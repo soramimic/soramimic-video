@@ -23,7 +23,7 @@ audio = [
     "librosa>=0.10",
     "faster-whisper>=1.0",
     "mecab-python3>=1.0",
-    "ipadic>=1.0",
+    "unidic-lite>=1.0",
     "numpy>=1.24",
 ]
 
@@ -39,7 +39,7 @@ dev = [
     # audio系の純ロジック(pitch/reading)のテスト用。モデル系依存はaudio extraのみ
     "numpy>=1.24",
     "mecab-python3>=1.0",
-    "ipadic>=1.0",
+    "unidic-lite>=1.0",
 ]
 
 [build-system]

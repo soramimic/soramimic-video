@@ -673,12 +673,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ipadic"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e7/4e/c459f94d62a0bef89f866857bc51b9105aff236b83928618315b41a26b7b/ipadic-1.0.0.tar.gz", hash = "sha256:f5923d31eca6131acaaf18ed28d8998665b1347b640d3a6476f64650e9a71c07", size = 13413189, upload-time = "2020-07-20T03:35:40.209Z" }
-
-[[package]]
 name = "jaconv"
 version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2105,7 +2099,6 @@ dependencies = [
 audio = [
     { name = "demucs" },
     { name = "faster-whisper" },
-    { name = "ipadic" },
     { name = "librosa" },
     { name = "mecab-python3" },
     { name = "numpy" },
@@ -2113,24 +2106,24 @@ audio = [
     { name = "torchaudio" },
     { name = "torchcodec" },
     { name = "transformers" },
+    { name = "unidic-lite" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "ipadic" },
     { name = "mecab-python3" },
     { name = "mypy" },
     { name = "numpy" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "types-requests" },
+    { name = "unidic-lite" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "demucs", marker = "extra == 'audio'", specifier = ">=4.0" },
     { name = "faster-whisper", marker = "extra == 'audio'", specifier = ">=1.0" },
-    { name = "ipadic", marker = "extra == 'audio'", specifier = ">=1.0" },
     { name = "jaconv", specifier = ">=0.3" },
     { name = "librosa", marker = "extra == 'audio'", specifier = ">=0.10" },
     { name = "mecab-python3", marker = "extra == 'audio'", specifier = ">=1.0" },
@@ -2141,19 +2134,20 @@ requires-dist = [
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.1" },
     { name = "torchcodec", marker = "extra == 'audio'", specifier = ">=0.2" },
     { name = "transformers", marker = "extra == 'audio'", specifier = ">=4.40" },
+    { name = "unidic-lite", marker = "extra == 'audio'", specifier = ">=1.0" },
     { name = "xfmido", specifier = ">=0.0.2" },
 ]
 provides-extras = ["audio"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "ipadic", specifier = ">=1.0" },
     { name = "mecab-python3", specifier = ">=1.0" },
     { name = "mypy", specifier = ">=1.10" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.4" },
     { name = "types-requests" },
+    { name = "unidic-lite", specifier = ">=1.0" },
 ]
 
 [[package]]
@@ -2492,6 +2486,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
 ]
+
+[[package]]
+name = "unidic-lite"
+version = "1.0.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/55/2b/8cf7514cb57d028abcef625afa847d60ff1ffbf0049c36b78faa7c35046f/unidic-lite-1.0.8.tar.gz", hash = "sha256:db9d4572d9fdd4d00a97949d4b0741ec480ee05a7e7e2e32f547500dae27b245", size = 47356746, upload-time = "2021-01-25T06:07:54.719Z" }
 
 [[package]]
 name = "urllib3"
