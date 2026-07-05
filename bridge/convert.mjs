@@ -59,10 +59,13 @@ async function main() {
   const csvText = fs.readFileSync(input.wordlist.file, 'utf8');
   const db = app.wordList.parseTidy(csvText, input.wordlist.where || '');
 
+  // 生成画面(app.js)と同じ経路: トークナイズ→生成。tokensListは
+  // editorの読み修正・部分再生成に必要なので出力にも含める
+  const tokensList = app.textAnalyzer.tokenizeTogether(input.phrases);
   const unitsList = [];
   const results = await new Promise((resolve) => {
-    app.soramimiMaker.generate(
-      input.phrases,
+    app.soramimiMaker.generateFromTokens(
+      tokensList,
       db,
       input.params || {},
       (result, i, tokenizedPhrases) => {
@@ -70,6 +73,7 @@ async function main() {
         unitsList[i] = tokenizedPhrases[i].map((u) => ({
           surface_form: u.surface_form,
           pronunciation: u.pronunciation,
+          phrase: u.phrase,
         }));
       },
       resolve,
@@ -80,7 +84,7 @@ async function main() {
     units: unitsList[i] || [],
     words: words.map((w) => ({ ...w })),
   }));
-  printOut(JSON.stringify({ lines }));
+  printOut(JSON.stringify({ lines, tokensList, phrases: input.phrases }));
 }
 
 main().catch((err) => {

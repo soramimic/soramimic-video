@@ -32,14 +32,16 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 def cmd_convert(args: argparse.Namespace) -> int:
     from .convert import convert_project
+    from .editor_io import save_raw
 
     project = Project.load(Path(args.project))
-    convert_project(
+    raw = convert_project(
         project,
         wordlist=args.wordlist,
         where=args.where,
         params=dict(kv.split("=", 1) for kv in args.param or []),
     )
+    save_raw(raw, Path(args.project))
     project.save(Path(args.project))
     n_words = sum(len(pl.words) for pl in project.parody.lines) if project.parody else 0
     print(f"変換完了: {n_words}単語 -> {Path(args.project) / 'project.json'}")
@@ -63,6 +65,29 @@ def cmd_import_edit(args: argparse.Namespace) -> int:
     import_edit(project, Path(args.project))
     project.save(Path(args.project))
     print("編集内容を取り込みました")
+    return 0
+
+
+def cmd_export_editor(args: argparse.Namespace) -> int:
+    from .editor_io import export_editor
+
+    project = Project.load(Path(args.project))
+    path = export_editor(project, Path(args.project))
+    print(f"editor用ファイルを書き出しました: {path}")
+    print("soramimic編集ツールの「読み込み」で開き、編集後に「書き出し」たファイルを")
+    print(f"  soramimi-video import-editor --project {args.project} --file <書き出したJSON>")
+    print("で取り込んでください")
+    return 0
+
+
+def cmd_import_editor(args: argparse.Namespace) -> int:
+    from .editor_io import import_editor
+
+    project = Project.load(Path(args.project))
+    import_editor(project, Path(args.project), Path(args.file) if args.file else None)
+    project.save(Path(args.project))
+    n_words = sum(len(pl.words) for pl in project.parody.lines) if project.parody else 0
+    print(f"editorの編集内容を取り込みました({n_words}単語)")
     return 0
 
 
@@ -136,6 +161,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("import-edit", help="編集済みファイルを取り込む")
     p.add_argument("--project", required=True)
     p.set_defaults(func=cmd_import_edit)
+
+    p = sub.add_parser(
+        "export-editor", help="soramimic編集ツールで開けるJSONを書き出す"
+    )
+    p.add_argument("--project", required=True)
+    p.set_defaults(func=cmd_export_editor)
+
+    p = sub.add_parser(
+        "import-editor", help="soramimic編集ツールが書き出したJSONを取り込む"
+    )
+    p.add_argument("--project", required=True)
+    p.add_argument("--file", help="editorが書き出したJSON(省略時は editor.json)")
+    p.set_defaults(func=cmd_import_editor)
 
     p = sub.add_parser("synthesize", help="NEUTRINOで替え歌を歌唱合成する")
     p.add_argument("--project", required=True)

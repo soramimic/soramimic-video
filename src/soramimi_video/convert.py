@@ -225,20 +225,40 @@ def convert_project(
     wordlist: str,
     where: str | None = None,
     params: dict[str, str] | None = None,
-) -> None:
-    """project.parody を埋める(破壊的)。"""
+) -> dict:
+    """project.parody を埋める(破壊的)。ブリッジの生の応答を返す。
+
+    生の応答(units・period付きの単語列・tokensList)は editor 連携の
+    書き出しに必要なので、呼び出し側でプロジェクトディレクトリに保存する。
+    """
     csv_path = resolve_wordlist(wordlist)
-    name = csv_path.stem
     if where is None:
-        where = DEFAULT_WHERE.get(name)
+        where = DEFAULT_WHERE.get(csv_path.stem)
     coerced = _coerce_params(params or {})
 
     phrases = [line.xf_kana for line in project.lines]
     result = run_bridge(phrases, csv_path, where, coerced)
+    apply_converted_lines(project, result["lines"], wordlist, where, coerced)
+    return result
+
+
+def apply_converted_lines(
+    project: Project,
+    lines: list[dict],
+    wordlist: str,
+    where: str | None,
+    params: dict[str, Any],
+) -> None:
+    """変換結果の行列([{units, words}])から project.parody を作り直す。
+
+    wordlist はリスト名またはCSVパス(parodyにそのまま保存され、
+    import-editor の再取り込みでも同じ解決ができる)。
+    """
+    csv_path = resolve_wordlist(wordlist)
     rows_by_id = _load_wordlist_rows(csv_path)
 
-    parody = Parody(wordlist=name, where=where, params=coerced)
-    for line, converted in zip(project.lines, result["lines"], strict=True):
+    parody = Parody(wordlist=wordlist, where=where, params=params)
+    for line, converted in zip(project.lines, lines, strict=True):
         pline = ParodyLine(line_id=line.id)
         unit_lens = [len(u["pronunciation"]) for u in converted["units"]]
         unit_concat = "".join(u["pronunciation"] for u in converted["units"])
@@ -271,6 +291,7 @@ def convert_project(
                     note_ids=[line.note_ids[i] for i in note_idx],
                     note_kana=note_kana,
                     wordlist_row=_find_row(rows_by_id, word),
+                    locked=bool(word.get("locked", False)),
                 )
             )
         parody.lines.append(pline)
