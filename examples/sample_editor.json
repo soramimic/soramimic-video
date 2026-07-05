@@ -1,0 +1,234 @@
+{
+ "format": "soramimic-editor/1",
+ "phrases": [
+  "ソラミミツクロ",
+  "エキメイデウタオウ"
+ ],
+ "tokensList": [
+  [
+   {
+    "surface_form": "ソラミミツクロ",
+    "basic_form": "*",
+    "reading": "*",
+    "pronunciation": "ソラミミツクロ",
+    "pos": "名詞",
+    "pos_detail_1": "固有名詞",
+    "pos_detail_2": "組織",
+    "pos_detail_3": "*",
+    "conjugated_form": "*",
+    "conjugated_type": "*",
+    "word_position": 1,
+    "phrase": 0,
+    "token_index": 0
+   }
+  ],
+  [
+   {
+    "surface_form": "エキメイデウタオウ",
+    "basic_form": "*",
+    "reading": "*",
+    "pronunciation": "エキメイデウタオウ",
+    "pos": "名詞",
+    "pos_detail_1": "固有名詞",
+    "pos_detail_2": "組織",
+    "pos_detail_3": "*",
+    "conjugated_form": "*",
+    "conjugated_type": "*",
+    "word_position": 1,
+    "phrase": 0,
+    "token_index": 0
+   }
+  ]
+ ],
+ "results": [
+  [
+   {
+    "surface": "東浪見",
+    "pronunciation": [
+     "ト",
+     "ラ",
+     "ミ"
+    ],
+    "kana": "トラミ",
+    "id": "5741",
+    "original": "東浪見",
+    "sim": 179.4895625,
+    "originalkana": "ソラミ",
+    "score": 179.4895625,
+    "period": [
+     0,
+     3
+    ],
+    "original_surface": "ソラミ",
+    "locked": false
+   },
+   {
+    "surface": "水窪",
+    "pronunciation": [
+     "ミ",
+     "サ",
+     "ク",
+     "ボ"
+    ],
+    "kana": "ミサクボ",
+    "id": "7939",
+    "original": "水窪",
+    "sim": 254.283243,
+    "originalkana": "ミツクロ",
+    "score": 254.283243,
+    "period": [
+     3,
+     7
+    ],
+    "original_surface": "ミツクロ",
+    "locked": false
+   }
+  ],
+  [
+   {
+    "surface": "頴娃",
+    "pronunciation": [
+     "エー"
+    ],
+    "kana": "エイ",
+    "id": "1201",
+    "original": "頴娃",
+    "sim": 56.661046999999996,
+    "originalkana": "エ",
+    "score": 56.661046999999996,
+    "period": [
+     0,
+     1
+    ],
+    "original_surface": "エ",
+    "locked": false
+   },
+   {
+    "surface": "神明",
+    "pronunciation": [
+     "シー",
+     "メ",
+     "イ"
+    ],
+    "kana": "シンメイ",
+    "id": "4375",
+    "original": "神明",
+    "sim": 117.033812,
+    "originalkana": "キメイ",
+    "score": 117.033812,
+    "period": [
+     1,
+     3
+    ],
+    "original_surface": "キメイ",
+    "locked": false
+   },
+   {
+    "surface": "中学校",
+    "pronunciation": [
+     "チュ",
+     "ウ",
+     "ガ",
+     "コ",
+     "ウ"
+    ],
+    "kana": "チュウガッコウ",
+    "id": "5261",
+    "original": "中学校",
+    "sim": 239.80315679999998,
+    "originalkana": "デウタオウ",
+    "score": 239.80315679999998,
+    "period": [
+     3,
+     7
+    ],
+    "original_surface": "デウタオウ",
+    "locked": false
+   }
+  ]
+ ],
+ "param": {},
+ "wordlist": {
+  "value": "STATION",
+  "text": "駅名",
+  "filepath": "wordlists/stations.csv",
+  "dbtype": "tidy",
+  "where": "status=current"
+ },
+ "unitsList": [
+  [
+   {
+    "surface_form": "ソ",
+    "pronunciation": "ソ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "ラ",
+    "pronunciation": "ラ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "ミ",
+    "pronunciation": "ミ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "ミ",
+    "pronunciation": "ミ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "ツ",
+    "pronunciation": "ツ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "ク",
+    "pronunciation": "ク",
+    "phrase": 0
+   },
+   {
+    "surface_form": "ロ",
+    "pronunciation": "ロ",
+    "phrase": 0
+   }
+  ],
+  [
+   {
+    "surface_form": "エ",
+    "pronunciation": "エ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "キ",
+    "pronunciation": "キ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "メイ",
+    "pronunciation": "メイ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "デ",
+    "pronunciation": "デ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "ウ",
+    "pronunciation": "ウ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "タ",
+    "pronunciation": "タ",
+    "phrase": 0
+   },
+   {
+    "surface_form": "オウ",
+    "pronunciation": "オウ",
+    "phrase": 0
+   }
+  ]
+ ]
+}

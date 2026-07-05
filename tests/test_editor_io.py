@@ -71,3 +71,22 @@ def test_editor_roundtrip(tmp_path: Path):
     payload2 = json.loads(path2.read_text(encoding="utf-8"))
     assert payload2["results"][0][0]["surface"] == "清水"
     assert payload2["results"][0][0]["locked"] is True
+
+
+def test_import_editor_without_convert(tmp_path: Path):
+    # ブラウザで変換・編集したJSONだけを、convertを経ていないプロジェクトに取り込む
+    project = _project(tmp_path)
+    donor = _project(tmp_path)
+    raw = convert_project(donor, wordlist=str(_wordlist(tmp_path)))
+    save_raw(raw, tmp_path)
+    path = export_editor(donor, tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    # 単語リストの解決に使うfilepathを、実在するCSVパスに差し替えておく
+    payload["wordlist"]["filepath"] = str(_wordlist(tmp_path))
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert project.parody is None
+    import_editor(project, tmp_path)
+    assert project.parody is not None
+    assert project.parody.lines[0].words, "取り込んだ単語が空"
+    assert project.parody.lines[0].words[0].note_ids

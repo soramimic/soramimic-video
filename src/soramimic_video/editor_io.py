@@ -92,9 +92,12 @@ def export_editor(project: Project, project_dir: Path) -> Path:
 
 
 def import_editor(project: Project, project_dir: Path, file: Path | None = None) -> None:
-    """editorが書き出したJSONを取り込み、project.parodyを作り直す。"""
-    if project.parody is None:
-        raise ValueError("替え歌案がありません。先に convert を実行してください")
+    """editorが書き出したJSONを取り込み、project.parodyを作り直す。
+
+    convert を経ていないプロジェクトにも取り込める(JSON側のwordlist情報を使う)。
+    ブラウザ(soramimic.com)で変換・編集した結果だけを持ち込むケース用で、
+    このときローカル/Colab側では変換ブリッジ(node+soramimic本体)が不要になる。
+    """
     path = file or (project_dir / EDITOR_FILENAME)
     payload = json.loads(path.read_text(encoding="utf-8"))
     results = payload.get("results")
@@ -110,28 +113,38 @@ def import_editor(project: Project, project_dir: Path, file: Path | None = None)
         {"units": units, "words": words}
         for units, words in zip(units_list, results, strict=True)
     ]
-    # editorで別の単語リストに切り替えて編集した場合に備え、
-    # JSON側のwordlist情報(filepath)が解決できるならそちらを優先する
-    wordlist = project.parody.wordlist
-    where = project.parody.where
+    # 単語リストはJSON側の情報(filepath)が解決できるならそちらを優先し、
+    # だめなら既存のparody(convert済みの場合)にフォールバックする
+    wordlist = project.parody.wordlist if project.parody else None
+    where = project.parody.where if project.parody else None
     entry = payload.get("wordlist") or {}
     filepath = entry.get("filepath", "")
     if filepath.endswith(".csv"):
-        name = Path(filepath).stem
-        try:
-            resolve_wordlist(name)
-            wordlist = name
-            where = entry.get("where")
-        except FileNotFoundError:
+        # まずパスそのもの、だめならリスト名(stem)で解決を試みる
+        for candidate in (filepath, Path(filepath).stem):
+            try:
+                resolve_wordlist(candidate)
+                wordlist = candidate
+                where = entry.get("where")
+                break
+            except FileNotFoundError:
+                continue
+        else:
             logger.warning(
                 "editor JSONの単語リスト %s が見つからないため %s を使います", filepath, wordlist
             )
+    if wordlist is None:
+        raise ValueError(
+            "単語リストを特定できません。convert を先に実行するか、"
+            "wordlist情報(filepath)を含むeditor JSONを使ってください"
+        )
+    default_params = project.parody.params if project.parody else {}
     apply_converted_lines(
         project,
         lines,
         wordlist=wordlist,
         where=where,
-        params=payload.get("param") or project.parody.params,
+        params=payload.get("param") or default_params,
     )
     # 再書き出しできるよう生応答も更新する
     save_raw(
