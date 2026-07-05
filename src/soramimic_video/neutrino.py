@@ -91,8 +91,10 @@ def run_neutrino(
         return None
     env = dict(os.environ)
     if root is not None:
-        # v3.2のバイナリは同梱dylibに依存する(Run.sh相当)
-        env["DYLD_LIBRARY_PATH"] = f"{root / 'bin'}:{env.get('DYLD_LIBRARY_PATH', '')}"
+        # v3.2のバイナリは同梱の共有ライブラリに依存する(Run.sh相当)。
+        # macOSはDYLD_、LinuxはLD_を見るので両方設定しておく
+        for var in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+            env[var] = f"{root / 'bin'}:{env.get(var, '')}"
     for c in commands:
         logger.info("実行: %s", c)
         proc = subprocess.run(

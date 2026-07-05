@@ -33,7 +33,8 @@ packages = ["src/soramimic_video"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-extend-exclude = ["external"]
+# notebooks: Colabの `!`マジックや `# @param` 長行はruff対象外
+extend-exclude = ["external", "notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

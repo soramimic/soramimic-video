@@ -47,6 +47,14 @@ uv run soramimic-video mix --project work/song --soundfont /path/to/GeneralUser.
 uv run soramimic-video video --project work/song
 ```
 
+## ブラウザ+Colabで使う(ローカル環境不要)
+
+1. [soramimic.com](https://soramimic.com) で「MIDIから取り込み」→ 変換 → 編集ツールで調整 → 「書き出し」(JSON)
+2. [notebooks/colab_render.ipynb](notebooks/colab_render.ipynb) をGoogle Colabで開き、
+   MIDIと書き出したJSONをアップロードして実行 → 替え歌動画(out.mp4)ができる
+
+Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の手順を参照。
+
 ## 開発
 
 ```sh

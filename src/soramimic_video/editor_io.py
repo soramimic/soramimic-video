@@ -110,12 +110,28 @@ def import_editor(project: Project, project_dir: Path, file: Path | None = None)
         {"units": units, "words": words}
         for units, words in zip(units_list, results, strict=True)
     ]
+    # editorで別の単語リストに切り替えて編集した場合に備え、
+    # JSON側のwordlist情報(filepath)が解決できるならそちらを優先する
+    wordlist = project.parody.wordlist
+    where = project.parody.where
+    entry = payload.get("wordlist") or {}
+    filepath = entry.get("filepath", "")
+    if filepath.endswith(".csv"):
+        name = Path(filepath).stem
+        try:
+            resolve_wordlist(name)
+            wordlist = name
+            where = entry.get("where")
+        except FileNotFoundError:
+            logger.warning(
+                "editor JSONの単語リスト %s が見つからないため %s を使います", filepath, wordlist
+            )
     apply_converted_lines(
         project,
         lines,
-        wordlist=project.parody.wordlist,
-        where=project.parody.where,
-        params=project.parody.params,
+        wordlist=wordlist,
+        where=where,
+        params=payload.get("param") or project.parody.params,
     )
     # 再書き出しできるよう生応答も更新する
     save_raw(
