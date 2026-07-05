@@ -80,6 +80,11 @@ def import_edit(project: Project, project_dir: Path) -> None:
                     f"{n_moras}モーラで音符数 {len(w.note_ids)} を超えています"
                 )
                 continue
+            if ew["surface"] != w.surface or kana != w.kana:
+                # 編集された単語は音符ごとの歌唱カナを配り直す
+                # (モーラを先頭から1音符1つ、足りない分は直前の音を伸ばす)
+                moras = split_moras(kana)
+                w.note_kana = moras + ["ー"] * (len(w.note_ids) - len(moras))
             w.surface = ew["surface"]
             w.kana = kana
             w.locked = bool(ew.get("locked", False))

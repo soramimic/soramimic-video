@@ -106,6 +106,18 @@ def _tempo_map(midi: XFMidiFile) -> list[list[int]]:
     return tempos
 
 
+def _time_signatures(midi: XFMidiFile) -> list[list[int]]:
+    sigs: list[list[int]] = []
+    for track in midi.tracks:
+        for tick, msg in _absolute_events(track):
+            if msg.type == "time_signature":
+                sigs.append([tick, msg.numerator, msg.denominator])
+    sigs.sort()
+    if not sigs or sigs[0][0] > 0:
+        sigs.insert(0, [0, 4, 4])
+    return sigs
+
+
 def tick_to_sec(tick: int, tempo_map: list[list[int]], ticks_per_beat: int) -> float:
     """tempo map(tick昇順)を使って絶対tickを秒に変換する。"""
     sec = 0.0
@@ -286,5 +298,6 @@ def analyze_midi(midi_path: Path) -> Project:
         time_offset=int(info.get("time_offset", 0)),
         language=str(info.get("language", "JP")),
         tempo_map=tempo_map,
+        time_signatures=_time_signatures(midi),
     )
     return Project(song=song, notes=notes, lines=lines)

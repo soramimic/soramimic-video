@@ -23,6 +23,8 @@ class SongInfo:
     time_offset: int = 0
     language: str = "JP"
     tempo_map: list[list[int]] = field(default_factory=list)  # [tick, us/beat]
+    # [tick, 分子, 分母]
+    time_signatures: list[list[int]] = field(default_factory=lambda: [[0, 4, 4]])
 
 
 @dataclass
@@ -60,6 +62,7 @@ class ParodyWord:
     original_surface: str  # 置き換え対象になった元歌詞側の表記
     originalkana: str
     note_ids: list[int]
+    note_kana: list[str] = field(default_factory=list)  # 音符ごとの歌唱カナ(note_idsと同長)
     wordlist_row: dict[str, Any] | None = None  # image列などを含むCSV行
     locked: bool = False
 

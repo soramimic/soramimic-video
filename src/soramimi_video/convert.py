@@ -113,13 +113,20 @@ def _map_word_to_notes(
     note_lens: list[int],
     offset_map: list[int],
     period: tuple[int, int],
-) -> list[int]:
-    """periodユニット区間 → (文字区間) → 重なる音符indexの列。"""
+    pronunciation: list[str] | None = None,
+) -> tuple[list[int], list[str]]:
+    """periodユニット区間 → (文字区間) → 重なる音符indexの列と音符ごとの歌唱カナ。
+
+    pronunciation は変換結果の発音バリエーションで、periodが指す文字列の
+    1文字に1要素が対応する(例: テユクヨウニ → [エー,シュ,ウ,ビョ,ウ,イー])。
+    """
     unit_cum = [0]
     for length in unit_lens:
         unit_cum.append(unit_cum[-1] + length)
-    start_c = offset_map[unit_cum[period[0]]]
-    end_c = offset_map[unit_cum[period[1]]]
+    start_src = unit_cum[period[0]]
+    end_src = unit_cum[period[1]]
+    start_c = offset_map[start_src]
+    end_c = offset_map[end_src]
 
     note_cum = [0]
     for length in note_lens:
@@ -129,7 +136,19 @@ def _map_word_to_notes(
         for i in range(len(note_lens))
         if note_cum[i] < end_c and note_cum[i + 1] > start_c
     ]
-    return ids
+
+    kana_per_note = [""] * len(ids)
+    if pronunciation and len(pronunciation) == end_src - start_src:
+        for j, p in enumerate(pronunciation):
+            src = start_src + j
+            lo, hi = offset_map[src], offset_map[src + 1]
+            if hi <= lo:  # 対応先の文字がない(脱落): 直近の音符に寄せる
+                lo, hi = max(0, lo - 1), lo
+            for k, i in enumerate(ids):
+                if note_cum[i] < hi and note_cum[i + 1] > lo:
+                    kana_per_note[k] += p
+                    break
+    return ids, kana_per_note
 
 
 def _load_wordlist_rows(csv_path: Path) -> dict[str, list[dict[str, str]]]:
@@ -183,9 +202,11 @@ def convert_project(
             )
         offset_map = _offset_map(unit_concat, note_concat)
         for word in converted["words"]:
-            note_idx = _map_word_to_notes(
-                unit_lens, note_lens, offset_map, tuple(word["period"])
+            note_idx, note_kana = _map_word_to_notes(
+                unit_lens, note_lens, offset_map, tuple(word["period"]),
+                word.get("pronunciation"),
             )
+            note_kana = [k or "ー" for k in note_kana]
             if not note_idx:
                 logger.warning(
                     "行%d: 単語 %r を音符に対応づけられずスキップ", line.id, word["surface"]
@@ -199,6 +220,7 @@ def convert_project(
                     original_surface=word.get("original_surface", ""),
                     originalkana=word.get("originalkana", ""),
                     note_ids=[line.note_ids[i] for i in note_idx],
+                    note_kana=note_kana,
                     wordlist_row=_find_row(rows_by_id, word),
                 )
             )

@@ -34,8 +34,24 @@ def test_map_word_to_notes():
     unit_lens = [1, 1, 1, 2, 1]
     note_lens = [1, 1, 1, 1, 1, 1]
     identity = list(range(7))
-    assert _map_word_to_notes(unit_lens, note_lens, identity, (0, 2)) == [0, 1]
-    assert _map_word_to_notes(unit_lens, note_lens, identity, (2, 5)) == [2, 3, 4, 5]
+    ids, kana = _map_word_to_notes(unit_lens, note_lens, identity, (0, 2), ["シ", "ズ"])
+    assert ids == [0, 1]
+    assert kana == ["シ", "ズ"]
+    ids, kana = _map_word_to_notes(
+        unit_lens, note_lens, identity, (2, 5), ["グ", "ミョ", "ウ", "ジ"]
+    )
+    assert ids == [2, 3, 4, 5]
+    assert kana == ["グ", "ミョ", "ウ", "ジ"]
+
+
+def test_map_word_to_notes_multi_kana_note():
+    # 音符kanaが2文字(「ライ」が1音符)のケース: 2要素が同じ音符にまとまる
+    unit_lens = [1, 1, 1]
+    note_lens = [1, 2]  # [キ, ライ]
+    identity = list(range(4))
+    ids, kana = _map_word_to_notes(unit_lens, note_lens, identity, (0, 3), ["ミ", "ラ", "イ"])
+    assert ids == [0, 1]
+    assert kana == ["ミ", "ライ"]
 
 
 def _tiny_project() -> Project:
