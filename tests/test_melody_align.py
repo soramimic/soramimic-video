@@ -1,21 +1,16 @@
 import pytest
 
-np = pytest.importorskip("numpy")
-
-from soramimic_video.melody_align import (  # noqa: E402
+from soramimic_video.melody_align import (
     MelodyNote,
     assemble_mora_notes,
-    build_time_map,
     channel_match_score,
     estimate_transpose,
-    fill_silent_frames,
+    fit_global_map,
     match_moras_to_notes,
-    midi_chroma,
     monophony_ratio,
     skyline,
-    warp_sec,
 )
-from soramimic_video.mora_align import AlignedMora  # noqa: E402
+from soramimic_video.mora_align import AlignedMora
 
 
 def _note(start: float, end: float, pitch: int) -> MelodyNote:
@@ -26,32 +21,15 @@ def _mora(i: int, kana: str, start: float, end: float) -> AlignedMora:
     return AlignedMora(line=0, mora=i, kana=kana, start_sec=start, end_sec=end, score=1.0)
 
 
+def _spans(onsets: list[float], dur: float = 0.4) -> list[tuple[float, float]]:
+    return [(t, t + dur) for t in onsets]
+
+
 def test_monophony_ratio():
     mono = [_note(0, 1, 60), _note(1, 2, 62), _note(2, 3, 64)]
     poly = [_note(0, 2, 60), _note(1, 3, 64), _note(2, 4, 67)]
     assert monophony_ratio(mono) == 1.0
     assert monophony_ratio(poly) == 0.0
-
-
-def test_channel_match_score_prefers_melody_over_bass():
-    # モーラのf0は65前後で輪郭が動く。メロディ(オク上,輪郭一致)がベース(輪郭無関係)に勝つ
-    contour = [65, 67, 69, 67, 65, 62, 65, 69]
-    fallback = list(contour)
-    melody = [_note(i * 0.5, i * 0.5 + 0.4, p + 12) for i, p in enumerate(contour)]
-    bass = [_note(i * 0.5, i * 0.5 + 0.4, 40) for i in range(len(contour))]
-    pairs: list[tuple[int | None, int | None]] = [(i, i) for i in range(len(contour))]
-    mel_score, mel_cov, mel_mad = channel_match_score(pairs, len(contour), fallback, melody)
-    bass_score, _, bass_mad = channel_match_score(pairs, len(contour), fallback, bass)
-    assert mel_cov == 1.0
-    assert mel_mad == 0.0  # 一定オフセット(+12)は輪郭一致とみなす
-    assert bass_mad > 0.0
-    assert mel_score > bass_score
-
-
-def test_channel_match_score_no_match():
-    score, coverage, _ = channel_match_score([(0, None)], 1, [60], [])
-    assert score == -1.0
-    assert coverage == 0.0
 
 
 def test_skyline_keeps_top_voice():
@@ -80,39 +58,48 @@ def test_skyline_keeps_sequential_notes():
     assert len(skyline(notes)) == 3
 
 
-def test_assemble_drops_overlapping_chord_note():
-    # マッチ音符と同時に鳴る和音の余り → メリスマにしない
-    aligned = [_mora(0, "ア", 1.0, 1.2)]
-    notes = [_note(1.0, 1.8, 67), _note(1.0, 1.8, 60)]
-    pairs: list[tuple[int | None, int | None]] = [(0, 0), (None, 1)]
-    result = assemble_mora_notes(aligned, notes, pairs, fallback_midi=[60])
-    assert [m.kana for m in result] == ["ア"]
+def test_fit_global_map_recovers_offset_and_scale():
+    # 音符列を scale=1.02, offset=+3.4s で写すとモーラ列に一致する
+    note_onsets = [float(i) for i in range(40)]
+    mora_onsets = [1.02 * t + 3.4 for t in note_onsets]
+    scale, offset = fit_global_map(mora_onsets, note_onsets)
+    assert scale == pytest.approx(1.02, abs=0.011)
+    assert offset == pytest.approx(3.4, abs=0.3)
+    # 写像後の残差が小さいこと(格子の分解能内)
+    residuals = [
+        abs(scale * t + offset - y)
+        for t, y in zip(note_onsets, mora_onsets, strict=True)
+    ]
+    assert max(residuals) < 0.15
 
 
-def test_midi_chroma_pitch_class_and_norm():
-    chroma = midi_chroma([_note(0.0, 1.0, 60)], n_frames=10, frame_sec=0.2)  # C4
-    assert chroma.shape == (12, 10)
-    assert chroma[0, 0] == pytest.approx(1.0)  # C行が立つ(正規化済み)
-    assert chroma[:, 9].sum() == 0  # ノートの無いフレームは0
+def test_fit_global_map_negative_offset():
+    note_onsets = [5.0 + i * 0.5 for i in range(60)]
+    mora_onsets = [t - 4.1 for t in note_onsets]
+    scale, offset = fit_global_map(mora_onsets, note_onsets)
+    assert scale == pytest.approx(1.0, abs=0.011)
+    assert offset == pytest.approx(-4.1, abs=0.15)
 
 
-def test_fill_silent_frames():
-    chroma = midi_chroma([_note(0.0, 1.0, 60)], n_frames=10, frame_sec=0.2)
-    filled = fill_silent_frames(chroma)
-    assert filled[:, 9] == pytest.approx(np.full(12, 1 / np.sqrt(12)))  # 無音は一様に
-    assert filled[0, 0] == pytest.approx(1.0)  # 有音フレームはそのまま
+def test_channel_match_score_prefers_melody_over_bass():
+    # モーラのf0は65前後で輪郭が動く。メロディ(オク上,輪郭一致)がベース(輪郭無関係)に勝つ
+    contour = [65, 67, 69, 67, 65, 62, 65, 69]
+    fallback = list(contour)
+    melody = [_note(i * 0.5, i * 0.5 + 0.4, p + 12) for i, p in enumerate(contour)]
+    bass = [_note(i * 0.5, i * 0.5 + 0.4, 40) for i in range(len(contour))]
+    pairs: list[tuple[int | None, int | None]] = [(i, i) for i in range(len(contour))]
+    mel_score, mel_cov, mel_mad = channel_match_score(pairs, len(contour), fallback, melody)
+    bass_score, _, bass_mad = channel_match_score(pairs, len(contour), fallback, bass)
+    assert mel_cov == 1.0
+    assert mel_mad == 0.0  # 一定オフセット(+12)は輪郭一致とみなす
+    assert bass_mad > 0.0
+    assert mel_score > bass_score
 
 
-def test_build_time_map_and_warp():
-    # midiフレームiがaudioフレーム2iに対応する経路(2倍に間延びした演奏)
-    wp = np.array([[i, 2 * i] for i in range(10)])
-    midi_t, audio_t = build_time_map(wp, frame_sec=0.5)
-    assert warp_sec(1.0, midi_t, audio_t) == pytest.approx(2.0)
-    assert warp_sec(2.25, midi_t, audio_t) == pytest.approx(4.5)
-
-
-def _spans(onsets: list[float], dur: float = 0.4) -> list[tuple[float, float]]:
-    return [(t, t + dur) for t in onsets]
+def test_channel_match_score_no_match():
+    score, coverage, _ = channel_match_score([(0, None)], 1, [60], [])
+    assert score == -1.0
+    assert coverage == 0.0
 
 
 def test_match_moras_to_notes_exact():
@@ -143,6 +130,20 @@ def test_match_moras_to_notes_extra_mora():
     assert (1, None) in pairs
 
 
+def test_match_moras_to_notes_pitch_cost_disambiguates():
+    # 時刻だけでは近い方の音符を選んでしまうケースを、音高で正しく選ぶ。
+    # f0=72に対し、時刻の近い方(65)でなく音高の合う方(72)へ
+    moras = [1.05]
+    spans = [(1.0, 1.15), (1.2, 1.8)]
+    pitches = [65, 72]
+    no_pitch = match_moras_to_notes(moras, spans)
+    with_pitch = match_moras_to_notes(
+        moras, spans, mora_pitches=[72], note_pitches=pitches, transpose=0
+    )
+    assert (0, 0) in no_pitch  # 時刻のみ: 近い方を選んでしまう
+    assert (0, 1) in with_pitch  # 音高込み: 正しい音符を選ぶ
+
+
 def test_estimate_transpose_octave():
     pairs: list[tuple[int | None, int | None]] = [(0, 0), (1, 1), (2, None)]
     fallback = [72, 74, 60]  # f0はオク上で歌っている
@@ -161,7 +162,7 @@ def test_assemble_matched_uses_midi_pitch_and_ctc_onset():
 
 def test_assemble_far_onset_uses_midi_onset():
     aligned = [_mora(0, "ア", 1.0, 1.2)]
-    notes = [_note(2.0, 2.5, 67)]  # 0.3s超の差 → MIDI開始を信用
+    notes = [_note(2.0, 2.5, 67)]  # 0.6s超の差 → MIDI開始を信用
     result = assemble_mora_notes(aligned, notes, [(0, 0)], fallback_midi=[60])
     assert result[0].start_sec == 2.0
 
@@ -179,6 +180,15 @@ def test_assemble_melisma_and_interlude():
     assert [m.kana for m in result] == ["ア", "ー", "イ"]
     assert result[1].midi_note == 64
     assert result[1].line == 0
+
+
+def test_assemble_drops_overlapping_chord_note():
+    # マッチ音符と同時に鳴る和音の余り → メリスマにしない
+    aligned = [_mora(0, "ア", 1.0, 1.2)]
+    notes = [_note(1.0, 1.8, 67), _note(1.0, 1.8, 60)]
+    pairs: list[tuple[int | None, int | None]] = [(0, 0), (None, 1)]
+    result = assemble_mora_notes(aligned, notes, pairs, fallback_midi=[60])
+    assert [m.kana for m in result] == ["ア"]
 
 
 def test_assemble_unmatched_mora_falls_back_to_f0():
@@ -206,29 +216,6 @@ def test_assemble_legato_closes_small_gaps():
     result = assemble_mora_notes(aligned, notes, pairs, fallback_midi=[60, 62, 64])
     assert result[0].end_sec == 1.5  # 0.1sの隙間は接続
     assert result[1].end_sec == 1.9  # 0.5sの隙間は残す
-
-
-def test_pitch_guard_falls_back_line_with_high_disagreement():
-    # 不一致が交互に出ても(別旋律でも部分的に音は一致する)、行の不一致率が
-    # 高ければ行ごとf0にフォールバックする
-    aligned = [_mora(i, k, 1.0 + i * 0.3, 1.2 + i * 0.3) for i, k in enumerate("アイウエ")]
-    notes = [_note(1.0 + i * 0.3, 1.25 + i * 0.3, 60) for i in range(4)]  # MIDIは全部60
-    fallback = [65, 60, 66, 60]  # 2/4=50%が不一致(交互)
-    pairs: list[tuple[int | None, int | None]] = [(i, i) for i in range(4)]
-    result = assemble_mora_notes(aligned, notes, pairs, fallback_midi=fallback)
-    assert [m.midi_note for m in result] == [65, 60, 66, 60]  # 行全体がf0に
-
-
-def test_pitch_guard_keeps_isolated_disagreement_and_octave():
-    aligned = [
-        _mora(i, k, 1.0 + i * 0.3, 1.2 + i * 0.3) for i, k in enumerate("アイウエオカ")
-    ]
-    notes = [_note(1.0 + i * 0.3, 1.25 + i * 0.3, 60) for i in range(6)]
-    # イだけ不一致(1/6=17% < 35%)、エはオクターブ違い(オクターブ無視で一致扱い)
-    fallback = [60, 66, 60, 72, 60, 60]
-    pairs: list[tuple[int | None, int | None]] = [(i, i) for i in range(6)]
-    result = assemble_mora_notes(aligned, notes, pairs, fallback_midi=fallback)
-    assert [m.midi_note for m in result] == [60] * 6  # MIDIを維持
 
 
 def test_assemble_applies_transpose():

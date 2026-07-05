@@ -52,6 +52,15 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval_audio(args: argparse.Namespace) -> int:
+    from .evaluate import evaluate
+
+    truth = Project.load(Path(args.truth))
+    est = Project.load(Path(args.project))
+    print(evaluate(truth, est).summary())
+    return 0
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
     from .convert import convert_project
     from .editor_io import save_raw
@@ -195,6 +204,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--device", help="torchデバイス(省略時はcuda→cpuの順で自動)")
     p.set_defaults(func=cmd_analyze_audio)
+
+    p = sub.add_parser(
+        "eval-audio", help="analyze-audioの出力をXF正解プロジェクトと突き合わせて評価する"
+    )
+    p.add_argument("--project", required=True, help="評価対象(analyze-audioの出力)")
+    p.add_argument("--truth", required=True, help="正解(XF MIDI由来のプロジェクト)")
+    p.set_defaults(func=cmd_eval_audio)
 
     p = sub.add_parser("convert", help="soramimicで替え歌単語歌詞に変換する")
     p.add_argument("--project", required=True)
