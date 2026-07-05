@@ -38,6 +38,10 @@ extend-exclude = ["external"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# ASSヘッダのFormat/Style行は仕様上1行でなければならない
+"src/soramimi_video/video.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = false

@@ -99,6 +99,8 @@ def cmd_video(args: argparse.Namespace) -> int:
         Path(args.project),
         width=args.width,
         height=args.height,
+        font=args.font,
+        audio=args.audio,
     )
     print(f"動画完成: {out}")
     return 0
@@ -150,6 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True)
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
+    p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
+    p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
     p.set_defaults(func=cmd_video)
 
     return parser

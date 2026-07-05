@@ -1,0 +1,20 @@
+# submoduleはcheckoutしない(soramimic本体はprivateのためGITHUB_TOKENで取れない)。
+# ブリッジ(node)依存のテストはbridge未セットアップ時に自動skipされる。
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pytest -q
