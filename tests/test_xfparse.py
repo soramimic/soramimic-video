@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from helpers import build_xf_midi
-from soramimi_video.xfparse import analyze_midi, normalize_kana, parse_lyric_events
+from soramimic_video.xfparse import analyze_midi, normalize_kana, parse_lyric_events
 
 
 def test_parse_lyric_events_brackets_and_breaks():

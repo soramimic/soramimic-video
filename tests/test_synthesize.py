@@ -1,10 +1,10 @@
 from pathlib import Path
 
 from helpers import build_xf_midi
-from soramimi_video.musicxml import build_musicxml
-from soramimi_video.project import Parody, ParodyLine, ParodyWord
-from soramimi_video.synthesize import build_lyric_map
-from soramimi_video.xfparse import analyze_midi
+from soramimic_video.musicxml import build_musicxml
+from soramimic_video.project import Parody, ParodyLine, ParodyWord
+from soramimic_video.synthesize import build_lyric_map
+from soramimic_video.xfparse import analyze_midi
 
 
 def _project(tmp_path: Path):

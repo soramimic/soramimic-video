@@ -3,8 +3,8 @@ from pathlib import Path
 import mido
 
 from helpers import build_xf_midi
-from soramimi_video.mix import make_accompaniment_midi
-from soramimi_video.xfparse import analyze_midi
+from soramimic_video.mix import make_accompaniment_midi
+from soramimic_video.xfparse import analyze_midi
 
 
 def test_make_accompaniment_midi_removes_melody(tmp_path: Path):

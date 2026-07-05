@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from soramimi_video.editing import export_edit, import_edit
-from soramimi_video.project import (
+from soramimic_video.editing import export_edit, import_edit
+from soramimic_video.project import (
     Line,
     Note,
     Parody,

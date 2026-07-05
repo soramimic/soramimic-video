@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 
 from helpers import build_xf_midi
-from soramimi_video.project import Parody, ParodyLine, ParodyWord
-from soramimi_video.video import build_ass, build_image_cues, write_slideshow
-from soramimi_video.xfparse import analyze_midi
+from soramimic_video.project import Parody, ParodyLine, ParodyWord
+from soramimic_video.video import build_ass, build_image_cues, write_slideshow
+from soramimic_video.xfparse import analyze_midi
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 

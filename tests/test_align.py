@@ -1,4 +1,4 @@
-from soramimi_video.align import align_texts
+from soramimic_video.align import align_texts
 
 
 def test_align_one_to_one():

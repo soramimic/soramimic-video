@@ -1,5 +1,5 @@
 [project]
-name = "soramimi-video"
+name = "soramimic-video"
 version = "0.1.0"
 description = "XF MIDIと歌詞から替え歌歌唱音源・替え歌動画を生成するパイプライン"
 readme = "README.md"
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-soramimi-video = "soramimi_video.cli:main"
+soramimic-video = "soramimic_video.cli:main"
 
 [dependency-groups]
 dev = [
@@ -28,7 +28,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/soramimi_video"]
+packages = ["src/soramimic_video"]
 
 [tool.ruff]
 line-length = 100
@@ -40,7 +40,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 # ASSヘッダのFormat/Style行は仕様上1行でなければならない
-"src/soramimi_video/video.py" = ["E501"]
+"src/soramimic_video/video.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

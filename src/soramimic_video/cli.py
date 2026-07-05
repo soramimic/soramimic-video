@@ -1,4 +1,4 @@
-"""soramimi-video CLI。
+"""soramimic-video CLI。
 
 各サブコマンドがパイプラインの1ステージ(DESIGN.md参照)。
 プロジェクトディレクトリの project.json を介して受け渡しする。
@@ -75,7 +75,7 @@ def cmd_export_editor(args: argparse.Namespace) -> int:
     path = export_editor(project, Path(args.project))
     print(f"editor用ファイルを書き出しました: {path}")
     print("soramimic編集ツールの「読み込み」で開き、編集後に「書き出し」たファイルを")
-    print(f"  soramimi-video import-editor --project {args.project} --file <書き出したJSON>")
+    print(f"  soramimic-video import-editor --project {args.project} --file <書き出したJSON>")
     print("で取り込んでください")
     return 0
 
@@ -132,7 +132,7 @@ def cmd_video(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="soramimi-video", description=__doc__)
+    parser = argparse.ArgumentParser(prog="soramimic-video", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 

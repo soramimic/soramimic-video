@@ -1,4 +1,4 @@
-# soramimi-video 設計
+# soramimic-video 設計
 
 XF MIDI と元歌詞テキストを入力に、替え歌歌唱音源と替え歌動画を生成するパイプライン。
 
@@ -101,7 +101,7 @@ XF MIDI ──┐
   音符列へ写像するため。
 - ブリッジは行ごとに `{syllables, words}` を返し、Python 側で
   音節区間 → カナ文字区間 → 音符ID列 に変換して project.json に格納する。
-- 単語リストは submodule `external/soramimi-wordlists` の CSV。
+- 単語リストは submodule `external/soramimic-wordlists` の CSV。
   `--wordlist stations --where "status=current"` のように editor の
   conf/setting.json と同じ流儀で指定。
 
@@ -141,10 +141,10 @@ XF MIDI ──┐
 ## リポジトリ構成
 
 ```
-src/soramimi_video/   Python パッケージ(CLI: soramimi-video)
+src/soramimi_video/   Python パッケージ(CLI: soramimic-video)
 bridge/               soramimic 変換を呼ぶ Node ブリッジ
 external/soramimic            (submodule, devブランチ) 変換アルゴリズム+データ
-external/soramimi-wordlists   (submodule) 単語リスト
+external/soramimic-wordlists   (submodule) 単語リスト
 tests/                pytest(XF MIDIはテスト用に合成したフィクスチャを使う)
 ```
 

@@ -1,5 +1,5 @@
 {
-  "name": "soramimi-video-bridge",
+  "name": "soramimic-video-bridge",
   "private": true,
   "version": "0.1.0",
   "description": "soramimic変換ロジック(external/soramimic)をパイプラインから呼ぶブリッジ",

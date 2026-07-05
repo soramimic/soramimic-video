@@ -28,7 +28,7 @@ from .synthesize import NEUTRINO_DIR
 logger = logging.getLogger(__name__)
 
 VIDEO_DIR = "video"
-USER_AGENT = "soramimi-video/0.1 (https://github.com/soramimic/soramimi-video)"
+USER_AGENT = "soramimic-video/0.1 (https://github.com/soramimic/soramimic-video)"
 HOLD_MAX_SEC = 3.0  # 次の単語が来ないとき画像を表示し続ける最大時間
 SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
 

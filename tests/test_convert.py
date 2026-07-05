@@ -2,14 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from soramimi_video.convert import (
+from soramimic_video.convert import (
     BRIDGE_DIR,
     _map_word_to_notes,
     _offset_map,
     convert_project,
 )
-from soramimi_video.kana import split_moras
-from soramimi_video.project import Line, Note, Project, SongInfo
+from soramimic_video.kana import split_moras
+from soramimic_video.project import Line, Note, Project, SongInfo
 
 
 def test_split_moras():

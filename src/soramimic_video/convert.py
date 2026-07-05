@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BRIDGE_DIR = Path(os.environ.get("SORAMIMI_VIDEO_BRIDGE", REPO_ROOT / "bridge"))
-WORDLISTS_DIR = REPO_ROOT / "external" / "soramimi-wordlists"
+WORDLISTS_DIR = REPO_ROOT / "external" / "soramimic-wordlists"
 
 # editor(conf/setting.json)と同じ既定の絞り込み
 DEFAULT_WHERE = {
@@ -43,7 +43,7 @@ def resolve_wordlist(name_or_path: str) -> Path:
         return candidate
     raise FileNotFoundError(
         f"単語リストが見つかりません: {name_or_path} "
-        f"(external/soramimi-wordlists のリスト名かCSVパスを指定してください)"
+        f"(external/soramimic-wordlists のリスト名かCSVパスを指定してください)"
     )
 
 
