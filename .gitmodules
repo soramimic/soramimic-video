@@ -1,0 +1,7 @@
+[submodule "external/soramimic"]
+	path = external/soramimic
+	url = https://github.com/soramimic/soramimic.git
+	branch = dev
+[submodule "external/soramimi-wordlists"]
+	path = external/soramimi-wordlists
+	url = https://github.com/soramimic/soramimi-wordlists.git

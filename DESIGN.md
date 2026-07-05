@@ -1,0 +1,157 @@
+# soramimi-video 設計
+
+XF MIDI と元歌詞テキストを入力に、替え歌歌唱音源と替え歌動画を生成するパイプライン。
+
+## 全体像
+
+```
+XF MIDI ──┐
+          ├─ 1. analyze ──> project.json(歌唱モーラ+タイミング+元歌詞アライメント)
+元歌詞 ────┘
+              2. convert ──> project.json に替え歌案を追記(soramimic変換)
+              3. export-edit / import-edit ──> 人手編集(将来: soramimic editor連携)
+              4. synthesize ──> MusicXML → NEUTRINO → vocal.wav
+              5. mix ──> 元MIDIの伴奏(メロディ消音) + vocal.wav → song.wav
+              6. video ──> 画像(単語リスト由来) + 字幕(元歌詞/替え歌) + song.wav → out.mp4
+```
+
+各ステージは CLI サブコマンド。中間成果物はすべてプロジェクトディレクトリの
+`project.json` に集約し、ステージ間の受け渡しはこのファイルだけで行う。
+
+## 入力
+
+- **XF MIDI**: XFKM チャンクに歌唱タイミング付き歌詞(`表記[読み` 形式、`/`=改行、
+  `<`=改ページ)が入っている。発音(読み)と音符タイミングの正解はこちら。
+  解析には [xfmido](https://github.com/jiroshimaya/xfmido) を使う。
+- **元歌詞テキスト**: 字幕表示用。XF MIDI の歌詞は発音主体で、また元歌詞の全行が
+  歌われているとは限らないため、XF の歌唱モーラを基本としつつ元歌詞と
+  アライメントして持つ。
+
+## project.json スキーマ(v1)
+
+```jsonc
+{
+  "version": 1,
+  "song": {
+    "midi_path": "song.mid",
+    "ticks_per_beat": 480,
+    "melody_channel": 1,      // $Lyrc ヘッダ由来
+    "time_offset": 0,
+    "language": "JP",
+    "tempo_map": [[0, 500000], ...]   // [tick, us/beat]
+  },
+  "notes": [                  // 歌唱モーラ(=歌詞イベントが付いたメロディ音符)
+    {
+      "id": 0, "midi_note": 65,
+      "start_tick": 5260, "end_tick": 5500,
+      "start_sec": 3.27, "end_sec": 3.42,
+      "line": 0,
+      "surface": "沈", "kana": "シ", "raw": "沈[し"
+    }
+  ],
+  "lines": [                  // XF の行(`/` 区切り)
+    {
+      "id": 0,
+      "xf_surface": "沈むように",
+      "xf_kana": "シズムヨウニ",
+      "note_ids": [0, 1, 2, 3, 4, 5],
+      "original_text": "沈むように溶けてゆくように"  // アライメント結果(無ければnull)
+    }
+  ],
+  "parody": {
+    "wordlist": "stations", "where": null,
+    "params": {"REPEAT": "100", ...},
+    "lines": [
+      {
+        "line_id": 0,
+        "words": [
+          {
+            "surface": "静岡", "kana": "シズオカ",
+            "original": "静岡駅",          // 単語リストの original 列
+            "wordlist_row": {...},          // 画像URL等を含む行データ
+            "original_surface": "沈むよう", "originalkana": "シズムヨウ",
+            "note_ids": [0, 1, 2, 3],       // この単語が歌われる音符
+            "locked": false
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## 各ステージ
+
+### 1. analyze(XF解析+元歌詞アライメント)
+
+- XFKM の歌詞イベント列(デルタ時間つき)とメロディチャンネルの note_on/off を
+  tick で突き合わせ、「歌唱モーラ=音符+表記+読み」の列を作る。
+- tempo map で tick → 秒に変換。
+- `/` で行に分割。行の XF 表記(`沈むように` 等)と元歌詞テキストの行を
+  文字ベースの DP(difflib)でアライメントする。歌われていない元歌詞行は
+  どの XF 行にも対応しない。XF 行が元歌詞に無い場合は original_text=null。
+
+### 2. convert(soramimic変換)
+
+- soramimic 本体(git submodule `external/soramimic`、devブランチ)の
+  `frontend/src/lib` を Node ブリッジ(`bridge/convert.mjs`)から呼ぶ。
+  ゴールデンテストのハーネス(kuromoji・完全オフライン)と同じ方式。
+- 変換の入力は **XF の読み(カナ)を行ごとに連結した文字列**。表記でなく読みを
+  使うのは、変換結果の period(音節区間)を文字オフセット経由で確実に
+  音符列へ写像するため。
+- ブリッジは行ごとに `{syllables, words}` を返し、Python 側で
+  音節区間 → カナ文字区間 → 音符ID列 に変換して project.json に格納する。
+- 単語リストは submodule `external/soramimi-wordlists` の CSV。
+  `--wordlist stations --where "status=current"` のように editor の
+  conf/setting.json と同じ流儀で指定。
+
+### 3. edit(人手編集)
+
+- v1 はファイルベース: `export-edit` が編集用 JSON を出力し、人が
+  surface/kana を書き換えて `import-edit` で取り込む。読みのモーラ数が
+  音符区間と一致しない場合はエラーにする(歌わせ方が決められないため)。
+- 将来: soramimic editor(#17)と直接連携する。editor の
+  sessionStorage スキーマ(results/tokensList/unitsList)への変換は
+  このリポジトリの exchange フォーマットから可能な設計にしてある。
+
+### 4. synthesize(NEUTRINO歌唱合成)
+
+- メロディ音符+替え歌カナから MusicXML を生成(先頭から休符を入れて
+  曲頭からの絶対時間を保つ → ミックス時のタイミング合わせが不要になる)。
+- NEUTRINO は `NEUTRINO_ROOT` 環境変数で場所を指定(未同梱。
+  https://studio-neutrino.com/ から取得)。
+  `bin/musicXMLtoLabel → bin/NEUTRINO → bin/NSF` の順に呼ぶ。
+  `--dry-run` でコマンド列の確認のみも可能。
+
+### 5. mix(伴奏+歌唱)
+
+- 元 MIDI からメロディチャンネルの note イベントを除いた伴奏 MIDI を作り、
+  fluidsynth(要 `brew install fluidsynth` + サウンドフォント)で wav 化。
+- vocal.wav は曲頭からレンダリングされているので、ffmpeg の amix で重ねるだけ。
+
+### 6. video(替え歌動画)
+
+- 各替え歌単語の歌唱区間 [start_sec, end_sec] に、単語リスト行の `image`
+  (例: stations.csv の駅写真)を表示。画像はローカルにキャッシュし、
+  `image_page` からクレジット一覧(credits.md)を生成する(CC BY-SA対応)。
+- 字幕: ASS を生成し、画面下部に「替え歌歌詞(上)/元歌詞(下)」を
+  行の歌唱区間で表示。
+- ffmpeg 一発(背景+overlay enable=between(t,a,b)+subtitles)で合成。
+
+## リポジトリ構成
+
+```
+src/soramimi_video/   Python パッケージ(CLI: soramimi-video)
+bridge/               soramimic 変換を呼ぶ Node ブリッジ
+external/soramimic            (submodule, devブランチ) 変換アルゴリズム+データ
+external/soramimi-wordlists   (submodule) 単語リスト
+tests/                pytest(XF MIDIはテスト用に合成したフィクスチャを使う)
+```
+
+## 制約・注意
+
+- 著作権のある楽曲の MIDI・歌詞・音源はリポジトリにコミットしない
+  (テストは合成フィクスチャで行う)。リポジトリは当面 private。
+- NEUTRINO・fluidsynth・サウンドフォントは環境依存の外部ツールとして扱い、
+  実行時に存在チェックして分かりやすいエラーを出す。
+- wordlists の画像利用時は image_page のライセンス表記に従う(credits.md 自動生成)。

@@ -1,0 +1,20 @@
+__pycache__/
+*.egg-info/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+
+# Node (bridge)
+node_modules/
+
+# 作業用プロジェクトディレクトリ(楽曲データはコミットしない)
+work/
+*.mid
+*.wav
+*.mp4
+!tests/fixtures/*.mid
+
+# 画像キャッシュ
+.image_cache/
