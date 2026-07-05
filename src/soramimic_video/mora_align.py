@@ -87,7 +87,7 @@ def _compute_log_probs(vocals_path: Path, device: str):  # -> torch.Tensor (T, C
     from transformers import AutoProcessor, Wav2Vec2ForCTC
 
     logger.info("wav2vec2(%s)でCTC確率を計算中...", MODEL_NAME)
-    model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME).to(device)
+    model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME).to(device)  # type: ignore[arg-type]
     processor = AutoProcessor.from_pretrained(MODEL_NAME)
 
     audio, _ = librosa.load(str(vocals_path), sr=SAMPLING_RATE, mono=True)

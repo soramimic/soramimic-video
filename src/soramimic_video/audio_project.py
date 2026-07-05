@@ -50,17 +50,26 @@ def build_project(
 
     line_texts はモーラの line 番号が指す元歌詞(またはWhisper認識結果)の行。
     モーラの無い行は project.lines に含めない(行IDは詰め直す)。
+    mora_notes は歌詞順であることが前提。時刻が局所的に前後している場合は
+    順序を保ったままクランプする(並べ替えると歌詞が壊れるため)。
     """
-    moras = sorted(mora_notes, key=lambda m: (m.start_sec, m.line))
+    moras = list(mora_notes)
 
-    # 時刻の整形: 最小長を確保しつつ次のモーラと重ならないようにする
+    # 時刻の整形: 歌詞順のまま単調化し、最小長を確保しつつ次のモーラと重ねない
+    prev_start = 0.0
     for i, m in enumerate(moras):
+        if m.start_sec < prev_start:
+            logger.debug(
+                "モーラ%d(%s)の開始%.3fを%.3fにクランプ(単調化)", i, m.kana, m.start_sec, prev_start
+            )
+            m.start_sec = prev_start
+        prev_start = m.start_sec
         if m.end_sec - m.start_sec < MIN_NOTE_SEC:
             m.end_sec = m.start_sec + MIN_NOTE_SEC
-        if i + 1 < len(moras):
-            next_start = moras[i + 1].start_sec
-            if m.end_sec > next_start > m.start_sec:
-                m.end_sec = next_start
+    for i, m in enumerate(moras[:-1]):
+        next_start = moras[i + 1].start_sec
+        if m.end_sec > next_start > m.start_sec:
+            m.end_sec = next_start
 
     notes: list[Note] = []
     line_ids: dict[int, int] = {}  # 元の行番号 -> 詰め直した行ID

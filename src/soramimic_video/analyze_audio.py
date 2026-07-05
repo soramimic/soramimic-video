@@ -33,6 +33,8 @@ def analyze_audio(
     audio_path: Path,
     project_dir: Path,
     lyrics_path: Path | None = None,
+    melody_midi: Path | None = None,
+    melody_channel: int | None = None,
     bpm: float = DEFAULT_BPM,
     whisper_model: str = DEFAULT_WHISPER_MODEL,
     skip_separation: bool = False,
@@ -85,17 +87,26 @@ def analyze_audio(
         m.end_sec = max(m.end_sec, voiced_end(track, m.start_sec, limit))
     midi_notes = mora_midi_notes(track, [(m.start_sec, m.end_sec) for m in aligned])
 
-    # 5. project.json 組み立て
-    mora_notes = [
-        MoraNote(
-            line=m.line,
-            kana=m.kana,
-            start_sec=m.start_sec,
-            end_sec=m.end_sec,
-            midi_note=note,
+    # 5. モーラ音符列の確定
+    if melody_midi is not None:
+        # メロディMIDIがあればピッチ・タイミングを楽譜に寄せる(issue #3)。
+        # f0由来のmidi_notesは余りモーラのフォールバックと移調補正に使う
+        from .melody_align import apply_melody_midi
+
+        mora_notes = apply_melody_midi(
+            audio_path, melody_midi, melody_channel, aligned, midi_notes
         )
-        for m, note in zip(aligned, midi_notes, strict=True)
-    ]
+    else:
+        mora_notes = [
+            MoraNote(
+                line=m.line,
+                kana=m.kana,
+                start_sec=m.start_sec,
+                end_sec=m.end_sec,
+                midi_note=note,
+            )
+            for m, note in zip(aligned, midi_notes, strict=True)
+        ]
     project = build_project(
         audio_path=audio_path,
         vocals_path=None if skip_separation else vocals,

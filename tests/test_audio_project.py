@@ -64,6 +64,26 @@ def test_build_project_min_duration_and_overlap():
     assert all(n.end_tick > n.start_tick for n in project.notes)
 
 
+def test_build_project_keeps_lyric_order_and_clamps_inversion():
+    """時刻が局所的に逆転していても歌詞順を保つ(並べ替えない)。"""
+    moras = [
+        _mora(0, "ア", 1.0, 1.2),
+        _mora(0, "イ", 0.9, 1.1),  # 開始が前のモーラより早い → クランプ
+        _mora(0, "ウ", 1.5, 1.8),
+    ]
+    project = build_project(
+        audio_path=Path("a.wav"),
+        vocals_path=None,
+        accompaniment_path=None,
+        line_texts=["あいう"],
+        mora_notes=moras,
+    )
+    assert [n.kana for n in project.notes] == ["ア", "イ", "ウ"]
+    starts = [n.start_sec for n in project.notes]
+    assert starts == sorted(starts)
+    assert all(n.end_sec > n.start_sec for n in project.notes)
+
+
 def test_build_project_skips_empty_lines():
     moras = [_mora(2, "ア", 0.5, 0.8)]
     project = build_project(

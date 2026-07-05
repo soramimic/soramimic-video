@@ -123,6 +123,16 @@ XF MIDI が手に入らない曲向けに、歌唱音源(wav/mp3)から project.
 検証用に `analyze_audio/moras.srt` / `lines.srt` を書き出す
 (プレーヤーで字幕表示してタイミングを目視確認する)。
 
+**メロディMIDI併用(`--melody-midi`, issue #3)**: 普通のSMFがあれば
+「採譜」でなく「楽譜と演奏のアライメント」にできる。
+MIDI全ノートのクロマ × 元ミックスの chroma_cqt を DTW して
+「MIDI時刻→実演奏時刻」の写像を作り、CTCのモーラ開始時刻と warp 済み
+音符開始時刻を単調DPで対応づける。ピッチはMIDIそのまま、開始時刻は
+両者が近ければCTC(実際の歌い出し)、余り音符はメリスマ(kana="ー")、
+余りモーラは f0 フォールバック。f0とMIDIの音高差の中央値で移調も自動補正。
+メロディチャンネルは単旋律度×音数で自動選択(`--melody-channel` で上書き)し、
+和音混じりのチャンネルは skyline 法で最高音の旋律線を取り出す。
+
 ### 2. convert(soramimic変換)
 
 - soramimic 本体(git submodule `external/soramimic`、devブランチ)の

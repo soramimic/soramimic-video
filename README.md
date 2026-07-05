@@ -31,7 +31,9 @@ uv run soramimic-video analyze --midi song.mid --lyrics lyrics.txt --project wor
 
 # 1'. XF MIDIが無い場合: 歌唱音源から解析(要 uv sync --extra audio)
 #     --lyrics 省略時はWhisperの認識結果を元歌詞として使う
-uv run soramimic-video analyze-audio --audio song.wav --lyrics lyrics.txt --project work/song
+#     --melody-midi でメロディ入りMIDI(非XFでよい)を渡すとピッチ・タイミングが楽譜に寄って大幅に良くなる
+uv run soramimic-video analyze-audio --audio song.wav --lyrics lyrics.txt \
+  --melody-midi song.mid --project work/song
 
 # 2. 替え歌単語歌詞に変換(soramimic)
 uv run soramimic-video convert --project work/song --wordlist stations
