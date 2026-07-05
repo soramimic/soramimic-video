@@ -15,6 +15,7 @@ work/
 *.wav
 *.mp4
 !tests/fixtures/*.mid
+!examples/*.mid
 
 # 画像キャッシュ
 .image_cache/
