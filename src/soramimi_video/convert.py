@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .kana import split_fine_moras
 from .project import Parody, ParodyLine, ParodyWord, Project
 
 logger = logging.getLogger(__name__)
@@ -108,17 +109,57 @@ def _offset_map(src: str, dst: str) -> list[int]:
     return table
 
 
+# 変換のバリエーション分割で直前の音節に吸収されうるモーラ
+# (撥音・促音・長音・母音字。例: フェ+ン→フェー, テ+イ→テー, ヨ+ウ→ヨー)
+_ABSORBABLE = set("ンッーアイウエオ")
+
+
+def _segment_spans(kana: str, n: int) -> list[tuple[int, int]] | None:
+    """kanaをn個のバリエーション要素に対応する文字区間に分割する。
+
+    分割はsoramimicのsyllableToVariation相当: 拗音等は必ず直前に付き、
+    余剰分(len(fine moras) - n)は吸収可能なモーラを左から直前に併合する。
+    分割できなければNone。
+    """
+    fines = split_fine_moras(kana)
+    extras = len(fines) - n
+    if extras < 0 or n == 0:
+        return None
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    j = 0
+    for k in range(n):
+        start = pos
+        pos += len(fines[j])
+        j += 1
+        while (
+            extras > 0
+            and j < len(fines)
+            and fines[j] in _ABSORBABLE
+            and len(fines) - j > n - k - 1
+        ):
+            pos += len(fines[j])
+            j += 1
+            extras -= 1
+        spans.append((start, pos))
+    if j != len(fines):
+        return None
+    return spans
+
+
 def _map_word_to_notes(
     unit_lens: list[int],
     note_lens: list[int],
     offset_map: list[int],
     period: tuple[int, int],
     pronunciation: list[str] | None = None,
+    source_kana: str = "",
 ) -> tuple[list[int], list[str]]:
     """periodユニット区間 → (文字区間) → 重なる音符indexの列と音符ごとの歌唱カナ。
 
-    pronunciation は変換結果の発音バリエーションで、periodが指す文字列の
-    1文字に1要素が対応する(例: テユクヨウニ → [エー,シュ,ウ,ビョ,ウ,イー])。
+    pronunciation は変換結果の発音バリエーションで、periodが指す
+    元の読み(source_kana=originalkana)の1音節に1要素が対応する
+    (例: フェンス → [フェ][ン][ス] に [ホ][ン,][ス] など)。
     """
     unit_cum = [0]
     for length in unit_lens:
@@ -137,17 +178,25 @@ def _map_word_to_notes(
         if note_cum[i] < end_c and note_cum[i + 1] > start_c
     ]
 
+    # pronunciationの要素はoriginalkanaのバリエーション分割
+    # (ン・ッ・母音字・ーを直前の音節に吸収した形)に対応するので、
+    # 吸収規則を再現して要素ごとの文字区間を割り出し、音符に割り当てる
     kana_per_note = [""] * len(ids)
-    if pronunciation and len(pronunciation) == end_src - start_src:
-        for j, p in enumerate(pronunciation):
-            src = start_src + j
-            lo, hi = offset_map[src], offset_map[src + 1]
+    spans = _segment_spans(source_kana, len(pronunciation)) if pronunciation else None
+    if pronunciation and spans is not None:
+        for (s, e), p in zip(spans, pronunciation, strict=True):
+            lo, hi = offset_map[start_src + s], offset_map[start_src + e]
             if hi <= lo:  # 対応先の文字がない(脱落): 直近の音符に寄せる
                 lo, hi = max(0, lo - 1), lo
             for k, i in enumerate(ids):
                 if note_cum[i] < hi and note_cum[i + 1] > lo:
                     kana_per_note[k] += p
                     break
+    elif pronunciation:
+        logger.debug(
+            "発音要素数(%d)がoriginalkana %r に対応づけられません",
+            len(pronunciation), source_kana,
+        )
     return ids, kana_per_note
 
 
@@ -204,7 +253,7 @@ def convert_project(
         for word in converted["words"]:
             note_idx, note_kana = _map_word_to_notes(
                 unit_lens, note_lens, offset_map, tuple(word["period"]),
-                word.get("pronunciation"),
+                word.get("pronunciation"), word.get("originalkana", ""),
             )
             note_kana = [k or "ー" for k in note_kana]
             if not note_idx:

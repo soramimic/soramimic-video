@@ -12,6 +12,7 @@ import logging
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
+from .kana import vowel_of
 from .project import Project
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,21 @@ def build_musicxml(project: Project, lyric_map: dict[int, str]) -> str:
     if not segments:
         raise ValueError("音符がありません")
     end_tick = segments[-1].end
+
+    # 「ー」で始まる歌詞は直前の音の母音を引き継ぐが、休符直後や行頭では
+    # 引き継ぐ音が無くNEUTRINOで未定義音素になるため、母音(無ければア)に置換する
+    prev_lyric: str | None = None
+    prev_was_rest = True
+    for seg in segments:
+        if seg.midi_note is None:
+            prev_was_rest = True
+            continue
+        if seg.lyric:
+            if prev_was_rest and seg.lyric.startswith("ー"):
+                v = vowel_of(prev_lyric or "") or "ア"
+                seg.lyric = v + seg.lyric[1:]
+            prev_lyric = seg.lyric
+        prev_was_rest = False
 
     bounds = _measure_boundaries(project.song.time_signatures, end_tick, tpb)
 

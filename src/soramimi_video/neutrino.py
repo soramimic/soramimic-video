@@ -3,9 +3,10 @@
 NEUTRINOは同梱しない。https://studio-neutrino.com/ から取得して展開し、
 環境変数 NEUTRINO_ROOT でルートディレクトリを指定する。
 
-実行コマンドはv1系のRun.shに合わせたテンプレートを既定とし、
+実行コマンドはv3.2系(Tau)のRun.shに合わせたテンプレートを既定とし、
 プロジェクトディレクトリの neutrino/commands.json で差し替えられる
-(NEUTRINOのバージョンによりCLIが異なるため)。
+(NEUTRINOのバージョンによりCLIが異なるため。v1系はWORLD/NSFの
+後段が別コマンドだが、v3.2はneutrino単体でwavまで出力する)。
 """
 
 from __future__ import annotations
@@ -21,12 +22,11 @@ logger = logging.getLogger(__name__)
 
 COMMANDS_FILENAME = "commands.json"
 
-# NEUTRINO v1系 Run.sh 相当。プレースホルダは format() で展開される
+# NEUTRINO v3.2系(Tau) Run.sh 相当。プレースホルダは format() で展開される
 DEFAULT_COMMANDS = [
     "{root}/bin/musicXMLtoLabel {musicxml} {full_lab} {mono_lab}",
-    "{root}/bin/NEUTRINO {full_lab} {timing_lab} {f0} {mgc} {bap} {root}/model/{model}/"
-    " -n {threads} -t",
-    "{root}/bin/WORLD {f0} {mgc} {bap} -f 0.0 -m 1.0 -o {wav} -n {threads} -t",
+    "{root}/bin/neutrino {full_lab} {timing_lab} {f0} {melspec} {wav} {root}/model/{model}/"
+    " -n {threads} -k 0 -f 0 -s 48000 -b 16 -t",
 ]
 
 
@@ -66,6 +66,9 @@ def run_neutrino(
     """MusicXMLから歌唱wavを合成して work_dir/vocal.wav を返す。"""
     root = None if dry_run else neutrino_root()
     work_dir.mkdir(parents=True, exist_ok=True)
+    # 実行時はcwdをNEUTRINO_ROOTにするため、パスはすべて絶対にする
+    work_dir = work_dir.resolve()
+    musicxml_path = musicxml_path.resolve()
     wav = work_dir / "vocal.wav"
     mapping = {
         "root": str(root) if root else "$NEUTRINO_ROOT",
@@ -76,6 +79,7 @@ def run_neutrino(
         "mono_lab": str(work_dir / "mono.lab"),
         "timing_lab": str(work_dir / "timing.lab"),
         "f0": str(work_dir / "score.f0"),
+        "melspec": str(work_dir / "score.melspec"),
         "mgc": str(work_dir / "score.mgc"),
         "bap": str(work_dir / "score.bap"),
         "wav": str(wav),
@@ -85,11 +89,16 @@ def run_neutrino(
         for c in commands:
             print(c)
         return None
+    env = dict(os.environ)
+    if root is not None:
+        # v3.2のバイナリは同梱dylibに依存する(Run.sh相当)
+        env["DYLD_LIBRARY_PATH"] = f"{root / 'bin'}:{env.get('DYLD_LIBRARY_PATH', '')}"
     for c in commands:
         logger.info("実行: %s", c)
         proc = subprocess.run(
             shlex.split(c),
             cwd=root,  # NEUTRINOのバイナリは相対パス(settings等)に依存することがある
+            env=env,
             capture_output=True,
             text=True,
             check=False,

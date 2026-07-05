@@ -34,14 +34,28 @@ def test_map_word_to_notes():
     unit_lens = [1, 1, 1, 2, 1]
     note_lens = [1, 1, 1, 1, 1, 1]
     identity = list(range(7))
-    ids, kana = _map_word_to_notes(unit_lens, note_lens, identity, (0, 2), ["シ", "ズ"])
+    ids, kana = _map_word_to_notes(
+        unit_lens, note_lens, identity, (0, 2), ["シ", "ズ"], "シズ"
+    )
     assert ids == [0, 1]
     assert kana == ["シ", "ズ"]
     ids, kana = _map_word_to_notes(
-        unit_lens, note_lens, identity, (2, 5), ["グ", "ミョ", "ウ", "ジ"]
+        unit_lens, note_lens, identity, (2, 5), ["グ", "ミョ", "ウ", "ジ"], "ムヨウニ"
     )
     assert ids == [2, 3, 4, 5]
     assert kana == ["グ", "ミョ", "ウ", "ジ"]
+
+
+def test_map_word_to_notes_syllable_source():
+    # 「フェンス」(4文字・3音節)に3要素の発音が対応するケース
+    unit_lens = [2, 1, 1]  # フェ, ン, ス
+    note_lens = [2, 1, 1]
+    identity = list(range(5))
+    ids, kana = _map_word_to_notes(
+        unit_lens, note_lens, identity, (0, 3), ["ホ", "ン", "ス"], "フェンス"
+    )
+    assert ids == [0, 1, 2]
+    assert kana == ["ホ", "ン", "ス"]
 
 
 def test_map_word_to_notes_multi_kana_note():
@@ -49,7 +63,9 @@ def test_map_word_to_notes_multi_kana_note():
     unit_lens = [1, 1, 1]
     note_lens = [1, 2]  # [キ, ライ]
     identity = list(range(4))
-    ids, kana = _map_word_to_notes(unit_lens, note_lens, identity, (0, 3), ["ミ", "ラ", "イ"])
+    ids, kana = _map_word_to_notes(
+        unit_lens, note_lens, identity, (0, 3), ["ミ", "ラ", "イ"], "キラウ"
+    )
     assert ids == [0, 1]
     assert kana == ["ミ", "ライ"]
 
