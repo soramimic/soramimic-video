@@ -34,6 +34,16 @@ _ONSET_TRUST_SEC = 0.6
 _MELISMA_GAP_SEC = 0.25  # 直前の音符とこれ以内に続く余り音符はメリスマとみなす
 _SKIP_MORA_COST = 0.6
 _SKIP_NOTE_COST = 0.4
+_STAY_COST = 0.15  # 直前のモーラと音符を共有する遷移の固定ペナルティ
+_LEGATO_GAP_SEC = 0.15  # 音符間の隙間がこれ以下ならレガート接続(MIDIのゲート補正)
+# ピッチガード: 行の中でMIDIとf0の不一致(オクターブ無視で3半音以上)の割合が
+# 高ければ、その行はMIDIの内容が歌と違う(ファンメイドMIDIの欠落・別旋律)と
+# みなし行ごとf0にフォールバックする。別旋律でも部分的に音は一致するため、
+# 連続不一致でなく行単位の不一致率で判定する。孤立した不一致(f0側の誤り)では
+# 行の率が閾値に届かずMIDIが維持される
+_PITCH_GUARD_SEMITONES = 3
+_PITCH_GUARD_LINE_RATE = 0.35
+_PITCH_GUARD_MIN_MATCHED = 4
 
 
 @dataclass
@@ -167,18 +177,25 @@ def warp_sec(t: float, midi_times: np.ndarray, audio_times: np.ndarray) -> float
 
 def match_moras_to_notes(
     mora_onsets: list[float],
-    note_onsets: list[float],
+    note_spans: list[tuple[float, float]],
     skip_mora_cost: float = _SKIP_MORA_COST,
     skip_note_cost: float = _SKIP_NOTE_COST,
+    stay_cost: float = _STAY_COST,
 ) -> list[tuple[int | None, int | None]]:
     """開始時刻差をコストにした単調DPマッチング。
 
     戻り値は (モーラindex, 音符index) のペア列。片方が None のものは
     対応なし(余りモーラ/余り音符)。
+
+    MIDIは同音連打を1つの長い音符にまとめることがあり音符数<モーラ数に
+    なりうるため、「直前のモーラと同じ音符を共有する」遷移(stay)を許可する
+    (多対一)。stayのコストは固定ペナルティ+音符区間からのはみ出し距離。
     """
-    m, n = len(mora_onsets), len(note_onsets)
+    m, n = len(mora_onsets), len(note_spans)
     inf = float("inf")
+    # dp[i][j]: モーラi個・音符j個を消費した最小コスト。bp[i][j]は遷移の種類
     dp = [[inf] * (n + 1) for _ in range(m + 1)]
+    bp = [[0] * (n + 1) for _ in range(m + 1)]  # 1=match 2=skip_mora 3=skip_note 4=stay
     dp[0][0] = 0.0
     for i in range(m + 1):
         row, nxt = dp[i], dp[i + 1] if i < m else None
@@ -188,30 +205,36 @@ def match_moras_to_notes(
             if cur == inf:
                 continue
             if nxt is not None and j < n:
-                cost = cur + abs(onset - note_onsets[j])
+                cost = cur + abs(onset - note_spans[j][0])
                 if cost < nxt[j + 1]:
                     nxt[j + 1] = cost
-            if nxt is not None and cur + skip_mora_cost < nxt[j]:
-                nxt[j] = cur + skip_mora_cost
+                    bp[i + 1][j + 1] = 1
+            if nxt is not None:
+                if j > 0:
+                    start, end = note_spans[j - 1]
+                    overflow = max(0.0, start - onset) + max(0.0, onset - end)
+                    cost = cur + stay_cost + overflow
+                    if cost < nxt[j]:
+                        nxt[j] = cost
+                        bp[i + 1][j] = 4
+                if cur + skip_mora_cost < nxt[j]:
+                    nxt[j] = cur + skip_mora_cost
+                    bp[i + 1][j] = 2
             if j < n and cur + skip_note_cost < row[j + 1]:
                 row[j + 1] = cur + skip_note_cost
+                bp[i][j + 1] = 3
     # バックトラック
-    eps = 1e-9
     pairs: list[tuple[int | None, int | None]] = []
     i, j = m, n
     while i > 0 or j > 0:
-        if (
-            i > 0
-            and j > 0
-            and abs(
-                dp[i][j]
-                - (dp[i - 1][j - 1] + abs(mora_onsets[i - 1] - note_onsets[j - 1]))
-            )
-            < eps
-        ):
+        op = bp[i][j]
+        if op == 1:
             pairs.append((i - 1, j - 1))
             i, j = i - 1, j - 1
-        elif i > 0 and abs(dp[i][j] - (dp[i - 1][j] + skip_mora_cost)) < eps:
+        elif op == 4:
+            pairs.append((i - 1, j - 1))  # 音符j-1を共有
+            i -= 1
+        elif op == 2:
             pairs.append((i - 1, None))
             i -= 1
         else:
@@ -245,21 +268,30 @@ def assemble_mora_notes(
     """マッチング結果からMoraNote列を組み立てる。
 
     - マッチしたモーラ: ピッチ=MIDI、開始=CTCとMIDIが近ければCTC、終端=MIDIのnote-off
+    - 音符を共有するモーラ(同音連打がMIDIで1音符にまとまっている箇所): 開始=CTC
     - 余りモーラ: CTCタイミング+f0フォールバック
     - 余り音符: 直前の音符に間近で続くならメリスマ(kana="ー")、離れていれば間奏として破棄
+    - 最後にMIDIのゲート由来の小さい隙間をレガート接続する
     """
     result: list[MoraNote] = []
+    matched: list[tuple[int, int]] = []  # (resultのindex, f0フォールバック音高)
     last_line = 0
+    prev_j: int | None = None
     for i, j in pairs:
         if i is not None:
             m = aligned[i]
             last_line = m.line
             if j is not None:
                 note = notes[j]
-                close = abs(m.start_sec - note.start_sec) <= _ONSET_TRUST_SEC
-                start = m.start_sec if close else note.start_sec
+                if j == prev_j:  # 音符共有: 開始は自分のCTC時刻
+                    start = m.start_sec
+                else:
+                    close = abs(m.start_sec - note.start_sec) <= _ONSET_TRUST_SEC
+                    start = m.start_sec if close else note.start_sec
                 end = max(note.end_sec, start + 0.05)
                 pitch = note.midi_note + transpose
+                prev_j = j
+                matched.append((len(result), fallback_midi[i]))
             else:
                 start, end, pitch = m.start_sec, m.end_sec, fallback_midi[i]
             result.append(
@@ -282,7 +314,48 @@ def assemble_mora_notes(
                 )
             else:
                 logger.debug("間奏の音符を破棄: %.2f-%.2fs", note.start_sec, note.end_sec)
+            prev_j = j
+
+    guard_pitch_runs(result, matched)
+
+    # MIDIのゲート(音符間の小さい隙間)をレガート接続。歌唱は基本レガートで、
+    # 極短の休符はNEUTRINOでブツ切りに聞こえるため
+    for a, b in zip(result, result[1:], strict=False):
+        if 0 < b.start_sec - a.end_sec <= _LEGATO_GAP_SEC:
+            a.end_sec = b.start_sec
     return result
+
+
+def guard_pitch_runs(result: list[MoraNote], matched: list[tuple[int, int]]) -> None:
+    """MIDIとf0の不一致率が高い行をf0にフォールバックする(インプレース)。
+
+    matched: (resultのindex, そのモーラのf0フォールバック音高) の列。
+    オクターブ違いは f0 のオクターブ誤りの可能性が高いので不一致とみなさない。
+    """
+
+    def disagree(idx: int, fb: int) -> bool:
+        delta = result[idx].midi_note - fb
+        octave_invariant = min(abs(delta), abs(delta - 12), abs(delta + 12))
+        return octave_invariant >= _PITCH_GUARD_SEMITONES
+
+    by_line: dict[int, list[tuple[int, int]]] = {}
+    for idx, fb in matched:
+        by_line.setdefault(result[idx].line, []).append((idx, fb))
+
+    fallback_lines = []
+    for line, entries in by_line.items():
+        if len(entries) < _PITCH_GUARD_MIN_MATCHED:
+            continue
+        rate = sum(1 for idx, fb in entries if disagree(idx, fb)) / len(entries)
+        if rate >= _PITCH_GUARD_LINE_RATE:
+            for idx, fb in entries:
+                result[idx].midi_note = fb
+            fallback_lines.append(line)
+    if fallback_lines:
+        logger.warning(
+            "MIDIと歌の旋律が合わない%d行をf0にフォールバックしました: 行%s",
+            len(fallback_lines), fallback_lines,
+        )
 
 
 def apply_melody_midi(
@@ -333,7 +406,9 @@ def apply_melody_midi(
 
     if channel is not None:
         warped = prepare(channel)
-        pairs = match_moras_to_notes(mora_onsets, [n.start_sec for n in warped])
+        pairs = match_moras_to_notes(
+            mora_onsets, [(n.start_sec, n.end_sec) for n in warped]
+        )
     else:
         # モーラとの照合結果でメロディチャンネルを選ぶ。音数がモーラ数と
         # かけ離れたチャンネル(伴奏・装飾)は候補から外す
@@ -344,7 +419,9 @@ def apply_melody_midi(
             cand = prepare(ch)
             if not 0.25 * len(aligned) <= len(cand) <= 3 * len(aligned):
                 continue
-            cand_pairs = match_moras_to_notes(mora_onsets, [n.start_sec for n in cand])
+            cand_pairs = match_moras_to_notes(
+                mora_onsets, [(n.start_sec, n.end_sec) for n in cand]
+            )
             score, coverage, mad = channel_match_score(
                 cand_pairs, len(aligned), fallback_midi, cand
             )
