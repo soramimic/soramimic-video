@@ -243,9 +243,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    if args.verbose:
+        # numba等の外部ライブラリのDEBUGは大量に出るので自パッケージだけ下げる
+        logging.getLogger("soramimic_video").setLevel(logging.DEBUG)
     return args.func(args)
 
 
