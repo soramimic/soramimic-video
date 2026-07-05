@@ -151,20 +151,14 @@ def test_estimate_transpose_octave():
     assert estimate_transpose(pairs, fallback, notes) == 12
 
 
-def test_assemble_matched_uses_midi_pitch_and_ctc_onset():
+def test_assemble_matched_uses_midi_pitch_and_timing():
+    # タイミングは楽譜基準: CTC(1.0)でなくMIDIのnote-on/off(1.1-1.8)を使う
     aligned = [_mora(0, "ア", 1.0, 1.2)]
-    notes = [_note(1.1, 1.8, 67)]  # CTCと0.1s差 → CTC開始を採用
+    notes = [_note(1.1, 1.8, 67)]
     result = assemble_mora_notes(aligned, notes, [(0, 0)], fallback_midi=[60])
     assert result[0].midi_note == 67
-    assert result[0].start_sec == 1.0
-    assert result[0].end_sec == 1.8  # 終端はMIDIのnote-off
-
-
-def test_assemble_far_onset_uses_midi_onset():
-    aligned = [_mora(0, "ア", 1.0, 1.2)]
-    notes = [_note(2.0, 2.5, 67)]  # 0.6s超の差 → MIDI開始を信用
-    result = assemble_mora_notes(aligned, notes, [(0, 0)], fallback_midi=[60])
-    assert result[0].start_sec == 2.0
+    assert result[0].start_sec == 1.1
+    assert result[0].end_sec == 1.8
 
 
 def test_assemble_melisma_and_interlude():
@@ -198,14 +192,14 @@ def test_assemble_unmatched_mora_falls_back_to_f0():
     assert result[0].start_sec == 1.0
 
 
-def test_assemble_shared_note_keeps_ctc_onsets():
-    # 同音連打3モーラが1音符を共有: 各モーラの開始はCTC時刻のまま
-    aligned = [_mora(0, "シ", 1.0, 1.1), _mora(1, "ズ", 1.2, 1.3), _mora(2, "ム", 1.4, 1.5)]
+def test_assemble_shared_note_splits_at_ctc_onsets():
+    # 同音連打3モーラが1音符を共有: 先頭は音符開始、以降の分割位置はCTC時刻
+    aligned = [_mora(0, "シ", 0.9, 1.1), _mora(1, "ズ", 1.2, 1.3), _mora(2, "ム", 1.4, 1.5)]
     notes = [_note(1.0, 1.6, 70)]
     pairs: list[tuple[int | None, int | None]] = [(0, 0), (1, 0), (2, 0)]
     result = assemble_mora_notes(aligned, notes, pairs, fallback_midi=[60, 60, 60])
     assert [m.midi_note for m in result] == [70, 70, 70]
-    assert [m.start_sec for m in result] == [1.0, 1.2, 1.4]
+    assert [m.start_sec for m in result] == [1.0, 1.2, 1.4]  # 先頭はMIDI開始に吸着
 
 
 def test_assemble_legato_closes_small_gaps():

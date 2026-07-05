@@ -32,8 +32,6 @@ from .mora_align import AlignedMora
 logger = logging.getLogger(__name__)
 
 _DRUM_CHANNEL = 9
-# CTCとMIDIの開始時刻差がこれ以内ならCTC(実際の歌い出し)を採用
-_ONSET_TRUST_SEC = 0.6
 _MELISMA_GAP_SEC = 0.25  # 直前の音符とこれ以内に続く余り音符はメリスマとみなす
 _SKIP_MORA_COST = 0.6
 _SKIP_NOTE_COST = 0.4
@@ -279,8 +277,13 @@ def assemble_mora_notes(
 ) -> list[MoraNote]:
     """マッチング結果からMoraNote列を組み立てる。
 
-    - マッチしたモーラ: ピッチ=MIDI、開始=CTCとMIDIが近ければCTC、終端=MIDIのnote-off
-    - 音符を共有するモーラ(同音連打がMIDIで1音符にまとまっている箇所): 開始=CTC
+    タイミングは楽譜(MIDI)基準: マッチしたモーラの開始・終端は写像済み音符の
+    note-on/off をそのまま使う。CTC時刻を混ぜると音符単位でASRのジッタが乗り、
+    「均等なテンポ感なのに微妙にずれる」歌唱になるため使わない。
+
+    - マッチしたモーラ: ピッチ・開始・終端ともMIDI
+    - 音符を共有するモーラ(同音連打がMIDIで1音符にまとまっている箇所):
+      音符内の分割位置のみCTC時刻を使う(楽譜に分割の情報が無いため)
     - 余りモーラ: CTCタイミング+f0フォールバック
     - 余り音符: 直前の音符に間近で続くならメリスマ(kana="ー")、離れていれば間奏として破棄
     - 最後にMIDIのゲート由来の小さい隙間をレガート接続する
@@ -294,11 +297,10 @@ def assemble_mora_notes(
             last_line = m.line
             if j is not None:
                 note = notes[j]
-                if j == prev_j:  # 音符共有: 開始は自分のCTC時刻
-                    start = m.start_sec
+                if j == prev_j:  # 音符共有: 音符内の分割位置はCTC時刻
+                    start = max(m.start_sec, note.start_sec)
                 else:
-                    close = abs(m.start_sec - note.start_sec) <= _ONSET_TRUST_SEC
-                    start = m.start_sec if close else note.start_sec
+                    start = note.start_sec
                 end = max(note.end_sec, start + 0.05)
                 pitch = note.midi_note + transpose
                 prev_j = j
