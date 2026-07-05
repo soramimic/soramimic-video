@@ -12,6 +12,20 @@ dependencies = [
     "requests>=2.31",
 ]
 
+[project.optional-dependencies]
+# analyze-audio(歌唱音源入力)用の重い依存。uv sync --extra audio で入れる
+audio = [
+    "demucs>=4.0",
+    "torch>=2.1",
+    "torchaudio>=2.1",
+    "transformers>=4.40",
+    "librosa>=0.10",
+    "faster-whisper>=1.0",
+    "mecab-python3>=1.0",
+    "ipadic>=1.0",
+    "numpy>=1.24",
+]
+
 [project.scripts]
 soramimic-video = "soramimic_video.cli:main"
 
@@ -21,6 +35,10 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "types-requests",
+    # audio系の純ロジック(pitch/reading)のテスト用。モデル系依存はaudio extraのみ
+    "numpy>=1.24",
+    "mecab-python3>=1.0",
+    "ipadic>=1.0",
 ]
 
 [build-system]

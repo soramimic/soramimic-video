@@ -1,17 +1,20 @@
 # soramimic-video 設計
 
-XF MIDI と元歌詞テキストを入力に、替え歌歌唱音源と替え歌動画を生成するパイプライン。
+XF MIDI(または歌唱音源)と元歌詞テキストを入力に、替え歌歌唱音源と替え歌動画を
+生成するパイプライン。
 
 ## 全体像
 
 ```
 XF MIDI ──┐
-          ├─ 1. analyze ──> project.json(歌唱モーラ+タイミング+元歌詞アライメント)
+          ├─ 1. analyze ──────> project.json(歌唱モーラ+タイミング+元歌詞アライメント)
 元歌詞 ────┘
+歌唱音源 ──┬─ 1'. analyze-audio ─> project.json(同上。元歌詞はオプショナル)
+[元歌詞] ──┘
               2. convert ──> project.json に替え歌案を追記(soramimic変換)
               3. export-edit / import-edit ──> 人手編集(将来: soramimic editor連携)
               4. synthesize ──> MusicXML → NEUTRINO → vocal.wav
-              5. mix ──> 元MIDIの伴奏(メロディ消音) + vocal.wav → song.wav
+              5. mix ──> 伴奏(元MIDIメロディ消音 or demucs分離) + vocal.wav → song.wav
               6. video ──> 画像(単語リスト由来) + 字幕(元歌詞/替え歌) + song.wav → out.mp4
 ```
 
@@ -33,12 +36,16 @@ XF MIDI ──┐
 {
   "version": 1,
   "song": {
-    "midi_path": "song.mid",
+    "midi_path": "song.mid",  // 音源プロジェクト(analyze-audio)では ""
     "ticks_per_beat": 480,
     "melody_channel": 1,      // $Lyrc ヘッダ由来
     "time_offset": 0,
     "language": "JP",
-    "tempo_map": [[0, 500000], ...]   // [tick, us/beat]
+    "tempo_map": [[0, 500000], ...],  // [tick, us/beat]。音源入力では固定BPM1本
+    // 以下は analyze-audio(歌唱音源入力)のときのみ
+    "audio_path": "song.wav",
+    "vocals_path": "separation/vocals.wav",
+    "accompaniment_path": "separation/no_vocals.wav"  // mixがそのまま伴奏に使う
   },
   "notes": [                  // 歌唱モーラ(=歌詞イベントが付いたメロディ音符)
     {
@@ -91,6 +98,31 @@ XF MIDI ──┐
   文字ベースの DP(difflib)でアライメントする。歌われていない元歌詞行は
   どの XF 行にも対応しない。XF 行が元歌詞に無い場合は original_text=null。
 
+### 1'. analyze-audio(歌唱音源からの解析) — issue #1
+
+XF MIDI が手に入らない曲向けに、歌唱音源(wav/mp3)から project.json を作る。
+以降のステージはそのまま流用できる(mix のみ伴奏の扱いが変わる)。
+重い依存(torch/demucs/whisper等)は extras `audio` に分離。
+
+1. **音源分離(demucs)**: vocals.wav / no_vocals.wav に分離。
+   no_vocals.wav は `song.accompaniment_path` に記録し、mix がそのまま伴奏に使う。
+2. **歌詞行の決定**: `--lyrics` があればその行構成を使う。無ければ
+   Whisper(faster-whisper)の認識結果をセグメント=行として元歌詞に使う。
+3. **モーラタイミング(forced alignment)**: 歌詞をMeCabでカナ化しモーラ分割、
+   カナ1文字ずつを reazon wav2vec2(rs35kh)のトークンに落として
+   `torchaudio.functional.forced_align` でアライメント。長い音源は
+   チャンク分割で logits を連結。語彙外文字のモーラは近傍から補間。
+4. **ピッチと音符終端**: pyin の f0 をモーラ区間で切り出し中央値 → midi_note。
+   CTC スパンはスパイク状で短いため、音符終端は有声区間が途切れるか
+   次のモーラが始まるまで伸長する。v1 は 1モーラ=1音符(メリスマは将来課題)。
+5. **tick 換算**: テンポ復元はせず固定BPM(既定120)のテンポマップを1本置き、
+   実測秒から直接換算。NEUTRINO 用 MusicXML は音楽的に正しい音価を
+   要求しないのでこれで足りる。start_sec/end_sec は実測値を保持するので
+   video / mix に換算誤差は影響しない。
+
+検証用に `analyze_audio/moras.srt` / `lines.srt` を書き出す
+(プレーヤーで字幕表示してタイミングを目視確認する)。
+
 ### 2. convert(soramimic変換)
 
 - soramimic 本体(git submodule `external/soramimic`、devブランチ)の
@@ -127,6 +159,8 @@ XF MIDI ──┐
 
 - 元 MIDI からメロディチャンネルの note イベントを除いた伴奏 MIDI を作り、
   fluidsynth(要 `brew install fluidsynth` + サウンドフォント)で wav 化。
+  音源プロジェクト(`song.accompaniment_path` あり)は demucs 分離済みの
+  伴奏 wav をそのまま使う(fluidsynth 不要)。
 - vocal.wav は曲頭からレンダリングされているので、ffmpeg の amix で重ねるだけ。
 
 ### 6. video(替え歌動画)
