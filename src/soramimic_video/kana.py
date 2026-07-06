@@ -48,3 +48,24 @@ def vowel_of(kana: str) -> str | None:
             continue
         return _CHAR_TO_VOWEL.get(ch)
     return None
+
+
+def normalize_long_vowels(kana: str) -> str:
+    """長音の表記ゆれを「ー」に正規化する(ヨウ→ヨー、ケイ→ケー、オオ→オー)。
+
+    読みエンジンによって仮名形(トウキョウ)と発音形(トーキョー)が混在するため、
+    比較・対応付けの前に揃える用途。
+    """
+    out: list[str] = []
+    for ch in kana:
+        prev_vowel = _CHAR_TO_VOWEL.get(out[-1]) if out else None
+        if out and out[-1] != "ー":
+            if (
+                (ch == "ウ" and prev_vowel in ("オ", "ウ"))
+                or (ch == "イ" and prev_vowel in ("エ", "イ"))
+                or (ch in "アイウエオ" and prev_vowel == ch)
+            ):
+                out.append("ー")
+                continue
+        out.append(ch)
+    return "".join(out)

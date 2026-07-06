@@ -16,6 +16,7 @@ import difflib
 from dataclasses import dataclass
 from statistics import median
 
+from .kana import normalize_long_vowels
 from .project import Project
 
 
@@ -43,14 +44,35 @@ class EvalResult:
         ])
 
 
+def _chars_with_owner(kanas: list[str]) -> tuple[list[str], list[int]]:
+    """カナ列を正規化した文字列に展開し、各文字の元要素indexを返す。"""
+    owners = [i for i, k in enumerate(kanas) for _ in k]
+    chars = list(normalize_long_vowels("".join(kanas)))
+    return chars, owners
+
+
 def match_by_kana(
     truth_kanas: list[str], est_kanas: list[str]
 ) -> list[tuple[int, int]]:
-    """カナ列同士をDP対応付けし、一致した (正解idx, 推定idx) ペアを返す。"""
-    sm = difflib.SequenceMatcher(a=truth_kanas, b=est_kanas, autojunk=False)
+    """カナ列同士をDP対応付けし、一致した (正解idx, 推定idx) ペアを返す。
+
+    読みエンジンによって長音の表記(ヨウ/ヨー)やモーラの切り方
+    (ヨ+ウの2音符 vs ヨー+継続ーの2音符)が違っても対応が切れないよう、
+    要素単位でなく正規化した文字単位でマッチングし、要素indexに引き戻す。
+    正解側は一意、推定側は再利用を許す(長音がまとまった音符に複数の正解音符が
+    対応するケース)。
+    """
+    t_chars, t_owners = _chars_with_owner(truth_kanas)
+    e_chars, e_owners = _chars_with_owner(est_kanas)
+    sm = difflib.SequenceMatcher(a=t_chars, b=e_chars, autojunk=False)
     pairs: list[tuple[int, int]] = []
+    seen_truth: set[int] = set()
     for block in sm.get_matching_blocks():
-        pairs.extend((block.a + k, block.b + k) for k in range(block.size))
+        for k in range(block.size):
+            ti, ei = t_owners[block.a + k], e_owners[block.b + k]
+            if ti not in seen_truth:
+                seen_truth.add(ti)
+                pairs.append((ti, ei))
     return pairs
 
 

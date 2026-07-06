@@ -40,9 +40,9 @@ def analyze_audio(
     skip_separation: bool = False,
     device: str | None = None,
 ) -> Project:
-    from .mora_align import align_moras
+    from .mora_align import align_moras_with_variants
     from .pitch import extract_pitch, mora_midi_notes, voiced_end
-    from .reading import text_to_kana
+    from .reading import reading_candidates
 
     # 1. 音源分離
     accompaniment: Path | None = None
@@ -69,12 +69,21 @@ def analyze_audio(
             raise RuntimeError("Whisperが歌詞を認識できませんでした")
         logger.info("Whisper認識結果を元歌詞として使用: %d行", len(line_texts))
 
-    # 3. カナ化 + forced alignment
-    line_moras = [split_moras(text_to_kana(text)) for text in line_texts]
-    for text, moras in zip(line_texts, line_moras, strict=True):
-        if not moras:
+    # 3. カナ化 + forced alignment。読み候補が割れた行は音響スコアで判定する
+    line_variants = [
+        [split_moras(kana) for kana in reading_candidates(text)] or [[]]
+        for text in line_texts
+    ]
+    for text, variants in zip(line_texts, line_variants, strict=True):
+        if not variants[0]:
             logger.warning("カナ読みが得られない行をスキップ: %r", text)
-    aligned = align_moras(vocals, line_moras, device=device)
+    aligned, chosen = align_moras_with_variants(vocals, line_variants, device=device)
+    n_ambiguous = sum(1 for v in line_variants if len(v) > 1)
+    if n_ambiguous:
+        logger.info(
+            "読み候補が複数の行: %d行(うち%d行で第2候補以降を採用)",
+            n_ambiguous, sum(1 for k in chosen if k != 0),
+        )
 
     # 4. ピッチ + 音符終端の伸長
     track = extract_pitch(vocals)
