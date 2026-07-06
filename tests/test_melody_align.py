@@ -2,6 +2,7 @@ import pytest
 
 from soramimic_video.melody_align import (
     MelodyNote,
+    apply_transcribed_pitch,
     assemble_mora_notes,
     channel_match_score,
     estimate_transpose,
@@ -217,3 +218,28 @@ def test_assemble_applies_transpose():
     notes = [_note(1.0, 1.5, 55)]
     result = assemble_mora_notes(aligned, notes, [(0, 0)], fallback_midi=[67], transpose=12)
     assert result[0].midi_note == 67
+
+
+def test_transcribed_pitch_keeps_ctc_timing_and_borrows_pitch():
+    # タイミングはモーラ(CTC)のまま、ピッチは重なる採譜ノートから借りる
+    aligned = [_mora(0, "ア", 1.0, 1.2), _mora(1, "イ", 1.2, 1.4)]
+    notes = [_note(0.95, 1.25, 67), _note(1.25, 1.5, 69)]
+    result = apply_transcribed_pitch(notes, aligned, fallback_midi=[60, 60])
+    assert [m.midi_note for m in result] == [67, 69]
+    assert [(m.start_sec, m.end_sec) for m in result] == [(1.0, 1.2), (1.2, 1.4)]
+
+
+def test_transcribed_pitch_falls_back_to_f0_in_gaps():
+    # 採譜ノートの無い区間(取りこぼし)は f0 を使う
+    aligned = [_mora(0, "ア", 1.0, 1.2), _mora(1, "イ", 5.0, 5.2)]
+    notes = [_note(0.95, 1.25, 67)]  # 2つ目のモーラには重なるノートが無い
+    result = apply_transcribed_pitch(notes, aligned, fallback_midi=[60, 62])
+    assert [m.midi_note for m in result] == [67, 62]
+
+
+def test_transcribed_pitch_picks_max_overlap():
+    aligned = [_mora(0, "ア", 1.0, 1.4)]
+    # 1.0-1.4 と重なるのは 60(0.1s重なり) と 64(0.3s重なり) → 64
+    notes = [_note(0.5, 1.1, 60), _note(1.1, 1.5, 64)]
+    result = apply_transcribed_pitch(notes, aligned, fallback_midi=[70])
+    assert result[0].midi_note == 64

@@ -39,6 +39,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
         lyrics_path=Path(args.lyrics) if args.lyrics else None,
         melody_midi=Path(args.melody_midi) if args.melody_midi else None,
         melody_channel=args.melody_channel,
+        transcribe_pitch=args.transcribe_pitch,
         bpm=args.bpm,
         whisper_model=args.whisper_model,
         skip_separation=args.no_separation,
@@ -190,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--melody-channel",
         type=int,
         help="メロディのMIDIチャンネル(0始まり)。省略時は自動選択",
+    )
+    p.add_argument(
+        "--transcribe-pitch",
+        action="store_true",
+        help="外部MIDIが無いとき歌唱採譜(RMVPE+ROSVOT)でピッチ・音符を起こす"
+        "(要 ROSVOT_ROOT)。--melody-midi 指定時は無視",
     )
     p.add_argument("--bpm", type=float, default=120.0, help="tick換算用の固定BPM")
     p.add_argument(

@@ -372,32 +372,19 @@ def apply_melody_midi(
             for n in notes
         ]
 
-    def match(warped: list[MelodyNote]) -> list[tuple[int | None, int | None]]:
-        transpose = round(
-            median(fallback_midi) - median(n.midi_note for n in warped)
-        )
-        return match_moras_to_notes(
-            mora_onsets,
-            [(n.start_sec, n.end_sec) for n in warped],
-            mora_pitches=fallback_midi,
-            note_pitches=[n.midi_note for n in warped],
-            transpose=transpose,
-        )
-
     if channel is not None:
         warped = prepare(channel)
-        pairs = match(warped)
     else:
         # モーラとの照合結果でメロディチャンネルを選ぶ。音数がモーラ数と
         # かけ離れたチャンネル(伴奏・装飾)は候補から外す
-        best: tuple[float, int, list[MelodyNote], list] | None = None
+        best: tuple[float, int, list[MelodyNote]] | None = None
         for ch in sorted(notes_by_channel):
             if ch == _DRUM_CHANNEL:
                 continue
             cand = prepare(ch)
             if not 0.25 * len(aligned) <= len(cand) <= 3 * len(aligned):
                 continue
-            cand_pairs = match(cand)
+            cand_pairs = _match_pairs(mora_onsets, fallback_midi, cand)
             score, coverage, mad = channel_match_score(
                 cand_pairs, len(aligned), fallback_midi, cand
             )
@@ -406,20 +393,97 @@ def apply_melody_midi(
                 ch, len(cand), coverage * 100, mad, score,
             )
             if best is None or score > best[0]:
-                best = (score, ch, cand, cand_pairs)
+                best = (score, ch, cand)
         if best is None:
             raise ValueError(
                 "メロディ候補チャンネルがありません(--melody-channel で指定してください)"
             )
-        _, channel, warped, pairs = best
+        _, channel, warped = best
     logger.info("メロディチャンネル: ch%d (%d音)", channel, len(warped))
+    return finalize_melody(aligned, fallback_midi, warped)
 
+
+def _match_pairs(
+    mora_onsets: list[float],
+    fallback_midi: list[int],
+    notes: list[MelodyNote],
+) -> list[tuple[int | None, int | None]]:
+    """f0由来の移調推定込みで、モーラと音符を対応づける。"""
+    transpose = round(median(fallback_midi) - median(n.midi_note for n in notes))
+    return match_moras_to_notes(
+        mora_onsets,
+        [(n.start_sec, n.end_sec) for n in notes],
+        mora_pitches=fallback_midi,
+        note_pitches=[n.midi_note for n in notes],
+        transpose=transpose,
+    )
+
+
+def finalize_melody(
+    aligned: list[AlignedMora],
+    fallback_midi: list[int],
+    notes: list[MelodyNote],
+) -> list[MoraNote]:
+    """音源時間軸に乗った1本のメロディ音符列にモーラを対応づけて組み立てる。
+
+    外部MIDI(warp後)と採譜pseudo-MIDI(同一時間軸)で共通の後段。
+    """
+    mora_onsets = [m.start_sec for m in aligned]
+    pairs = _match_pairs(mora_onsets, fallback_midi, notes)
     matched = sum(1 for i, j in pairs if i is not None and j is not None)
     logger.info(
         "モーラ%d / 音符%d のうち %d 組が対応(モーラ被覆率 %.0f%%)",
-        len(aligned), len(warped), matched, 100 * matched / max(1, len(aligned)),
+        len(aligned), len(notes), matched, 100 * matched / max(1, len(aligned)),
     )
-    transpose = estimate_transpose(pairs, fallback_midi, warped)
+    transpose = estimate_transpose(pairs, fallback_midi, notes)
     if transpose:
-        logger.warning("MIDIと歌唱の音高差 %+d 半音を補正します", transpose)
-    return assemble_mora_notes(aligned, warped, pairs, fallback_midi, transpose)
+        logger.warning("メロディと歌唱の音高差 %+d 半音を補正します", transpose)
+    return assemble_mora_notes(aligned, notes, pairs, fallback_midi, transpose)
+
+
+def apply_transcribed_pitch(
+    notes: list[MelodyNote],
+    aligned: list[AlignedMora],
+    fallback_midi: list[int],
+) -> list[MoraNote]:
+    """歌唱採譜(RMVPE+ROSVOT)のpseudo-MIDIでMoraNote列を作る(issue #5)。
+
+    タイミングはCTC(モーラ)を使う: 採譜ノートの境界はシラブルでなく音楽的な
+    音符なので、モーラ開始の精度はCTCが勝る(実測: CTC 24ms vs 採譜 32ms)。
+    ピッチだけモーラ区間に最も重なる採譜ノートから借り、ノートの無い区間
+    (採譜が取りこぼした弱い音節)は f0 にフォールバックする。
+    採譜ノートは音源と同一時間軸・同一音域(f0と同じ)なので移調は不要。
+    """
+    starts = [n.start_sec for n in notes]
+    result: list[MoraNote] = []
+    n_from_notes = 0
+    for m, f0_pitch in zip(aligned, fallback_midi, strict=True):
+        pitch = _overlapping_pitch(notes, starts, m.start_sec, m.end_sec)
+        if pitch is None:
+            pitch = f0_pitch
+        else:
+            n_from_notes += 1
+        result.append(
+            MoraNote(line=m.line, kana=m.kana, start_sec=m.start_sec,
+                     end_sec=m.end_sec, midi_note=pitch)
+        )
+    logger.info(
+        "採譜ピッチ: %d/%dモーラ(%.0f%%)に採譜ノートを適用、残りはf0",
+        n_from_notes, len(aligned), 100 * n_from_notes / max(1, len(aligned)),
+    )
+    return result
+
+
+def _overlapping_pitch(
+    notes: list[MelodyNote], starts: list[float], t0: float, t1: float
+) -> int | None:
+    """区間[t0,t1)に最も長く重なる採譜ノートの音高。重なりが無ければNone。"""
+    import bisect
+
+    best_overlap, best_pitch = 0.0, None
+    lo = bisect.bisect(starts, t1)
+    for n in notes[max(0, lo - 30) : lo + 2]:
+        overlap = min(t1, n.end_sec) - max(t0, n.start_sec)
+        if overlap > best_overlap:
+            best_overlap, best_pitch = overlap, n.midi_note
+    return best_pitch
