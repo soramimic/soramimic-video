@@ -35,7 +35,6 @@ def analyze_audio(
     lyrics_path: Path | None = None,
     melody_midi: Path | None = None,
     melody_channel: int | None = None,
-    transcribe_pitch: bool = False,
     bpm: float = DEFAULT_BPM,
     whisper_model: str = DEFAULT_WHISPER_MODEL,
     skip_separation: bool = False,
@@ -86,7 +85,8 @@ def analyze_audio(
             n_ambiguous, sum(1 for k in chosen if k != 0),
         )
 
-    # 4. ピッチ + 音符終端の伸長
+    # 4. ピッチ + 音符終端の伸長。ピッチは区間内f0のモード集約
+    # (中央値はビブラート・しゃくりに引っ張られる。XF正解評価 81%→84%)
     track = extract_pitch(vocals)
     for i, m in enumerate(aligned):
         limit = (
@@ -106,13 +106,6 @@ def analyze_audio(
         mora_notes = apply_melody_midi(
             audio_path, melody_midi, melody_channel, aligned, midi_notes
         )
-    elif transcribe_pitch:
-        # 外部MIDIが無いとき、歌唱採譜(RMVPE+ROSVOT)でpseudo-MIDIを起こす(issue #5)
-        from .melody_align import apply_transcribed_pitch
-        from .transcribe_pitch import transcribe_notes
-
-        notes = transcribe_notes(vocals, project_dir, device=device)
-        mora_notes = apply_transcribed_pitch(notes, aligned, midi_notes)
     else:
         mora_notes = [
             MoraNote(

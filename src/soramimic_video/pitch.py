@@ -49,14 +49,17 @@ def mora_midi_notes(
 ) -> list[int]:
     """各モーラ区間の midi_note を決める。
 
-    区間内の有声フレームの中央値。無ければ少し広げて再試行し、
-    それでも無ければ直前のモーラの音高(先頭なら後続、全滅なら default)。
+    区間内の有声フレームの最頻半音(モード)。中央値はビブラート・しゃくり・
+    リリースのピッチdrift に引っ張られて隣の半音へ外れやすいが、モードは
+    最も長く保持された半音を拾うため頑健(XF正解評価: RMVPEのf0で
+    中央値79%→モード86%)。無ければ少し広げて再試行し、それでも無ければ
+    直前のモーラの音高(先頭なら後続、全滅なら default)。
     """
-    raw: list[float | None] = []
+    raw: list[int | None] = []
     for start, end in spans:
-        value = _median_in_range(track, start, end)
+        value = _mode_in_range(track, start, end)
         if value is None:
-            value = _median_in_range(track, start - 0.05, end + 0.05)
+            value = _mode_in_range(track, start - 0.05, end + 0.05)
         raw.append(value)
 
     notes: list[int] = []
@@ -66,16 +69,26 @@ def mora_midi_notes(
         if value is None:
             value = next((v for v in raw[i + 1 :] if v is not None), None)
         if value is None:
-            value = float(default)
-        notes.append(int(np.clip(round(value), MIDI_MIN, MIDI_MAX)))
+            value = default
+        notes.append(int(np.clip(value, MIDI_MIN, MIDI_MAX)))
     return notes
 
 
-def _median_in_range(track: PitchTrack, start: float, end: float) -> float | None:
+def _mode_in_range(track: PitchTrack, start: float, end: float) -> int | None:
+    """区間内の有声フレームを半音に丸めた最頻値。同数なら中央値に近い方。"""
     sel = (track.times >= start) & (track.times < end)
     values = track.midi[sel]
     values = values[~np.isnan(values)]
-    return float(np.median(values)) if len(values) else None
+    if len(values) == 0:
+        return None
+    semis = np.round(values).astype(int)
+    counts = np.bincount(semis - semis.min())
+    top = int(counts.max())
+    candidates = [semis.min() + k for k, c in enumerate(counts) if c == top]
+    if len(candidates) == 1:
+        return candidates[0]
+    med = float(np.median(values))
+    return min(candidates, key=lambda s: abs(s - med))
 
 
 def voiced_end(track: PitchTrack, start_sec: float, limit_sec: float) -> float:

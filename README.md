@@ -22,10 +22,6 @@ uv sync                          # Python側
 - fluidsynth + サウンドフォント — `mix` の伴奏レンダリングに必要
   (`brew install fluidsynth`)
 - ffmpeg — `mix` / `video` に必要
-- [ROSVOT](https://github.com/RickyL-2000/ROSVOT) — `analyze-audio --transcribe-pitch`
-  (外部MIDIが無いときの歌唱採譜)に必要。環境変数 `ROSVOT_ROOT` で指定
-  (macOSはCPU/MPS用の小パッチが要る)。効果は限定的なので詳細は
-  [docs/input-methods.md](docs/input-methods.md) 参照
 
 ## 使い方
 
