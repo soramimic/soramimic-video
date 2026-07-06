@@ -131,6 +131,31 @@ def cmd_video(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from .api import API_KEY_ENV, create_app
+    except ImportError:
+        print(
+            "APIサーバーの依存が足りません。`pip install -e '.[api]'` で入れてください",
+            file=sys.stderr,
+        )
+        return 1
+    import os
+
+    app = create_app(
+        jobs_dir=Path(args.jobs_dir),
+        soundfont=args.soundfont,
+        font=args.font,
+        threads=args.threads,
+    )
+    auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
+    print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="soramimic-video", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -193,6 +218,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
     p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
     p.set_defaults(func=cmd_video)
+
+    p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
+    p.add_argument("--host", default="127.0.0.1", help="LANに公開するなら 0.0.0.0")
+    p.add_argument("--port", type=int, default=8300)
+    p.add_argument("--jobs-dir", default="work/api-jobs", help="ジョブの作業ディレクトリ")
+    p.add_argument("--soundfont", help="伴奏用サウンドフォント(.sf2)")
+    p.add_argument("--font", help="字幕フォント名(既定はOSに応じて選択)")
+    p.add_argument("--threads", type=int, default=4, help="NEUTRINOのスレッド数")
+    p.set_defaults(func=cmd_serve)
 
     return parser
 

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>soramimic-video</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: "Hiragino Sans", "Noto Sans CJK JP", sans-serif;
+    max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6;
+  }
+  h1 { font-size: 1.3rem; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; }
+  label { display: block; margin: .6rem 0 .2rem; font-weight: 600; font-size: .9rem; }
+  input[type=text], input[type=password], textarea, select {
+    width: 100%; box-sizing: border-box; padding: .4rem; font-size: 1rem;
+    border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit;
+  }
+  textarea { height: 6rem; }
+  button {
+    font-size: 1rem; padding: .5rem 1.5rem; border-radius: 8px; border: none;
+    background: #2563eb; color: #fff; cursor: pointer;
+  }
+  button:disabled { background: #94a3b8; cursor: default; }
+  .hint { font-size: .8rem; opacity: .7; margin-top: .1rem; }
+  .stages { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; padding: 0; list-style: none; }
+  .stages li {
+    padding: .2rem .6rem; border-radius: 999px; font-size: .85rem;
+    background: #8882; opacity: .5;
+  }
+  .stages li.done { opacity: 1; background: #16a34a33; }
+  .stages li.now { opacity: 1; background: #2563eb33; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .5; } }
+  #result video { width: 100%; border-radius: 8px; margin-top: .5rem; }
+  .error { color: #dc2626; white-space: pre-wrap; }
+  pre { background: #8881; padding: .6rem; border-radius: 6px; overflow-x: auto; font-size: .75rem; }
+  details { margin-top: .6rem; }
+  #history table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid #8883; text-align: left; }
+  a { color: #2563eb; }
+</style>
+</head>
+<body>
+<h1>🎤 soramimic-video 動画生成</h1>
+<p class="hint" id="server-info"></p>
+
+<div id="auth" hidden>
+  <label>APIキー</label>
+  <input type="password" id="api-key" placeholder="X-API-Key">
+</div>
+
+<fieldset>
+  <legend>入力</legend>
+  <label>XF MIDIファイル(必須)</label>
+  <input type="file" id="midi" accept=".mid,.midi">
+  <label>editorの書き出しJSON(推奨)</label>
+  <input type="file" id="editor" accept=".json">
+  <p class="hint">soramimicエディタで編集→「書き出し」したファイル。なしの場合は下の単語リストで自動変換します。</p>
+  <label>元歌詞(任意・字幕用)</label>
+  <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+</fieldset>
+
+<fieldset>
+  <legend>オプション</legend>
+  <label>歌声モデル</label>
+  <input type="text" id="model" list="model-list" value="MERROW">
+  <datalist id="model-list"></datalist>
+  <label>単語リスト(editor JSONがないときは必須)</label>
+  <input type="text" id="wordlist" placeholder="例: stations">
+</fieldset>
+
+<button id="submit">動画を生成</button>
+
+<div id="progress" hidden>
+  <ul class="stages">
+    <li data-stage="analyze">MIDI解析</li>
+    <li data-stage="convert">空耳変換</li>
+    <li data-stage="import-editor">編集の取り込み</li>
+    <li data-stage="synthesize">歌唱合成</li>
+    <li data-stage="mix">ミックス</li>
+    <li data-stage="video">動画生成</li>
+  </ul>
+  <p id="status-line"></p>
+  <details><summary>ログ</summary><pre id="log"></pre></details>
+</div>
+
+<div id="result" hidden></div>
+
+<details id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
+const headers = () => apiKey() ? { "X-API-Key": apiKey() } : {};
+const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) : url;
+
+async function loadConfig() {
+  const res = await fetch("/api/config", { headers: headers() });
+  const conf = await res.json();
+  $("auth").hidden = !conf.auth_required;
+  if (conf.auth_required && !apiKey()) return;
+  $("server-info").textContent =
+    `サーバー: ${conf.host || location.host}` + (conf.neutrino ? "" : " ⚠ NEUTRINO_ROOT未設定");
+  $("model-list").innerHTML = (conf.models || [])
+    .map((m) => `<option value="${m}">`).join("");
+  if (conf.models && conf.models.length && !conf.models.includes($("model").value)) {
+    $("model").value = conf.models[0];
+  }
+  loadHistory();
+}
+
+async function loadHistory() {
+  const res = await fetch("/api/jobs", { headers: headers() });
+  if (!res.ok) return;
+  const jobs = await res.json();
+  if (!jobs.length) { $("history-body").textContent = "まだありません"; return; }
+  $("history-body").innerHTML = "<table><tr><th>ID</th><th>日時</th><th>状態</th><th></th></tr>" +
+    jobs.map((j) => `<tr><td>${j.id}</td><td>${j.created_at.replace("T", " ")}</td>` +
+      `<td>${j.status}${j.total_seconds ? ` (${Math.round(j.total_seconds)}秒)` : ""}</td>` +
+      `<td>${j.video_url ? `<a href="${qs(j.video_url)}">動画</a>` : ""}</td></tr>`).join("") +
+    "</table>";
+}
+
+function renderStages(job) {
+  const doneNames = new Set(job.stages.map((s) => s.name));
+  const secs = Object.fromEntries(job.stages.map((s) => [s.name, s.seconds]));
+  document.querySelectorAll(".stages li").forEach((li) => {
+    const name = li.dataset.stage;
+    li.classList.toggle("done", doneNames.has(name));
+    li.classList.toggle("now", job.stage === name);
+    const base = li.textContent.replace(/ [\d.]+秒$/, "");
+    li.textContent = doneNames.has(name) ? `${base} ${secs[name]}秒` : base;
+  });
+  // 使わない方の変換ステージは薄いまま残る(editor / convert は排他)
+}
+
+async function poll(id) {
+  const res = await fetch(`/api/jobs/${id}`, { headers: headers() });
+  if (!res.ok) { $("status-line").textContent = "状態取得に失敗: " + res.status; return; }
+  const job = await res.json();
+  renderStages(job);
+  $("log").textContent = (job.log || []).slice(-15).join("\n");
+  if (job.status === "running") {
+    $("status-line").textContent =
+      `実行中: ${job.stage || "…"}` + (job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "");
+    setTimeout(() => poll(id), 2000);
+  } else if (job.status === "queued") {
+    $("status-line").textContent = "順番待ち…";
+    setTimeout(() => poll(id), 2000);
+  } else if (job.status === "done") {
+    $("status-line").textContent = `完成!(合計 ${Math.round(job.total_seconds)}秒)`;
+    $("result").hidden = false;
+    $("result").innerHTML =
+      `<video controls src="${qs(job.video_url)}"></video>` +
+      `<p><a href="${qs(job.video_url)}" download>ダウンロード</a></p>`;
+    $("submit").disabled = false;
+    loadHistory();
+  } else {
+    $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
+    $("submit").disabled = false;
+    loadHistory();
+  }
+}
+
+$("submit").addEventListener("click", async () => {
+  const midi = $("midi").files[0];
+  if (!midi) { alert("MIDIファイルを選んでください"); return; }
+  if (apiKey()) localStorage.setItem("apiKey", apiKey());
+  const form = new FormData();
+  form.append("midi", midi);
+  if ($("editor").files[0]) form.append("editor", $("editor").files[0]);
+  form.append("lyrics", $("lyrics").value);
+  form.append("model", $("model").value);
+  form.append("wordlist", $("wordlist").value);
+  $("submit").disabled = true;
+  $("result").hidden = true;
+  $("progress").hidden = false;
+  $("status-line").textContent = "送信中…";
+  try {
+    const res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    poll(body.id);
+  } catch (err) {
+    $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
+    $("submit").disabled = false;
+  }
+});
+
+$("api-key").addEventListener("change", loadConfig);
+if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");
+loadConfig();
+</script>
+</body>
+</html>
