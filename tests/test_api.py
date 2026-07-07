@@ -73,6 +73,45 @@ def test_requires_editor_or_wordlist(client):
     assert wait_done(client, job_id)["params"]["parody_source"] == "convert"
 
 
+def test_preview_returns_audio(tmp_path, monkeypatch):
+    def fake_pipeline(job, config):
+        assert job.params["preview"] == 20.0
+        out = job.dir / "neutrino" / "vocal.wav"
+        out.parent.mkdir(parents=True)
+        out.write_bytes(b"RIFF-fake")
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    files = {
+        "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+        "editor": ("editor.json", b"{}", "application/json"),
+    }
+    res = client.post("/api/jobs", files=files, data={"preview": "20"})
+    assert res.status_code == 200
+    body = wait_done(client, res.json()["id"])
+    assert body["result_kind"] == "audio"
+    video = client.get(body["video_url"])
+    assert video.headers["content-type"] == "audio/wav"
+
+
+def test_truncate_project():
+    from types import SimpleNamespace
+
+    notes = [
+        SimpleNamespace(id=i, start_sec=float(i)) for i in range(5)
+    ]
+    lines = [
+        SimpleNamespace(note_ids=[0, 1]),
+        SimpleNamespace(note_ids=[2, 3]),
+        SimpleNamespace(note_ids=[4]),
+    ]
+    project = SimpleNamespace(notes=notes, lines=lines)
+    api_mod._truncate_project(project, 3.0)
+    assert [n.id for n in project.notes] == [0, 1, 2]
+    assert [ln.note_ids for ln in project.lines] == [[0, 1], [2]]
+
+
 def test_rejects_non_midi(client):
     res = client.post("/api/jobs", files={"midi": ("x.mid", b"not midi", "audio/midi")})
     assert res.status_code == 400

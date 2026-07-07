@@ -102,6 +102,7 @@ class Job:
             d["total_seconds"] = round(self.finished_at - self.started_at, 1)
         if self.status == "done" and self.video:
             d["video_url"] = f"/api/jobs/{self.id}/video"
+            d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
         if with_log:
             d["log"] = list(self.log)
         return d
@@ -117,6 +118,19 @@ class _JobLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         self.job.log.append(self.format(record))
+
+
+def _truncate_project(project: Any, seconds: float) -> None:
+    """プレビュー用に冒頭seconds秒ぶんの音符・行だけ残す。"""
+    kept = [n for n in project.notes if n.start_sec < seconds]
+    kept_ids = {n.id for n in kept}
+    project.notes = kept
+    lines = []
+    for line in project.lines:
+        line.note_ids = [nid for nid in line.note_ids if nid in kept_ids]
+        if line.note_ids:
+            lines.append(line)
+    project.lines = lines
 
 
 def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
@@ -152,6 +166,21 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             )
             save_raw(raw, d)
             project.save(d)
+
+    preview_sec = float(job.params.get("preview") or 0)
+    if preview_sec > 0:
+        # プレビュー: 冒頭だけ歌声を合成して返す(ミックス・動画は作らない)
+        _truncate_project(project, preview_sec)
+        with _stage(job, "synthesize"):
+            wav = synthesize(
+                project,
+                d,
+                model=job.params["model"],
+                threads=config.get("threads", 4),
+                transpose=job.params.get("transpose", 0),
+            )
+        assert wav is not None
+        return wav
 
     with _stage(job, "synthesize"):
         synthesize(
@@ -342,6 +371,7 @@ def create_app(
         lyrics: str = Form(""),
         model: str = Form("MERROW"),
         transpose: int = Form(0),
+        preview: float = Form(0),
         wordlist: str = Form(""),
         where: str = Form(""),
     ) -> dict[str, Any]:
@@ -365,6 +395,7 @@ def create_app(
         params = {
             "model": model.strip() or "MERROW",
             "transpose": transpose,
+            "preview": max(0.0, min(preview, 60.0)),
             "wordlist": wordlist.strip(),
             "where": where.strip(),
             "parody_source": "editor" if editor_bytes else "convert",
@@ -387,6 +418,10 @@ def create_app(
         job = manager.get(job_id)
         if job.status != "done" or not job.video or not job.video.exists():
             raise HTTPException(status_code=409, detail="動画はまだできていません")
+        if job.video.suffix == ".wav":  # プレビュー(歌声のみ)
+            return FileResponse(
+                job.video, media_type="audio/wav", filename=f"preview_{job.id}.wav"
+            )
         return FileResponse(
             job.video, media_type="video/mp4", filename=f"soramimic_{job.id}.mp4"
         )

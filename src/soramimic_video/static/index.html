@@ -74,6 +74,8 @@
 </fieldset>
 
 <button id="submit">動画を生成</button>
+<button id="preview" style="background:#64748b">声プレビュー(冒頭20秒)</button>
+<p class="hint">プレビューは歌声だけを冒頭20秒ぶん合成します。モデルや移調の当たりをつけるのに。</p>
 
 <div id="progress" hidden>
   <ul class="stages">
@@ -121,7 +123,7 @@ async function loadHistory() {
   $("history-body").innerHTML = "<table><tr><th>ID</th><th>日時</th><th>状態</th><th></th></tr>" +
     jobs.map((j) => `<tr><td>${j.id}</td><td>${j.created_at.replace("T", " ")}</td>` +
       `<td>${j.status}${j.total_seconds ? ` (${Math.round(j.total_seconds)}秒)` : ""}</td>` +
-      `<td>${j.video_url ? `<a href="${qs(j.video_url)}">動画</a>` : ""}</td></tr>`).join("") +
+      `<td>${j.video_url ? `<a href="${qs(j.video_url)}">${j.result_kind === "audio" ? "音声" : "動画"}</a>` : ""}</td></tr>`).join("") +
     "</table>";
 }
 
@@ -154,19 +156,25 @@ async function poll(id) {
   } else if (job.status === "done") {
     $("status-line").textContent = `完成!(合計 ${Math.round(job.total_seconds)}秒)`;
     $("result").hidden = false;
-    $("result").innerHTML =
-      `<video controls src="${qs(job.video_url)}"></video>` +
-      `<p><a href="${qs(job.video_url)}" download>ダウンロード</a></p>`;
-    $("submit").disabled = false;
+    $("result").innerHTML = job.result_kind === "audio"
+      ? `<audio controls autoplay style="width:100%" src="${qs(job.video_url)}"></audio>`
+      : `<video controls src="${qs(job.video_url)}"></video>` +
+        `<p><a href="${qs(job.video_url)}" download>ダウンロード</a></p>`;
+    setBusy(false);
     loadHistory();
   } else {
     $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
-    $("submit").disabled = false;
+    setBusy(false);
     loadHistory();
   }
 }
 
-$("submit").addEventListener("click", async () => {
+function setBusy(busy) {
+  $("submit").disabled = busy;
+  $("preview").disabled = busy;
+}
+
+async function submitJob(previewSec) {
   const midi = $("midi").files[0];
   if (!midi) { alert("MIDIファイルを選んでください"); return; }
   if (apiKey()) localStorage.setItem("apiKey", apiKey());
@@ -176,8 +184,9 @@ $("submit").addEventListener("click", async () => {
   form.append("lyrics", $("lyrics").value);
   form.append("model", $("model").value);
   form.append("transpose", $("transpose").value.trim() || "0");
+  form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
-  $("submit").disabled = true;
+  setBusy(true);
   $("result").hidden = true;
   $("progress").hidden = false;
   $("status-line").textContent = "送信中…";
@@ -188,9 +197,12 @@ $("submit").addEventListener("click", async () => {
     poll(body.id);
   } catch (err) {
     $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
-    $("submit").disabled = false;
+    setBusy(false);
   }
-});
+}
+
+$("submit").addEventListener("click", () => submitJob(0));
+$("preview").addEventListener("click", () => submitJob(20));
 
 $("api-key").addEventListener("change", loadConfig);
 if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");
