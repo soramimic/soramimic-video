@@ -61,6 +61,27 @@ def cmd_eval_audio(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_analyze_midi(args: argparse.Namespace) -> int:
+    from .midi_project import build_from_melody_midi
+
+    lyrics = None
+    if args.lyrics:
+        lyrics = Path(args.lyrics).read_text(encoding="utf-8")
+    project = build_from_melody_midi(
+        Path(args.midi),
+        Path(args.project),
+        lyrics=lyrics,
+        channel=args.melody_channel,
+        render_backing=not args.no_backing,
+        soundfont=args.soundfont,
+    )
+    path = project.save(Path(args.project))
+    print(f"解析完了: {len(project.notes)}モーラ / {len(project.lines)}行 -> {path}")
+    if not args.lyrics:
+        print("ベース歌詞なし(ラで充填)。--lyrics で生成歌詞を渡すと空耳の元になります")
+    return 0
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
     from .convert import convert_project
     from .editor_io import save_raw
@@ -238,6 +259,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True, help="評価対象(analyze-audioの出力)")
     p.add_argument("--truth", required=True, help="正解(XF MIDI由来のプロジェクト)")
     p.set_defaults(func=cmd_eval_audio)
+
+    p = sub.add_parser(
+        "analyze-midi",
+        help="生成メロディMIDI(音源なし)から器を作る(著作権フリー替え歌用)",
+    )
+    p.add_argument("--midi", required=True, help="単旋律メロディMIDI(ChatMusician等の生成物)")
+    p.add_argument("--lyrics", help="ベース歌詞(空耳変換の元。省略時はラで充填)")
+    p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
+    p.add_argument("--melody-channel", type=int, help="メロディのMIDIチャンネル。省略時は自動")
+    p.add_argument("--no-backing", action="store_true", help="伴奏レンダリングをしない")
+    p.add_argument("--soundfont", help="伴奏レンダリング用サウンドフォント(.sf2)")
+    p.set_defaults(func=cmd_analyze_midi)
 
     p = sub.add_parser("convert", help="soramimicで替え歌単語歌詞に変換する")
     p.add_argument("--project", required=True)

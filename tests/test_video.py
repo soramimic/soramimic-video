@@ -6,7 +6,7 @@ import pytest
 
 from helpers import build_xf_midi
 from soramimic_video.project import Parody, ParodyLine, ParodyWord
-from soramimic_video.video import build_ass, build_image_cues, write_slideshow
+from soramimic_video.video import build_ass, build_image_cues, download_image, write_slideshow
 from soramimic_video.xfparse import analyze_midi
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
@@ -107,3 +107,25 @@ def test_image_cues_and_slideshow(tmp_path: Path):
 
     out = write_slideshow(cues, work, 320, 180, total_sec=3.0)
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_download_image_local_path(tmp_path: Path):
+    # ローカルパスの画像はコピーで取り込む(生成・ローカル単語リスト用)
+    src = tmp_path / "portrait.jpg"
+    src.write_bytes(b"\xff\xd8\xff\xe0dummy")
+    cache = tmp_path / "cache"
+    got = download_image(str(src), cache)
+    assert got is not None and got.exists()
+    assert got.read_bytes() == src.read_bytes()
+    assert got.suffix == ".jpg"
+
+
+def test_download_image_file_url(tmp_path: Path):
+    src = tmp_path / "p.png"
+    src.write_bytes(b"\x89PNGdummy")
+    got = download_image(f"file://{src}", tmp_path / "cache")
+    assert got is not None and got.read_bytes() == src.read_bytes()
+
+
+def test_download_image_missing_local(tmp_path: Path):
+    assert download_image(str(tmp_path / "nope.jpg"), tmp_path / "cache") is None
