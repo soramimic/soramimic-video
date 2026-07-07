@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -128,7 +129,9 @@ def build_image_cues(
 
     cues: list[ImageCue] = []
     credits: dict[str, dict] = {}
-    cache = work / "images"
+    # ダウンロード画像はプロジェクトをまたいで使い回せる(URLベースのキー)。
+    # 環境変数で共有キャッシュを指すと、同じ単語リストの2回目以降が速くなる
+    cache = Path(os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images")
     norm = work / "frames"
     for i, (start, end, w) in enumerate(words):
         url = w.wordlist_row["image"]  # type: ignore[index]

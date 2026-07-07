@@ -290,6 +290,11 @@ def create_app(
     threads: int = 4,
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
+    # 単語画像はジョブをまたいで共有キャッシュに置く(初回ジョブの動画ステージが
+    # 画像ダウンロードで数分かかるため。2回目以降はほぼゼロになる)
+    os.environ.setdefault(
+        "SORAMIMIC_VIDEO_IMAGE_CACHE", str(jobs_dir.resolve() / "image-cache")
+    )
     config = {
         "soundfont": resolve_soundfont(soundfont),
         "font": font or default_font(),
