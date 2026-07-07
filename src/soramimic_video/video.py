@@ -226,8 +226,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Parody,{font},{int(height * 0.065)},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.12)},1
-Style: Original,{font},{int(height * 0.042)},&H00B8B8B8,&H000000FF,&H00202020,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.045)},1
+Style: Sub,{font},{int(height * 0.065)},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.06)},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -240,24 +239,35 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start, end = project.line_time_range(line)
         start -= SUB_PAD_SEC
         end += SUB_PAD_SEC
-        # 次の行と重ならないように詰める
+        # 次の行と重ならないように詰める。次の行は start-=SUB_PAD_SEC で早出しするので、
+        # この行の終わりも next_start-SUB_PAD_SEC までにしないと切り替わりで一瞬重なり、
+        # libassの衝突回避で字幕が上下にずれる。わずかな隙間(0.02s)で確実に非重複にする
         if i + 1 < len(project.lines) and project.lines[i + 1].note_ids:
             next_start, _ = project.line_time_range(project.lines[i + 1])
-            end = min(end, next_start - SUB_PAD_SEC / 2)
+            end = min(end, next_start - SUB_PAD_SEC - 0.02)
 
+        # 替え歌(上・大)と元歌詞(下・小・灰)を1イベントにまとめる。別イベントだと
+        # 折り返し時にlibassの衝突回避で上下が入れ替わるため、\N連結で順序を固定する
         pline = parody_lines.get(line.id)
-        if pline and pline.words:
-            parody_text = "  ".join(w.surface for w in pline.words)
-            events.append(
-                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Parody,,0,0,0,,"
-                f"{_ass_escape(parody_text)}"
-            )
-        original_text = line.original_text or line.xf_surface
+        parody_text = (
+            "  ".join(w.surface for w in pline.words) if pline and pline.words else ""
+        )
+        original_text = line.original_text or line.xf_surface or ""
+        rows = []
+        if parody_text:
+            rows.append(_ass_escape(parody_text))
         if original_text:
-            events.append(
-                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Original,,0,0,0,,"
-                f"{_ass_escape(original_text)}"
+            # 元歌詞は小さめ・灰色にする(インライン上書き)
+            small = int(height * 0.042)
+            rows.append(
+                f"{{\\fs{small}\\c&HB8B8B8&}}{_ass_escape(original_text)}"
             )
+        if not rows:
+            continue
+        events.append(
+            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Sub,,0,0,0,,"
+            + "\\N".join(rows)
+        )
     return header + "\n".join(events) + "\n"
 
 

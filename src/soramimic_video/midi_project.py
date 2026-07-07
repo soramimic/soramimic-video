@@ -2,8 +2,9 @@
 
 ChatMusician等で生成した単旋律MIDIとベース歌詞を入力に、音源もf0も使わず
 「1音符=1モーラ」の器を作る。タイミング・ピッチはMIDIそのもの(=確定)。
-以降の convert(空耳変換) / synthesize / video はそのまま流せる。伴奏は
-メロディMIDIをそのままレンダリングして使う(入力著作物ゼロの構成)。
+以降の convert(空耳変換) / synthesize / video はそのまま流せる。伴奏は、
+コード/ベース等メロディ以外のチャンネルがあればそれを、無ければメロディ自身を
+レンダリングして使う(入力著作物ゼロの構成)。
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from .audio_project import MoraNote, build_project
 from .kana import split_moras
-from .melody_align import load_midi_notes, monophony_ratio, skyline
+from .melody_align import MelodyNote, load_midi_notes, monophony_ratio, skyline
 from .project import Project
 from .reading import text_to_kana
 
@@ -23,12 +24,24 @@ DEFAULT_LINE_GAP_SEC = 0.4  # これ以上の休符で行(フレーズ)を区切
 DEFAULT_MAX_LINE_NOTES = 12  # 休符が無いとき、この音符数で機械的に改行
 
 
-def _select_channel(notes_by_channel: dict[int, list]) -> int:
-    """最も音数の多い非ドラムチャンネルをメロディとみなす。"""
+def _select_channel(notes_by_channel: dict[int, list[MelodyNote]]) -> int:
+    """メロディらしいチャンネルを選ぶ。
+
+    伴奏付きMIDI(abc2midiはメロディ/ベース/コードを別chに出す)でメロディを選ぶため、
+    単旋律度が高く音高が高いものを優先する(コードは和音で単旋律度が低く、
+    ベースは音高が低いので落ちる)。単独chならそれを返す。
+    """
     candidates = {ch: v for ch, v in notes_by_channel.items() if ch != 9 and v}
     if not candidates:
         raise ValueError("メロディに使えるチャンネルがありません")
-    return max(candidates, key=lambda ch: len(candidates[ch]))
+
+    def score(ch: int) -> float:
+        notes = candidates[ch]
+        mono = monophony_ratio(notes)
+        mean_pitch = sum(n.midi_note for n in notes) / len(notes)
+        return mono**2 * mean_pitch
+
+    return max(candidates, key=score)
 
 
 def _group_lines(
@@ -47,22 +60,6 @@ def _group_lines(
                 lines.append([])
         lines[-1].append(i)
     return [ln for ln in lines if ln]
-
-
-def base_kana_stream(lyrics: str | None, n_notes: int) -> list[str]:
-    """ベース歌詞から n_notes 個のモーラ列を作る(1音符=1モーラ)。
-
-    歌詞が無ければ「ラ」で埋める。歌詞のモーラが足りなければ繰り返す。
-    """
-    if not lyrics or not lyrics.strip():
-        return ["ラ"] * n_notes
-    moras: list[str] = []
-    for line in lyrics.splitlines():
-        moras.extend(split_moras(text_to_kana(line)))
-    moras = [m for m in moras if m.strip()]
-    if not moras:
-        return ["ラ"] * n_notes
-    return [moras[i % len(moras)] for i in range(n_notes)]
 
 
 def build_from_melody_midi(
@@ -88,41 +85,76 @@ def build_from_melody_midi(
     logger.info("メロディ: ch%d %d音", channel, len(melody))
 
     line_groups = _group_lines(melody, gap_sec, max_line_notes)
-    kana = base_kana_stream(lyrics, len(melody))
+    # 元歌詞は行(フレーズ)単位に割り当てる。字幕には表層(漢字仮名交じり)を出し、
+    # その読み(カナ)を1音符1モーラでフレーズの音符に配る(足りなければ循環)。
+    lyric_lines = [ln for ln in (lyrics or "").splitlines() if ln.strip()]
 
     mora_notes: list[MoraNote] = []
     line_texts: list[str] = []
     for li, group in enumerate(line_groups):
-        for idx in group:
+        if lyric_lines:
+            surface = lyric_lines[li % len(lyric_lines)]
+            reading = split_moras(text_to_kana(surface)) or ["ラ"]
+        else:
+            surface = ""  # 歌詞なしはラで充填、字幕も出さない
+            reading = ["ラ"]
+        for k, idx in enumerate(group):
             n = melody[idx]
             mora_notes.append(
                 MoraNote(
                     line=li,
-                    kana=kana[idx],
+                    kana=reading[k % len(reading)],
                     start_sec=n.start_sec,
                     end_sec=n.end_sec,
                     midi_note=n.midi_note,
                 )
             )
-        line_texts.append("".join(kana[idx] for idx in group))
-
-    # 伴奏: 生成メロディMIDIをそのままレンダリング(著作物ゼロの伴奏)
-    accompaniment: Path | None = None
-    if render_backing:
-        from .mix import render_midi
-
-        try:
-            work = project_dir / "backing"
-            work.mkdir(parents=True, exist_ok=True)
-            accompaniment = render_midi(midi_path, work / "backing.wav", soundfont)
-        except RuntimeError as e:
-            logger.warning("伴奏レンダリングをスキップ(%s)", e)
+        line_texts.append(surface)
 
     project = build_project(
         audio_path=midi_path,
         vocals_path=None,
-        accompaniment_path=accompaniment,
+        accompaniment_path=None,
         line_texts=line_texts,
         mora_notes=mora_notes,
     )
+    # mix が伴奏を作れるよう、元MIDIとメロディチャンネルを記録する
+    project.song.midi_path = str(midi_path)
+    project.song.melody_channel = channel
+
+    if render_backing:
+        project.song.accompaniment_path = _render_backing(
+            project, midi_path, channel, project_dir, soundfont
+        )
     return project
+
+
+def _render_backing(
+    project: Project, midi_path: Path, channel: int, project_dir: Path,
+    soundfont: str | None,
+) -> str | None:
+    """伴奏wavをレンダリングする。
+
+    コード/ベース等メロディ以外のチャンネルがあればそれを伴奏にする(=本物のBGM)。
+    メロディ単独のMIDIならメロディ自身をレンダリングする(薄いが無よりは良い)。
+    """
+    from .mix import make_accompaniment_midi, render_midi
+
+    work = project_dir / "backing"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        acc_mid = make_accompaniment_midi(project, work / "backing.mid")
+        import mido
+
+        has_other = any(
+            m.type == "note_on" and m.velocity > 0
+            for tr in mido.MidiFile(str(acc_mid)).tracks
+            for m in tr
+        )
+        source = acc_mid if has_other else midi_path
+        if not has_other:
+            logger.info("伴奏チャンネルが無いためメロディをそのまま伴奏にします")
+        return str(render_midi(source, work / "backing.wav", soundfont))
+    except RuntimeError as e:
+        logger.warning("伴奏レンダリングをスキップ(%s)", e)
+        return None

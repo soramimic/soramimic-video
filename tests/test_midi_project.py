@@ -2,26 +2,7 @@ from pathlib import Path
 
 from mido import Message, MidiFile, MidiTrack
 
-from soramimic_video.midi_project import (
-    base_kana_stream,
-    build_from_melody_midi,
-)
-
-
-def test_base_kana_stream_placeholder():
-    assert base_kana_stream(None, 5) == ["ラ"] * 5
-    assert base_kana_stream("   ", 3) == ["ラ"] * 3
-
-
-def test_base_kana_stream_cycles_lyrics():
-    # モーラが足りなければ繰り返して音符数ぶん埋める
-    out = base_kana_stream("あい", 5)
-    assert out == ["ア", "イ", "ア", "イ", "ア"]
-
-
-def test_base_kana_stream_truncates():
-    out = base_kana_stream("あいうえお", 3)
-    assert out == ["ア", "イ", "ウ"]
+from soramimic_video.midi_project import build_from_melody_midi
 
 
 def _plain_midi(path: Path, notes):
@@ -43,23 +24,37 @@ def _plain_midi(path: Path, notes):
 
 
 def test_build_from_melody_midi_basic(tmp_path: Path):
-    # 4音符、休符で2フレーズに分かれる
+    # 4音符、休符で2フレーズに分かれる。元歌詞は2行(フレーズごとに1行)
     notes = [
         (0, 240, 60), (240, 240, 62),
         (960, 240, 64), (1200, 240, 65),  # 大きな休符のあと
     ]
     midi = _plain_midi(tmp_path / "m.mid", notes)
     project = build_from_melody_midi(
-        midi, tmp_path / "proj", lyrics="あいうえ", render_backing=False
+        midi, tmp_path / "proj", lyrics="あい\nうえ", render_backing=False
     )
     assert len(project.notes) == 4
     assert [n.midi_note for n in project.notes] == [60, 62, 64, 65]
+    # 各フレーズにその行の読みを配る
     assert [n.kana for n in project.notes] == ["ア", "イ", "ウ", "エ"]
-    # 休符で2行に分かれる
     assert len(project.lines) == 2
+    # 元歌詞(字幕)は表層(漢字仮名交じり)を保持する
+    assert project.lines[0].original_text == "あい"
+    assert project.lines[1].original_text == "うえ"
     # 器: 各行のxf_kanaが音符カナの連結(convertの前提)
     for ln in project.lines:
         assert ln.xf_kana == "".join(project.notes[i].kana for i in ln.note_ids)
+
+
+def test_build_from_melody_midi_keeps_kanji_surface(tmp_path: Path):
+    # 漢字仮名交じりの元歌詞: 字幕は漢字のまま、音符には読み(カナ)が乗る
+    notes = [(i * 240, 240, 60 + i) for i in range(4)]
+    midi = _plain_midi(tmp_path / "m.mid", notes)
+    project = build_from_melody_midi(
+        midi, tmp_path / "proj", lyrics="東京", render_backing=False, max_line_notes=8
+    )
+    assert project.lines[0].original_text == "東京"
+    assert "".join(n.kana for n in project.notes).startswith("トー")  # 読みが音符に
 
 
 def test_build_from_melody_midi_forces_linebreak(tmp_path: Path):
