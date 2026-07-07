@@ -160,7 +160,12 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     with _stage(job, "mix"):
         mix(project, d, soundfont=config.get("soundfont"))
     with _stage(job, "video"):
-        return make_video(project, d, font=config.get("font") or default_font())
+        return make_video(
+            project,
+            d,
+            font=config.get("font") or default_font(),
+            image_cache=config.get("image_cache"),
+        )
 
 
 @contextmanager
@@ -290,12 +295,10 @@ def create_app(
     threads: int = 4,
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
-    # 単語画像はジョブをまたいで共有キャッシュに置く(初回ジョブの動画ステージが
-    # 画像ダウンロードで数分かかるため。2回目以降はほぼゼロになる)
-    os.environ.setdefault(
-        "SORAMIMIC_VIDEO_IMAGE_CACHE", str(jobs_dir.resolve() / "image-cache")
-    )
     config = {
+        # 単語画像はジョブをまたいで共有する(初回ジョブの動画ステージが
+        # 画像ダウンロードで数分かかるため。2回目以降はほぼゼロになる)
+        "image_cache": jobs_dir.resolve() / "image-cache",
         "soundfont": resolve_soundfont(soundfont),
         "font": font or default_font(),
         "threads": threads,

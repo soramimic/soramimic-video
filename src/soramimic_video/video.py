@@ -114,7 +114,11 @@ class ImageCue:
 
 
 def build_image_cues(
-    project: Project, work: Path, width: int, height: int
+    project: Project,
+    work: Path,
+    width: int,
+    height: int,
+    image_cache: Path | None = None,
 ) -> tuple[list[ImageCue], list[dict]]:
     """替え歌単語の歌唱区間に対応する画像キュー列と、使用画像のクレジット情報。"""
     if project.parody is None:
@@ -130,8 +134,10 @@ def build_image_cues(
     cues: list[ImageCue] = []
     credits: dict[str, dict] = {}
     # ダウンロード画像はプロジェクトをまたいで使い回せる(URLベースのキー)。
-    # 環境変数で共有キャッシュを指すと、同じ単語リストの2回目以降が速くなる
-    cache = Path(os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images")
+    # 共有キャッシュを指定すると、同じ単語リストの2回目以降が速くなる
+    cache = image_cache or Path(
+        os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
+    )
     norm = work / "frames"
     for i, (start, end, w) in enumerate(words):
         url = w.wordlist_row["image"]  # type: ignore[index]
@@ -285,6 +291,7 @@ def make_video(
     height: int = 720,
     font: str = "Hiragino Sans",
     audio: str | None = None,
+    image_cache: Path | None = None,
 ) -> Path:
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
@@ -303,7 +310,7 @@ def make_video(
 
     total_sec = max(n.end_sec for n in project.notes) + 3.0
 
-    cues, credits = build_image_cues(project, work, width, height)
+    cues, credits = build_image_cues(project, work, width, height, image_cache)
     logger.info("画像キュー: %d件", len(cues))
     slideshow = write_slideshow(cues, work, width, height, total_sec)
 

@@ -126,6 +126,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         height=args.height,
         font=args.font,
         audio=args.audio,
+        image_cache=Path(args.image_cache) if args.image_cache else None,
     )
     print(f"動画完成: {out}")
     return 0
@@ -217,6 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
     p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
+    p.add_argument(
+        "--image-cache",
+        help="単語画像の共有キャッシュ(環境変数 SORAMIMIC_VIDEO_IMAGE_CACHE でも指定可)",
+    )
     p.set_defaults(func=cmd_video)
 
     p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
