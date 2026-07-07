@@ -1,6 +1,6 @@
 # soramimic-video
 
-XF MIDI(カラオケ歌詞入りMIDI)と元歌詞テキストを入力に、
+XF MIDI(カラオケ歌詞入りMIDI)または歌唱音源(wav/mp3)と元歌詞テキストを入力に、
 [soramimic](https://github.com/soramimic/soramimic) の単語リストで替え歌歌詞を生成し、
 NEUTRINO で歌わせて、画像+字幕つきの替え歌動画まで作るパイプライン。
 
@@ -29,6 +29,12 @@ uv sync                          # Python側
 # 1. XF MIDI解析+元歌詞アライメント
 uv run soramimic-video analyze --midi song.mid --lyrics lyrics.txt --project work/song
 
+# 1'. XF MIDIが無い場合: 歌唱音源から解析(要 uv sync --extra audio)
+#     --lyrics 省略時はWhisperの認識結果を元歌詞として使う
+#     --melody-midi でメロディ入りMIDI(非XFでよい)を渡すとピッチ・タイミングが楽譜に寄って大幅に良くなる
+uv run soramimic-video analyze-audio --audio song.wav --lyrics lyrics.txt \
+  --melody-midi song.mid --project work/song
+
 # 2. 替え歌単語歌詞に変換(soramimic)
 uv run soramimic-video convert --project work/song --wordlist stations
 
@@ -40,7 +46,7 @@ uv run soramimic-video import-edit --project work/song
 # 4. NEUTRINOで歌唱合成
 NEUTRINO_ROOT=~/NEUTRINO uv run soramimic-video synthesize --project work/song --model MERROW
 
-# 5. 伴奏(元MIDI、メロディ消音)とミックス
+# 5. 伴奏とミックス(音源入力のプロジェクトは分離済み伴奏を使うのでsoundfont不要)
 uv run soramimic-video mix --project work/song --soundfont /path/to/GeneralUser.sf2
 
 # 6. 替え歌動画(単語リストの画像+元歌詞/替え歌字幕)

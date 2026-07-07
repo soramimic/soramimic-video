@@ -64,6 +64,24 @@ def render_midi(midi_path: Path, wav_path: Path, soundfont: str | None) -> Path:
     return wav_path
 
 
+def resolve_accompaniment(
+    project: Project, work: Path, soundfont: str | None
+) -> Path:
+    """伴奏wavを用意する。
+
+    音源プロジェクト(analyze-audio)は分離済みの伴奏wavをそのまま使い、
+    MIDIプロジェクトはメロディ消音MIDIをfluidsynthでレンダリングする。
+    """
+    acc_path = project.song.accompaniment_path
+    if acc_path:
+        acc = Path(acc_path)
+        if not acc.exists():
+            raise RuntimeError(f"分離済み伴奏がありません({acc})")
+        return acc
+    acc_mid = make_accompaniment_midi(project, work / "accompaniment.mid")
+    return render_midi(acc_mid, work / "accompaniment.wav", soundfont)
+
+
 def mix(
     project: Project,
     project_dir: Path,
@@ -80,8 +98,7 @@ def mix(
 
     work = project_dir / MIX_DIR
     work.mkdir(parents=True, exist_ok=True)
-    acc_mid = make_accompaniment_midi(project, work / "accompaniment.mid")
-    acc_wav = render_midi(acc_mid, work / "accompaniment.wav", soundfont)
+    acc_wav = resolve_accompaniment(project, work, soundfont)
 
     out = work / "song.wav"
     cmd = [

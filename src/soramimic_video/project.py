@@ -17,7 +17,7 @@ SCHEMA_VERSION = 1
 
 @dataclass
 class SongInfo:
-    midi_path: str
+    midi_path: str  # 音源プロジェクト(analyze-audio)では空文字
     ticks_per_beat: int
     melody_channel: int | None = None  # $Lyrcヘッダの値(1始まり)。無ければ自動判定
     time_offset: int = 0
@@ -25,6 +25,10 @@ class SongInfo:
     tempo_map: list[list[int]] = field(default_factory=list)  # [tick, us/beat]
     # [tick, 分子, 分母]
     time_signatures: list[list[int]] = field(default_factory=lambda: [[0, 4, 4]])
+    # analyze-audio(歌唱音源入力)のとき設定される
+    audio_path: str | None = None  # 入力音源
+    vocals_path: str | None = None  # demucs分離後のボーカル
+    accompaniment_path: str | None = None  # demucs分離後の伴奏(mixで使用)
 
 
 @dataclass
