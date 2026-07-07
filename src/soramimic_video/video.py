@@ -224,30 +224,35 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Parody,{font},{int(height * 0.065)},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.12)},1
-Style: Original,{font},{int(height * 0.042)},&H00B8B8B8,&H000000FF,&H00202020,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.045)},1
+Style: Parody,{font},{int(height * 0.065)},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.13)},1
+Style: Original,{font},{int(height * 0.042)},&H00B8B8B8,&H000000FF,&H00202020,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.055)},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     parody_lines = {pl.line_id: pl for pl in project.parody.lines} if project.parody else {}
-    events = []
-    for i, line in enumerate(project.lines):
-        if not line.note_ids:
-            continue
+    # 先に全行の表示区間を決め、前後の行と重ならないようにする。
+    # 同時に表示される字幕があるとASSレンダラの衝突回避が働いて
+    # 字幕が上に積み上がり、行の切り替わりで位置が跳ねるため
+    shown = [line for line in project.lines if line.note_ids]
+    spans = []
+    for line in shown:
         start, end = project.line_time_range(line)
-        start -= SUB_PAD_SEC
-        end += SUB_PAD_SEC
-        # 次の行と重ならないように詰める
-        if i + 1 < len(project.lines) and project.lines[i + 1].note_ids:
-            next_start, _ = project.line_time_range(project.lines[i + 1])
-            end = min(end, next_start - SUB_PAD_SEC / 2)
+        spans.append([start - SUB_PAD_SEC, end + SUB_PAD_SEC])
+    for j in range(len(spans) - 1):
+        spans[j][1] = min(spans[j][1], spans[j + 1][0])
+        spans[j][1] = max(spans[j][1], spans[j][0] + 0.2)  # 行の重なりが極端でも一瞬は出す
+        spans[j + 1][0] = max(spans[j + 1][0], spans[j][1])
 
+    events = []
+    for line, (start, end) in zip(shown, spans, strict=True):
         pline = parody_lines.get(line.id)
+        # レイヤーを分けておくと、万一区間が重なっても替え歌(上段)と
+        # 元歌詞(下段)が衝突回避で入れ替わらない(衝突判定は同一レイヤー内のみ)
         if pline and pline.words:
             parody_text = "  ".join(w.surface for w in pline.words)
             events.append(
-                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Parody,,0,0,0,,"
+                f"Dialogue: 1,{_ass_time(start)},{_ass_time(end)},Parody,,0,0,0,,"
                 f"{_ass_escape(parody_text)}"
             )
         original_text = line.original_text or line.xf_surface

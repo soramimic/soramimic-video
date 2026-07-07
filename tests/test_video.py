@@ -49,6 +49,30 @@ def test_build_ass(tmp_path: Path):
     assert ass.count("Dialogue:") == 2
     assert "静" in ass
     assert "沈むように" in ass
+    # 替え歌=レイヤー1 / 元歌詞=レイヤー0 で衝突回避の対象にならない
+    assert any(ln.startswith("Dialogue: 1,") and ",Parody," in ln for ln in ass.splitlines())
+    assert any(ln.startswith("Dialogue: 0,") and ",Original," in ln for ln in ass.splitlines())
+
+
+def test_build_ass_layers_and_no_overlap(tmp_path: Path):
+    # 2行の歌唱区間が近接していても、表示区間は重ならない(位置が跳ねる原因)
+    midi = build_xf_midi(
+        tmp_path / "song2.mid",
+        notes=[(480, 240, 60), (720, 240, 62), (960, 240, 64), (1200, 240, 65)],
+        lyric_events=[(480, "沈[し"), (720, "ず]"), (960, "/溶[と"), (1200, "け]")],
+    )
+    project = analyze_midi(midi)
+    ass = build_ass(project, 1280, 720, "Font")
+    dialogues = [ln for ln in ass.splitlines() if ln.startswith("Dialogue:")]
+    # 替え歌はレイヤー1、元歌詞はレイヤー0(衝突回避で上下が入れ替わらないように)
+    assert all(ln.split(",")[0] == "Dialogue: 0" for ln in dialogues if ",Original," in ln)
+    spans = []
+    for ln in dialogues:
+        parts = ln.split(",")
+        spans.append((parts[1], parts[2], parts[3]))
+    starts = sorted({s for s, _, _ in spans})
+    ends = sorted({e for _, e, _ in spans})
+    assert ends[0] <= starts[1]  # 1行目の終了 <= 2行目の開始
 
 
 def test_build_ass_escapes_braces(tmp_path: Path):

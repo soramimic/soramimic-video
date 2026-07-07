@@ -66,6 +66,9 @@
   <label>歌声モデル</label>
   <input type="text" id="model" list="model-list" value="MERROW">
   <datalist id="model-list"></datalist>
+  <label>移調(半音)</label>
+  <input type="text" id="transpose" value="0" inputmode="numeric">
+  <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
   <label>単語リスト(editor JSONがないときは必須)</label>
   <input type="text" id="wordlist" placeholder="例: stations">
 </fieldset>
@@ -172,6 +175,7 @@ $("submit").addEventListener("click", async () => {
   if ($("editor").files[0]) form.append("editor", $("editor").files[0]);
   form.append("lyrics", $("lyrics").value);
   form.append("model", $("model").value);
+  form.append("transpose", $("transpose").value.trim() || "0");
   form.append("wordlist", $("wordlist").value);
   $("submit").disabled = true;
   $("result").hidden = true;

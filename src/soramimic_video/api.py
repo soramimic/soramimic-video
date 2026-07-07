@@ -155,7 +155,11 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
     with _stage(job, "synthesize"):
         synthesize(
-            project, d, model=job.params["model"], threads=config.get("threads", 4)
+            project,
+            d,
+            model=job.params["model"],
+            threads=config.get("threads", 4),
+            transpose=job.params.get("transpose", 0),
         )
     with _stage(job, "mix"):
         mix(project, d, soundfont=config.get("soundfont"))
@@ -337,6 +341,7 @@ def create_app(
         editor: UploadFile | None = None,
         lyrics: str = Form(""),
         model: str = Form("MERROW"),
+        transpose: int = Form(0),
         wordlist: str = Form(""),
         where: str = Form(""),
     ) -> dict[str, Any]:
@@ -359,6 +364,7 @@ def create_app(
             )
         params = {
             "model": model.strip() or "MERROW",
+            "transpose": transpose,
             "wordlist": wordlist.strip(),
             "where": where.strip(),
             "parody_source": "editor" if editor_bytes else "convert",

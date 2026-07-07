@@ -99,6 +99,7 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         project,
         Path(args.project),
         model=args.model,
+        transpose=args.transpose,
         dry_run=args.dry_run,
     )
     if wav:
@@ -204,6 +205,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("synthesize", help="NEUTRINOで替え歌を歌唱合成する")
     p.add_argument("--project", required=True)
     p.add_argument("--model", default="MERROW", help="NEUTRINOの歌声モデル名")
+    p.add_argument(
+        "--transpose", type=int, default=0, help="半音単位の移調(-12で1オクターブ下)"
+    )
     p.add_argument("--dry-run", action="store_true", help="コマンドを表示するだけ")
     p.set_defaults(func=cmd_synthesize)
 

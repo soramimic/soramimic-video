@@ -53,8 +53,10 @@ def _measure_boundaries(time_signatures: list[list[int]], end_tick: int,
     return bounds
 
 
-def build_musicxml(project: Project, lyric_map: dict[int, str]) -> str:
-    """lyric_map: note_id -> 歌唱カナ。"""
+def build_musicxml(
+    project: Project, lyric_map: dict[int, str], transpose: int = 0
+) -> str:
+    """lyric_map: note_id -> 歌唱カナ。transpose: 半音単位の移調(-12で1オクターブ下)。"""
     tpb = project.song.ticks_per_beat
 
     # 音符列(重なりは後勝ちでクリップ)+ 休符で埋めた区間列を作る
@@ -171,12 +173,13 @@ def build_musicxml(project: Project, lyric_map: dict[int, str]) -> str:
             if seg.midi_note is None:
                 ET.SubElement(note_el, "rest")
             else:
-                step, alter = _STEPS[seg.midi_note % 12]
+                midi_note = seg.midi_note + transpose
+                step, alter = _STEPS[midi_note % 12]
                 pitch = ET.SubElement(note_el, "pitch")
                 ET.SubElement(pitch, "step").text = step
                 if alter:
                     ET.SubElement(pitch, "alter").text = str(alter)
-                ET.SubElement(pitch, "octave").text = str(seg.midi_note // 12 - 1)
+                ET.SubElement(pitch, "octave").text = str(midi_note // 12 - 1)
             ET.SubElement(note_el, "duration").text = str(seg.end - seg.start)
             if seg.tie in ("start", "continue"):
                 ET.SubElement(note_el, "tie", type="start")

@@ -38,13 +38,15 @@ def synthesize(
     project_dir: Path,
     model: str = "MERROW",
     threads: int = 4,
+    transpose: int = 0,
     dry_run: bool = False,
 ) -> Path | None:
     work_dir = project_dir / NEUTRINO_DIR
     work_dir.mkdir(parents=True, exist_ok=True)
     xml_path = work_dir / "score.musicxml"
     xml_path.write_text(
-        build_musicxml(project, build_lyric_map(project)), encoding="utf-8"
+        build_musicxml(project, build_lyric_map(project), transpose=transpose),
+        encoding="utf-8",
     )
     logger.info("MusicXMLを書き出しました: %s", xml_path)
     return run_neutrino(xml_path, work_dir, model=model, threads=threads, dry_run=dry_run)

@@ -54,6 +54,21 @@ def test_build_musicxml(tmp_path: Path):
     assert xml.count("<text>ム</text>") == 1
 
 
+def test_build_musicxml_transpose(tmp_path: Path):
+    project = _project(tmp_path)
+    xml = build_musicxml(project, {})
+    down = build_musicxml(project, {}, transpose=-12)
+    # 音名は同じままオクターブだけ1つ下がる
+    for line, line_down in zip(xml.splitlines(), down.splitlines(), strict=True):
+        if "<octave>" in line:
+            octave = int(line.strip().removeprefix("<octave>").removesuffix("</octave>"))
+            octave_down = int(
+                line_down.strip().removeprefix("<octave>").removesuffix("</octave>")
+            )
+            assert octave_down == octave - 1
+    assert "<octave>" in xml  # 比較対象が実在すること
+
+
 def test_build_musicxml_tempo(tmp_path: Path):
     project = _project(tmp_path)
     xml = build_musicxml(project, {})
