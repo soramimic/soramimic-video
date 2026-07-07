@@ -39,7 +39,7 @@ def wait_done(client: TestClient, job_id: str, **kw) -> dict:
         res = client.get(f"/api/jobs/{job_id}", **kw)
         assert res.status_code == 200
         body = res.json()
-        if body["status"] in ("done", "error"):
+        if body["status"] in ("done", "error", "canceled"):
             return body
         time.sleep(0.02)
     raise AssertionError("ジョブが終わりません")
@@ -110,6 +110,59 @@ def test_truncate_project():
     api_mod._truncate_project(project, 3.0)
     assert [n.id for n in project.notes] == [0, 1, 2]
     assert [ln.note_ids for ln in project.lines] == [[0, 1], [2]]
+
+
+def test_cancel_running_and_queued(tmp_path, monkeypatch):
+    from soramimic_video import runproc
+
+    def slow_pipeline(job, config):
+        for _ in range(100):
+            time.sleep(0.02)
+            runproc.raise_if_cancelled()
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", slow_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    running = submit(client, editor=b"{}")
+    queued = submit(client, editor=b"{}")
+    time.sleep(0.1)  # 1件目が実行中になるのを待つ
+
+    # 順番待ちのジョブは即座にcanceledになり、実行されない
+    res = client.post(f"/api/jobs/{queued}/cancel")
+    assert res.status_code == 200
+    assert res.json()["status"] == "canceled"
+
+    # 実行中のジョブは中断チェックで止まる
+    client.post(f"/api/jobs/{running}/cancel")
+    body = wait_done(client, running)
+    assert body["status"] == "canceled"
+    assert client.get(f"/api/jobs/{queued}").json()["status"] == "canceled"
+    # 完了済みジョブへのcancelは何もしない
+    assert client.post(f"/api/jobs/{running}/cancel").json()["status"] == "canceled"
+
+
+def test_runproc_kill_current():
+    import threading
+    import time as _time
+
+    from soramimic_video import runproc
+
+    result = {}
+
+    def target():
+        result["proc"] = runproc.run(["sleep", "5"], capture_output=True)
+
+    t = threading.Thread(target=target)
+    started = _time.time()
+    t.start()
+    _time.sleep(0.2)
+    assert runproc.kill_current()
+    t.join(timeout=3)
+    assert not t.is_alive()
+    assert _time.time() - started < 3
+    assert result["proc"].returncode != 0
 
 
 def test_rejects_non_midi(client):

@@ -87,6 +87,7 @@
     <li data-stage="video">動画生成</li>
   </ul>
   <p id="status-line"></p>
+  <button id="cancel" hidden style="background:#dc2626">中断</button>
   <details><summary>ログ</summary><pre id="log"></pre></details>
 </div>
 
@@ -100,6 +101,8 @@ const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
 const headers = () => apiKey() ? { "X-API-Key": apiKey() } : {};
 const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) : url;
 
+let resumed = false;
+
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
@@ -112,19 +115,37 @@ async function loadConfig() {
   if (conf.models && conf.models.length && !conf.models.includes($("model").value)) {
     $("model").value = conf.models[0];
   }
-  loadHistory();
+  const jobs = await loadHistory();
+  // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
+  const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
+  if (active && !resumed) {
+    resumed = true;
+    setBusy(true);
+    $("progress").hidden = false;
+    $("status-line").textContent = "実行中のジョブに再接続しました";
+    watch(active.id);
+  }
 }
 
 async function loadHistory() {
   const res = await fetch("/api/jobs", { headers: headers() });
-  if (!res.ok) return;
+  if (!res.ok) return [];
   const jobs = await res.json();
-  if (!jobs.length) { $("history-body").textContent = "まだありません"; return; }
+  if (!jobs.length) { $("history-body").textContent = "まだありません"; return jobs; }
   $("history-body").innerHTML = "<table><tr><th>ID</th><th>日時</th><th>状態</th><th></th></tr>" +
     jobs.map((j) => `<tr><td>${j.id}</td><td>${j.created_at.replace("T", " ")}</td>` +
       `<td>${j.status}${j.total_seconds ? ` (${Math.round(j.total_seconds)}秒)` : ""}</td>` +
       `<td>${j.video_url ? `<a href="${qs(j.video_url)}">${j.result_kind === "audio" ? "音声" : "動画"}</a>` : ""}</td></tr>`).join("") +
     "</table>";
+  return jobs;
+}
+
+let currentJob = null;
+
+function watch(id) {
+  currentJob = id;
+  $("cancel").hidden = false;
+  poll(id);
 }
 
 function renderStages(job) {
@@ -160,13 +181,21 @@ async function poll(id) {
       ? `<audio controls autoplay style="width:100%" src="${qs(job.video_url)}"></audio>`
       : `<video controls src="${qs(job.video_url)}"></video>` +
         `<p><a href="${qs(job.video_url)}" download>ダウンロード</a></p>`;
-    setBusy(false);
-    loadHistory();
+    finish();
+  } else if (job.status === "canceled") {
+    $("status-line").textContent = "中断しました";
+    finish();
   } else {
     $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
-    setBusy(false);
-    loadHistory();
+    finish();
   }
+}
+
+function finish() {
+  $("cancel").hidden = true;
+  currentJob = null;
+  setBusy(false);
+  loadHistory();
 }
 
 function setBusy(busy) {
@@ -194,7 +223,7 @@ async function submitJob(previewSec) {
     const res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
-    poll(body.id);
+    watch(body.id);
   } catch (err) {
     $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
     setBusy(false);
@@ -203,6 +232,16 @@ async function submitJob(previewSec) {
 
 $("submit").addEventListener("click", () => submitJob(0));
 $("preview").addEventListener("click", () => submitJob(20));
+$("cancel").addEventListener("click", async () => {
+  if (!currentJob) return;
+  $("cancel").disabled = true;
+  try {
+    await fetch(`/api/jobs/${currentJob}/cancel`, { method: "POST", headers: headers() });
+  } finally {
+    $("cancel").disabled = false;
+  }
+  // 状態遷移はpollが拾う
+});
 
 $("api-key").addEventListener("change", loadConfig);
 if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");

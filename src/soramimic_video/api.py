@@ -34,6 +34,8 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
+from . import runproc
+
 logger = logging.getLogger(__name__)
 
 API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
@@ -73,7 +75,7 @@ class Job:
     id: str
     dir: Path
     params: dict[str, Any]
-    status: str = "queued"  # queued / running / done / error
+    status: str = "queued"  # queued / running / done / canceled / error
     stage: str | None = None
     stages: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
@@ -83,6 +85,7 @@ class Job:
     stage_started_at: float | None = None
     log: deque[str] = field(default_factory=lambda: deque(maxlen=200))
     video: Path | None = None
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def to_dict(self, with_log: bool = True) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -203,6 +206,8 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
 @contextmanager
 def _stage(job: Job, name: str):
+    if job.cancel_event.is_set():
+        raise runproc.Cancelled()
     job.stage = name
     job.stage_started_at = time.time()
     logger.info("[job %s] ステージ開始: %s", job.id, name)
@@ -289,23 +294,53 @@ class JobManager:
             json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
         )
 
+    def cancel(self, job_id: str) -> Job:
+        job = self.get(job_id)
+        if job.status not in ("queued", "running"):
+            return job
+        job.cancel_event.set()
+        if job.status == "running":
+            # 実行中のNEUTRINO/ffmpeg等をプロセスグループごと止める。
+            # ワーカーは1本なので、実行中プロセス=このジョブのもの
+            runproc.kill_current()
+        else:
+            job.status = "canceled"
+            self._save(job)
+        return job
+
     def _loop(self) -> None:
         while True:
             job = self._queue.get()
+            if job.cancel_event.is_set():
+                job.status = "canceled"
+                self._save(job)
+                continue
             handler = _JobLogHandler(job)
             logging.getLogger("soramimic_video").addHandler(handler)
             job.status = "running"
             job.started_at = time.time()
+            runproc.set_cancel_check(job.cancel_event.is_set)
             self._save(job)
             try:
                 job.video = run_pipeline(job, self.config)
+                if job.cancel_event.is_set():
+                    raise runproc.Cancelled()
                 job.status = "done"
+            except runproc.Cancelled:
+                job.status = "canceled"
+                logger.info("[job %s] 中断されました", job.id)
             except Exception as exc:  # noqa: BLE001 - ジョブ失敗はAPI応答に載せる
-                job.status = "error"
-                job.error = str(exc)
-                job.log.append(traceback.format_exc())
-                logger.exception("[job %s] 失敗", job.id)
+                if job.cancel_event.is_set():
+                    # 中断でプロセスをkillした結果のエラーは「中断」として扱う
+                    job.status = "canceled"
+                    logger.info("[job %s] 中断されました", job.id)
+                else:
+                    job.status = "error"
+                    job.error = str(exc)
+                    job.log.append(traceback.format_exc())
+                    logger.exception("[job %s] 失敗", job.id)
             finally:
+                runproc.set_cancel_check(None)
                 job.stage = None
                 job.finished_at = time.time()
                 logging.getLogger("soramimic_video").removeHandler(handler)
@@ -412,6 +447,10 @@ def create_app(
     @app.get("/api/jobs/{job_id}", dependencies=[Depends(_require_api_key)])
     def get_job(job_id: str) -> dict[str, Any]:
         return manager.get(job_id).to_dict()
+
+    @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(_require_api_key)])
+    def cancel_job(job_id: str) -> dict[str, Any]:
+        return manager.cancel(job_id).to_dict(with_log=False)
 
     @app.get("/api/jobs/{job_id}/video", dependencies=[Depends(_require_api_key)])
     def get_video(job_id: str) -> FileResponse:

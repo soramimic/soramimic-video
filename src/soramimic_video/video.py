@@ -16,12 +16,12 @@ import hashlib
 import logging
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import requests
 
+from . import runproc
 from .mix import MIX_DIR
 from .project import ParodyWord, Project
 from .synthesize import NEUTRINO_DIR
@@ -35,7 +35,7 @@ SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
 
 
 def _run(cmd: list[str], what: str) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = runproc.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"{what}が失敗しました:\n{proc.stderr[-2000:]}")
 
@@ -140,6 +140,7 @@ def build_image_cues(
     )
     norm = work / "frames"
     for i, (start, end, w) in enumerate(words):
+        runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = w.wordlist_row["image"]  # type: ignore[index]
         raw = download_image(url, cache)
         if raw is None:

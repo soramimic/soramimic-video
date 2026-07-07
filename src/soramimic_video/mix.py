@@ -9,11 +9,11 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import mido
 
+from . import runproc
 from .project import Project
 from .synthesize import NEUTRINO_DIR
 
@@ -58,7 +58,7 @@ def render_midi(midi_path: Path, wav_path: Path, soundfont: str | None) -> Path:
         )
     cmd = [fluidsynth, "-ni", "-g", "1.0", "-F", str(wav_path), "-r", "44100",
            str(sf), str(midi_path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = runproc.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0 or not wav_path.exists():
         raise RuntimeError(f"fluidsynthが失敗しました:\n{proc.stderr[-2000:]}")
     return wav_path
@@ -112,7 +112,7 @@ def mix(
         "-map", "[out]",
         str(out),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = runproc.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpegミックスが失敗しました:\n{proc.stderr[-2000:]}")
     return out

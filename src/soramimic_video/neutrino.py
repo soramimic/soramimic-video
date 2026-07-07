@@ -15,8 +15,9 @@ import json
 import logging
 import os
 import shlex
-import subprocess
 from pathlib import Path
+
+from . import runproc
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def run_neutrino(
             env[var] = f"{root / 'bin'}:{env.get(var, '')}"
     for c in commands:
         logger.info("実行: %s", c)
-        proc = subprocess.run(
+        proc = runproc.run(
             shlex.split(c),
             cwd=root,  # NEUTRINOのバイナリは相対パス(settings等)に依存することがある
             env=env,

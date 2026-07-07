@@ -14,10 +14,10 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import runproc
 from .kana import split_fine_moras
 from .project import Parody, ParodyLine, ParodyWord, Project
 
@@ -76,7 +76,7 @@ def run_bridge(phrases: list[str], wordlist_csv: Path, where: str | None,
         },
         ensure_ascii=False,
     )
-    proc = subprocess.run(
+    proc = runproc.run(
         [node, str(script)],
         input=payload.encode("utf-8"),
         capture_output=True,
