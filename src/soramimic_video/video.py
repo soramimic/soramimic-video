@@ -54,6 +54,17 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
     name = hashlib.sha1(url.encode()).hexdigest()[:16]
     for p in cache_dir.glob(f"{name}.*"):
         return p
+    # ローカルパス / file:// はコピーで取り込む(生成・ローカル単語リスト用)
+    local = url[7:] if url.startswith("file://") else url
+    if "://" not in local:
+        src = Path(local).expanduser()
+        if not src.exists():
+            logger.warning("画像が見つかりません: %s", url)
+            return None
+        ext = src.suffix.lstrip(".").lower() or "img"
+        path = cache_dir / f"{name}.{ext}"
+        path.write_bytes(src.read_bytes())
+        return path
     fetch_url = url
     if "Special:FilePath" in url and "?" not in url:
         fetch_url = url + "?width=1200"  # フル解像度は不要なのでサムネイルをもらう
