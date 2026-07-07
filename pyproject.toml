@@ -19,6 +19,20 @@ api = [
     "uvicorn>=0.29",
     "python-multipart>=0.0.9",
 ]
+# analyze-audio(歌唱音源入力)用の重い依存。uv sync --extra audio で入れる
+audio = [
+    "demucs>=4.0",
+    "torch>=2.1",
+    "torchaudio>=2.1",
+    "torchcodec>=0.2",  # 新しめのtorchaudioは音声保存をtorchcodecに委譲する(要ffmpeg)
+    "transformers>=4.40",
+    "librosa>=0.10",
+    "faster-whisper>=1.0",
+    "mecab-python3>=1.0",
+    "unidic-lite>=1.0",
+    "soramimic-yomi",
+    "numpy>=1.24",
+]
 
 [project.scripts]
 soramimic-video = "soramimic_video.cli:main"
@@ -31,6 +45,10 @@ dev = [
     "types-requests",
     # APIのテスト(fastapi TestClient)用
     "httpx>=0.27",
+    # audio系の純ロジック(pitch/reading)のテスト用。モデル系依存はaudio extraのみ
+    "numpy>=1.24",
+    "mecab-python3>=1.0",
+    "unidic-lite>=1.0",
 ]
 
 [build-system]
@@ -60,3 +78,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv.sources]
+soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi" }

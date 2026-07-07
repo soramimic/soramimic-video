@@ -276,6 +276,12 @@ def apply_converted_lines(
                 word.get("pronunciation"), word.get("originalkana", ""),
             )
             note_kana = [k or "ー" for k in note_kana]
+            if note_idx and all(k == "ー" for k in note_kana):
+                logger.warning(
+                    "行%d: 単語 %r の歌唱カナがすべて継続(ー)になりました"
+                    "(直前の母音を伸ばすだけで単語として聞こえません)",
+                    line.id, word["surface"],
+                )
             if not note_idx:
                 logger.warning(
                     "行%d: 単語 %r を音符に対応づけられずスキップ", line.id, word["surface"]
