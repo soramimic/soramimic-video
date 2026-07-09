@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
+from collections.abc import Callable
 from pathlib import Path
 
 from . import runproc
@@ -22,6 +24,19 @@ from . import runproc
 logger = logging.getLogger(__name__)
 
 COMMANDS_FILENAME = "commands.json"
+
+# NEUTRINO(v3.2 Tau)のneutrinoバイナリは合成中、標準出力に \r で上書きしながら
+#   「    progress = 42 % (18.1 / 43.2 sec)」
+# のような進捗行を出す。ここから割合を取り出す。
+_PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+)\s*%")
+
+
+def parse_progress(line: str) -> float | None:
+    """NEUTRINOの進捗行から進捗割合(0.0〜1.0)を取り出す。該当しなければ None。"""
+    m = _PROGRESS_RE.search(line)
+    if m is None:
+        return None
+    return max(0.0, min(1.0, int(m.group(1)) / 100.0))
 
 # NEUTRINO v3.2系(Tau) Run.sh 相当。プレースホルダは format() で展開される
 DEFAULT_COMMANDS = [
@@ -63,8 +78,13 @@ def run_neutrino(
     model: str = "MERROW",
     threads: int = 4,
     dry_run: bool = False,
+    progress_cb: Callable[[float], None] | None = None,
 ) -> Path | None:
-    """MusicXMLから歌唱wavを合成して work_dir/vocal.wav を返す。"""
+    """MusicXMLから歌唱wavを合成して work_dir/vocal.wav を返す。
+
+    progress_cb を渡すと、NEUTRINOの進捗出力をパースして割合(0.0〜1.0)を
+    その都度コールバックする。出力に進捗が無いバージョンでは呼ばれない。
+    """
     root = None if dry_run else neutrino_root()
     work_dir.mkdir(parents=True, exist_ok=True)
     # 実行時はcwdをNEUTRINO_ROOTにするため、パスはすべて絶対にする
@@ -96,6 +116,13 @@ def run_neutrino(
         # macOSはDYLD_、LinuxはLD_を見るので両方設定しておく
         for var in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
             env[var] = f"{root / 'bin'}:{env.get(var, '')}"
+    on_stdout = None
+    if progress_cb is not None:
+        def on_stdout(line: str) -> None:
+            frac = parse_progress(line)
+            if frac is not None:
+                progress_cb(frac)
+
     for c in commands:
         logger.info("実行: %s", c)
         proc = runproc.run(
@@ -105,6 +132,7 @@ def run_neutrino(
             capture_output=True,
             text=True,
             check=False,
+            on_stdout=on_stdout,
         )
         if proc.returncode != 0:
             raise RuntimeError(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from .kana import split_moras
@@ -40,6 +41,7 @@ def synthesize(
     threads: int = 4,
     transpose: int = 0,
     dry_run: bool = False,
+    progress_cb: Callable[[float], None] | None = None,
 ) -> Path | None:
     work_dir = project_dir / NEUTRINO_DIR
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -49,4 +51,11 @@ def synthesize(
         encoding="utf-8",
     )
     logger.info("MusicXMLを書き出しました: %s", xml_path)
-    return run_neutrino(xml_path, work_dir, model=model, threads=threads, dry_run=dry_run)
+    return run_neutrino(
+        xml_path,
+        work_dir,
+        model=model,
+        threads=threads,
+        dry_run=dry_run,
+        progress_cb=progress_cb,
+    )

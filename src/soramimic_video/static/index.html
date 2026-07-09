@@ -177,6 +177,16 @@ const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
 const headers = () => apiKey() ? { "X-API-Key": apiKey() } : {};
 const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) : url;
 
+// 秒数を「30秒」「1分30秒」のように整形する(残り時間の目安の表示用)
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec >= 60) {
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return s ? `${m}分${s}秒` : `${m}分`;
+  }
+  return `${sec}秒`;
+}
+
 let resumed = false;
 
 async function loadConfig() {
@@ -246,8 +256,15 @@ async function poll(id) {
   renderStages(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
   if (job.status === "running") {
-    $("status-line").textContent =
-      `実行中: ${job.stage || "…"}` + (job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "");
+    if (job.stage === "synthesize" && job.stage_progress != null) {
+      let line = `歌唱合成 ${job.stage_progress}%`;
+      if (job.stage_eta_seconds != null) line += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
+      else if (job.stage_elapsed) line += ` (${Math.round(job.stage_elapsed)}秒経過)`;
+      $("status-line").textContent = line;
+    } else {
+      $("status-line").textContent =
+        `実行中: ${job.stage || "…"}` + (job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "");
+    }
     setTimeout(() => poll(id), 2000);
   } else if (job.status === "queued") {
     $("status-line").textContent = "順番待ち…";
