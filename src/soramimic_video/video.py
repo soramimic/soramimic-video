@@ -32,6 +32,7 @@ from .layout import (
     _font,
     load_layout,
     render_frame,
+    render_idle_frame,
     resolve_font_path,
 )
 from .mix import MIX_DIR
@@ -132,6 +133,16 @@ def word_frame_data(word: ParodyWord, row: dict) -> dict:
     }
 
 
+def idle_frame_data(project: Project) -> dict:
+    """idle(歌唱なし区間)フレームのテンプレートに渡すプロジェクトレベルの情報。
+
+    単語データはないので、曲(入力MIDIのファイル名)と単語リスト名だけを渡す。
+    """
+    title = Path(project.song.midi_path).stem if project.song.midi_path else ""
+    wordlist = project.parody.wordlist if project.parody else ""
+    return {"title": title, "wordlist": wordlist}
+
+
 def word_is_shown(layout: Layout, data: dict, use_fallback: bool) -> bool:
     """このレイアウトでこの単語に表示できるもの(画像 or テキスト)があるか。
 
@@ -188,9 +199,18 @@ def build_image_cues(
         frame = render_frame(layout, raw, data, width, height, norm, use_fallback)
         if frame is None:
             continue
-        # 次の単語まで表示を持続(上限あり)
-        next_start = words[i + 1][0] if i + 1 < len(words) else end + HOLD_MAX_SEC
-        show_end = min(max(end, next_start), end + HOLD_MAX_SEC)
+        # 次の単語まで表示を持続。既定は最大 HOLD_MAX_SEC 秒。
+        # layout.hold_next(="hold":"next")なら隙間を直前フレームで埋め続ける。
+        # 最終単語より後(後奏)は hold_next でも持続させず idle/黒に任せる
+        if i + 1 < len(words):
+            next_start = words[i + 1][0]
+            show_end = (
+                max(end, next_start)
+                if layout.hold_next
+                else min(max(end, next_start), end + HOLD_MAX_SEC)
+            )
+        else:
+            show_end = end if layout.hold_next else end + HOLD_MAX_SEC
         if cues and cues[-1].end > start:
             cues[-1].end = start
         cues.append(ImageCue(start=start, end=show_end, frame=frame))
@@ -205,19 +225,27 @@ def build_image_cues(
 
 
 def write_slideshow(
-    cues: list[ImageCue], work: Path, width: int, height: int, total_sec: float
+    cues: list[ImageCue],
+    work: Path,
+    width: int,
+    height: int,
+    total_sec: float,
+    idle_frame: Path | None = None,
 ) -> Path:
-    """concatデマルチプレクサでスライドショー動画を作る。"""
-    black = _black_frame(work / "frames", width, height)
+    """concatデマルチプレクサでスライドショー動画を作る。
+
+    歌唱がない隙間(前奏・間奏・後奏)は idle_frame があればそれで、なければ黒で埋める。
+    """
+    fill = idle_frame or _black_frame(work / "frames", width, height)
     entries: list[tuple[Path, float]] = []
     cursor = 0.0
     for cue in cues:
         if cue.start > cursor:
-            entries.append((black, cue.start - cursor))
+            entries.append((fill, cue.start - cursor))
         entries.append((cue.frame, cue.end - cue.start))
         cursor = cue.end
     if total_sec > cursor:
-        entries.append((black, total_sec - cursor))
+        entries.append((fill, total_sec - cursor))
 
     lines = ["ffconcat version 1.0"]
     for path, dur in entries:
@@ -487,7 +515,11 @@ def make_video(
 
     cues, credits = build_image_cues(project, work, width, height, image_cache, layout_obj)
     logger.info("画像キュー: %d件", len(cues))
-    slideshow = write_slideshow(cues, work, width, height, total_sec)
+    # 歌唱がない区間(前奏・間奏・後奏)用のidleフレーム(定義があるときだけ)
+    idle_frame = render_idle_frame(
+        layout_obj, idle_frame_data(project), width, height, work / "frames"
+    )
+    slideshow = write_slideshow(cues, work, width, height, total_sec, idle_frame)
 
     ass_path = work / "subtitles.ass"
     ass_path.write_text(build_ass(project, width, height, font, layout_obj), encoding="utf-8")

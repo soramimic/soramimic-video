@@ -36,6 +36,26 @@
 - 各要素の require: "列名" を指定すると、その列が空の単語では要素を出さない。
   「行はあるが一部の列だけ欠ける」(没年不明など)ケースに使え、fallbackとは
   独立に効く(通常側・fallback側どちらの要素にも書ける)
+
+歌唱がない区間(前奏・間奏・後奏)の表示は次の2つで指定できる(任意・opt-in):
+
+    {
+      "hold": "next",
+      "idle": [
+        {"type": "text", "text": "{title}", "box": [0.1, 0.4, 0.8, 0.2], "size": 0.1},
+        {"type": "text", "text": "単語リスト: {wordlist}", "box": [0.1, 0.62, 0.8, 0.08]}
+      ]
+    }
+
+- "hold": "next" は各単語のフレームを次の歌唱まで表示し続ける(既定の3秒上限
+  HOLD_MAX_SEC を解除する)。省略時は従来どおり最大3秒で idle(なければ黒)に戻る
+- "idle" は歌唱がない区間に出すフレーム(elementsと同じ書式)。単語データはない
+  ので、固定文言か下記のプロジェクトレベルの列だけ {..} で参照できる。subtitle
+  要素は無視される(行タイミングの歌詞が存在しないため)。省略時はその区間は黒画面
+    - title: 入力MIDIのファイル名(拡張子なし。音源プロジェクトでは空)
+    - wordlist: 使用した単語リスト名
+- hold と idle を併用した場合、単語と単語の間の隙間は hold(直前フレーム)が、
+  先頭(1単語目より前)と末尾(最終単語より後)は idle が受け持つ
 """
 
 from __future__ import annotations
@@ -129,11 +149,35 @@ def _require_met(el: ImageElement | TextElement, values: dict) -> bool:
     return bool(str(values.get(el.require) or "").strip())
 
 
+def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> list[str]:
+    """要素列のtextテンプレートを埋めた文字列(要素順)。imageは含まない。
+
+    require 列が空の要素は空文字にする(描画側でスキップされる)。
+    """
+    values = _SafeDict({k: v for k, v in data.items() if v is not None})
+    out = []
+    for el in elements:
+        if isinstance(el, TextElement):
+            if not _require_met(el, values):
+                out.append("")
+                continue
+            try:
+                out.append(el.template.format_map(values).strip())
+            except (ValueError, IndexError, KeyError):
+                # {0} や {a[b]} など format_map で解決できない指定は原文のまま
+                out.append(el.template)
+    return out
+
+
 @dataclass
 class Layout:
     elements: list[ImageElement | TextElement]
     subtitles: list[SubtitleElement] = field(default_factory=list)
     fallback: list[ImageElement | TextElement] = field(default_factory=list)
+    # 歌唱がない区間(前奏・間奏・後奏)に出す固定フレームの要素(空なら黒画面)
+    idle: list[ImageElement | TextElement] = field(default_factory=list)
+    # "hold": "next" で単語フレームを次の歌唱まで持続する(3秒上限を外す)
+    hold_next: bool = False
     background: str = "black"
     font: str | None = None
     raw: dict = field(default_factory=dict)  # フレームキャッシュのキー用に元JSONを保持
@@ -143,23 +187,8 @@ class Layout:
         return self.fallback if (use_fallback and self.fallback) else self.elements
 
     def render_texts(self, data: dict, use_fallback: bool = False) -> list[str]:
-        """text要素のテンプレートを埋めた文字列(要素順)。imageは含まない。
-
-        require 列が空の要素は空文字にする(描画側でスキップされる)。
-        """
-        values = _SafeDict({k: v for k, v in data.items() if v is not None})
-        out = []
-        for el in self.active_elements(use_fallback):
-            if isinstance(el, TextElement):
-                if not _require_met(el, values):
-                    out.append("")
-                    continue
-                try:
-                    out.append(el.template.format_map(values).strip())
-                except (ValueError, IndexError, KeyError):
-                    # {0} や {a[b]} など format_map で解決できない指定は原文のまま
-                    out.append(el.template)
-        return out
+        """text要素のテンプレートを埋めた文字列(要素順)。imageは含まない。"""
+        return _element_texts(self.active_elements(use_fallback), data)
 
 
 def builtin_layout_names() -> list[str]:
@@ -243,10 +272,14 @@ def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
     # fallback(未知語用)の要素。字幕は行タイミングなので通常側と共通で使い、
     # fallback側に書かれた subtitle は無視する
     fallback, _ = _parse_elements(raw.get("fallback", []), origin)
+    # idle(歌唱なし区間用)の要素。単語も行タイミングもないので subtitle は無視する
+    idle, _ = _parse_elements(raw.get("idle", []), origin)
     return Layout(
         elements=elements,
         subtitles=subtitles,
         fallback=fallback,
+        idle=idle,
+        hold_next=raw.get("hold") == "next",
         background=raw.get("background", "black"),
         font=raw.get("font"),
         raw=raw,
@@ -400,14 +433,14 @@ def _render_canvas(
     data: dict,
     width: int,
     height: int,
-    use_fallback: bool = False,
+    elements: list[ImageElement | TextElement],
+    texts: list[str],
 ) -> Image.Image:
     canvas = Image.new("RGB", (width, height), layout.background)
     font_path = resolve_font_path(layout.font)
     values = _SafeDict({k: v for k, v in data.items() if v is not None})
-    texts = layout.render_texts(data, use_fallback)
     ti = 0
-    for el in layout.active_elements(use_fallback):
+    for el in elements:
         if isinstance(el, ImageElement):
             if image_path is not None and _require_met(el, values):
                 try:
@@ -422,6 +455,47 @@ def _render_canvas(
     return canvas
 
 
+def _render_to_cache(
+    layout: Layout,
+    image_path: Path | None,
+    data: dict,
+    width: int,
+    height: int,
+    out_dir: Path,
+    elements: list[ImageElement | TextElement],
+    texts: list[str],
+    raw_elements: list,
+    tag: str,
+) -> Path:
+    """要素列とテンプレート展開済みテキストからフレームPNGを合成(同内容なら再利用)。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    values = _SafeDict({k: v for k, v in data.items() if v is not None})
+    # 実際に描く側(通常/fallback/idle)の要素だけをキャッシュキーに使う。
+    # subtitle要素はASS側で描くので内容に影響しない(除外)。require が
+    # 満たされない要素も描かれないので除外し、画像のrequireも取りこぼさない
+    raw_visual = {
+        **layout.raw,
+        "elements": [
+            e
+            for e in raw_elements
+            if e.get("type") != "subtitle"
+            and (not e.get("require") or str(values.get(e["require"]) or "").strip())
+        ],
+    }
+    key = hashlib.sha1(
+        json.dumps(
+            [tag, raw_visual, image_path.name if image_path else "", texts, width, height],
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:16]
+    out = out_dir / f"frame_{key}.png"
+    if out.exists():
+        return out
+    _render_canvas(layout, image_path, data, width, height, elements, texts).save(out)
+    return out
+
+
 def render_frame(
     layout: Layout,
     image_path: Path | None,
@@ -432,33 +506,29 @@ def render_frame(
     use_fallback: bool = False,
 ) -> Path | None:
     """レイアウトに従いフレームPNGを合成して返す(同内容なら既存を再利用)。"""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    elements = layout.active_elements(use_fallback)
     texts = layout.render_texts(data, use_fallback)
-    values = _SafeDict({k: v for k, v in data.items() if v is not None})
-    # 実際に描く側(通常 or fallback)の要素だけをキャッシュキーに使う。
-    # subtitle要素はASS側で描くので内容に影響しない(除外)。require が
-    # 満たされない要素も描かれないので除外し、画像のrequireも取りこぼさない
     raw_key = "fallback" if (use_fallback and layout.fallback) else "elements"
-    raw_visual = {
-        **layout.raw,
-        "elements": [
-            e
-            for e in layout.raw.get(raw_key, [])
-            if e.get("type") != "subtitle"
-            and (not e.get("require") or str(values.get(e["require"]) or "").strip())
-        ],
-    }
-    key = hashlib.sha1(
-        json.dumps(
-            [raw_visual, image_path.name if image_path else "", texts, width, height],
-            ensure_ascii=False,
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()[:16]
-    out = out_dir / f"frame_{key}.png"
-    if out.exists():
-        return out
-    _render_canvas(layout, image_path, data, width, height, use_fallback).save(out)
-    return out
+    return _render_to_cache(
+        layout, image_path, data, width, height, out_dir,
+        elements, texts, layout.raw.get(raw_key, []), tag=raw_key,
+    )
+
+
+def render_idle_frame(
+    layout: Layout, data: dict, width: int, height: int, out_dir: Path
+) -> Path | None:
+    """歌唱なし区間(前奏・間奏・後奏)に出す idle フレームPNG。
+
+    idle要素がなければ None(呼び出し側は黒画面のまま)。単語画像はないので
+    image要素を書いても描かれない(プロジェクトレベルの固定文言向け)。
+    """
+    if not layout.idle:
+        return None
+    texts = _element_texts(layout.idle, data)
+    return _render_to_cache(
+        layout, None, data, width, height, out_dir,
+        layout.idle, texts, layout.raw.get("idle", []), tag="idle",
+    )
 
 
