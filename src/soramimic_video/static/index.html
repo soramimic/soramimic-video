@@ -102,6 +102,21 @@
   <label>editorの書き出しJSON(推奨)</label>
   <input type="file" id="editor" accept=".json">
   <p class="hint">soramimicエディタで編集→「書き出し」したファイル。なしの場合は下の単語リストで自動変換します。</p>
+  <div id="editor-embed-controls" hidden>
+    <button type="button" id="open-editor">✏️ この場でeditor編集(MIDI+単語リストから)</button>
+    <p class="hint">MIDIと単語リストから替え歌に変換し、その場のエディタで編集できます。
+      「取り込んで閉じる」で上のJSON欄に反映され、そのまま動画生成に使えます。</p>
+    <span id="open-editor-msg" class="error"></span>
+  </div>
+  <div id="editor-frame-wrap" hidden style="margin-top:.8rem">
+    <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.4rem">
+      <button type="button" id="editor-import">編集内容を取り込んで閉じる</button>
+      <button type="button" id="editor-close" style="background:#64748b">閉じる(取り込まない)</button>
+      <span class="hint">編集はエディタ内で自動保存されます。</span>
+    </div>
+    <iframe id="editor-frame" title="soramimic editor"
+      style="width:100%; height:72vh; border:1px solid #8884; border-radius:8px"></iframe>
+  </div>
   <label>元歌詞(任意・字幕用)</label>
   <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
 </fieldset>
@@ -226,6 +241,7 @@ async function loadConfig() {
   }
   $("layout-list").innerHTML = (conf.layouts || [])
     .map((l) => `<option value="${l}">`).join("");
+  $("editor-embed-controls").hidden = !conf.editor;
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
   const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
@@ -1014,6 +1030,64 @@ $("layout-json").addEventListener("change", () => {
     leMsg("JSONが不正: " + err.message);
   }
 });
+
+// ---- 同梱editorの埋め込み(A-2): MIDI+単語リスト→変換→iframeで編集→取り込み ----
+// 同一オリジンのiframeなので sessionStorage を親子で共有できる。シードを書いて
+// から /editor/editor.html を開くと editor がそれを読んで編集を開始する。
+const EDITOR_KEY = "soramimic-editor";
+
+async function openEditor() {
+  const midi = $("midi").files[0];
+  const wl = $("wordlist").value.trim();
+  const msg = $("open-editor-msg");
+  msg.textContent = "";
+  if (!midi) { msg.textContent = "MIDIファイルを選んでください"; return; }
+  if (!wl) { msg.textContent = "単語リストを入力してください"; return; }
+  const form = new FormData();
+  form.append("midi", midi);
+  form.append("lyrics", $("lyrics").value);
+  form.append("wordlist", wl);
+  const btn = $("open-editor");
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "変換中…";
+  try {
+    const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    sessionStorage.setItem(EDITOR_KEY, JSON.stringify(body));
+    $("editor-frame").src = "/editor/editor.html";
+    $("editor-frame-wrap").hidden = false;
+    $("editor-frame-wrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (err) {
+    msg.textContent = "編集の準備に失敗しました: " + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+function importEditor() {
+  const raw = sessionStorage.getItem(EDITOR_KEY);
+  if (!raw) { alert("編集データがありません"); return; }
+  const file = new File([raw], "editor.json", { type: "application/json" });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  // 既存のファイルアップロード経路(create_job / #11のキュープレビュー)を
+  // そのまま使えるよう、editorファイル入力に流し込んで change を発火する。
+  $("editor").files = dt.files;
+  $("editor").dispatchEvent(new Event("change", { bubbles: true }));
+  closeEditor();
+}
+
+function closeEditor() {
+  $("editor-frame-wrap").hidden = true;
+  $("editor-frame").src = "about:blank";
+}
+
+$("open-editor").addEventListener("click", openEditor);
+$("editor-import").addEventListener("click", importEditor);
+$("editor-close").addEventListener("click", closeEditor);
 
 $("api-key").addEventListener("change", loadConfig);
 if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");

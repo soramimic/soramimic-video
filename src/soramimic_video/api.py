@@ -37,6 +37,7 @@ from urllib.parse import urlencode
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import runproc, synth_estimate
 from .layout import LAYOUTS_DIR, builtin_layout_names, load_layout, parse_layout
@@ -45,6 +46,10 @@ logger = logging.getLogger(__name__)
 
 API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 STATIC_DIR = Path(__file__).parent / "static"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# soramimic editor(submodule)のビルド出力。scripts/build-editor.sh で生成する。
+# /editor/ にマウントして同一オリジン配信し、WebUIからiframeで埋め込む(A-2)。
+DEFAULT_EDITOR_DIST = REPO_ROOT / "external" / "soramimic" / "frontend" / "dist"
 STATUS_FILENAME = "status.json"
 THROUGHPUT_FILENAME = "synthesize-throughput.json"
 DEFAULT_SOUNDFONTS = ("/usr/share/sounds/sf2/FluidR3_GM.sf2",)
@@ -474,6 +479,7 @@ def create_app(
     font: str | None = None,
     threads: int = 4,
     layout: str | None = None,
+    editor_dist: Path | None = None,
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     config = {
@@ -497,6 +503,11 @@ def create_app(
     )
     app.state.manager = manager
 
+    # editorの静的ビルド(scripts/build-editor.sh の出力)があれば /editor/ で配信する。
+    # 無くてもサーバーは起動する(WebUIはeditor連携ボタンを隠すだけ)。
+    editor_root = (editor_dist or DEFAULT_EDITOR_DIST).resolve()
+    editor_available = (editor_root / "editor.html").is_file()
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -514,6 +525,7 @@ def create_app(
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "host": platform.node(),
             "layouts": builtin_layout_names(),
+            "editor": editor_available,
         }
 
     @app.get("/api/layouts/{name}", dependencies=[Depends(_require_api_key)])
@@ -740,6 +752,116 @@ def create_app(
             )
         return FileResponse(
             job.video, media_type="video/mp4", filename=f"soramimic_{job.id}.mp4"
+        )
+
+    # ---- 同梱editor(/editor/)向けの配信・シード(A-2) ----
+    # 以下のルートは StaticFiles マウントより前に登録して優先させる
+    # (単語リストは submodule内のダミーではなく external/soramimic-wordlists の
+    #  正データを、kuromoji辞書は Content-Encoding を付けず素のバイナリで返す)。
+
+    @app.get("/editor/wordlists/{name}.csv")
+    def editor_wordlist(name: str) -> FileResponse:
+        """editorのDB構築(buildDatabase)が取りに来る単語リストCSVを返す。
+
+        editor JSONの wordlist.filepath = "wordlists/<stem>.csv" が
+        /editor/wordlists/<stem>.csv に解決される。実体は
+        external/soramimic-wordlists の該当CSV。
+        """
+        from .convert import resolve_wordlist
+
+        if not re.fullmatch(r"[\w-]+", name):
+            raise HTTPException(status_code=404, detail="単語リストが見つかりません")
+        try:
+            path = resolve_wordlist(name)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="単語リストが見つかりません"
+            ) from exc
+        return FileResponse(path, media_type="text/csv")
+
+    @app.get("/editor/kuromoji/dict/{name}")
+    def editor_kuromoji_dict(name: str) -> FileResponse:
+        """kuromojiの辞書(.dat.gz)を素のバイナリで返す。
+
+        kuromoji自身が gzip 解凍するので、Content-Encoding: gzip を付けると
+        ブラウザが二重解凍して壊れる。octet-stream + no-transform で配る
+        (vite の serveDictAsBinary プラグインと同じ扱い)。
+        """
+        if not editor_available or not re.fullmatch(r"[\w.-]+", name):
+            raise HTTPException(status_code=404, detail="辞書が見つかりません")
+        path = editor_root / "kuromoji" / "dict" / name
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="辞書が見つかりません")
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-transform"},
+        )
+
+    @app.post("/api/editor-session", dependencies=[Depends(_require_api_key)])
+    async def editor_session(
+        midi: UploadFile,
+        lyrics: str = Form(""),
+        wordlist: str = Form(""),
+        where: str = Form(""),
+    ) -> dict[str, Any]:
+        """MIDI+単語リストから変換済みeditorセッションJSONを組んで返す。
+
+        WebUIがこれを sessionStorage["soramimic-editor"] に書いてから
+        /editor/editor.html を iframe で開くと、そのまま編集を始められる。
+        run_pipeline の analyze→convert 段を同期・ジョブ無しで実行する。
+        """
+        import tempfile
+
+        from .align import align_lines
+        from .convert import convert_project, resolve_wordlist
+        from .editor_io import export_editor, save_raw
+        from .xfparse import analyze_midi
+
+        midi_bytes = await midi.read()
+        if not midi_bytes.startswith(b"MThd"):
+            raise HTTPException(status_code=400, detail="MIDIファイルではありません")
+        if not wordlist.strip():
+            raise HTTPException(
+                status_code=422, detail="単語リスト名(wordlist)が必要です"
+            )
+        try:
+            resolve_wordlist(wordlist.strip())
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "input.mid").write_bytes(midi_bytes)
+            try:
+                project = analyze_midi(d / "input.mid")
+            except Exception as exc:  # noqa: BLE001 - 壊れたMIDIは400で返す
+                raise HTTPException(
+                    status_code=400, detail=f"MIDIの解析に失敗しました: {exc}"
+                ) from exc
+            if lyrics.strip():
+                align_lines(project, lyrics.splitlines())
+            try:
+                raw = convert_project(
+                    project,
+                    wordlist=wordlist.strip(),
+                    where=where.strip() or None,
+                    params={},
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            save_raw(raw, d)
+            project.save(d)
+            path = export_editor(project, d)
+            return json.loads(path.read_text(encoding="utf-8"))
+
+    if editor_available:
+        # 上のルートで拾わなかった /editor/* は静的ビルドから配信する。
+        # html=True で /editor/ と /editor/editor.html が引ける。
+        app.mount(
+            "/editor",
+            StaticFiles(directory=editor_root, html=True),
+            name="editor",
         )
 
     return app

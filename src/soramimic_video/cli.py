@@ -205,6 +205,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         font=args.font,
         threads=args.threads,
         layout=args.layout,
+        editor_dist=Path(args.editor_dist) if args.editor_dist else None,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
@@ -346,6 +347,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--font", help="字幕フォント名(既定はOSに応じて選択)")
     p.add_argument("--threads", type=int, default=4, help="NEUTRINOのスレッド数")
     p.add_argument("--layout", help="フレームレイアウト(組み込み名かJSONパス)")
+    p.add_argument(
+        "--editor-dist",
+        help="同梱editorの静的ビルド出力(既定は external/soramimic/frontend/dist)。"
+        "scripts/build-editor.sh で生成する",
+    )
     p.set_defaults(func=cmd_serve)
 
     return parser

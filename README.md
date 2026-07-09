@@ -59,6 +59,34 @@ uv run soramimic-video mix --project work/song --soundfont /path/to/GeneralUser.
 uv run soramimic-video video --project work/song --layout caption
 ```
 
+## Web UI(APIサーバー)で使う
+
+ローカル/自宅サーバーでAPIサーバーを立て、ブラウザから投入・進捗確認・動画取得ができる。
+
+```sh
+uv run soramimic-video serve            # http://127.0.0.1:8300/
+```
+
+MIDIと単語リスト(または editor の書き出しJSON)を入れて「動画を生成」するだけ。
+`SORAMIMIC_VIDEO_API_KEY` を設定すると全APIで `X-API-Key` を必須にできる(LAN外公開時)。
+
+### soramimic editor を同梱して画面内で替え歌を編集する(任意)
+
+soramimic の編集ツール(submodule `external/soramimic/frontend`)を静的ビルドして
+同梱すると、Web UI から「この場でeditor編集」ボタンで替え歌変換 → その場の
+エディタ(iframe)で単語の差し替え・再生成 → 「取り込んで閉じる」で編集結果を
+そのまま動画生成に使える(JSONの手動書き出し・アップロードが不要になる)。
+
+```sh
+scripts/build-editor.sh                 # external/soramimic/frontend/dist を生成
+uv run soramimic-video serve            # dist があれば自動で /editor/ に同梱配信
+```
+
+ビルドには Node が必要(`scripts/build-editor.sh` が `npm ci` と
+`vite build --base=/editor/` を実行する)。dist を別の場所に置く場合は
+`serve --editor-dist <path>` で指定する。dist が無ければボタンは表示されず、
+従来どおり editor の書き出しJSONをファイルアップロードして使える。
+
 ## ブラウザ+Colabで使う(ローカル環境不要)
 
 1. [soramimic.com](https://soramimic.com) で「MIDIから取り込み」→ 変換 → 編集ツールで調整 → 「書き出し」(JSON)
