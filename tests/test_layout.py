@@ -88,6 +88,72 @@ def test_render_frame_text_only(tmp_path):
     assert out is not None and out.exists()
 
 
+def test_default_layout_has_fallback():
+    # 既定レイアウトには未知語用のfallbackがある(elementsは画像のみのまま)
+    layout = load_layout(None)
+    assert len(layout.elements) == 1
+    assert layout.fallback
+    assert layout.render_texts({"surface": "未知語", "original": "元"}, use_fallback=True) == [
+        "未知語",
+        "(元)",
+    ]
+
+
+def test_fallback_elements_selected(tmp_path):
+    p = tmp_path / "fb.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{achievement}", "box": [0.1, 0.1, 0.8, 0.1]}],
+        "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    data = {"surface": "未知語", "achievement": ""}
+    # 通常側: achievementが空なので空文字
+    assert layout.render_texts(data) == [""]
+    # fallback側: 単語フィールドで埋まる
+    assert layout.render_texts(data, use_fallback=True) == ["未知語"]
+    # fallback定義がなければ use_fallback でも通常側を使う(従来動作を維持)
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+    }), encoding="utf-8")
+    assert load_layout(str(plain)).render_texts({"surface": "x"}, use_fallback=True) == ["x"]
+
+
+def test_require_hides_element_when_column_empty(tmp_path):
+    p = tmp_path / "req.json"
+    p.write_text(json.dumps({
+        "elements": [
+            {"type": "text", "text": "{original}", "box": [0.1, 0.1, 0.8, 0.1]},
+            {"type": "text", "text": "没年 {death}", "box": [0.1, 0.3, 0.8, 0.1],
+             "require": "death"},
+        ],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert layout.elements[1].require == "death"
+    # deathがある単語は両方出る
+    assert layout.render_texts({"original": "X", "death": "1900"}) == ["X", "没年 1900"]
+    # deathが空/欠けている単語ではrequire要素は空文字(描画側でスキップ)
+    assert layout.render_texts({"original": "X"}) == ["X", ""]
+    assert layout.render_texts({"original": "X", "death": ""}) == ["X", ""]
+
+
+def test_render_frame_fallback(tmp_path):
+    p = tmp_path / "fb.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "image", "box": [0, 0, 1, 0.7]}],
+        "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2],
+                      "size": 0.1}],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    data = {"surface": "未知語", "original": "元"}
+    # fallback側(画像なし)でもフレームが出る
+    out = render_frame(layout, None, data, 320, 180, tmp_path / "f", use_fallback=True)
+    assert out is not None and out.exists()
+    # 通常側と別キャッシュになる(別の要素集合)
+    normal = render_frame(layout, None, data, 320, 180, tmp_path / "f", use_fallback=False)
+    assert normal != out
+
+
 def test_render_frame_wrap_long_text(tmp_path):
     p = tmp_path / "wrap.json"
     p.write_text(json.dumps({

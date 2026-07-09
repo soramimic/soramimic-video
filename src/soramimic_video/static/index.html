@@ -68,6 +68,9 @@
   }
   .le-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; align-items: center; }
   .le-toolbar button { font-size: .8rem; padding: .3rem .7rem; background: #64748b; }
+  .le-tabs { display: flex; gap: .3rem; margin-top: .5rem; }
+  .le-tabs button { font-size: .8rem; padding: .3rem .9rem; background: #334155; opacity: .6; }
+  .le-tabs button.active { background: #2563eb; opacity: 1; }
   #le-msg { font-size: .8rem; color: #dc2626; }
   #le-props { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin-top: .5rem; }
   #le-props label { margin: 0; font-weight: 400; font-size: .75rem; }
@@ -122,6 +125,10 @@
       <button type="button" id="le-export">エクスポート</button>
       <span id="le-msg"></span>
     </div>
+    <div class="le-tabs">
+      <button type="button" id="le-tab-elements" class="active">通常</button>
+      <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
+    </div>
     <div id="le-canvas">
       <div id="le-guide-v" class="le-guide" hidden></div>
       <div id="le-guide-h" class="le-guide" hidden></div>
@@ -132,7 +139,10 @@
       右下の角でリサイズ、クリックで選択して文言・サイズ・色を変更。
       選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
       本番と同じく、枠に収まらない文字は自動で縮小されます。
-      編集した内容はジョブ投入時にレイアウト名より優先で使われます。</p>
+      編集した内容はジョブ投入時にレイアウト名より優先で使われます。
+      「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
+      列({achievement}など)は空になるので{surface}/{original}だけで組みます
+      (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。</p>
     <details><summary>JSON</summary>
       <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
     </details>
@@ -320,6 +330,24 @@ let leSelected = -1;
 let leDrag = null;
 let leColumns = [];    // 単語リストの列名({列名}挿入プルダウン用)
 let leSample = null;   // 単語リストの代表行(WYSIWYG表示のサンプルデータ)
+let leSide = "elements";  // 編集中の側: "elements"(通常) / "fallback"(未知語用)
+
+// 編集中の側の要素配列(なければ作らずに空を返す)
+function leEls() {
+  if (!leLayout) return [];
+  return leLayout[leSide] || [];
+}
+
+// 現在の側で背景に薄く見せる字幕ゴースト(字幕は通常側と共通で編集する)。
+// 通常側: subtitle要素があればそれ、なければ既定字幕。
+// 未知語側: 通常側の字幕(なければ既定字幕)をプレビューだけ表示(ここでは編集しない)
+function leGhostSubs() {
+  if (leSide === "fallback") {
+    const ns = ((leLayout && leLayout.elements) || []).filter((e) => e.type === "subtitle");
+    return ns.length ? ns : LE_DEFAULT_SUBS;
+  }
+  return leEls().some((e) => e.type === "subtitle") ? [] : LE_DEFAULT_SUBS;
+}
 
 async function leFetchColumns() {
   const wl = encodeURIComponent($("wordlist").value.trim());
@@ -347,7 +375,22 @@ function leToJson() {
   $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
 }
 
+// 替え歌単語フィールドのサンプル(未知語には行がないのでこれだけ埋まる)
+const LE_WORD_FIELDS = {
+  surface: "替え歌単語", original: "元の単語", kana: "カエウタタンゴ",
+  original_surface: "元の単語", originalkana: "モトノタンゴ",
+};
+
 function leSampleData() {
+  if (leSide === "fallback") {
+    // 未知語(単語リストにない単語)は行がないので、単語フィールドだけ埋め、
+    // 列参照({achievement}など)は空にする
+    const row = {};
+    for (const k of Object.keys(LE_WORD_FIELDS)) {
+      row[k] = (leSample && leSample[k]) || LE_WORD_FIELDS[k];
+    }
+    return row;
+  }
   const row = (leSample && Object.keys(leSample).length) ? leSample
     : { surface: "替え歌単語", original: "元の単語" };
   return row;
@@ -362,7 +405,8 @@ function leFill(tpl) {
 // フォントの縮小・折返しはサーバー描画の近似(正確な見た目は「サーバー描画で確認」)
 function leContent(e) {
   if (e.type === "image") {
-    if (leSample && leSample.image) {
+    // 未知語(fallback)は行がないので画像もない → プレースホルダ表示
+    if (leSide !== "fallback" && leSample && leSample.image) {
       const img = document.createElement("img");
       img.className = "le-content";
       img.draggable = false;
@@ -496,10 +540,10 @@ function leRender() {
     canvas.appendChild(div);
     leFitText(div);
   };
-  const elements = leLayout.elements || [];
+  const elements = leEls();
   elements.forEach(mount);
-  // subtitle要素がなければ既定の字幕位置をゴースト表示(動かすには「字幕追加」)
-  if (!elements.some((e) => e.type === "subtitle")) LE_DEFAULT_SUBS.forEach((e) => mount(e, -1));
+  // 字幕ゴースト(既定字幕 or 通常側の字幕)を薄く表示。動かすには「字幕追加」
+  leGhostSubs().forEach((e) => mount(e, -1));
 }
 
 function leSelect(i) {
@@ -514,7 +558,7 @@ function leRenderProps() {
   panel.hidden = leSelected < 0;
   panel.innerHTML = "";
   if (leSelected < 0) return;
-  const e = leLayout.elements[leSelected];
+  const e = leEls()[leSelected];
   const commit = () => { leToJson(); leRender(); };
   const add = (labelText, input) => {
     const label = document.createElement("label");
@@ -551,6 +595,18 @@ function leRenderProps() {
     inp.addEventListener("change", () => { e[key] = inp.checked; commit(); });
     return inp;
   };
+  // 表示条件: 選んだ列が空の単語ではこの要素を隠す(require)
+  const requireField = () => {
+    const sel = document.createElement("select");
+    sel.innerHTML = '<option value="">(なし・常に表示)</option>' +
+      leColumns.map((c) => `<option value="${c}"${c === e.require ? " selected" : ""}>${c}</option>`)
+        .join("");
+    sel.addEventListener("change", () => {
+      if (sel.value) e.require = sel.value; else delete e.require;
+      commit();
+    });
+    return sel;
+  };
   if (e.type === "text") {
     const textInp = textInput("text", "", 28);
     add("文言({列名}が使える)", textInp);
@@ -571,6 +627,9 @@ function leRenderProps() {
     add("揃え", select("align", ["left", "center", "right"], "center"));
     add("縦揃え", select("valign", ["top", "middle", "bottom"], "middle"));
     add("折返し", checkbox("wrap"));
+    add("表示条件(空の列なら隠す)", requireField());
+  } else if (e.type === "image") {
+    add("表示条件(空の列なら隠す)", requireField());
   } else if (e.type === "subtitle") {
     add("種類", select("source", ["parody", "original"], "parody"));
     add("サイズ", numInput("size", 0.05));
@@ -586,11 +645,13 @@ $("le-canvas").addEventListener("pointerdown", (ev) => {
   if (!box) { leSelect(-1); return; }
   let i;
   if (box.dataset.index === undefined) {
+    // 未知語側の字幕ゴーストは通常側と共通なので、ここでは編集させない
+    if (leSide === "fallback") { leSelect(-1); return; }
     // 既定字幕のゴースト: まとめて実要素化してから掴んだ方を選択する
     // (片方だけ要素化すると、もう片方の既定字幕が動画から消えてしまうため)
     const ghosts = [...$("le-canvas").querySelectorAll(".le-box.ghost")];
-    i = leLayout.elements.length + ghosts.indexOf(box);
-    leLayout.elements.push(...ghosts.map((g) => JSON.parse(g.dataset.ghost)));
+    i = leEls().length + ghosts.indexOf(box);
+    leEls().push(...ghosts.map((g) => JSON.parse(g.dataset.ghost)));
     leToJson();
   } else {
     i = Number(box.dataset.index);
@@ -599,7 +660,7 @@ $("le-canvas").addEventListener("pointerdown", (ev) => {
   leDrag = {
     i, resize: ev.target.classList.contains("le-handle"),
     startX: ev.clientX, startY: ev.clientY,
-    box: [...leLayout.elements[i].box],
+    box: [...leEls()[i].box],
     rect: $("le-canvas").getBoundingClientRect(),
     div: $("le-canvas").querySelector(`.le-box[data-index="${i}"]`),
   };
@@ -615,9 +676,9 @@ function leSnapTargets(excludeIndex) {
     xs.push(x, x + w / 2, x + w);
     ys.push(y, y + h / 2, y + h);
   };
-  const elements = leLayout.elements || [];
+  const elements = leEls();
   elements.forEach((e, i) => { if (i !== excludeIndex) collect(e); });
-  if (!elements.some((e) => e.type === "subtitle")) LE_DEFAULT_SUBS.forEach(collect);
+  leGhostSubs().forEach(collect);
   return { xs, ys };
 }
 
@@ -647,7 +708,7 @@ $("le-canvas").addEventListener("pointermove", (ev) => {
   const { i, resize, startX, startY, box, rect, div } = leDrag;
   const dx = (ev.clientX - startX) / rect.width;
   const dy = (ev.clientY - startY) / rect.height;
-  const e = leLayout.elements[i];
+  const e = leEls()[i];
   const thX = 8 / rect.width, thY = 8 / rect.height;  // 8px以内で吸着
   const { xs, ys } = leSnapTargets(i);
   let guideX = null, guideY = null;
@@ -684,9 +745,10 @@ $("le-canvas").addEventListener("pointermove", (ev) => {
 
 function leAdd(el) {
   if (!leLayout) leLayout = { background: "black", elements: [] };
-  leLayout.elements.push(el);
+  if (!leLayout[leSide]) leLayout[leSide] = [];
+  leLayout[leSide].push(el);
   leToJson();
-  leSelect(leLayout.elements.length - 1);
+  leSelect(leLayout[leSide].length - 1);
 }
 
 $("le-add-text").addEventListener("click", () => leAdd(
@@ -699,10 +761,22 @@ $("le-add-image").addEventListener("click", () => leAdd(
 
 $("le-delete").addEventListener("click", () => {
   if (leSelected < 0) return;
-  leLayout.elements.splice(leSelected, 1);
+  leEls().splice(leSelected, 1);
   leToJson();
   leSelect(-1);
 });
+
+// 通常 / 未知語用(fallback)の編集切り替え
+function leSetSide(side) {
+  leSide = side;
+  $("le-tab-elements").classList.toggle("active", side === "elements");
+  $("le-tab-fallback").classList.toggle("active", side === "fallback");
+  // 字幕は行タイミングなので通常側で共通。未知語側では字幕を足せない
+  $("le-add-subtitle").disabled = side === "fallback";
+  leSelect(-1);
+}
+$("le-tab-elements").addEventListener("click", () => leSetSide("elements"));
+$("le-tab-fallback").addEventListener("click", () => leSetSide("fallback"));
 
 // 編集中のレイアウトをJSONファイルとして保存(CLIの --layout にそのまま使える)
 $("le-export").addEventListener("click", () => {
@@ -723,10 +797,10 @@ document.addEventListener("keydown", (ev) => {
   if (!$("le-details").open || !leLayout || leSelected < 0) return;
   const t = ev.target;
   if (t && ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
-  const e = leLayout.elements[leSelected];
+  const e = leEls()[leSelected];
   if (ev.key === "Delete" || ev.key === "Backspace") {  // Macのdelete=Backspace
     ev.preventDefault();
-    leLayout.elements.splice(leSelected, 1);
+    leEls().splice(leSelected, 1);
     leToJson();
     leSelect(-1);
     return;
@@ -752,7 +826,7 @@ async function leLoad() {
   leLayout = await res.json();
   leMsg("");
   leToJson();
-  leSelect(-1);
+  leSetSide("elements");
   return true;
 }
 $("layout-load").addEventListener("click", leLoad);
@@ -780,7 +854,7 @@ $("layout-json").addEventListener("change", () => {
   try {
     leLayout = $("layout-json").value.trim() ? JSON.parse($("layout-json").value) : null;
     leMsg("");
-    leSelect(-1);
+    leSetSide("elements");
   } catch (err) {
     leMsg("JSONが不正: " + err.message);
   }
