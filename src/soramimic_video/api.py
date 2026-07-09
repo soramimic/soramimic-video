@@ -378,9 +378,16 @@ class JobManager:
     def _save(self, job: Job) -> None:
         data = job.to_dict(with_log=False)
         if job.video:
-            data["video"] = job.video.name if job.video.parent == job.dir else str(
-                job.video.relative_to(job.dir)
-            )
+            # job.video が絶対パス・job.dir が相対パスの組み合わせでも落ちない
+            # よう、両方を resolve してから相対化する。ジョブディレクトリ外の
+            # パスはそのまま保存する(_load_existing の
+            # status_path.parent / video は絶対パスもそのまま扱える)。
+            try:
+                data["video"] = str(
+                    job.video.resolve().relative_to(job.dir.resolve())
+                )
+            except ValueError:
+                data["video"] = str(job.video)
         (job.dir / STATUS_FILENAME).write_text(
             json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
         )
@@ -402,40 +409,54 @@ class JobManager:
     def _loop(self) -> None:
         while True:
             job = self._queue.get()
-            if job.cancel_event.is_set():
-                job.status = "canceled"
-                self._save(job)
-                continue
-            handler = _JobLogHandler(job)
-            logging.getLogger("soramimic_video").addHandler(handler)
-            job.status = "running"
-            job.started_at = time.time()
-            runproc.set_cancel_check(job.cancel_event.is_set)
-            self._save(job)
+            # ジョブ1件の例外でワーカースレッドごと死なないよう防御する
+            # (死ぬと以降のジョブが永久にqueuedのままになる)。
             try:
-                job.video = run_pipeline(job, self.config)
-                if job.cancel_event.is_set():
-                    raise runproc.Cancelled()
-                job.status = "done"
-            except runproc.Cancelled:
+                self._run_one(job)
+            except Exception as exc:  # noqa: BLE001 - ワーカー存続を最優先
+                job.status = "error"
+                job.error = job.error or f"ワーカー内部エラー: {exc}"
+                logger.exception("[job %s] ワーカー内部エラー", job.id)
+                try:
+                    self._save(job)
+                except Exception:
+                    logger.exception("[job %s] 状態の保存に失敗", job.id)
+
+    def _run_one(self, job: Job) -> None:
+        if job.cancel_event.is_set():
+            job.status = "canceled"
+            self._save(job)
+            return
+        handler = _JobLogHandler(job)
+        logging.getLogger("soramimic_video").addHandler(handler)
+        job.status = "running"
+        job.started_at = time.time()
+        runproc.set_cancel_check(job.cancel_event.is_set)
+        self._save(job)
+        try:
+            job.video = run_pipeline(job, self.config)
+            if job.cancel_event.is_set():
+                raise runproc.Cancelled()
+            job.status = "done"
+        except runproc.Cancelled:
+            job.status = "canceled"
+            logger.info("[job %s] 中断されました", job.id)
+        except Exception as exc:  # noqa: BLE001 - ジョブ失敗はAPI応答に載せる
+            if job.cancel_event.is_set():
+                # 中断でプロセスをkillした結果のエラーは「中断」として扱う
                 job.status = "canceled"
                 logger.info("[job %s] 中断されました", job.id)
-            except Exception as exc:  # noqa: BLE001 - ジョブ失敗はAPI応答に載せる
-                if job.cancel_event.is_set():
-                    # 中断でプロセスをkillした結果のエラーは「中断」として扱う
-                    job.status = "canceled"
-                    logger.info("[job %s] 中断されました", job.id)
-                else:
-                    job.status = "error"
-                    job.error = str(exc)
-                    job.log.append(traceback.format_exc())
-                    logger.exception("[job %s] 失敗", job.id)
-            finally:
-                runproc.set_cancel_check(None)
-                job.stage = None
-                job.finished_at = time.time()
-                logging.getLogger("soramimic_video").removeHandler(handler)
-                self._save(job)
+            else:
+                job.status = "error"
+                job.error = str(exc)
+                job.log.append(traceback.format_exc())
+                logger.exception("[job %s] 失敗", job.id)
+        finally:
+            runproc.set_cancel_check(None)
+            job.stage = None
+            job.finished_at = time.time()
+            logging.getLogger("soramimic_video").removeHandler(handler)
+            self._save(job)
 
 
 def _require_api_key(request: Request) -> None:
