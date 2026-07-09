@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from .convert import REPO_ROOT, apply_converted_lines, resolve_wordlist
-from .project import Project
+from .layout import Layout
+from .project import ParodyWord, Project
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,87 @@ def export_editor(project: Project, project_dir: Path) -> Path:
     path = project_dir / EDITOR_FILENAME
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return path
+
+
+def _resolve_preview_wordlist(payload: dict, fallback: str | None) -> str | None:
+    """プレビュー用の単語リストを決める。
+
+    editor JSONのwordlist情報(filepath: パスそのもの→リスト名stem)を優先し、
+    だめならフォームのwordlist名にフォールバックする(import_editorと同じ考え方)。
+    どれも解決できなければ None(=単語リスト行なしでプレビュー)。
+    """
+    entry = payload.get("wordlist") or {}
+    filepath = entry.get("filepath", "")
+    candidates: list[str] = []
+    if filepath.endswith(".csv"):
+        candidates += [filepath, Path(filepath).stem]
+    if fallback and fallback.strip():
+        candidates.append(fallback.strip())
+    for cand in candidates:
+        try:
+            resolve_wordlist(cand)
+            return cand
+        except FileNotFoundError:
+            continue
+    return None
+
+
+def build_editor_preview(
+    payload: dict, wordlist: str | None, layout: Layout
+) -> dict[str, Any]:
+    """editor書き出しJSONから、実動画と同じキュー順・フィルタのプレビューデータを作る。
+
+    キューは build_image_cues と同じく「このレイアウトで表示できるものがある
+    替え歌単語」を行順・単語順(=歌唱順)に並べたもの。各キューには単語の
+    data(単語リスト行+替え歌フィールド)・use_fallback・その行の字幕テキスト
+    (替え歌/元歌詞)を持たせる。MIDI(音符)なしでも作れるよう、時間ではなく
+    行・単語の並びでキュー順を決める(実動画でも歌唱順=この並び)。
+    """
+    from .convert import _find_row, _load_wordlist_rows
+    from .video import word_frame_data, word_is_shown
+
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise ValueError("editorの書き出しファイルではありません(resultsが必要)")
+    phrases = payload.get("phrases") or []
+    resolved = _resolve_preview_wordlist(payload, wordlist)
+    rows_by_id: dict[str, list[dict[str, str]]] = {}
+    if resolved is not None:
+        rows_by_id = _load_wordlist_rows(resolve_wordlist(resolved))
+
+    cues: list[dict[str, Any]] = []
+    for i, line_words in enumerate(results):
+        if not isinstance(line_words, list):
+            continue
+        # 字幕は行タイミング。替え歌=全単語のsurfaceを2スペース連結(video.build_ass
+        # と同じ)、元歌詞=元の行(editor JSONはxf_kana=phrasesを持つ)
+        parody_text = "  ".join(w.get("surface", "") for w in line_words)
+        original_text = phrases[i] if i < len(phrases) else ""
+        for w in line_words:
+            row = _find_row(rows_by_id, w) or {}
+            # 単語リストに行がない単語(未知語)はfallback側で描く
+            use_fallback = not row
+            word = ParodyWord(
+                surface=w.get("surface", ""),
+                kana=w.get("kana", ""),
+                original=w.get("original", ""),
+                original_surface=w.get("original_surface", ""),
+                originalkana=w.get("originalkana", ""),
+                note_ids=[],
+            )
+            data = word_frame_data(word, row)
+            if not word_is_shown(layout, data, use_fallback):
+                continue  # このレイアウトでは表示できるものがない単語
+            cues.append(
+                {
+                    "data": data,
+                    "use_fallback": use_fallback,
+                    "image": data.get("image") or "",
+                    "parody_text": parody_text,
+                    "original_text": original_text,
+                }
+            )
+    return {"wordlist": resolved or "", "cues": cues}
 
 
 def import_editor(project: Project, project_dir: Path, file: Path | None = None) -> None:

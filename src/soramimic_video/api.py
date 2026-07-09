@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -547,18 +548,93 @@ def create_app(
             "row": row,
         }
 
+    def _wordlist_image_urls(wordlist: str) -> set[str]:
+        """単語リストのimage列に実在する画像URLの集合(URL指定プロキシの許可リスト)。"""
+        from .convert import resolve_wordlist
+
+        try:
+            with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
+                return {r["image"] for r in csv.DictReader(f) if r.get("image")}
+        except (FileNotFoundError, OSError):
+            return set()
+
     @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
-    def wordlist_image(wordlist: str = "") -> FileResponse:
-        """代表行の画像(レイアウト編集のWYSIWYG表示向け)。"""
+    def wordlist_image(wordlist: str = "", url: str = "") -> FileResponse:
+        """レイアウト編集プレビュー用の画像(WYSIWYG表示向け)。
+
+        url指定時はプレビューのキュー画像を返す。オープンプロキシ化を避けるため、
+        指定した単語リストのimage列に実在するURLだけを取得して返す。
+        url未指定時は代表行(単語リストの最初の画像あり行)の画像。
+        """
         from .video import download_image
 
-        row = _sample_row(wordlist.strip()) if wordlist.strip() else None
-        if not row or not row.get("image"):
-            raise HTTPException(status_code=404, detail="画像のある行がありません")
-        path = download_image(row["image"], jobs_dir.resolve() / "image-cache")
+        if url:
+            if not wordlist.strip() or url not in _wordlist_image_urls(wordlist.strip()):
+                raise HTTPException(status_code=404, detail="画像が見つかりません")
+            target = url
+        else:
+            row = _sample_row(wordlist.strip()) if wordlist.strip() else None
+            if not row or not row.get("image"):
+                raise HTTPException(status_code=404, detail="画像のある行がありません")
+            target = row["image"]
+        path = download_image(target, jobs_dir.resolve() / "image-cache")
         if path is None:
             raise HTTPException(status_code=404, detail="画像を取得できません")
         return FileResponse(path)
+
+    @app.post("/api/editor-preview", dependencies=[Depends(_require_api_key)])
+    async def editor_preview(
+        editor: UploadFile,
+        wordlist: str = Form(""),
+        cue: int = Form(0),
+        layout_json: str = Form(""),
+    ) -> dict[str, Any]:
+        """editor書き出しJSONの変換結果に基づく、キュー1枚ぶんのプレビューデータ。
+
+        レイアウト編集画面のプレビューを、単語リストの代表行1件ではなく実際の
+        変換結果(replaced単語列)で描くための元データ。cueで動画のキュー順に送る。
+        """
+        from .editor_io import build_editor_preview
+
+        raw = await editor.read()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="editorのJSONが読めません") from exc
+        # 編集中のレイアウトがあれば、そのフィルタ・要素でキューを組む(なければ既定)
+        layout_obj = load_layout(None)
+        if layout_json.strip():
+            try:
+                layout_obj = parse_layout(json.loads(layout_json), "layout_json")
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
+                ) from exc
+        try:
+            result = build_editor_preview(payload, wordlist.strip() or None, layout_obj)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cues = result["cues"]
+        total = len(cues)
+        if total == 0:
+            return {"total": 0, "index": 0, "wordlist": result["wordlist"]}
+        index = max(0, min(cue, total - 1))
+        item = cues[index]
+        image_url = ""
+        if item["image"]:
+            image_url = "/api/wordlist-image?" + urlencode(
+                {"wordlist": result["wordlist"], "url": item["image"]}
+            )
+        return {
+            "total": total,
+            "index": index,
+            "wordlist": result["wordlist"],
+            "data": item["data"],
+            "use_fallback": item["use_fallback"],
+            "parody_text": item["parody_text"],
+            "original_text": item["original_text"],
+            "image_url": image_url,
+        }
 
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])
     async def create_job(
