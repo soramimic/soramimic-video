@@ -575,6 +575,8 @@ function leRenderProps() {
     add("種類", select("source", ["parody", "original"], "parody"));
     add("サイズ", numInput("size", 0.05));
     add("色", textInput("color", "white"));
+    add("揃え", select("align", ["left", "center", "right"], "center"));
+    add("縦揃え", select("valign", ["top", "middle", "bottom"], "bottom"));
     add("太字", checkbox("bold"));
   }
 }
