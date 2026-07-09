@@ -71,6 +71,7 @@
   .le-tabs { display: flex; gap: .3rem; margin-top: .5rem; }
   .le-tabs button { font-size: .8rem; padding: .3rem .9rem; background: #334155; opacity: .6; }
   .le-tabs button.active { background: #2563eb; opacity: 1; }
+  .le-idle-opts { font-size: .85rem; margin-top: .2rem; }
   .le-cue-nav { display: flex; gap: .5rem; margin-top: .5rem; align-items: center; }
   .le-cue-nav button { font-size: .8rem; padding: .3rem .7rem; background: #64748b; }
   .le-cue-nav button:disabled { opacity: .4; }
@@ -133,6 +134,16 @@
     <div class="le-tabs">
       <button type="button" id="le-tab-elements" class="active">通常</button>
       <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
+      <button type="button" id="le-tab-idle">歌唱なし区間(前奏・間奏・後奏)</button>
+    </div>
+    <div class="le-idle-opts" id="le-idle-opts" hidden>
+      <label style="display:inline-flex; align-items:center; gap:.4rem; font-weight:400; margin:.5rem 0 0">
+        <input type="checkbox" id="le-hold" style="width:auto">
+        単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
+      </label>
+      <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
+        単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
+        idle要素を1つも置かなければその区間は黒画面のままです。</p>
     </div>
     <div class="le-cue-nav" id="le-cue-nav" hidden>
       <button type="button" id="le-cue-prev">◀ 前</button>
@@ -153,7 +164,8 @@
       編集した内容はジョブ投入時にレイアウト名より優先で使われます。
       「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
       列({achievement}など)は空になるので{surface}/{original}だけで組みます
-      (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。</p>
+      (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。
+      「歌唱なし区間」タブは前奏・間奏・後奏に出す固定フレームの配置です。</p>
     <details><summary>JSON</summary>
       <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
     </details>
@@ -358,7 +370,7 @@ let leSelected = -1;
 let leDrag = null;
 let leColumns = [];    // 単語リストの列名({列名}挿入プルダウン用)
 let leSample = null;   // 単語リストの代表行(WYSIWYG表示のサンプルデータ)
-let leSide = "elements";  // 編集中の側: "elements"(通常) / "fallback"(未知語用)
+let leSide = "elements";  // 編集中の側: "elements"(通常) / "fallback"(未知語用) / "idle"(歌唱なし区間)
 // editor書き出しJSONが選択されているときのプレビュー(動画のキュー順)。
 // null なら従来どおり単語リストの代表行1件でプレビューする
 let leCue = null;      // 現在キューのデータ({data, use_fallback, parody_text, ...})
@@ -375,6 +387,8 @@ function leEls() {
 // 通常側: subtitle要素があればそれ、なければ既定字幕。
 // 未知語側: 通常側の字幕(なければ既定字幕)をプレビューだけ表示(ここでは編集しない)
 function leGhostSubs() {
+  // 歌唱なし区間は行タイミングの字幕が存在しないのでゴーストも出さない
+  if (leSide === "idle") return [];
   if (leSide === "fallback") {
     const ns = ((leLayout && leLayout.elements) || []).filter((e) => e.type === "subtitle");
     return ns.length ? ns : LE_DEFAULT_SUBS;
@@ -426,7 +440,8 @@ async function leFetchCue(index) {
 
 // 「◀ 前 / 次 ▶」とキュー番号表示の更新(editorファイルがあるときだけ出す)
 function leUpdateCueNav() {
-  const active = !!$("editor").files[0];
+  // 歌唱なし区間タブは単語キューと無関係なのでナビを隠す
+  const active = !!$("editor").files[0] && leSide !== "idle";
   $("le-cue-nav").hidden = !active;
   if (!active) return;
   $("le-cue-indicator").textContent =
@@ -455,6 +470,10 @@ const LE_WORD_FIELDS = {
 };
 
 function leSampleData() {
+  // 歌唱なし区間は単語データがなく、プロジェクトレベルの情報だけ使える
+  if (leSide === "idle") {
+    return { title: "曲のタイトル", wordlist: $("wordlist").value.trim() || "単語リスト名" };
+  }
   // editor JSONプレビュー中は、そのキューの実データ(行データ+替え歌フィールド)を使う。
   // 未知語(行なし)のキューは列参照が空のdataなので、そのまま渡せばfallback相当に見える
   if (leCue) return leCue.data;
@@ -484,12 +503,12 @@ function leContent(e) {
     // editor JSONプレビュー中はキューの画像、そうでなければ代表行の画像を出す。
     // 未知語(fallback)は行がないので画像もない → プレースホルダ表示
     let src = null;
-    if (leCue) {
+    if (leCue && leSide !== "idle") {
       // image_urlは同一オリジンのパス。認証ありのときはapi_keyを付ける(既にクエリ有り)
       if (leCue.image_url) {
         src = leCue.image_url + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
       }
-    } else if (leSide !== "fallback" && leSample && leSample.image) {
+    } else if (leSide === "elements" && leSample && leSample.image) {
       src = "/api/wordlist-image?wordlist=" + encodeURIComponent($("wordlist").value.trim());
     }
     if (src) {
@@ -651,6 +670,8 @@ function leRenderProps() {
   panel.innerHTML = "";
   if (leSelected < 0) return;
   const e = leEls()[leSelected];
+  // 挿入できる列: 歌唱なし区間はプロジェクトレベルの情報だけ({列名}挿入・表示条件で共用)
+  const cols = leSide === "idle" ? ["title", "wordlist"] : leColumns;
   const commit = () => { leToJson(); leRender(); };
   const add = (labelText, input) => {
     const label = document.createElement("label");
@@ -691,7 +712,7 @@ function leRenderProps() {
   const requireField = () => {
     const sel = document.createElement("select");
     sel.innerHTML = '<option value="">(なし・常に表示)</option>' +
-      leColumns.map((c) => `<option value="${c}"${c === e.require ? " selected" : ""}>${c}</option>`)
+      cols.map((c) => `<option value="${c}"${c === e.require ? " selected" : ""}>${c}</option>`)
         .join("");
     sel.addEventListener("change", () => {
       if (sel.value) e.require = sel.value; else delete e.require;
@@ -705,7 +726,7 @@ function leRenderProps() {
     // 列名を選ぶと文言に {列名} を挿し込む
     const colSel = document.createElement("select");
     colSel.innerHTML = '<option value="">列名を挿入…</option>' +
-      leColumns.map((c) => `<option value="${c}">${c}</option>`).join("");
+      cols.map((c) => `<option value="${c}">${c}</option>`).join("");
     colSel.addEventListener("change", () => {
       if (!colSel.value) return;
       e.text = (e.text || "") + `{${colSel.value}}`;
@@ -873,17 +894,31 @@ $("le-delete").addEventListener("click", () => {
   leSelect(-1);
 });
 
-// 通常 / 未知語用(fallback)の編集切り替え
+// 通常 / 未知語用(fallback) / 歌唱なし区間(idle)の編集切り替え
 function leSetSide(side) {
   leSide = side;
   $("le-tab-elements").classList.toggle("active", side === "elements");
   $("le-tab-fallback").classList.toggle("active", side === "fallback");
-  // 字幕は行タイミングなので通常側で共通。未知語側では字幕を足せない
-  $("le-add-subtitle").disabled = side === "fallback";
+  $("le-tab-idle").classList.toggle("active", side === "idle");
+  // 字幕は行タイミングなので通常側だけで足せる(未知語・歌唱なし区間では不可)
+  $("le-add-subtitle").disabled = side !== "elements";
+  // 歌唱なし区間には単語画像がないので画像枠は足せない
+  $("le-add-image").disabled = side === "idle";
+  $("le-idle-opts").hidden = side !== "idle";
+  if (side === "idle" && leLayout) $("le-hold").checked = leLayout.hold === "next";
+  leUpdateCueNav();
   leSelect(-1);
 }
 $("le-tab-elements").addEventListener("click", () => leSetSide("elements"));
 $("le-tab-fallback").addEventListener("click", () => leSetSide("fallback"));
+$("le-tab-idle").addEventListener("click", () => leSetSide("idle"));
+
+// hold(直前フレームを次の歌唱まで保持)の切り替え。空/未指定=3秒で idle/黒に戻る
+$("le-hold").addEventListener("change", () => {
+  if (!leLayout) return;
+  if ($("le-hold").checked) leLayout.hold = "next"; else delete leLayout.hold;
+  leToJson();
+});
 
 // 編集中のレイアウトをJSONファイルとして保存(CLIの --layout にそのまま使える)
 $("le-export").addEventListener("click", () => {

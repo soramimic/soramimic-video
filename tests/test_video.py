@@ -5,8 +5,14 @@ from pathlib import Path
 import pytest
 
 from helpers import build_xf_midi
-from soramimic_video.project import Parody, ParodyLine, ParodyWord
-from soramimic_video.video import build_ass, build_image_cues, download_image, write_slideshow
+from soramimic_video.project import Line, Note, Parody, ParodyLine, ParodyWord, Project, SongInfo
+from soramimic_video.video import (
+    ImageCue,
+    build_ass,
+    build_image_cues,
+    download_image,
+    write_slideshow,
+)
 from soramimic_video.xfparse import analyze_midi
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
@@ -279,6 +285,59 @@ def _write(path: Path, obj) -> Path:
 
     path.write_text(json.dumps(obj), encoding="utf-8")
     return path
+
+
+def _two_word_project() -> Project:
+    # 2単語を大きく離して配置(単語0: 0.5〜0.75s / 単語1: 4.5〜4.75s、隙間3.75s)
+    song = SongInfo(midi_path="mysong.mid", ticks_per_beat=480)
+    notes = [
+        Note(0, 60, 0, 240, 0.5, 0.75, 0, "静", "シズ", ""),
+        Note(1, 62, 0, 240, 4.5, 4.75, 1, "山", "ヤマ", ""),
+    ]
+    lines = [Line(0, "", "", [0]), Line(1, "", "", [1])]
+    parody = Parody(wordlist="test", lines=[
+        ParodyLine(0, [ParodyWord("静", "シズ", "", "", "", [0])]),
+        ParodyLine(1, [ParodyWord("山", "ヤマ", "", "", "", [1])]),
+    ])
+    return Project(song=song, notes=notes, lines=lines, parody=parody)
+
+
+def test_hold_next_extends_show_end(tmp_path: Path):
+    project = _two_word_project()
+    els = {"elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.3],
+                         "size": 0.1}]}
+    from soramimic_video.layout import load_layout
+
+    # 既定: 3秒(HOLD_MAX_SEC)で上限。1単語目は3.75s(0.75+3.0)で切れる
+    cap = load_layout(str(_write(tmp_path / "cap.json", els)))
+    cues, _ = build_image_cues(project, tmp_path / "cap", 320, 180, layout=cap)
+    assert len(cues) == 2
+    assert abs(cues[0].end - 3.75) < 0.01
+    assert abs(cues[1].end - 7.75) < 0.01  # 最終単語は end+3.0
+
+    # hold=next: 1単語目は次の歌唱(4.5s)まで持続。最終単語は end 止め(後奏はidle/黒)
+    hold = load_layout(str(_write(tmp_path / "hold.json", {**els, "hold": "next"})))
+    cues_h, _ = build_image_cues(project, tmp_path / "hold", 320, 180, layout=hold)
+    assert abs(cues_h[0].end - 4.5) < 0.01
+    assert abs(cues_h[1].end - 4.75) < 0.01
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_slideshow_idle_fill(tmp_path: Path):
+    from PIL import Image
+
+    work = tmp_path / "video"
+    (work / "frames").mkdir(parents=True)
+    idle = work / "frames" / "idle.png"
+    Image.new("RGB", (320, 180), "navy").save(idle)
+    cue_frame = work / "frames" / "cue.png"
+    Image.new("RGB", (320, 180), "red").save(cue_frame)
+    cues = [ImageCue(start=1.0, end=2.0, frame=cue_frame)]
+    out = write_slideshow(cues, work, 320, 180, total_sec=3.0, idle_frame=idle)
+    txt = (work / "slideshow.txt").read_text(encoding="utf-8")
+    assert "idle.png" in txt  # 前奏(0〜1s)・後奏(2〜3s)がidleで埋まる
+    assert "black_" not in txt  # idle_frame指定時は黒フレームを使わない
+    assert out.exists() and out.stat().st_size > 0
 
 
 def test_download_image_local_path(tmp_path: Path):

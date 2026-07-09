@@ -5,7 +5,7 @@ import json
 import pytest
 from PIL import Image
 
-from soramimic_video.layout import load_layout, render_frame
+from soramimic_video.layout import load_layout, render_frame, render_idle_frame
 
 
 def test_load_builtin_layouts():
@@ -152,6 +152,56 @@ def test_render_frame_fallback(tmp_path):
     # 通常側と別キャッシュになる(別の要素集合)
     normal = render_frame(layout, None, data, 320, 180, tmp_path / "f", use_fallback=False)
     assert normal != out
+
+
+def test_idle_and_hold_parse(tmp_path):
+    # idle セクションと "hold": "next" を読み込む。idle内のsubtitleは無視される
+    p = tmp_path / "idle.json"
+    p.write_text(json.dumps({
+        "hold": "next",
+        "idle": [
+            {"type": "text", "text": "{title}", "box": [0.1, 0.4, 0.8, 0.2]},
+            {"type": "subtitle", "source": "parody", "box": [0, 0, 1, 0.1]},
+        ],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert layout.hold_next is True
+    assert len(layout.idle) == 1  # subtitleはidleでは無視される
+    # hold省略時はhold_next=Falseが既定
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+    }), encoding="utf-8")
+    assert load_layout(str(plain)).hold_next is False
+
+
+def test_render_idle_frame(tmp_path):
+    p = tmp_path / "idle.json"
+    p.write_text(json.dumps({
+        "idle": [
+            {"type": "text", "text": "{title}", "box": [0.1, 0.35, 0.8, 0.2], "size": 0.12},
+            {"type": "text", "text": "単語リスト: {wordlist}", "box": [0.1, 0.6, 0.8, 0.08]},
+        ],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    out = render_idle_frame(layout, {"title": "夜に駆ける", "wordlist": "stations"},
+                            320, 180, tmp_path / "f")
+    assert out is not None and out.exists()
+    with Image.open(out) as frame:
+        assert frame.size == (320, 180)
+    # 同内容はキャッシュを返す / 文言が違えば別フレーム
+    again = render_idle_frame(layout, {"title": "夜に駆ける", "wordlist": "stations"},
+                              320, 180, tmp_path / "f")
+    assert again == out
+    other = render_idle_frame(layout, {"title": "別の曲", "wordlist": "stations"},
+                              320, 180, tmp_path / "f")
+    assert other != out
+
+
+def test_render_idle_frame_absent_is_none(tmp_path):
+    # idleセクションのないレイアウトでは None(呼び出し側は黒画面のまま)
+    layout = load_layout("caption")
+    assert render_idle_frame(layout, {"title": "x"}, 320, 180, tmp_path / "f") is None
 
 
 def test_render_frame_wrap_long_text(tmp_path):
