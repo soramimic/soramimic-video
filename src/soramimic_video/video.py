@@ -124,10 +124,12 @@ def build_image_cues(
         return [], []
     if layout is None:
         layout = load_layout(None)
-    words: list[tuple[float, float, dict]] = []
+    words: list[tuple[float, float, dict, bool]] = []
     for pline in project.parody.lines:
         for w in pline.words:
             row = w.wordlist_row or {}
+            # 単語リストに行がない単語(手入力の未知語など)はfallback側で描く
+            use_fallback = not row
             # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
             data = {
                 **row,
@@ -137,10 +139,10 @@ def build_image_cues(
                 "original_surface": w.original_surface,
                 "originalkana": w.originalkana,
             }
-            if not row.get("image") and not any(layout.render_texts(data)):
+            if not row.get("image") and not any(layout.render_texts(data, use_fallback)):
                 continue  # このレイアウトでは表示できるものがない単語
             start, end = project.word_time_range(w)
-            words.append((start, end, data))
+            words.append((start, end, data, use_fallback))
     words.sort(key=lambda x: x[0])
 
     cues: list[ImageCue] = []
@@ -151,13 +153,13 @@ def build_image_cues(
         os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
     )
     norm = work / "frames"
-    for i, (start, end, data) in enumerate(words):
+    for i, (start, end, data, use_fallback) in enumerate(words):
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
-        if raw is None and not any(layout.render_texts(data)):
+        if raw is None and not any(layout.render_texts(data, use_fallback)):
             continue  # 画像が取れずテキストもないフレームは出さない
-        frame = render_frame(layout, raw, data, width, height, norm)
+        frame = render_frame(layout, raw, data, width, height, norm, use_fallback)
         if frame is None:
             continue
         # 次の単語まで表示を持続(上限あり)

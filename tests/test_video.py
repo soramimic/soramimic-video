@@ -135,6 +135,59 @@ def test_image_cues_and_slideshow(tmp_path: Path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_image_cues_fallback_for_unknown_word(tmp_path: Path):
+    # 単語リストに行がない単語(未知語)は、fallback定義があればフレームが出る
+    import json
+
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words[0].wordlist_row = None  # 行なし = 未知語
+
+    # fallbackなし・画像のみのレイアウトでは表示できずスキップされる
+    plain = tmp_path / "plain.json"
+    plain.write_text(
+        json.dumps({"elements": [{"type": "image", "box": [0, 0, 1, 0.7]}]}), encoding="utf-8"
+    )
+    cues, _ = build_image_cues(project, tmp_path / "v1", 320, 180, layout=load_layout(str(plain)))
+    assert cues == []
+
+    # fallbackありのレイアウトでは未知語のフレームが出る(画像なしでもテキストで表示)
+    fb = tmp_path / "fb.json"
+    fb.write_text(json.dumps({
+        "elements": [{"type": "image", "box": [0, 0, 1, 0.7]}],
+        "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2],
+                      "size": 0.1}],
+    }), encoding="utf-8")
+    cues2, _ = build_image_cues(project, tmp_path / "v2", 320, 180, layout=load_layout(str(fb)))
+    assert len(cues2) == 1
+    assert cues2[0].frame.exists()
+
+
+def test_image_cues_require_skips_empty_column(tmp_path: Path):
+    # requireで、行はあるが列が欠ける単語の要素だけ隠せる。列が全部空+画像なしなら
+    # 表示できずスキップされる
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words[0].wordlist_row = {"death": ""}  # 画像なし・death空
+    layout = load_layout(str(_write(tmp_path / "req.json", {
+        "elements": [
+            {"type": "text", "text": "没年 {death}", "box": [0.1, 0.3, 0.8, 0.2],
+             "require": "death"},
+        ],
+    })))
+    cues, _ = build_image_cues(project, tmp_path / "v", 320, 180, layout=layout)
+    assert cues == []  # require要素が空でテキストが無く、画像もない → スキップ
+
+
+def _write(path: Path, obj) -> Path:
+    import json
+
+    path.write_text(json.dumps(obj), encoding="utf-8")
+    return path
+
+
 def test_download_image_local_path(tmp_path: Path):
     # ローカルパスの画像はコピーで取り込む(生成・ローカル単語リスト用)
     src = tmp_path / "portrait.jpg"

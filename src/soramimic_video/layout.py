@@ -28,6 +28,14 @@
   (逆に元歌詞を消したいときは parody だけ書けばよい)
 - subtitle要素がないレイアウトでは既定の字幕が画面下部約25%に載るので、
   image/text はそこを空けて配置すること
+- fallback: 単語リストに行がない単語(手入力の未知語など)は elements の
+  代わりに fallback の要素で描く。列参照({achievement}など)は空になるので、
+  {surface}/{original} のような替え歌単語フィールドだけで組むとよい。
+  fallback省略時は従来どおり elements を使う(未知語は表示できるものが
+  なければスキップ)。字幕(subtitle)は行タイミングなので通常側で共通
+- 各要素の require: "列名" を指定すると、その列が空の単語では要素を出さない。
+  「行はあるが一部の列だけ欠ける」(没年不明など)ケースに使え、fallbackとは
+  独立に効く(通常側・fallback側どちらの要素にも書ける)
 """
 
 from __future__ import annotations
@@ -79,11 +87,13 @@ class TextElement:
     stroke_width: float = 0.0
     stroke_color: str = "black"
     background: str | None = None  # テキスト背後の帯。"#00000080" のようにα付き可
+    require: str | None = None  # この列が空の単語ではこの要素を出さない
 
 
 @dataclass
 class ImageElement:
     box: tuple[float, float, float, float]
+    require: str | None = None  # この列が空の単語ではこの要素を出さない
 
 
 @dataclass
@@ -108,20 +118,38 @@ DEFAULT_SUBTITLES = [
 ]
 
 
+def _require_met(el: ImageElement | TextElement, values: dict) -> bool:
+    """要素の require 列が埋まっているか(未指定なら常にTrue)。"""
+    if not el.require:
+        return True
+    return bool(str(values.get(el.require) or "").strip())
+
+
 @dataclass
 class Layout:
     elements: list[ImageElement | TextElement]
     subtitles: list[SubtitleElement] = field(default_factory=list)
+    fallback: list[ImageElement | TextElement] = field(default_factory=list)
     background: str = "black"
     font: str | None = None
     raw: dict = field(default_factory=dict)  # フレームキャッシュのキー用に元JSONを保持
 
-    def render_texts(self, data: dict) -> list[str]:
-        """text要素のテンプレートを埋めた文字列(要素順)。imageは含まない。"""
+    def active_elements(self, use_fallback: bool = False) -> list[ImageElement | TextElement]:
+        """描画に使う要素列。未知語(use_fallback)でfallback定義があればそちら。"""
+        return self.fallback if (use_fallback and self.fallback) else self.elements
+
+    def render_texts(self, data: dict, use_fallback: bool = False) -> list[str]:
+        """text要素のテンプレートを埋めた文字列(要素順)。imageは含まない。
+
+        require 列が空の要素は空文字にする(描画側でスキップされる)。
+        """
         values = _SafeDict({k: v for k, v in data.items() if v is not None})
         out = []
-        for el in self.elements:
+        for el in self.active_elements(use_fallback):
             if isinstance(el, TextElement):
+                if not _require_met(el, values):
+                    out.append("")
+                    continue
                 try:
                     out.append(el.template.format_map(values).strip())
                 except (ValueError, IndexError, KeyError):
@@ -152,17 +180,19 @@ def load_layout(name_or_path: str | None) -> Layout:
     return parse_layout(json.loads(path.read_text(encoding="utf-8")), str(path))
 
 
-def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
-    """レイアウトJSON(パース済みdict)を検証してLayoutにする。originはエラー表示用。"""
+def _parse_elements(
+    raw_elements: list, origin: str
+) -> tuple[list[ImageElement | TextElement], list[SubtitleElement]]:
+    """要素配列を (image/text要素, subtitle要素) に分けてパースする。"""
     elements: list[ImageElement | TextElement] = []
     subtitles: list[SubtitleElement] = []
-    for e in raw.get("elements", []):
+    for e in raw_elements:
         box = tuple(float(v) for v in e["box"])
         if len(box) != 4:
             raise ValueError(f"box は [x, y, w, h] の4要素です: {e['box']} ({origin})")
         kind = e.get("type")
         if kind == "image":
-            elements.append(ImageElement(box=box))
+            elements.append(ImageElement(box=box, require=e.get("require")))
         elif kind == "subtitle":
             source = e.get("source")
             if source not in ("parody", "original"):
@@ -193,13 +223,24 @@ def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
                     stroke_width=float(e.get("stroke_width", 0)),
                     stroke_color=e.get("stroke_color", "black"),
                     background=e.get("background"),
+                    require=e.get("require"),
                 )
             )
         else:
             raise ValueError(f"未知のレイアウト要素 type={kind!r} ({origin})")
+    return elements, subtitles
+
+
+def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
+    """レイアウトJSON(パース済みdict)を検証してLayoutにする。originはエラー表示用。"""
+    elements, subtitles = _parse_elements(raw.get("elements", []), origin)
+    # fallback(未知語用)の要素。字幕は行タイミングなので通常側と共通で使い、
+    # fallback側に書かれた subtitle は無視する
+    fallback, _ = _parse_elements(raw.get("fallback", []), origin)
     return Layout(
         elements=elements,
         subtitles=subtitles,
+        fallback=fallback,
         background=raw.get("background", "black"),
         font=raw.get("font"),
         raw=raw,
@@ -348,15 +389,21 @@ def _draw_text(
 
 
 def _render_canvas(
-    layout: Layout, image_path: Path | None, data: dict, width: int, height: int
+    layout: Layout,
+    image_path: Path | None,
+    data: dict,
+    width: int,
+    height: int,
+    use_fallback: bool = False,
 ) -> Image.Image:
     canvas = Image.new("RGB", (width, height), layout.background)
     font_path = resolve_font_path(layout.font)
-    texts = layout.render_texts(data)
+    values = _SafeDict({k: v for k, v in data.items() if v is not None})
+    texts = layout.render_texts(data, use_fallback)
     ti = 0
-    for el in layout.elements:
+    for el in layout.active_elements(use_fallback):
         if isinstance(el, ImageElement):
-            if image_path is not None:
+            if image_path is not None and _require_met(el, values):
                 try:
                     _paste_image(canvas, image_path, el)
                 except Exception as e:
@@ -376,15 +423,23 @@ def render_frame(
     width: int,
     height: int,
     out_dir: Path,
+    use_fallback: bool = False,
 ) -> Path | None:
     """レイアウトに従いフレームPNGを合成して返す(同内容なら既存を再利用)。"""
     out_dir.mkdir(parents=True, exist_ok=True)
-    texts = layout.render_texts(data)
-    # subtitle要素はASS側で描くのでフレームの内容に影響しない(キャッシュキーから除外)
+    texts = layout.render_texts(data, use_fallback)
+    values = _SafeDict({k: v for k, v in data.items() if v is not None})
+    # 実際に描く側(通常 or fallback)の要素だけをキャッシュキーに使う。
+    # subtitle要素はASS側で描くので内容に影響しない(除外)。require が
+    # 満たされない要素も描かれないので除外し、画像のrequireも取りこぼさない
+    raw_key = "fallback" if (use_fallback and layout.fallback) else "elements"
     raw_visual = {
         **layout.raw,
         "elements": [
-            e for e in layout.raw.get("elements", []) if e.get("type") != "subtitle"
+            e
+            for e in layout.raw.get(raw_key, [])
+            if e.get("type") != "subtitle"
+            and (not e.get("require") or str(values.get(e["require"]) or "").strip())
         ],
     }
     key = hashlib.sha1(
@@ -397,7 +452,7 @@ def render_frame(
     out = out_dir / f"frame_{key}.png"
     if out.exists():
         return out
-    _render_canvas(layout, image_path, data, width, height).save(out)
+    _render_canvas(layout, image_path, data, width, height, use_fallback).save(out)
     return out
 
 
