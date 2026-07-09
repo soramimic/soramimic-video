@@ -1,7 +1,7 @@
 [submodule "external/soramimic"]
 	path = external/soramimic
 	url = https://github.com/soramimic/soramimic.git
-	branch = dev
+	branch = main
 [submodule "external/soramimic-wordlists"]
 	path = external/soramimic-wordlists
 	url = https://github.com/soramimic/soramimic-wordlists.git

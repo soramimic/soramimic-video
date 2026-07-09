@@ -2348,7 +2348,11 @@ wheels = [
 [[package]]
 name = "soramimic"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-python#70238797e53e1c96e9d8539783a00f23d6c25fbb" }
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/92/1ea595e534cca7a898da12614dbb4f561f85684f218a13ef03541a817c0f/soramimic-0.1.0.tar.gz", hash = "sha256:241099bb2e5df18f89877f65654686175e7da6dd9d83cc518b7299436a3a32ad", size = 1170819, upload-time = "2026-07-09T10:33:33.556Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/ad/105ef5407de79d267ea0330f067ae718dc25283624c3ad4ec5166c8c374c/soramimic-0.1.0-py3-none-any.whl", hash = "sha256:1dbbae30e6e13b96d3e0771f938351cad7aa4feddfc528f3d97202c710715a2e", size = 1174083, upload-time = "2026-07-09T10:33:31.545Z" },
+]
 
 [package.optional-dependencies]
 mecab = [
@@ -2412,7 +2416,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'audio'", specifier = ">=1.24" },
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.9" },
     { name = "requests", specifier = ">=2.31" },
-    { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python" },
+    { name = "soramimic", extras = ["mecab"], specifier = ">=0.1.0" },
     { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi" },
     { name = "torch", marker = "extra == 'audio'", specifier = ">=2.1" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.1" },
