@@ -71,6 +71,11 @@
   .le-tabs { display: flex; gap: .3rem; margin-top: .5rem; }
   .le-tabs button { font-size: .8rem; padding: .3rem .9rem; background: #334155; opacity: .6; }
   .le-tabs button.active { background: #2563eb; opacity: 1; }
+  .le-cue-nav { display: flex; gap: .5rem; margin-top: .5rem; align-items: center; }
+  .le-cue-nav button { font-size: .8rem; padding: .3rem .7rem; background: #64748b; }
+  .le-cue-nav button:disabled { opacity: .4; }
+  #le-cue-indicator { font-size: .85rem; font-variant-numeric: tabular-nums; }
+  #le-cue-hint { margin: 0; }
   #le-msg { font-size: .8rem; color: #dc2626; }
   #le-props { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin-top: .5rem; }
   #le-props label { margin: 0; font-weight: 400; font-size: .75rem; }
@@ -128,6 +133,12 @@
     <div class="le-tabs">
       <button type="button" id="le-tab-elements" class="active">通常</button>
       <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
+    </div>
+    <div class="le-cue-nav" id="le-cue-nav" hidden>
+      <button type="button" id="le-cue-prev">◀ 前</button>
+      <span id="le-cue-indicator">- / -枚目</span>
+      <button type="button" id="le-cue-next">次 ▶</button>
+      <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
     </div>
     <div id="le-canvas">
       <div id="le-guide-v" class="le-guide" hidden></div>
@@ -348,6 +359,11 @@ let leDrag = null;
 let leColumns = [];    // 単語リストの列名({列名}挿入プルダウン用)
 let leSample = null;   // 単語リストの代表行(WYSIWYG表示のサンプルデータ)
 let leSide = "elements";  // 編集中の側: "elements"(通常) / "fallback"(未知語用)
+// editor書き出しJSONが選択されているときのプレビュー(動画のキュー順)。
+// null なら従来どおり単語リストの代表行1件でプレビューする
+let leCue = null;      // 現在キューのデータ({data, use_fallback, parody_text, ...})
+let leCueIndex = 0;    // 現在のキュー番号(0始まり)
+let leCueTotal = 0;    // キュー総数
 
 // 編集中の側の要素配列(なければ作らずに空を返す)
 function leEls() {
@@ -379,6 +395,46 @@ async function leFetchColumns() {
   } catch { /* オフライン等は無視(プルダウンが空になるだけ) */ }
 }
 
+// editor JSONの変換結果に基づくキュー1枚ぶんのプレビューを取得する。
+// editorファイル未選択なら従来モード(代表行)に戻す。
+async function leFetchCue(index) {
+  const file = $("editor").files[0];
+  if (!file) { leCue = null; leCueTotal = 0; leCueIndex = 0; leUpdateCueNav(); leRender(); return; }
+  const form = new FormData();
+  form.append("editor", file);
+  form.append("wordlist", $("wordlist").value.trim());
+  form.append("cue", Math.max(0, index | 0));
+  if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
+  try {
+    const res = await fetch("/api/editor-preview", { method: "POST", body: form, headers: headers() });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    if (!body.total) {
+      leCue = null; leCueTotal = 0; leCueIndex = 0;
+      leMsg("editor JSONにこのレイアウトで表示できるキューがありません");
+    } else {
+      leCue = body; leCueIndex = body.index; leCueTotal = body.total;
+      leMsg("");
+    }
+  } catch (err) {
+    leCue = null; leCueTotal = 0; leCueIndex = 0;
+    leMsg("プレビュー取得に失敗: " + err.message);
+  }
+  leUpdateCueNav();
+  leRender();
+}
+
+// 「◀ 前 / 次 ▶」とキュー番号表示の更新(editorファイルがあるときだけ出す)
+function leUpdateCueNav() {
+  const active = !!$("editor").files[0];
+  $("le-cue-nav").hidden = !active;
+  if (!active) return;
+  $("le-cue-indicator").textContent =
+    leCueTotal ? `${leCueIndex + 1} / ${leCueTotal}枚目` : "0 / 0枚目";
+  $("le-cue-prev").disabled = !leCueTotal || leCueIndex <= 0;
+  $("le-cue-next").disabled = !leCueTotal || leCueIndex >= leCueTotal - 1;
+}
+
 const leMsg = (t) => { $("le-msg").textContent = t; };
 const leClamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -399,6 +455,9 @@ const LE_WORD_FIELDS = {
 };
 
 function leSampleData() {
+  // editor JSONプレビュー中は、そのキューの実データ(行データ+替え歌フィールド)を使う。
+  // 未知語(行なし)のキューは列参照が空のdataなので、そのまま渡せばfallback相当に見える
+  if (leCue) return leCue.data;
   if (leSide === "fallback") {
     // 未知語(単語リストにない単語)は行がないので、単語フィールドだけ埋め、
     // 列参照({achievement}など)は空にする
@@ -422,13 +481,22 @@ function leFill(tpl) {
 // フォントの縮小・折返しはサーバー描画の近似(正確な見た目は「サーバー描画で確認」)
 function leContent(e) {
   if (e.type === "image") {
+    // editor JSONプレビュー中はキューの画像、そうでなければ代表行の画像を出す。
     // 未知語(fallback)は行がないので画像もない → プレースホルダ表示
-    if (leSide !== "fallback" && leSample && leSample.image) {
+    let src = null;
+    if (leCue) {
+      // image_urlは同一オリジンのパス。認証ありのときはapi_keyを付ける(既にクエリ有り)
+      if (leCue.image_url) {
+        src = leCue.image_url + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
+      }
+    } else if (leSide !== "fallback" && leSample && leSample.image) {
+      src = "/api/wordlist-image?wordlist=" + encodeURIComponent($("wordlist").value.trim());
+    }
+    if (src) {
       const img = document.createElement("img");
       img.className = "le-content";
       img.draggable = false;
-      img.src = "/api/wordlist-image?wordlist=" +
-        encodeURIComponent($("wordlist").value.trim());
+      img.src = src;
       return img;
     }
     const ph = document.createElement("div");
@@ -441,7 +509,14 @@ function leContent(e) {
   const H = $("le-canvas").clientHeight;
   let text, size, bold = false, wrap = false, valign;
   if (e.type === "subtitle") {
-    text = e.source === "parody" ? "替え歌の歌詞がここに出ます" : "元の歌詞がここに出ます";
+    if (leCue) {
+      // editor JSONプレビュー中は、このキューの行の実際の替え歌/元歌詞を出す
+      text = e.source === "parody"
+        ? (leCue.parody_text || "(替え歌なし)")
+        : (leCue.original_text || "(元歌詞なし)");
+    } else {
+      text = e.source === "parody" ? "替え歌の歌詞がここに出ます" : "元の歌詞がここに出ます";
+    }
     size = e.size ?? 0.05; bold = !!e.bold; valign = e.valign || "bottom";
   } else {
     text = leFill(e.text);
@@ -861,11 +936,24 @@ $("le-details").addEventListener("toggle", async () => {
     leFetchColumns();
     // 開いたとき空なら現在のレイアウト名(なければdefault)から編集を始める
     if (!leLayout) await leLoad();
+    leFetchCue(leCueIndex);  // editorファイルがあればキュープレビューを取得
   }
   leRender();
 });
 
-$("wordlist").addEventListener("change", leFetchColumns);
+$("wordlist").addEventListener("change", () => {
+  leFetchColumns();
+  leFetchCue(leCueIndex);  // editor JSONのwordlist解決がフォーム欄に依存する場合に更新
+});
+
+// editor書き出しJSONを選び直したら先頭キューからプレビューし直す
+$("editor").addEventListener("change", () => { leCueIndex = 0; leFetchCue(0); });
+$("le-cue-prev").addEventListener("click", () => {
+  if (leCueIndex > 0) leFetchCue(leCueIndex - 1);
+});
+$("le-cue-next").addEventListener("click", () => {
+  if (leCueIndex < leCueTotal - 1) leFetchCue(leCueIndex + 1);
+});
 
 $("layout-json").addEventListener("change", () => {
   try {

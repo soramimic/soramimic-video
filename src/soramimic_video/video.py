@@ -26,7 +26,7 @@ from PIL import ImageColor
 from . import runproc
 from .layout import DEFAULT_SUBTITLES, Layout, SubtitleElement, load_layout, render_frame
 from .mix import MIX_DIR
-from .project import Project
+from .project import ParodyWord, Project
 from .synthesize import NEUTRINO_DIR
 
 logger = logging.getLogger(__name__)
@@ -107,6 +107,30 @@ class ImageCue:
     frame: Path
 
 
+def word_frame_data(word: ParodyWord, row: dict) -> dict:
+    """レイアウトのテンプレートに渡す1単語ぶんのデータ。
+
+    単語リスト行の全列に、替え歌単語のフィールド(surface/kana/original等)を重ねる。
+    build_image_cues とレイアウト編集プレビュー(editor JSON)で共用する。
+    """
+    return {
+        **row,
+        "surface": word.surface,
+        "kana": word.kana,
+        "original": word.original or row.get("original", ""),
+        "original_surface": word.original_surface,
+        "originalkana": word.originalkana,
+    }
+
+
+def word_is_shown(layout: Layout, data: dict, use_fallback: bool) -> bool:
+    """このレイアウトでこの単語に表示できるもの(画像 or テキスト)があるか。
+
+    build_image_cues が「表示するものがない単語」をキューから外す判定と同じ。
+    """
+    return bool(data.get("image")) or any(layout.render_texts(data, use_fallback))
+
+
 def build_image_cues(
     project: Project,
     work: Path,
@@ -131,15 +155,8 @@ def build_image_cues(
             # 単語リストに行がない単語(手入力の未知語など)はfallback側で描く
             use_fallback = not row
             # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
-            data = {
-                **row,
-                "surface": w.surface,
-                "kana": w.kana,
-                "original": w.original or row.get("original", ""),
-                "original_surface": w.original_surface,
-                "originalkana": w.originalkana,
-            }
-            if not row.get("image") and not any(layout.render_texts(data, use_fallback)):
+            data = word_frame_data(w, row)
+            if not word_is_shown(layout, data, use_fallback):
                 continue  # このレイアウトでは表示できるものがない単語
             start, end = project.word_time_range(w)
             words.append((start, end, data, use_fallback))
