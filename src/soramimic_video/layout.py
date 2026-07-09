@@ -107,6 +107,10 @@ class SubtitleElement:
     align: str = "center"  # left / center / right
     valign: str = "bottom"  # top / middle / bottom
     bold: bool = False
+    # 替え歌字幕に単語ごとのふりがな(ルビ)を付ける。ふりがなは ParodyWord.kana。
+    # 第1段階では source="parody" のみ有効(元歌詞ではカナ対応付けに課題があり無視する)。
+    ruby: bool = False
+    ruby_size: float = 0.5  # ルビの文字サイズ(本文フォントサイズに対する比)
 
 
 # subtitle要素を持たないレイアウトで使う既定の字幕(従来の下部2段と同じ見た目)
@@ -208,6 +212,8 @@ def _parse_elements(
                     align=e.get("align", "center"),
                     valign=e.get("valign", "bottom"),
                     bold=bool(e.get("bold", False)),
+                    ruby=bool(e.get("ruby", False)),
+                    ruby_size=float(e.get("ruby_size", 0.5)),
                 )
             )
         elif kind == "text":

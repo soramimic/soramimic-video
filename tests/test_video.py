@@ -108,6 +108,99 @@ def test_build_ass_layout_subtitles(tmp_path: Path):
     assert "沈むように" in ass
 
 
+def _ruby_layout(tmp_path: Path, ruby: bool = True) -> str:
+    import json
+
+    spec = tmp_path / f"ruby_{ruby}.json"
+    spec.write_text(json.dumps({
+        "elements": [
+            {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.1],
+             "size": 0.065, "color": "white", "bold": True, "ruby": ruby, "ruby_size": 0.5},
+        ],
+    }), encoding="utf-8")
+    return str(spec)
+
+
+def _multi_word_project(tmp_path: Path):
+    project = _project(tmp_path)
+    # 「静(シズ)」漢字=ルビあり / 「カワ」既にカナ=ルビなし / 「山(ヤマ)」漢字=ルビあり
+    project.parody.lines[0].words = [
+        ParodyWord(surface="静", kana="シズ", original="", original_surface="", originalkana="",
+                   note_ids=[0]),
+        ParodyWord(surface="カワ", kana="カワ", original="", original_surface="", originalkana="",
+                   note_ids=[1]),
+        ParodyWord(surface="山", kana="ヤマ", original="", original_surface="", originalkana="",
+                   note_ids=[2]),
+    ]
+    return project
+
+
+def _ruby_events(ass: str):
+    # ルビイベントは \fs でフォントサイズを上書きしているので本文と区別できる
+    return [ln for ln in ass.splitlines()
+            if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" in ln]
+
+
+def _pos_x(line: str) -> float:
+    import re
+
+    return float(re.search(r"\\pos\(([-\d.]+),", line).group(1))
+
+
+def test_build_ass_ruby_events(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _multi_word_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    ruby = _ruby_events(ass)
+    # ルビが要る単語(静・山)だけ。既にカナの「カワ」は出さない
+    assert len(ruby) == 2
+    # ルビ文言 = kana
+    joined = "\n".join(ruby)
+    assert "シズ" in joined and "ヤマ" in joined and "カワ" not in joined
+    # 本文パロディイベント(\fsなし)と同じ開始・終了区間
+    body = next(ln for ln in ass.splitlines()
+                if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" not in ln)
+    bstart, bend = body.split(",")[1], body.split(",")[2]
+    for ln in ruby:
+        assert ln.split(",")[1] == bstart and ln.split(",")[2] == bend
+        assert ln.split(",")[0] == "Dialogue: 1"  # 本文と同じレイヤー1
+
+
+def test_build_ass_ruby_positions_monotonic(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _multi_word_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    xs = [_pos_x(ln) for ln in _ruby_events(ass)]
+    assert xs == sorted(xs) and len(set(xs)) == len(xs)  # 単語順に単調増加
+
+
+def test_build_ass_ruby_disabled(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _multi_word_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path, ruby=False)))
+    assert _ruby_events(ass) == []  # ruby=false ならルビイベントは出ない
+
+
+def test_build_ass_no_ruby_by_default(tmp_path: Path):
+    # 既定字幕(DEFAULT_SUBTITLES, ruby=false)ではルビは出ない
+    project = _multi_word_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font")
+    assert _ruby_events(ass) == []
+
+
+def test_needs_ruby():
+    from soramimic_video.video import _needs_ruby
+
+    assert _needs_ruby("静", "シズ")  # 漢字
+    assert not _needs_ruby("カワ", "カワ")  # 既にカタカナで同じ
+    assert not _needs_ruby("しずむ", "シズム")  # ひらがな⇔カタカナで同じ
+    assert not _needs_ruby("トウキョウ", "トーキョー")  # 長音表記ゆれを吸収
+    assert not _needs_ruby("", "シズ")  # 表記が空ならルビなし
+
+
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
 def test_image_cues_and_slideshow(tmp_path: Path):
     project = _project(tmp_path)
