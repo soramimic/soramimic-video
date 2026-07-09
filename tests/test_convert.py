@@ -1,9 +1,6 @@
 from pathlib import Path
 
-import pytest
-
 from soramimic_video.convert import (
-    BRIDGE_DIR,
     _map_word_to_notes,
     _offset_map,
     convert_project,
@@ -88,11 +85,7 @@ def _tiny_project() -> Project:
     )
 
 
-@pytest.mark.skipif(
-    not (BRIDGE_DIR / "node_modules").exists(),
-    reason="bridge未セットアップ(cd bridge && npm ci)",
-)
-def test_convert_project_with_bridge(tmp_path: Path):
+def test_convert_project(tmp_path: Path):
     csv_path = tmp_path / "words.csv"
     csv_path.write_text(
         "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",

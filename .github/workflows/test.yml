@@ -1,5 +1,7 @@
 # submoduleはcheckoutしない(soramimic本体はprivateのためGITHUB_TOKENで取れない)。
-# ブリッジ(node)依存のテストはbridge未セットアップ時に自動skipされる。
+# 替え歌変換は soramimic ライブラリ(uv syncで導入)でPython完結するため、
+# convert/editor 連携のテストもCIで実行される(editor_io の conf/setting.json 参照は
+# submodule未取得でもフォールバックする)。
 name: test
 on:
   push:

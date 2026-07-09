@@ -1,17 +1,10 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from helpers import build_xf_midi
-from soramimic_video.convert import BRIDGE_DIR, convert_project
+from soramimic_video.convert import convert_project
 from soramimic_video.editor_io import export_editor, import_editor, save_raw
 from soramimic_video.xfparse import analyze_midi
-
-pytestmark = pytest.mark.skipif(
-    not (BRIDGE_DIR / "node_modules").exists(),
-    reason="bridge未セットアップ(cd bridge && npm ci)",
-)
 
 
 def _project(tmp_path: Path):

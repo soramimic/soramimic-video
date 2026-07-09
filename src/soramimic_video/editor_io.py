@@ -4,7 +4,7 @@ soramimic の編集ツールは `soramimic-editor/1` 形式のJSON
 (phrases/tokensList/results/param/wordlist/unitsList)を
 読み込み/書き出しできる(soramimic#51)。
 
-- export_editor: convert時に保存したブリッジ生応答から editor 用JSONを作る
+- export_editor: convert時に保存した変換の生応答から editor 用JSONを作る
 - import_editor: editorで編集・書き出したJSONから project.parody を作り直す
 """
 
@@ -96,7 +96,7 @@ def import_editor(project: Project, project_dir: Path, file: Path | None = None)
 
     convert を経ていないプロジェクトにも取り込める(JSON側のwordlist情報を使う)。
     ブラウザ(soramimic.com)で変換・編集した結果だけを持ち込むケース用で、
-    このときローカル/Colab側では変換ブリッジ(node+soramimic本体)が不要になる。
+    このときローカル/Colab側では変換処理(soramimic ライブラリ)が不要になる。
     """
     path = file or (project_dir / EDITOR_FILENAME)
     payload = json.loads(path.read_text(encoding="utf-8"))

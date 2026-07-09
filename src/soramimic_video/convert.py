@@ -1,7 +1,7 @@
-"""替え歌変換ステージ: soramimic(Nodeブリッジ)で行ごとの替え歌単語列を得る。
+"""替え歌変換ステージ: soramimic ライブラリで行ごとの替え歌単語列を得る。
 
 変換入力はXFの読み(カナ)を行ごとに連結した文字列。変換結果の period は
-ブリッジが返すユニット列(mora単位)へのindexなので、
+変換エンジンが返すユニット列(mora単位)へのindexなので、
 ユニットの文字オフセット → XFモーラ(音符)の文字オフセット の対応で
 各単語を音符ID列に写像する。
 """
@@ -10,21 +10,17 @@ from __future__ import annotations
 
 import csv
 import difflib
-import json
 import logging
-import os
-import shutil
 from pathlib import Path
 from typing import Any
 
-from . import runproc
 from .kana import split_fine_moras
 from .project import Parody, ParodyLine, ParodyWord, Project
+from .soramimic_engine import run_convert
 
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BRIDGE_DIR = Path(os.environ.get("SORAMIMI_VIDEO_BRIDGE", REPO_ROOT / "bridge"))
 WORDLISTS_DIR = REPO_ROOT / "external" / "soramimic-wordlists"
 
 # editor(conf/setting.json)と同じ既定の絞り込み
@@ -58,33 +54,6 @@ def _coerce_params(params: dict[str, str]) -> dict[str, Any]:
             except ValueError:
                 out[k] = v
     return out
-
-
-def run_bridge(phrases: list[str], wordlist_csv: Path, where: str | None,
-               params: dict[str, Any]) -> dict:
-    node = shutil.which("node")
-    if node is None:
-        raise RuntimeError("node が見つかりません(変換ブリッジに必要です)")
-    script = BRIDGE_DIR / "convert.mjs"
-    if not (BRIDGE_DIR / "node_modules").exists():
-        raise RuntimeError(f"ブリッジが未セットアップです: cd {BRIDGE_DIR} && npm ci")
-    payload = json.dumps(
-        {
-            "phrases": phrases,
-            "wordlist": {"file": str(wordlist_csv), "where": where},
-            "params": params,
-        },
-        ensure_ascii=False,
-    )
-    proc = runproc.run(
-        [node, str(script)],
-        input=payload.encode("utf-8"),
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"変換ブリッジが失敗しました:\n{proc.stderr.decode('utf-8')}")
-    return json.loads(proc.stdout.decode("utf-8"))
 
 
 def _offset_map(src: str, dst: str) -> list[int]:
@@ -226,7 +195,7 @@ def convert_project(
     where: str | None = None,
     params: dict[str, str] | None = None,
 ) -> dict:
-    """project.parody を埋める(破壊的)。ブリッジの生の応答を返す。
+    """project.parody を埋める(破壊的)。変換エンジンの生の応答を返す。
 
     生の応答(units・period付きの単語列・tokensList)は editor 連携の
     書き出しに必要なので、呼び出し側でプロジェクトディレクトリに保存する。
@@ -237,7 +206,7 @@ def convert_project(
     coerced = _coerce_params(params or {})
 
     phrases = [line.xf_kana for line in project.lines]
-    result = run_bridge(phrases, csv_path, where, coerced)
+    result = run_convert(phrases, csv_path, where, coerced)
     apply_converted_lines(project, result["lines"], wordlist, where, coerced)
     return result
 

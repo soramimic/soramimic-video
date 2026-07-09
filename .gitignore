@@ -6,9 +6,6 @@ __pycache__/
 .pytest_cache/
 dist/
 
-# Node (bridge)
-node_modules/
-
 # 作業用プロジェクトディレクトリ(楽曲データはコミットしない)
 work/
 *.mid
