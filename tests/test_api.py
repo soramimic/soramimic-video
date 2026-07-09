@@ -83,10 +83,8 @@ def test_preview_returns_audio(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
-    files = {
-        "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
-        "editor": ("editor.json", b"{}", "application/json"),
-    }
+    # プレビューはeditor/wordlistなしでも受け付ける(元歌詞で合成するため)
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
     res = client.post("/api/jobs", files=files, data={"preview": "20"})
     assert res.status_code == 200
     body = wait_done(client, res.json()["id"])
@@ -98,18 +96,70 @@ def test_preview_returns_audio(tmp_path, monkeypatch):
 def test_truncate_project():
     from types import SimpleNamespace
 
-    notes = [
-        SimpleNamespace(id=i, start_sec=float(i)) for i in range(5)
-    ]
-    lines = [
-        SimpleNamespace(note_ids=[0, 1]),
-        SimpleNamespace(note_ids=[2, 3]),
-        SimpleNamespace(note_ids=[4]),
-    ]
-    project = SimpleNamespace(notes=notes, lines=lines)
+    def make_project():
+        return SimpleNamespace(
+            notes=[SimpleNamespace(id=i, start_sec=float(i)) for i in range(5)],
+            lines=[
+                SimpleNamespace(note_ids=[0, 1]),
+                SimpleNamespace(note_ids=[2, 3]),
+                SimpleNamespace(note_ids=[4]),
+            ],
+        )
+
+    # 起点0から3秒: start_sec 0,1,2 を残す
+    project = make_project()
     api_mod._truncate_project(project, 3.0)
     assert [n.id for n in project.notes] == [0, 1, 2]
     assert [ln.note_ids for ln in project.lines] == [[0, 1], [2]]
+
+    # 起点2秒から2秒: [2, 4) に入る start_sec 2,3 を残す(前奏スキップ相当)
+    project = make_project()
+    api_mod._truncate_project(project, 2.0, start=2.0)
+    assert [n.id for n in project.notes] == [2, 3]
+    assert [ln.note_ids for ln in project.lines] == [[2, 3]]
+
+
+def test_first_lyric_start():
+    from types import SimpleNamespace
+
+    # 歌詞(kana)のある最初の音符の開始秒を起点にする
+    notes = [
+        SimpleNamespace(id=0, start_sec=10.0, kana=""),
+        SimpleNamespace(id=1, start_sec=30.0, kana="ア"),
+        SimpleNamespace(id=2, start_sec=40.0, kana="イ"),
+    ]
+    project = SimpleNamespace(notes=notes)
+    assert api_mod._first_lyric_start(project) == 30.0
+
+    # 音符が無ければ0にフォールバック
+    assert api_mod._first_lyric_start(SimpleNamespace(notes=[])) == 0.0
+
+
+def test_trim_wav_head(tmp_path):
+    import shutil
+    import subprocess
+    import wave
+
+    # start<=0 は何もしない
+    wav = tmp_path / "vocal.wav"
+    wav.write_bytes(b"")
+    assert api_mod._trim_wav_head(wav, 0.0) == wav
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpegがない環境")
+
+    # 3秒の無音WAVの頭2秒を切ると約1秒になる
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+         "-t", "3", str(wav)],
+        check=True, capture_output=True,
+    )
+    out = api_mod._trim_wav_head(wav, 2.0)
+    assert out != wav
+    with wave.open(str(out)) as w:
+        duration = w.getnframes() / w.getframerate()
+    assert 0.9 <= duration <= 1.1
 
 
 def test_cancel_running_and_queued(tmp_path, monkeypatch):

@@ -21,6 +21,7 @@ import platform
 import queue
 import re
 import secrets
+import shutil
 import threading
 import time
 import traceback
@@ -126,9 +127,36 @@ class _JobLogHandler(logging.Handler):
         self.job.log.append(self.format(record))
 
 
-def _truncate_project(project: Any, seconds: float) -> None:
-    """プレビュー用に冒頭seconds秒ぶんの音符・行だけ残す。"""
-    kept = [n for n in project.notes if n.start_sec < seconds]
+def _first_lyric_start(project: Any) -> float:
+    """歌詞のある最初の音符の開始秒。音符が無ければ0。"""
+    starts = [n.start_sec for n in project.notes if getattr(n, "kana", None)]
+    if not starts:
+        starts = [n.start_sec for n in project.notes]
+    return min(starts) if starts else 0.0
+
+
+def _trim_wav_head(wav: Path, start: float) -> Path:
+    """WAV先頭のstart秒(前奏ぶんの無音)を切り落とす。失敗したら元のWAVを返す。"""
+    if start <= 0:
+        return wav
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return wav
+    out = wav.with_name(wav.stem + "_trimmed.wav")
+    proc = runproc.run(
+        [ffmpeg, "-y", "-ss", f"{start:.3f}", "-i", str(wav), str(out)],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0 or not out.exists():
+        logger.warning("プレビューWAVのトリムに失敗しました: %s", proc.stderr[-500:])
+        return wav
+    return out
+
+
+def _truncate_project(project: Any, seconds: float, start: float = 0.0) -> None:
+    """プレビュー用に start 秒から seconds 秒ぶんの音符・行だけ残す。"""
+    end = start + seconds
+    kept = [n for n in project.notes if start <= n.start_sec < end]
     kept_ids = {n.id for n in kept}
     project.notes = kept
     lines = []
@@ -156,6 +184,26 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             align_lines(project, lyrics_path.read_text(encoding="utf-8").splitlines())
         project.save(d)
 
+    preview_sec = float(job.params.get("preview") or 0)
+    if preview_sec > 0:
+        # プレビュー: 空耳変換(convert/import-editor)は行わず、歌い出しから
+        # preview 秒ぶんを元歌詞(XFカナ)のまま合成して返す。モデル・移調の
+        # 当たり確認が目的なので、ミックス・動画は作らない
+        lyric_start = _first_lyric_start(project)
+        _truncate_project(project, preview_sec, start=lyric_start)
+        with _stage(job, "synthesize"):
+            wav = synthesize(
+                project,
+                d,
+                model=job.params["model"],
+                threads=config.get("threads", 4),
+                transpose=job.params.get("transpose", 0),
+            )
+        assert wav is not None
+        # 合成WAVは楽譜の絶対時刻を保つため前奏ぶんの無音が頭に付く。
+        # 歌い出しの少し手前まで切り落として即再生できるようにする
+        return _trim_wav_head(wav, max(0.0, lyric_start - 0.5))
+
     if (d / "editor.json").exists():
         with _stage(job, "import-editor"):
             import_editor(project, d, d / "editor.json")
@@ -172,21 +220,6 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             )
             save_raw(raw, d)
             project.save(d)
-
-    preview_sec = float(job.params.get("preview") or 0)
-    if preview_sec > 0:
-        # プレビュー: 冒頭だけ歌声を合成して返す(ミックス・動画は作らない)
-        _truncate_project(project, preview_sec)
-        with _stage(job, "synthesize"):
-            wav = synthesize(
-                project,
-                d,
-                model=job.params["model"],
-                threads=config.get("threads", 4),
-                transpose=job.params.get("transpose", 0),
-            )
-        assert wav is not None
-        return wav
 
     with _stage(job, "synthesize"):
         synthesize(
@@ -504,7 +537,8 @@ def create_app(
                 raise HTTPException(
                     status_code=400, detail="editorのJSONが読めません"
                 ) from exc
-        if editor_bytes is None and not wordlist.strip():
+        # プレビューは元歌詞をそのまま歌わせるので替え歌の入力は不要
+        if preview <= 0 and editor_bytes is None and not wordlist.strip():
             raise HTTPException(
                 status_code=422,
                 detail="editorの書き出しJSONか単語リスト名(wordlist)のどちらかが必要です",
