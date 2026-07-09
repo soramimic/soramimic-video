@@ -729,6 +729,21 @@ function leRenderProps() {
     add("揃え", select("align", ["left", "center", "right"], "center"));
     add("縦揃え", select("valign", ["top", "middle", "bottom"], "bottom"));
     add("太字", checkbox("bold"));
+    // ルビ(ふりがな): 替え歌字幕のみ有効。キャンバスにはルビは描かない(下の注記のみ)
+    add("ルビ(替え歌のみ)", checkbox("ruby"));
+    const rubySize = document.createElement("input");
+    rubySize.type = "number"; rubySize.step = "0.05"; rubySize.min = "0.2"; rubySize.max = "1";
+    rubySize.value = e.ruby_size ?? 0.5; rubySize.style.width = "5rem";
+    rubySize.addEventListener("input", () => {
+      e.ruby_size = Number(rubySize.value) || 0.5; commit();
+    });
+    add("ルビサイズ(本文比)", rubySize);
+    if (e.ruby) {
+      const note = document.createElement("p");
+      note.textContent = "※ プレビューにはルビは表示されません(動画には各単語の上に振られます)";
+      note.style.cssText = "font-size:11px;color:#999;margin:4px 0 0";
+      panel.appendChild(note);
+    }
   }
 }
 

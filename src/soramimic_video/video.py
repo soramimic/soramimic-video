@@ -24,7 +24,16 @@ import requests
 from PIL import ImageColor
 
 from . import runproc
-from .layout import DEFAULT_SUBTITLES, Layout, SubtitleElement, load_layout, render_frame
+from .kana import normalize_long_vowels
+from .layout import (
+    DEFAULT_SUBTITLES,
+    Layout,
+    SubtitleElement,
+    _font,
+    load_layout,
+    render_frame,
+    resolve_font_path,
+)
 from .mix import MIX_DIR
 from .project import ParodyWord, Project
 from .synthesize import NEUTRINO_DIR
@@ -260,6 +269,87 @@ def _ass_alignment(el: SubtitleElement) -> int:
     return base + {"left": 0, "center": 1, "right": 2}.get(el.align, 1)
 
 
+WORD_SEP = "  "  # 替え歌字幕で単語を区切る空白(build_ass本文とルビ位置計算で共有)
+
+# ひらがな→カタカナ(表記が既にカナかを判定するための正規化用)
+_HIRA_TO_KATA = {chr(c): chr(c + 0x60) for c in range(0x3041, 0x3097)}
+
+
+def _to_katakana(text: str) -> str:
+    return "".join(_HIRA_TO_KATA.get(ch, ch) for ch in text)
+
+
+def _needs_ruby(surface: str, kana: str) -> bool:
+    """この単語にルビを振るべきか(表記がすでにカナで読みと同じなら不要)。
+
+    ひらがな/カタカナ・長音表記のゆれを吸収してから比較する。
+    """
+    if not surface or not kana:
+        return False
+    a = normalize_long_vowels(_to_katakana(surface))
+    b = normalize_long_vowels(_to_katakana(kana))
+    return a != b
+
+
+def _ruby_events(
+    el: SubtitleElement,
+    name: str,
+    layer: int,
+    start: float,
+    end: float,
+    words: list[ParodyWord],
+    px: float,
+    py: float,
+    an: int,
+    height: int,
+    font_path: Path | None,
+) -> list[str]:
+    """替え歌字幕の各単語の真上にルビ(ふりがな)を置くASSイベント列。
+
+    本文行と同じフォント・同じピクセルサイズでPillowで文字幅を測り、本文の
+    各単語のx中心を求める。本文と同一レイヤー・同一区間で、単語ごとに小さい
+    フォントの別イベントを本文の上端すぐ上に \\pos で配置する。
+    """
+    body_px = int(el.size * height)
+    if body_px <= 0 or not words:
+        return []
+    font = _font(font_path, body_px)
+    full = WORD_SEP.join(w.surface for w in words)
+    total_w = font.getlength(full)
+    # 本文行の左端x。build_ass本体の px(align基準点)と揃える
+    if el.align == "left":
+        x0 = px
+    elif el.align == "right":
+        x0 = px - total_w
+    else:
+        x0 = px - total_w / 2
+    # 本文行の上端y(\pos の基準点 py と valign(an)から逆算。行高は概ねフォントpx)
+    if an in (1, 2, 3):
+        top = py - body_px
+    elif an in (4, 5, 6):
+        top = py - body_px / 2
+    else:
+        top = py
+    ruby_px = max(1, round(el.ruby_size * body_px))
+    events: list[str] = []
+    prefix = ""
+    for i, w in enumerate(words):
+        if i:
+            prefix += WORD_SEP
+        start_x = font.getlength(prefix)
+        prefix += w.surface
+        end_x = font.getlength(prefix)
+        if not _needs_ruby(w.surface, w.kana):
+            continue
+        cx = x0 + (start_x + end_x) / 2  # 単語の中心x
+        # \an2: ルビの下端中央を単語中心・本文上端に合わせる(本文のすぐ上に載る)
+        events.append(
+            f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
+            f"{{\\an2\\pos({cx:.0f},{top:.0f})\\fs{ruby_px}}}{_ass_escape(w.kana)}"
+        )
+    return events
+
+
 def build_ass(
     project: Project, width: int, height: int, font: str, layout: Layout | None = None
 ) -> str:
@@ -309,10 +399,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         spans[j][1] = max(spans[j][1], spans[j][0] + 0.2)  # 行の重なりが極端でも一瞬は出す
         spans[j + 1][0] = max(spans[j + 1][0], spans[j][1])
 
+    font_path = resolve_font_path(layout.font if layout else None)
     events = []
     for line, (start, end) in zip(shown, spans, strict=True):
         pline = parody_lines.get(line.id)
-        parody_text = "  ".join(w.surface for w in pline.words) if pline and pline.words else ""
+        parody_text = WORD_SEP.join(w.surface for w in pline.words) if pline and pline.words else ""
         original_text = line.original_text or line.xf_surface
         for el, name in zip(subs, names, strict=True):
             text = parody_text if el.source == "parody" else original_text
@@ -330,6 +421,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
                 f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(text)}"
             )
+            # ルビ(ふりがな): 替え歌字幕のみ。本文と同一レイヤー・同一区間で、
+            # 各単語の真上に小さいフォントの別イベントを追加する(本文は変えない)
+            if el.source == "parody" and el.ruby and pline and pline.words:
+                events.extend(
+                    _ruby_events(
+                        el, name, layer, start, end, pline.words, px, py, an, height, font_path
+                    )
+                )
     return header + "\n".join(events) + "\n"
 
 
