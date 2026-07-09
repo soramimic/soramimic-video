@@ -10,6 +10,7 @@ dependencies = [
     "mido>=1.3",
     "jaconv>=0.3",
     "requests>=2.31",
+    "soramimic[mecab]>=0.1.0",
 ]
 
 [project.optional-dependencies]
