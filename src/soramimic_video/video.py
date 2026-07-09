@@ -1,8 +1,9 @@
 """動画生成ステージ: 単語画像+字幕(替え歌/元歌詞)+歌唱音源 → out.mp4。
 
 構成(ffmpeg 3パス):
- 1. 単語リスト由来の画像をダウンロードし、同一サイズのフレームに正規化
- 2. concatデマルチプレクサで「歌唱タイミングに画像が出るスライドショー」を作る
+ 1. 単語リスト由来の画像をダウンロードし、レイアウト定義(layout.py)に従って
+    列情報のテキストと合成した同一サイズのフレームPNGを作る
+ 2. concatデマルチプレクサで「歌唱タイミングにフレームが出るスライドショー」を作る
     (単語数が多くてもffmpegの入力数が増えない)
  3. ASS字幕(下部: 替え歌歌詞/元歌詞)と音声を焼き込んで完成
 
@@ -20,10 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import requests
+from PIL import ImageColor
 
 from . import runproc
+from .layout import DEFAULT_SUBTITLES, Layout, SubtitleElement, load_layout, render_frame
 from .mix import MIX_DIR
-from .project import ParodyWord, Project
+from .project import Project
 from .synthesize import NEUTRINO_DIR
 
 logger = logging.getLogger(__name__)
@@ -83,26 +86,6 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
     return path
 
 
-def normalize_image(src: Path, out_dir: Path, width: int, height: int) -> Path | None:
-    """画像を動画フレーム(width x height、上寄せ中央、黒背景)に正規化する。"""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{src.stem}_{width}x{height}.png"
-    if out.exists():
-        return out
-    box_w, box_h = int(width * 0.82), int(height * 0.62)
-    vf = (
-        f"scale=w={box_w}:h={box_h}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:{int(height * 0.07)}+({box_h}-ih)/2:black"
-    )
-    try:
-        _run([_ffmpeg(), "-y", "-i", str(src), "-vf", vf, "-frames:v", "1", str(out)],
-             "画像の正規化")
-    except RuntimeError as e:
-        logger.warning("%s: %s", src, e)
-        return None
-    return out
-
-
 def _black_frame(out_dir: Path, width: int, height: int) -> Path:
     out = out_dir / f"black_{width}x{height}.png"
     if not out.exists():
@@ -130,16 +113,34 @@ def build_image_cues(
     width: int,
     height: int,
     image_cache: Path | None = None,
+    layout: Layout | None = None,
 ) -> tuple[list[ImageCue], list[dict]]:
-    """替え歌単語の歌唱区間に対応する画像キュー列と、使用画像のクレジット情報。"""
+    """替え歌単語の歌唱区間に対応するフレームキュー列と、使用画像のクレジット情報。
+
+    フレームは単語リスト行の画像+列情報をレイアウト定義で合成したもの。
+    画像がなくてもレイアウトのtext要素が埋まる単語はテキストのみで表示する。
+    """
     if project.parody is None:
         return [], []
-    words: list[tuple[float, float, ParodyWord]] = []
+    if layout is None:
+        layout = load_layout(None)
+    words: list[tuple[float, float, dict]] = []
     for pline in project.parody.lines:
         for w in pline.words:
-            if w.wordlist_row and w.wordlist_row.get("image"):
-                start, end = project.word_time_range(w)
-                words.append((start, end, w))
+            row = w.wordlist_row or {}
+            # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
+            data = {
+                **row,
+                "surface": w.surface,
+                "kana": w.kana,
+                "original": w.original or row.get("original", ""),
+                "original_surface": w.original_surface,
+                "originalkana": w.originalkana,
+            }
+            if not row.get("image") and not any(layout.render_texts(data)):
+                continue  # このレイアウトでは表示できるものがない単語
+            start, end = project.word_time_range(w)
+            words.append((start, end, data))
     words.sort(key=lambda x: x[0])
 
     cues: list[ImageCue] = []
@@ -150,13 +151,13 @@ def build_image_cues(
         os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
     )
     norm = work / "frames"
-    for i, (start, end, w) in enumerate(words):
+    for i, (start, end, data) in enumerate(words):
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
-        url = w.wordlist_row["image"]  # type: ignore[index]
-        raw = download_image(url, cache)
-        if raw is None:
-            continue
-        frame = normalize_image(raw, norm, width, height)
+        url = data.get("image") or ""
+        raw = download_image(url, cache) if url else None
+        if raw is None and not any(layout.render_texts(data)):
+            continue  # 画像が取れずテキストもないフレームは出さない
+        frame = render_frame(layout, raw, data, width, height, norm)
         if frame is None:
             continue
         # 次の単語まで表示を持続(上限あり)
@@ -165,12 +166,12 @@ def build_image_cues(
         if cues and cues[-1].end > start:
             cues[-1].end = start
         cues.append(ImageCue(start=start, end=show_end, frame=frame))
-        if url not in credits:
+        if url and raw is not None and url not in credits:
             credits[url] = {
-                "word": w.surface,
-                "original": w.original,
+                "word": data["surface"],
+                "original": data["original"],
                 "image": url,
-                "image_page": w.wordlist_row.get("image_page", ""),  # type: ignore[union-attr]
+                "image_page": data.get("image_page", ""),
             }
     return cues, list(credits.values())
 
@@ -226,8 +227,42 @@ def _ass_escape(text: str) -> str:
     return text.replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
-def build_ass(project: Project, width: int, height: int, font: str) -> str:
-    """下部2段の字幕: 上=替え歌歌詞、下=元歌詞。行の歌唱区間で表示する。"""
+def _ass_color(color: str) -> str:
+    """CSS風の色(名前 / #rrggbb / #rrggbbaa)をASSの &HAABBGGRR に変換する。"""
+    rgba = ImageColor.getrgb(color)
+    r, g, b = rgba[:3]
+    a = rgba[3] if len(rgba) == 4 else 255
+    return f"&H{255 - a:02X}{b:02X}{g:02X}{r:02X}"
+
+
+def _ass_alignment(el: SubtitleElement) -> int:
+    """align/valign をASSのnumpad Alignment値にする。"""
+    base = {"bottom": 1, "middle": 4, "top": 7}.get(el.valign, 1)
+    return base + {"left": 0, "center": 1, "right": 2}.get(el.align, 1)
+
+
+def build_ass(
+    project: Project, width: int, height: int, font: str, layout: Layout | None = None
+) -> str:
+    """歌詞字幕(替え歌/元歌詞)のASSを作る。行の歌唱区間で表示する。
+
+    位置・サイズ・色はレイアウトのsubtitle要素から決める。subtitle要素の
+    ないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
+    """
+    subs = layout.subtitles if layout and layout.subtitles else DEFAULT_SUBTITLES
+    # スタイル名はsource由来(Parody/Original)。同一sourceが複数あれば連番を足す
+    names: list[str] = []
+    for el in subs:
+        base = el.source.capitalize()
+        name = base if base not in names else f"{base}{sum(n.startswith(base) for n in names) + 1}"
+        names.append(name)
+    styles = []
+    for el, name in zip(subs, names, strict=True):
+        styles.append(
+            f"Style: {name},{font},{int(el.size * height)},{_ass_color(el.color)},"
+            f"&H000000FF,&H00202020,&H96000000,{-1 if el.bold else 0},0,0,0,"
+            f"100,100,0,0,1,2,1,{_ass_alignment(el)},0,0,0,1"
+        )
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -236,8 +271,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Parody,{font},{int(height * 0.065)},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.13)},1
-Style: Original,{font},{int(height * 0.042)},&H00B8B8B8,&H000000FF,&H00202020,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,{int(height * 0.055)},1
+{chr(10).join(styles)}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -259,19 +293,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     events = []
     for line, (start, end) in zip(shown, spans, strict=True):
         pline = parody_lines.get(line.id)
-        # レイヤーを分けておくと、万一区間が重なっても替え歌(上段)と
-        # 元歌詞(下段)が衝突回避で入れ替わらない(衝突判定は同一レイヤー内のみ)
-        if pline and pline.words:
-            parody_text = "  ".join(w.surface for w in pline.words)
-            events.append(
-                f"Dialogue: 1,{_ass_time(start)},{_ass_time(end)},Parody,,0,0,0,,"
-                f"{_ass_escape(parody_text)}"
-            )
+        parody_text = "  ".join(w.surface for w in pline.words) if pline and pline.words else ""
         original_text = line.original_text or line.xf_surface
-        if original_text:
+        for el, name in zip(subs, names, strict=True):
+            text = parody_text if el.source == "parody" else original_text
+            if not text:
+                continue
+            # \posで固定配置(boxのalign/valign側の辺が基準点)。
+            # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
+            # 元歌詞が衝突回避で入れ替わらない(衝突判定は同一レイヤー内のみ)
+            layer = 1 if el.source == "parody" else 0
+            an = _ass_alignment(el)
+            x, y, w, h = el.box
+            px = {"left": x, "right": x + w}.get(el.align, x + w / 2) * width
+            py = {"top": y, "middle": y + h / 2}.get(el.valign, y + h) * height
             events.append(
-                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Original,,0,0,0,,"
-                f"{_ass_escape(original_text)}"
+                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
+                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(text)}"
             )
     return header + "\n".join(events) + "\n"
 
@@ -309,7 +347,9 @@ def make_video(
     font: str = "Hiragino Sans",
     audio: str | None = None,
     image_cache: Path | None = None,
+    layout: str | None = None,
 ) -> Path:
+    layout_obj = load_layout(layout)
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 
@@ -327,12 +367,12 @@ def make_video(
 
     total_sec = max(n.end_sec for n in project.notes) + 3.0
 
-    cues, credits = build_image_cues(project, work, width, height, image_cache)
+    cues, credits = build_image_cues(project, work, width, height, image_cache, layout_obj)
     logger.info("画像キュー: %d件", len(cues))
     slideshow = write_slideshow(cues, work, width, height, total_sec)
 
     ass_path = work / "subtitles.ass"
-    ass_path.write_text(build_ass(project, width, height, font), encoding="utf-8")
+    ass_path.write_text(build_ass(project, width, height, font, layout_obj), encoding="utf-8")
 
     credits_path = write_credits(credits, work)
     if credits_path:

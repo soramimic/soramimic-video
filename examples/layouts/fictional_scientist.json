@@ -1,0 +1,18 @@
+{
+  "background": "#101018",
+  "elements": [
+    {"type": "image", "box": [0.05, 0.06, 0.42, 0.66]},
+    {"type": "text", "text": "{original}", "box": [0.51, 0.08, 0.44, 0.11],
+     "size": 0.062, "color": "white", "align": "left"},
+    {"type": "text", "text": "{birth_year}〜{death_year} / {nationality}",
+     "box": [0.51, 0.21, 0.44, 0.06], "size": 0.038, "color": "#b8c0d0", "align": "left"},
+    {"type": "text", "text": "{field}", "box": [0.51, 0.29, 0.44, 0.06],
+     "size": 0.045, "color": "#ffd870", "align": "left"},
+    {"type": "text", "text": "{achievement}", "box": [0.51, 0.4, 0.44, 0.3],
+     "size": 0.042, "color": "#e8e8e8", "align": "left", "valign": "top", "wrap": true},
+    {"type": "subtitle", "source": "parody", "box": [0.02, 0.74, 0.96, 0.1],
+     "size": 0.06, "color": "white", "bold": true},
+    {"type": "subtitle", "source": "original", "box": [0.02, 0.87, 0.96, 0.05],
+     "size": 0.04, "color": "#8890a0"}
+  ]
+}
