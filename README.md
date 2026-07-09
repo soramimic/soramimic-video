@@ -54,7 +54,9 @@ NEUTRINO_ROOT=~/NEUTRINO uv run soramimic-video synthesize --project work/song -
 uv run soramimic-video mix --project work/song --soundfont /path/to/GeneralUser.sf2
 
 # 6. 替え歌動画(単語リストの画像+元歌詞/替え歌字幕)
-uv run soramimic-video video --project work/song
+#    --layout で画像と列情報(説明文など)の配置を変えられる
+#    (組み込み: default/caption。JSONで自作可、examples/layouts/ 参照)
+uv run soramimic-video video --project work/song --layout caption
 ```
 
 ## ブラウザ+Colabで使う(ローカル環境不要)

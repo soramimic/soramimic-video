@@ -11,6 +11,8 @@ dependencies = [
     "jaconv>=0.3",
     "requests>=2.31",
     "soramimic[mecab]>=0.1.0",
+    # フレームレイアウト(layout.py)の描画。load_default(size)に10.1が要る
+    "pillow>=10.1",
 ]
 
 [project.optional-dependencies]

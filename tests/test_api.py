@@ -170,6 +170,61 @@ def test_rejects_non_midi(client):
     assert res.status_code == 400
 
 
+def test_config_lists_layouts(client):
+    conf = client.get("/api/config").json()
+    assert "default" in conf["layouts"] and "caption" in conf["layouts"]
+
+
+def test_get_builtin_layout(client):
+    body = client.get("/api/layouts/default").json()
+    assert body["elements"][0]["type"] == "image"
+    assert client.get("/api/layouts/no-such").status_code == 404
+
+
+def test_rejects_bad_layout(client):
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    # 不正なJSONは投入前に400で返す
+    res = client.post("/api/jobs", files=files,
+                      data={"wordlist": "stations", "layout_json": "{oops"})
+    assert res.status_code == 400
+    res = client.post("/api/jobs", files=files,
+                      data={"wordlist": "stations",
+                            "layout_json": '{"elements": [{"type": "nope", "box": [0,0,1,1]}]}'})
+    assert res.status_code == 400
+    # 存在しないレイアウト名も400
+    res = client.post("/api/jobs", files=files,
+                      data={"wordlist": "stations", "layout": "no-such-layout"})
+    assert res.status_code == 400
+
+
+def test_wordlist_columns(client, tmp_path):
+    # 未指定でも替え歌単語のフィールドは返る
+    cols = client.get("/api/wordlist-columns").json()["columns"]
+    assert "surface" in cols and "original" in cols
+    # CSVパスを渡すとその列も返る(重複は除去)
+    csv_path = tmp_path / "wl.csv"
+    csv_path.write_text("id,original,surface,achievement\n0,a,b,c", encoding="utf-8")
+    body = client.get(f"/api/wordlist-columns?wordlist={csv_path}").json()
+    cols = body["columns"]
+    assert "achievement" in cols
+    assert cols.count("original") == 1
+    # 代表行(WYSIWYG表示のサンプル)も返る
+    assert body["row"]["achievement"] == "c"
+    # 見つからないリスト名でもエラーにしない
+    res = client.get("/api/wordlist-columns?wordlist=no-such-list")
+    assert res.status_code == 200
+
+
+def test_layout_json_saved_to_job_dir(client):
+    spec = '{"elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.2]}]}'
+    job_id = submit(client, wordlist="stations", layout="caption", layout_json=spec)
+    body = wait_done(client, job_id)
+    assert body["status"] == "done"
+    assert body["params"]["layout"] == "caption"
+    manager = client.app.state.manager
+    assert (manager.jobs[job_id].dir / "layout.json").read_text(encoding="utf-8") == spec
+
+
 def test_video_not_ready(client, monkeypatch):
     # 実行前に取りに来たら409
     slow = api_mod.run_pipeline

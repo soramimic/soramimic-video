@@ -13,11 +13,13 @@ GET /api/jobs/{id}/video で取得する。GET / に簡易Web UIを同梱。
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
 import platform
 import queue
+import re
 import secrets
 import threading
 import time
@@ -35,6 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
 from . import runproc
+from .layout import LAYOUTS_DIR, builtin_layout_names, load_layout, parse_layout
 
 logger = logging.getLogger(__name__)
 
@@ -196,11 +199,16 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     with _stage(job, "mix"):
         mix(project, d, soundfont=config.get("soundfont"))
     with _stage(job, "video"):
+        # レイアウトの優先順: ジョブのJSON > ジョブの名前指定 > サーバー既定(--layout)
+        layout: str | None = str(d / "layout.json")
+        if not (d / "layout.json").exists():
+            layout = job.params.get("layout") or config.get("layout")
         return make_video(
             project,
             d,
             font=config.get("font") or default_font(),
             image_cache=config.get("image_cache"),
+            layout=layout,
         )
 
 
@@ -262,6 +270,7 @@ class JobManager:
         editor: bytes | None,
         lyrics: str,
         params: dict[str, Any],
+        layout_json: str = "",
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
@@ -271,6 +280,8 @@ class JobManager:
             (job_dir / "editor.json").write_bytes(editor)
         if lyrics.strip():
             (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
+        if layout_json.strip():
+            (job_dir / "layout.json").write_text(layout_json, encoding="utf-8")
         job = Job(id=job_id, dir=job_dir, params=params)
         with self._lock:
             self.jobs[job_id] = job
@@ -361,6 +372,7 @@ def create_app(
     soundfont: str | None = None,
     font: str | None = None,
     threads: int = 4,
+    layout: str | None = None,
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     config = {
@@ -370,6 +382,7 @@ def create_app(
         "soundfont": resolve_soundfont(soundfont),
         "font": font or default_font(),
         "threads": threads,
+        "layout": layout,
     }
     manager = JobManager(jobs_dir, config)
     app = FastAPI(title="soramimic-video API")
@@ -397,7 +410,74 @@ def create_app(
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "host": platform.node(),
+            "layouts": builtin_layout_names(),
         }
+
+    @app.get("/api/layouts/{name}", dependencies=[Depends(_require_api_key)])
+    def get_layout(name: str) -> dict[str, Any]:
+        """組み込みレイアウトのJSONを返す(UIの「編集用に読み込む」向け)。"""
+        if not re.fullmatch(r"[\w-]+", name):
+            raise HTTPException(status_code=404, detail="レイアウトが見つかりません")
+        path = LAYOUTS_DIR / f"{name}.json"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="レイアウトが見つかりません")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _sample_row(wordlist: str) -> dict[str, str] | None:
+        """レイアウト編集のプレビューに使う代表行(画像のある最初の行、なければ先頭)。"""
+        from .convert import resolve_wordlist
+
+        try:
+            with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+        except (FileNotFoundError, OSError):
+            return None
+        return next((r for r in rows if r.get("image")), rows[0] if rows else None)
+
+    @app.get("/api/wordlist-columns", dependencies=[Depends(_require_api_key)])
+    def wordlist_columns(wordlist: str = "") -> dict[str, Any]:
+        """単語リストの列名一覧と代表行(レイアウト編集のWYSIWYG表示向け)。
+
+        リストが未指定・見つからない場合も、替え歌単語のフィールドは返す。
+        """
+        from .convert import resolve_wordlist
+
+        cols: list[str] = []
+        row = None
+        if wordlist.strip():
+            try:
+                with open(resolve_wordlist(wordlist.strip()), encoding="utf-8") as f:
+                    cols = next(csv.reader(f), [])
+            except (FileNotFoundError, OSError):
+                pass
+            row = _sample_row(wordlist.strip())
+        word_fields = ["surface", "original", "kana", "original_surface", "originalkana"]
+        if row:
+            # kana等はCSVの列ではなく変換後の替え歌単語のフィールド。
+            # プレビューでも空にならないよう代表行から補う
+            row = {
+                "kana": row.get("pronunciation") or row.get("surface", ""),
+                "original_surface": "(元歌詞の対応部分)",
+                "originalkana": "(モトカシ)",
+                **row,
+            }
+        return {
+            "columns": list(dict.fromkeys([*word_fields, *cols])),
+            "row": row,
+        }
+
+    @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
+    def wordlist_image(wordlist: str = "") -> FileResponse:
+        """代表行の画像(レイアウト編集のWYSIWYG表示向け)。"""
+        from .video import download_image
+
+        row = _sample_row(wordlist.strip()) if wordlist.strip() else None
+        if not row or not row.get("image"):
+            raise HTTPException(status_code=404, detail="画像のある行がありません")
+        path = download_image(row["image"], jobs_dir.resolve() / "image-cache")
+        if path is None:
+            raise HTTPException(status_code=404, detail="画像を取得できません")
+        return FileResponse(path)
 
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])
     async def create_job(
@@ -409,6 +489,8 @@ def create_app(
         preview: float = Form(0),
         wordlist: str = Form(""),
         where: str = Form(""),
+        layout: str = Form(""),
+        layout_json: str = Form(""),
     ) -> dict[str, Any]:
         midi_bytes = await midi.read()
         if not midi_bytes.startswith(b"MThd"):
@@ -427,16 +509,32 @@ def create_app(
                 status_code=422,
                 detail="editorの書き出しJSONか単語リスト名(wordlist)のどちらかが必要です",
             )
+        layout = layout.strip()
+        layout_json = layout_json.strip()
+        # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
+        if layout_json:
+            try:
+                parse_layout(json.loads(layout_json), "layout_json")
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
+                ) from exc
+        elif layout:
+            try:
+                load_layout(layout)
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         params = {
             "model": model.strip() or "MERROW",
             "transpose": transpose,
             "preview": max(0.0, min(preview, 60.0)),
             "wordlist": wordlist.strip(),
             "where": where.strip(),
+            "layout": layout,
             "parody_source": "editor" if editor_bytes else "convert",
             "midi_filename": midi.filename,
         }
-        job = manager.create(midi_bytes, editor_bytes, lyrics, params)
+        job = manager.create(midi_bytes, editor_bytes, lyrics, params, layout_json=layout_json)
         return {"id": job.id}
 
     @app.get("/api/jobs", dependencies=[Depends(_require_api_key)])

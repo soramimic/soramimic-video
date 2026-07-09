@@ -180,6 +180,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         font=args.font,
         audio=args.audio,
         image_cache=Path(args.image_cache) if args.image_cache else None,
+        layout=args.layout,
     )
     print(f"動画完成: {out}")
     return 0
@@ -203,6 +204,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         soundfont=args.soundfont,
         font=args.font,
         threads=args.threads,
+        layout=args.layout,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
@@ -329,6 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--image-cache",
         help="単語画像の共有キャッシュ(環境変数 SORAMIMIC_VIDEO_IMAGE_CACHE でも指定可)",
     )
+    p.add_argument(
+        "--layout",
+        help="フレームレイアウト。組み込み名(default/caption)またはJSONファイルパス"
+        "(書き方は examples/layouts/ と layout.py 冒頭を参照)",
+    )
     p.set_defaults(func=cmd_video)
 
     p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
@@ -338,6 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--soundfont", help="伴奏用サウンドフォント(.sf2)")
     p.add_argument("--font", help="字幕フォント名(既定はOSに応じて選択)")
     p.add_argument("--threads", type=int, default=4, help="NEUTRINOのスレッド数")
+    p.add_argument("--layout", help="フレームレイアウト(組み込み名かJSONパス)")
     p.set_defaults(func=cmd_serve)
 
     return parser

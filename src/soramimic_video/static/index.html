@@ -36,6 +36,42 @@
   .error { color: #dc2626; white-space: pre-wrap; }
   pre { background: #8881; padding: .6rem; border-radius: 6px; overflow-x: auto; font-size: .75rem; }
   details { margin-top: .6rem; }
+  #le-canvas {
+    position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000;
+    border-radius: 8px; overflow: hidden; margin-top: .5rem; user-select: none;
+    touch-action: none;
+  }
+  #le-canvas img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* 枠線はoutlineで描く(borderだと内側を食って文字の収まり判定が本番とずれる) */
+  .le-box { position: absolute; outline: 1px dashed #38bdf8aa; cursor: move; }
+  .le-box.selected { outline: 2px solid #f59e0b; z-index: 2; }
+  .le-box.subtitle { outline-color: #a78bfaaa; }
+  .le-badge {
+    position: absolute; left: 0; top: 0; font-size: 9px; line-height: 1.4;
+    background: #0009; color: #fff; padding: 0 3px; z-index: 1; pointer-events: none;
+  }
+  .le-content { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  img.le-content { object-fit: contain; width: 100%; height: 100%; }
+  .le-text {
+    display: flex; line-height: 1.25; word-break: break-all;
+    text-shadow: 0 0 3px #000, 0 0 3px #000;
+  }
+  .le-ph { display: flex; align-items: center; justify-content: center; color: #888; }
+  .le-box.ghost { outline: 1px dotted #777; }
+  .le-box.ghost .le-badge { background: #0006; color: #aaa; }
+  .le-guide { position: absolute; background: #f43f5e; z-index: 3; pointer-events: none; }
+  #le-guide-v { width: 1px; top: 0; bottom: 0; }
+  #le-guide-h { height: 1px; left: 0; right: 0; }
+  .le-handle {
+    position: absolute; right: 0; bottom: 0; width: 12px; height: 12px;
+    background: #38bdf8; cursor: nwse-resize;
+  }
+  .le-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; align-items: center; }
+  .le-toolbar button { font-size: .8rem; padding: .3rem .7rem; background: #64748b; }
+  #le-msg { font-size: .8rem; color: #dc2626; }
+  #le-props { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin-top: .5rem; }
+  #le-props label { margin: 0; font-weight: 400; font-size: .75rem; }
+  #le-props input, #le-props select { width: auto; font-size: .85rem; padding: .2rem .3rem; }
   #history table { width: 100%; border-collapse: collapse; font-size: .85rem; }
   #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid #8883; text-align: left; }
   a { color: #2563eb; }
@@ -71,6 +107,36 @@
   <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
   <label>単語リスト(editor JSONがないときは必須)</label>
   <input type="text" id="wordlist" placeholder="例: stations">
+  <label>レイアウト(任意)</label>
+  <input type="text" id="layout" list="layout-list" placeholder="例: default(組み込み名かサーバー上のJSONパス)">
+  <datalist id="layout-list"></datalist>
+  <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。</p>
+  <details id="le-details">
+    <summary>レイアウトを編集(ドラッグで配置)</summary>
+    <div class="le-toolbar">
+      <button type="button" id="layout-load">レイアウトを読み込む</button>
+      <button type="button" id="le-add-text">テキスト追加</button>
+      <button type="button" id="le-add-subtitle">字幕追加</button>
+      <button type="button" id="le-add-image">画像枠追加</button>
+      <button type="button" id="le-delete" disabled>選択を削除</button>
+      <button type="button" id="le-export">エクスポート</button>
+      <span id="le-msg"></span>
+    </div>
+    <div id="le-canvas">
+      <div id="le-guide-v" class="le-guide" hidden></div>
+      <div id="le-guide-h" class="le-guide" hidden></div>
+    </div>
+    <div id="le-props" hidden></div>
+    <p class="hint">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
+      箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
+      右下の角でリサイズ、クリックで選択して文言・サイズ・色を変更。
+      選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
+      本番と同じく、枠に収まらない文字は自動で縮小されます。
+      編集した内容はジョブ投入時にレイアウト名より優先で使われます。</p>
+    <details><summary>JSON</summary>
+      <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
+    </details>
+  </details>
 </fieldset>
 
 <button id="submit">動画を生成</button>
@@ -115,6 +181,8 @@ async function loadConfig() {
   if (conf.models && conf.models.length && !conf.models.includes($("model").value)) {
     $("model").value = conf.models[0];
   }
+  $("layout-list").innerHTML = (conf.layouts || [])
+    .map((l) => `<option value="${l}">`).join("");
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
   const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
@@ -215,6 +283,8 @@ async function submitJob(previewSec) {
   form.append("transpose", $("transpose").value.trim() || "0");
   form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
+  form.append("layout", $("layout").value);
+  form.append("layout_json", $("layout-json").value);
   setBusy(true);
   $("result").hidden = true;
   $("progress").hidden = false;
@@ -241,6 +311,477 @@ $("cancel").addEventListener("click", async () => {
     $("cancel").disabled = false;
   }
   // 状態遷移はpollが拾う
+});
+
+// ---- レイアウトエディタ(ドラッグで配置) ----
+
+let leLayout = null;   // 編集中のレイアウト。nullなら未使用(=レイアウト名 or サーバー既定)
+let leSelected = -1;
+let leDrag = null;
+let leColumns = [];    // 単語リストの列名({列名}挿入プルダウン用)
+let leSample = null;   // 単語リストの代表行(WYSIWYG表示のサンプルデータ)
+
+async function leFetchColumns() {
+  const wl = encodeURIComponent($("wordlist").value.trim());
+  try {
+    const res = await fetch(`/api/wordlist-columns?wordlist=${wl}`, { headers: headers() });
+    if (res.ok) {
+      const body = await res.json();
+      leColumns = body.columns || [];
+      leSample = body.row;
+      leRender();  // サンプルデータが変わったので中身を描き直す
+    }
+  } catch { /* オフライン等は無視(プルダウンが空になるだけ) */ }
+}
+
+const leMsg = (t) => { $("le-msg").textContent = t; };
+const leClamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+function leLabel(e) {
+  if (e.type === "image") return "画像";
+  if (e.type === "subtitle") return "字幕: " + (e.source === "parody" ? "替え歌" : "元歌詞");
+  return e.text || "テキスト";
+}
+
+function leToJson() {
+  $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
+}
+
+function leSampleData() {
+  const row = (leSample && Object.keys(leSample).length) ? leSample
+    : { surface: "替え歌単語", original: "元の単語" };
+  return row;
+}
+
+function leFill(tpl) {
+  const data = leSampleData();
+  return (tpl || "").replace(/\{([^}]+)\}/g, (_, k) => data[k] ?? "");
+}
+
+// ボックスの中身(画像/テンプレート展開したテキスト/字幕サンプル)を実データで描く。
+// フォントの縮小・折返しはサーバー描画の近似(正確な見た目は「サーバー描画で確認」)
+function leContent(e) {
+  if (e.type === "image") {
+    if (leSample && leSample.image) {
+      const img = document.createElement("img");
+      img.className = "le-content";
+      img.draggable = false;
+      img.src = "/api/wordlist-image?wordlist=" +
+        encodeURIComponent($("wordlist").value.trim());
+      return img;
+    }
+    const ph = document.createElement("div");
+    ph.className = "le-content le-ph";
+    ph.textContent = "画像";
+    return ph;
+  }
+  const div = document.createElement("div");
+  div.className = "le-content le-text";
+  const H = $("le-canvas").clientHeight;
+  let text, size, bold = false, wrap = false, valign;
+  if (e.type === "subtitle") {
+    text = e.source === "parody" ? "替え歌の歌詞がここに出ます" : "元の歌詞がここに出ます";
+    size = e.size ?? 0.05; bold = !!e.bold; valign = e.valign || "bottom";
+  } else {
+    text = leFill(e.text);
+    size = e.size ?? 0.06; wrap = !!e.wrap; valign = e.valign || "middle";
+  }
+  const align = e.align || "center";
+  const span = document.createElement("span");
+  span.textContent = text;
+  if (e.background) Object.assign(span.style, { background: e.background, padding: "0 .2em" });
+  div.appendChild(span);
+  Object.assign(div.style, {
+    fontSize: size * H + "px",
+    color: e.color || "white",
+    fontWeight: bold ? "700" : "400",
+    justifyContent: { left: "flex-start", right: "flex-end" }[align] || "center",
+    alignItems: { top: "flex-start", bottom: "flex-end" }[valign] || "center",
+    whiteSpace: wrap ? "normal" : "nowrap",
+    textAlign: align,
+  });
+  return div;
+}
+
+// サイズ指定を上げて枠に収まらなくなったら、枠の方を広げる(パワポ風)。
+// 揃え位置を基準に広げる: 中央揃えなら左右均等、右揃えなら左へ、など
+function leGrowToFit(e) {
+  const canvas = $("le-canvas");
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (!W || e.type === "image") return;
+  // 要求サイズでの実寸を、現在の枠幅の測定用ボックスで測る(wrapの折返し再現)
+  const probe = document.createElement("div");
+  probe.style.cssText =
+    `position:absolute; visibility:hidden; left:0; top:0; width:${e.box[2] * W}px;`;
+  const content = leContent(e);
+  probe.appendChild(content);
+  canvas.appendChild(probe);
+  const sr = content.querySelector("span").getBoundingClientRect();
+  probe.remove();
+  const pad = 0.005;
+  const needW = e.wrap ? e.box[2] : Math.max(e.box[2], Math.min(1, sr.width / W + pad));
+  const needH = Math.max(e.box[3], Math.min(1, sr.height / H + pad));
+  const growW = needW - e.box[2], growH = needH - e.box[3];
+  if (growW <= 0 && growH <= 0) return;
+  const align = e.align || "center";
+  const valign = e.valign || (e.type === "subtitle" ? "bottom" : "middle");
+  e.box[0] -= growW * ({ left: 0, right: 1 }[align] ?? 0.5);
+  e.box[1] -= growH * ({ top: 0, bottom: 1 }[valign] ?? 0.5);
+  e.box[2] = needW;
+  e.box[3] = needH;
+  e.box[0] = leClamp(e.box[0], 0, 1 - needW);
+  e.box[1] = leClamp(e.box[1], 0, 1 - needH);
+  e.box = e.box.map((v) => Math.round(v * 10000) / 10000);
+}
+
+// 本番(Pillowの_fit_text)と同じく、枠に収まるまでフォントを縮める
+function leFitText(box) {
+  const content = box.querySelector(".le-text");
+  const span = content && content.querySelector("span");
+  if (!span || !content.clientWidth) return;
+  let px = parseFloat(content.style.fontSize);
+  const min = 9 * $("le-canvas").clientHeight / 720;
+  const fits = () => {
+    const r = span.getBoundingClientRect();
+    const c = content.getBoundingClientRect();
+    return r.width <= c.width + 1 && r.height <= c.height + 1;
+  };
+  while (px > min && !fits()) {
+    px = Math.max(min, px - Math.max(1, px / 8));
+    content.style.fontSize = px + "px";
+  }
+}
+
+function leApplyBoxStyle(div, box) {
+  const canvas = $("le-canvas");
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const [x, y, w, h] = box;
+  Object.assign(div.style, {
+    left: x * W + "px", top: y * H + "px", width: w * W + "px", height: h * H + "px",
+  });
+}
+
+// subtitle要素がないレイアウトで使われる既定の字幕(video.pyのDEFAULT_SUBTITLESと同じ値)
+const LE_DEFAULT_SUBS = [
+  { type: "subtitle", source: "parody", box: [0.02, 0.77, 0.96, 0.10],
+    size: 0.065, color: "white", bold: true },
+  { type: "subtitle", source: "original", box: [0.02, 0.895, 0.96, 0.05],
+    size: 0.042, color: "#b8b8b8" },
+];
+
+function leRender() {
+  const canvas = $("le-canvas");
+  canvas.querySelectorAll(".le-box").forEach((b) => b.remove());
+  canvas.style.background = (leLayout && leLayout.background) || "#000";
+  if (!leLayout) return;
+  const mount = (e, i) => {
+    const div = document.createElement("div");
+    div.className = "le-box" + (e.type === "subtitle" ? " subtitle" : "")
+      + (i === leSelected ? " selected" : "") + (i < 0 ? " ghost" : "");
+    leApplyBoxStyle(div, e.box);
+    const badge = document.createElement("div");
+    badge.className = "le-badge";
+    badge.textContent = (i < 0 ? "字幕(既定): " + (e.source === "parody" ? "替え歌" : "元歌詞")
+      : leLabel(e).slice(0, 12));
+    div.append(leContent(e), badge);
+    if (i >= 0) {
+      div.dataset.index = i;
+      const handle = document.createElement("div");
+      handle.className = "le-handle";
+      div.appendChild(handle);
+    } else {
+      // ゴースト(既定字幕)は掴んだ瞬間に実要素化してドラッグできるようにする
+      div.dataset.ghost = JSON.stringify(e);
+    }
+    canvas.appendChild(div);
+    leFitText(div);
+  };
+  const elements = leLayout.elements || [];
+  elements.forEach(mount);
+  // subtitle要素がなければ既定の字幕位置をゴースト表示(動かすには「字幕追加」)
+  if (!elements.some((e) => e.type === "subtitle")) LE_DEFAULT_SUBS.forEach((e) => mount(e, -1));
+}
+
+function leSelect(i) {
+  leSelected = i;
+  $("le-delete").disabled = i < 0;
+  leRender();
+  leRenderProps();
+}
+
+function leRenderProps() {
+  const panel = $("le-props");
+  panel.hidden = leSelected < 0;
+  panel.innerHTML = "";
+  if (leSelected < 0) return;
+  const e = leLayout.elements[leSelected];
+  const commit = () => { leToJson(); leRender(); };
+  const add = (labelText, input) => {
+    const label = document.createElement("label");
+    label.append(labelText, document.createElement("br"), input);
+    panel.appendChild(label);
+  };
+  const textInput = (key, def, size) => {
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = e[key] ?? def; inp.size = size || 8;
+    inp.addEventListener("input", () => { e[key] = inp.value; commit(); });
+    return inp;
+  };
+  const numInput = (key, def) => {
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.step = "0.005"; inp.min = "0.01"; inp.max = "0.4";
+    inp.value = e[key] ?? def; inp.style.width = "5rem";
+    inp.addEventListener("input", () => {
+      e[key] = Number(inp.value) || def;
+      if (key === "size") leGrowToFit(e);  // サイズを上げたら枠も一緒に広げる
+      commit();
+    });
+    return inp;
+  };
+  const select = (key, options, def) => {
+    const sel = document.createElement("select");
+    sel.innerHTML = options
+      .map((o) => `<option${o === (e[key] ?? def) ? " selected" : ""}>${o}</option>`).join("");
+    sel.addEventListener("change", () => { e[key] = sel.value; commit(); });
+    return sel;
+  };
+  const checkbox = (key) => {
+    const inp = document.createElement("input");
+    inp.type = "checkbox"; inp.checked = !!e[key];
+    inp.addEventListener("change", () => { e[key] = inp.checked; commit(); });
+    return inp;
+  };
+  if (e.type === "text") {
+    const textInp = textInput("text", "", 28);
+    add("文言({列名}が使える)", textInp);
+    // 列名を選ぶと文言に {列名} を挿し込む
+    const colSel = document.createElement("select");
+    colSel.innerHTML = '<option value="">列名を挿入…</option>' +
+      leColumns.map((c) => `<option value="${c}">${c}</option>`).join("");
+    colSel.addEventListener("change", () => {
+      if (!colSel.value) return;
+      e.text = (e.text || "") + `{${colSel.value}}`;
+      textInp.value = e.text;
+      colSel.value = "";
+      commit();
+    });
+    add("列", colSel);
+    add("サイズ", numInput("size", 0.06));
+    add("色", textInput("color", "white"));
+    add("揃え", select("align", ["left", "center", "right"], "center"));
+    add("縦揃え", select("valign", ["top", "middle", "bottom"], "middle"));
+    add("折返し", checkbox("wrap"));
+  } else if (e.type === "subtitle") {
+    add("種類", select("source", ["parody", "original"], "parody"));
+    add("サイズ", numInput("size", 0.05));
+    add("色", textInput("color", "white"));
+    add("太字", checkbox("bold"));
+  }
+}
+
+$("le-canvas").addEventListener("pointerdown", (ev) => {
+  const box = ev.target.closest(".le-box");
+  if (!box) { leSelect(-1); return; }
+  let i;
+  if (box.dataset.index === undefined) {
+    // 既定字幕のゴースト: まとめて実要素化してから掴んだ方を選択する
+    // (片方だけ要素化すると、もう片方の既定字幕が動画から消えてしまうため)
+    const ghosts = [...$("le-canvas").querySelectorAll(".le-box.ghost")];
+    i = leLayout.elements.length + ghosts.indexOf(box);
+    leLayout.elements.push(...ghosts.map((g) => JSON.parse(g.dataset.ghost)));
+    leToJson();
+  } else {
+    i = Number(box.dataset.index);
+  }
+  leSelect(i);
+  leDrag = {
+    i, resize: ev.target.classList.contains("le-handle"),
+    startX: ev.clientX, startY: ev.clientY,
+    box: [...leLayout.elements[i].box],
+    rect: $("le-canvas").getBoundingClientRect(),
+    div: $("le-canvas").querySelector(`.le-box[data-index="${i}"]`),
+  };
+  ev.preventDefault();
+  $("le-canvas").setPointerCapture(ev.pointerId);
+});
+
+// スナップ先(パワポ風のガイド): キャンバスの端・中央と、他の要素の端・中央
+function leSnapTargets(excludeIndex) {
+  const xs = [0, 0.5, 1], ys = [0, 0.5, 1];
+  const collect = (e) => {
+    const [x, y, w, h] = e.box;
+    xs.push(x, x + w / 2, x + w);
+    ys.push(y, y + h / 2, y + h);
+  };
+  const elements = leLayout.elements || [];
+  elements.forEach((e, i) => { if (i !== excludeIndex) collect(e); });
+  if (!elements.some((e) => e.type === "subtitle")) LE_DEFAULT_SUBS.forEach(collect);
+  return { xs, ys };
+}
+
+// cands: [位置, ボックス左端(または上端)からのオフセット] の候補列。
+// どれかがターゲットに吸い付いたら {v: 吸着先, off: オフセット} を返す
+function leSnapAxis(cands, targets, th) {
+  let best = null, bd = th;
+  for (const [pos, off] of cands) {
+    for (const t of targets) {
+      const d = Math.abs(pos - t);
+      if (d < bd) { bd = d; best = { v: t, off }; }
+    }
+  }
+  return best;
+}
+
+function leGuides(gx, gy) {
+  const canvas = $("le-canvas");
+  $("le-guide-v").hidden = gx === null;
+  $("le-guide-h").hidden = gy === null;
+  if (gx !== null) $("le-guide-v").style.left = gx * canvas.clientWidth + "px";
+  if (gy !== null) $("le-guide-h").style.top = gy * canvas.clientHeight + "px";
+}
+
+$("le-canvas").addEventListener("pointermove", (ev) => {
+  if (!leDrag) return;
+  const { i, resize, startX, startY, box, rect, div } = leDrag;
+  const dx = (ev.clientX - startX) / rect.width;
+  const dy = (ev.clientY - startY) / rect.height;
+  const e = leLayout.elements[i];
+  const thX = 8 / rect.width, thY = 8 / rect.height;  // 8px以内で吸着
+  const { xs, ys } = leSnapTargets(i);
+  let guideX = null, guideY = null;
+  if (resize) {
+    let w = leClamp(box[2] + dx, 0.02, 1 - e.box[0]);
+    let h = leClamp(box[3] + dy, 0.02, 1 - e.box[1]);
+    const sx = leSnapAxis([[e.box[0] + w, 0]], xs, thX);
+    if (sx && sx.v - e.box[0] >= 0.02) { w = sx.v - e.box[0]; guideX = sx.v; }
+    const sy = leSnapAxis([[e.box[1] + h, 0]], ys, thY);
+    if (sy && sy.v - e.box[1] >= 0.02) { h = sy.v - e.box[1]; guideY = sy.v; }
+    e.box[2] = w;
+    e.box[3] = h;
+  } else {
+    let x = leClamp(box[0] + dx, 0, 1 - e.box[2]);
+    let y = leClamp(box[1] + dy, 0, 1 - e.box[3]);
+    const w = e.box[2], h = e.box[3];
+    const sx = leSnapAxis([[x, 0], [x + w / 2, w / 2], [x + w, w]], xs, thX);
+    if (sx) { x = leClamp(sx.v - sx.off, 0, 1 - w); guideX = sx.v; }
+    const sy = leSnapAxis([[y, 0], [y + h / 2, h / 2], [y + h, h]], ys, thY);
+    if (sy) { y = leClamp(sy.v - sy.off, 0, 1 - h); guideY = sy.v; }
+    e.box[0] = x;
+    e.box[1] = y;
+  }
+  e.box = e.box.map((v) => Math.round(v * 10000) / 10000);
+  // ドラッグ中は中身ごとボックスのstyleだけ動かす(全再描画しない)
+  leApplyBoxStyle(div, e.box);
+  leGuides(guideX, guideY);
+});
+
+["pointerup", "pointercancel"].forEach((t) =>
+  $("le-canvas").addEventListener(t, () => {
+    if (leDrag) { leDrag = null; leGuides(null, null); leToJson(); leRender(); }
+  }));
+
+function leAdd(el) {
+  if (!leLayout) leLayout = { background: "black", elements: [] };
+  leLayout.elements.push(el);
+  leToJson();
+  leSelect(leLayout.elements.length - 1);
+}
+
+$("le-add-text").addEventListener("click", () => leAdd(
+  { type: "text", text: "{original}", box: [0.3, 0.35, 0.4, 0.1], size: 0.06, color: "white" }));
+$("le-add-subtitle").addEventListener("click", () => leAdd(
+  { type: "subtitle", source: "parody", box: [0.02, 0.77, 0.96, 0.1],
+    size: 0.065, color: "white", bold: true }));
+$("le-add-image").addEventListener("click", () => leAdd(
+  { type: "image", box: [0.09, 0.07, 0.82, 0.62] }));
+
+$("le-delete").addEventListener("click", () => {
+  if (leSelected < 0) return;
+  leLayout.elements.splice(leSelected, 1);
+  leToJson();
+  leSelect(-1);
+});
+
+// 編集中のレイアウトをJSONファイルとして保存(CLIの --layout にそのまま使える)
+$("le-export").addEventListener("click", () => {
+  if (!leLayout) { leMsg("レイアウトが空です"); return; }
+  const blob = new Blob([JSON.stringify(leLayout, null, 2) + "\n"],
+    { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const name = ($("layout").value.trim() || "layout")
+    .replace(/.*\//, "").replace(/\.json$/, "");
+  a.download = name + ".json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// 選択中のボックスをカーソルキーで移動(Shiftで大きく)、Deleteで削除
+document.addEventListener("keydown", (ev) => {
+  if (!$("le-details").open || !leLayout || leSelected < 0) return;
+  const t = ev.target;
+  if (t && ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
+  const e = leLayout.elements[leSelected];
+  if (ev.key === "Delete" || ev.key === "Backspace") {  // Macのdelete=Backspace
+    ev.preventDefault();
+    leLayout.elements.splice(leSelected, 1);
+    leToJson();
+    leSelect(-1);
+    return;
+  }
+  const step = ev.shiftKey ? 0.02 : 0.005;
+  const move = {
+    ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+    ArrowUp: [0, -step], ArrowDown: [0, step],
+  }[ev.key];
+  if (!move) return;
+  ev.preventDefault();
+  e.box[0] = leClamp(e.box[0] + move[0], 0, 1 - e.box[2]);
+  e.box[1] = leClamp(e.box[1] + move[1], 0, 1 - e.box[3]);
+  e.box = e.box.map((v) => Math.round(v * 10000) / 10000);
+  leToJson();
+  leRender();
+});
+
+async function leLoad() {
+  const name = $("layout").value.trim() || "default";
+  const res = await fetch(`/api/layouts/${encodeURIComponent(name)}`, { headers: headers() });
+  if (!res.ok) { leMsg("組み込みレイアウトだけ読み込めます: " + name); return false; }
+  leLayout = await res.json();
+  leMsg("");
+  leToJson();
+  leSelect(-1);
+  return true;
+}
+$("layout-load").addEventListener("click", leLoad);
+
+// レイアウト名を選んだら、その内容から編集をスタートする(エディタも開く)
+$("layout").addEventListener("change", async () => {
+  if (await leLoad()) {
+    $("le-details").open = true;
+    leRender();
+  }
+});
+
+$("le-details").addEventListener("toggle", async () => {
+  if ($("le-details").open) {
+    leFetchColumns();
+    // 開いたとき空なら現在のレイアウト名(なければdefault)から編集を始める
+    if (!leLayout) await leLoad();
+  }
+  leRender();
+});
+
+$("wordlist").addEventListener("change", leFetchColumns);
+
+$("layout-json").addEventListener("change", () => {
+  try {
+    leLayout = $("layout-json").value.trim() ? JSON.parse($("layout-json").value) : null;
+    leMsg("");
+    leSelect(-1);
+  } catch (err) {
+    leMsg("JSONが不正: " + err.message);
+  }
 });
 
 $("api-key").addEventListener("change", loadConfig);

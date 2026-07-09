@@ -76,10 +76,36 @@ def test_build_ass_layers_and_no_overlap(tmp_path: Path):
 
 
 def test_build_ass_escapes_braces(tmp_path: Path):
+    # 歌詞由来の{}はASSの制御タグにならないよう()に置換される
+    # (行頭の {\an\pos} は build_ass 自身が付ける配置タグ)
     project = _project(tmp_path)
     project.lines[0].original_text = "て{す}と"
     ass = build_ass(project, 1280, 720, "Font")
-    assert "{" not in ass.split("[Events]")[1]
+    assert "て(す)と" in ass
+    assert "{す}" not in ass
+
+
+def test_build_ass_layout_subtitles(tmp_path: Path):
+    # レイアウトのsubtitle要素で元歌詞の位置を変えられる。
+    # subtitle要素があるレイアウトでは既定の字幕は使われない(parodyは出ない)
+    import json
+
+    from soramimic_video.layout import load_layout
+
+    spec = tmp_path / "sub.json"
+    spec.write_text(json.dumps({
+        "elements": [
+            {"type": "subtitle", "source": "original", "box": [0.1, 0.05, 0.8, 0.08],
+             "size": 0.05, "color": "#ffcc00", "align": "left", "valign": "top"},
+        ],
+    }), encoding="utf-8")
+    project = _project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", load_layout(str(spec)))
+    assert "Style: Original,Font,36,&H0000CCFF," in ass  # #ffcc00 → BGR、0.05*720=36px
+    assert "Style: Parody" not in ass and ",Parody," not in ass
+    # 左上寄せ: \an7、pos はboxの左上(0.1*1280, 0.05*720)
+    assert "\\an7\\pos(128,36)" in ass
+    assert "沈むように" in ass
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
