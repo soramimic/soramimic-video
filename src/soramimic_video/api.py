@@ -37,7 +37,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
-from . import runproc
+from . import runproc, synth_estimate
 from .layout import LAYOUTS_DIR, builtin_layout_names, load_layout, parse_layout
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 STATIC_DIR = Path(__file__).parent / "static"
 STATUS_FILENAME = "status.json"
+THROUGHPUT_FILENAME = "synthesize-throughput.json"
 DEFAULT_SOUNDFONTS = ("/usr/share/sounds/sf2/FluidR3_GM.sf2",)
 
 
@@ -87,9 +88,26 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     stage_started_at: float | None = None
+    stage_progress: int | None = None  # synthesizeの実進捗(%)。NEUTRINO出力から
+    stage_estimated_total: float | None = None  # synthesizeの所要秒の見積り
     log: deque[str] = field(default_factory=lambda: deque(maxlen=200))
     video: Path | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
+
+    def _synth_progress(self, elapsed: float) -> tuple[int | None, float | None]:
+        """synthesizeステージの進捗率(%)と残り秒の目安を返す。
+
+        NEUTRINOが出す実進捗を優先し、まだ出ていなければ過去実績からの
+        見積り(経過秒÷見積り総秒)で補う。どちらも無ければ (None, None)。
+        """
+        if self.stage_progress:  # 実進捗(1%以上)が取れている
+            pct = self.stage_progress
+            eta = elapsed * (100 - pct) / pct if 0 < pct < 100 else 0.0
+            return pct, eta
+        if self.stage_estimated_total and self.stage_estimated_total > 0:
+            pct = min(99, int(elapsed / self.stage_estimated_total * 100))
+            return pct, max(0.0, self.stage_estimated_total - elapsed)
+        return None, None
 
     def to_dict(self, with_log: bool = True) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -104,7 +122,14 @@ class Job:
             ),
         }
         if self.status == "running" and self.stage_started_at:
-            d["stage_elapsed"] = round(time.time() - self.stage_started_at, 1)
+            elapsed = round(time.time() - self.stage_started_at, 1)
+            d["stage_elapsed"] = elapsed
+            if self.stage == "synthesize":
+                pct, eta = self._synth_progress(elapsed)
+                if pct is not None:
+                    d["stage_progress"] = pct
+                    if eta is not None:
+                        d["stage_eta_seconds"] = round(eta)
         if self.started_at and self.finished_at:
             d["total_seconds"] = round(self.finished_at - self.started_at, 1)
         if self.status == "done" and self.video:
@@ -191,14 +216,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         # 当たり確認が目的なので、ミックス・動画は作らない
         lyric_start = _first_lyric_start(project)
         _truncate_project(project, preview_sec, start=lyric_start)
-        with _stage(job, "synthesize"):
-            wav = synthesize(
-                project,
-                d,
-                model=job.params["model"],
-                threads=config.get("threads", 4),
-                transpose=job.params.get("transpose", 0),
-            )
+        wav = _run_synthesize(job, config, project, synthesize)
         assert wav is not None
         # 合成WAVは楽譜の絶対時刻を保つため前奏ぶんの無音が頭に付く。
         # 歌い出しの少し手前まで切り落として即再生できるようにする
@@ -221,14 +239,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             save_raw(raw, d)
             project.save(d)
 
-    with _stage(job, "synthesize"):
-        synthesize(
-            project,
-            d,
-            model=job.params["model"],
-            threads=config.get("threads", 4),
-            transpose=job.params.get("transpose", 0),
-        )
+    _run_synthesize(job, config, project, synthesize)
     with _stage(job, "mix"):
         mix(project, d, soundfont=config.get("soundfont"))
     with _stage(job, "video"):
@@ -251,11 +262,46 @@ def _stage(job: Job, name: str):
         raise runproc.Cancelled()
     job.stage = name
     job.stage_started_at = time.time()
+    job.stage_progress = None
+    job.stage_estimated_total = None
     logger.info("[job %s] ステージ開始: %s", job.id, name)
     yield
     seconds = round(time.time() - job.stage_started_at, 1)
     job.stages.append({"name": name, "seconds": seconds})
     logger.info("[job %s] ステージ完了: %s (%.1f秒)", job.id, name, seconds)
+
+
+def _run_synthesize(job: Job, config: dict[str, Any], project: Any, synthesize) -> Any:
+    """synthesizeステージを実行し、進捗率と残り時間の目安を job に反映する。
+
+    NEUTRINOの進捗出力を job.stage_progress に、過去実績からの所要見積りを
+    job.stage_estimated_total に入れる(to_dict がこれらから %/残り秒を出す)。
+    成功後は今回の実績を throughput ストアに記録して次回の見積りに使う。
+    """
+    store: Path | None = config.get("throughput_store")
+    score_seconds = max((n.end_sec for n in project.notes), default=0.0)
+    with _stage(job, "synthesize"):
+        if store is not None:
+            job.stage_estimated_total = synth_estimate.estimate_seconds(
+                store, score_seconds
+            )
+
+        def on_progress(frac: float) -> None:
+            job.stage_progress = max(0, min(100, round(frac * 100)))
+
+        result = synthesize(
+            project,
+            job.dir,
+            model=job.params["model"],
+            threads=config.get("threads", 4),
+            transpose=job.params.get("transpose", 0),
+            progress_cb=on_progress,
+        )
+        if store is not None and job.stage_started_at is not None:
+            synth_estimate.record_run(
+                store, score_seconds, time.time() - job.stage_started_at
+            )
+    return result
 
 
 class JobManager:
@@ -416,6 +462,8 @@ def create_app(
         "font": font or default_font(),
         "threads": threads,
         "layout": layout,
+        # 合成の所要時間の目安(曲秒あたりの実処理秒)を実行ごとに記録して次回に使う
+        "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
     }
     manager = JobManager(jobs_dir, config)
     app = FastAPI(title="soramimic-video API")
