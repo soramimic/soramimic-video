@@ -84,6 +84,28 @@ def test_build_score_leading_rest_from_zero():
     assert notes[1]["lyric"] == "ド"
 
 
+def test_build_score_absorbs_one_frame_gap():
+    # 1フレームだけの休符はエンジンが500を返すので、直前の音符を伸ばして埋める。
+    # ド: 1.0秒 = 93.75 → 94フレームで終わり、レ: 1.0107秒 ≒ 95フレーム開始(隙間1)
+    notes = [_note(0, 60, 0.5, 1.0, "ド"), _note(1, 62, 95 / FRAME_RATE, 1.5, "レ")]
+    score = build_score(_project(notes))
+    keys = [n["key"] for n in score["notes"]]
+    assert keys == [None, 60, 62]  # 1フレーム休符は出ない
+    # ドは 47〜94フレーム(47個)+吸収した1フレーム
+    assert score["notes"][1]["frame_length"] == 94 - round(0.5 * FRAME_RATE) + 1
+    # どの休符も2フレーム以上(エンジン制約)
+    assert all(
+        n["frame_length"] >= 2 for n in score["notes"] if n["key"] is None
+    )
+
+
+def test_build_score_one_frame_gap_at_head():
+    # 曲頭の1フレーム休符は音符の前倒しで吸収する
+    score = build_score(_project([_note(0, 60, 1 / FRAME_RATE, 0.5, "ド")]))
+    assert score["notes"][0]["key"] == 60
+    assert score["notes"][0]["frame_length"] == round(0.5 * FRAME_RATE)
+
+
 def test_build_score_transpose():
     score = build_score(_project([_note(0, 60, 0.5, 1.0, "ド")]), transpose=3)
     pitched = [n for n in score["notes"] if n["key"] is not None]
