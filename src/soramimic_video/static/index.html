@@ -99,6 +99,7 @@
   <legend>入力</legend>
   <label>XF MIDIファイル(必須)</label>
   <input type="file" id="midi" accept=".mid,.midi">
+  <p class="hint" id="midi-restore-hint" hidden></p>
   <label>元歌詞(任意・字幕用)</label>
   <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
 </fieldset>
@@ -223,6 +224,8 @@
 <button id="submit">動画を生成</button>
 <button id="preview" style="background:#64748b">声プレビュー(歌い出しから20秒)</button>
 <p class="hint">プレビューは替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
+<p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
+  style="background:#64748b; font-size:.8rem; padding:.2rem .8rem; margin-left:.3rem">保存した入力をクリア</button></p>
 
 <div id="progress" hidden>
   <ul class="stages">
@@ -278,6 +281,7 @@ async function loadConfig() {
   $("editor-embed-controls").hidden = !conf.editor;
   await loadWordlistSelect(conf.editor);
   updateParodyStatus();
+  await restoreForm();  // wordlist選択肢が揃った後に前回の入力を復元(初回のみ)
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
   const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
@@ -557,6 +561,7 @@ function leLabel(e) {
 
 function leToJson() {
   $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
+  saveForm();  // ドラッグ編集はchangeを発火しないのでここで保存する
 }
 
 // 替え歌単語フィールドのサンプル(未知語には行がないのでこれだけ埋まる)
@@ -1260,6 +1265,167 @@ $("download-editor").addEventListener("click", async () => {
   a.download = file.name || "editor.json";
   a.click();
   URL.revokeObjectURL(a.href);
+});
+
+// ---- 入力フォームの localStorage 保存・復元(プリセット, #31) ----
+// テキスト・選択系は formState にまとめ、ファイルは midiFile / editorFile に別保存する。
+// APIキー(apiKey)は既存の保存を尊重してここでは触らない。
+const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
+
+function saveForm() {
+  // 復元中はchange発火で保存が走ると、未復元の値で保存済み状態を上書きしてしまう
+  if (restoring) return;
+  try {
+    localStorage.setItem(FORM_KEY, JSON.stringify({
+      lyrics: $("lyrics").value,
+      wordlist: $("wordlist").value,
+      where: $("where").value,
+      transpose: $("transpose").value,
+      layout: $("layout").value,
+      layoutJson: $("layout-json").value,
+      model: $("model").value,
+      synthesizer: $("synthesizer").value,
+      voicevoxStyle: $("voicevox-style").value,
+      voicevoxAutoOctave: $("voicevox-auto-octave").checked,
+    }));
+  } catch { /* QuotaExceededError等でUIを壊さない */ }
+}
+
+// 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)
+["lyrics", "wordlist", "where", "transpose", "layout", "layout-json",
+ "model", "synthesizer", "voicevox-style", "voicevox-auto-octave"]
+  .forEach((id) => $(id).addEventListener("change", saveForm));
+
+// MIDIはバイナリなのでdataURL化して保存(未選択なら消す)
+$("midi").addEventListener("change", async () => {
+  const f = $("midi").files[0];
+  try {
+    if (!f) { localStorage.removeItem(MIDI_KEY); return; }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(f);
+    });
+    localStorage.setItem(MIDI_KEY, JSON.stringify({ name: f.name, dataUrl }));
+  } catch { /* 保存失敗は無視 */ }
+});
+
+// editor JSONはテキストのまま保存(「取り消し」でvalue=""なら消す)
+$("editor").addEventListener("change", async () => {
+  const f = $("editor").files[0];
+  try {
+    if (!f) { localStorage.removeItem(EDITOR_FILE_KEY); return; }
+    localStorage.setItem(EDITOR_FILE_KEY, JSON.stringify({ name: f.name, text: await f.text() }));
+  } catch { /* 保存失敗は無視 */ }
+});
+
+// dataURL/テキストからFileを作り、file入力に注入する
+function injectFile(input, file, dispatch) {
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+  if (dispatch) input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+let restored = false, restoring = false;
+async function restoreForm() {
+  if (restored) return;   // loadConfigはapi-keyのchangeで再実行されるので一度だけ
+  restored = true;
+  restoring = true;
+  try {
+    await doRestoreForm();
+  } finally {
+    restoring = false;
+  }
+}
+
+async function doRestoreForm() {
+  let state = null;
+  try { state = JSON.parse(localStorage.getItem(FORM_KEY) || "null"); } catch { /* 壊れた値は無視 */ }
+  let any = false;
+
+  if (state) {
+    any = true;
+    // 1. 単語リスト: 選択肢があれば name/where 一致のoptionを選ぶ
+    const sel = $("wordlist-select");
+    if (!sel.hidden && sel.options.length) {
+      const match = [...sel.options].find((o) => o.value !== "__other__"
+        && (o.dataset.name || "") === (state.wordlist || "")
+        && (o.dataset.where || "") === (state.where || ""));
+      if (match) {
+        sel.value = match.value;
+        applyWordlistSelection();  // #wordlist/#where設定 + change dispatch
+      } else {
+        sel.value = "__other__";
+        $("wordlist").hidden = false;
+        $("wordlist").value = state.wordlist || "";
+        $("where").value = state.where || "";
+        $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } else {
+      $("wordlist").value = state.wordlist || "";
+      $("where").value = state.where || "";
+      $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    // 2. lyrics, transpose, model
+    $("lyrics").value = state.lyrics || "";
+    if (state.transpose != null) $("transpose").value = state.transpose;
+    if (state.model) $("model").value = state.model;
+    // 3. 合成エンジン: voicevoxが無効なら復元しない
+    if (state.synthesizer === "voicevox" && !$("synth-voicevox-opt").disabled) {
+      $("synthesizer").value = "voicevox";
+    } else if (state.synthesizer === "neutrino") {
+      $("synthesizer").value = "neutrino";
+    }
+    toggleSynthOpts();
+    if (state.voicevoxStyle
+        && [...$("voicevox-style").options].some((o) => o.value === state.voicevoxStyle)) {
+      $("voicevox-style").value = state.voicevoxStyle;
+      updateVoicevoxCredit();
+    }
+    if (state.voicevoxAutoOctave != null) {
+      $("voicevox-auto-octave").checked = !!state.voicevoxAutoOctave;
+    }
+    // 4. layout名: 値だけ入れる(changeを発火するとleLoadがlayoutJsonを上書きするため)
+    if (state.layout) $("layout").value = state.layout;
+    // 5. layoutJson: 既存ハンドラでleLayoutにパースさせる
+    if (state.layoutJson) {
+      $("layout-json").value = state.layoutJson;
+      $("layout-json").dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+
+  // 6. MIDIファイル: dataURLからFile復元して注入(changeは不要・復元表示を出す)
+  try {
+    const m = JSON.parse(localStorage.getItem(MIDI_KEY) || "null");
+    if (m && m.dataUrl) {
+      const blob = await (await fetch(m.dataUrl)).blob();
+      injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), false);
+      $("midi-restore-hint").textContent = "前回のファイルを復元: " + m.name;
+      $("midi-restore-hint").hidden = false;
+      any = true;
+    }
+  } catch { /* 復元失敗は無視 */ }
+
+  // 7. editorファイル: File化して注入しchange(単語リスト復元より後に行う)
+  try {
+    const ed = JSON.parse(localStorage.getItem(EDITOR_FILE_KEY) || "null");
+    if (ed && ed.text != null) {
+      injectFile($("editor"), new File([ed.text], ed.name, { type: "application/json" }), true);
+      any = true;
+    }
+  } catch { /* 復元失敗は無視 */ }
+
+  if (any) $("restore-notice").hidden = false;
+}
+
+// 保存した入力をクリア(apiKeyは消さない)
+$("clear-form").addEventListener("click", () => {
+  localStorage.removeItem(FORM_KEY);
+  localStorage.removeItem(MIDI_KEY);
+  localStorage.removeItem(EDITOR_FILE_KEY);
+  location.reload();
 });
 
 $("api-key").addEventListener("change", loadConfig);
