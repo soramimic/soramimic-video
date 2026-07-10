@@ -91,7 +91,14 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             sf = cursor
         if ef <= sf:  # 長さが無い(丸めで消えた)音符は捨てる
             continue
-        if sf > cursor:  # 隙間を休符で埋める
+        if sf - cursor == 1:
+            # 1フレームだけの休符はエンジンが500を返す(実測: 2フレーム以上は可)。
+            # 丸めで生じた微小ギャップなので、直前の要素を1フレーム伸ばして埋める
+            if out_notes:
+                out_notes[-1]["frame_length"] += 1
+            else:
+                sf = cursor  # 曲頭なら音符を1フレーム前倒しする
+        elif sf > cursor:  # 隙間を休符で埋める
             out_notes.append({"key": None, "frame_length": sf - cursor, "lyric": ""})
 
         kana = lyric_map.get(n.id) or ""
