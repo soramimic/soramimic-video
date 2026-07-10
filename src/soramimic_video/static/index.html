@@ -1328,7 +1328,10 @@ function injectFile(input, file, dispatch) {
   if (dispatch) input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-let restored = false, restoring = false;
+// restoringは最初からtrue: loadConfig中のloadWordlistSelectが#wordlistにchangeを
+// 発火するので、復元前にsaveFormが走ると保存済みの状態(歌詞・単語リスト選択など)を
+// 空の値で上書きしてしまう。初回の復元が終わるまで保存を抑止する
+let restored = false, restoring = true;
 async function restoreForm() {
   if (restored) return;   // loadConfigはapi-keyのchangeで再実行されるので一度だけ
   restored = true;
