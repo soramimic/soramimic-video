@@ -54,6 +54,7 @@ def synthesize(
     synthesizer: str = "neutrino",
     voicevox_url: str = "http://127.0.0.1:50021",
     voicevox_style: int = 3003,
+    voicevox_auto_octave: bool = True,
 ) -> Path | None:
     """歌唱合成を実行して vocal.wav のパスを返す。
 
@@ -70,6 +71,7 @@ def synthesize(
             engine_url=voicevox_url,
             style_id=voicevox_style,
             transpose=transpose,
+            auto_octave=voicevox_auto_octave,
             progress_cb=progress_cb,
         )
     if synthesizer != "neutrino":

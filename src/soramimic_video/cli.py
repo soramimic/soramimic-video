@@ -156,6 +156,7 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         synthesizer=args.synthesizer,
         voicevox_url=args.voicevox_url,
         voicevox_style=args.voicevox_style,
+        voicevox_auto_octave=not args.no_voicevox_auto_octave,
     )
     if wav:
         print(f"歌唱音源: {wav}")
@@ -331,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3003,
         help="VOICEVOXのスタイルID(例: ずんだもんノーマル=3003、波音リツ歌唱=6000)",
+    )
+    p.add_argument(
+        "--no-voicevox-auto-octave",
+        action="store_true",
+        help="VOICEVOXの音域に合わせた自動オクターブ調整を無効にする",
     )
     p.add_argument(
         "--transpose", type=int, default=0, help="半音単位の移調(-12で1オクターブ下)"

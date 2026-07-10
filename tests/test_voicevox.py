@@ -146,6 +146,33 @@ def test_build_score_empty_raises():
         build_score(_project([]))
 
 
+# ---- auto_octave_shift ----
+
+
+def test_auto_octave_shift_high_song_goes_down():
+    # 実曲相当: 67〜89(高すぎ)は-12で55〜77になり安全域(54〜78)に全部入る
+    keys = list(range(67, 90))
+    assert vv.auto_octave_shift(keys) == -12
+
+
+def test_auto_octave_shift_in_range_stays():
+    assert vv.auto_octave_shift([60, 65, 70, 75]) == 0
+
+
+def test_auto_octave_shift_considers_user_transpose():
+    # ユーザーが既に-12している場合は追加調整不要
+    keys = list(range(67, 90))
+    assert vv.auto_octave_shift(keys, transpose=-12) == 0
+
+
+def test_auto_octave_shift_low_song_goes_up():
+    assert vv.auto_octave_shift(list(range(40, 60))) == 12
+
+
+def test_auto_octave_shift_empty():
+    assert vv.auto_octave_shift([]) == 0
+
+
 # ---- run_voicevox (HTTPモック) ----
 
 
