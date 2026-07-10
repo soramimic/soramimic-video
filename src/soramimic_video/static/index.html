@@ -99,13 +99,20 @@
   <legend>入力</legend>
   <label>XF MIDIファイル(必須)</label>
   <input type="file" id="midi" accept=".mid,.midi">
-  <label>editorの書き出しJSON(推奨)</label>
-  <input type="file" id="editor" accept=".json">
-  <p class="hint">soramimicエディタで編集→「書き出し」したファイル。なしの場合は下の単語リストで自動変換します。</p>
+  <label>元歌詞(任意・字幕用)</label>
+  <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+</fieldset>
+
+<fieldset>
+  <legend>替え歌</legend>
+  <label>単語リスト</label>
+  <select id="wordlist-select" hidden></select>
+  <input type="text" id="wordlist" placeholder="例: stations">
+  <p class="hint">替え歌に使う単語のリスト。MIDIの元歌詞に音が近い単語へ置き換えます。</p>
   <div id="editor-embed-controls" hidden>
-    <button type="button" id="open-editor">✏️ この場でeditor編集(MIDI+単語リストから)</button>
+    <button type="button" id="open-editor">✏️ editorで変換・編集</button>
     <p class="hint">MIDIと単語リストから替え歌に変換し、その場のエディタで編集できます。
-      「取り込んで閉じる」で上のJSON欄に反映され、そのまま動画生成に使えます。</p>
+      「取り込んで閉じる」でこの替え歌が動画生成に使われます。</p>
     <span id="open-editor-msg" class="error"></span>
   </div>
   <div id="editor-frame-wrap" hidden style="margin-top:.8rem">
@@ -117,8 +124,18 @@
     <iframe id="editor-frame" title="soramimic editor"
       style="width:100%; height:72vh; border:1px solid #8884; border-radius:8px"></iframe>
   </div>
-  <label>元歌詞(任意・字幕用)</label>
-  <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+  <p id="parody-status" class="hint"></p>
+  <details id="parody-advanced">
+    <summary>詳細(上級者向け)</summary>
+    <label>外部で編集した替え歌JSONの読み込み</label>
+    <input type="file" id="editor" accept=".json">
+    <p class="hint">soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
+    <button type="button" id="download-editor" disabled
+      style="background:#64748b; font-size:.85rem; padding:.35rem 1rem">現在の替え歌JSONをダウンロード</button>
+    <label>絞り込み(where・任意)</label>
+    <input type="text" id="where" placeholder="例: type=family or type=full">
+    <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
+  </details>
 </fieldset>
 
 <fieldset>
@@ -129,8 +146,6 @@
   <label>移調(半音)</label>
   <input type="text" id="transpose" value="0" inputmode="numeric">
   <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
-  <label>単語リスト(editor JSONがないときは必須)</label>
-  <input type="text" id="wordlist" placeholder="例: stations">
   <label>レイアウト(任意)</label>
   <input type="text" id="layout" list="layout-list" placeholder="例: default(組み込み名かサーバー上のJSONパス)">
   <datalist id="layout-list"></datalist>
@@ -242,6 +257,8 @@ async function loadConfig() {
   $("layout-list").innerHTML = (conf.layouts || [])
     .map((l) => `<option value="${l}">`).join("");
   $("editor-embed-controls").hidden = !conf.editor;
+  await loadWordlistSelect(conf.editor);
+  updateParodyStatus();
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
   const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
@@ -349,6 +366,7 @@ async function submitJob(previewSec) {
   form.append("transpose", $("transpose").value.trim() || "0");
   form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
+  form.append("where", $("where").value);
   form.append("layout", $("layout").value);
   form.append("layout_json", $("layout-json").value);
   setBusy(true);
@@ -1047,6 +1065,7 @@ async function openEditor() {
   form.append("midi", midi);
   form.append("lyrics", $("lyrics").value);
   form.append("wordlist", wl);
+  form.append("where", $("where").value.trim());
   const btn = $("open-editor");
   btn.disabled = true;
   const label = btn.textContent;
@@ -1088,6 +1107,98 @@ function closeEditor() {
 $("open-editor").addEventListener("click", openEditor);
 $("editor-import").addEventListener("click", importEditor);
 $("editor-close").addEventListener("click", closeEditor);
+
+// ---- 単語リスト選択(同梱editorのconfを唯一の情報源に) ----
+// editorが使えるときは /editor/conf/setting.json の wordlist からプルダウンを組む。
+// 選択は canonical な #wordlist(テキスト欄)に name(filepathのstem)を書き込み、
+// #where に絞り込みを反映する。これで既存の読み手($("wordlist"))は変えずに済む。
+async function loadWordlistSelect(editorAvailable) {
+  const sel = $("wordlist-select");
+  if (!editorAvailable) { sel.hidden = true; $("wordlist").hidden = false; return; }
+  let entries;
+  try {
+    const res = await fetch("/editor/conf/setting.json", { headers: headers() });
+    if (!res.ok) throw new Error(String(res.status));
+    const conf = await res.json();
+    // value=ORIGINAL(editorローカルのカスタムリスト)はサーバーで解決できないので除外
+    entries = (conf.wordlist || []).filter(
+      (w) => w && w.filepath && w.value !== "ORIGINAL");
+  } catch {
+    // confが取れなければ従来のテキスト入力にフォールバック
+    sel.hidden = true; $("wordlist").hidden = false; return;
+  }
+  if (!entries.length) { sel.hidden = true; $("wordlist").hidden = false; return; }
+  // 同じvalueが複数(絞り込み違い)ある場合はwhereを添えて区別できるようにする
+  const counts = {};
+  entries.forEach((w) => { counts[w.value] = (counts[w.value] || 0) + 1; });
+  sel.innerHTML = "";
+  entries.forEach((w, i) => {
+    const name = w.filepath.replace(/.*\//, "").replace(/\.csv$/, "");
+    let label = w.text || name;
+    if (counts[w.value] > 1 && w.where) label += `(${w.where})`;
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = label;
+    o.dataset.name = name;
+    o.dataset.where = w.where || "";
+    sel.appendChild(o);
+  });
+  // サーバーはconfにないリストも名前で解決できるので、手入力の逃げ道を常に用意する
+  const other = document.createElement("option");
+  other.value = "__other__";
+  other.textContent = "その他(名前を入力)";
+  sel.appendChild(other);
+  sel.hidden = false;
+  applyWordlistSelection();
+}
+
+// 選択内容を canonical な #wordlist / #where に反映する。
+// 「その他」ならテキスト欄を出して手入力に切り替える。
+function applyWordlistSelection() {
+  const sel = $("wordlist-select");
+  const opt = sel.selectedOptions[0];
+  if (!opt || opt.value === "__other__") {
+    $("wordlist").hidden = false;
+    if (opt && opt.value === "__other__") $("wordlist").focus();
+    return;
+  }
+  $("wordlist").hidden = true;
+  $("wordlist").value = opt.dataset.name || "";
+  $("where").value = opt.dataset.where || "";
+  // 列取得・キュープレビュー等(#wordlistのchangeを見ている)を更新する
+  $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+}
+$("wordlist-select").addEventListener("change", applyWordlistSelection);
+
+// 替え歌JSONの有無に応じた状態表示とダウンロードボタンの活性を更新する
+function updateParodyStatus() {
+  const has = !!$("editor").files[0];
+  $("download-editor").disabled = !has;
+  const s = $("parody-status");
+  if (has) {
+    s.innerHTML = '✅ 編集済みの替え歌を使用します(<a href="#" id="clear-editor">取り消し</a>)';
+    $("clear-editor").addEventListener("click", (ev) => {
+      ev.preventDefault();
+      $("editor").value = "";
+      $("editor").dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  } else {
+    s.textContent = "未編集: 投入時に単語リストで自動変換します";
+  }
+}
+$("editor").addEventListener("change", updateParodyStatus);
+
+// 現在の替え歌JSON(editorファイル入力の中身)を保存する(バックアップ・再利用向け)
+$("download-editor").addEventListener("click", async () => {
+  const file = $("editor").files[0];
+  if (!file) return;
+  const blob = new Blob([await file.text()], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = file.name || "editor.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
 
 $("api-key").addEventListener("change", loadConfig);
 if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");
