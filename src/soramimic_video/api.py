@@ -308,6 +308,7 @@ def _run_synthesize(job: Job, config: dict[str, Any], project: Any, synthesize) 
             synthesizer=synthesizer,
             voicevox_url=config.get("voicevox_url", "http://127.0.0.1:50021"),
             voicevox_style=job.params.get("voicevox_style", 3003),
+            voicevox_auto_octave=job.params.get("voicevox_auto_octave", True),
         )
         if store is not None and job.stage_started_at is not None:
             synth_estimate.record_run(
@@ -699,6 +700,7 @@ def create_app(
         model: str = Form("MERROW"),
         synthesizer: str = Form("neutrino"),
         voicevox_style: int = Form(3003),
+        voicevox_auto_octave: bool = Form(True),
         transpose: int = Form(0),
         preview: float = Form(0),
         wordlist: str = Form(""),
@@ -747,6 +749,7 @@ def create_app(
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
             "voicevox_style": voicevox_style,
+            "voicevox_auto_octave": voicevox_auto_octave,
             "transpose": transpose,
             "preview": max(0.0, min(preview, 60.0)),
             "wordlist": wordlist.strip(),

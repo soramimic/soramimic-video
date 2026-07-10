@@ -31,7 +31,12 @@ FRAME_RATE = 93.75  # VOICEVOXの1フレーム = 1/93.75秒
 # 歌唱用の「歌の先生」スタイル(sing型)。クエリ生成に使う。frame_synthesisは
 # 選んだスタイル(frame_decode/sing)で行う。現状 sing型は 波音リツ ノーマル(6000)のみ。
 SING_TEACHER_ID = 6000
-_TIMEOUT = 120  # 1リクエストのタイムアウト秒(合成は数秒〜数十秒)
+# 歌の先生(6000)が要求どおりのピッチで歌える音域(実測)。sing_frame_audio_queryの
+# 返すf0を要求keyと比較したところ、54〜78(F#3〜F#5)の外では大きく崩れる
+# (例: key=84で-9半音)。ハミングもf0は先生由来なので、この範囲が事実上の制約。
+SAFE_KEY_MIN = 54
+SAFE_KEY_MAX = 78
+_TIMEOUT = 600  # 1リクエストのタイムアウト秒(フルコーラスのクエリ生成は数分かかりうる)
 
 
 def _connect_error(engine_url: str, exc: Exception) -> RuntimeError:
@@ -62,6 +67,24 @@ def split_voicevox_moras(kana: str) -> list[str]:
             v = vowel_of(base) if base else (out[-1] if out else "ア")
             out.extend([v or "ア"] * n_long)
     return out
+
+
+def auto_octave_shift(keys: list[int], transpose: int = 0) -> int:
+    """安全音域に収まる音符が最も多くなるオクターブシフト(半音)を返す。
+
+    ユーザー指定のtransposeを適用した後のkeyに対して、-24〜+24半音の
+    オクターブ単位で範囲外の音符数が最小になるシフトを選ぶ(同数なら0寄り)。
+    """
+    if not keys:
+        return 0
+    shifted = [k + transpose for k in keys]
+
+    def out_count(shift: int) -> int:
+        return sum(
+            1 for k in shifted if not SAFE_KEY_MIN <= k + shift <= SAFE_KEY_MAX
+        )
+
+    return min((s * 12 for s in (-2, -1, 0, 1, 2)), key=lambda x: (out_count(x), abs(x)))
 
 
 def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
@@ -170,16 +193,27 @@ def run_voicevox(
     engine_url: str = DEFAULT_ENGINE_URL,
     style_id: int = 3003,
     transpose: int = 0,
+    auto_octave: bool = True,
     progress_cb: Callable[[float], None] | None = None,
 ) -> Path:
     """VOICEVOXでvocal.wavを合成して返す。
 
     sing_frame_audio_query(歌の先生 6000。選んだstyle_id自体がsing型ならそれを先生に)
     → frame_synthesis(style_id) → vocal_path に書き出す。
+    auto_octave(既定ON)は、安全音域(SAFE_KEY_MIN..MAX)に収まる音符が最大に
+    なるようオクターブ単位で自動移調する(範囲外はピッチが大きく崩れるため)。
     """
     from .synthesize import vocal_path
 
     base = engine_url.rstrip("/")
+    if auto_octave:
+        shift = auto_octave_shift([n.midi_note for n in project.notes], transpose)
+        if shift:
+            logger.info(
+                "VOICEVOXの音域(MIDI %d〜%d)に合わせて%+dオクターブ調整します",
+                SAFE_KEY_MIN, SAFE_KEY_MAX, shift // 12,
+            )
+            transpose += shift
     score = build_score(project, transpose=transpose)
 
     # 先生(クエリ用スタイル)を決める。選んだスタイルがsing型なら自身、

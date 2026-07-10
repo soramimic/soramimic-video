@@ -153,6 +153,12 @@
   <div id="voicevox-opts" hidden>
     <label>歌声(キャラ・スタイル)</label>
     <select id="voicevox-style"></select>
+    <label style="display:inline-flex; align-items:center; gap:.4rem; font-weight:400">
+      <input type="checkbox" id="voicevox-auto-octave" checked style="width:auto">
+      音域に合わせて自動でオクターブ調整
+    </label>
+    <p class="hint">VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。
+      曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。</p>
     <p class="hint" id="voicevox-credit"></p>
   </div>
   <label>移調(半音)</label>
@@ -416,6 +422,7 @@ async function submitJob(previewSec) {
   form.append("model", $("model").value);
   form.append("synthesizer", $("synthesizer").value);
   form.append("voicevox_style", $("voicevox-style").value || "3003");
+  form.append("voicevox_auto_octave", $("voicevox-auto-octave").checked ? "true" : "false");
   form.append("transpose", $("transpose").value.trim() || "0");
   form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
