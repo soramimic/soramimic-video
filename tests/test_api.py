@@ -74,6 +74,30 @@ def test_requires_editor_or_wordlist(client):
     assert wait_done(client, job_id)["params"]["parody_source"] == "convert"
 
 
+def test_rejects_unknown_synthesizer(client):
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    res = client.post(
+        "/api/jobs",
+        files=files,
+        data={"wordlist": "stations", "synthesizer": "bogus"},
+    )
+    assert res.status_code == 422
+
+
+def test_accepts_voicevox_params(client):
+    job_id = submit(
+        client, wordlist="stations", synthesizer="voicevox", voicevox_style="3001"
+    )
+    body = wait_done(client, job_id)
+    assert body["params"]["synthesizer"] == "voicevox"
+    assert body["params"]["voicevox_style"] == 3001
+
+
+def test_config_has_voicevox_key(client):
+    body = client.get("/api/config").json()
+    assert "voicevox" in body  # 起動していればstyles、いなければNone
+
+
 def test_preview_returns_audio(tmp_path, monkeypatch):
     def fake_pipeline(job, config):
         assert job.params["preview"] == 20.0

@@ -15,7 +15,7 @@ import mido
 
 from . import runproc
 from .project import Project
-from .synthesize import NEUTRINO_DIR
+from .synthesize import vocal_path
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def mix(
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("ffmpeg が見つかりません")
-    vocal = project_dir / NEUTRINO_DIR / "vocal.wav"
+    vocal = vocal_path(project_dir)
     if not vocal.exists():
         raise RuntimeError(f"歌唱wavがありません({vocal})。先に synthesize を実行してください")
 

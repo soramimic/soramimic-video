@@ -284,7 +284,10 @@ def _run_synthesize(job: Job, config: dict[str, Any], project: Any, synthesize) 
     job.stage_estimated_total に入れる(to_dict がこれらから %/残り秒を出す)。
     成功後は今回の実績を throughput ストアに記録して次回の見積りに使う。
     """
-    store: Path | None = config.get("throughput_store")
+    synthesizer = job.params.get("synthesizer", "neutrino")
+    is_voicevox = synthesizer == "voicevox"
+    # VOICEVOXは速く進捗内訳も出ないので、NEUTRINO用の所要見積り・実績記録は行わない
+    store: Path | None = None if is_voicevox else config.get("throughput_store")
     score_seconds = max((n.end_sec for n in project.notes), default=0.0)
     with _stage(job, "synthesize"):
         if store is not None:
@@ -302,6 +305,9 @@ def _run_synthesize(job: Job, config: dict[str, Any], project: Any, synthesize) 
             threads=config.get("threads", 4),
             transpose=job.params.get("transpose", 0),
             progress_cb=on_progress,
+            synthesizer=synthesizer,
+            voicevox_url=config.get("voicevox_url", "http://127.0.0.1:50021"),
+            voicevox_style=job.params.get("voicevox_style", 3003),
         )
         if store is not None and job.stage_started_at is not None:
             synth_estimate.record_run(
@@ -480,6 +486,7 @@ def create_app(
     threads: int = 4,
     layout: str | None = None,
     editor_dist: Path | None = None,
+    voicevox_url: str = "http://127.0.0.1:50021",
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     config = {
@@ -490,6 +497,7 @@ def create_app(
         "font": font or default_font(),
         "threads": threads,
         "layout": layout,
+        "voicevox_url": voicevox_url,
         # 合成の所要時間の目安(曲秒あたりの実処理秒)を実行ごとに記録して次回に使う
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
     }
@@ -523,10 +531,24 @@ def create_app(
             "auth_required": auth_required,
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
+            "voicevox": _voicevox_config(),
             "host": platform.node(),
             "layouts": builtin_layout_names(),
             "editor": editor_available,
         }
+
+    def _voicevox_config() -> dict[str, Any] | None:
+        """VOICEVOXエンジンが起動していればスタイル一覧、いなければNone。
+
+        起動確認はリクエスト時に短いタイムアウトで行う(サーバー起動を
+        ブロックしない。エンジンは後から立ち上げてもよい)。
+        """
+        from .voicevox import list_singers
+
+        try:
+            return {"styles": list_singers(str(config["voicevox_url"]), timeout=1.0)}
+        except RuntimeError:
+            return None
 
     @app.get("/api/layouts/{name}", dependencies=[Depends(_require_api_key)])
     def get_layout(name: str) -> dict[str, Any]:
@@ -675,6 +697,8 @@ def create_app(
         editor: UploadFile | None = None,
         lyrics: str = Form(""),
         model: str = Form("MERROW"),
+        synthesizer: str = Form("neutrino"),
+        voicevox_style: int = Form(3003),
         transpose: int = Form(0),
         preview: float = Form(0),
         wordlist: str = Form(""),
@@ -715,8 +739,14 @@ def create_app(
                 load_layout(layout)
             except (FileNotFoundError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if synthesizer not in ("neutrino", "voicevox"):
+            raise HTTPException(
+                status_code=422, detail="synthesizerは neutrino か voicevox です"
+            )
         params = {
             "model": model.strip() or "MERROW",
+            "synthesizer": synthesizer,
+            "voicevox_style": voicevox_style,
             "transpose": transpose,
             "preview": max(0.0, min(preview, 60.0)),
             "wordlist": wordlist.strip(),

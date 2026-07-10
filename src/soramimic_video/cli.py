@@ -153,6 +153,9 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         model=args.model,
         transpose=args.transpose,
         dry_run=args.dry_run,
+        synthesizer=args.synthesizer,
+        voicevox_url=args.voicevox_url,
+        voicevox_style=args.voicevox_style,
     )
     if wav:
         print(f"歌唱音源: {wav}")
@@ -206,6 +209,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         threads=args.threads,
         layout=args.layout,
         editor_dist=Path(args.editor_dist) if args.editor_dist else None,
+        voicevox_url=args.voicevox_url,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
@@ -308,9 +312,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file", help="editorが書き出したJSON(省略時は editor.json)")
     p.set_defaults(func=cmd_import_editor)
 
-    p = sub.add_parser("synthesize", help="NEUTRINOで替え歌を歌唱合成する")
+    p = sub.add_parser("synthesize", help="替え歌を歌唱合成する(NEUTRINO/VOICEVOX)")
     p.add_argument("--project", required=True)
     p.add_argument("--model", default="MERROW", help="NEUTRINOの歌声モデル名")
+    p.add_argument(
+        "--synthesizer",
+        choices=["neutrino", "voicevox"],
+        default="neutrino",
+        help="合成エンジン(既定: neutrino)",
+    )
+    p.add_argument(
+        "--voicevox-url",
+        default="http://127.0.0.1:50021",
+        help="VOICEVOXエンジンのURL",
+    )
+    p.add_argument(
+        "--voicevox-style",
+        type=int,
+        default=3003,
+        help="VOICEVOXのスタイルID(例: ずんだもんノーマル=3003、波音リツ歌唱=6000)",
+    )
     p.add_argument(
         "--transpose", type=int, default=0, help="半音単位の移調(-12で1オクターブ下)"
     )
@@ -346,6 +367,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--soundfont", help="伴奏用サウンドフォント(.sf2)")
     p.add_argument("--font", help="字幕フォント名(既定はOSに応じて選択)")
     p.add_argument("--threads", type=int, default=4, help="NEUTRINOのスレッド数")
+    p.add_argument(
+        "--voicevox-url",
+        default="http://127.0.0.1:50021",
+        help="VOICEVOXエンジンのURL(合成エンジンにVOICEVOXを選んだとき使う)",
+    )
     p.add_argument("--layout", help="フレームレイアウト(組み込み名かJSONパス)")
     p.add_argument(
         "--editor-dist",
