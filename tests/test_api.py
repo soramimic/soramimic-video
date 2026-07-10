@@ -396,6 +396,21 @@ def test_restart_recovers_history(tmp_path, monkeypatch):
     job_id = submit(client, editor=b"{}")
     wait_done(client, job_id)
 
+    # APIのstatusはメモリ上で先に"done"になり、status.jsonへの保存はその直後に
+    # ワーカーが行う。再起動(履歴の読み直し)は永続化が終わってから行う
+    import json as json_mod
+
+    status_path = jobs_dir / job_id / api_mod.STATUS_FILENAME
+    for _ in range(200):
+        try:
+            if json_mod.loads(status_path.read_text())["status"] == "done":
+                break
+        except (OSError, ValueError, KeyError):
+            pass  # 未作成・書き込み途中
+        time.sleep(0.02)
+    else:
+        raise AssertionError("status.jsonが書き込まれません")
+
     client2 = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
     jobs = client2.get("/api/jobs").json()
     assert [j["id"] for j in jobs] == [job_id]
