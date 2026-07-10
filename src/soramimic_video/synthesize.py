@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 NEUTRINO_DIR = "neutrino"
 
 
+def vocal_path(project_dir: Path) -> Path:
+    """合成した歌唱wavの正規パス。バックエンド(NEUTRINO/VOICEVOX)共通。
+
+    ミックスはこの1箇所の定義を参照する(mix.pyが同じ関数を使う)。
+    ディスク上の場所は歴史的経緯で neutrino/ 配下だが、両バックエンド共通。
+    """
+    return project_dir / NEUTRINO_DIR / "vocal.wav"
+
+
 def build_lyric_map(project: Project) -> dict[int, str]:
     """note_id -> 歌唱カナ。替え歌単語があればその読み、なければ元の読み。"""
     lyric_map = {n.id: n.kana for n in project.notes}
@@ -42,7 +51,30 @@ def synthesize(
     transpose: int = 0,
     dry_run: bool = False,
     progress_cb: Callable[[float], None] | None = None,
+    synthesizer: str = "neutrino",
+    voicevox_url: str = "http://127.0.0.1:50021",
+    voicevox_style: int = 3003,
 ) -> Path | None:
+    """歌唱合成を実行して vocal.wav のパスを返す。
+
+    synthesizer で使うバックエンドを選ぶ("neutrino" 既定 / "voicevox")。
+    """
+    if synthesizer == "voicevox":
+        from .voicevox import run_voicevox
+
+        if dry_run:
+            return None
+        return run_voicevox(
+            project,
+            project_dir,
+            engine_url=voicevox_url,
+            style_id=voicevox_style,
+            transpose=transpose,
+            progress_cb=progress_cb,
+        )
+    if synthesizer != "neutrino":
+        raise ValueError(f"未対応の合成エンジンです: {synthesizer}")
+
     work_dir = project_dir / NEUTRINO_DIR
     work_dir.mkdir(parents=True, exist_ok=True)
     xml_path = work_dir / "score.musicxml"

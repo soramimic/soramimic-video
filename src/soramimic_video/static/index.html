@@ -140,9 +140,21 @@
 
 <fieldset>
   <legend>オプション</legend>
-  <label>歌声モデル</label>
-  <input type="text" id="model" list="model-list" value="MERROW">
-  <datalist id="model-list"></datalist>
+  <label>合成エンジン</label>
+  <select id="synthesizer">
+    <option value="neutrino">NEUTRINO</option>
+    <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
+  </select>
+  <div id="neutrino-opts">
+    <label>歌声モデル</label>
+    <input type="text" id="model" list="model-list" value="MERROW">
+    <datalist id="model-list"></datalist>
+  </div>
+  <div id="voicevox-opts" hidden>
+    <label>歌声(キャラ・スタイル)</label>
+    <select id="voicevox-style"></select>
+    <p class="hint" id="voicevox-credit"></p>
+  </div>
   <label>移調(半音)</label>
   <input type="text" id="transpose" value="0" inputmode="numeric">
   <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
@@ -254,6 +266,7 @@ async function loadConfig() {
   if (conf.models && conf.models.length && !conf.models.includes($("model").value)) {
     $("model").value = conf.models[0];
   }
+  setupVoicevox(conf.voicevox);
   $("layout-list").innerHTML = (conf.layouts || [])
     .map((l) => `<option value="${l}">`).join("");
   $("editor-embed-controls").hidden = !conf.editor;
@@ -269,6 +282,44 @@ async function loadConfig() {
     $("status-line").textContent = "実行中のジョブに再接続しました";
     watch(active.id);
   }
+}
+
+// VOICEVOXの歌声一覧をセレクトに流し込み、エンジン未起動なら選択肢を無効化する。
+function setupVoicevox(vv) {
+  const opt = $("synth-voicevox-opt");
+  const sel = $("voicevox-style");
+  if (!vv || !vv.styles || !vv.styles.length) {
+    opt.disabled = true;
+    opt.textContent = "VOICEVOX(エンジン未起動)";
+    if ($("synthesizer").value === "voicevox") $("synthesizer").value = "neutrino";
+    toggleSynthOpts();
+    return;
+  }
+  opt.disabled = false;
+  opt.textContent = "VOICEVOX";
+  // 歌(sing)を先頭に、続けてハミング(frame_decode)。ラベルにキャラ・スタイル・種別を出す
+  sel.innerHTML = vv.styles.map((s) => {
+    const tag = s.type === "sing" ? "歌" : "ハミング";
+    return `<option value="${s.style_id}" data-name="${s.name}">`
+      + `${s.name}(${s.style_name})[${tag}]</option>`;
+  }).join("");
+  updateVoicevoxCredit();
+  toggleSynthOpts();
+}
+
+function updateVoicevoxCredit() {
+  const sel = $("voicevox-style");
+  const o = sel.options[sel.selectedIndex];
+  const name = o ? (o.getAttribute("data-name") || "") : "";
+  $("voicevox-credit").textContent =
+    `生成音声の利用には『VOICEVOX:${name}』のクレジット表記が必要です。`;
+}
+
+// エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
+function toggleSynthOpts() {
+  const isVv = $("synthesizer").value === "voicevox";
+  $("neutrino-opts").hidden = isVv;
+  $("voicevox-opts").hidden = !isVv;
 }
 
 async function loadHistory() {
@@ -363,6 +414,8 @@ async function submitJob(previewSec) {
   if ($("editor").files[0]) form.append("editor", $("editor").files[0]);
   form.append("lyrics", $("lyrics").value);
   form.append("model", $("model").value);
+  form.append("synthesizer", $("synthesizer").value);
+  form.append("voicevox_style", $("voicevox-style").value || "3003");
   form.append("transpose", $("transpose").value.trim() || "0");
   form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
@@ -386,6 +439,8 @@ async function submitJob(previewSec) {
 
 $("submit").addEventListener("click", () => submitJob(0));
 $("preview").addEventListener("click", () => submitJob(20));
+$("synthesizer").addEventListener("change", toggleSynthOpts);
+$("voicevox-style").addEventListener("change", updateVoicevoxCredit);
 $("cancel").addEventListener("click", async () => {
   if (!currentJob) return;
   $("cancel").disabled = true;
