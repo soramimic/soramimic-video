@@ -208,6 +208,16 @@ def test_needs_ruby():
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_black_frame_creates_missing_dir(tmp_path: Path):
+    # キュー画像ゼロのジョブではframesディレクトリを誰も作らない。
+    # _black_frame自身が作らないと実ffmpegがCould not open fileで失敗する(実障害)
+    from soramimic_video.video import _black_frame
+
+    out = _black_frame(tmp_path / "video" / "frames", 64, 48)
+    assert out.exists() and out.stat().st_size > 0
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
 def test_image_cues_and_slideshow(tmp_path: Path):
     project = _project(tmp_path)
     work = tmp_path / "video"
