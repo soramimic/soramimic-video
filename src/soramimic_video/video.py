@@ -102,9 +102,10 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
 def _black_frame(out_dir: Path, width: int, height: int) -> Path:
     out = out_dir / f"black_{width}x{height}.png"
     if not out.exists():
+        # キュー画像が1枚も無いと out_dir(frames)は誰も作っていない。
+        # ffmpegは親ディレクトリを作らず「Could not open file」で失敗する
+        out_dir.mkdir(parents=True, exist_ok=True)
         _run(
-            # -update 1: ffmpeg 6.1以降、固定ファイル名への単一画像出力に必須
-            # (無いと image2 muxer が連番パターンを要求して失敗する)
             [_ffmpeg(), "-y", "-f", "lavfi", "-i", f"color=black:s={width}x{height}",
              "-frames:v", "1", "-update", "1", str(out)],
             "黒フレーム生成",
