@@ -557,7 +557,12 @@ def make_video(
     total_sec = max(n.end_sec for n in project.notes) + 3.0
 
     cues, credits = build_image_cues(project, work, width, height, image_cache, layout_obj)
-    logger.info("画像キュー: %d件", len(cues))
+    if cues:
+        logger.info("画像キュー: %d件", len(cues))
+    else:
+        # 画像取得の全滅(ネットワーク・レート制限)や、画像もテキストも無い
+        # レイアウトで起きる。動画は生成されるが全編無地になるので目立たせる
+        logger.warning("画像キューが0件です。動画の背景は全編無地になります")
     # 歌唱がない区間(前奏・間奏・後奏)用のidleフレーム(定義があるときだけ)
     idle_frame = render_idle_frame(
         layout_obj, idle_frame_data(project), width, height, work / "frames"
