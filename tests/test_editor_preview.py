@@ -117,6 +117,24 @@ def test_unknown_word_uses_fallback(client, tmp_path):
     assert "death" not in unknown["data"]
 
 
+def test_lyrics_align_to_original_text(client, tmp_path):
+    """元歌詞を渡すと、字幕の元歌詞がカナ(phrases)ではなく対応する元歌詞行になる。"""
+    payload = _editor_payload(_wordlist(tmp_path))
+    layout_json = json.dumps(_LAYOUT_SHOW_ALL)
+    lyrics = "のぶなが秀吉\nかくうの単語"
+
+    first = _post(client, payload, cue="0", layout_json=layout_json, lyrics=lyrics).json()
+    assert first["original_text"] == "のぶなが秀吉"
+    last = _post(client, payload, cue="2", layout_json=layout_json, lyrics=lyrics).json()
+    assert last["original_text"] == "かくうの単語"
+
+    # 元歌詞に対応する行がなければ従来どおりカナ(phrase)にフォールバック
+    unmatched = _post(
+        client, payload, cue="0", layout_json=layout_json, lyrics="全然違う歌詞"
+    ).json()
+    assert unmatched["original_text"] == "ノブナガヒデヨシ"
+
+
 def test_no_editor_words_shows_zero(client, tmp_path):
     # 画像だけのレイアウトでは、画像列のない単語は表示できず0キューになる
     payload = _editor_payload(_wordlist(tmp_path))

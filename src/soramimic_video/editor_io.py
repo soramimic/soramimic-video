@@ -116,7 +116,7 @@ def _resolve_preview_wordlist(payload: dict, fallback: str | None) -> str | None
 
 
 def build_editor_preview(
-    payload: dict, wordlist: str | None, layout: Layout
+    payload: dict, wordlist: str | None, layout: Layout, lyrics: str = ""
 ) -> dict[str, Any]:
     """editor書き出しJSONから、実動画と同じキュー順・フィルタのプレビューデータを作る。
 
@@ -133,6 +133,15 @@ def build_editor_preview(
     if not isinstance(results, list):
         raise ValueError("editorの書き出しファイルではありません(resultsが必要)")
     phrases = payload.get("phrases") or []
+    # 元歌詞が与えられていれば実動画(align_lines)と同様に行対応づけし、
+    # 字幕の元歌詞をカナ(phrases)ではなく元歌詞の行で出す
+    aligned: list[str | None] = [None] * len(phrases)
+    lyric_lines = [ln.strip() for ln in lyrics.splitlines() if ln.strip()]
+    if lyric_lines and phrases:
+        from .align import align_texts
+
+        assignments = align_texts([str(p) for p in phrases], lyric_lines)
+        aligned = [lyric_lines[a] if a is not None else None for a in assignments]
     resolved = _resolve_preview_wordlist(payload, wordlist)
     rows_by_id: dict[str, list[dict[str, str]]] = {}
     if resolved is not None:
@@ -145,7 +154,9 @@ def build_editor_preview(
         # 字幕は行タイミング。替え歌=全単語のsurfaceを2スペース連結(video.build_ass
         # と同じ)、元歌詞=元の行(editor JSONはxf_kana=phrasesを持つ)
         parody_text = "  ".join(w.get("surface", "") for w in line_words)
-        original_text = phrases[i] if i < len(phrases) else ""
+        original_text = (aligned[i] if i < len(aligned) else None) or (
+            phrases[i] if i < len(phrases) else ""
+        )
         for w in line_words:
             row = _find_row(rows_by_id, w) or {}
             # 単語リストに行がない単語(未知語)はfallback側で描く

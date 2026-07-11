@@ -644,6 +644,7 @@ def create_app(
         wordlist: str = Form(""),
         cue: int = Form(0),
         layout_json: str = Form(""),
+        lyrics: str = Form(""),
     ) -> dict[str, Any]:
         """editor書き出しJSONの変換結果に基づく、キュー1枚ぶんのプレビューデータ。
 
@@ -667,7 +668,9 @@ def create_app(
                     status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
                 ) from exc
         try:
-            result = build_editor_preview(payload, wordlist.strip() or None, layout_obj)
+            result = build_editor_preview(
+                payload, wordlist.strip() or None, layout_obj, lyrics
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         cues = result["cues"]
