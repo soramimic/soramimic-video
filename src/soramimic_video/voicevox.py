@@ -349,19 +349,26 @@ def _samples_per_frame(sample_rate: int) -> int:
 
 
 def _concat_chunks(
-    wav_parts: list[bytes], chunks: list[ScoreChunk], total_frames: int
+    wav_parts: list[bytes | None], chunks: list[ScoreChunk], total_frames: int
 ) -> bytes:
     """各チャンクのWAVを絶対フレーム位置で連結し、1本のWAVバイト列にする。
 
     frame→サンプル変換は samples_per_frame = sr/FRAME_RATE。各チャンクの実サンプル数が
     期待(frame_length×spf)と丸め起因でずれる場合のみ黙ってpad/trimする。
+    wav_partsのNoneは合成をスキップした純休符チャンク。出力バッファはゼロ初期化なので
+    書き込みを省略するだけで無音になる。WAVフォーマットの基準は最初の非Noneから取る。
     """
-    sr, sampwidth, nchannels, _, _ = _read_wav(wav_parts[0])
+    first = next((p for p in wav_parts if p is not None), None)
+    if first is None:  # build_scoreが音符ゼロを弾くため通常は起こらない(防御)
+        raise RuntimeError("全チャンクが休符のみで、合成するチャンクがありません")
+    sr, sampwidth, nchannels, _, _ = _read_wav(first)
     spf = _samples_per_frame(sr)
     tolerance = spf  # 許容ドリフト(約1フレーム分)。これを超えるずれはエラー。
     bytes_per_sample = sampwidth * nchannels
     out = bytearray(total_frames * spf * bytes_per_sample)
     for part, chunk in zip(wav_parts, chunks, strict=True):
+        if part is None:  # 純休符チャンク: 無音のまま
+            continue
         p_sr, p_sw, p_ch, p_nframes, pcm = _read_wav(part)
         if (p_sr, p_sw, p_ch) != (sr, sampwidth, nchannels):
             raise RuntimeError("チャンク間でWAVフォーマットが一致しません")
@@ -434,16 +441,23 @@ def run_voicevox(
         chunks = [ScoreChunk(start_frame=0, notes=score["notes"])]
     logger.info("VOICEVOX合成: %dチャンクに分割しました", len(chunks))
 
-    wav_parts: list[bytes] = []
+    wav_parts: list[bytes | None] = []
     for i, chunk in enumerate(chunks):
         runproc.raise_if_cancelled()
-        wav_parts.append(
-            _synthesize_chunk(base, engine_url, teacher, style_id, chunk.to_score())
-        )
+        if any(n["key"] is not None for n in chunk.notes):
+            wav_parts.append(
+                _synthesize_chunk(base, engine_url, teacher, style_id, chunk.to_score())
+            )
+        else:
+            # 純休符チャンク(長いイントロ・間奏)は合成せず無音として扱う。
+            logger.info(
+                "チャンク%d/%dは休符のみのため合成をスキップします", i + 1, len(chunks)
+            )
+            wav_parts.append(None)
         if progress_cb is not None:
             progress_cb((i + 1) / len(chunks))
 
-    if len(chunks) == 1:
+    if len(chunks) == 1 and wav_parts[0] is not None:
         # 1チャンクなら結合不要。エンジン出力をそのまま書く(従来動作を維持)。
         content = wav_parts[0]
     else:

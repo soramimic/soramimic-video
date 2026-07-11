@@ -369,6 +369,46 @@ def test_run_voicevox_chunked_concat(tmp_path, monkeypatch):
     assert set(samples[66 * 256 :]) == {2000}
 
 
+def test_run_voicevox_skips_pure_rest_chunk(tmp_path, monkeypatch):
+    # 歌い出しが遅い曲: 長い先頭休符の途中で切れて「休符のみのチャンク」ができる。
+    # 純休符チャンクはエンジンに送らず、結合後は無音になること。
+    singers = [{"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}]
+    monkeypatch.setattr(vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers))
+
+    posts = {"query": 0, "synth": 0}
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        if "sing_frame_audio_query" in url:
+            posts["query"] += 1
+            # 純休符チャンクが送られてきたらここで検出する
+            assert any(n["key"] is not None for n in json["notes"])
+            return _FakeResp(json_data=json)
+        posts["synth"] += 1
+        frames = sum(n["frame_length"] for n in json["notes"])
+        return _FakeResp(content=_wav_const(frames * 256, 1000))
+
+    monkeypatch.setattr(vv.requests, "post", fake_post)
+
+    # build_score上で [rest(141), note60(47)] = 188frame。chunk_sec=0.7(max 65.625frame)
+    # では先頭休符の途中(65frame)で切れ、chunk0が純休符になる。
+    notes = [_note(0, 60, 1.5, 2.0, "ド")]
+    out = run_voicevox(_project(notes), tmp_path, style_id=6000, chunk_sec=0.7)
+
+    # 事前条件の確認: 実際に純休符チャンク+非休符チャンクに分かれている
+    chunks = vv.split_score(build_score(_project(notes)), max_sec=0.7)
+    assert len(chunks) == 2
+    assert all(n["key"] is None for n in chunks[0].notes)
+
+    # (a) エンジンへのリクエストは非休符チャンクの1回だけ
+    assert posts["query"] == 1 and posts["synth"] == 1
+    # (b) 総サンプル数が正しく、スキップ区間(chunk0)は無音
+    samples = _read_samples(out)
+    assert len(samples) == 188 * 256
+    cut = chunks[1].start_frame * 256
+    assert set(samples[:cut]) == {0}
+    assert set(samples[cut:]) == {1000}
+
+
 def test_run_voicevox_chunk_disabled_single_request(tmp_path, monkeypatch):
     singers = [{"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}]
     monkeypatch.setattr(vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers))
