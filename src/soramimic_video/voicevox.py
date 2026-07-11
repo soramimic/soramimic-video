@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -43,6 +44,12 @@ SING_TEACHER_ID = 6000
 SAFE_KEY_MIN = 54
 SAFE_KEY_MAX = 78
 _TIMEOUT = 600  # 1リクエストのタイムアウト秒(フルコーラスのクエリ生成は数分かかりうる)
+# エンジンは合成中にOOM等でクラッシュしうるが、launchd/dockerの再起動ポリシーで
+# 自動復帰する運用。クライアント側は「復帰を待って同じチャンクを再試行」する。
+# エンジンプロセスの起動・killはここでは絶対に行わない(HTTPで待つだけ)。
+ENGINE_POLL_INTERVAL = 2.0  # エンジン復帰待ちの /version ポーリング間隔(秒)
+ENGINE_RECOVERY_TIMEOUT = 60.0  # エンジン復帰待ちの上限(秒)
+CHUNK_MAX_RETRIES = 2  # 接続断による1チャンクあたりの最大再試行回数
 
 
 def _connect_error(engine_url: str, exc: Exception) -> RuntimeError:
@@ -70,6 +77,28 @@ def _request_error(engine_url: str, exc: Exception) -> RuntimeError:
             f"エンジンを再起動して再実行してください: {exc}"
         )
     return _connect_error(engine_url, exc)
+
+
+def _wait_for_engine(base: str, timeout: float = ENGINE_RECOVERY_TIMEOUT) -> bool:
+    """クラッシュしたエンジンの復帰を GET /version のポーリングで待つ。
+
+    timeout 秒以内に /version が 200 を返せば True、上限に達したら False を返す。
+    ENGINE_POLL_INTERVAL 間隔でポーリングし、待機中も runproc.raise_if_cancelled()
+    を呼んでキャンセルを効かせる。/version が返ればモデル未ロードでも合成は通るので、
+    復帰判定はこれで十分(エンジンプロセスの起動・killは一切行わない)。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        runproc.raise_if_cancelled()
+        try:
+            r = requests.get(f"{base}/version", timeout=ENGINE_POLL_INTERVAL)
+            if r.status_code == 200:
+                return True
+        except requests.RequestException:
+            pass  # まだ復帰していない(接続拒否など)。上限まで待つ。
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(ENGINE_POLL_INTERVAL)
 
 
 def split_voicevox_moras(kana: str) -> list[str]:
@@ -414,6 +443,8 @@ def run_voicevox(
     なるようオクターブ単位で自動移調する(範囲外はピッチが大きく崩れるため)。
     chunk_sec>0 のときはスコアを休符境界で分割し、チャンクごとに順次合成して結合する
     (エンジンのピークメモリを抑えてOOMを避ける)。0以下で分割無効(従来どおり1リクエスト)。
+    合成中にエンジンが接続断(クラッシュ)した場合は、GET /version の復帰を待って同じ
+    チャンクを再試行する(最大 CHUNK_MAX_RETRIES 回。復帰待ちの上限は ENGINE_RECOVERY_TIMEOUT)。
     """
     from .synthesize import vocal_path
 
@@ -446,7 +477,9 @@ def run_voicevox(
         runproc.raise_if_cancelled()
         if any(n["key"] is not None for n in chunk.notes):
             wav_parts.append(
-                _synthesize_chunk(base, engine_url, teacher, style_id, chunk.to_score())
+                _synthesize_chunk_resilient(
+                    base, engine_url, teacher, style_id, chunk.to_score()
+                )
             )
         else:
             # 純休符チャンク(長いイントロ・間奏)は合成せず無音として扱う。
@@ -473,6 +506,39 @@ def run_voicevox(
     return wav
 
 
+def _synthesize_chunk_resilient(
+    base: str,
+    engine_url: str,
+    teacher: int,
+    style_id: int,
+    score: dict[str, Any],
+) -> bytes:
+    """_synthesize_chunk を接続断に強くしたラッパー。
+
+    合成中にエンジンがクラッシュすると requests.ConnectionError になる(合成中の異常終了、
+    死んでいる間のリクエストの両方)。その場合は GET /version の復帰を待って同じチャンクを
+    最大 CHUNK_MAX_RETRIES 回まで再試行する。復帰待ちがタイムアウトした、または再試行を
+    使い切った場合は _request_error 相当の RuntimeError を送出する。接続系以外のエラー
+    (HTTPステータス異常・タイムアウト)はリトライせず即失敗する(挙動を変えない)。
+    """
+    for attempt in range(CHUNK_MAX_RETRIES + 1):
+        try:
+            return _synthesize_chunk(base, engine_url, teacher, style_id, score)
+        except requests.ConnectionError as exc:
+            if attempt >= CHUNK_MAX_RETRIES:
+                raise _request_error(engine_url, exc) from exc
+            logger.warning(
+                "VOICEVOXエンジンとの接続が切れました。復帰を待って再試行します"
+                "(%d/%d): %s",
+                attempt + 1, CHUNK_MAX_RETRIES, exc,
+            )
+            if not _wait_for_engine(base):
+                # 上限まで待っても /version が戻らない。異常終了・再起動案内で失敗させる。
+                raise _request_error(engine_url, exc) from exc
+    # ループは必ず return か raise で抜けるが、型チェッカーのため防御的に置く。
+    raise RuntimeError("VOICEVOXチャンク合成が予期せず終了しました")
+
+
 def _synthesize_chunk(
     base: str,
     engine_url: str,
@@ -488,6 +554,10 @@ def _synthesize_chunk(
             json=score,
             timeout=_TIMEOUT,
         )
+    except requests.ConnectionError:
+        # 接続断(合成中のクラッシュ or 死んでいる間のリクエスト)は呼び出し側で
+        # 復帰待ち・再試行するため、そのまま送出する。
+        raise
     except requests.RequestException as exc:
         raise _request_error(engine_url, exc) from exc
     if r.status_code != 200:
@@ -503,6 +573,10 @@ def _synthesize_chunk(
             json=query,
             timeout=_TIMEOUT,
         )
+    except requests.ConnectionError:
+        # 接続断(合成中のクラッシュ or 死んでいる間のリクエスト)は呼び出し側で
+        # 復帰待ち・再試行するため、そのまま送出する。
+        raise
     except requests.RequestException as exc:
         raise _request_error(engine_url, exc) from exc
     if r2.status_code != 200:
