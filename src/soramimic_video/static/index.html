@@ -24,6 +24,11 @@
   }
   button:disabled { background: #94a3b8; cursor: default; }
   .hint { font-size: .8rem; opacity: .7; margin-top: .1rem; }
+  .wordlist-filters { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; margin-top: .4rem; }
+  .wordlist-filters-label { font-size: .8rem; opacity: .7; }
+  .wordlist-filter { display: inline-flex; align-items: center; gap: .2rem; margin: 0; font-weight: normal; font-size: .85rem; }
+  .wordlist-filter input[type=checkbox] { width: auto; margin: 0; }
+  .wordlist-filter-hint { font-size: .8rem; opacity: .6; }
   .stages { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; padding: 0; list-style: none; }
   .stages li {
     padding: .2rem .6rem; border-radius: 999px; font-size: .85rem;
@@ -112,6 +117,7 @@
   <legend>替え歌</legend>
   <label>単語リスト</label>
   <select id="wordlist-select" hidden></select>
+  <div id="wordlist-filters" class="wordlist-filters" hidden></div>
   <input type="text" id="wordlist" placeholder="例: stations">
   <p class="hint">替え歌に使う単語のリスト。MIDIの元歌詞に音が近い単語へ置き換えます。</p>
   <div id="editor-embed-controls" hidden>
@@ -1249,9 +1255,18 @@ $("editor-close").addEventListener("click", closeEditor);
 // editorが使えるときは /editor/conf/setting.json の wordlist からプルダウンを組む。
 // 選択は canonical な #wordlist(テキスト欄)に name(filepathのstem)を書き込み、
 // #where に絞り込みを反映する。これで既存の読み手($("wordlist"))は変えずに済む。
+// プルダウンの各項目が指す単語リスト。同じ value(なければ名前)の
+// 絞り込み違いエントリを1グループにまとめる。 { name, text, entries: [conf順] }
+let wordlistGroups = [];
+
 async function loadWordlistSelect(editorAvailable) {
   const sel = $("wordlist-select");
-  if (!editorAvailable) { sel.hidden = true; $("wordlist").hidden = false; return; }
+  const filters = $("wordlist-filters");
+  wordlistGroups = [];
+  const bail = () => {
+    sel.hidden = true; filters.hidden = true; $("wordlist").hidden = false;
+  };
+  if (!editorAvailable) { bail(); return; }
   let entries;
   try {
     const res = await fetch("/editor/conf/setting.json", { headers: headers() });
@@ -1262,22 +1277,24 @@ async function loadWordlistSelect(editorAvailable) {
       (w) => w && w.filepath && w.value !== "ORIGINAL");
   } catch {
     // confが取れなければ従来のテキスト入力にフォールバック
-    sel.hidden = true; $("wordlist").hidden = false; return;
+    bail(); return;
   }
-  if (!entries.length) { sel.hidden = true; $("wordlist").hidden = false; return; }
-  // 同じvalueが複数(絞り込み違い)ある場合はwhereを添えて区別できるようにする
-  const counts = {};
-  entries.forEach((w) => { counts[w.value] = (counts[w.value] || 0) + 1; });
-  sel.innerHTML = "";
-  entries.forEach((w, i) => {
+  if (!entries.length) { bail(); return; }
+  // ユニークなリストごとに1項目にまとめる(value、なければ名前でグループ化)
+  const map = new Map();
+  entries.forEach((w) => {
     const name = w.filepath.replace(/.*\//, "").replace(/\.csv$/, "");
-    let label = w.text || name;
-    if (counts[w.value] > 1 && w.where) label += `(${w.where})`;
+    const key = w.value || name;
+    let g = map.get(key);
+    if (!g) { g = { name, text: w.text || name, entries: [] }; map.set(key, g); }
+    g.entries.push(w);
+  });
+  wordlistGroups = [...map.values()];
+  sel.innerHTML = "";
+  wordlistGroups.forEach((g, i) => {
     const o = document.createElement("option");
     o.value = String(i);
-    o.textContent = label;
-    o.dataset.name = name;
-    o.dataset.where = w.where || "";
+    o.textContent = g.text;  // グループ先頭エントリの text(なければ名前)
     sel.appendChild(o);
   });
   // サーバーはconfにないリストも名前で解決できるので、手入力の逃げ道を常に用意する
@@ -1289,23 +1306,119 @@ async function loadWordlistSelect(editorAvailable) {
   applyWordlistSelection();
 }
 
+// #where を設定し、その change を発火する(不一致警告の再描画がこれを見ている)
+function setWhere(v) {
+  $("where").value = v;
+  $("where").dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+// where を " or " 区切りの条件項に分解する。単純なor連結でない
+// (and・括弧を含む等)なら null、条件が無ければ空配列を返す。
+function parseWhereTerms(where) {
+  const w = (where || "").trim();
+  if (!w) return [];
+  if (/[()]/.test(w) || /\band\b/i.test(w)) return null;
+  return w.split(/\s+or\s+/i).map((t) => t.trim()).filter(Boolean);
+}
+
+// 選択中グループのwhere群からチェックボックスを組み立て、#whereへ反映する。
+// 単純なor連結でないエントリを含む/条件項が無いグループはチェックボックスを
+// 出さず、先頭エントリのwhereをそのまま使う。
+function renderWordlistFilters(g) {
+  const filters = $("wordlist-filters");
+  filters.innerHTML = "";
+  const firstWhere = g && g.entries[0] ? (g.entries[0].where || "") : "";
+  const perEntry = g ? g.entries.map((e) => parseWhereTerms(e.where)) : [];
+  const simple = perEntry.every((t) => t !== null);
+  // 条件項の和集合を conf 出現順で作る
+  const union = [];
+  if (simple) {
+    perEntry.forEach((terms) => terms.forEach(
+      (t) => { if (!union.includes(t)) union.push(t); }));
+  }
+  if (!g || !simple || union.length === 0) {
+    filters.hidden = true;
+    setWhere(firstWhere);
+    return;
+  }
+  // 全項が同じキー(type= 等)なら値部分だけを表示する
+  const kv = union.map((t) => {
+    const m = t.match(/^\s*([^=<>!]+(?:=|!=|<=|>=|<|>))(.*)$/);
+    return m ? { key: m[1].trim(), val: m[2].trim() } : null;
+  });
+  const sameKey = kv.every(Boolean) && new Set(kv.map((x) => x.key)).size === 1;
+  const initial = new Set(perEntry[0]);  // 初期チェックは先頭エントリの項
+  filters.hidden = false;
+  const lbl = document.createElement("span");
+  lbl.className = "wordlist-filters-label";
+  lbl.textContent = "絞り込み:";
+  filters.appendChild(lbl);
+  union.forEach((term, i) => {
+    const wrap = document.createElement("label");
+    wrap.className = "wordlist-filter";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = term;
+    cb.checked = initial.has(term);
+    cb.addEventListener("change", updateWhereFromFilters);
+    wrap.appendChild(cb);
+    wrap.appendChild(document.createTextNode(sameKey ? kv[i].val : term));
+    filters.appendChild(wrap);
+  });
+  const hint = document.createElement("span");
+  hint.className = "wordlist-filter-hint";
+  filters.appendChild(hint);
+  updateWhereFromFilters();
+}
+
+// チェック済みの項を conf 出現順(=DOM順)に " or " で連結して #where に反映する。
+function updateWhereFromFilters() {
+  const filters = $("wordlist-filters");
+  const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
+  const checked = boxes.filter((b) => b.checked).map((b) => b.value);
+  const hint = filters.querySelector(".wordlist-filter-hint");
+  if (hint) hint.textContent = checked.length ? "" : "(絞り込みなし: すべての行を使用)";
+  setWhere(checked.join(" or "));
+}
+
 // 選択内容を canonical な #wordlist / #where に反映する。
 // 「その他」ならテキスト欄を出して手入力に切り替える。
 function applyWordlistSelection() {
   const sel = $("wordlist-select");
+  const filters = $("wordlist-filters");
   const opt = sel.selectedOptions[0];
   if (!opt || opt.value === "__other__") {
+    filters.hidden = true; filters.innerHTML = "";
     $("wordlist").hidden = false;
     if (opt && opt.value === "__other__") $("wordlist").focus();
     return;
   }
+  const g = wordlistGroups[Number(opt.value)];
   $("wordlist").hidden = true;
-  $("wordlist").value = opt.dataset.name || "";
-  $("where").value = opt.dataset.where || "";
+  $("wordlist").value = g ? g.name : "";
+  renderWordlistFilters(g);  // #where を設定 + change 発火
   // 列取得・キュープレビュー等(#wordlistのchangeを見ている)を更新する
   $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
 }
 $("wordlist-select").addEventListener("change", applyWordlistSelection);
+
+// 復元された #where の項に合わせてチェック状態を戻す。or連結として解釈できて
+// 全項が既知ならチェックを合わせ、解釈できなければ初期チェックのまま #where に
+// 復元値を残す(チェックボックスが無いグループも復元値をそのまま使う)。
+function restoreWordlistFilters(where) {
+  const filters = $("wordlist-filters");
+  if (filters.hidden) { setWhere(where); return; }
+  const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
+  const terms = parseWhereTerms(where);
+  const known = new Set(boxes.map((b) => b.value));
+  if (terms !== null && terms.every((t) => known.has(t))) {
+    const want = new Set(terms);
+    boxes.forEach((b) => { b.checked = want.has(b.value); });
+    updateWhereFromFilters();
+  } else {
+    setWhere(where);
+  }
+}
 
 // 替え歌JSONの有無・単語リストとの不一致に応じた状態表示を更新する。
 // localStorage復元による注入は取り込み直後と区別がつかないため、restoreForm側が
@@ -1484,15 +1597,14 @@ async function doRestoreForm() {
     // 1. 単語リスト: 選択肢があれば name/where 一致のoptionを選ぶ
     const sel = $("wordlist-select");
     if (!sel.hidden && sel.options.length) {
-      const match = [...sel.options].find((o) => o.value !== "__other__"
-        && (o.dataset.name || "") === (state.wordlist || "")
-        && (o.dataset.where || "") === (state.where || ""));
-      if (match) {
-        sel.value = match.value;
-        applyWordlistSelection();  // #wordlist/#where設定 + change dispatch
+      const gi = wordlistGroups.findIndex((g) => g.name === (state.wordlist || ""));
+      if (gi >= 0) {
+        sel.value = String(gi);
+        applyWordlistSelection();  // #wordlist/#where設定 + チェックボックス + change
+        restoreWordlistFilters(state.where || "");  // 復元whereに合わせてチェック
       } else {
         sel.value = "__other__";
-        $("wordlist").hidden = false;
+        applyWordlistSelection();  // チェックボックスを隠しテキスト欄を出す
         $("wordlist").value = state.wordlist || "";
         $("where").value = state.where || "";
         $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
