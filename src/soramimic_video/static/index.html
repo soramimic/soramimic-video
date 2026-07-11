@@ -1343,11 +1343,17 @@ function groupFacets(g) {
   return e && Array.isArray(e.facets) && e.facets.length ? e.facets : null;
 }
 
+// facetの対象列。単数 column / 複数 columns(例: ポケモンのタイプ=type1,type2)の
+// 両形式に対応する。複数列は「いずれかの列が値に一致」の意味。
+function facetCols(f) {
+  return f.columns || (f.column ? [f.column] : []);
+}
+
 // facetの全項を "column=v" 文字列の配列で返す(語彙の被覆判定用)
 function facetVocabKeys(facets) {
   const keys = [];
   facets.forEach((f) => (f.values || []).forEach(
-    (v) => keys.push(f.column + "=" + v.v)));
+    (v) => facetCols(f).forEach((c) => keys.push(c + "=" + v.v))));
   return keys;
 }
 
@@ -1393,19 +1399,21 @@ function renderFacetFilters(facets) {
   const filters = $("wordlist-filters");
   filters.hidden = false;
   facets.forEach((f) => {
+    const cols = facetCols(f);
+    if (!cols.length) return;  // 列指定のないfacetは無視(conf不備)
     const row = document.createElement("div");
     row.className = "wordlist-facet";
-    row.dataset.col = f.column;
+    row.dataset.cols = JSON.stringify(cols);
     const lbl = document.createElement("span");
     lbl.className = "wordlist-filters-label";
-    lbl.textContent = (f.label || f.column) + ":";
+    lbl.textContent = (f.label || cols.join("/")) + ":";
     row.appendChild(lbl);
     (f.values || []).forEach((val) => {
       const wrap = document.createElement("label");
       wrap.className = "wordlist-filter";
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.dataset.col = f.column;
+      cb.dataset.cols = JSON.stringify(cols);
       cb.value = val.v;
       cb.checked = val.default === true;
       cb.addEventListener("change", updateWhereFromFilters);
@@ -1482,11 +1490,13 @@ function updateWhereFromFilters() {
   const rows = [...filters.querySelectorAll(".wordlist-facet")];
   if (rows.length) {
     // 各ファセット = チェック済み値を定義順に col=v で or 連結。空節は出さない。
+    // 複数列facetは値ごとに全列ぶんの項を並べる(いずれかの列が一致すればヒット)
     const clauses = [];
     rows.forEach((row) => {
-      const col = row.dataset.col;
+      const cols = JSON.parse(row.dataset.cols);
       const checked = [...row.querySelectorAll('input[type="checkbox"]')]
-        .filter((b) => b.checked).map((b) => col + "=" + b.value);
+        .filter((b) => b.checked)
+        .flatMap((b) => cols.map((c) => c + "=" + b.value));
       if (checked.length) clauses.push(checked.join(" or "));
     });
     // 1節なら括弧なし、複数節は各節を括弧で包み and 連結
@@ -1535,12 +1545,14 @@ function restoreWordlistFilters(where) {
   const rows = [...filters.querySelectorAll(".wordlist-facet")];
   if (rows.length) {
     const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
-    const key = (col, v) => col + "=" + v;
+    // 各チェックボックスの項集合(複数列facetは全列ぶん)。復元は全項が揃っている
+    // 値だけをチェックする(合成側が全列ぶん出すので、自前生成のwhereなら一致する)
+    const boxTerms = (b) => JSON.parse(b.dataset.cols).map((c) => c + "=" + b.value);
     const terms = parseFacetWhere(where);
-    const known = new Set(boxes.map((b) => key(b.dataset.col, b.value)));
-    if (terms !== null && terms.every((t) => known.has(key(t.col, t.v)))) {
-      const want = new Set(terms.map((t) => key(t.col, t.v)));
-      boxes.forEach((b) => { b.checked = want.has(key(b.dataset.col, b.value)); });
+    const known = new Set(boxes.flatMap(boxTerms));
+    if (terms !== null && terms.every((t) => known.has(t.col + "=" + t.v))) {
+      const want = new Set(terms.map((t) => t.col + "=" + t.v));
+      boxes.forEach((b) => { b.checked = boxTerms(b).every((k) => want.has(k)); });
       updateWhereFromFilters();
     } else {
       filters.hidden = true;
