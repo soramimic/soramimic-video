@@ -83,37 +83,42 @@ def _offset_map(src: str, dst: str) -> list[int]:
 _ABSORBABLE = set("ンッーアイウエオ")
 
 
-def _segment_spans(kana: str, n: int) -> list[tuple[int, int]] | None:
-    """kanaをn個のバリエーション要素に対応する文字区間に分割する。
+def _compressed_moras_per_element(
+    word_kana: str, pronunciation: list[str]
+) -> list[list[str]] | None:
+    """各発音要素が圧縮で「ー」に潰した単語モーラ(ン・ッ・母音字)を求める。
 
-    分割はsoramimicのsyllableToVariation相当: 拗音等は必ず直前に付き、
-    余剰分(len(fine moras) - n)は吸収可能なモーラを左から直前に併合する。
-    分割できなければNone。
+    変換エンジンの getVariation は単語の1音節を ``[頭] + ー``(撥音等を長音に
+    圧縮)という要素にすることがある(例: 単語リン→要素「リー」)。この関数は
+    単語kanaのfineモーラ列と発音要素を突き合わせ、各要素の末尾「ー」が単語側の
+    どのモーラ由来かを求める。末尾「ー」が単語自身の長音(単語側もfineモーラが
+    「ー」)なら圧縮ではないので除外する(例: 単語ハビー→要素「ビー」は圧縮なし)。
+    整合が取れなければ None(呼び出し側は復元せず現状動作)。
     """
-    fines = split_fine_moras(kana)
-    extras = len(fines) - n
-    if extras < 0 or n == 0:
+    fines = split_fine_moras(word_kana)
+    wi = 0
+    out: list[list[str]] = []
+    for p in pronunciation:
+        head = p.rstrip("ー")
+        nlong = len(p) - len(head)
+        acc = ""
+        while wi < len(fines) and len(acc) < len(head):
+            acc += fines[wi]
+            wi += 1
+        if acc != head:
+            return None
+        comp: list[str] = []
+        for _ in range(nlong):
+            if wi >= len(fines) or fines[wi] not in _ABSORBABLE:
+                return None
+            m = fines[wi]
+            wi += 1
+            if m != "ー":  # 単語自身の長音は圧縮ではない
+                comp.append(m)
+        out.append(comp)
+    if wi != len(fines):
         return None
-    spans: list[tuple[int, int]] = []
-    pos = 0
-    j = 0
-    for k in range(n):
-        start = pos
-        pos += len(fines[j])
-        j += 1
-        while (
-            extras > 0
-            and j < len(fines)
-            and fines[j] in _ABSORBABLE
-            and len(fines) - j > n - k - 1
-        ):
-            pos += len(fines[j])
-            j += 1
-            extras -= 1
-        spans.append((start, pos))
-    if j != len(fines):
-        return None
-    return spans
+    return out
 
 
 def _map_word_to_notes(
@@ -122,13 +127,15 @@ def _map_word_to_notes(
     offset_map: list[int],
     period: tuple[int, int],
     pronunciation: list[str] | None = None,
-    source_kana: str = "",
+    word_kana: str = "",
 ) -> tuple[list[int], list[str]]:
-    """periodユニット区間 → (文字区間) → 重なる音符indexの列と音符ごとの歌唱カナ。
+    """periodユニット区間 → 重なる音符indexの列と音符ごとの歌唱カナ。
 
-    pronunciation は変換結果の発音バリエーションで、periodが指す
-    元の読み(source_kana=originalkana)の1音節に1要素が対応する
-    (例: フェンス → [フェ][ン][ス] に [ホ][ン,][ス] など)。
+    発音要素(pronunciation)は変換エンジンが period 内の元歌詞ユニット
+    (units=音節)のバリエーション(syllableToVariation)と要素数を揃えて
+    マッチさせた結果なので、要素は「元歌詞ユニット」を単位に音符へ載る。
+    ユニット境界を尊重して要素を音符へ配置し、さらに単語側の圧縮モーラ
+    (撥音等)を同ユニット内の空き音符へ復元する。
     """
     unit_cum = [0]
     for length in unit_lens:
@@ -147,25 +154,76 @@ def _map_word_to_notes(
         if note_cum[i] < end_c and note_cum[i + 1] > start_c
     ]
 
-    # pronunciationの要素はoriginalkanaのバリエーション分割
-    # (ン・ッ・母音字・ーを直前の音節に吸収した形)に対応するので、
-    # 吸収規則を再現して要素ごとの文字区間を割り出し、音符に割り当てる
     kana_per_note = [""] * len(ids)
-    spans = _segment_spans(source_kana, len(pronunciation)) if pronunciation else None
-    if pronunciation and spans is not None:
-        for (s, e), p in zip(spans, pronunciation, strict=True):
-            lo, hi = offset_map[start_src + s], offset_map[start_src + e]
-            if hi <= lo:  # 対応先の文字がない(脱落): 直近の音符に寄せる
-                lo, hi = max(0, lo - 1), lo
-            for k, i in enumerate(ids):
-                if note_cum[i] < hi and note_cum[i + 1] > lo:
-                    kana_per_note[k] += p
-                    break
-    elif pronunciation:
-        logger.debug(
-            "発音要素数(%d)がoriginalkana %r に対応づけられません",
-            len(pronunciation), source_kana,
-        )
+    if not pronunciation:
+        return ids, kana_per_note
+
+    # 各ユニット(元歌詞音節)が占める ids 内の音符位置を求める
+    units = list(range(period[0], period[1]))
+    unit_note_ks: list[list[int]] = []
+    for u in units:
+        lo, hi = offset_map[unit_cum[u]], offset_map[unit_cum[u + 1]]
+        if hi <= lo:  # 対応先の文字がない(脱落): 直近の音符に寄せる
+            lo, hi = max(0, lo - 1), lo
+        ks = [k for k, i in enumerate(ids) if note_cum[i] < hi and note_cum[i + 1] > lo]
+        unit_note_ks.append(ks)
+
+    # 発音要素(計 len(pronunciation))をユニットへ分配する。
+    # 各ユニットは最低1要素、余剰は音符の空きがあるユニットへ左から割り当てる
+    # (エンジンは長い音節を複数要素へ展開しうる。例: ユウ→[ユ,ウ])。
+    n_units = len(units)
+    e = [0] * n_units
+    remaining = len(pronunciation)
+    for u in range(n_units):
+        if remaining <= 0:
+            break
+        e[u] = 1
+        remaining -= 1
+    u = 0
+    while remaining > 0 and u < n_units:
+        spare = max(0, len(unit_note_ks[u]) - e[u])
+        take = min(spare, remaining)
+        e[u] += take
+        remaining -= take
+        u += 1
+    if remaining > 0 and n_units:  # 音符数を超える要素は末尾ユニットに寄せる
+        e[-1] += remaining
+
+    comp_per_elem = (
+        _compressed_moras_per_element(word_kana, pronunciation) if word_kana else None
+    )
+    # 復元先にできるのは1ユニットだけが占有する音符(共有音符は避ける)
+    owners = [0] * len(ids)
+    for ks in unit_note_ks:
+        for k in ks:
+            owners[k] += 1
+
+    base = 0
+    for ui in range(n_units):
+        eu = e[ui]
+        ks = unit_note_ks[ui]
+        for j in range(eu):
+            p = pronunciation[base + j]
+            if not ks:
+                continue
+            k = ks[j] if j < len(ks) else ks[-1]
+            is_last = j == eu - 1
+            comp = comp_per_elem[base + j] if (is_last and comp_per_elem) else []
+            if comp:
+                trailing = [
+                    kk
+                    for kk in ks[j + 1 :]
+                    if kana_per_note[kk] == "" and owners[kk] == 1
+                ]
+                r = min(len(comp), len(trailing))
+                head = p.rstrip("ー")
+                genuine = (len(p) - len(head)) - len(comp)  # 単語自身の長音ぶんのー
+                kana_per_note[k] += head + "ー" * (genuine + (len(comp) - r))
+                for x in range(r):
+                    kana_per_note[trailing[x]] = comp[x]
+            else:
+                kana_per_note[k] += p
+        base += eu
     return ids, kana_per_note
 
 
@@ -242,7 +300,7 @@ def apply_converted_lines(
         for word in converted["words"]:
             note_idx, note_kana = _map_word_to_notes(
                 unit_lens, note_lens, offset_map, tuple(word["period"]),
-                word.get("pronunciation"), word.get("originalkana", ""),
+                word.get("pronunciation"), word.get("kana", ""),
             )
             note_kana = [k or "ー" for k in note_kana]
             if note_idx and all(k == "ー" for k in note_kana):
