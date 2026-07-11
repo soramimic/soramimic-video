@@ -180,6 +180,10 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             out_notes.append({"key": None, "frame_length": sf - cursor, "lyric": ""})
 
         kana = lyric_map.get(n.id) or ""
+        if kana.startswith("ー"):
+            # 伸ばしノート(「ー」等): split_voicevox_morasは文字列内でしか前音を
+            # 知れず「ア」に落ちてしまうため、直前ノートの母音で置き換える
+            kana = prev_vowel + kana[1:]
         morae = split_voicevox_moras(kana)
         if not morae:  # カナが無い継続モーラ等: 直前の母音を引き継ぐ
             morae = [prev_vowel]

@@ -108,6 +108,19 @@ def test_build_score_one_frame_gap_at_head():
     assert score["notes"][0]["frame_length"] == round(0.5 * FRAME_RATE)
 
 
+def test_build_score_choon_note_inherits_prev_vowel():
+    # 伸ばし専用ノート(カナ「ー」)は直前ノートの母音で歌う。
+    # 「ア」フォールバックだと ハ・ビー・ー が「ハビア」に聞こえる(実報告)
+    notes = [
+        _note(0, 60, 0.0, 0.5, "ハ"),
+        _note(1, 60, 0.5, 1.0, "ビー"),
+        _note(2, 60, 1.0, 1.5, "ー"),
+    ]
+    score = build_score(_project(notes))
+    lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
+    assert lyrics == ["ハ", "ビ", "イ", "イ"]  # ビーは[ビ,イ]、ーはイを引き継ぐ
+
+
 def test_build_score_transpose():
     score = build_score(_project([_note(0, 60, 0.5, 1.0, "ド")]), transpose=3)
     pitched = [n for n in score["notes"] if n["key"] is not None]
