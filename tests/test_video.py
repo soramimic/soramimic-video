@@ -161,9 +161,9 @@ def test_build_ass_ruby_events(tmp_path: Path):
     ruby = _ruby_events(ass)
     # ルビが要る単語(静・山)だけ。既にカナの「カワ」は出さない
     assert len(ruby) == 2
-    # ルビ文言 = kana
+    # ルビ文言 = kana のひらがな表示
     joined = "\n".join(ruby)
-    assert "シズ" in joined and "ヤマ" in joined and "カワ" not in joined
+    assert "しず" in joined and "やま" in joined and "カワ" not in joined and "かわ" not in joined
     # 本文パロディイベント(\fsなし)と同じ開始・終了区間
     body = next(ln for ln in ass.splitlines()
                 if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" not in ln)

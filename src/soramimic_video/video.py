@@ -317,6 +317,14 @@ def _to_katakana(text: str) -> str:
     return "".join(_HIRA_TO_KATA.get(ch, ch) for ch in text)
 
 
+_KATA_TO_HIRA = {v: k for k, v in _HIRA_TO_KATA.items()}
+
+
+def _to_hiragana(text: str) -> str:
+    """ルビ表示用にカタカナをひらがなへ(長音「ー」などはそのまま)。"""
+    return "".join(_KATA_TO_HIRA.get(ch, ch) for ch in text)
+
+
 def _needs_ruby(surface: str, kana: str) -> bool:
     """この単語にルビを振るべきか(表記がすでにカナで読みと同じなら不要)。
 
@@ -401,7 +409,7 @@ def _ruby_events(
         # \an2: ルビの下端中央を単語中心・本文上端に合わせる(本文のすぐ上に載る)
         events.append(
             f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
-            f"{{\\an2\\pos({cx:.0f},{top:.0f})\\fs{ruby_px}}}{_ass_escape(w.kana)}"
+            f"{{\\an2\\pos({cx:.0f},{top:.0f})\\fs{ruby_px}}}{_ass_escape(_to_hiragana(w.kana))}"
         )
     return events
 

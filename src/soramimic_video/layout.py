@@ -132,7 +132,8 @@ class SubtitleElement:
     align: str = "center"  # left / center / right
     valign: str = "bottom"  # top / middle / bottom
     bold: bool = False
-    # 替え歌字幕に単語ごとのふりがな(ルビ)を付ける。ふりがなは ParodyWord.kana。
+    # 替え歌字幕に単語ごとのふりがな(ルビ)を付ける。ふりがなは ParodyWord.kana の
+    # ひらがな表示。
     # 第1段階では source="parody" のみ有効(元歌詞ではカナ対応付けに課題があり無視する)。
     ruby: bool = False
     ruby_size: float = 0.5  # ルビの文字サイズ(本文フォントサイズに対する比)
