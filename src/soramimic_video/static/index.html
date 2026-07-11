@@ -525,6 +525,7 @@ async function leFetchCue(index) {
   form.append("editor", file);
   form.append("wordlist", $("wordlist").value.trim());
   form.append("cue", Math.max(0, index | 0));
+  form.append("lyrics", $("lyrics").value);
   if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
   try {
     const res = await fetch("/api/editor-preview", { method: "POST", body: form, headers: headers() });
@@ -1106,6 +1107,9 @@ $("wordlist").addEventListener("change", () => {
 
 // editor書き出しJSONを選び直したら先頭キューからプレビューし直す
 $("editor").addEventListener("change", () => { leCueIndex = 0; leFetchCue(0); });
+$("lyrics").addEventListener("change", () => {
+  leFetchCue(leCueIndex);  // 字幕の元歌詞はフォームの元歌詞を行対応づけして出すため
+});
 $("le-cue-prev").addEventListener("click", () => {
   if (leCueIndex > 0) leFetchCue(leCueIndex - 1);
 });
