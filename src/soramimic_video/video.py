@@ -103,8 +103,10 @@ def _black_frame(out_dir: Path, width: int, height: int) -> Path:
     out = out_dir / f"black_{width}x{height}.png"
     if not out.exists():
         _run(
+            # -update 1: ffmpeg 6.1以降、固定ファイル名への単一画像出力に必須
+            # (無いと image2 muxer が連番パターンを要求して失敗する)
             [_ffmpeg(), "-y", "-f", "lavfi", "-i", f"color=black:s={width}x{height}",
-             "-frames:v", "1", str(out)],
+             "-frames:v", "1", "-update", "1", str(out)],
             "黒フレーム生成",
         )
     return out
