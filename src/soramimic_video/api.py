@@ -521,19 +521,33 @@ def create_app(
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
-    # 同梱サンプル(ふるさと: 詞・曲ともパブリックドメイン、examples/gen_furusato.py で生成)
-    @app.get("/api/sample/midi")
-    def sample_midi() -> FileResponse:
+    # 同梱サンプル曲(いずれも詞・曲パブリックドメイン、examples/gen_samples.py で生成)
+    sample_dir = STATIC_DIR / "sample"
+
+    def _sample_ids() -> set[str]:
+        manifest = json.loads((sample_dir / "samples.json").read_text(encoding="utf-8"))
+        return {s["id"] for s in manifest}
+
+    @app.get("/api/samples")
+    def list_samples() -> list[dict[str, str]]:
+        return json.loads((sample_dir / "samples.json").read_text(encoding="utf-8"))
+
+    @app.get("/api/sample/{sample_id}/midi")
+    def sample_midi(sample_id: str) -> FileResponse:
+        if sample_id not in _sample_ids():
+            raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return FileResponse(
-            STATIC_DIR / "sample" / "furusato.mid",
+            sample_dir / f"{sample_id}.mid",
             media_type="audio/midi",
-            filename="furusato.mid",
+            filename=f"{sample_id}.mid",
         )
 
-    @app.get("/api/sample/lyrics")
-    def sample_lyrics() -> FileResponse:
+    @app.get("/api/sample/{sample_id}/lyrics")
+    def sample_lyrics(sample_id: str) -> FileResponse:
+        if sample_id not in _sample_ids():
+            raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return FileResponse(
-            STATIC_DIR / "sample" / "furusato_lyrics.txt", media_type="text/plain"
+            sample_dir / f"{sample_id}_lyrics.txt", media_type="text/plain"
         )
 
     @app.get("/api/config")

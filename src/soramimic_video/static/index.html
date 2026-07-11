@@ -100,9 +100,10 @@
   <label>XF MIDIファイル(必須)</label>
   <input type="file" id="midi" accept=".mid,.midi">
   <p class="hint" id="midi-restore-hint" hidden></p>
-  <p class="hint">
+  <p class="hint" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+    <select id="sample-select" style="width:auto;font-size:.85rem;padding:.25rem .3rem"></select>
     <button id="sample" type="button" style="background:#64748b;font-size:.85rem;padding:.25rem .8rem">
-      サンプル曲をセット(ふるさと)
+      サンプル曲をセット
     </button>
     <span id="sample-status"></span>
   </p>
@@ -461,13 +462,30 @@ async function submitJob(previewSec) {
   }
 }
 
+async function loadSamples() {
+  try {
+    const res = await fetch("/api/samples");
+    if (!res.ok) throw new Error(String(res.status));
+    const samples = await res.json();
+    $("sample-select").innerHTML = samples
+      .map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
+  } catch {
+    // サンプルが取れない環境ではUIごと隠す
+    $("sample-select").parentElement.hidden = true;
+  }
+}
+loadSamples();
+
 $("sample").addEventListener("click", async () => {
   try {
+    const sid = $("sample-select").value;
+    if (!sid) throw new Error("サンプルがありません");
+    const title = $("sample-select").selectedOptions[0].textContent;
     const [midiRes, lyricsRes] = await Promise.all([
-      fetch("/api/sample/midi"), fetch("/api/sample/lyrics"),
+      fetch(`/api/sample/${sid}/midi`), fetch(`/api/sample/${sid}/lyrics`),
     ]);
     if (!midiRes.ok || !lyricsRes.ok) throw new Error("サンプルの取得に失敗しました");
-    const file = new File([await midiRes.blob()], "furusato.mid", { type: "audio/midi" });
+    const file = new File([await midiRes.blob()], `${sid}.mid`, { type: "audio/midi" });
     // changeを発火してlocalStorage保存(リロード後の復元)にも乗せる
     injectFile($("midi"), file, true);
     $("midi-restore-hint").hidden = true;
@@ -478,7 +496,7 @@ $("sample").addEventListener("click", async () => {
       $("wordlist").value = "stations";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
     }
-    $("sample-status").textContent = "✓ ふるさと(童謡・PD)をセットしました";
+    $("sample-status").textContent = `✓ ${title}(童謡・PD)をセットしました`;
   } catch (err) {
     $("sample-status").textContent = err.message;
   }
