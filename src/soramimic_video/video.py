@@ -7,8 +7,11 @@
     (単語数が多くてもffmpegの入力数が増えない)
  3. ASS字幕(下部: 替え歌歌詞/元歌詞)と音声を焼き込んで完成
 
-画像はWikimedia Commons等のURL(wordlist_rowのimage列)。image_page から
-クレジット一覧(credits.md)を生成するので、公開時はライセンス表記に従うこと。
+画像はWikimedia Commons等のURL(wordlist_rowのimage列)。クレジット表記が
+必要な画像(CommonsでAttributionRequiredのもの)は出典文言をフレームに自動で
+焼き込む(image_credit.py / layout.py参照。単語リストにimage_credit列があれば
+その文言を優先)。あわせて image_page からクレジット一覧(credits.md)も生成
+するので、公開時はライセンス表記に従うこと。
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import requests
 from PIL import ImageColor
 
 from . import runproc
+from .image_credit import USER_AGENT, fetch_image_credit
 from .kana import normalize_long_vowels
 from .layout import (
     DEFAULT_SUBTITLES,
@@ -42,7 +46,6 @@ from .synthesize import NEUTRINO_DIR
 logger = logging.getLogger(__name__)
 
 VIDEO_DIR = "video"
-USER_AGENT = "soramimic-video/0.1 (https://github.com/soramimic/soramimic-video)"
 HOLD_MAX_SEC = 3.0  # 次の単語が来ないとき画像を表示し続ける最大時間
 SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
 
@@ -196,6 +199,12 @@ def build_image_cues(
         raw = download_image(url, cache) if url else None
         if raw is None and not any(layout.render_texts(data, use_fallback)):
             continue  # 画像が取れずテキストもないフレームは出さない
+        # 画像クレジット文言: 単語リストのimage_credit列があればそれを、なければ
+        # Commonsから取得(表記不要な画像では空になり、フレームには描かれない)
+        if raw is not None and url and not str(data.get("image_credit") or "").strip():
+            info = fetch_image_credit(url, data.get("image_page", ""), cache)
+            if info is not None:
+                data["image_credit"] = info["credit_text"]
         frame = render_frame(layout, raw, data, width, height, norm, use_fallback)
         if frame is None:
             continue
@@ -220,6 +229,7 @@ def build_image_cues(
                 "original": data["original"],
                 "image": url,
                 "image_page": data.get("image_page", ""),
+                "credit": str(data.get("image_credit") or ""),
             }
     return cues, list(credits.values())
 
@@ -471,12 +481,16 @@ def write_credits(credits: list[dict], work: Path) -> Path | None:
         "",
         "この動画で使用した画像の出典。公開時は各ファイルページのライセンス"
         "(作者表示など)に従ってください。",
+        "クレジット欄が空の画像は表記不要(パブリックドメイン等)か情報を取得"
+        "できなかったもので、後者はライセンス確認先で要確認です。",
         "",
-        "| 単語 | 画像 | ライセンス確認先 |",
-        "|---|---|---|",
+        "| 単語 | 画像 | クレジット | ライセンス確認先 |",
+        "|---|---|---|---|",
     ]
     for c in credits:
-        lines.append(f"| {c['original']} | {c['image']} | {c['image_page']} |")
+        lines.append(
+            f"| {c['original']} | {c['image']} | {c.get('credit', '')} | {c['image_page']} |"
+        )
     path = work / "credits.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
