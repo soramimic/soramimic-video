@@ -13,6 +13,7 @@ work/
 *.mp4
 !tests/fixtures/*.mid
 !examples/*.mid
+!src/soramimic_video/static/sample/*.mid
 
 # 画像キャッシュ
 .image_cache/

@@ -521,6 +521,21 @@ def create_app(
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
+    # 同梱サンプル(ふるさと: 詞・曲ともパブリックドメイン、examples/gen_furusato.py で生成)
+    @app.get("/api/sample/midi")
+    def sample_midi() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "sample" / "furusato.mid",
+            media_type="audio/midi",
+            filename="furusato.mid",
+        )
+
+    @app.get("/api/sample/lyrics")
+    def sample_lyrics() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "sample" / "furusato_lyrics.txt", media_type="text/plain"
+        )
+
     @app.get("/api/config")
     def get_config(request: Request) -> dict[str, Any]:
         auth_required = bool(os.environ.get(API_KEY_ENV))
