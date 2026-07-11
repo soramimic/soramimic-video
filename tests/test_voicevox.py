@@ -447,6 +447,102 @@ def test_run_voicevox_engine_aborted_midrequest(tmp_path, monkeypatch):
         run_voicevox(_project([_note(0, 60, 0.5, 1.0, "ラ")]), tmp_path, style_id=6000)
 
 
+# ---- クラッシュ耐性(接続断→復帰待ち→再試行) ----
+
+
+def test_wait_for_engine_true_when_version_ok(monkeypatch):
+    # /version が200を返せば復帰とみなす(モデル未ロードでも合成は通る)
+    monkeypatch.setattr(vv.requests, "get", lambda url, timeout=None: _FakeResp())
+    assert vv._wait_for_engine("http://x", timeout=5.0) is True
+
+
+def test_wait_for_engine_times_out(monkeypatch):
+    import requests as real_requests
+
+    # /version が返らないまま上限に達したら False(sleepは無効化して即判定)
+    monkeypatch.setattr(vv.time, "sleep", lambda s: None)
+
+    def refuse(url, timeout=None):
+        raise real_requests.ConnectionError("refused")
+
+    monkeypatch.setattr(vv.requests, "get", refuse)
+    assert vv._wait_for_engine("http://x", timeout=0.0) is False
+
+
+def test_run_voicevox_retries_after_recovery(tmp_path, monkeypatch):
+    # 合成中に接続断 → /version 復帰 → 同じチャンクを再試行して成功。正常時と同じ結果になる。
+    import requests as real_requests
+
+    singers = [{"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}]
+    # /singers も 復帰確認の /version も 200 を返す(get で兼ねる)
+    monkeypatch.setattr(vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers))
+    monkeypatch.setattr(vv.time, "sleep", lambda s: None)
+
+    wav = _valid_wav_bytes()
+    posts = {"query": 0, "synth": 0, "failed": False}
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        if "sing_frame_audio_query" in url:
+            posts["query"] += 1
+            return _FakeResp(json_data={"f0": [], "phonemes": []})
+        posts["synth"] += 1
+        if not posts["failed"]:  # 初回の合成中にエンジンがクラッシュ(接続断)
+            posts["failed"] = True
+            raise real_requests.ConnectionError(
+                "('Connection aborted.', RemoteDisconnected('...'))"
+            )
+        return _FakeResp(content=wav)
+
+    monkeypatch.setattr(vv.requests, "post", fake_post)
+
+    out = run_voicevox(_project([_note(0, 60, 0.5, 1.0, "ラ")]), tmp_path, style_id=6000)
+
+    assert out.exists()
+    assert posts["synth"] == 2  # 1回失敗→復帰待ち→再試行で成功
+    assert posts["query"] == 2  # チャンク先頭からやり直すのでクエリも再実行
+    # 正常時と同じ結果: 1チャンクなのでエンジン出力(wav)がそのまま書かれる
+    assert out.read_bytes() == wav
+
+
+def test_run_voicevox_recovery_timeout_raises(tmp_path, monkeypatch):
+    # 接続断のあと復帰待ちがタイムアウト → 再起動案内の RuntimeError
+    import requests as real_requests
+
+    singers = [{"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}]
+    monkeypatch.setattr(vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers))
+    # 復帰待ちは常にタイムアウト扱いにする(実待ちを避ける)
+    monkeypatch.setattr(vv, "_wait_for_engine", lambda base, timeout=60.0: False)
+
+    def boom(url, params=None, json=None, timeout=None):
+        raise real_requests.ConnectionError(
+            "('Connection aborted.', RemoteDisconnected('...'))"
+        )
+
+    monkeypatch.setattr(vv.requests, "post", boom)
+    with pytest.raises(RuntimeError, match="再起動して再実行"):
+        run_voicevox(_project([_note(0, 60, 0.5, 1.0, "ラ")]), tmp_path, style_id=6000)
+
+
+def test_run_voicevox_non200_does_not_retry(tmp_path, monkeypatch):
+    # 非200レスポンスはリトライせず即失敗(現行挙動を維持)
+    singers = [{"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}]
+    monkeypatch.setattr(vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers))
+
+    posts = {"query": 0, "synth": 0}
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        if "sing_frame_audio_query" in url:
+            posts["query"] += 1
+            return _FakeResp(json_data={"f0": [], "phonemes": []})
+        posts["synth"] += 1
+        return _FakeResp(status=500)  # frame_synthesis が非200
+
+    monkeypatch.setattr(vv.requests, "post", fake_post)
+    with pytest.raises(RuntimeError, match="frame_synthesisが失敗しました"):
+        run_voicevox(_project([_note(0, 60, 0.5, 1.0, "ラ")]), tmp_path, style_id=6000)
+    assert posts["synth"] == 1  # リトライしていない
+
+
 # ---- dispatch ----
 
 
