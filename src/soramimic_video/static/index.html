@@ -418,6 +418,13 @@ function setBusy(busy) {
 async function submitJob(previewSec) {
   const midi = $("midi").files[0];
   if (!midi) { alert("MIDIファイルを選んでください"); return; }
+  // editor.jsonがあると単語リスト指定は無視されるため、食い違ったまま
+  // 高コストな生成が走る前に最終確認を挟む
+  if ($("editor").files[0] && parodyMismatch()
+      && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
+        + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
+    return;
+  }
   if (apiKey()) localStorage.setItem("apiKey", apiKey());
   const form = new FormData();
   form.append("midi", midi);
@@ -1142,9 +1149,7 @@ async function openEditor() {
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
     sessionStorage.setItem(EDITOR_KEY, JSON.stringify(body));
-    $("editor-frame").src = "/editor/editor.html";
-    $("editor-frame-wrap").hidden = false;
-    $("editor-frame-wrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    showEditorFrame();
   } catch (err) {
     msg.textContent = "編集の準備に失敗しました: " + err.message;
   } finally {
@@ -1169,6 +1174,23 @@ function importEditor() {
 function closeEditor() {
   $("editor-frame-wrap").hidden = true;
   $("editor-frame").src = "about:blank";
+}
+
+function showEditorFrame() {
+  $("editor-frame").src = "/editor/editor.html";
+  $("editor-frame-wrap").hidden = false;
+  $("editor-frame-wrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// 取り込み済み(または前回から復元した)替え歌JSONをシードにエディタを開き直す。
+// 取り込み時に保存したテキストはEDITOR_KEYの中身そのものなので、書き戻すだけで
+// サーバー変換(/api/editor-session)なしに編集を再開できる。
+async function reEditParody(ev) {
+  ev.preventDefault();
+  const f = $("editor").files[0];
+  if (!f) return;
+  sessionStorage.setItem(EDITOR_KEY, await f.text());
+  showEditorFrame();
 }
 
 $("open-editor").addEventListener("click", openEditor);
@@ -1237,23 +1259,84 @@ function applyWordlistSelection() {
 }
 $("wordlist-select").addEventListener("change", applyWordlistSelection);
 
-// 替え歌JSONの有無に応じた状態表示とダウンロードボタンの活性を更新する
-function updateParodyStatus() {
-  const has = !!$("editor").files[0];
-  $("download-editor").disabled = !has;
+// 替え歌JSONの有無・単語リストとの不一致に応じた状態表示を更新する。
+// localStorage復元による注入は取り込み直後と区別がつかないため、restoreForm側が
+// parodyRestoredを立てて文言を切り替える(changeハンドラは最初のawaitまで同期
+// 実行されるので、フラグはawait前に読み取る)
+let parodyRestored = false;
+let parodyWasRestored = false;  // 表示中のJSONが復元由来か(再描画用に保持)
+let editorWordlist = null;      // 表示中のJSONの生成元単語リスト {name, where} | null
+
+function escapeHtml(t) {
+  const d = document.createElement("div");
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+// 編集済みJSONの生成元単語リストとフォームの選択が食い違っているか。
+// editor.jsonがあると投入時にwordlist/whereは無視されるため、その警告に使う
+function parodyMismatch() {
+  if (!editorWordlist || !$("editor").files[0]) return false;
+  const cur = $("wordlist").value.trim();
+  if (!cur) return false;  // 未選択なら比較する意味がない
+  return editorWordlist.name !== cur
+    || (editorWordlist.where || "") !== $("where").value.trim();
+}
+
+function renderParodyStatus() {
   const s = $("parody-status");
-  if (has) {
-    s.innerHTML = '✅ 編集済みの替え歌を使用します(<a href="#" id="clear-editor">取り消し</a>)';
+  if (!$("editor").files[0]) {
+    s.textContent = "未編集: 投入時に単語リストで自動変換します";
+    return;
+  }
+  // エディタありなら基本「再編集」のみ: 外して自動変換に任せるのと変換し直して
+  // 取り込むのは同じ入力を使うので結果が同じ。取り消しは、それでしか外せない
+  // エディタ未ビルド構成と、外す動機が生まれる不一致時にだけ出す
+  const canEdit = !$("editor-embed-controls").hidden;
+  const reedit = '<a href="#" id="reedit-editor">再編集</a>';
+  const clear = '<a href="#" id="clear-editor">取り消して自動変換に戻す</a>';
+  if (parodyMismatch()) {
+    const links = canEdit ? `${reedit} / ${clear}` : clear;
+    s.innerHTML = `⚠ 単語リスト「${escapeHtml($("wordlist").value.trim())}」は使われません — `
+      + `編集済み替え歌(「${escapeHtml(editorWordlist.name)}」から作成)が優先されます(${links})`;
+  } else {
+    const head = parodyWasRestored
+      ? "✅ 前回の編集済み替え歌を復元しました。このまま生成に使われます"
+      : "✅ 編集済みの替え歌を使用します";
+    s.innerHTML = `${head}(${canEdit ? reedit : clear})`;
+  }
+  if ($("reedit-editor")) $("reedit-editor").addEventListener("click", reEditParody);
+  if ($("clear-editor")) {
     $("clear-editor").addEventListener("click", (ev) => {
       ev.preventDefault();
       $("editor").value = "";
       $("editor").dispatchEvent(new Event("change", { bubbles: true }));
     });
-  } else {
-    s.textContent = "未編集: 投入時に単語リストで自動変換します";
   }
 }
+
+async function updateParodyStatus() {
+  const f = $("editor").files[0];
+  $("download-editor").disabled = !f;
+  parodyWasRestored = parodyRestored;  // await前に確定させる
+  editorWordlist = null;
+  if (f) {
+    try {
+      const w = JSON.parse(await f.text()).wordlist;
+      if (w && w.filepath) {
+        editorWordlist = {
+          name: String(w.filepath).replace(/.*\//, "").replace(/\.csv$/, ""),
+          where: w.where || "",
+        };
+      }
+    } catch { /* 生成元が読めなければ不一致判定を諦める(警告なし) */ }
+  }
+  renderParodyStatus();
+}
 $("editor").addEventListener("change", updateParodyStatus);
+// 単語リスト側の変更でも不一致警告を出し直す
+$("wordlist").addEventListener("change", renderParodyStatus);
+$("where").addEventListener("change", renderParodyStatus);
 
 // 現在の替え歌JSON(editorファイル入力の中身)を保存する(バックアップ・再利用向け)
 $("download-editor").addEventListener("click", async () => {
@@ -1415,7 +1498,9 @@ async function doRestoreForm() {
   try {
     const ed = JSON.parse(localStorage.getItem(EDITOR_FILE_KEY) || "null");
     if (ed && ed.text != null) {
+      parodyRestored = true;
       injectFile($("editor"), new File([ed.text], ed.name, { type: "application/json" }), true);
+      parodyRestored = false;
       any = true;
     }
   } catch { /* 復元失敗は無視 */ }
