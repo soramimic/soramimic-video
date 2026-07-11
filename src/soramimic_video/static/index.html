@@ -25,6 +25,7 @@
   button:disabled { background: #94a3b8; cursor: default; }
   .hint { font-size: .8rem; opacity: .7; margin-top: .1rem; }
   .wordlist-filters { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; margin-top: .4rem; }
+  .wordlist-facet { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; flex: 1 0 100%; }
   .wordlist-filters-label { font-size: .8rem; opacity: .7; }
   .wordlist-filter { display: inline-flex; align-items: center; gap: .2rem; margin: 0; font-weight: normal; font-size: .85rem; }
   .wordlist-filter input[type=checkbox] { width: auto; margin: 0; }
@@ -1272,9 +1273,10 @@ async function loadWordlistSelect(editorAvailable) {
     const res = await fetch("/editor/conf/setting.json", { headers: headers() });
     if (!res.ok) throw new Error(String(res.status));
     const conf = await res.json();
-    // value=ORIGINAL(editorローカルのカスタムリスト)はサーバーで解決できないので除外
+    // value=ORIGINAL(editorローカルのカスタムリスト)はサーバーで解決できないので除外。
+    // active === false のエントリも除外(旧confにactiveは無いので影響なし)
     entries = (conf.wordlist || []).filter(
-      (w) => w && w.filepath && w.value !== "ORIGINAL");
+      (w) => w && w.filepath && w.value !== "ORIGINAL" && w.active !== false);
   } catch {
     // confが取れなければ従来のテキスト入力にフォールバック
     bail(); return;
@@ -1333,12 +1335,101 @@ function wordlistGroupUnion(g) {
   return union.length ? union : null;
 }
 
+// ---- ファセット(本体新conf形式)対応 ----
+// エントリに非空の facets があればそれを優先してチェックボックスUIを作る。
+// facets が無いグループは従来の where-union 方式のまま(旧confで壊れない)。
+function groupFacets(g) {
+  const e = g && g.entries[0];
+  return e && Array.isArray(e.facets) && e.facets.length ? e.facets : null;
+}
+
+// facetの全項を "column=v" 文字列の配列で返す(語彙の被覆判定用)
+function facetVocabKeys(facets) {
+  const keys = [];
+  facets.forEach((f) => (f.values || []).forEach(
+    (v) => keys.push(f.column + "=" + v.v)));
+  return keys;
+}
+
+// パーサ: paren深さ0の " and " で分割(and節は括弧付き想定)。値にandは出ない前提。
+function splitTopLevelAnd(s) {
+  const parts = [];
+  let depth = 0, buf = "", i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "(") { depth++; buf += ch; i++; continue; }
+    if (ch === ")") { depth--; buf += ch; i++; continue; }
+    if (depth === 0 && s.slice(i, i + 3).toLowerCase() === "and"
+        && /\s|^/.test(s[i - 1] || " ") && /\s|$/.test(s[i + 3] || " ")) {
+      parts.push(buf); buf = ""; i += 3; continue;
+    }
+    buf += ch; i++;
+  }
+  parts.push(buf);
+  return parts.map((p) => p.trim()).filter(Boolean);
+}
+
+// facet形式のwhereを {col, v} 項の配列に解析する。and連結された(括弧付き or 単一の)
+// or節、各項が column=v として解釈できれば配列、できなければ null、条件無しは空配列。
+function parseFacetWhere(where) {
+  const w = (where || "").trim();
+  if (!w) return [];
+  const terms = [];
+  for (let c of splitTopLevelAnd(w)) {
+    c = c.trim();
+    if (c.startsWith("(") && c.endsWith(")")) c = c.slice(1, -1).trim();
+    if (/[()]/.test(c) || /\band\b/i.test(c)) return null;  // 想定外のネスト
+    for (const p of c.split(/\s+or\s+/i).map((t) => t.trim()).filter(Boolean)) {
+      const m = p.match(/^([^=<>!\s]+)\s*=\s*(.+)$/);
+      if (!m) return null;
+      terms.push({ col: m[1].trim(), v: m[2].trim() });
+    }
+  }
+  return terms;
+}
+
+// ファセットごとに1行のチェックボックスUIを組み立て、#whereへ反映する。
+function renderFacetFilters(facets) {
+  const filters = $("wordlist-filters");
+  filters.hidden = false;
+  facets.forEach((f) => {
+    const row = document.createElement("div");
+    row.className = "wordlist-facet";
+    row.dataset.col = f.column;
+    const lbl = document.createElement("span");
+    lbl.className = "wordlist-filters-label";
+    lbl.textContent = (f.label || f.column) + ":";
+    row.appendChild(lbl);
+    (f.values || []).forEach((val) => {
+      const wrap = document.createElement("label");
+      wrap.className = "wordlist-filter";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.dataset.col = f.column;
+      cb.value = val.v;
+      cb.checked = val.default === true;
+      cb.addEventListener("change", updateWhereFromFilters);
+      wrap.appendChild(cb);
+      wrap.appendChild(document.createTextNode(val.label || val.v));
+      row.appendChild(wrap);
+    });
+    filters.appendChild(row);
+  });
+  const hint = document.createElement("span");
+  hint.className = "wordlist-filter-hint";
+  filters.appendChild(hint);
+  updateWhereFromFilters();
+}
+
 // 選択中グループのwhere群からチェックボックスを組み立て、#whereへ反映する。
 // 単純なor連結でないエントリを含む/条件項が無いグループはチェックボックスを
 // 出さず、先頭エントリのwhereをそのまま使う。
 function renderWordlistFilters(g) {
   const filters = $("wordlist-filters");
   filters.innerHTML = "";
+  // 非空のfacetsがあればfacet UIを優先(旧whereは無視)
+  const facets = groupFacets(g);
+  if (facets) { renderFacetFilters(facets); return; }
   const firstWhere = g && g.entries[0] ? (g.entries[0].where || "") : "";
   const perEntry = g ? g.entries.map((e) => parseWhereTerms(e.where)) : [];
   const simple = perEntry.every((t) => t !== null);
@@ -1384,11 +1475,30 @@ function renderWordlistFilters(g) {
 }
 
 // チェック済みの項を conf 出現順(=DOM順)に " or " で連結して #where に反映する。
+// facetモードでは各ファセットの節を作り、複数節は括弧+ and で連結する。
 function updateWhereFromFilters() {
   const filters = $("wordlist-filters");
+  const hint = filters.querySelector(".wordlist-filter-hint");
+  const rows = [...filters.querySelectorAll(".wordlist-facet")];
+  if (rows.length) {
+    // 各ファセット = チェック済み値を定義順に col=v で or 連結。空節は出さない。
+    const clauses = [];
+    rows.forEach((row) => {
+      const col = row.dataset.col;
+      const checked = [...row.querySelectorAll('input[type="checkbox"]')]
+        .filter((b) => b.checked).map((b) => col + "=" + b.value);
+      if (checked.length) clauses.push(checked.join(" or "));
+    });
+    // 1節なら括弧なし、複数節は各節を括弧で包み and 連結
+    let where = "";
+    if (clauses.length === 1) where = clauses[0];
+    else if (clauses.length > 1) where = clauses.map((c) => "(" + c + ")").join(" and ");
+    if (hint) hint.textContent = where ? "" : "(絞り込みなし: すべての行を使用)";
+    setWhere(where);
+    return;
+  }
   const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
   const checked = boxes.filter((b) => b.checked).map((b) => b.value);
-  const hint = filters.querySelector(".wordlist-filter-hint");
   if (hint) hint.textContent = checked.length ? "" : "(絞り込みなし: すべての行を使用)";
   setWhere(checked.join(" or "));
 }
@@ -1421,6 +1531,23 @@ $("wordlist-select").addEventListener("change", applyWordlistSelection);
 function restoreWordlistFilters(where) {
   const filters = $("wordlist-filters");
   if (filters.hidden) { setWhere(where); return; }
+  // facetモード: and連結の(括弧付き/単一)or節として解析し column=v を照合
+  const rows = [...filters.querySelectorAll(".wordlist-facet")];
+  if (rows.length) {
+    const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
+    const key = (col, v) => col + "=" + v;
+    const terms = parseFacetWhere(where);
+    const known = new Set(boxes.map((b) => key(b.dataset.col, b.value)));
+    if (terms !== null && terms.every((t) => known.has(key(t.col, t.v)))) {
+      const want = new Set(terms.map((t) => key(t.col, t.v)));
+      boxes.forEach((b) => { b.checked = want.has(key(b.dataset.col, b.value)); });
+      updateWhereFromFilters();
+    } else {
+      filters.hidden = true;
+      setWhere(where);
+    }
+    return;
+  }
   const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
   const terms = parseWhereTerms(where);
   const known = new Set(boxes.map((b) => b.value));
@@ -1618,15 +1745,22 @@ async function doRestoreForm() {
       const cands = wordlistGroups
         .map((g, i) => ({ g, i }))
         .filter(({ g }) => g.name === wantName);
+      // facetグループは全 column=v の語彙で、where-unionグループは union で被覆判定する
       const wantTerms = parseWhereTerms(state.where || "");
+      const wantFacetTerms = parseFacetWhere(state.where || "");
       let gi = -1;
-      if (wantTerms !== null) {
-        const hit = cands.find(({ g }) => {
-          const union = wordlistGroupUnion(g);
-          return union && wantTerms.every((t) => union.includes(t));
-        });
-        if (hit) gi = hit.i;
-      }
+      const hit = cands.find(({ g }) => {
+        const facets = groupFacets(g);
+        if (facets) {
+          if (wantFacetTerms === null) return false;
+          const vocab = new Set(facetVocabKeys(facets));
+          return wantFacetTerms.every((t) => vocab.has(t.col + "=" + t.v));
+        }
+        if (wantTerms === null) return false;
+        const union = wordlistGroupUnion(g);
+        return union && wantTerms.every((t) => union.includes(t));
+      });
+      if (hit) gi = hit.i;
       if (gi < 0 && cands.length) gi = cands[0].i;
       if (gi >= 0) {
         sel.value = String(gi);
