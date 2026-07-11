@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import requests
-from PIL import ImageColor
+from PIL import ImageColor, ImageFont
 
 from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit
@@ -329,6 +329,24 @@ def _needs_ruby(surface: str, kana: str) -> bool:
     return a != b
 
 
+def _measuring_font(font_path: Path | None, ass_fontsize: int):
+    """ASSの本文と同じ字面幅を測るためのPillowフォント。
+
+    libass(VSFilter互換)はASSのFontsizeを「行セル高(アセント+ディセント)」として
+    扱うため、実際の字面(em)は Fontsize×em/セル高 に縮む。Pillowのサイズ指定は
+    emそのものなので、そのまま測ると横位置が字面比ぶん(Noto CJKで約1.48倍)
+    外側へずれていく。セル高比で縮めたサイズで測って揃える。
+    """
+    font = _font(font_path, ass_fontsize)
+    if not isinstance(font, ImageFont.FreeTypeFont):  # フォント未解決時は補正不能
+        return font
+    ascent, descent = font.getmetrics()
+    cell = ascent + descent
+    if cell <= 0 or cell == ass_fontsize:
+        return font
+    return _font(font_path, max(1, round(ass_fontsize * ass_fontsize / cell)))
+
+
 def _ruby_events(
     el: SubtitleElement,
     name: str,
@@ -351,7 +369,7 @@ def _ruby_events(
     body_px = int(el.size * height)
     if body_px <= 0 or not words:
         return []
-    font = _font(font_path, body_px)
+    font = _measuring_font(font_path, body_px)
     full = WORD_SEP.join(w.surface for w in words)
     total_w = font.getlength(full)
     # 本文行の左端x。build_ass本体の px(align基準点)と揃える
