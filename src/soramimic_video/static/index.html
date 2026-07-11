@@ -102,9 +102,6 @@
   <p class="hint" id="midi-restore-hint" hidden></p>
   <p class="hint" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
     <select id="sample-select" style="width:auto;font-size:.85rem;padding:.25rem .3rem"></select>
-    <button id="sample" type="button" style="background:#64748b;font-size:.85rem;padding:.25rem .8rem">
-      サンプル曲をセット
-    </button>
     <span id="sample-status"></span>
   </p>
   <label>元歌詞(任意・字幕用)</label>
@@ -467,8 +464,8 @@ async function loadSamples() {
     const res = await fetch("/api/samples");
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
-    $("sample-select").innerHTML = samples
-      .map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
+    $("sample-select").innerHTML = '<option value="">サンプル曲を選んでセット…</option>' +
+      samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
   } catch {
     // サンプルが取れない環境ではUIごと隠す
     $("sample-select").parentElement.hidden = true;
@@ -476,10 +473,10 @@ async function loadSamples() {
 }
 loadSamples();
 
-$("sample").addEventListener("click", async () => {
+$("sample-select").addEventListener("change", async () => {
+  const sid = $("sample-select").value;
+  if (!sid) return;
   try {
-    const sid = $("sample-select").value;
-    if (!sid) throw new Error("サンプルがありません");
     const title = $("sample-select").selectedOptions[0].textContent;
     const [midiRes, lyricsRes] = await Promise.all([
       fetch(`/api/sample/${sid}/midi`), fetch(`/api/sample/${sid}/lyrics`),
