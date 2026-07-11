@@ -1321,6 +1321,18 @@ function parseWhereTerms(where) {
   return w.split(/\s+or\s+/i).map((t) => t.trim()).filter(Boolean);
 }
 
+// グループのwhere群からチェックボックス化できる条件項の和集合を conf 出現順で返す。
+// 単純なor連結でないエントリを含む/条件項が無い(=チェックボックスを出せない)場合は null。
+function wordlistGroupUnion(g) {
+  if (!g) return null;
+  const perEntry = g.entries.map((e) => parseWhereTerms(e.where));
+  if (!perEntry.every((t) => t !== null)) return null;
+  const union = [];
+  perEntry.forEach((terms) => terms.forEach(
+    (t) => { if (!union.includes(t)) union.push(t); }));
+  return union.length ? union : null;
+}
+
 // 選択中グループのwhere群からチェックボックスを組み立て、#whereへ反映する。
 // 単純なor連結でないエントリを含む/条件項が無いグループはチェックボックスを
 // 出さず、先頭エントリのwhereをそのまま使う。
@@ -1403,8 +1415,9 @@ function applyWordlistSelection() {
 $("wordlist-select").addEventListener("change", applyWordlistSelection);
 
 // 復元された #where の項に合わせてチェック状態を戻す。or連結として解釈できて
-// 全項が既知ならチェックを合わせ、解釈できなければ初期チェックのまま #where に
-// 復元値を残す(チェックボックスが無いグループも復元値をそのまま使う)。
+// 全項が既知ならチェックを合わせる。解釈できない/未知の項がある場合は見た目と
+// 実際が食い違わないようチェックボックス行を非表示にし、#where に復元値を残す
+// (グループを選び直せば applyWordlistSelection→renderWordlistFilters が再描画する)。
 function restoreWordlistFilters(where) {
   const filters = $("wordlist-filters");
   if (filters.hidden) { setWhere(where); return; }
@@ -1416,6 +1429,7 @@ function restoreWordlistFilters(where) {
     boxes.forEach((b) => { b.checked = want.has(b.value); });
     updateWhereFromFilters();
   } else {
+    filters.hidden = true;
     setWhere(where);
   }
 }
@@ -1597,7 +1611,23 @@ async function doRestoreForm() {
     // 1. 単語リスト: 選択肢があれば name/where 一致のoptionを選ぶ
     const sel = $("wordlist-select");
     if (!sel.hidden && sel.options.length) {
-      const gi = wordlistGroups.findIndex((g) => g.name === (state.wordlist || ""));
+      // name一致の候補のうち、復元whereの全条件項をチェックボックス化できる
+      // (=そのグループのunionに全項が含まれる)最初のグループを優先する。
+      // whereが解釈不能/どの候補にも収まらない場合はname一致の先頭にフォールバック。
+      const wantName = state.wordlist || "";
+      const cands = wordlistGroups
+        .map((g, i) => ({ g, i }))
+        .filter(({ g }) => g.name === wantName);
+      const wantTerms = parseWhereTerms(state.where || "");
+      let gi = -1;
+      if (wantTerms !== null) {
+        const hit = cands.find(({ g }) => {
+          const union = wordlistGroupUnion(g);
+          return union && wantTerms.every((t) => union.includes(t));
+        });
+        if (hit) gi = hit.i;
+      }
+      if (gi < 0 && cands.length) gi = cands[0].i;
       if (gi >= 0) {
         sel.value = String(gi);
         applyWordlistSelection();  // #wordlist/#where設定 + チェックボックス + change
