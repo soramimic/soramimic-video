@@ -36,6 +36,11 @@
 - 各要素の require: "列名" を指定すると、その列が空の単語では要素を出さない。
   「行はあるが一部の列だけ欠ける」(没年不明など)ケースに使え、fallbackとは
   独立に効く(通常側・fallback側どちらの要素にも書ける)
+- 画像のクレジット表記: image要素のあるレイアウトでは、クレジット表記が必要な
+  画像(Wikimedia CommonsでAttributionRequiredのもの。image_credit.py参照)に
+  限り、出典文言({image_credit})を画像の右下に自動で焼き込む。
+  "credit": false で無効化できる。位置や見た目を変えたいときは text 要素で
+  {image_credit} を自分で参照すれば自動追加はされない
 
 歌唱がない区間(前奏・間奏・後奏)の表示は次の2つで指定できる(任意・opt-in):
 
@@ -64,7 +69,7 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -178,6 +183,9 @@ class Layout:
     idle: list[ImageElement | TextElement] = field(default_factory=list)
     # "hold": "next" で単語フレームを次の歌唱まで持続する(3秒上限を外す)
     hold_next: bool = False
+    # 画像クレジット({image_credit})の自動焼き込み要素。credit_textが空の単語
+    # (表記不要・情報なし)では描かれない。None = 自動追加なし
+    credit: TextElement | None = None
     background: str = "black"
     font: str | None = None
     raw: dict = field(default_factory=dict)  # フレームキャッシュのキー用に元JSONを保持
@@ -266,6 +274,35 @@ def _parse_elements(
     return elements, subtitles
 
 
+def _auto_credit_element(
+    elements: list[ImageElement | TextElement],
+    fallback: list[ImageElement | TextElement],
+    raw: dict,
+) -> TextElement | None:
+    """画像クレジットの自動焼き込み要素(画像boxの右下に小さく載せる)。
+
+    "credit": false のレイアウト、image要素のないレイアウト、text要素で
+    {image_credit} を自分で配置しているレイアウトでは追加しない。
+    """
+    if raw.get("credit") is False:
+        return None
+    for el in (*elements, *fallback):
+        if isinstance(el, TextElement) and "{image_credit}" in el.template:
+            return None
+    image_boxes = [el.box for el in elements if isinstance(el, ImageElement)]
+    if not image_boxes:
+        return None
+    return TextElement(
+        template="{image_credit}",
+        box=image_boxes[0],
+        size=0.025,
+        color="#dddddd",
+        align="right",
+        valign="bottom",
+        background="#00000080",
+    )
+
+
 def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
     """レイアウトJSON(パース済みdict)を検証してLayoutにする。originはエラー表示用。"""
     elements, subtitles = _parse_elements(raw.get("elements", []), origin)
@@ -280,6 +317,7 @@ def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
         fallback=fallback,
         idle=idle,
         hold_next=raw.get("hold") == "next",
+        credit=_auto_credit_element(elements, fallback, raw),
         background=raw.get("background", "black"),
         font=raw.get("font"),
         raw=raw,
@@ -340,6 +378,28 @@ def _paste_image(canvas: Image.Image, image_path: Path, el: ImageElement) -> Non
     nh = max(1, round(img.height * scale))
     img = img.resize((nw, nh), Image.Resampling.LANCZOS)
     canvas.paste(img, (x + (w - nw) // 2, y + (h - nh) // 2))
+
+
+def _fitted_image_box(
+    image_path: Path, box: tuple[float, float, float, float], width: int, height: int
+) -> tuple[float, float, float, float] | None:
+    """image要素のboxにアスペクト維持で収めた画像の実表示領域(フレーム比率)。
+
+    _paste_image と同じ配置計算。クレジット表記を(boxではなく)画像そのものの
+    右下に載せるために使う。画像が読めなければ None。
+    """
+    try:
+        with Image.open(image_path) as img:
+            iw, ih = img.size
+    except Exception:
+        return None
+    x, y, w, h = _box_px(box, width, height)
+    scale = min(w / iw, h / ih)
+    nw = max(1, round(iw * scale))
+    nh = max(1, round(ih * scale))
+    px = x + (w - nw) // 2
+    py = y + (h - nh) // 2
+    return (px / width, py / height, nw / width, nh / height)
 
 
 def _wrap_chars(
@@ -506,8 +566,22 @@ def render_frame(
     use_fallback: bool = False,
 ) -> Path | None:
     """レイアウトに従いフレームPNGを合成して返す(同内容なら既存を再利用)。"""
-    elements = layout.active_elements(use_fallback)
+    elements = list(layout.active_elements(use_fallback))
     texts = layout.render_texts(data, use_fallback)
+    # 画像クレジットの自動焼き込み(文言が空の単語=表記不要では描かない)。
+    # textsに文言が入るのでフレームキャッシュのキーにも自然に効く
+    if layout.credit is not None:
+        credit_text = _element_texts([layout.credit], data)[0]
+        if credit_text:
+            credit_el = layout.credit
+            # boxより写真が狭いと帯が背景上に浮くので、実表示領域の右下に寄せる
+            image_el = next((e for e in elements if isinstance(e, ImageElement)), None)
+            if image_path is not None and image_el is not None:
+                fitted = _fitted_image_box(image_path, image_el.box, width, height)
+                if fitted is not None:
+                    credit_el = replace(credit_el, box=fitted)
+            elements.append(credit_el)
+            texts.append(credit_text)
     raw_key = "fallback" if (use_fallback and layout.fallback) else "elements"
     return _render_to_cache(
         layout, image_path, data, width, height, out_dir,

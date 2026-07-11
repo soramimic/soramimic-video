@@ -204,6 +204,63 @@ def test_render_idle_frame_absent_is_none(tmp_path):
     assert render_idle_frame(layout, {"title": "x"}, 320, 180, tmp_path / "f") is None
 
 
+def test_credit_element_auto_added_for_image_layouts():
+    # image要素のあるレイアウトには {image_credit} の自動焼き込み要素が付く
+    layout = load_layout(None)
+    assert layout.credit is not None
+    assert layout.credit.template == "{image_credit}"
+    # elements自体には混ぜない(render_textsや要素数は従来どおり)
+    assert len(layout.elements) == 1
+
+
+def test_credit_element_disabled_by_flag(tmp_path):
+    p = tmp_path / "nc.json"
+    p.write_text(json.dumps({
+        "credit": False,
+        "elements": [{"type": "image", "box": [0, 0, 1, 0.7]}],
+    }), encoding="utf-8")
+    assert load_layout(str(p)).credit is None
+
+
+def test_credit_element_skipped_when_placed_manually(tmp_path):
+    # text要素で {image_credit} を自分で配置したレイアウトには自動追加しない
+    p = tmp_path / "manual.json"
+    p.write_text(json.dumps({
+        "elements": [
+            {"type": "image", "box": [0, 0, 1, 0.7]},
+            {"type": "text", "text": "{image_credit}", "box": [0, 0.9, 1, 0.05],
+             "size": 0.03},
+        ],
+    }), encoding="utf-8")
+    assert load_layout(str(p)).credit is None
+
+
+def test_credit_element_skipped_without_image(tmp_path):
+    p = tmp_path / "noimg.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.2]}],
+    }), encoding="utf-8")
+    assert load_layout(str(p)).credit is None
+
+
+def test_render_frame_draws_credit(tmp_path):
+    img = tmp_path / "word.png"
+    Image.new("RGB", (300, 200), "red").save(img)
+    layout = load_layout(None)
+    data = {"surface": "ホシズム", "original": "静岡駅"}
+    plain = render_frame(layout, img, data, 320, 180, tmp_path / "f")
+    # クレジット文言があるとフレーム内容(キャッシュキー)が変わる
+    credited = render_frame(
+        layout, img, {**data, "image_credit": "山田 太郎, CC BY-SA 4.0, via Wikimedia Commons"},
+        320, 180, tmp_path / "f",
+    )
+    assert plain is not None and credited is not None
+    assert credited != plain
+    # 文言が空(表記不要)ならクレジットなしと同じフレーム
+    empty = render_frame(layout, img, {**data, "image_credit": ""}, 320, 180, tmp_path / "f")
+    assert empty == plain
+
+
 def test_render_frame_wrap_long_text(tmp_path):
     p = tmp_path / "wrap.json"
     p.write_text(json.dumps({

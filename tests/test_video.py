@@ -340,6 +340,68 @@ def test_slideshow_idle_fill(tmp_path: Path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def _precache_image(work: Path, url: str) -> None:
+    """ネットワークを使わないよう、画像キャッシュにダミー画像を事前配置する。"""
+    from PIL import Image
+
+    cache = work / "images"
+    cache.mkdir(parents=True)
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    Image.new("RGB", (64, 48), "red").save(cache / f"{name}.png")
+
+
+def test_image_cues_credit_from_wordlist_column(tmp_path: Path):
+    # 単語リストにimage_credit列があればその文言を使う(Commons取得より優先)
+    project = _project(tmp_path)
+    project.parody.lines[0].words[0].wordlist_row["image_credit"] = "山田 太郎 (CC BY 2.0)"
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+    cues, credits = build_image_cues(project, work, 320, 180)
+    assert len(cues) == 1
+    assert credits[0]["credit"] == "山田 太郎 (CC BY 2.0)"
+
+
+def test_image_cues_credit_fetched(tmp_path: Path, monkeypatch):
+    # Commonsから取得したcredit_textがフレームデータとcredits一覧に入る
+    import soramimic_video.video as video_mod
+
+    project = _project(tmp_path)
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+
+    def fake_fetch(url, page, cache):
+        assert page == "https://example.com/page"
+        return {"artist": "山田 太郎", "license": "CC BY-SA 4.0",
+                "attribution_required": True,
+                "credit_text": "山田 太郎, CC BY-SA 4.0, via Wikimedia Commons"}
+
+    monkeypatch.setattr(video_mod, "fetch_image_credit", fake_fetch)
+    cues, credits = build_image_cues(project, work, 320, 180)
+    assert len(cues) == 1
+    assert credits[0]["credit"] == "山田 太郎, CC BY-SA 4.0, via Wikimedia Commons"
+    # クレジットなしで作ったフレームとは別内容になる(焼き込まれている)
+    monkeypatch.setattr(video_mod, "fetch_image_credit", lambda *a: None)
+    cues2, credits2 = build_image_cues(project, tmp_path / "video2", 320, 180,
+                                       image_cache=work / "images")
+    assert credits2[0]["credit"] == ""
+    assert cues[0].frame.name != cues2[0].frame.name
+
+
+def test_write_credits_table(tmp_path: Path):
+    from soramimic_video.video import write_credits
+
+    path = write_credits([
+        {"word": "静", "original": "静岡", "image": "http://img", "image_page": "http://page",
+         "credit": "山田 太郎, CC BY-SA 4.0, via Wikimedia Commons"},
+        {"word": "山", "original": "山田", "image": "http://img2", "image_page": "http://page2",
+         "credit": ""},
+    ], tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert ("| 静岡 | http://img | 山田 太郎, CC BY-SA 4.0, via Wikimedia Commons "
+            "| http://page |") in text
+    assert "| 山田 | http://img2 |  | http://page2 |" in text
+
+
 def test_download_image_local_path(tmp_path: Path):
     # ローカルパスの画像はコピーで取り込む(生成・ローカル単語リスト用)
     src = tmp_path / "portrait.jpg"
