@@ -46,12 +46,15 @@ def resolve_wordlist(name_or_path: str) -> Path:
 def _coerce_params(params: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in params.items():
+        if isinstance(v, str) and v.lower() in ("true", "false"):
+            out[k] = v.lower() == "true"
+            continue
         try:
             out[k] = int(v)
-        except ValueError:
+        except (ValueError, TypeError):
             try:
                 out[k] = float(v)
-            except ValueError:
+            except (ValueError, TypeError):
                 out[k] = v
     return out
 
@@ -262,6 +265,9 @@ def convert_project(
     if where is None:
         where = DEFAULT_WHERE.get(csv_path.stem)
     coerced = _coerce_params(params or {})
+    # エンジン既定はDUPLICATE:true(単語重複あり)だが、本家Web UIの既定は
+    # 「なし」。未指定時はWeb UIに合わせ、同じ単語ばかり選ばれるのを防ぐ
+    coerced.setdefault("DUPLICATE", False)
 
     phrases = [line.xf_kana for line in project.lines]
     result = run_convert(phrases, csv_path, where, coerced)
