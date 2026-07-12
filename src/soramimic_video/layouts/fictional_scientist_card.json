@@ -1,0 +1,17 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "image", "box": [0.1075, 0.101, 0.314, 0.558]},
+    {"type": "text", "text": "{original}", "box": [0.448, 0.253, 0.445, 0.085],
+     "size": 0.062, "color": "white", "align": "left"},
+    {"type": "text", "text": "（{birth_year}-{death_year}）", "box": [0.448, 0.35, 0.445, 0.052],
+     "size": 0.04, "color": "white", "align": "left", "require": "birth_year"},
+    {"type": "text", "text": "{achievement}", "box": [0.448, 0.414, 0.445, 0.11],
+     "size": 0.04, "color": "white", "align": "left", "valign": "top", "wrap": true,
+     "require": "achievement"}
+  ],
+  "fallback": [
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08], "size": 0.05, "color": "#aaa"}
+  ]
+}
