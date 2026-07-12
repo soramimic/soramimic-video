@@ -1,0 +1,18 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "image", "box": [0.1075, 0.101, 0.314, 0.558]},
+    {"type": "text", "text": "{original}", "box": [0.448, 0.253, 0.445, 0.085],
+     "size": 0.062, "color": "white", "align": "left"},
+    {"type": "text", "text": "『{title}』（初登場{first_year}年） CV:{cv_name}",
+     "box": [0.448, 0.352, 0.445, 0.048],
+     "size": 0.036, "color": "white", "align": "left", "require": "title"},
+    {"type": "text", "text": "{description}", "box": [0.448, 0.414, 0.445, 0.11],
+     "size": 0.04, "color": "white", "align": "left", "valign": "top", "wrap": true,
+     "require": "description"}
+  ],
+  "fallback": [
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08], "size": 0.05, "color": "#aaa"}
+  ]
+}
