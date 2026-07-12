@@ -1260,6 +1260,24 @@ $("editor-close").addEventListener("click", closeEditor);
 // 絞り込み違いエントリを1グループにまとめる。 { name, text, entries: [conf順] }
 let wordlistGroups = [];
 
+// conf の wordlist は従来のentry(filepathを持つ)に加えて {label, items:[entry,...]}
+// のグループが混在しうる。グループを再帰的に均し、各entryに所属グループのラベルを
+// _group として付けて返す(トップレベルのentryは _group なし)。
+function flattenWordlist(list, groupLabel) {
+  const out = [];
+  (list || []).forEach((w) => {
+    if (!w) return;
+    if (Array.isArray(w.items)) {
+      out.push(...flattenWordlist(w.items, w.label || groupLabel));
+    } else if (groupLabel) {
+      out.push({ ...w, _group: groupLabel });
+    } else {
+      out.push(w);
+    }
+  });
+  return out;
+}
+
 async function loadWordlistSelect(editorAvailable) {
   const sel = $("wordlist-select");
   const filters = $("wordlist-filters");
@@ -1275,7 +1293,7 @@ async function loadWordlistSelect(editorAvailable) {
     const conf = await res.json();
     // value=ORIGINAL(editorローカルのカスタムリスト)はサーバーで解決できないので除外。
     // active === false のエントリも除外(旧confにactiveは無いので影響なし)
-    entries = (conf.wordlist || []).filter(
+    entries = flattenWordlist(conf.wordlist).filter(
       (w) => w && w.filepath && w.value !== "ORIGINAL" && w.active !== false);
   } catch {
     // confが取れなければ従来のテキスト入力にフォールバック
@@ -1288,16 +1306,31 @@ async function loadWordlistSelect(editorAvailable) {
     const name = w.filepath.replace(/.*\//, "").replace(/\.csv$/, "");
     const key = w.value || name;
     let g = map.get(key);
-    if (!g) { g = { name, text: w.text || name, entries: [] }; map.set(key, g); }
+    if (!g) { g = { name, text: w.text || name, groupLabel: w._group || null, entries: [] }; map.set(key, g); }
     g.entries.push(w);
   });
   wordlistGroups = [...map.values()];
   sel.innerHTML = "";
+  // conf の {label, items} グループは <optgroup> でまとめる。トップレベル(グループ
+  // なし)のエントリは従来どおり <select> 直下の <option>。同じラベルのグループが
+  // 離れて現れても1つの optgroup に集約する。
+  const optgroups = new Map();
   wordlistGroups.forEach((g, i) => {
     const o = document.createElement("option");
     o.value = String(i);
     o.textContent = g.text;  // グループ先頭エントリの text(なければ名前)
-    sel.appendChild(o);
+    if (g.groupLabel) {
+      let og = optgroups.get(g.groupLabel);
+      if (!og) {
+        og = document.createElement("optgroup");
+        og.label = g.groupLabel;
+        optgroups.set(g.groupLabel, og);
+        sel.appendChild(og);
+      }
+      og.appendChild(o);
+    } else {
+      sel.appendChild(o);
+    }
   });
   // サーバーはconfにないリストも名前で解決できるので、手入力の逃げ道を常に用意する
   const other = document.createElement("option");
@@ -1328,11 +1361,26 @@ function facetCols(f) {
   return f.columns || (f.column ? [f.column] : []);
 }
 
-// facetの全項を "column=v" 文字列の配列で返す(語彙の被覆判定用)
+// 述語文字列 "col op value"(op は = / != / ~= / !~=)を正規化する。前後・演算子
+// 周りの空白を除いて "col{op}value" に揃える。演算子が無ければ null。
+function normalizePred(p) {
+  const m = String(p || "").trim().match(/^(.+?)\s*(!~=|~=|!=|=)\s*(.+)$/);
+  if (!m) return null;
+  return m[1].trim() + m[2] + m[3].trim();
+}
+
+// facet値が合成時に出す述語文字列の配列。値に where があればそれを1述語として
+// そのまま使い、なければ列ごとに col=v を組む(複数列は各列ぶん)。
+function facetValuePreds(f, val) {
+  const raw = val.where ? [val.where] : facetCols(f).map((c) => c + "=" + val.v);
+  return raw.map((p) => normalizePred(p) || p);
+}
+
+// facetの全値が出しうる述語文字列を返す(語彙の被覆判定用)
 function facetVocabKeys(facets) {
   const keys = [];
   facets.forEach((f) => (f.values || []).forEach(
-    (v) => facetCols(f).forEach((c) => keys.push(c + "=" + v.v))));
+    (v) => facetValuePreds(f, v).forEach((p) => keys.push(p))));
   return keys;
 }
 
@@ -1354,23 +1402,24 @@ function splitTopLevelAnd(s) {
   return parts.map((p) => p.trim()).filter(Boolean);
 }
 
-// facet形式のwhereを {col, v} 項の配列に解析する。and連結された(括弧付き or 単一の)
-// or節、各項が column=v として解釈できれば配列、できなければ null、条件無しは空配列。
+// facet形式のwhereを正規化済み述語文字列("col op value")の配列に解析する。
+// and連結された(括弧付き or 単一の)or節を平坦に並べ、各項を演算子
+// = / != / ~= / !~= で解釈できれば配列、できなければ null、条件無しは空配列。
 function parseFacetWhere(where) {
   const w = (where || "").trim();
   if (!w) return [];
-  const terms = [];
+  const preds = [];
   for (let c of splitTopLevelAnd(w)) {
     c = c.trim();
     if (c.startsWith("(") && c.endsWith(")")) c = c.slice(1, -1).trim();
     if (/[()]/.test(c) || /\band\b/i.test(c)) return null;  // 想定外のネスト
     for (const p of c.split(/\s+or\s+/i).map((t) => t.trim()).filter(Boolean)) {
-      const m = p.match(/^([^=<>!\s]+)\s*=\s*(.+)$/);
-      if (!m) return null;
-      terms.push({ col: m[1].trim(), v: m[2].trim() });
+      const np = normalizePred(p);
+      if (np === null) return null;
+      preds.push(np);
     }
   }
-  return terms;
+  return preds;
 }
 
 // ファセットごとに1行のチェックボックスUIを組み立て、#whereへ反映する。
@@ -1379,20 +1428,25 @@ function renderFacetFilters(facets) {
   filters.hidden = false;
   facets.forEach((f) => {
     const cols = facetCols(f);
-    if (!cols.length) return;  // 列指定のないfacetは無視(conf不備)
+    const values = f.values || [];
+    // 各値が出す述語文字列。列指定が無くても where があれば述語を作れる。
+    // どの値も述語を作れないfacet(列なし・where無し)は無視(conf不備)。
+    const vpreds = values.map((val) => facetValuePreds(f, val));
+    if (!vpreds.some((ps) => ps.length)) return;
     const row = document.createElement("div");
     row.className = "wordlist-facet";
-    row.dataset.cols = JSON.stringify(cols);
     const lbl = document.createElement("span");
     lbl.className = "wordlist-filters-label";
-    lbl.textContent = (f.label || cols.join("/")) + ":";
+    lbl.textContent = (f.label || cols.join("/") || "絞り込み") + ":";
     row.appendChild(lbl);
-    (f.values || []).forEach((val) => {
+    values.forEach((val, vi) => {
+      const preds = vpreds[vi];
+      if (!preds.length) return;  // 述語を作れない値は出さない
       const wrap = document.createElement("label");
       wrap.className = "wordlist-filter";
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.dataset.cols = JSON.stringify(cols);
+      cb.dataset.preds = JSON.stringify(preds);
       cb.value = val.v;
       cb.checked = val.default === true;
       cb.addEventListener("change", updateWhereFromFilters);
@@ -1419,19 +1473,18 @@ function renderWordlistFilters(g) {
   setWhere(g && g.entries[0] ? (g.entries[0].where || "") : "");
 }
 
-// チェック済みのファセット値から #where を組み立てる。各ファセット = チェック済み値を
-// 定義順に col=v で " or " 連結した1節。1節なら括弧なし、複数節は各節を括弧で包み
-// " and " 連結する。複数列facetは値ごとに全列ぶんの項を並べる(いずれかの列が一致でヒット)。
+// チェック済みのファセット値から #where を組み立てる。各ファセット = チェック済み値の
+// 述語を定義順に " or " 連結した1節。1節なら括弧なし、複数節は各節を括弧で包み
+// " and " 連結する。値の述語は where があればそれ、なければ col=v(複数列は全列ぶん)。
 function updateWhereFromFilters() {
   const filters = $("wordlist-filters");
   const hint = filters.querySelector(".wordlist-filter-hint");
   const rows = [...filters.querySelectorAll(".wordlist-facet")];
   const clauses = [];
   rows.forEach((row) => {
-    const cols = JSON.parse(row.dataset.cols);
     const checked = [...row.querySelectorAll('input[type="checkbox"]')]
       .filter((b) => b.checked)
-      .flatMap((b) => cols.map((c) => c + "=" + b.value));
+      .flatMap((b) => JSON.parse(b.dataset.preds));
     if (checked.length) clauses.push(checked.join(" or "));
   });
   let where = "";
@@ -1464,22 +1517,22 @@ $("wordlist-select").addEventListener("change", applyWordlistSelection);
 
 // 復元された #where に合わせて facet のチェック状態を戻す。filters が隠れている
 // (facets の無いグループ)なら復元値をそのまま #where に入れる。facetモードでは
-// and連結の(括弧付き/単一)or節として解析し column=v を照合し、全項が既知なら
-// チェックを合わせる。解釈できない/未知の項があれば見た目と実際が食い違わないよう
-// チェックボックス行を非表示にし、#where に復元値を残す
-// (グループを選び直せば applyWordlistSelection→renderWordlistFilters が再描画する)。
+// and連結の(括弧付き/単一)or節として述語文字列に解析し、各チェックボックスが
+// 合成時に出す述語集合と照合する。全述語が既知ならチェックを合わせる。解釈できない
+// /未知の述語があれば見た目と実際が食い違わないようチェックボックス行を非表示にし、
+// #where に復元値を残す(グループを選び直せば renderWordlistFilters が再描画する)。
 function restoreWordlistFilters(where) {
   const filters = $("wordlist-filters");
   if (filters.hidden) { setWhere(where); return; }
   const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
-  // 各チェックボックスの項集合(複数列facetは全列ぶん)。復元は全項が揃っている
-  // 値だけをチェックする(合成側が全列ぶん出すので、自前生成のwhereなら一致する)
-  const boxTerms = (b) => JSON.parse(b.dataset.cols).map((c) => c + "=" + b.value);
-  const terms = parseFacetWhere(where);
-  const known = new Set(boxes.flatMap(boxTerms));
-  if (terms !== null && terms.every((t) => known.has(t.col + "=" + t.v))) {
-    const want = new Set(terms.map((t) => t.col + "=" + t.v));
-    boxes.forEach((b) => { b.checked = boxTerms(b).every((k) => want.has(k)); });
+  // 各チェックボックスが出す述語集合。復元は全述語が揃っている値だけをチェックする
+  // (合成側が全述語を出すので、自前生成のwhereなら一致する)
+  const boxPreds = (b) => JSON.parse(b.dataset.preds);
+  const preds = parseFacetWhere(where);
+  const known = new Set(boxes.flatMap(boxPreds));
+  if (preds !== null && preds.every((p) => known.has(p))) {
+    const want = new Set(preds);
+    boxes.forEach((b) => { b.checked = boxPreds(b).every((k) => want.has(k)); });
     updateWhereFromFilters();
   } else {
     filters.hidden = true;
@@ -1677,7 +1730,7 @@ async function doRestoreForm() {
         const facets = groupFacets(g);
         if (!facets || wantFacetTerms === null) return false;
         const vocab = new Set(facetVocabKeys(facets));
-        return wantFacetTerms.every((t) => vocab.has(t.col + "=" + t.v));
+        return wantFacetTerms.every((t) => vocab.has(t));
       });
       if (hit) gi = hit.i;
       if (gi < 0 && cands.length) gi = cands[0].i;
