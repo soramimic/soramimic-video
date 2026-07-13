@@ -5,10 +5,15 @@
     {"type": "text", "text": "{original}", "box": [0.448, 0.253, 0.445, 0.085],
      "size": 0.062, "color": "white", "align": "left"},
     {"type": "text", "text": "（{birth_year}-{death_year}）", "box": [0.448, 0.35, 0.445, 0.052],
-     "size": 0.04, "color": "white", "align": "left", "require": "birth_year"},
+     "size": 0.04, "color": "white", "align": "left", "require": "nationality"},
+    {"type": "text", "text": "（{birth_year}年生まれ・{country}）", "box": [0.448, 0.35, 0.445, 0.052],
+     "size": 0.04, "color": "white", "align": "left", "require": "country"},
     {"type": "text", "text": "{achievement}", "box": [0.448, 0.414, 0.445, 0.11],
      "size": 0.04, "color": "white", "align": "left", "valign": "top", "wrap": true,
-     "require": "achievement"}
+     "require": "achievement"},
+    {"type": "text", "text": "{description}", "box": [0.448, 0.414, 0.445, 0.17],
+     "size": 0.04, "color": "white", "align": "left", "valign": "top", "wrap": true,
+     "require": "description"}
   ],
   "fallback": [
     {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
