@@ -135,6 +135,96 @@ def test_lyrics_align_to_original_text(client, tmp_path):
     assert unmatched["original_text"] == "ノブナガヒデヨシ"
 
 
+def _granularity_payload(csv_path: Path) -> dict:
+    """2フレーズ(=2行・各1単語)が1つの元歌詞行に対応する粒度テスト用ペイロード。"""
+    return {
+        "format": "soramimic-editor/1",
+        "phrases": ["沈むように", "溶けるように"],  # align は表記の重なりで対応づく
+        "results": [
+            [{"surface": "静", "kana": "シズ", "id": "10", "original": "",
+              "originalkana": "", "original_surface": ""}],
+            [{"surface": "川", "kana": "カワ", "id": "11", "original": "",
+              "originalkana": "", "original_surface": ""}],
+        ],
+        "wordlist": {"filepath": str(csv_path)},
+    }
+
+
+def test_granularity_original_line_vs_phrase(client, tmp_path):
+    """元歌詞の粒度: 既定(line)は行全文、phrase はフレーズの部分文字列。"""
+    payload = _granularity_payload(_wordlist(tmp_path))
+    layout_json = json.dumps(_LAYOUT_SHOW_ALL)
+    lyrics = "沈むように 溶けるように"
+
+    # 既定(未指定=original:line): 両フレーズとも行全文
+    for cue in ("0", "1"):
+        body = _post(client, payload, cue=cue, layout_json=layout_json, lyrics=lyrics).json()
+        assert body["original_text"] == "沈むように 溶けるように"
+
+    # original:phrase: フレーズごとに部分文字列へ切り分ける
+    g = "parody:phrase|original:phrase"
+    first = _post(client, payload, cue="0", layout_json=layout_json, lyrics=lyrics,
+                  subtitle_granularity=g).json()
+    second = _post(client, payload, cue="1", layout_json=layout_json, lyrics=lyrics,
+                   subtitle_granularity=g).json()
+    assert first["original_text"] == "沈むように"
+    assert second["original_text"] == "溶けるように"
+
+
+def test_granularity_parody_line_concatenates(client, tmp_path):
+    """替え歌の粒度 line: 同じ元歌詞行の替え歌を連結して両フレーズに出す。"""
+    payload = _granularity_payload(_wordlist(tmp_path))
+    layout_json = json.dumps(_LAYOUT_SHOW_ALL)
+    lyrics = "沈むように 溶けるように"
+    g = "parody:line|original:line"
+    for cue in ("0", "1"):
+        body = _post(client, payload, cue=cue, layout_json=layout_json, lyrics=lyrics,
+                     subtitle_granularity=g).json()
+        assert body["parody_text"] == "静  川"
+
+
+def test_preview_original_matches_video(tmp_path):
+    """editor-preview の元歌詞テキストが video.build_ass と一致する(共通ロジック)。"""
+    from helpers import build_xf_midi
+    from soramimic_video.align import align_lines
+    from soramimic_video.editor_io import build_editor_preview
+    from soramimic_video.layout import parse_layout
+    from soramimic_video.project import Parody, ParodyLine, ParodyWord
+    from soramimic_video.video import build_ass
+    from soramimic_video.xfparse import analyze_midi
+
+    midi = build_xf_midi(
+        tmp_path / "m.mid",
+        notes=[(480, 240, 60), (720, 240, 62), (960, 240, 64), (1200, 240, 65)],
+        lyric_events=[(480, "沈む"), (720, "ように"), (960, "/溶ける"), (1200, "ように")],
+    )
+    project = analyze_midi(midi)
+    align_lines(project, ["沈むように 溶けるように"])
+    project.parody = Parody(wordlist="t", lines=[
+        ParodyLine(line_id=project.lines[0].id, words=[ParodyWord(
+            surface="静", kana="シズ", original="", original_surface="", originalkana="",
+            note_ids=[0, 1])]),
+        ParodyLine(line_id=project.lines[1].id, words=[ParodyWord(
+            surface="川", kana="カワ", original="", original_surface="", originalkana="",
+            note_ids=[2, 3])]),
+    ])
+    payload = _granularity_payload(tmp_path / "wl.csv")  # phrases が project の XF行と同じ切り
+
+    override = {"parody": "phrase", "original": "phrase"}
+    ass = build_ass(project, 1280, 720, "Font", None, override)
+    video_orig = [ln.split(",,")[-1].split("}")[-1]
+                  for ln in ass.splitlines()
+                  if ln.startswith("Dialogue:") and ",Original," in ln]
+
+    # プレビューは単語ごとにキューを作るので、単語を表示できる要素を持つレイアウトが要る
+    # (字幕だけのレイアウトでは表示できる単語がなくキューが0件になる)。粒度は override で駆動。
+    layout = parse_layout(_LAYOUT_SHOW_ALL, "test")
+    preview = build_editor_preview(payload, None, layout, "沈むように 溶けるように", override)
+    preview_orig = [c["original_text"] for c in preview["cues"]]
+
+    assert preview_orig == video_orig == ["沈むように", "溶けるように"]
+
+
 def test_no_editor_words_shows_zero(client, tmp_path):
     # 画像だけのレイアウトでは、画像列のない単語は表示できず0キューになる
     payload = _editor_payload(_wordlist(tmp_path))

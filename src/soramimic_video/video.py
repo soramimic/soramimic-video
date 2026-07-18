@@ -464,13 +464,22 @@ def _ruby_events(
 
 
 def build_ass(
-    project: Project, width: int, height: int, font: str, layout: Layout | None = None
+    project: Project,
+    width: int,
+    height: int,
+    font: str,
+    layout: Layout | None = None,
+    granularity: dict[str, str] | None = None,
 ) -> str:
     """歌詞字幕(替え歌/元歌詞)のASSを作る。行の歌唱区間で表示する。
 
     位置・サイズ・色はレイアウトのsubtitle要素から決める。subtitle要素の
     ないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
+    表示粒度(行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
+    (Web UIの一括指定)、それも無ければ source 既定に従う。
     """
+    from .align import build_subtitle_segments, resolve_granularity
+
     subs = layout.subtitles if layout and layout.subtitles else DEFAULT_SUBTITLES
     # スタイル名はsource由来(Parody/Original)。同一sourceが複数あれば連番を足す
     names: list[str] = []
@@ -513,35 +522,56 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         spans[j + 1][0] = max(spans[j + 1][0], spans[j][1])
 
     font_path = resolve_font_path(layout.font if layout else None)
+    # 行ごとの素材(グループ化・切り出し・マージは align 側の共通ロジックで行う)
+    plines = [parody_lines.get(line.id) for line in shown]
+    originals = [line.original_text for line in shown]  # グループ化キー(未対応はNone)
+    xf_texts = [line.xf_surface or line.xf_kana for line in shown]
+    original_full = [(line.original_text or line.xf_surface) for line in shown]
+    parody_full = [
+        WORD_SEP.join(w.surface for w in pl.words) if pl and pl.words else ""
+        for pl in plines
+    ]
+    # spans は上の重なり調整で可変listにしていたので、区間は (start, end) に固める
+    span_pairs = [(s[0], s[1]) for s in spans]
+
     events = []
-    for line, (start, end) in zip(shown, spans, strict=True):
-        pline = parody_lines.get(line.id)
-        parody_text = WORD_SEP.join(w.surface for w in pline.words) if pline and pline.words else ""
-        original_text = line.original_text or line.xf_surface
-        for el, name in zip(subs, names, strict=True):
-            text = parody_text if el.source == "parody" else original_text
-            if not text:
+    for el, name in zip(subs, names, strict=True):
+        gran = resolve_granularity(el.source, getattr(el, "granularity", None), granularity)
+        full_texts = parody_full if el.source == "parody" else original_full
+        segments = build_subtitle_segments(
+            el.source, gran, originals, full_texts, xf_texts, span_pairs, sep=WORD_SEP
+        )
+        # \posで固定配置(boxのalign/valign側の辺が基準点)。
+        # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
+        # 元歌詞が衝突回避で入れ替わらない(衝突判定は同一レイヤー内のみ)
+        layer = 1 if el.source == "parody" else 0
+        an = _ass_alignment(el)
+        x, y, w, h = el.box
+        px = {"left": x, "right": x + w}.get(el.align, x + w / 2) * width
+        py = {"top": y, "middle": y + h / 2}.get(el.valign, y + h) * height
+        for seg in segments:
+            if not seg.text:
                 continue
-            # \posで固定配置(boxのalign/valign側の辺が基準点)。
-            # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
-            # 元歌詞が衝突回避で入れ替わらない(衝突判定は同一レイヤー内のみ)
-            layer = 1 if el.source == "parody" else 0
-            an = _ass_alignment(el)
-            x, y, w, h = el.box
-            px = {"left": x, "right": x + w}.get(el.align, x + w / 2) * width
-            py = {"top": y, "middle": y + h / 2}.get(el.valign, y + h) * height
             events.append(
-                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
-                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(text)}"
+                f"Dialogue: {layer},{_ass_time(seg.start)},{_ass_time(seg.end)},{name},,0,0,0,,"
+                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(seg.text)}"
             )
             # ルビ(ふりがな): 替え歌字幕のみ。本文と同一レイヤー・同一区間で、
-            # 各単語の真上に小さいフォントの別イベントを追加する(本文は変えない)
-            if el.source == "parody" and el.ruby and pline and pline.words:
-                events.extend(
-                    _ruby_events(
-                        el, name, layer, start, end, pline.words, px, py, an, height, font_path
+            # 各単語の真上に小さいフォントの別イベントを追加する(本文は変えない)。
+            # 行マージ(parody=line)時はグループ内の全単語を連結して並べる
+            if el.source == "parody" and el.ruby:
+                words = []
+                for k in seg.indices:
+                    pl = plines[k]
+                    if pl is not None:
+                        words.extend(pl.words)
+                if words:
+                    events.extend(
+                        _ruby_events(
+                            el, name, layer, seg.start, seg.end, words, px, py, an,
+                            height, font_path,
+                        )
                     )
-                )
     return header + "\n".join(events) + "\n"
 
 
@@ -583,6 +613,7 @@ def make_video(
     audio: str | None = None,
     image_cache: Path | None = None,
     layout: str | None = None,
+    granularity: dict[str, str] | None = None,
 ) -> Path:
     layout_obj = load_layout(layout)
     work = project_dir / VIDEO_DIR
@@ -617,7 +648,9 @@ def make_video(
     slideshow = write_slideshow(cues, work, width, height, total_sec, idle_frame)
 
     ass_path = work / "subtitles.ass"
-    ass_path.write_text(build_ass(project, width, height, font, layout_obj), encoding="utf-8")
+    ass_path.write_text(
+        build_ass(project, width, height, font, layout_obj, granularity), encoding="utf-8"
+    )
 
     credits_path = write_credits(credits, work)
     if credits_path:

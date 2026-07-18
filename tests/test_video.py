@@ -91,6 +91,89 @@ def test_build_ass_escapes_braces(tmp_path: Path):
     assert "{す}" not in ass
 
 
+def _two_line_project(tmp_path: Path):
+    """1つの元歌詞行に2つのXF行が対応するプロジェクト(粒度テスト用)。"""
+    from soramimic_video.align import align_lines
+
+    midi = build_xf_midi(
+        tmp_path / "two.mid",
+        notes=[(480, 240, 60), (720, 240, 62), (960, 240, 64), (1200, 240, 65)],
+        lyric_events=[(480, "沈む"), (720, "ように"), (960, "/溶ける"), (1200, "ように")],
+    )
+    project = analyze_midi(midi)
+    align_lines(project, ["沈むように 溶けるように"])
+    # 2つのXF行(=2フレーズ)が同じ元歌詞行に対応する
+    assert [ln.original_text for ln in project.lines] == ["沈むように 溶けるように"] * 2
+    project.parody = Parody(
+        wordlist="test",
+        lines=[
+            ParodyLine(line_id=project.lines[0].id, words=[
+                ParodyWord(surface="静", kana="シズ", original="", original_surface="",
+                           originalkana="", note_ids=[0, 1])]),
+            ParodyLine(line_id=project.lines[1].id, words=[
+                ParodyWord(surface="川", kana="カワ", original="", original_surface="",
+                           originalkana="", note_ids=[2, 3])]),
+        ],
+    )
+    return project
+
+
+def _orig_texts(ass: str) -> list[str]:
+    return [ln.split(",,")[-1].split("}")[-1]
+            for ln in ass.splitlines() if ln.startswith("Dialogue:") and ",Original," in ln]
+
+
+def _parody_texts(ass: str) -> list[str]:
+    return [ln.split(",,")[-1].split("}")[-1]
+            for ln in ass.splitlines()
+            if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" not in ln]
+
+
+def test_build_ass_original_line_merges_group(tmp_path: Path):
+    # 既定(original=line): 同じ元歌詞行に対応する2フレーズは1枚に畳まれ通しで出る
+    project = _two_line_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font")
+    assert _orig_texts(ass) == ["沈むように 溶けるように"]  # 2行ぶんが1枚に
+    starts = [ln.split(",")[1] for ln in ass.splitlines()
+              if ln.startswith("Dialogue:") and ",Original," in ln]
+    # 1枚だけ: 開始=1フレーズ目の頭、終了=2フレーズ目の終わり(通しタイミング)
+    assert len(starts) == 1
+    assert _parody_texts(ass) == ["静", "川"]  # 替え歌は既定でフレーズ
+
+
+def test_build_ass_original_phrase_splits(tmp_path: Path):
+    project = _two_line_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", None, {"original": "phrase"})
+    # 元歌詞の行を各フレーズの部分文字列に切り分けて別々に出す
+    assert _orig_texts(ass) == ["沈むように", "溶けるように"]
+
+
+def test_build_ass_parody_line_concatenates(tmp_path: Path):
+    project = _two_line_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", None, {"parody": "line", "original": "line"})
+    assert _parody_texts(ass) == ["静  川"]  # 同じ元歌詞行の替え歌を連結して1枚に
+    assert _orig_texts(ass) == ["沈むように 溶けるように"]
+
+
+def test_build_ass_granularity_from_layout_element(tmp_path: Path):
+    # subtitle要素の granularity 指定が override より優先される
+    import json
+
+    from soramimic_video.layout import load_layout
+
+    spec = tmp_path / "gran.json"
+    spec.write_text(json.dumps({
+        "elements": [
+            {"type": "subtitle", "source": "original", "box": [0.02, 0.9, 0.96, 0.05],
+             "granularity": "phrase"},
+        ],
+    }), encoding="utf-8")
+    project = _two_line_project(tmp_path)
+    # override で line を渡しても、要素の phrase が勝つ
+    ass = build_ass(project, 1280, 720, "Font", load_layout(str(spec)), {"original": "line"})
+    assert _orig_texts(ass) == ["沈むように", "溶けるように"]
+
+
 def test_build_ass_layout_subtitles(tmp_path: Path):
     # レイアウトのsubtitle要素で元歌詞の位置を変えられる。
     # subtitle要素があるレイアウトでは既定の字幕は使われない(parodyは出ない)
