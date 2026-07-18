@@ -9,6 +9,7 @@ from soramimic_video.convert import (
     _map_word_to_notes,
     _offset_map,
     _pair_score,
+    _paired_sokuon,
     apply_converted_lines,
     convert_project,
     parse_convert_params,
@@ -543,3 +544,79 @@ def test_dp_and_shared_note_resolution_coexist(tmp_path: Path):
         project, converted, wordlist=_empty_wordlist(tmp_path), where=None, params={}
     )
     _assert_no_shared_notes(project)
+
+
+# --- 2段DP(音節への個数配分)+ 促音ッ閉音節ハード制約 ---
+
+
+def _fill_bar(kana: list[str]) -> list[str]:
+    return [k or "ー" for k in kana]
+
+
+def test_syllable_distribution_hosoura():
+    # ホソウラ: 音節[ホン,トウ,ハ](音符[ホ,ン,ト,ウ,ハ])に要素[ホ,ソ,ウ,ラ]。
+    # 位置ベースだと ホン=[ホ,ソ] でソがン音符に載る。外側DPは配分[1,2,1]を選び、
+    # トウ音節に[ソ,ウ]を載せて ソ→ト(オ一致)、ウ→ウ、ホン音節はホのみ(ンはー)。
+    ids, kana = _map_word_to_notes(
+        [2, 2, 1], [1, 1, 1, 1, 1], list(range(6)), (0, 3),
+        ["ホ", "ソ", "ウ", "ラ"], "ホソウラ",
+        notes_kana=["ホ", "ン", "ト", "ウ", "ハ"],
+    )
+    assert ids == [0, 1, 2, 3, 4]
+    assert _fill_bar(kana) == ["ホ", "ー", "ソ", "ウ", "ラ"]
+
+
+def test_syllable_distribution_no_word_initial_bar():
+    # 語頭音節が空(語頭ー)にならない(語頭固定)。
+    ids, kana = _map_word_to_notes(
+        [1, 1, 1, 1, 2, 1], [1] * 7, list(range(8)), (0, 6),
+        ["ク", "ル", "ヤ", "バ", "ッ", "ト"], "クルヤバット",
+        notes_kana=["ボ", "ク", "ラ", "ハ", "キ", "ッ", "ト"],
+    )
+    assert kana[0] != ""  # 先頭音符は継続ーにしない
+
+
+def test_paired_sokuon_flags():
+    # 促音ッが直前モーラと閉音節を成す位置のみ True
+    assert _paired_sokuon(["ク", "ル", "ヤ", "バ", "ッ", "ト"]) == [
+        False, False, False, False, True, False
+    ]
+    # 語末ッは対象外(安全側フォールバック)
+    assert _paired_sokuon(["バ", "ッ"]) == [False, False]
+    # ッッ連続の2つ目(直前がッ)は対象外
+    assert _paired_sokuon(["バ", "ッ", "ッ", "ト"]) == [False, True, False, False]
+    # 語頭ッは対象外
+    assert _paired_sokuon(["ッ", "ト", "ア"]) == [False, False, False]
+
+
+def test_sokuon_closed_syllable_pulls_x_into_syllable():
+    # クルヤバット: 促音ッは直前バと不可分。バがハ音符に載るとキ音符を挟むため不可。
+    # 制約により バッ はキッ音節(音符[キ,ッ])へ引き込まれ [ク,ル,ヤ,ー,バ,ッ,ト]。
+    # (母音一致はバ/ハ一致を失い1点減るが、閉音節ハード制約が優先される。)
+    ids, kana = _map_word_to_notes(
+        [1, 1, 1, 1, 2, 1], [1] * 7, list(range(8)), (0, 6),
+        ["ク", "ル", "ヤ", "バ", "ッ", "ト"], "クルヤバット",
+        notes_kana=["ボ", "ク", "ラ", "ハ", "キ", "ッ", "ト"],
+    )
+    assert _fill_bar(kana) == ["ク", "ル", "ヤ", "ー", "バ", "ッ", "ト"]
+    # バとッが隣接音符(間にーを挟まない)
+    bi = kana.index("バ")
+    assert kana[bi + 1] == "ッ"
+
+
+def test_sokuon_pair_stays_adjacent_within_syllable():
+    # キッ音節[キ,ッ]に[バ,ッ]、ト音節に[ト]。促音ッが元のッ音符に載る。
+    ids, kana = _map_word_to_notes(
+        [2, 1], [1, 1, 1], list(range(4)), (0, 2),
+        ["バ", "ッ", "ト"], "バット", notes_kana=["キ", "ッ", "ト"],
+    )
+    assert _fill_bar(kana) == ["バ", "ッ", "ト"]
+
+
+def test_leadi_consonant_i_still_ok_after_distribution():
+    # レディ(子音付きi段は脱落対象外)が2段DP+制約下でも [レ,ー,ディ] のまま。
+    ids, kana = _map_word_to_notes(
+        [1, 2], [1, 1, 1], list(range(4)), (0, 2),
+        ["レ", "ディ"], "レディ", notes_kana=["レ", "テ", "イ"],
+    )
+    assert _fill_bar(kana) == ["レ", "ー", "ディ"]
