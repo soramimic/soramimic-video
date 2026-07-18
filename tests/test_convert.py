@@ -1,12 +1,17 @@
+import json
+from collections import Counter
 from pathlib import Path
 
 from soramimic_video.convert import (
     _map_word_to_notes,
     _offset_map,
+    apply_converted_lines,
     convert_project,
 )
 from soramimic_video.kana import split_moras
 from soramimic_video.project import Line, Note, Project, SongInfo
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_split_moras():
@@ -190,3 +195,129 @@ def test_convert_project(tmp_path: Path):
     for w in words:
         assert w.note_ids, "音符への対応づけがない"
         assert set(w.note_ids) <= {0, 1, 2}
+
+
+def _empty_wordlist(tmp_path: Path) -> str:
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation\n", encoding="utf-8")
+    return str(csv_path)
+
+
+def _line_project(kanas: list[str]) -> Project:
+    """音符kana列だけを持つ1行プロジェクト(id==indexの音符)。"""
+    notes = [
+        Note(
+            id=i, midi_note=60, start_tick=i * 480, end_tick=(i + 1) * 480,
+            start_sec=i * 0.5, end_sec=(i + 1) * 0.5,
+            line=0, surface=k, kana=k, raw=k,
+        )
+        for i, k in enumerate(kanas)
+    ]
+    xf = "".join(kanas)
+    lines = [Line(id=0, xf_surface=xf, xf_kana=xf, note_ids=list(range(len(kanas))))]
+    return Project(
+        song=SongInfo(midi_path="x.mid", ticks_per_beat=480), notes=notes, lines=lines
+    )
+
+
+def _assert_no_shared_notes(project: Project) -> None:
+    """各行で「行の音符数 == 単語のnote_ids合計(重複なし)」と、各note_idが
+    高々1単語にしか属さないことを検証する。"""
+    assert project.parody is not None
+    for pline in project.parody.lines:
+        counts: Counter[int] = Counter()
+        for w in pline.words:
+            assert len(w.note_ids) == len(w.note_kana), "note_ids と note_kana が不揃い"
+            counts.update(w.note_ids)
+        for nid, c in counts.items():
+            assert c == 1, f"音符 {nid} が {c} 単語に二重割り当て"
+
+
+def test_apply_converted_lines_resolves_compound_note_double_assignment(
+    tmp_path: Path,
+):
+    # 複合音符(kana2文字)が単語境界を跨ぐケース。
+    # 音符 [ア, ロガ, ト] (中央の「ロガ」が2文字の複合音符)に、
+    # 単語「アロ」(period 0..2, ア/ロ) と 単語「ガト」(period 2..4, ガ/ト) を載せる。
+    # 中央音符 index1 は両単語にヒットするが、
+    #   「アロ」の文字被り: [0,3) ∩ [1,3) = 2
+    #   「ガト」の文字被り: [3,5) ∩ [1,3) = 0
+    # なので「アロ」が音符1を取り、「ガト」からは外れる。
+    project = _line_project(["ア", "ロガ", "ト"])  # note_concat = "アロガト"
+    converted = [
+        {
+            "units": [{"pronunciation": c} for c in "アロガト"],
+            "words": [
+                {"surface": "アロ", "kana": "アロ", "period": [0, 2],
+                 "pronunciation": ["ア", "ロ"], "original": "", "original_surface": "",
+                 "originalkana": "", "locked": False},
+                {"surface": "ガト", "kana": "ガト", "period": [2, 4],
+                 "pronunciation": ["ガ", "ト"], "original": "", "original_surface": "",
+                 "originalkana": "", "locked": False},
+            ],
+        }
+    ]
+    apply_converted_lines(
+        project, converted, wordlist=_empty_wordlist(tmp_path), where=None, params={}
+    )
+    _assert_no_shared_notes(project)
+    words = {w.surface: w for w in project.parody.lines[0].words}
+    # 「アロ」が複合音符(index1)を保持し、末尾モーラ「ロ」を歌う
+    assert words["アロ"].note_ids == [0, 1]
+    assert words["アロ"].note_kana == ["ア", "ロ"]
+    # 「ガト」は複合音符を失い、後続音符だけを持つ(モーラ数が1減る)
+    assert words["ガト"].note_ids == [2]
+    assert words["ガト"].note_kana == ["ト"]
+
+
+def test_apply_converted_lines_tiebreak_favors_earlier_word(tmp_path: Path):
+    # 文字被りが同点(各1)なら先行単語が複合音符を取る。
+    # 音符 [ア, ロナ, ト]、単語「アロ」(period0..2) と「ナト」(period2..4)。
+    #   「アロ」被り: [0,2) ∩ [1,3) = 1、  「ナト」被り: [2,5) ∩ [1,3) = 1 → 同点
+    project = _line_project(["ア", "ロナ", "ト"])
+    converted = [
+        {
+            "units": [{"pronunciation": c} for c in "アロナト"],
+            "words": [
+                {"surface": "アロ", "kana": "アロ", "period": [0, 2],
+                 "pronunciation": ["ア", "ロ"], "original": "", "original_surface": "",
+                 "originalkana": "", "locked": False},
+                {"surface": "ナト", "kana": "ナト", "period": [2, 4],
+                 "pronunciation": ["ナ", "ト"], "original": "", "original_surface": "",
+                 "originalkana": "", "locked": False},
+            ],
+        }
+    ]
+    apply_converted_lines(
+        project, converted, wordlist=_empty_wordlist(tmp_path), where=None, params={}
+    )
+    _assert_no_shared_notes(project)
+    words = {w.surface: w for w in project.parody.lines[0].words}
+    assert words["アロ"].note_ids == [0, 1]  # 先行単語が複合音符を取る
+    assert words["ナト"].note_ids == [2]
+
+
+def test_apply_converted_lines_be429b67_fixture(tmp_path: Path):
+    # be429b67(実データ)から抜粋した2行。複合音符「ナイ」が単語境界を跨ぎ、
+    # 修正前は隣接2単語へ二重割り当てされて先行単語の末尾モーラが潰れていた。
+    fixture = json.loads(
+        (FIXTURES / "be429b67_shared_notes.json").read_text(encoding="utf-8")
+    )
+    wordlist = _empty_wordlist(tmp_path)
+    expected_first = {18: ("オロガ", "ガ"), 26: ("ウルナ", "ナ")}
+    for entry in fixture:
+        project = _line_project(entry["notes_kana"])
+        apply_converted_lines(
+            project, [entry["converted"]], wordlist=wordlist, where=None, params={}
+        )
+        _assert_no_shared_notes(project)
+        ci = entry["compound_note_local_index"]
+        surface, mora = expected_first[entry["line_id"]]
+        # 複合音符は先行単語が保持し、実モーラを歌う(「ー」潰れでない)
+        holder = [
+            w for w in project.parody.lines[0].words if ci in w.note_ids
+        ]
+        assert len(holder) == 1, "複合音符が単一単語に属すること"
+        w = holder[0]
+        assert w.surface == surface
+        assert w.note_kana[w.note_ids.index(ci)] == mora
