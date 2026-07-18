@@ -188,7 +188,7 @@ def test_preview_original_matches_video(tmp_path):
     from helpers import build_xf_midi
     from soramimic_video.align import align_lines
     from soramimic_video.editor_io import build_editor_preview
-    from soramimic_video.layout import DEFAULT_SUBTITLES, Layout
+    from soramimic_video.layout import parse_layout
     from soramimic_video.project import Parody, ParodyLine, ParodyWord
     from soramimic_video.video import build_ass
     from soramimic_video.xfparse import analyze_midi
@@ -216,7 +216,9 @@ def test_preview_original_matches_video(tmp_path):
                   for ln in ass.splitlines()
                   if ln.startswith("Dialogue:") and ",Original," in ln]
 
-    layout = Layout(elements=[], subtitles=list(DEFAULT_SUBTITLES))
+    # プレビューは単語ごとにキューを作るので、単語を表示できる要素を持つレイアウトが要る
+    # (字幕だけのレイアウトでは表示できる単語がなくキューが0件になる)。粒度は override で駆動。
+    layout = parse_layout(_LAYOUT_SHOW_ALL, "test")
     preview = build_editor_preview(payload, None, layout, "沈むように 溶けるように", override)
     preview_orig = [c["original_text"] for c in preview["cues"]]
 
