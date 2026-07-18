@@ -137,6 +137,9 @@ class SubtitleElement:
     # 第1段階では source="parody" のみ有効(元歌詞ではカナ対応付けに課題があり無視する)。
     ruby: bool = False
     ruby_size: float = 0.5  # ルビの文字サイズ(本文フォントサイズに対する比)
+    # 表示粒度。"line"(行) / "phrase"(フレーズ)。None は source 既定
+    # (original=line, parody=phrase)。詳細は align.build_subtitle_segments。
+    granularity: str | None = None
 
 
 # subtitle要素を持たないレイアウトで使う既定の字幕(従来の下部2段と同じ見た目)
@@ -241,6 +244,11 @@ def _parse_elements(
                 raise ValueError(
                     f"subtitle の source は parody / original です: {source!r} ({origin})"
                 )
+            granularity = e.get("granularity")
+            if granularity is not None and granularity not in ("line", "phrase"):
+                raise ValueError(
+                    f"subtitle の granularity は line / phrase です: {granularity!r} ({origin})"
+                )
             subtitles.append(
                 SubtitleElement(
                     source=source,
@@ -252,6 +260,7 @@ def _parse_elements(
                     bold=bool(e.get("bold", False)),
                     ruby=bool(e.get("ruby", False)),
                     ruby_size=float(e.get("ruby_size", 0.5)),
+                    granularity=granularity,
                 )
             )
         elif kind == "text":

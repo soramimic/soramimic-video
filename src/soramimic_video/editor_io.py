@@ -116,7 +116,11 @@ def _resolve_preview_wordlist(payload: dict, fallback: str | None) -> str | None
 
 
 def build_editor_preview(
-    payload: dict, wordlist: str | None, layout: Layout, lyrics: str = ""
+    payload: dict,
+    wordlist: str | None,
+    layout: Layout,
+    lyrics: str = "",
+    granularity: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """editor書き出しJSONから、実動画と同じキュー順・フィルタのプレビューデータを作る。
 
@@ -125,9 +129,17 @@ def build_editor_preview(
     data(単語リスト行+替え歌フィールド)・use_fallback・その行の字幕テキスト
     (替え歌/元歌詞)を持たせる。MIDI(音符)なしでも作れるよう、時間ではなく
     行・単語の並びでキュー順を決める(実動画でも歌唱順=この並び)。
+
+    字幕テキストの粒度(行/フレーズ)は video.build_ass と同じ align 側の共通
+    ロジックで解決し、動画と一致した元歌詞/替え歌を返す。
     """
+    from .align import (
+        build_subtitle_segments,
+        effective_granularities,
+        segment_text_by_line,
+    )
     from .convert import _find_row, _load_wordlist_rows
-    from .video import word_frame_data, word_is_shown
+    from .video import WORD_SEP, word_frame_data, word_is_shown
 
     results = payload.get("results")
     if not isinstance(results, list):
@@ -142,6 +154,35 @@ def build_editor_preview(
 
         assignments = align_texts([str(p) for p in phrases], lyric_lines)
         aligned = [lyric_lines[a] if a is not None else None for a in assignments]
+
+    # 粒度に応じて、各行に出す元歌詞/替え歌テキストを video と同じ手順で解決する。
+    # プレビューは時間軸を持たないので区間はダミー(表示テキストのみ使う)。
+    n_lines = len(results)
+    grans = effective_granularities(layout.subtitles, granularity)
+    originals: list[str | None] = [aligned[i] if i < len(aligned) else None for i in range(n_lines)]
+    xf_texts = [str(phrases[i]) if i < len(phrases) else "" for i in range(n_lines)]
+    original_full = [
+        (originals[i] or (str(phrases[i]) if i < len(phrases) else "")) for i in range(n_lines)
+    ]
+    parody_full = [
+        WORD_SEP.join(w.get("surface", "") for w in lw) if isinstance(lw, list) else ""
+        for lw in results
+    ]
+    dummy_spans = [(0.0, 0.0)] * n_lines
+    original_by_line = segment_text_by_line(
+        build_subtitle_segments(
+            "original", grans["original"], originals, original_full, xf_texts,
+            dummy_spans, sep=WORD_SEP,
+        ),
+        n_lines,
+    )
+    parody_by_line = segment_text_by_line(
+        build_subtitle_segments(
+            "parody", grans["parody"], originals, parody_full, xf_texts,
+            dummy_spans, sep=WORD_SEP,
+        ),
+        n_lines,
+    )
     resolved = _resolve_preview_wordlist(payload, wordlist)
     rows_by_id: dict[str, list[dict[str, str]]] = {}
     if resolved is not None:
@@ -151,12 +192,10 @@ def build_editor_preview(
     for i, line_words in enumerate(results):
         if not isinstance(line_words, list):
             continue
-        # 字幕は行タイミング。替え歌=全単語のsurfaceを2スペース連結(video.build_ass
-        # と同じ)、元歌詞=元の行(editor JSONはxf_kana=phrasesを持つ)
-        parody_text = "  ".join(w.get("surface", "") for w in line_words)
-        original_text = (aligned[i] if i < len(aligned) else None) or (
-            phrases[i] if i < len(phrases) else ""
-        )
+        # 字幕テキストは粒度解決済み(video.build_ass と同じ align 側ロジック)。
+        # 元歌詞=行/フレーズ、替え歌=フレーズ/行 のいずれか。
+        parody_text = parody_by_line[i]
+        original_text = original_by_line[i]
         for w in line_words:
             row = _find_row(rows_by_id, w) or {}
             # 単語リストに行がない単語(未知語)はfallback側で描く

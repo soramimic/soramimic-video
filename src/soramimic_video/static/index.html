@@ -112,6 +112,13 @@
   </p>
   <label>元歌詞(任意・字幕用)</label>
   <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+  <label>字幕の表示粒度</label>
+  <select id="subtitle-granularity">
+    <option value="parody:phrase|original:line">替え歌:フレーズ / 元歌詞:行</option>
+    <option value="parody:phrase|original:phrase">替え歌:フレーズ / 元歌詞:フレーズ</option>
+    <option value="parody:line|original:line">替え歌:行 / 元歌詞:行</option>
+  </select>
+  <p class="hint">既定字幕の粒度。「行」は元歌詞1行を通しで、「フレーズ」はXFの区切りごとに出します。</p>
 </fieldset>
 
 <fieldset>
@@ -451,6 +458,7 @@ async function submitJob(previewSec) {
   form.append("where", $("where").value);
   form.append("layout", $("layout").value);
   form.append("layout_json", $("layout-json").value);
+  form.append("subtitle_granularity", $("subtitle-granularity").value);
   setBusy(true);
   $("result").hidden = true;
   $("progress").hidden = false;
@@ -577,6 +585,7 @@ async function leFetchCue(index) {
   form.append("wordlist", $("wordlist").value.trim());
   form.append("cue", Math.max(0, index | 0));
   form.append("lyrics", $("lyrics").value);
+  form.append("subtitle_granularity", $("subtitle-granularity").value);
   if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
   try {
     const res = await fetch("/api/editor-preview", { method: "POST", body: form, headers: headers() });
@@ -1161,6 +1170,9 @@ $("editor").addEventListener("change", () => { leCueIndex = 0; leFetchCue(0); })
 $("lyrics").addEventListener("change", () => {
   leFetchCue(leCueIndex);  // 字幕の元歌詞はフォームの元歌詞を行対応づけして出すため
 });
+$("subtitle-granularity").addEventListener("change", () => {
+  leFetchCue(leCueIndex);  // 選択即反映(確認ボタンを挟まない)
+});
 $("le-cue-prev").addEventListener("click", () => {
   if (leCueIndex > 0) leFetchCue(leCueIndex - 1);
 });
@@ -1651,13 +1663,14 @@ function saveForm() {
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
       voicevoxAutoOctave: $("voicevox-auto-octave").checked,
+      subtitleGranularity: $("subtitle-granularity").value,
     }));
   } catch { /* QuotaExceededError等でUIを壊さない */ }
 }
 
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)
 ["lyrics", "wordlist", "where", "transpose", "layout", "layout-json",
- "model", "synthesizer", "voicevox-style", "voicevox-auto-octave"]
+ "model", "synthesizer", "voicevox-style", "voicevox-auto-octave", "subtitle-granularity"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
 // MIDIはバイナリなのでdataURL化して保存(未選択なら消す)
@@ -1752,6 +1765,10 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
+    if (state.subtitleGranularity
+        && [...$("subtitle-granularity").options].some((o) => o.value === state.subtitleGranularity)) {
+      $("subtitle-granularity").value = state.subtitleGranularity;
+    }
     if (state.transpose != null) $("transpose").value = state.transpose;
     if (state.model) $("model").value = state.model;
     // 3. 合成エンジン: voicevoxが無効なら復元しない

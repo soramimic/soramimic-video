@@ -253,12 +253,15 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         layout: str | None = str(d / "layout.json")
         if not (d / "layout.json").exists():
             layout = job.params.get("layout") or config.get("layout")
+        from .align import parse_granularity_override
+
         return make_video(
             project,
             d,
             font=config.get("font") or default_font(),
             image_cache=config.get("image_cache"),
             layout=layout,
+            granularity=parse_granularity_override(job.params.get("subtitle_granularity")),
         )
 
 
@@ -674,12 +677,14 @@ def create_app(
         cue: int = Form(0),
         layout_json: str = Form(""),
         lyrics: str = Form(""),
+        subtitle_granularity: str = Form(""),
     ) -> dict[str, Any]:
         """editor書き出しJSONの変換結果に基づく、キュー1枚ぶんのプレビューデータ。
 
         レイアウト編集画面のプレビューを、単語リストの代表行1件ではなく実際の
         変換結果(replaced単語列)で描くための元データ。cueで動画のキュー順に送る。
         """
+        from .align import parse_granularity_override
         from .editor_io import build_editor_preview
 
         raw = await editor.read()
@@ -698,7 +703,8 @@ def create_app(
                 ) from exc
         try:
             result = build_editor_preview(
-                payload, wordlist.strip() or None, layout_obj, lyrics
+                payload, wordlist.strip() or None, layout_obj, lyrics,
+                parse_granularity_override(subtitle_granularity),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -739,6 +745,7 @@ def create_app(
         where: str = Form(""),
         layout: str = Form(""),
         layout_json: str = Form(""),
+        subtitle_granularity: str = Form(""),
     ) -> dict[str, Any]:
         midi_bytes = await midi.read()
         if not midi_bytes.startswith(b"MThd"):
@@ -787,6 +794,7 @@ def create_app(
             "wordlist": wordlist.strip(),
             "where": where.strip(),
             "layout": layout,
+            "subtitle_granularity": subtitle_granularity.strip(),
             "parody_source": "editor" if editor_bytes else "convert",
             "midi_filename": midi.filename,
         }
