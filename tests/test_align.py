@@ -37,9 +37,43 @@ def test_split_lyric_single_and_boundaries():
     assert "".join(pieces) == "沈むように溶けて"
 
 
+def _reader(tokens):
+    """決定的な読みトークナイザを注入するヘルパ((表層, カタカナ読み) の列を返す)。"""
+    return lambda _text: list(tokens)
+
+
+def test_split_lyric_reading_match_kanji_line():
+    # XFがカナ・元歌詞が漢字交じりでも、元歌詞を読みに直して一致ベースで切れる。
+    # 表層に空白がないので、按分ならフレーズ境界がずれる(=一致ベースであることの検証)。
+    tokens = [
+        ("沈む", "シズム"), ("よう", "ヨー"), ("に", "ニ"),
+        ("溶け", "トケ"), ("て", "テ"), ("ゆく", "ユク"), ("よう", "ヨー"), ("に", "ニ"),
+    ]
+    pieces = split_lyric_to_phrases(
+        ["シズムヨウニ", "トケテユクヨウニ"], "沈むように溶けてゆくように", reader=_reader(tokens)
+    )
+    assert pieces == ["沈むように", "溶けてゆくように"]
+    # 参考: 同じ入力を按分にかけると境界がずれる(一致ベースの優位性)
+    assert split_lyric_to_phrases(
+        ["シズムヨウニ", "トケテユクヨウニ"], "沈むように溶けてゆくように", reader=lambda _t: []
+    ) != pieces
+
+
+def test_split_lyric_snaps_to_token_boundary():
+    # 切れ目が複合語(広がる)の読みの途中に落ちても、漢字語を途中で切らずに
+    # トークン境界へスナップする(読みのオーバーラップが大きい側=前フレーズに帰属)。
+    tokens = [("広がる", "ヒロガル"), ("夜", "ヨル")]
+    pieces = split_lyric_to_phrases(
+        ["ヒロガ", "ルヨル"], "広がる夜", reader=_reader(tokens)
+    )
+    assert pieces == ["広がる", "夜"]
+
+
 def test_split_lyric_falls_back_to_proportional():
-    # 表記がまったく重ならない(カナ×漢字)ときは文字数比の按分。空文字は作らない
-    pieces = split_lyric_to_phrases(["ゲッコウ", "シズムヨウニ"], "月光 沈むように")
+    # 読みが取れない(reader が空)ときは文字数比の按分。空文字は作らない
+    pieces = split_lyric_to_phrases(
+        ["ゲッコウ", "シズムヨウニ"], "月光 沈むように", reader=lambda _t: []
+    )
     assert len(pieces) == 2
     assert all(p for p in pieces)
     assert "".join(p.replace(" ", "") for p in pieces) == "月光沈むように".replace(" ", "")

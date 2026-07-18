@@ -5,9 +5,23 @@ pytest.importorskip("unidic_lite")
 
 from soramimic_video.reading import (  # noqa: E402
     reading_candidates,
+    reading_tokens,
     text_to_kana,
     text_to_kana_unidic,
 )
+
+
+def test_reading_tokens_surface_and_reading():
+    pytest.importorskip("soramimic_yomi")
+    tokens = reading_tokens("二人だけの空が広がる夜に")
+    # 表層を連結すると元の行に戻る(位置写像の前提)
+    assert "".join(surf for surf, _ in tokens) == "二人だけの空が広がる夜に"
+    # 各トークンにカナ読みが付く(記号以外)
+    surfaces = [surf for surf, _ in tokens]
+    assert "広がる" in surfaces
+    reading_of = dict(tokens)
+    assert reading_of["二人"] == "フタリ"
+    assert reading_of["広がる"] == "ヒロガル"
 
 
 def test_unidic_pron_style():

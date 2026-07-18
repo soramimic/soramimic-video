@@ -525,7 +525,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # 行ごとの素材(グループ化・切り出し・マージは align 側の共通ロジックで行う)
     plines = [parody_lines.get(line.id) for line in shown]
     originals = [line.original_text for line in shown]  # グループ化キー(未対応はNone)
-    xf_texts = [line.xf_surface or line.xf_kana for line in shown]
+    # 元歌詞のフレーズ切り出しは読み(かな)どうしで突き合わせるので XFカナを優先
+    xf_texts = [line.xf_kana or line.xf_surface for line in shown]
     original_full = [(line.original_text or line.xf_surface) for line in shown]
     parody_full = [
         WORD_SEP.join(w.surface for w in pl.words) if pl and pl.words else ""

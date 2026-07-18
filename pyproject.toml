@@ -13,6 +13,7 @@ dependencies = [
     "soramimic[mecab]>=0.1.2",
     # フレームレイアウト(layout.py)の描画。load_default(size)に10.1が要る
     "pillow>=10.1",
+    "soramimic-yomi",
 ]
 
 [project.optional-dependencies]
