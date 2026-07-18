@@ -233,14 +233,14 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             import_editor(project, d, d / "editor.json")
             project.save(d)
     else:
-        from .convert import convert_project
+        from .convert import convert_project, parse_convert_params
 
         with _stage(job, "convert"):
             raw = convert_project(
                 project,
                 wordlist=job.params["wordlist"],
                 where=job.params.get("where") or None,
-                params={},
+                params=parse_convert_params(job.params.get("convert_params")),
             )
             save_raw(raw, d)
             project.save(d)
@@ -743,6 +743,7 @@ def create_app(
         preview: float = Form(0),
         wordlist: str = Form(""),
         where: str = Form(""),
+        convert_params: str = Form(""),
         layout: str = Form(""),
         layout_json: str = Form(""),
         subtitle_granularity: str = Form(""),
@@ -793,6 +794,7 @@ def create_app(
             "preview": max(0.0, min(preview, 60.0)),
             "wordlist": wordlist.strip(),
             "where": where.strip(),
+            "convert_params": convert_params.strip(),
             "layout": layout,
             "subtitle_granularity": subtitle_granularity.strip(),
             "parody_source": "editor" if editor_bytes else "convert",

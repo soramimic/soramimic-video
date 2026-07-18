@@ -93,6 +93,18 @@ def test_accepts_voicevox_params(client):
     assert body["params"]["voicevox_style"] == 3001
 
 
+def test_accepts_convert_params(client):
+    job_id = submit(client, wordlist="stations", convert_params="DUPLICATE=true")
+    body = wait_done(client, job_id)
+    assert body["params"]["convert_params"] == "DUPLICATE=true"
+
+
+def test_convert_params_default_empty(client):
+    job_id = submit(client, wordlist="stations")
+    body = wait_done(client, job_id)
+    assert body["params"]["convert_params"] == ""
+
+
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone

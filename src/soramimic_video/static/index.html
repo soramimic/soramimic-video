@@ -154,6 +154,12 @@
     <label>絞り込み(where・任意)</label>
     <input type="text" id="where" placeholder="例: type=family or type=full">
     <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
+    <label>単語の重複</label>
+    <select id="duplicate">
+      <option value="false">なし(同じ単語を使い回さない)</option>
+      <option value="true">あり(同じ単語も繰り返し使う)</option>
+    </select>
+    <p class="hint">替え歌変換で同じ単語を何度も使うか。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
   </details>
 </fieldset>
 
@@ -456,6 +462,7 @@ async function submitJob(previewSec) {
   form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
+  form.append("convert_params", "DUPLICATE=" + $("duplicate").value);
   form.append("layout", $("layout").value);
   form.append("layout_json", $("layout-json").value);
   form.append("subtitle_granularity", $("subtitle-granularity").value);
@@ -1656,6 +1663,7 @@ function saveForm() {
       lyrics: $("lyrics").value,
       wordlist: $("wordlist").value,
       where: $("where").value,
+      duplicate: $("duplicate").value,
       transpose: $("transpose").value,
       layout: $("layout").value,
       layoutJson: $("layout-json").value,
@@ -1669,7 +1677,7 @@ function saveForm() {
 }
 
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)
-["lyrics", "wordlist", "where", "transpose", "layout", "layout-json",
+["lyrics", "wordlist", "where", "duplicate", "transpose", "layout", "layout-json",
  "model", "synthesizer", "voicevox-style", "voicevox-auto-octave", "subtitle-granularity"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
@@ -1768,6 +1776,10 @@ async function doRestoreForm() {
     if (state.subtitleGranularity
         && [...$("subtitle-granularity").options].some((o) => o.value === state.subtitleGranularity)) {
       $("subtitle-granularity").value = state.subtitleGranularity;
+    }
+    if (state.duplicate
+        && [...$("duplicate").options].some((o) => o.value === state.duplicate)) {
+      $("duplicate").value = state.duplicate;
     }
     if (state.transpose != null) $("transpose").value = state.transpose;
     if (state.model) $("model").value = state.model;

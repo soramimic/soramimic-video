@@ -3,10 +3,12 @@ from collections import Counter
 from pathlib import Path
 
 from soramimic_video.convert import (
+    _coerce_params,
     _map_word_to_notes,
     _offset_map,
     apply_converted_lines,
     convert_project,
+    parse_convert_params,
 )
 from soramimic_video.kana import split_moras
 from soramimic_video.project import Line, Note, Project, SongInfo
@@ -179,6 +181,64 @@ def _tiny_project() -> Project:
     return Project(
         song=SongInfo(midi_path="x.mid", ticks_per_beat=480), notes=notes, lines=lines
     )
+
+
+def test_parse_convert_params():
+    # 基本: KEY=VALUE を dict に
+    assert parse_convert_params("DUPLICATE=true") == {"DUPLICATE": "true"}
+    # 複数区切り(改行・セミコロン・縦棒)、前後空白の除去
+    assert parse_convert_params("DUPLICATE=false\nLENGTH = 2 ; REPEAT=50") == {
+        "DUPLICATE": "false",
+        "LENGTH": "2",
+        "REPEAT": "50",
+    }
+    assert parse_convert_params("A=1|B=2") == {"A": "1", "B": "2"}
+    # '=' を含まない要素・空キー・空文字は無視
+    assert parse_convert_params("") == {}
+    assert parse_convert_params(None) == {}
+    assert parse_convert_params("garbage;;=x; K=v") == {"K": "v"}
+    # 値に '=' が含まれても最初の '=' で分割する
+    assert parse_convert_params("WHERE=a=b") == {"WHERE": "a=b"}
+
+
+def test_coerce_params_types():
+    out = _coerce_params(
+        {"DUPLICATE": "true", "OFF": "False", "N": "3", "F": "0.5", "S": "hello"}
+    )
+    assert out["DUPLICATE"] is True
+    assert out["OFF"] is False
+    assert out["N"] == 3 and isinstance(out["N"], int)
+    assert out["F"] == 0.5 and isinstance(out["F"], float)
+    assert out["S"] == "hello"
+
+
+def test_convert_project_default_duplicate_preserved(tmp_path: Path):
+    # パラメータ未指定なら現行どおり DUPLICATE=False が保たれる(後方互換)
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",
+        encoding="utf-8",
+    )
+    project = _tiny_project()
+    convert_project(project, wordlist=str(csv_path))
+    assert project.parody is not None
+    assert project.parody.params["DUPLICATE"] is False
+
+
+def test_convert_project_passes_params_through(tmp_path: Path):
+    # 文字列パラメータが型変換されて変換エンジン・parody に渡る
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",
+        encoding="utf-8",
+    )
+    project = _tiny_project()
+    convert_project(
+        project, wordlist=str(csv_path), params={"DUPLICATE": "true", "LENGTH": "2"}
+    )
+    assert project.parody is not None
+    assert project.parody.params["DUPLICATE"] is True  # 明示指定で既定を上書き
+    assert project.parody.params["LENGTH"] == 2  # int へ型変換
 
 
 def test_convert_project(tmp_path: Path):
