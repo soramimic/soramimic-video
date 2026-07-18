@@ -3,9 +3,12 @@ from collections import Counter
 from pathlib import Path
 
 from soramimic_video.convert import (
+    _align_positions,
     _coerce_params,
+    _dropout_flags,
     _map_word_to_notes,
     _offset_map,
+    _pair_score,
     apply_converted_lines,
     convert_project,
     parse_convert_params,
@@ -411,3 +414,107 @@ def test_apply_converted_lines_be429b67_fixture(tmp_path: Path):
         w = holder[0]
         assert w.surface == surface
         assert w.note_kana[w.note_ids.index(ci)] == mora
+
+
+# --- 母音一致優先の単語内アライメント(DP) ---
+
+
+def test_dropout_flags():
+    # 特殊モーラ(ッ/ン/ー)は常に脱落しやすい
+    assert _dropout_flags(["ン", "ッ", "ー"]) == [True, True, True]
+    # エイ型(e段+イ)・オウ型(o段+ウ)の2モーラ目
+    assert _dropout_flags(["セ", "イ"]) == [False, True]
+    assert _dropout_flags(["コ", "ウ"]) == [False, True]
+    # ア段+イ・イ段+ウ 等は連鎖でないので脱落扱いしない
+    assert _dropout_flags(["カ", "イ"]) == [False, False]
+    assert _dropout_flags(["シ", "ア"]) == [False, False]
+
+
+def test_pair_score_vowel_dominates_consonant():
+    # 母音一致(重み1000)は子音一致(10)+脱落調整(<=2)より必ず大きい
+    v_match = _pair_score("ウ", "ウ", False, False)  # 母音一致
+    c_only = _pair_score("ウ", "ト", False, False)  # 母音不一致(トはオ段)
+    assert v_match >= 1000 > c_only
+    # 子音一致は脱落調整より大きい(第2キー)
+    assert _pair_score("サ", "ソ", False, False) > _pair_score("サ", "ト", False, False)
+
+
+def test_align_positions_picks_matching_note():
+    # 単一要素・2音符: スコアの高い音符を選ぶ
+    assert _align_positions([[1000, 10]], 1, 2, force_first=False) == [0]
+    assert _align_positions([[10, 1000]], 1, 2, force_first=False) == [1]
+    # force_first のときは先頭音符に固定(語頭の継続ー化を避ける)
+    assert _align_positions([[10, 1000]], 1, 2, force_first=True) == [0]
+    # 同点は前方優先
+    assert _align_positions([[500, 500]], 1, 2, force_first=False) == [0]
+    # 2要素・3音符: 単調増加で総和最大
+    assert _align_positions([[1000, 0, 0], [0, 0, 1000]], 2, 3, force_first=False) == [0, 2]
+
+
+def test_map_word_to_notes_vowel_alignment():
+    # 非先頭ユニットで、1要素「ウ」を2音符[ト(オ), ウ(ウ)]へ載せる。
+    # 母音一致でウ音符を選び、あいだのト音符は継続ーになる。
+    ids, kana = _map_word_to_notes(
+        [1, 2], [1, 1, 1], list(range(4)), (0, 2),
+        ["ソ", "ウ"], "ソウ", notes_kana=["ソ", "ト", "ウ"],
+    )
+    assert ids == [0, 1, 2]
+    assert kana == ["ソ", "", "ウ"]
+    # notes_kana を渡さないと従来の左詰め(位置ベース)のまま
+    ids2, kana2 = _map_word_to_notes(
+        [1, 2], [1, 1, 1], list(range(4)), (0, 2), ["ソ", "ウ"], "ソウ",
+    )
+    assert ids2 == [0, 1, 2]
+    assert kana2 == ["ソ", "ウ", ""]
+
+
+def test_map_word_to_notes_special_mora_alignment():
+    # 促音「ッ」を、元音符の促音位置へ寄せる(特殊モーラの母音一致 sp==sp)。
+    # 要素[バ,ッ,ト] を音符[バ,キ,ッ,ト] へ。DPは ッ→ッ、ト→ト を選び、キは継続ー。
+    ids, kana = _map_word_to_notes(
+        [1, 3], [1, 1, 1, 1], list(range(5)), (0, 2),
+        ["バ", "ッ", "ト"], "バット", notes_kana=["バ", "キ", "ッ", "ト"],
+    )
+    assert ids == [0, 1, 2, 3]
+    assert kana == ["バ", "", "ッ", "ト"]
+    # 従来(位置ベース)は ッ→キ、ト→ッ とずれていた
+    _, kana_old = _map_word_to_notes(
+        [1, 3], [1, 1, 1, 1], list(range(5)), (0, 2), ["バ", "ッ", "ト"], "バット",
+    )
+    assert kana_old == ["バ", "ッ", "ト", ""]
+
+
+def test_map_word_to_notes_dp_keeps_ids_and_count():
+    # DPの有無で音符集合(ids)とモーラ数は不変。変わるのは載せ先だけ。
+    args = ([1, 2], [1, 1, 1], list(range(4)), (0, 2), ["ソ", "ウ"], "ソウ")
+    ids_dp, kana_dp = _map_word_to_notes(*args, notes_kana=["ソ", "ト", "ウ"])
+    ids_pos, kana_pos = _map_word_to_notes(*args)
+    assert ids_dp == ids_pos
+    # 実モーラ数(継続ー以外)も不変
+    assert sum(k != "" for k in kana_dp) == sum(k != "" for k in kana_pos)
+
+
+def test_dp_and_shared_note_resolution_coexist(tmp_path: Path):
+    # DPが動く複数音符ユニットと、複合音符の二重割り当てが同居しても、
+    # 解消(_resolve_shared_notes)が正しく機能し、音符が重複しないこと。
+    # 音符 [ソ, ト, ウナ(複合), コ]、単語「ソウ」(period0..2) と「ナコ」(period2..4)。
+    #   「ソウ」: ソ→ソ, ウ は ト(オ)/ウ(ウ) から母音一致でウ側を取る。
+    #   複合音符「ウナ」は境界を跨ぐが、_resolve_shared_notes が一方へ一本化する。
+    project = _line_project(["ソ", "ト", "ウナ", "コ"])  # note_concat="ソトウナコ"
+    converted = [
+        {
+            "units": [{"pronunciation": c} for c in "ソトウナコ"],
+            "words": [
+                {"surface": "ソウ", "kana": "ソウ", "period": [0, 3],
+                 "pronunciation": ["ソ", "ウ"], "original": "", "original_surface": "",
+                 "originalkana": "", "locked": False},
+                {"surface": "ナコ", "kana": "ナコ", "period": [3, 5],
+                 "pronunciation": ["ナ", "コ"], "original": "", "original_surface": "",
+                 "originalkana": "", "locked": False},
+            ],
+        }
+    ]
+    apply_converted_lines(
+        project, converted, wordlist=_empty_wordlist(tmp_path), where=None, params={}
+    )
+    _assert_no_shared_notes(project)

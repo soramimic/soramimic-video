@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .kana import split_fine_moras
+from .kana import split_fine_moras, split_moras
 from .project import Parody, ParodyLine, ParodyWord, Project
 from .soramimic_engine import run_convert
 
@@ -142,6 +142,103 @@ def _compressed_moras_per_element(
     return out
 
 
+# --- 母音一致優先の単語内アライメント(歌唱タイミングの自然化) ---
+# soramimic 本体の音素定義(char_to_vowel/char_to_consonant)を再利用し、母音一致=
+# 第1キー・子音一致=第2キーの辞書順スコアで、単語のモーラをユニット境界内の音符へ
+# 割り当てる(生の類似度テーブルは使わない)。母音を最優先で最大化するため、音符集合
+# を変えずに「どのモーラがどの音符に載るか/どの音符が継続ーになるか」だけが変わる。
+
+_kana_phon_fns: Any = None
+
+
+def _kana_phon() -> Any:
+    """soramimic の母音・子音抽出関数を遅延取得してキャッシュする。"""
+    global _kana_phon_fns
+    if _kana_phon_fns is None:
+        from soramimic.kana_to_syllable import char_to_consonant, char_to_vowel
+
+        _kana_phon_fns = (char_to_vowel, char_to_consonant)
+    return _kana_phon_fns
+
+
+def _rep_mora(kana: str) -> str:
+    """複数モーラを含むkana(複合音符など)の音素代表として先頭モーラを取る。"""
+    moras = split_moras(kana)
+    return moras[0] if moras else kana
+
+
+# 歌唱で脱落・長音化しやすいモーラ(促音・撥音・長音)
+_DROPOUT_MORA = {"ッ", "ン", "ー"}
+
+
+def _dropout_flags(moras: list[str]) -> list[bool]:
+    """各モーラが脱落・長音化しやすいか。特殊モーラ(ッ/ン/ー)と、直前が e段+イ・
+    o段+ウ となるエイ/オウ型連鎖の2モーラ目を True にする。"""
+    char_to_vowel, _ = _kana_phon()
+    flags: list[bool] = []
+    for i, m in enumerate(moras):
+        drop = m in _DROPOUT_MORA
+        if not drop and i > 0:
+            pv = char_to_vowel(_rep_mora(moras[i - 1]))
+            if (m == "イ" and pv == "エ") or (m == "ウ" and pv == "オ"):
+                drop = True
+        flags.append(drop)
+    return flags
+
+
+def _pair_score(
+    elem_head: str, note_kana: str, elem_drop: bool, note_drop: bool
+) -> int:
+    """替え歌モーラと元音符kanaのペアスコア(辞書順: 母音一致>子音一致>脱落調整)。
+
+    母音一致(重み1000)は子音一致(10)・脱落調整(<=2)の総和より必ず大きいので、
+    母音一致数を最優先で最大化する(=母音一致率が悪化しない)。脱落調整は、
+    脱落しやすい要素/音符ほど実音の載せ先としての優先度を下げる同点の微調整。
+    """
+    char_to_vowel, char_to_consonant = _kana_phon()
+    er, nr = _rep_mora(elem_head), _rep_mora(note_kana)
+    vowel = 1 if char_to_vowel(er) == char_to_vowel(nr) else 0
+    cons = 1 if char_to_consonant(er) == char_to_consonant(nr) else 0
+    tie = (0 if note_drop else 1) + (0 if elem_drop else 1)
+    return 1000 * vowel + 10 * cons + tie
+
+
+def _align_positions(
+    scores: list[list[int]], eu: int, k: int, force_first: bool
+) -> list[int]:
+    """eu 個の要素を k 個の音符(0..k-1)へ、順序を保った単調増加の位置列で割り当て、
+    スコア総和を最大化する(DP)。同点は前方の位置を優先。force_first のとき先頭要素は
+    音符0に固定(語頭の継続ー化を避ける)。余った音符は空(=継続ー)になる。eu<=k 前提。
+    """
+    neg = float("-inf")
+    dp = [[neg] * k for _ in range(eu)]
+    par = [[-1] * k for _ in range(eu)]
+    for kk in range(k):
+        if force_first and kk != 0:
+            continue
+        if kk <= k - eu:  # 後続 eu-1 個が入る余地が要る
+            dp[0][kk] = scores[0][kk]
+    for j in range(1, eu):
+        for kk in range(j, k):  # 要素jは最短でも位置j
+            best, bpar = neg, -1
+            for kp in range(j - 1, kk):
+                if dp[j - 1][kp] > best:  # 同点は小さいkp(前方)を保持
+                    best, bpar = dp[j - 1][kp], kp
+            if best > neg:
+                dp[j][kk] = best + scores[j][kk]
+                par[j][kk] = bpar
+    best_k, best_v = -1, neg
+    for kk in range(eu - 1, k):
+        if dp[eu - 1][kk] > best_v:  # 同点は小さいkk(前方)を保持
+            best_v, best_k = dp[eu - 1][kk], kk
+    pos = [0] * eu
+    kk = best_k
+    for j in range(eu - 1, -1, -1):
+        pos[j] = kk
+        kk = par[j][kk]
+    return pos
+
+
 def _map_word_to_notes(
     unit_lens: list[int],
     note_lens: list[int],
@@ -149,6 +246,7 @@ def _map_word_to_notes(
     period: tuple[int, int],
     pronunciation: list[str] | None = None,
     word_kana: str = "",
+    notes_kana: list[str] | None = None,
 ) -> tuple[list[int], list[str]]:
     """periodユニット区間 → 重なる音符indexの列と音符ごとの歌唱カナ。
 
@@ -157,6 +255,10 @@ def _map_word_to_notes(
     マッチさせた結果なので、要素は「元歌詞ユニット」を単位に音符へ載る。
     ユニット境界を尊重して要素を音符へ配置し、さらに単語側の圧縮モーラ
     (撥音等)を同ユニット内の空き音符へ復元する。
+
+    notes_kana(行の音符ごとの元kana、note_lens と並行)を渡すと、ユニット内で
+    要素をどの音符に載せるか(=どの音符を継続ーにするか)を母音一致優先のDPで
+    決める。ユニット境界はハード制約で、音符集合(ids)は変わらない。
     """
     unit_cum = [0]
     for length in unit_lens:
@@ -219,21 +321,47 @@ def _map_word_to_notes(
         for k in ks:
             owners[k] += 1
 
+    # 母音一致優先アライメント用の下準備(notes_kana が渡されたときのみ)
+    heads = [p.rstrip("ー") for p in pronunciation]
+    if notes_kana is not None:
+        id_kanas = [notes_kana[i] for i in ids]
+        elem_drop = _dropout_flags(heads)
+        note_drop = _dropout_flags(id_kanas)
+    else:
+        id_kanas = None
+
     base = 0
     for ui in range(n_units):
         eu = e[ui]
         ks = unit_note_ks[ui]
+        # ユニット内で eu 要素を ks 音符へ載せる位置 pos(ks内index)を決める。
+        # notes_kana があり音符数>要素数のときだけ母音一致優先DPで選び、それ以外は
+        # 従来の左詰め(位置ベース)。ユニット境界(ks)は常にハード制約。
+        if id_kanas is not None and 0 < eu < len(ks):
+            svec = [
+                [
+                    _pair_score(
+                        heads[base + j], id_kanas[ks[kk]],
+                        elem_drop[base + j], note_drop[ks[kk]],
+                    )
+                    for kk in range(len(ks))
+                ]
+                for j in range(eu)
+            ]
+            pos = _align_positions(svec, eu, len(ks), force_first=(ui == 0))
+        else:
+            pos = [min(j, len(ks) - 1) for j in range(eu)] if ks else []
         for j in range(eu):
             p = pronunciation[base + j]
             if not ks:
                 continue
-            k = ks[j] if j < len(ks) else ks[-1]
+            k = ks[pos[j]]
             is_last = j == eu - 1
             comp = comp_per_elem[base + j] if (is_last and comp_per_elem) else []
             if comp:
                 trailing = [
                     kk
-                    for kk in ks[j + 1 :]
+                    for kk in ks[pos[j] + 1 :]
                     if kana_per_note[kk] == "" and owners[kk] == 1
                 ]
                 r = min(len(comp), len(trailing))
@@ -380,11 +508,13 @@ def apply_converted_lines(
 
         # 1st pass: 単語ごとに音符割り当てを計算(この時点では複合音符が
         # 単語境界を跨ぐと隣接2単語に二重割り当てされうる)
+        notes_kana = [project.notes[i].kana for i in line.note_ids]
         pending: list[list[Any]] = []
         for word in converted["words"]:
             note_idx, note_kana = _map_word_to_notes(
                 unit_lens, note_lens, offset_map, tuple(word["period"]),
                 word.get("pronunciation"), word.get("kana", ""),
+                notes_kana=notes_kana,
             )
             start_c, end_c = _word_char_span(
                 unit_lens, offset_map, tuple(word["period"])
