@@ -230,6 +230,59 @@ def _map_word_to_notes(
     return ids, kana_per_note
 
 
+def _word_char_span(
+    unit_lens: list[int], offset_map: list[int], period: tuple[int, int]
+) -> tuple[int, int]:
+    """単語(period)が占める音符側の文字オフセット区間 [start_c, end_c)。"""
+    unit_cum = [0]
+    for length in unit_lens:
+        unit_cum.append(unit_cum[-1] + length)
+    return offset_map[unit_cum[period[0]]], offset_map[unit_cum[period[1]]]
+
+
+def _resolve_shared_notes(
+    pending: list[list[Any]], note_cum: list[int]
+) -> list[tuple[int, int, int]]:
+    """複合音符が単語境界を跨いで二重割り当てされたのを解消する(破壊的)。
+
+    原曲側の1音符に元歌詞かなが複数文字入る複合音符(タイ・継続音由来)が
+    替え歌の単語境界を横切ると、_map_word_to_notes は独立処理のため両単語に
+    その音符を割り当てる。合成時 lyric_map は後勝ち上書きなので、先行単語の
+    末尾モーラが後続単語に潰される。ここで同一音符は**文字オーバーラップが
+    大きい方の単語**(同点なら先行単語)に一本化し、外れた側からは音符と
+    対応する歌唱カナを対で取り除く(note_ids と note_kana の同長を保つ)。
+
+    pending の各要素は [word, note_idx, note_kana, start_c, end_c](破壊的に更新)。
+    解消した衝突の (note位置index, 勝った単語index, 負けた単語index) を返す。
+    """
+    holders: dict[int, list[tuple[int, int]]] = {}
+    for wi, (_word, note_idx, _kana, start_c, end_c) in enumerate(pending):
+        for i in note_idx:
+            overlap = min(end_c, note_cum[i + 1]) - max(start_c, note_cum[i])
+            holders.setdefault(i, []).append((wi, overlap))
+
+    resolved: list[tuple[int, int, int]] = []
+    to_drop: dict[int, set[int]] = {}
+    for i, claims in holders.items():
+        if len(claims) <= 1:
+            continue
+        # 文字オーバーラップ最大の単語が音符を取る。同点は index が小さい先行単語。
+        winner = max(claims, key=lambda c: (c[1], -c[0]))[0]
+        for wi, _overlap in claims:
+            if wi != winner:
+                to_drop.setdefault(wi, set()).add(i)
+                resolved.append((i, winner, wi))
+
+    for wi, drop in to_drop.items():
+        _word, note_idx, note_kana, start_c, end_c = pending[wi]
+        kept = [
+            (i, k) for i, k in zip(note_idx, note_kana, strict=True) if i not in drop
+        ]
+        pending[wi][1] = [i for i, _ in kept]
+        pending[wi][2] = [k for _, k in kept]
+    return resolved
+
+
 def _load_wordlist_rows(csv_path: Path) -> dict[str, list[dict[str, str]]]:
     rows: dict[str, list[dict[str, str]]] = {}
     with open(csv_path, encoding="utf-8") as f:
@@ -303,11 +356,34 @@ def apply_converted_lines(
                 line.id, unit_concat, note_concat,
             )
         offset_map = _offset_map(unit_concat, note_concat)
+        note_cum = [0]
+        for length in note_lens:
+            note_cum.append(note_cum[-1] + length)
+
+        # 1st pass: 単語ごとに音符割り当てを計算(この時点では複合音符が
+        # 単語境界を跨ぐと隣接2単語に二重割り当てされうる)
+        pending: list[list[Any]] = []
         for word in converted["words"]:
             note_idx, note_kana = _map_word_to_notes(
                 unit_lens, note_lens, offset_map, tuple(word["period"]),
                 word.get("pronunciation"), word.get("kana", ""),
             )
+            start_c, end_c = _word_char_span(
+                unit_lens, offset_map, tuple(word["period"])
+            )
+            pending.append([word, note_idx, note_kana, start_c, end_c])
+
+        # 2nd pass: 複合音符の二重割り当てを一本化する
+        for i, winner, loser in _resolve_shared_notes(pending, note_cum):
+            logger.debug(
+                "行%d: 音符位置%d を単語 %r と %r が二重取り→%r に一本化",
+                line.id, i,
+                pending[winner][0]["surface"], pending[loser][0]["surface"],
+                pending[winner][0]["surface"],
+            )
+
+        # 3rd pass: ParodyWord を生成
+        for word, note_idx, note_kana, _start_c, _end_c in pending:
             note_kana = [k or "ー" for k in note_kana]
             if note_idx and all(k == "ー" for k in note_kana):
                 logger.warning(
