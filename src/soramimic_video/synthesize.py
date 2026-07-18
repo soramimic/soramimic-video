@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .kana import split_moras
 from .musicxml import build_musicxml
-from .neutrino import run_neutrino
+from .neutrino import model_pitch_range, run_neutrino
 from .octave import (
     NEUTRINO_SAFE_KEY_MAX,
     NEUTRINO_SAFE_KEY_MIN,
@@ -97,16 +97,27 @@ def synthesize(
     if auto_octave:
         # NEUTRINOは音域外(特に高すぎ)だと力んだ苦しそうな発声になる。安全音域に
         # 最も収まるオクターブシフトをユーザー指定transposeに加算する(VOICEVOXと同様)。
+        # 音域は選択モデルの推奨音域(model_info.json)を優先し、取れなければ汎用音域。
+        model_range = model_pitch_range(model)
+        if model_range is not None:
+            key_min, key_max = model_range
+            logger.debug(
+                "NEUTRINOモデル%sの推奨音域 MIDI %d〜%d を使います",
+                model, key_min, key_max,
+            )
+        else:
+            key_min, key_max = NEUTRINO_SAFE_KEY_MIN, NEUTRINO_SAFE_KEY_MAX
+            logger.debug(
+                "NEUTRINOモデル%sの推奨音域が取得できず汎用音域 MIDI %d〜%d を使います",
+                model, key_min, key_max,
+            )
         shift = auto_octave_shift(
-            [n.midi_note for n in project.notes],
-            transpose,
-            NEUTRINO_SAFE_KEY_MIN,
-            NEUTRINO_SAFE_KEY_MAX,
+            [n.midi_note for n in project.notes], transpose, key_min, key_max
         )
         if shift:
             logger.info(
                 "NEUTRINOの音域(MIDI %d〜%d)に合わせて%+dオクターブ調整します",
-                NEUTRINO_SAFE_KEY_MIN, NEUTRINO_SAFE_KEY_MAX, shift // 12,
+                key_min, key_max, shift // 12,
             )
             transpose += shift
 

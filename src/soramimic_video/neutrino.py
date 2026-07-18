@@ -38,6 +38,78 @@ def parse_progress(line: str) -> float | None:
         return None
     return max(0.0, min(1.0, int(m.group(1)) / 100.0))
 
+
+MODEL_INFO_FILENAME = "model_info.json"
+
+# 音名(科学的表記: 音名+任意の臨時記号+オクターブ)→ 半音オフセット。C4 = MIDI 60。
+_NOTE_OFFSETS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+_NOTE_RE = re.compile(r"([A-G])([#♯b♭]?)(-?\d+)")
+# settings/model_info.json の説明文にある
+#   「推奨音域：mid2A～hiE（A3～E5）」
+# の丸括弧内(科学的表記)を取り出す。区切りは全角/半角チルダやwave dashが混在する。
+# Yamaha表記(mid2A等)ではなく丸括弧内のA3/E5側を使う(音名+オクターブで機械処理しやすい)。
+_RANGE_RE = re.compile(
+    r"推奨音域[^（(]*[（(]\s*"
+    r"([A-G][#♯b♭]?-?\d+)\s*[～~〜]\s*([A-G][#♯b♭]?-?\d+)\s*[）)]"
+)
+
+
+def note_name_to_midi(name: str) -> int:
+    """科学的表記の音名(例 A3, C#5, Bb2)を MIDI ノート番号に変換する。C4=60。"""
+    m = _NOTE_RE.fullmatch(name.strip())
+    if m is None:
+        raise ValueError(f"音名として解釈できません: {name!r}")
+    letter, accidental, octave = m.groups()
+    semitone = _NOTE_OFFSETS[letter]
+    if accidental in ("#", "♯"):
+        semitone += 1
+    elif accidental in ("b", "♭"):
+        semitone -= 1
+    return semitone + (int(octave) + 1) * 12
+
+
+def parse_pitch_range(description: str) -> tuple[int, int] | None:
+    """model_info.json のモデル説明文から推奨音域(MIDIのlo, hi)を取り出す。
+
+    「推奨音域：…（A3～E5）」のような表記が無い/音名が解釈できない場合は None。
+    """
+    m = _RANGE_RE.search(description)
+    if m is None:
+        return None
+    try:
+        lo = note_name_to_midi(m.group(1))
+        hi = note_name_to_midi(m.group(2))
+    except ValueError:
+        return None
+    return (lo, hi) if lo <= hi else (hi, lo)
+
+
+def model_pitch_range(
+    model: str, root: Path | None = None
+) -> tuple[int, int] | None:
+    """NEUTRINOモデルの推奨音域(MIDIのlo, hi)を settings/model_info.json から読む。
+
+    root 省略時は NEUTRINO_ROOT から探す。ファイルが無い・モデル名不一致・パース失敗・
+    音域表記が無いときは None を返す(呼び出し側は汎用音域へフォールバックする)。
+    実NEUTRINOを必要とせずテストできるよう、root と純粋なパース関数を分けてある。
+    """
+    try:
+        if root is None:
+            root = neutrino_root()
+        raw = (root / "settings" / MODEL_INFO_FILENAME).read_text(encoding="utf-8")
+        info = json.loads(raw)
+    except (RuntimeError, OSError, ValueError):
+        # RuntimeError: NEUTRINO_ROOT未設定/不正、OSError: ファイル無し、
+        # ValueError: JSONパース失敗(json.JSONDecodeErrorを含む)
+        return None
+    if not isinstance(info, dict):
+        return None
+    # まず完全一致、無ければ大文字化して照合(JSONのキーは大文字)
+    description = info.get(model) or info.get(model.upper())
+    if not isinstance(description, str) or not description:
+        return None
+    return parse_pitch_range(description)
+
 # NEUTRINO v3.2系(Tau) Run.sh 相当。プレースホルダは format() で展開される
 DEFAULT_COMMANDS = [
     "{root}/bin/musicXMLtoLabel {musicxml} {full_lab} {mono_lab}",
