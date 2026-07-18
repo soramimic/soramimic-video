@@ -31,6 +31,9 @@ def build_lyric_map(project: Project) -> dict[int, str]:
     if project.parody is None:
         logger.warning("替え歌案がないため元の歌詞で合成します")
         return lyric_map
+    # 替え歌単語が同じ音符を二重に取ると後勝ち上書きで先行単語の末尾モーラが
+    # 潰れる(convert側で解消済みのはずだが、将来の同種バグ検出のため記録する)
+    assigned_by: dict[int, str] = {}
     for pline in project.parody.lines:
         for w in pline.words:
             kana_list = w.note_kana
@@ -39,6 +42,13 @@ def build_lyric_map(project: Project) -> dict[int, str]:
                 kana_list = moras[: len(w.note_ids)]
                 kana_list += ["ー"] * (len(w.note_ids) - len(kana_list))
             for nid, kana in zip(w.note_ids, kana_list, strict=True):
+                if nid in assigned_by and assigned_by[nid] != w.surface:
+                    logger.warning(
+                        "音符%d が複数の替え歌単語に割り当てられています"
+                        "(%r を %r が上書き)。先行単語の歌唱が欠落します",
+                        nid, assigned_by[nid], w.surface,
+                    )
+                assigned_by[nid] = w.surface
                 lyric_map[nid] = kana
     return lyric_map
 

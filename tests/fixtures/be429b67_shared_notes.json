@@ -1,0 +1,186 @@
+[
+ {
+  "line_id": 18,
+  "xf_kana": "フレルココロナイコトバ",
+  "notes_kana": [
+   "フ",
+   "レ",
+   "ル",
+   "コ",
+   "コ",
+   "ロ",
+   "ナイ",
+   "コ",
+   "ト",
+   "バ"
+  ],
+  "compound_note_local_index": 6,
+  "converted": {
+   "units": [
+    {
+     "pronunciation": "フ"
+    },
+    {
+     "pronunciation": "レ"
+    },
+    {
+     "pronunciation": "ル"
+    },
+    {
+     "pronunciation": "コ"
+    },
+    {
+     "pronunciation": "コ"
+    },
+    {
+     "pronunciation": "ロ"
+    },
+    {
+     "pronunciation": "ナ"
+    },
+    {
+     "pronunciation": "イ"
+    },
+    {
+     "pronunciation": "コ"
+    },
+    {
+     "pronunciation": "ト"
+    },
+    {
+     "pronunciation": "バ"
+    }
+   ],
+   "words": [
+    {
+     "surface": "ウィレルモ",
+     "kana": "ウィレルモ",
+     "period": [
+      0,
+      4
+     ],
+     "pronunciation": [
+      "ウィ",
+      "レ",
+      "ル",
+      "モ"
+     ],
+     "original": "ウィレルモ",
+     "original_surface": "フレルコ",
+     "originalkana": "フレルコ",
+     "locked": false
+    },
+    {
+     "surface": "オロガ",
+     "kana": "オロガ",
+     "period": [
+      4,
+      7
+     ],
+     "pronunciation": [
+      "オ",
+      "ロ",
+      "ガ"
+     ],
+     "original": "オロガ・ナル",
+     "original_surface": "コロナ",
+     "originalkana": "コロナ",
+     "locked": false
+    },
+    {
+     "surface": "オストラ",
+     "kana": "オストラ",
+     "period": [
+      7,
+      11
+     ],
+     "pronunciation": [
+      "オ",
+      "ス",
+      "ト",
+      "ラ"
+     ],
+     "original": "オストラ",
+     "original_surface": "イコトバ",
+     "originalkana": "イコトバ",
+     "locked": false
+    }
+   ]
+  }
+ },
+ {
+  "line_id": 26,
+  "xf_kana": "アケナイヨルニ",
+  "notes_kana": [
+   "ア",
+   "ケ",
+   "ナイ",
+   "ヨ",
+   "ル",
+   "ニ"
+  ],
+  "compound_note_local_index": 2,
+  "converted": {
+   "units": [
+    {
+     "pronunciation": "ア"
+    },
+    {
+     "pronunciation": "ケ"
+    },
+    {
+     "pronunciation": "ナ"
+    },
+    {
+     "pronunciation": "イ"
+    },
+    {
+     "pronunciation": "ヨ"
+    },
+    {
+     "pronunciation": "ル"
+    },
+    {
+     "pronunciation": "ニ"
+    }
+   ],
+   "words": [
+    {
+     "surface": "ウルナ",
+     "kana": "ウルナ",
+     "period": [
+      0,
+      3
+     ],
+     "pronunciation": [
+      "ウ",
+      "ル",
+      "ナ"
+     ],
+     "original": "ウルナ・ミィ",
+     "original_surface": "アケナ",
+     "originalkana": "アケナ",
+     "locked": false
+    },
+    {
+     "surface": "エオルネイ",
+     "kana": "エオルネイ",
+     "period": [
+      3,
+      7
+     ],
+     "pronunciation": [
+      "エ",
+      "オ",
+      "ル",
+      "ネー"
+     ],
+     "original": "エオルネイ",
+     "original_surface": "イヨルニ",
+     "originalkana": "イヨルニ",
+     "locked": false
+    }
+   ]
+  }
+ }
+]

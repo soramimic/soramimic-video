@@ -63,6 +63,52 @@ def _ffmpeg() -> str:
     return path
 
 
+def _ffprobe() -> str:
+    path = shutil.which("ffprobe")
+    if path is None:
+        raise RuntimeError("ffprobe が見つかりません")
+    return path
+
+
+def _audio_duration_sec(path: Path) -> float | None:
+    """音声ファイルの実長(秒)をffprobeで取得する。取得できなければNone。
+
+    ffprobeバイナリが無い/失敗する/出力をパースできない場合はいずれも
+    警告ログを出してNoneを返す(動画生成自体は止めない)。
+    """
+    try:
+        ffprobe_path = _ffprobe()
+    except RuntimeError as exc:
+        logger.warning("音声長の取得をスキップします: %s", exc)
+        return None
+    proc = runproc.run(
+        [ffprobe_path, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        logger.warning("音声長の取得に失敗しました(%s): %s", path, proc.stderr[-500:])
+        return None
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        logger.warning("音声長の取得結果を解析できませんでした(%s): %r", path, proc.stdout)
+        return None
+
+
+def _resolve_total_sec(sung_end_sec: float, audio_duration_sec: float | None) -> float:
+    """動画の総尺(秒)を決める。
+
+    後奏(エンディング)があると伴奏のMIDI長 = 音声の実長が、最後の歌唱ノート
+    終端(+3秒の余韻)より長くなることがある。その場合は音声の実長に合わせて
+    スライドショーを延ばし、後奏が映像側で切り詰められないようにする。
+    音声長が取得できなかった場合は従来通り歌唱ノート側にフォールバックする。
+    """
+    if audio_duration_sec is None:
+        return sung_end_sec
+    return max(sung_end_sec, audio_duration_sec)
+
+
 # ---- 画像 ----
 
 
@@ -579,7 +625,8 @@ def make_video(
             "音声がありません。先に mix(または synthesize)を実行するか --audio で指定してください"
         )
 
-    total_sec = max(n.end_sec for n in project.notes) + 3.0
+    sung_end_sec = max(n.end_sec for n in project.notes) + 3.0
+    total_sec = _resolve_total_sec(sung_end_sec, _audio_duration_sec(audio_path))
 
     cues, credits = build_image_cues(project, work, width, height, image_cache, layout_obj)
     if cues:
