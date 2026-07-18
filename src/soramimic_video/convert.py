@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import difflib
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,23 @@ def resolve_wordlist(name_or_path: str) -> Path:
         f"単語リストが見つかりません: {name_or_path} "
         f"(external/soramimic-wordlists のリスト名かCSVパスを指定してください)"
     )
+
+
+def parse_convert_params(spec: str | None) -> dict[str, str]:
+    """"KEY=VALUE" を並べた文字列を {KEY: VALUE} に分解する。
+
+    Web UI・API から変換エンジンのパラメータ(DUPLICATE など)を受け取る入口。
+    区切りは改行・セミコロン・縦棒のいずれか。'=' を含まない要素や空キーは無視する
+    (値の型変換 bool/int/float は convert_project 内の _coerce_params が行う)。
+    CLI の ``--param KEY=VALUE`` と同じ意味のパラメータを渡せる。
+    """
+    out: dict[str, str] = {}
+    for part in re.split(r"[\n;|]", spec or ""):
+        key, sep, value = part.partition("=")
+        key = key.strip()
+        if sep and key:
+            out[key] = value.strip()
+    return out
 
 
 def _coerce_params(params: dict[str, str]) -> dict[str, Any]:

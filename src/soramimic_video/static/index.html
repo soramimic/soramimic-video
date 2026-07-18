@@ -154,6 +154,55 @@
     <label>絞り込み(where・任意)</label>
     <input type="text" id="where" placeholder="例: type=family or type=full">
     <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
+    <!-- 「単語重複」は本家 soramimic の単語重複トグル(frontend/index.html: あり/なし、
+         なしが既定)と文言・選択肢・既定をそろえたもの(external/soramimic 53dcff1)。 -->
+    <label>単語重複</label>
+    <select id="duplicate">
+      <option value="true">あり</option>
+      <option value="false" selected>なし</option>
+    </select>
+    <p class="hint">替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
+    <!-- 変換スコアの調整パラメータ。選択肢の値は本家 soramimic フロントエンド
+         (external/soramimic 53dcff1 の frontend/src/app.js)の実装が出典。
+         createParamItem(小/中/大, スライダー生値, 既定index=1) の生値を getParam() の
+         スケーリングに通した結果を option の value に直接埋め込んでいる:
+           母音   [1,5,9] → SAME_VOWEL_REWARD    = (10 - v) * 0.1  (app.js:181,192)
+           子音   [0,1,9] → SAME_CONSONANT_REWARD = (10 - v) * 0.1  (app.js:182,191)
+           文節   [0,3,8] → SAME_PHRASE_BREAK_REWARD = v * 10       (app.js:183,193)
+           単語長 [0,2,6] → WORD_NUMBER_PENALTY      = v * 10       (app.js:184,194)
+         「既定」を選ぶとそのパラメータを convert_params に含めず、同梱soramimic本体の
+         既定にまかせる(=現行出力と完全一致)。DUPLICATE の既定「なし」も本体既定と同じ。 -->
+    <!-- ラベル(母音/子音/文節/単語長)と段階名(小/中/大)は本家 app.js の
+         createParamItem 呼び出しと完全一致。先頭の「既定」だけがこのアプリ独自。 -->
+    <label>母音</label>
+    <select id="p-vowel">
+      <option value="">既定</option>
+      <option value="0.9">小</option>
+      <option value="0.5">中</option>
+      <option value="0.1">大</option>
+    </select>
+    <label>子音</label>
+    <select id="p-consonant">
+      <option value="">既定</option>
+      <option value="1">小</option>
+      <option value="0.9">中</option>
+      <option value="0.1">大</option>
+    </select>
+    <label>文節</label>
+    <select id="p-phrasebreak">
+      <option value="">既定</option>
+      <option value="0">小</option>
+      <option value="30">中</option>
+      <option value="80">大</option>
+    </select>
+    <label>単語長</label>
+    <select id="p-wordnum">
+      <option value="">既定</option>
+      <option value="0">小</option>
+      <option value="20">中</option>
+      <option value="60">大</option>
+    </select>
+    <p class="hint">変換スコアの調整(本家soramimicと同じ項目・段階)。いずれも「既定」なら現行のまま変化せず、明示的に選んだ項目だけが効きます。</p>
   </details>
 </fieldset>
 
@@ -456,6 +505,7 @@ async function submitJob(previewSec) {
   form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
+  form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
   form.append("layout_json", $("layout-json").value);
   form.append("subtitle_granularity", $("subtitle-granularity").value);
@@ -1648,6 +1698,26 @@ $("download-editor").addEventListener("click", async () => {
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
 
+// 変換スコア調整セレクト(id)→ 同梱soramimicエンジンのパラメータ名の対応。
+// option value(=送る値)の出典は本家app.js。詳細は替え歌欄のHTMLコメント参照。
+const SCORE_PARAM_KEYS = {
+  "p-vowel": "SAME_VOWEL_REWARD",
+  "p-consonant": "SAME_CONSONANT_REWARD",
+  "p-phrasebreak": "SAME_PHRASE_BREAK_REWARD",
+  "p-wordnum": "WORD_NUMBER_PENALTY",
+};
+
+// 生成時に送る変換パラメータ(KEY=VALUE を改行区切り)を組み立てる。
+// スコア項目が「既定」(value="")なら送らない=エンジン既定のまま(現行出力と一致)。
+function buildConvertParams() {
+  const pairs = ["DUPLICATE=" + $("duplicate").value];
+  for (const [id, key] of Object.entries(SCORE_PARAM_KEYS)) {
+    const v = $(id).value;
+    if (v !== "") pairs.push(key + "=" + v);
+  }
+  return pairs.join("\n");
+}
+
 function saveForm() {
   // 復元中はchange発火で保存が走ると、未復元の値で保存済み状態を上書きしてしまう
   if (restoring) return;
@@ -1656,6 +1726,10 @@ function saveForm() {
       lyrics: $("lyrics").value,
       wordlist: $("wordlist").value,
       where: $("where").value,
+      duplicate: $("duplicate").value,
+      scoreParams: Object.fromEntries(
+        Object.keys(SCORE_PARAM_KEYS).map((id) => [id, $(id).value])
+      ),
       transpose: $("transpose").value,
       layout: $("layout").value,
       layoutJson: $("layout-json").value,
@@ -1669,7 +1743,9 @@ function saveForm() {
 }
 
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)
-["lyrics", "wordlist", "where", "transpose", "layout", "layout-json",
+["lyrics", "wordlist", "where", "duplicate",
+ "p-vowel", "p-consonant", "p-phrasebreak", "p-wordnum",
+ "transpose", "layout", "layout-json",
  "model", "synthesizer", "voicevox-style", "voicevox-auto-octave", "subtitle-granularity"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
@@ -1768,6 +1844,18 @@ async function doRestoreForm() {
     if (state.subtitleGranularity
         && [...$("subtitle-granularity").options].some((o) => o.value === state.subtitleGranularity)) {
       $("subtitle-granularity").value = state.subtitleGranularity;
+    }
+    if (state.duplicate
+        && [...$("duplicate").options].some((o) => o.value === state.duplicate)) {
+      $("duplicate").value = state.duplicate;
+    }
+    if (state.scoreParams) {
+      for (const id of Object.keys(SCORE_PARAM_KEYS)) {
+        const v = state.scoreParams[id];
+        if (v != null && [...$(id).options].some((o) => o.value === v)) {
+          $(id).value = v;
+        }
+      }
     }
     if (state.transpose != null) $("transpose").value = state.transpose;
     if (state.model) $("model").value = state.model;
