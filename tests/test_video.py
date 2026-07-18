@@ -432,3 +432,67 @@ def test_download_image_file_url(tmp_path: Path):
 
 def test_download_image_missing_local(tmp_path: Path):
     assert download_image(str(tmp_path / "nope.jpg"), tmp_path / "cache") is None
+
+
+# ---- 後奏で動画が切れるバグの回帰テスト ----
+# song.wav(伴奏はMIDI全体をfluidsynthでレンダリングするため後奏込みで長い)が
+# 最後の歌唱ノート+3秒より長い場合、動画の総尺は音声の実長に合わせる必要がある。
+
+HAS_FFPROBE = shutil.which("ffprobe") is not None
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_audio_duration_sec_reads_real_length(tmp_path: Path):
+    import subprocess
+
+    from soramimic_video.video import _audio_duration_sec
+
+    wav = tmp_path / "silence.wav"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-y", "-f", "lavfi",
+         "-i", "anullsrc=r=8000:cl=mono", "-t", "2.5", str(wav)],
+        check=True, capture_output=True,
+    )
+
+    duration = _audio_duration_sec(wav)
+    assert duration is not None
+    assert abs(duration - 2.5) < 0.1
+
+
+def test_audio_duration_sec_missing_ffprobe(tmp_path: Path, monkeypatch):
+    from soramimic_video import video as video_mod
+
+    def _raise() -> str:
+        raise RuntimeError("ffprobe が見つかりません")
+
+    monkeypatch.setattr(video_mod, "_ffprobe", _raise)
+    assert video_mod._audio_duration_sec(tmp_path / "nope.wav") is None
+
+
+@pytest.mark.skipif(not HAS_FFPROBE, reason="ffprobeがない")
+def test_audio_duration_sec_ffprobe_failure_returns_none(tmp_path: Path):
+    from soramimic_video.video import _audio_duration_sec
+
+    # 存在しないファイルを渡すとffprobeがエラー終了する(returncode != 0)
+    assert _audio_duration_sec(tmp_path / "does-not-exist.wav") is None
+
+
+def test_resolve_total_sec_uses_audio_when_longer():
+    from soramimic_video.video import _resolve_total_sec
+
+    # 後奏があり音声の方が長いケース: 音声の実長が採用される
+    assert _resolve_total_sec(10.0, 20.0) == 20.0
+
+
+def test_resolve_total_sec_keeps_sung_end_when_audio_shorter():
+    from soramimic_video.video import _resolve_total_sec
+
+    # 音声側が短い(取得誤差等)ケース: 従来通り歌唱ノート側が採用される
+    assert _resolve_total_sec(10.0, 5.0) == 10.0
+
+
+def test_resolve_total_sec_falls_back_when_audio_duration_unknown():
+    from soramimic_video.video import _resolve_total_sec
+
+    # ffprobe失敗(None)のケース: 従来の計算にフォールバックする
+    assert _resolve_total_sec(10.0, None) == 10.0
