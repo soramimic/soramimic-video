@@ -221,14 +221,13 @@
   <div id="voicevox-opts" hidden>
     <label>歌声(キャラ・スタイル)</label>
     <select id="voicevox-style"></select>
-    <label style="display:inline-flex; align-items:center; gap:.4rem; font-weight:400">
-      <input type="checkbox" id="voicevox-auto-octave" checked style="width:auto">
-      音域に合わせて自動でオクターブ調整
-    </label>
-    <p class="hint">VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。
-      曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。</p>
     <p class="hint" id="voicevox-credit"></p>
   </div>
+  <label style="display:inline-flex; align-items:center; gap:.4rem; font-weight:400">
+    <input type="checkbox" id="auto-octave" checked style="width:auto">
+    音域に合わせて自動でオクターブ調整
+  </label>
+  <p class="hint" id="auto-octave-hint"></p>
   <label>移調(半音)</label>
   <input type="text" id="transpose" value="0" inputmode="numeric">
   <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
@@ -397,6 +396,12 @@ function toggleSynthOpts() {
   const isVv = $("synthesizer").value === "voicevox";
   $("neutrino-opts").hidden = isVv;
   $("voicevox-opts").hidden = !isVv;
+  // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
+  $("auto-octave-hint").textContent = isVv
+    ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
+      + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"
+    : "NEUTRINOは音域外の音だと苦しそうな発声になります。"
+      + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。";
 }
 
 async function loadHistory() {
@@ -500,7 +505,7 @@ async function submitJob(previewSec) {
   form.append("model", $("model").value);
   form.append("synthesizer", $("synthesizer").value);
   form.append("voicevox_style", $("voicevox-style").value || "3003");
-  form.append("voicevox_auto_octave", $("voicevox-auto-octave").checked ? "true" : "false");
+  form.append("auto_octave", $("auto-octave").checked ? "true" : "false");
   form.append("transpose", $("transpose").value.trim() || "0");
   form.append("preview", String(previewSec));
   form.append("wordlist", $("wordlist").value);
@@ -1736,7 +1741,7 @@ function saveForm() {
       model: $("model").value,
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
-      voicevoxAutoOctave: $("voicevox-auto-octave").checked,
+      autoOctave: $("auto-octave").checked,
       subtitleGranularity: $("subtitle-granularity").value,
     }));
   } catch { /* QuotaExceededError等でUIを壊さない */ }
@@ -1746,7 +1751,7 @@ function saveForm() {
 ["lyrics", "wordlist", "where", "duplicate",
  "p-vowel", "p-consonant", "p-phrasebreak", "p-wordnum",
  "transpose", "layout", "layout-json",
- "model", "synthesizer", "voicevox-style", "voicevox-auto-octave", "subtitle-granularity"]
+ "model", "synthesizer", "voicevox-style", "auto-octave", "subtitle-granularity"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
 // MIDIはバイナリなのでdataURL化して保存(未選択なら消す)
@@ -1871,8 +1876,11 @@ async function doRestoreForm() {
       $("voicevox-style").value = state.voicevoxStyle;
       updateVoicevoxCredit();
     }
-    if (state.voicevoxAutoOctave != null) {
-      $("voicevox-auto-octave").checked = !!state.voicevoxAutoOctave;
+    // 新キー autoOctave 優先。旧キー voicevoxAutoOctave も後方互換で読む
+    const savedAutoOctave =
+      state.autoOctave != null ? state.autoOctave : state.voicevoxAutoOctave;
+    if (savedAutoOctave != null) {
+      $("auto-octave").checked = !!savedAutoOctave;
     }
     // 4. layout名: 値だけ入れる(changeを発火するとleLoadがlayoutJsonを上書きするため)
     if (state.layout) $("layout").value = state.layout;

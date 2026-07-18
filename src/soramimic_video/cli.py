@@ -156,7 +156,9 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         synthesizer=args.synthesizer,
         voicevox_url=args.voicevox_url,
         voicevox_style=args.voicevox_style,
-        voicevox_auto_octave=not args.no_voicevox_auto_octave,
+        # 新名 --no-auto-octave を優先。旧名 --no-voicevox-auto-octave も後方互換で受ける
+        # (どちらも「無効化」なので、いずれか指定されていればOFF)。
+        auto_octave=not (args.no_auto_octave or args.no_voicevox_auto_octave),
     )
     if wav:
         print(f"歌唱音源: {wav}")
@@ -334,9 +336,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="VOICEVOXのスタイルID(例: ずんだもんノーマル=3003、波音リツ歌唱=6000)",
     )
     p.add_argument(
+        "--no-auto-octave",
+        action="store_true",
+        help="エンジンの音域に合わせた自動オクターブ調整を無効にする"
+        "(VOICEVOX/NEUTRINO共通)",
+    )
+    p.add_argument(
+        # 旧名。--no-auto-octave に統合したが後方互換で受け続ける(deprecated)
         "--no-voicevox-auto-octave",
         action="store_true",
-        help="VOICEVOXの音域に合わせた自動オクターブ調整を無効にする",
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--transpose", type=int, default=0, help="半音単位の移調(-12で1オクターブ下)"

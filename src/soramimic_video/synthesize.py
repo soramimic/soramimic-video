@@ -9,6 +9,11 @@ from pathlib import Path
 from .kana import split_moras
 from .musicxml import build_musicxml
 from .neutrino import run_neutrino
+from .octave import (
+    NEUTRINO_SAFE_KEY_MAX,
+    NEUTRINO_SAFE_KEY_MIN,
+    auto_octave_shift,
+)
 from .project import Project
 
 logger = logging.getLogger(__name__)
@@ -64,11 +69,13 @@ def synthesize(
     synthesizer: str = "neutrino",
     voicevox_url: str = "http://127.0.0.1:50021",
     voicevox_style: int = 3003,
-    voicevox_auto_octave: bool = True,
+    auto_octave: bool = True,
 ) -> Path | None:
     """歌唱合成を実行して vocal.wav のパスを返す。
 
     synthesizer で使うバックエンドを選ぶ("neutrino" 既定 / "voicevox")。
+    auto_octave(既定ON)はエンジンの安全音域に収まるよう曲全体をオクターブ単位で
+    自動移調する(VOICEVOX/NEUTRINO共通。移調はユーザー指定transposeに加算)。
     """
     if synthesizer == "voicevox":
         from .voicevox import run_voicevox
@@ -81,11 +88,27 @@ def synthesize(
             engine_url=voicevox_url,
             style_id=voicevox_style,
             transpose=transpose,
-            auto_octave=voicevox_auto_octave,
+            auto_octave=auto_octave,
             progress_cb=progress_cb,
         )
     if synthesizer != "neutrino":
         raise ValueError(f"未対応の合成エンジンです: {synthesizer}")
+
+    if auto_octave:
+        # NEUTRINOは音域外(特に高すぎ)だと力んだ苦しそうな発声になる。安全音域に
+        # 最も収まるオクターブシフトをユーザー指定transposeに加算する(VOICEVOXと同様)。
+        shift = auto_octave_shift(
+            [n.midi_note for n in project.notes],
+            transpose,
+            NEUTRINO_SAFE_KEY_MIN,
+            NEUTRINO_SAFE_KEY_MAX,
+        )
+        if shift:
+            logger.info(
+                "NEUTRINOの音域(MIDI %d〜%d)に合わせて%+dオクターブ調整します",
+                NEUTRINO_SAFE_KEY_MIN, NEUTRINO_SAFE_KEY_MAX, shift // 12,
+            )
+            transpose += shift
 
     work_dir = project_dir / NEUTRINO_DIR
     work_dir.mkdir(parents=True, exist_ok=True)

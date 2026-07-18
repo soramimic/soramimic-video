@@ -93,6 +93,34 @@ def test_accepts_voicevox_params(client):
     assert body["params"]["voicevox_style"] == 3001
 
 
+def test_auto_octave_defaults_on(client):
+    job_id = submit(client, wordlist="stations")
+    body = wait_done(client, job_id)
+    assert body["params"]["auto_octave"] is True
+
+
+def test_auto_octave_new_flag(client):
+    job_id = submit(client, wordlist="stations", auto_octave="false")
+    body = wait_done(client, job_id)
+    assert body["params"]["auto_octave"] is False
+
+
+def test_auto_octave_legacy_flag_name_backward_compat(client):
+    # 旧名 voicevox_auto_octave も引き続き受け付ける(deprecated)
+    job_id = submit(client, wordlist="stations", voicevox_auto_octave="false")
+    body = wait_done(client, job_id)
+    assert body["params"]["auto_octave"] is False
+
+
+def test_auto_octave_new_name_takes_priority(client):
+    # 新旧両方指定なら新名(auto_octave)を優先する
+    job_id = submit(
+        client, wordlist="stations", auto_octave="true", voicevox_auto_octave="false"
+    )
+    body = wait_done(client, job_id)
+    assert body["params"]["auto_octave"] is True
+
+
 def test_accepts_convert_params(client):
     job_id = submit(client, wordlist="stations", convert_params="DUPLICATE=true")
     body = wait_done(client, job_id)

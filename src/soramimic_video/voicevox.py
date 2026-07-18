@@ -25,6 +25,8 @@ import requests
 
 from . import runproc
 from .kana import split_moras, vowel_of
+from .octave import VOICEVOX_SAFE_KEY_MAX, VOICEVOX_SAFE_KEY_MIN
+from .octave import auto_octave_shift as _octave_shift
 from .project import Project
 
 logger = logging.getLogger(__name__)
@@ -41,8 +43,9 @@ SING_TEACHER_ID = 6000
 # 歌の先生(6000)が要求どおりのピッチで歌える音域(実測)。sing_frame_audio_queryの
 # 返すf0を要求keyと比較したところ、54〜78(F#3〜F#5)の外では大きく崩れる
 # (例: key=84で-9半音)。ハミングもf0は先生由来なので、この範囲が事実上の制約。
-SAFE_KEY_MIN = 54
-SAFE_KEY_MAX = 78
+# 実体は octave.py の共通定数(自動オクターブ調整はエンジン共通化した)。
+SAFE_KEY_MIN = VOICEVOX_SAFE_KEY_MIN
+SAFE_KEY_MAX = VOICEVOX_SAFE_KEY_MAX
 _TIMEOUT = 600  # 1リクエストのタイムアウト秒(フルコーラスのクエリ生成は数分かかりうる)
 # エンジンは合成中にOOM等でクラッシュしうるが、launchd/dockerの再起動ポリシーで
 # 自動復帰する運用。クライアント側は「復帰を待って同じチャンクを再試行」する。
@@ -125,21 +128,12 @@ def split_voicevox_moras(kana: str) -> list[str]:
 
 
 def auto_octave_shift(keys: list[int], transpose: int = 0) -> int:
-    """安全音域に収まる音符が最も多くなるオクターブシフト(半音)を返す。
+    """VOICEVOX安全音域に収まる音符が最も多くなるオクターブシフト(半音)を返す。
 
-    ユーザー指定のtransposeを適用した後のkeyに対して、-24〜+24半音の
-    オクターブ単位で範囲外の音符数が最小になるシフトを選ぶ(同数なら0寄り)。
+    共通実装 octave.auto_octave_shift に VOICEVOX の安全音域を渡す薄いラッパー。
+    従来の呼び出し(音域を省略)との後方互換のために残してある。
     """
-    if not keys:
-        return 0
-    shifted = [k + transpose for k in keys]
-
-    def out_count(shift: int) -> int:
-        return sum(
-            1 for k in shifted if not SAFE_KEY_MIN <= k + shift <= SAFE_KEY_MAX
-        )
-
-    return min((s * 12 for s in (-2, -1, 0, 1, 2)), key=lambda x: (out_count(x), abs(x)))
+    return _octave_shift(keys, transpose, SAFE_KEY_MIN, SAFE_KEY_MAX)
 
 
 def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
