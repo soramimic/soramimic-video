@@ -112,13 +112,6 @@
   </p>
   <label>元歌詞(任意・字幕用)</label>
   <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
-  <label>字幕の表示粒度</label>
-  <select id="subtitle-granularity">
-    <option value="parody:phrase|original:line">替え歌:フレーズ / 元歌詞:行</option>
-    <option value="parody:phrase|original:phrase">替え歌:フレーズ / 元歌詞:フレーズ</option>
-    <option value="parody:line|original:line">替え歌:行 / 元歌詞:行</option>
-  </select>
-  <p class="hint">既定字幕の粒度。「行」は元歌詞1行を通しで、「フレーズ」はXFの区切りごとに出します。</p>
 </fieldset>
 
 <fieldset>
@@ -513,7 +506,6 @@ async function submitJob(previewSec) {
   form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
   form.append("layout_json", $("layout-json").value);
-  form.append("subtitle_granularity", $("subtitle-granularity").value);
   setBusy(true);
   $("result").hidden = true;
   $("progress").hidden = false;
@@ -640,7 +632,6 @@ async function leFetchCue(index) {
   form.append("wordlist", $("wordlist").value.trim());
   form.append("cue", Math.max(0, index | 0));
   form.append("lyrics", $("lyrics").value);
-  form.append("subtitle_granularity", $("subtitle-granularity").value);
   if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
   try {
     const res = await fetch("/api/editor-preview", { method: "POST", body: form, headers: headers() });
@@ -974,6 +965,17 @@ function leRenderProps() {
     add("揃え", select("align", ["left", "center", "right"], "center"));
     add("縦揃え", select("valign", ["top", "middle", "bottom"], "bottom"));
     add("太字", checkbox("bold"));
+    // 粒度: 「既定」はgranularityキーなし(入力欄のプルダウン/source既定に従う)
+    const granSel = document.createElement("select");
+    granSel.innerHTML = [["", "既定"], ["line", "行"], ["phrase", "フレーズ"]]
+      .map(([v, t]) =>
+        `<option value="${v}"${v === (e.granularity ?? "") ? " selected" : ""}>${t}</option>`)
+      .join("");
+    granSel.addEventListener("change", () => {
+      if (granSel.value) e.granularity = granSel.value; else delete e.granularity;
+      commit();
+    });
+    add("粒度", granSel);
     // ルビ(ふりがな): 替え歌字幕のみ有効。キャンバスにはルビは描かない(下の注記のみ)
     add("ルビ(替え歌のみ)", checkbox("ruby"));
     const rubySize = document.createElement("input");
@@ -1224,9 +1226,6 @@ $("wordlist").addEventListener("change", () => {
 $("editor").addEventListener("change", () => { leCueIndex = 0; leFetchCue(0); });
 $("lyrics").addEventListener("change", () => {
   leFetchCue(leCueIndex);  // 字幕の元歌詞はフォームの元歌詞を行対応づけして出すため
-});
-$("subtitle-granularity").addEventListener("change", () => {
-  leFetchCue(leCueIndex);  // 選択即反映(確認ボタンを挟まない)
 });
 $("le-cue-prev").addEventListener("click", () => {
   if (leCueIndex > 0) leFetchCue(leCueIndex - 1);
@@ -1742,7 +1741,6 @@ function saveForm() {
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
       autoOctave: $("auto-octave").checked,
-      subtitleGranularity: $("subtitle-granularity").value,
     }));
   } catch { /* QuotaExceededError等でUIを壊さない */ }
 }
@@ -1751,7 +1749,7 @@ function saveForm() {
 ["lyrics", "wordlist", "where", "duplicate",
  "p-vowel", "p-consonant", "p-phrasebreak", "p-wordnum",
  "transpose", "layout", "layout-json",
- "model", "synthesizer", "voicevox-style", "auto-octave", "subtitle-granularity"]
+ "model", "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
 // MIDIはバイナリなのでdataURL化して保存(未選択なら消す)
@@ -1846,10 +1844,6 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
-    if (state.subtitleGranularity
-        && [...$("subtitle-granularity").options].some((o) => o.value === state.subtitleGranularity)) {
-      $("subtitle-granularity").value = state.subtitleGranularity;
-    }
     if (state.duplicate
         && [...$("duplicate").options].some((o) => o.value === state.duplicate)) {
       $("duplicate").value = state.duplicate;
