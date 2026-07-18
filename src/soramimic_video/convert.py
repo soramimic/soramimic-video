@@ -210,11 +210,18 @@ def _pair_score(
 
 
 def _align_positions(
-    scores: list[list[int]], eu: int, k: int, force_first: bool
-) -> list[int]:
+    scores: list[list[int]],
+    eu: int,
+    k: int,
+    force_first: bool,
+    adj: list[bool] | None = None,
+) -> list[int] | None:
     """eu 個の要素を k 個の音符(0..k-1)へ、順序を保った単調増加の位置列で割り当て、
     スコア総和を最大化する(DP)。同点は前方の位置を優先。force_first のとき先頭要素は
     音符0に固定(語頭の継続ー化を避ける)。余った音符は空(=継続ー)になる。eu<=k 前提。
+
+    adj[j]=True の要素は直前要素と隣接音符(pos[j]=pos[j-1]+1)に固定する(促音ッの
+    閉音節ハード制約)。制約を満たす配置が無ければ None を返す。
     """
     neg = float("-inf")
     dp = [[neg] * k for _ in range(eu)]
@@ -225,7 +232,14 @@ def _align_positions(
         if kk <= k - eu:  # 後続 eu-1 個が入る余地が要る
             dp[0][kk] = scores[0][kk]
     for j in range(1, eu):
+        must_adj = adj is not None and adj[j]
         for kk in range(j, k):  # 要素jは最短でも位置j
+            if must_adj:  # 直前要素の直後(pos[j-1]=kk-1)のみ許す
+                kp = kk - 1
+                if kp >= j - 1 and dp[j - 1][kp] > neg:
+                    dp[j][kk] = dp[j - 1][kp] + scores[j][kk]
+                    par[j][kk] = kp
+                continue
             best, bpar = neg, -1
             for kp in range(j - 1, kk):
                 if dp[j - 1][kp] > best:  # 同点は小さいkp(前方)を保持
@@ -237,12 +251,212 @@ def _align_positions(
     for kk in range(eu - 1, k):
         if dp[eu - 1][kk] > best_v:  # 同点は小さいkk(前方)を保持
             best_v, best_k = dp[eu - 1][kk], kk
+    if best_k < 0:  # 制約を満たす配置なし
+        return None
     pos = [0] * eu
     kk = best_k
     for j in range(eu - 1, -1, -1):
         pos[j] = kk
         kk = par[j][kk]
     return pos
+
+
+# --- 要素→音節(ユニット)への個数配分を最適化する外側DP ---
+# 音節対応(unit_note_ks)は維持したまま、各音節に何個の要素を載せるか(e[u])だけを、
+# 音節内配置(内側=_align_positions)スコアの総和が最大になるよう選ぶ。ホソウラ等で
+# 位置ベース配分が誤って隣音節に要素を寄せる問題を解く。
+
+
+def _positional_distribution(n_pron: int, unit_note_ks: list[list[int]]) -> list[int]:
+    """従来の位置ベース配分: 各音節に最低1、余剰は空きのある音節へ左から。"""
+    n_units = len(unit_note_ks)
+    e = [0] * n_units
+    remaining = n_pron
+    for u in range(n_units):
+        if remaining <= 0:
+            break
+        e[u] = 1
+        remaining -= 1
+    u = 0
+    while remaining > 0 and u < n_units:
+        spare = max(0, len(unit_note_ks[u]) - e[u])
+        take = min(spare, remaining)
+        e[u] += take
+        remaining -= take
+        u += 1
+    if remaining > 0 and n_units:  # 音符数を超える要素は末尾ユニットに寄せる
+        e[-1] += remaining
+    return e
+
+
+# 替え歌側の促音ッは直前モーラと閉音節を成し不可分(隣接音符ハード制約)
+_SOKUON = "ッ"
+
+
+def _paired_sokuon(heads: list[str]) -> list[bool]:
+    """替え歌側の促音ッが直前モーラと閉音節を成す(不可分)位置を True にする。
+    語頭ッ・ッッ連続・語末ッは安全側で対象外(従来配置にフォールバック)。"""
+    n = len(heads)
+    paired = [False] * n
+    for j in range(1, n - 1):  # 語末(n-1)は対象外
+        if heads[j] == _SOKUON and heads[j - 1] not in ("", "ー", _SOKUON):
+            paired[j] = True
+    return paired
+
+
+def _inner_positions(
+    heads: list[str],
+    id_kanas: list[str] | None,
+    elem_drop: list[bool] | None,
+    note_drop: list[bool] | None,
+    ks: list[int],
+    base: int,
+    eu: int,
+    force_first: bool,
+    adj: list[bool] | None = None,
+) -> list[int] | None:
+    """音節内(内側): base..base+eu の要素を ks 音符へ載せる位置(ks内index)を返す。
+    notes_kana があり音符数>要素数のときだけ母音一致優先DP、それ以外は左詰め。
+    adj[l]=True(促音ッの閉音節)は直前要素と隣接に固定。制約充足不能なら None。"""
+    if not ks or eu <= 0:
+        return []
+    k = len(ks)
+    adj_needed = adj is not None and any(adj)
+    if eu >= k:  # 1音符1要素(eu==k、隣接自明)または溢れ(eu>k)は左詰め
+        if eu > k and adj_needed:
+            return None  # 溢れではペアの隣接を保証できない
+        return [min(j, k - 1) for j in range(eu)]
+    if id_kanas is not None:
+        assert elem_drop is not None and note_drop is not None
+        svec = [
+            [
+                _pair_score(
+                    heads[base + j], id_kanas[ks[kk]],
+                    elem_drop[base + j], note_drop[ks[kk]],
+                )
+                for kk in range(k)
+            ]
+            for j in range(eu)
+        ]
+        return _align_positions(svec, eu, k, force_first, adj)
+    return [min(j, k - 1) for j in range(eu)]  # notes_kana無し: 左詰め(連続=隣接OK)
+
+
+def _seg_score(
+    heads: list[str],
+    id_kanas: list[str] | None,
+    elem_drop: list[bool] | None,
+    note_drop: list[bool] | None,
+    unit_note_ks: list[list[int]],
+    u: int,
+    start: int,
+    length: int,
+    paired: list[bool] | None = None,
+) -> int | None:
+    """音節 u に要素 [start, start+length) を載せたときの内側配置スコア合計。
+    促音ッのペアが分断(区間先頭がッ)・隣接不能な区間は制約違反として None を返す。"""
+    if length <= 0:
+        return 0
+    if paired is not None and paired[start]:
+        return None  # 区間先頭がペア後半(ッ)= ペア分断
+    ks = unit_note_ks[u]
+    if id_kanas is None or not ks:
+        return 0
+    assert elem_drop is not None and note_drop is not None
+    adj = [paired[start + j] for j in range(length)] if paired is not None else None
+    pos = _inner_positions(
+        heads, id_kanas, elem_drop, note_drop, ks, start, length,
+        force_first=(start == 0), adj=adj,
+    )
+    if pos is None:  # 隣接制約を満たせない
+        return None
+    s = 0
+    for j in range(length):
+        if j < len(pos):
+            k = ks[pos[j]]
+            s += _pair_score(
+                heads[start + j], id_kanas[k], elem_drop[start + j], note_drop[k]
+            )
+    return s
+
+
+def _distribution_score(
+    e: list[int],
+    heads: list[str],
+    id_kanas: list[str] | None,
+    elem_drop: list[bool] | None,
+    note_drop: list[bool] | None,
+    unit_note_ks: list[list[int]],
+    paired: list[bool] | None = None,
+) -> int | None:
+    """個数配分 e の内側配置スコア合計。制約違反を含むなら None。"""
+    s = 0
+    start = 0
+    for u, cnt in enumerate(e):
+        seg = _seg_score(
+            heads, id_kanas, elem_drop, note_drop, unit_note_ks, u, start, cnt, paired
+        )
+        if seg is None:
+            return None
+        s += seg
+        start += cnt
+    return s
+
+
+def _distribute_moras(
+    heads: list[str],
+    id_kanas: list[str],
+    elem_drop: list[bool],
+    note_drop: list[bool],
+    unit_note_ks: list[list[int]],
+    n_pron: int,
+    paired: list[bool] | None = None,
+) -> tuple[list[int] | None, int]:
+    """外側DP: 要素列を順序保持で音節へ連続割り当てする個数配分 e[] を、内側配置
+    スコアの総和が最大になるよう選ぶ。各音節の要素数はその音符数まで(1音符1実音)。
+    促音ッの閉音節ペアは分断・隣接不能な区間を除外(ハード制約)。(e_opt, 総スコア)
+    を返す。到達不能なら (None, -inf)。前提: n_pron <= sum(音符数)。
+    """
+    n_units = len(unit_note_ks)
+    # 位置ベース配分の累積境界(同点時に現行配分へ寄せるタイブレークの基準)
+    cum_pos = [0] * (n_units + 1)
+    for u, c in enumerate(_positional_distribution(n_pron, unit_note_ks)):
+        cum_pos[u + 1] = cum_pos[u] + c
+    neg = -(10**18)
+    # dp[u][i] = (スコア, 位置配分の累積一致数)。スコア優先、同点は一致数が多い方。
+    dp = [[(neg, 0)] * (n_pron + 1) for _ in range(n_units + 1)]
+    par = [[-1] * (n_pron + 1) for _ in range(n_units + 1)]
+    dp[0][0] = (0, 0)
+    for u in range(1, n_units + 1):
+        cap = len(unit_note_ks[u - 1])
+        for i in range(n_pron + 1):
+            # 語頭音節(音符あり)は空にしない=語頭の継続ー化を防ぐ(語頭固定)
+            if u == 1 and cap > 0 and i == 0 and n_pron > 0:
+                continue
+            match_i = 1 if i == cum_pos[u] else 0  # 累積境界が現行配分と一致
+            for j in range(max(0, i - cap), i + 1):  # 音節 u-1 に [j,i)、要素数<=cap
+                prev = dp[u - 1][j]
+                if prev[0] == neg:
+                    continue
+                seg = _seg_score(
+                    heads, id_kanas, elem_drop, note_drop, unit_note_ks,
+                    u - 1, j, i - j, paired,
+                )
+                if seg is None:  # ペア制約違反の区間は不可
+                    continue
+                cand = (prev[0] + seg, prev[1] + match_i)
+                if cand > dp[u][i]:
+                    dp[u][i] = cand
+                    par[u][i] = j
+    if dp[n_units][n_pron][0] == neg:
+        return None, neg
+    e_opt = [0] * n_units
+    i = n_pron
+    for u in range(n_units, 0, -1):
+        j = par[u][i]
+        e_opt[u - 1] = i - j
+        i = j
+    return e_opt, dp[n_units][n_pron][0]
 
 
 def _map_word_to_notes(
@@ -297,27 +511,6 @@ def _map_word_to_notes(
         ks = [k for k, i in enumerate(ids) if note_cum[i] < hi and note_cum[i + 1] > lo]
         unit_note_ks.append(ks)
 
-    # 発音要素(計 len(pronunciation))をユニットへ分配する。
-    # 各ユニットは最低1要素、余剰は音符の空きがあるユニットへ左から割り当てる
-    # (エンジンは長い音節を複数要素へ展開しうる。例: ユウ→[ユ,ウ])。
-    n_units = len(units)
-    e = [0] * n_units
-    remaining = len(pronunciation)
-    for u in range(n_units):
-        if remaining <= 0:
-            break
-        e[u] = 1
-        remaining -= 1
-    u = 0
-    while remaining > 0 and u < n_units:
-        spare = max(0, len(unit_note_ks[u]) - e[u])
-        take = min(spare, remaining)
-        e[u] += take
-        remaining -= take
-        u += 1
-    if remaining > 0 and n_units:  # 音符数を超える要素は末尾ユニットに寄せる
-        e[-1] += remaining
-
     comp_per_elem = (
         _compressed_moras_per_element(word_kana, pronunciation) if word_kana else None
     )
@@ -330,32 +523,47 @@ def _map_word_to_notes(
     # 母音一致優先アライメント用の下準備(notes_kana が渡されたときのみ)
     heads = [p.rstrip("ー") for p in pronunciation]
     if notes_kana is not None:
-        id_kanas = [notes_kana[i] for i in ids]
-        elem_drop = _dropout_flags(heads)
-        note_drop = _dropout_flags(id_kanas)
+        id_kanas: list[str] | None = [notes_kana[i] for i in ids]
+        elem_drop: list[bool] | None = _dropout_flags(heads)
+        note_drop: list[bool] | None = _dropout_flags(id_kanas)  # type: ignore[arg-type]
     else:
-        id_kanas = None
+        id_kanas = elem_drop = note_drop = None
+
+    # 替え歌側の促音ッ+直前モーラの閉音節ペア(不可分・隣接音符ハード制約)
+    paired = _paired_sokuon(heads) if notes_kana is not None else None
+
+    # 要素→音節(ユニット)の個数配分。既定は従来の位置ベース。notes_kana があり溢れ
+    # (要素数>音符数)でなければ、音節内配置スコア総和を最大化する外側DPで最適化する
+    # (音節対応は維持、促音ッの閉音節ペアは分断しない、同点は現行配分)。
+    n_units = len(units)
+    e = _positional_distribution(len(pronunciation), unit_note_ks)
+    if id_kanas is not None and n_units and len(pronunciation) <= len(ids):
+        e_opt, opt_score = _distribute_moras(
+            heads, id_kanas, elem_drop, note_drop,  # type: ignore[arg-type]
+            unit_note_ks, len(pronunciation), paired,
+        )
+        pos_score = _distribution_score(
+            e, heads, id_kanas, elem_drop, note_drop, unit_note_ks, paired
+        )
+        # e_opt が制約を満たし、かつ現行配分より良い(または現行が制約違反)なら採用
+        if e_opt is not None and (pos_score is None or opt_score > pos_score):
+            e = e_opt
 
     base = 0
     for ui in range(n_units):
         eu = e[ui]
         ks = unit_note_ks[ui]
-        # ユニット内で eu 要素を ks 音符へ載せる位置 pos(ks内index)を決める。
-        # notes_kana があり音符数>要素数のときだけ母音一致優先DPで選び、それ以外は
-        # 従来の左詰め(位置ベース)。ユニット境界(ks)は常にハード制約。
-        if id_kanas is not None and 0 < eu < len(ks):
-            svec = [
-                [
-                    _pair_score(
-                        heads[base + j], id_kanas[ks[kk]],
-                        elem_drop[base + j], note_drop[ks[kk]],
-                    )
-                    for kk in range(len(ks))
-                ]
-                for j in range(eu)
-            ]
-            pos = _align_positions(svec, eu, len(ks), force_first=(ui == 0))
-        else:
+        # 音節内(内側)で eu 要素を ks 音符へ載せる位置を決める(母音一致優先DPまたは
+        # 左詰め)。ユニット境界(ks)はハード制約。語頭要素は先頭音符に固定。促音ッの
+        # 閉音節ペアは直前モーラと隣接音符へ固定する。
+        adj_local = (
+            [paired[base + j] for j in range(eu)] if paired is not None else None
+        )
+        pos = _inner_positions(
+            heads, id_kanas, elem_drop, note_drop, ks, base, eu,
+            force_first=(base == 0 and eu > 0), adj=adj_local,
+        )
+        if pos is None:  # 制約充足不能(フォールバック): 従来の左詰め
             pos = [min(j, len(ks) - 1) for j in range(eu)] if ks else []
         for j in range(eu):
             p = pronunciation[base + j]
