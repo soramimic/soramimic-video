@@ -150,25 +150,32 @@ def _granularity_payload(csv_path: Path) -> dict:
     }
 
 
-def test_granularity_original_line_vs_phrase(client, tmp_path):
-    """元歌詞の粒度: 既定(line)は行全文、phrase はフレーズの部分文字列。"""
+def test_granularity_default_is_phrase(client, tmp_path):
+    """既定(未指定)は替え歌・元歌詞ともフレーズ: 元歌詞は行全文でなく部分文字列。"""
     payload = _granularity_payload(_wordlist(tmp_path))
     layout_json = json.dumps(_LAYOUT_SHOW_ALL)
     lyrics = "沈むように 溶けるように"
 
-    # 既定(未指定=original:line): 両フレーズとも行全文
-    for cue in ("0", "1"):
-        body = _post(client, payload, cue=cue, layout_json=layout_json, lyrics=lyrics).json()
-        assert body["original_text"] == "沈むように 溶けるように"
-
-    # original:phrase: フレーズごとに部分文字列へ切り分ける
-    g = "parody:phrase|original:phrase"
-    first = _post(client, payload, cue="0", layout_json=layout_json, lyrics=lyrics,
-                  subtitle_granularity=g).json()
-    second = _post(client, payload, cue="1", layout_json=layout_json, lyrics=lyrics,
-                   subtitle_granularity=g).json()
+    # 未指定 → 両方 phrase。元歌詞はフレーズごとに切り分けられる
+    first = _post(client, payload, cue="0", layout_json=layout_json, lyrics=lyrics).json()
+    second = _post(client, payload, cue="1", layout_json=layout_json, lyrics=lyrics).json()
     assert first["original_text"] == "沈むように"
     assert second["original_text"] == "溶けるように"
+    # 替え歌もフレーズ(各行の単語)
+    assert first["parody_text"] == "静"
+    assert second["parody_text"] == "川"
+
+
+def test_granularity_original_line_override(client, tmp_path):
+    """override で original:line を指定すると、両フレーズとも行全文になる。"""
+    payload = _granularity_payload(_wordlist(tmp_path))
+    layout_json = json.dumps(_LAYOUT_SHOW_ALL)
+    lyrics = "沈むように 溶けるように"
+    g = "parody:phrase|original:line"
+    for cue in ("0", "1"):
+        body = _post(client, payload, cue=cue, layout_json=layout_json, lyrics=lyrics,
+                     subtitle_granularity=g).json()
+        assert body["original_text"] == "沈むように 溶けるように"
 
 
 def test_granularity_parody_line_concatenates(client, tmp_path):

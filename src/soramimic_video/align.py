@@ -150,8 +150,9 @@ def align_lines(project: Project, lyric_lines: list[str]) -> None:
 # subtitle要素ごとに指定でき、未指定なら source 既定(下記)にフォールバックする。
 
 GRANULARITIES = ("line", "phrase")
-# source ごとの既定粒度(subtitle要素・override いずれも未指定のとき)
-DEFAULT_GRANULARITY = {"parody": "phrase", "original": "line"}
+# source ごとの既定粒度(subtitle要素・override いずれも未指定のとき)。
+# 既定は替え歌・元歌詞ともフレーズ単位(元歌詞の行全文ではなく対応フレーズを出す)。
+DEFAULT_GRANULARITY = {"parody": "phrase", "original": "phrase"}
 
 
 def resolve_granularity(

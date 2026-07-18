@@ -58,6 +58,31 @@ def test_load_subtitle_bad_source(tmp_path):
         load_layout(str(p))
 
 
+def test_load_subtitle_granularity(tmp_path):
+    # レイアウトエディタで設定した粒度が読み込める。省略時は None(=入力欄/既定に従う)
+    p = tmp_path / "gran.json"
+    p.write_text(json.dumps({
+        "elements": [
+            {"type": "subtitle", "source": "parody", "box": [0, 0.7, 1, 0.1],
+             "granularity": "line"},
+            {"type": "subtitle", "source": "original", "box": [0, 0.9, 1, 0.05]},
+        ],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert layout.subtitles[0].granularity == "line"
+    assert layout.subtitles[1].granularity is None  # 省略=既定
+
+
+def test_load_subtitle_bad_granularity(tmp_path):
+    p = tmp_path / "badg.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "subtitle", "source": "parody", "box": [0, 0, 1, 0.1],
+                      "granularity": "word"}],
+    }), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_layout(str(p))
+
+
 def test_render_texts_missing_column_is_empty():
     layout = load_layout("caption")
     # original列がないデータでは空文字になる(エラーにしない)

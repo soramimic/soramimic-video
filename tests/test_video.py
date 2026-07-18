@@ -130,15 +130,24 @@ def _parody_texts(ass: str) -> list[str]:
 
 
 def test_build_ass_original_line_merges_group(tmp_path: Path):
-    # 既定(original=line): 同じ元歌詞行に対応する2フレーズは1枚に畳まれ通しで出る
+    # original=line: 同じ元歌詞行に対応する2フレーズは1枚に畳まれ通しで出る
     project = _two_line_project(tmp_path)
-    ass = build_ass(project, 1280, 720, "Font")
+    ass = build_ass(project, 1280, 720, "Font", None, {"original": "line"})
     assert _orig_texts(ass) == ["沈むように 溶けるように"]  # 2行ぶんが1枚に
     starts = [ln.split(",")[1] for ln in ass.splitlines()
               if ln.startswith("Dialogue:") and ",Original," in ln]
     # 1枚だけ: 開始=1フレーズ目の頭、終了=2フレーズ目の終わり(通しタイミング)
     assert len(starts) == 1
     assert _parody_texts(ass) == ["静", "川"]  # 替え歌は既定でフレーズ
+
+
+def test_build_ass_default_is_phrase(tmp_path: Path):
+    # 既定(override・要素指定なし): 替え歌・元歌詞ともフレーズ単位
+    project = _two_line_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font")
+    # 元歌詞の行を各フレーズの部分文字列に切り分けて別々に出す(行全文にはしない)
+    assert _orig_texts(ass) == ["沈むように", "溶けるように"]
+    assert _parody_texts(ass) == ["静", "川"]
 
 
 def test_build_ass_original_phrase_splits(tmp_path: Path):

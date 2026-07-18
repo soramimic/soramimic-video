@@ -80,11 +80,11 @@ def test_split_lyric_falls_back_to_proportional():
 
 
 def test_resolve_granularity_precedence():
-    # 要素の指定 > override > source既定
-    assert resolve_granularity("original", None, None) == "line"
+    # 要素の指定 > override > source既定。既定は替え歌・元歌詞ともフレーズ
+    assert resolve_granularity("original", None, None) == "phrase"
     assert resolve_granularity("parody", None, None) == "phrase"
-    assert resolve_granularity("original", "phrase", None) == "phrase"
-    assert resolve_granularity("original", None, {"original": "phrase"}) == "phrase"
+    assert resolve_granularity("original", "line", None) == "line"
+    assert resolve_granularity("original", None, {"original": "line"}) == "line"
     assert resolve_granularity("original", "line", {"original": "phrase"}) == "line"  # 要素優先
 
 
