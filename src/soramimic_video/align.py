@@ -14,6 +14,7 @@ phrases)場合でも、漢字率の高い行を取りこぼさないため。
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
@@ -196,18 +197,6 @@ def effective_granularities(subtitles, override: dict[str, str] | None) -> dict[
     return out
 
 
-def _norm_with_map(text: str) -> tuple[str, list[int]]:
-    """正規化文字列と、その各文字が元の text の何文字目かの対応表を返す。"""
-    chars: list[str] = []
-    idx: list[int] = []
-    for i, ch in enumerate(text):
-        if not _STRIP_RE.sub("", ch):  # 空白・記号は落とす(_normalize と同じ基準)
-            continue
-        chars.append(jaconv.kata2hira(ch))
-        idx.append(i)
-    return "".join(chars), idx
-
-
 def _proportional_split(xf_texts: list[str], lyric_line: str) -> list[str]:
     """XF各行の(正規化後)文字数比で元歌詞行を按分して切り出す(フォールバック)。"""
     weights = [max(1, len(_normalize(x))) for x in xf_texts]
@@ -227,60 +216,140 @@ def _proportional_split(xf_texts: list[str], lyric_line: str) -> list[str]:
             for i in range(n)]
 
 
-def split_lyric_to_phrases(xf_texts: list[str], lyric_line: str) -> list[str]:
+TokenReader = Callable[[str], list[tuple[str, str]]]
+
+
+def _default_reader(text: str) -> list[tuple[str, str]]:
+    """既定の読みトークナイザ。soramimic-yomi が無い環境では空リストを返す。"""
+    from .reading import reading_tokens
+
+    try:
+        return reading_tokens(text)
+    except (ImportError, RuntimeError):  # soramimic-yomi 未導入・読み取得失敗
+        return []
+
+
+def _token_surface_bounds(tokens: list[tuple[str, str]], lyric_line: str) -> list[int]:
+    """各トークンの表層開始位置(元歌詞surface座標)。末尾に行末番兵を付ける。
+
+    MeCabが空白を落とすことがあるので、表層を元歌詞上で順に探して位置を復元する。
+    """
+    starts: list[int] = []
+    pos = 0
+    for surf, _ in tokens:
+        idx = lyric_line.find(surf, pos) if surf else pos
+        if idx < 0:
+            idx = pos
+        starts.append(idx)
+        pos = idx + len(surf)
+    starts.append(len(lyric_line))  # 番兵(最後のトークンの後ろ=行末)
+    return starts
+
+
+def _snap_reading_cut(
+    cut: int,
+    tok_of_char: list[int],
+    tok_span: list[tuple[int, int]],
+    surf_bounds: list[int],
+    lyric_len: int,
+) -> int:
+    """読みかな座標の切れ目を、元歌詞surface座標のトークン境界にスナップする。
+
+    切れ目がトークンの読みの途中なら、読みのオーバーラップが大きい側へトークンを
+    帰属させる(同点は前側=そのトークンを前フレーズに含める)。漢字1語を途中で
+    切らないための処理。
+    """
+    if cut <= 0:
+        return 0
+    if cut >= len(tok_of_char):
+        return lyric_len
+    left, right = tok_of_char[cut - 1], tok_of_char[cut]
+    if left != right:
+        return surf_bounds[right]  # 既にトークン境界: 右トークンの開始
+    rs, re = tok_span[left]
+    before, after = cut - rs, re - cut
+    # 前側優勢(同点も前): このトークンは前フレーズ → 境界はトークンの後ろ
+    return surf_bounds[left + 1] if before >= after else surf_bounds[left]
+
+
+def _split_by_reading(
+    xf_texts: list[str], lyric_line: str, reader: TokenReader
+) -> list[str] | None:
+    """元歌詞をかな読みに直してXFかなと突き合わせ、表層位置で切り出す。
+
+    成功すれば各XF行に対応する表層部分文字列、無理なら None(=按分に退避)。
+    """
+    tokens = reader(lyric_line)
+    if not tokens:
+        return None
+    surf_bounds = _token_surface_bounds(tokens, lyric_line)
+    # 読み(発音形)を連結し、各かな文字→トークンindex・各トークン→読み区間 を作る
+    norm_parts: list[str] = []
+    tok_of_char: list[int] = []
+    tok_span: list[tuple[int, int]] = []
+    pos = 0
+    for t, (_surf, reading) in enumerate(tokens):
+        nr = _pron_normalize(reading)
+        tok_span.append((pos, pos + len(nr)))
+        tok_of_char.extend([t] * len(nr))
+        norm_parts.append(nr)
+        pos += len(nr)
+    norm_reading = "".join(norm_parts)
+    if not norm_reading:
+        return None
+
+    n = len(xf_texts)
+    cursor = 0  # norm_reading 上の現在位置
+    bounds = [0]  # 元歌詞surface座標の切れ目
+    for xf in xf_texts[:-1]:
+        nx = _pron_normalize(xf)
+        if not nx:
+            return None
+        sub = norm_reading[cursor:]
+        sm = SequenceMatcher(None, sub, nx, autojunk=False)
+        blocks = [b for b in sm.get_matching_blocks() if b.size]
+        matched = sum(b.size for b in blocks)
+        if not blocks or matched < len(nx) * 0.5:  # ほとんど一致しない
+            return None
+        cut = cursor + blocks[-1].a + blocks[-1].size  # 読み座標のこの行の末尾
+        if cut <= cursor:
+            return None
+        surf_cut = _snap_reading_cut(cut, tok_of_char, tok_span, surf_bounds, len(lyric_line))
+        # 単調に進み、残りのXF行ぶんの表層を必ず1文字以上残す
+        if surf_cut <= bounds[-1] or surf_cut > len(lyric_line) - (n - len(bounds)):
+            return None
+        bounds.append(surf_cut)
+        cursor = cut
+    bounds.append(len(lyric_line))
+    pieces = [lyric_line[bounds[i]:bounds[i + 1]].strip() for i in range(n)]
+    if any(not p for p in pieces):
+        return None
+    return pieces
+
+
+def split_lyric_to_phrases(
+    xf_texts: list[str], lyric_line: str, reader: TokenReader | None = None
+) -> list[str]:
     """同一元歌詞行に割り当てられた連続XF行それぞれに対応する部分文字列を返す。
 
-    SequenceMatcher の一致区間で元歌詞行を順に切り分ける。XF側がカナのみで
-    漢字の元歌詞と表記が重ならない等、一致が取れない/曖昧なときは文字数比の
-    按分にフォールバックする。返り値は xf_texts と同数で、連結すると(空白等の
-    正規化差を除き)元の行に一致し、どれも空文字にならない。
+    元歌詞行をMeCabで読み(かな)に変換し、XF側のかなと SequenceMatcher で
+    突き合わせて切れ目を求め、それを元歌詞の表層位置へ写像して切り出す(漢字1語は
+    トークン境界にスナップして途中で切らない)。読みが取れない/一致率が低いときは
+    文字数比の按分にフォールバックする。返り値は xf_texts と同数で、連結すると
+    (空白等の正規化差を除き)元の行に一致し、どれも空文字にならない。
+
+    reader は読みトークナイザ((表層, カタカナ読み)の列)。既定は MeCab+unidic。
+    テストでは決定的なトークン列を注入できる。
     """
     n = len(xf_texts)
     if n == 0:
         return []
     if n == 1:
         return [lyric_line]
-    norm_lyric, lyr_map = _norm_with_map(lyric_line)
-    if not norm_lyric:
-        return _proportional_split(xf_texts, lyric_line)
-
-    # 元歌詞(正規化)をXF行の順にカーソルを進めながら切っていく
-    cursor = 0  # norm_lyric 上の現在位置
-    cut_norm = [0]  # 各XF行の開始位置(norm_lyric座標)
-    ok = True
-    for xf in xf_texts[:-1]:
-        nx = _normalize(xf)
-        if not nx:
-            ok = False
-            break
-        sub = norm_lyric[cursor:]
-        sm = SequenceMatcher(None, sub, nx, autojunk=False)
-        blocks = [b for b in sm.get_matching_blocks() if b.size]
-        matched = sum(b.size for b in blocks)
-        # このXF行が元歌詞側とほとんど重ならない → 全体を按分に切り替える
-        if not blocks or matched < len(nx) * 0.5:
-            ok = False
-            break
-        end_in_sub = blocks[-1].a + blocks[-1].size  # sub 上でのこの行の末尾
-        new_cursor = cursor + end_in_sub
-        # 単調に進み、残りのXF行ぶんは必ず1文字以上残す
-        if new_cursor <= cursor or new_cursor > len(norm_lyric) - (n - len(cut_norm)):
-            ok = False
-            break
-        cut_norm.append(new_cursor)
-        cursor = new_cursor
-    if not ok:
-        return _proportional_split(xf_texts, lyric_line)
-
-    # norm 座標の切れ目を元歌詞の文字位置に写して切り出す(間の空白は次の行に付く)
-    bounds = [0]
-    for c in cut_norm[1:]:
-        bounds.append(lyr_map[c])
-    bounds.append(len(lyric_line))
-    pieces = [lyric_line[bounds[i]:bounds[i + 1]].strip() for i in range(n)]
-    if any(not p for p in pieces):  # 念のため(空文字が出たら按分に退避)
-        return _proportional_split(xf_texts, lyric_line)
-    return pieces
+    pieces = _split_by_reading(xf_texts, lyric_line, reader or _default_reader)
+    if pieces is not None:
+        return pieces
+    return _proportional_split(xf_texts, lyric_line)
 
 
 @dataclass

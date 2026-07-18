@@ -75,6 +75,28 @@ def text_to_kana_unidic(text: str) -> str:
     return _kana_only("".join(parts))
 
 
+def reading_tokens(text: str) -> list[tuple[str, str]]:
+    """soramimic-yomi で (表層形, カタカナ発音) のトークン列に分割する。
+
+    元歌詞のフレーズ切り出し(align.split_lyric_to_phrases)で、表層位置と読みの
+    対応を取るために使う。get_tokens はデフォルトで表層を保持する(位置写像に好都合)。
+    読みは reading(表層準拠。は→ハ 等)を採る。XFカナも表層準拠のことが多く、
+    長音のゆれ(ヨウ/ヨー)は突き合わせ側の正規化で吸収するため、pronunciation
+    (は→ワ)よりも取りこぼしが少ない。soramimic-yomi 未インストールなら
+    ImportError(呼び出し側で按分にフォールバック)。
+    """
+    import soramimic_yomi  # 遅延import(未導入環境で既存機能を壊さない)
+
+    tokens: list[tuple[str, str]] = []
+    for tok in soramimic_yomi.get_tokens(text):
+        surface = tok.get("surface_form", "")
+        if not surface:
+            continue
+        reading = tok.get("reading") or tok.get("pronunciation") or ""
+        tokens.append((surface, _kana_only(reading)))
+    return tokens
+
+
 def text_to_kana_yomi(text: str) -> str | None:
     """soramimic-yomi によるカタカナ読み。未インストールなら None。"""
     global _yomi_available
