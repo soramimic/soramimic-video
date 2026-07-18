@@ -170,18 +170,24 @@ def _rep_mora(kana: str) -> str:
 # 歌唱で脱落・長音化しやすいモーラ(促音・撥音・長音)
 _DROPOUT_MORA = {"ッ", "ン", "ー"}
 
+# エイ型・オウ型連鎖で脱落・長音化しやすいと見なせる2モーラ目は、母音単独のかな
+# (イ/ウ そのもの)だけ。ディ・キ・リ(子音付きi段)やク・ル(子音付きu段)は直前が
+# e段/o段でも独立モーラとして発音されるので対象外。判定は「母音がi/uか」ではなく
+# 「かなが イ/ウ そのものか」で行う。値は連鎖成立に必要な直前モーラの母音。
+_CHAIN_SECOND_VOWEL = {"イ": "エ", "ウ": "オ"}
+
 
 def _dropout_flags(moras: list[str]) -> list[bool]:
-    """各モーラが脱落・長音化しやすいか。特殊モーラ(ッ/ン/ー)と、直前が e段+イ・
-    o段+ウ となるエイ/オウ型連鎖の2モーラ目を True にする。"""
+    """各モーラが脱落・長音化しやすいか。特殊モーラ(ッ/ン/ー)と、母音単独の
+    イ/ウ が直前 e段/o段に続くエイ/オウ型連鎖の2モーラ目(例: ケ+イ、コ+ウ)を
+    True にする。子音付きのi/u段モーラ(ディ・キ・ク・ル等)は対象外。"""
     char_to_vowel, _ = _kana_phon()
     flags: list[bool] = []
     for i, m in enumerate(moras):
         drop = m in _DROPOUT_MORA
-        if not drop and i > 0:
+        if not drop and i > 0 and m in _CHAIN_SECOND_VOWEL:
             pv = char_to_vowel(_rep_mora(moras[i - 1]))
-            if (m == "イ" and pv == "エ") or (m == "ウ" and pv == "オ"):
-                drop = True
+            drop = pv == _CHAIN_SECOND_VOWEL[m]
         flags.append(drop)
     return flags
 

@@ -430,6 +430,31 @@ def test_dropout_flags():
     assert _dropout_flags(["シ", "ア"]) == [False, False]
 
 
+def test_dropout_flags_bare_vowel_only():
+    # 連鎖2モーラ目とみなすのは母音単独のかな(イ/ウ)だけ。子音付きの i段/u段
+    # モーラ(ディ・ク等)は直前がe段/o段でも独立モーラなので対象外にする。
+    assert _dropout_flags(["レ", "ディ"]) == [False, False]  # レ+ディ 対象外
+    assert _dropout_flags(["レ", "イ"]) == [False, True]  # レ+イ  対象
+    assert _dropout_flags(["コ", "ウ"]) == [False, True]  # コ+ウ  対象
+    assert _dropout_flags(["コ", "ク"]) == [False, False]  # コ+ク  対象外
+    # 他の子音付き i段/u段 も対象外
+    assert _dropout_flags(["キ", "リ"]) == [False, False]
+    assert _dropout_flags(["ホ", "ル"]) == [False, False]
+
+
+def test_map_word_to_notes_consonant_i_mora_not_absorbed():
+    # 「レディ」相当: 元ノート[レ, テ, イ] に要素[レ, ディ]。ディは子音付きi段モーラ
+    # なので脱落調整の対象外。母音一致(ディ=イ → イ音符)で イ音符に載り、安易に
+    # ー化されない(テ音符が継続ーになる)。
+    ids, kana = _map_word_to_notes(
+        [1, 2], [1, 1, 1], list(range(4)), (0, 2),
+        ["レ", "ディ"], "レディ", notes_kana=["レ", "テ", "イ"],
+    )
+    assert ids == [0, 1, 2]
+    assert kana == ["レ", "", "ディ"]  # ディはイ音符へ、テ音符がー
+    assert "ディ" in kana  # ディが実音として残る(ー化されていない)
+
+
 def test_pair_score_vowel_dominates_consonant():
     # 母音一致(重み1000)は子音一致(10)+脱落調整(<=2)より必ず大きい
     v_match = _pair_score("ウ", "ウ", False, False)  # 母音一致
