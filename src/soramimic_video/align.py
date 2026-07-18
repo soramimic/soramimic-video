@@ -335,8 +335,9 @@ def build_subtitle_segments(
                 text = full_texts[a]  # 元歌詞行はグループ内で同一
             segments.append(SubtitleSegment(text, spans[a][0], spans[b - 1][1], idxs))
         else:  # phrase
-            if kind == "original" and originals[a] is not None and (b - a) > 1:
-                pieces = split_lyric_to_phrases([xf_texts[k] for k in idxs], originals[a])
+            lyric_line = originals[a]
+            if kind == "original" and lyric_line is not None and (b - a) > 1:
+                pieces = split_lyric_to_phrases([xf_texts[k] for k in idxs], lyric_line)
             else:
                 pieces = [full_texts[k] for k in idxs]
             for k, piece in zip(idxs, pieces, strict=True):

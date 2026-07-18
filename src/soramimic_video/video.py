@@ -531,13 +531,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         WORD_SEP.join(w.surface for w in pl.words) if pl and pl.words else ""
         for pl in plines
     ]
+    # spans は上の重なり調整で可変listにしていたので、区間は (start, end) に固める
+    span_pairs = [(s[0], s[1]) for s in spans]
 
     events = []
     for el, name in zip(subs, names, strict=True):
         gran = resolve_granularity(el.source, getattr(el, "granularity", None), granularity)
         full_texts = parody_full if el.source == "parody" else original_full
         segments = build_subtitle_segments(
-            el.source, gran, originals, full_texts, xf_texts, spans, sep=WORD_SEP
+            el.source, gran, originals, full_texts, xf_texts, span_pairs, sep=WORD_SEP
         )
         # \posで固定配置(boxのalign/valign側の辺が基準点)。
         # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
@@ -558,7 +560,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # 各単語の真上に小さいフォントの別イベントを追加する(本文は変えない)。
             # 行マージ(parody=line)時はグループ内の全単語を連結して並べる
             if el.source == "parody" and el.ruby:
-                words = [w for k in seg.indices if plines[k] for w in plines[k].words]
+                words = []
+                for k in seg.indices:
+                    pl = plines[k]
+                    if pl is not None:
+                        words.extend(pl.words)
                 if words:
                     events.extend(
                         _ruby_events(
