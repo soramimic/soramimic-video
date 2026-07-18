@@ -105,6 +105,31 @@ def test_convert_params_default_empty(client):
     assert body["params"]["convert_params"] == ""
 
 
+def test_index_html_score_param_select_mapping():
+    # 変換スコア調整セレクトの option value(=送信する値)が本家app.js由来の
+    # 対応表と一致し、各セレクトに「既定」(value="")が先頭にあることを固定する。
+    import re
+
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # 各セレクトの id → 期待する option value 列(既定は空文字)
+    expected = {
+        "p-vowel": ["", "0.9", "0.5", "0.1"],       # SAME_VOWEL_REWARD (10-v)*0.1
+        "p-consonant": ["", "1", "0.9", "0.1"],     # SAME_CONSONANT_REWARD (10-v)*0.1
+        "p-phrasebreak": ["", "0", "30", "80"],     # SAME_PHRASE_BREAK_REWARD v*10
+        "p-wordnum": ["", "0", "20", "60"],         # WORD_NUMBER_PENALTY v*10
+    }
+    for sel_id, values in expected.items():
+        m = re.search(
+            rf'<select id="{sel_id}">(.*?)</select>', html, re.DOTALL
+        )
+        assert m, f"{sel_id} のセレクトが見つからない"
+        opts = re.findall(r'<option value="([^"]*)">', m.group(1))
+        assert opts == values, f"{sel_id}: {opts} != {values}"
+        assert opts[0] == "", f"{sel_id} の先頭は既定(空文字)であること"
+
+
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone

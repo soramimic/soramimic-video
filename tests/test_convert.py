@@ -201,6 +201,36 @@ def test_parse_convert_params():
     assert parse_convert_params("WHERE=a=b") == {"WHERE": "a=b"}
 
 
+def test_parse_convert_params_ui_payload_all_defaults():
+    # スコア項目がすべて「既定」のとき UI は DUPLICATE だけを送る。
+    # 各スコアパラメータのキーは含まれない=エンジン既定のまま(現行出力と一致)。
+    coerced = _coerce_params(parse_convert_params("DUPLICATE=false"))
+    assert coerced == {"DUPLICATE": False}
+    for key in (
+        "SAME_VOWEL_REWARD",
+        "SAME_CONSONANT_REWARD",
+        "SAME_PHRASE_BREAK_REWARD",
+        "WORD_NUMBER_PENALTY",
+    ):
+        assert key not in coerced
+
+
+def test_parse_convert_params_ui_payload_selected():
+    # 各スコア項目を選んだときに送られる値(本家app.js由来の対応表のスポットチェック)。
+    #   母音 大 → SAME_VOWEL_REWARD=0.1、子音 小 → SAME_CONSONANT_REWARD=1、
+    #   文節 中 → SAME_PHRASE_BREAK_REWARD=30、単語長 大 → WORD_NUMBER_PENALTY=60
+    spec = (
+        "DUPLICATE=true\nSAME_VOWEL_REWARD=0.1\nSAME_CONSONANT_REWARD=1\n"
+        "SAME_PHRASE_BREAK_REWARD=30\nWORD_NUMBER_PENALTY=60"
+    )
+    coerced = _coerce_params(parse_convert_params(spec))
+    assert coerced["DUPLICATE"] is True
+    assert coerced["SAME_VOWEL_REWARD"] == 0.1
+    assert coerced["SAME_CONSONANT_REWARD"] == 1  # (10-0)*0.1 の "1"
+    assert coerced["SAME_PHRASE_BREAK_REWARD"] == 30
+    assert coerced["WORD_NUMBER_PENALTY"] == 60
+
+
 def test_coerce_params_types():
     out = _coerce_params(
         {"DUPLICATE": "true", "OFF": "False", "N": "3", "F": "0.5", "S": "hello"}
