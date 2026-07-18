@@ -40,6 +40,9 @@ def _capture_neutrino(monkeypatch):
     monkeypatch.setattr(
         synth_mod, "run_neutrino", lambda *a, **k: k.get("work_dir")
     )
+    # 既定では汎用音域にフォールバックさせる(実環境のNEUTRINO_ROOTに依存しない)。
+    # モデル推奨音域を使うテストは個別に model_pitch_range を差し替える。
+    monkeypatch.setattr(synth_mod, "model_pitch_range", lambda model: None)
     return captured
 
 
@@ -67,6 +70,24 @@ def test_neutrino_auto_octave_adds_on_top_of_user_transpose(
     # ユーザーが+12した上でONにすると、80〜84+12=92〜96はさらに-24で収まる
     synthesize(project, tmp_path, synthesizer="neutrino", transpose=12, auto_octave=True)
     assert captured["transpose"] == 12 - 24
+
+
+def test_neutrino_auto_octave_uses_model_range(tmp_path: Path, monkeypatch):
+    project = _high_project(tmp_path)  # 音符 80〜84
+    captured = _capture_neutrino(monkeypatch)
+    # モデル推奨音域が高め(A4〜C6 = 69〜84)なら 80〜84 はそのまま収まりシフトなし
+    monkeypatch.setattr(synth_mod, "model_pitch_range", lambda model: (69, 84))
+    synthesize(project, tmp_path, synthesizer="neutrino", transpose=0, auto_octave=True)
+    assert captured["transpose"] == 0
+
+
+def test_neutrino_auto_octave_falls_back_to_generic_range(tmp_path: Path, monkeypatch):
+    project = _high_project(tmp_path)
+    captured = _capture_neutrino(monkeypatch)
+    # 取得失敗(None)なら汎用音域50〜74で調整され、80〜84は-12
+    monkeypatch.setattr(synth_mod, "model_pitch_range", lambda model: None)
+    synthesize(project, tmp_path, synthesizer="neutrino", transpose=0, auto_octave=True)
+    assert captured["transpose"] == -12
 
 
 def test_build_lyric_map_defaults_to_original(tmp_path: Path):
