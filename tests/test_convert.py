@@ -620,3 +620,50 @@ def test_leadi_consonant_i_still_ok_after_distribution():
         ["レ", "ディ"], "レディ", notes_kana=["レ", "テ", "イ"],
     )
     assert _fill_bar(kana) == ["レ", "ー", "ディ"]
+
+
+def test_overflow_sokuon_pairs_with_closed_note():
+    # ラグナット(夜に駆ける実例): 音節[ダ,ケ,ダッ,タ]に要素[ラ,グ,ナ,ッ,ト](溢れ1)。
+    # 従来は末尾寄せで ラ|グ|ナ|ット(ッが音符頭)だった。分割DPは閉音節ダッに
+    # ナッを載せ、ト は タ に1モーラで対応する。
+    ids, kana = _map_word_to_notes(
+        [1, 1, 2, 1], [1, 1, 2, 1], list(range(6)), (0, 4),
+        ["ラ", "グ", "ナ", "ッ", "ト"], "ラグナット",
+        notes_kana=["ダ", "ケ", "ダッ", "タ"],
+    )
+    assert ids == [0, 1, 2, 3]
+    assert kana == ["ラ", "グ", "ナッ", "ト"]
+
+
+def test_overflow_hatsuon_pairs_with_closed_note():
+    # アンカー(実例): 音節[アッ,タ]に要素[ア,ン,カー](溢れ1)。
+    # ア|ンカー ではなく アン|カー(閉音節アッに撥音ンを積む)。
+    ids, kana = _map_word_to_notes(
+        [2, 1], [2, 1], list(range(4)), (0, 2),
+        ["ア", "ン", "カー"], "アンカー",
+        notes_kana=["アッ", "タ"],
+    )
+    assert ids == [0, 1]
+    assert kana == ["アン", "カー"]
+
+
+def test_overflow_double_stack_mirrors_note_moras():
+    # ランエイサン(実例): 音節[ナッ,テイ,タ]に要素[ラ,ン,エ,イ,サー](溢れ2)。
+    # 従来は ラ|ン|エイサー。分割DPは ナッ↔ラン、テイ↔エイ を対応させる。
+    ids, kana = _map_word_to_notes(
+        [2, 2, 1], [2, 2, 1], list(range(6)), (0, 3),
+        ["ラ", "ン", "エ", "イ", "サー"], "ランエイサン",
+        notes_kana=["ナッ", "テイ", "タ"],
+    )
+    assert ids == [0, 1, 2]
+    assert kana == ["ラン", "エイ", "サー"]
+
+
+def test_overflow_without_notes_kana_keeps_legacy():
+    # notes_kana が無いときは従来どおり末尾寄せのまま
+    ids, kana = _map_word_to_notes(
+        [1, 1, 2, 1], [1, 1, 2, 1], list(range(6)), (0, 4),
+        ["ラ", "グ", "ナ", "ッ", "ト"], "ラグナット",
+    )
+    assert ids == [0, 1, 2, 3]
+    assert kana == ["ラ", "グ", "ナ", "ット"]
