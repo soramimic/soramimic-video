@@ -158,6 +158,25 @@ def test_index_html_score_param_select_mapping():
         assert opts[0] == "", f"{sel_id} の先頭は既定(空文字)であること"
 
 
+def test_index_html_model_layout_use_select_not_datalist():
+    # iOS Safari が datalist を表示しない問題への対応:
+    # 歌声モデル(#model)・レイアウト(#layout)は select + 手入力 + 隠しvalue に置換。
+    # 送信フィールド名(#model / #layout の hidden)は据え置きでAPI互換を保つ。
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # datalist 方式は撤去(iOS Safari で候補が出ないため)
+    assert "<datalist" not in html
+    assert 'list="model-list"' not in html and 'list="layout-list"' not in html
+    # 各コントロールの select・手入力・送信用hiddenが揃っている
+    for base in ("model", "layout"):
+        assert f'<select id="{base}-select">' in html
+        assert f'<input type="text" id="{base}-other"' in html
+        assert f'<input type="hidden" id="{base}"' in html
+    # 「その他(手入力)」の選択肢が存在する
+    assert 'その他(手入力)' in html
+
+
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone

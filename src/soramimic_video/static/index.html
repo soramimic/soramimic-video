@@ -208,8 +208,11 @@
   </select>
   <div id="neutrino-opts">
     <label>歌声モデル</label>
-    <input type="text" id="model" list="model-list" value="MERROW">
-    <datalist id="model-list"></datalist>
+    <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
+         送信値の正本は隠し input#model。選択肢は /api/config の models。 -->
+    <select id="model-select"></select>
+    <input type="text" id="model-other" hidden placeholder="モデル名を入力">
+    <input type="hidden" id="model" value="MERROW">
   </div>
   <div id="voicevox-opts" hidden>
     <label>歌声(キャラ・スタイル)</label>
@@ -225,8 +228,11 @@
   <input type="text" id="transpose" value="0" inputmode="numeric">
   <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
   <label>レイアウト(任意)</label>
-  <input type="text" id="layout" list="layout-list" placeholder="例: default(組み込み名かサーバー上のJSONパス)">
-  <datalist id="layout-list"></datalist>
+  <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
+       送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。 -->
+  <select id="layout-select"></select>
+  <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
+  <input type="hidden" id="layout">
   <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。</p>
   <details id="le-details">
     <summary>レイアウトを編集(ドラッグで配置)</summary>
@@ -329,14 +335,15 @@ async function loadConfig() {
   if (conf.auth_required && !apiKey()) return;
   $("server-info").textContent =
     `サーバー: ${conf.host || location.host}` + (conf.neutrino ? "" : " ⚠ NEUTRINO_ROOT未設定");
-  $("model-list").innerHTML = (conf.models || [])
-    .map((m) => `<option value="${m}">`).join("");
-  if (conf.models && conf.models.length && !conf.models.includes($("model").value)) {
-    $("model").value = conf.models[0];
+  fillChoiceOptions("model", conf.models || []);
+  let model0 = $("model").value || "MERROW";
+  if (conf.models && conf.models.length && !conf.models.includes(model0)) {
+    model0 = conf.models[0];
   }
+  setChoice("model", model0);
   setupVoicevox(conf.voicevox);
-  $("layout-list").innerHTML = (conf.layouts || [])
-    .map((l) => `<option value="${l}">`).join("");
+  fillChoiceOptions("layout", conf.layouts || [], "サーバー既定");
+  setChoice("layout", $("layout").value || "");
   $("editor-embed-controls").hidden = !conf.editor;
   await loadWordlistSelect(conf.editor);
   updateParodyStatus();
@@ -1745,11 +1752,67 @@ function saveForm() {
   } catch { /* QuotaExceededError等でUIを壊さない */ }
 }
 
-// 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)
+// ---- 選択肢select +「その他(手入力)」+ 隠しvalue の3点セット ----
+// iOS Safari が datalist 候補を出さない問題への対応(#model / #layout)。
+// 送信値・保存値の正本は隠し input#<base>(既存のフォーム送信・保存/復元と互換)。
+const CHOICE_OTHER = "__other__";
+
+// select の選択肢を組み立てる。emptyLabel を渡すと先頭に空値(=既定)を置く。
+// 末尾は必ず「その他(手入力)…」。
+function fillChoiceOptions(base, items, emptyLabel) {
+  const sel = $(base + "-select");
+  sel.textContent = "";
+  const add = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    sel.appendChild(o);
+  };
+  if (emptyLabel != null) add("", emptyLabel);
+  for (const it of items) add(it, it);
+  add(CHOICE_OTHER, "その他(手入力)…");
+}
+
+// select/手入力の状態を隠しvalueへ反映し、保存する(選択即反映)。
+function syncChoice(base) {
+  const sel = $(base + "-select"), other = $(base + "-other"), hidden = $(base);
+  const isOther = sel.value === CHOICE_OTHER;
+  other.hidden = !isOther;
+  hidden.value = isOther ? other.value.trim() : sel.value;
+  if (!restoring) saveForm();
+}
+
+// 送信値(=保存文字列)をUIへ反映。選択肢になければ「その他」+手入力に復元。
+function setChoice(base, value) {
+  const sel = $(base + "-select"), other = $(base + "-other"), hidden = $(base);
+  value = value || "";
+  const known = [...sel.options].some(
+    (o) => o.value === value && o.value !== CHOICE_OTHER
+  );
+  sel.value = known ? value : CHOICE_OTHER;
+  other.hidden = known;
+  other.value = known ? "" : value;
+  hidden.value = value;
+}
+
+for (const base of ["model", "layout"]) {
+  $(base + "-select").addEventListener("change", () => syncChoice(base));
+  $(base + "-other").addEventListener("input", () => syncChoice(base));
+}
+// 組み込みレイアウト名を選んだら既存のエディタ読み込み挙動を維持する
+$("layout-select").addEventListener("change", () => {
+  const v = $("layout-select").value;
+  if (v && v !== CHOICE_OTHER) {
+    $("layout").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+});
+
+// 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)。
+// model / layout は上の syncChoice が保存するのでここには入れない。
 ["lyrics", "wordlist", "where", "duplicate",
  "p-vowel", "p-consonant", "p-phrasebreak", "p-wordnum",
- "transpose", "layout", "layout-json",
- "model", "synthesizer", "voicevox-style", "auto-octave"]
+ "transpose", "layout-json",
+ "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
 // MIDIはバイナリなのでdataURL化して保存(未選択なら消す)
@@ -1857,7 +1920,7 @@ async function doRestoreForm() {
       }
     }
     if (state.transpose != null) $("transpose").value = state.transpose;
-    if (state.model) $("model").value = state.model;
+    if (state.model) setChoice("model", state.model);
     // 3. 合成エンジン: voicevoxが無効なら復元しない
     if (state.synthesizer === "voicevox" && !$("synth-voicevox-opt").disabled) {
       $("synthesizer").value = "voicevox";
@@ -1876,8 +1939,9 @@ async function doRestoreForm() {
     if (savedAutoOctave != null) {
       $("auto-octave").checked = !!savedAutoOctave;
     }
-    // 4. layout名: 値だけ入れる(changeを発火するとleLoadがlayoutJsonを上書きするため)
-    if (state.layout) $("layout").value = state.layout;
+    // 4. layout名: 値だけ入れる(changeを発火するとleLoadがlayoutJsonを上書きするため)。
+    // setChoice はchangeを発火しないのでlayoutJsonを上書きしない。
+    if (state.layout) setChoice("layout", state.layout);
     // 5. layoutJson: 既存ハンドラでleLayoutにパースさせる
     if (state.layoutJson) {
       $("layout-json").value = state.layoutJson;
