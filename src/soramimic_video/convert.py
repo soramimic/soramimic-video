@@ -292,6 +292,81 @@ def _positional_distribution(n_pron: int, unit_note_ks: list[list[int]]) -> list
 # 替え歌側の促音ッは直前モーラと閉音節を成し不可分(隣接音符ハード制約)
 _SOKUON = "ッ"
 
+# --- 溢れ(要素数>音符数)時の連続分割DP ---
+# 要素数が音符数を超えると従来は配分DPを諦めて余剰を末尾音符へ寄せていた
+# (ラグナット→ラ|グ|ナ|ット)。代わりに要素列を音符数個の連続非空区間に分割し、
+# 各音符へ順に載せる分割をDPで選ぶ(全音符が実音を持ち、促音ッが音符頭に来ない)。
+# 区間先頭要素は _pair_score(母音一致優先)、2要素目以降は「脱落系モーラ
+# (ッ/ン/ー/エイ・オウ連鎖のイ・ウ)」や「元音符が複数モーラ(ダッ/テイ等の
+# 閉音節・長音)」ほど載せやすいボーナスで評価する。
+
+# 脱落系モーラを同一音符へ積む優先ボーナス。母音一致(1000)より小さくし、
+# 母音一致数を犠牲にしてまで脱落系ペアを作らない。
+_STACK_BONUS = 200
+# 元音符が複数モーラ(閉音節・長音)のとき、その音符へ積む追加ボーナス
+_STACK_NOTE_BONUS = 100
+
+
+def _overflow_alloc(
+    pronunciation: list[str],
+    heads: list[str],
+    elem_drop: list[bool],
+    note_drop: list[bool],
+    id_kanas: list[str],
+) -> list[str] | None:
+    """溢れ時の音符ごとの歌唱カナ。要素列を音符数個の連続非空区間へ分割する。
+
+    dp[j][t] = 先頭 j 要素を先頭 t 音符に割り当てた最良スコア。
+    区間が促音ッで始まる分割は閉音節ペアの分断なので不可。同点は従来動作
+    (末尾音符へ寄せる=前方の音符ほど区間を短く)に寄せる。
+    実行可能な分割がなければ None(従来の左詰めへフォールバック)。
+    """
+    n, k = len(pronunciation), len(id_kanas)
+    if n <= k or k == 0:
+        return None
+
+    def seg_score(a: int, b: int, t: int) -> int | None:
+        """要素 [a,b) を音符 t に載せるスコア。ッ頭は不可。"""
+        if heads[a].startswith(_SOKUON):
+            return None
+        s = _pair_score(heads[a], id_kanas[t], elem_drop[a], note_drop[t])
+        note_multi = len(split_moras(id_kanas[t])) >= 2
+        for j in range(a + 1, b):
+            if elem_drop[j]:
+                s += _STACK_BONUS
+            if note_multi:
+                s += _STACK_NOTE_BONUS
+        return s
+
+    neg = float("-inf")
+    dp = [[neg] * (k + 1) for _ in range(n + 1)]
+    par = [[-1] * (k + 1) for _ in range(n + 1)]
+    dp[0][0] = 0.0
+    for t in range(1, k + 1):
+        for j in range(t, n - (k - t) + 1):  # 残り音符ぶんの要素を残す
+            for a in range(t - 1, j):  # 音符 t-1 に要素 [a, j)
+                if dp[a][t - 1] == neg:
+                    continue
+                seg = seg_score(a, j, t - 1)
+                if seg is None:
+                    continue
+                cand = dp[a][t - 1] + seg
+                # 同点は大きい a(=前方の音符ほど短い区間=従来の末尾寄せ)を採用
+                if cand >= dp[j][t]:
+                    dp[j][t] = cand
+                    par[j][t] = a
+    if dp[n][k] == neg:
+        return None
+    bounds = [n]
+    j = n
+    for t in range(k, 0, -1):
+        j = par[j][t]
+        bounds.append(j)
+    bounds.reverse()
+    return [
+        "".join(pronunciation[bounds[t] : bounds[t + 1]]) for t in range(k)
+    ]
+
 
 def _paired_sokuon(heads: list[str]) -> list[bool]:
     """替え歌側の促音ッが直前モーラと閉音節を成す(不可分)位置を True にする。
@@ -531,6 +606,15 @@ def _map_word_to_notes(
 
     # 替え歌側の促音ッ+直前モーラの閉音節ペア(不可分・隣接音符ハード制約)
     paired = _paired_sokuon(heads) if notes_kana is not None else None
+
+    # 溢れ(要素数>音符数)は、要素列を音符数個の連続区間に分割するDPで
+    # 音符ごとの歌唱カナを直接決める(従来は末尾音符へ丸ごと寄せていた)。
+    # 全音符が実音を持つのでユニット内の空き音符への圧縮復元は不要。
+    if id_kanas is not None and len(pronunciation) > len(ids):
+        assert elem_drop is not None and note_drop is not None
+        alloc = _overflow_alloc(pronunciation, heads, elem_drop, note_drop, id_kanas)
+        if alloc is not None:
+            return ids, alloc
 
     # 要素→音節(ユニット)の個数配分。既定は従来の位置ベース。notes_kana があり溢れ
     # (要素数>音符数)でなければ、音節内配置スコア総和を最大化する外側DPで最適化する
