@@ -10,7 +10,6 @@ apply_converted_lines で parody を再計算し、ground_truth_full.json と比
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 from pathlib import Path
 
