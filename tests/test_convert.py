@@ -667,3 +667,11 @@ def test_overflow_without_notes_kana_keeps_legacy():
     )
     assert ids == [0, 1, 2, 3]
     assert kana == ["ラ", "グ", "ナ", "ット"]
+
+
+def test_dropout_flags_and_pair_score_tolerate_empty_kana():
+    # ルビ無し漢字ノートでkanaが空になるXF(例: 女々しくて)でも落ちない
+    assert _dropout_flags(["", "イ", "ウ"]) == [False, False, False]
+    from soramimic_video.convert import _pair_score
+    assert _pair_score("", "カ", False, False) == 0
+    assert _pair_score("カ", "", False, False) == 0

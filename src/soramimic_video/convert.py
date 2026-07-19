@@ -180,14 +180,15 @@ _CHAIN_SECOND_VOWEL = {"イ": "エ", "ウ": "オ"}
 def _dropout_flags(moras: list[str]) -> list[bool]:
     """各モーラが脱落・長音化しやすいか。特殊モーラ(ッ/ン/ー)と、母音単独の
     イ/ウ が直前 e段/o段に続くエイ/オウ型連鎖の2モーラ目(例: ケ+イ、コ+ウ)を
-    True にする。子音付きのi/u段モーラ(ディ・キ・ク・ル等)は対象外。"""
+    True にする。子音付きのi/u段モーラ(ディ・キ・ク・ル等)は対象外。
+    空文字(ルビ無し漢字ノートなど kana が空)は False 扱い。"""
     char_to_vowel, _ = _kana_phon()
     flags: list[bool] = []
     for i, m in enumerate(moras):
         drop = m in _DROPOUT_MORA
         if not drop and i > 0 and m in _CHAIN_SECOND_VOWEL:
-            pv = char_to_vowel(_rep_mora(moras[i - 1]))
-            drop = pv == _CHAIN_SECOND_VOWEL[m]
+            prev = _rep_mora(moras[i - 1])
+            drop = bool(prev) and char_to_vowel(prev) == _CHAIN_SECOND_VOWEL[m]
         flags.append(drop)
     return flags
 
@@ -203,6 +204,8 @@ def _pair_score(
     """
     char_to_vowel, char_to_consonant = _kana_phon()
     er, nr = _rep_mora(elem_head), _rep_mora(note_kana)
+    if not er or not nr:  # 空kana(ルビ無し漢字ノート等)は照合対象外
+        return 0
     vowel = 1 if char_to_vowel(er) == char_to_vowel(nr) else 0
     cons = 1 if char_to_consonant(er) == char_to_consonant(nr) else 0
     tie = (0 if note_drop else 1) + (0 if elem_drop else 1)
