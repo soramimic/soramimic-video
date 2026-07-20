@@ -308,6 +308,29 @@ _SOKUON = "ッ"
 _STACK_BONUS = 200
 # 元音符が複数モーラ(閉音節・長音)のとき、その音符へ積む追加ボーナス
 _STACK_NOTE_BONUS = 100
+# 音符の元モーラ数(容量)に対する超過1音節あたりのペナルティ。
+# 母音一致(1000)より重くし、詰め込みは母音が合っても避ける
+_CAP_OVER_PENALTY = 1200
+# 載せる音節数が元モーラ数と一致したときのボーナス(配分の鏡写しを優遇)。
+# 脱落系スタックボーナス(200)より小さくし、マン・クン等の閉音節ペアを
+# 容量一致のために引き剥がさない
+_CAP_MATCH_BONUS = 50
+# 引き伸ばしノート(ハァ/セェ/オー等: 2文字目以降が小書き母音・ー)に
+# 2音節以上積むときの追加ペナルティ(1音節を保持したまま歌う音符のため)。
+# 音符が行内中央値より十分長い場合は免除する(長い音符には積んでよい)
+_HELD_STACK_PENALTY = 200
+# 二重母音の結合ボーナス: 母音単独のイ/ウが直前モーラに続く(アイ/オイ/ソウ等)
+# とき、同じ音符に載せる(音節を分断しない)ことを優遇する
+_DIPHTHONG_BONUS = 250
+
+# 引き伸ばしノート判定に使う継続文字(小書き母音・長音)
+_HELD_CHARS = set("ァィゥェォー")
+
+
+def _held_note(kana: str) -> bool:
+    """ハァ・セェ・オー のような「1音節を引き伸ばした」音符かどうか。
+    2文字目以降がすべて小書き母音か長音なら True(ダッ/ナン/テイは False)。"""
+    return len(kana) >= 2 and all(c in _HELD_CHARS for c in kana[1:])
 
 
 def _overflow_alloc(
@@ -316,29 +339,82 @@ def _overflow_alloc(
     elem_drop: list[bool],
     note_drop: list[bool],
     id_kanas: list[str],
+    note_durs: list[float] | None = None,
 ) -> list[str] | None:
     """溢れ時の音符ごとの歌唱カナ。要素列を音符数個の連続非空区間へ分割する。
 
     dp[j][t] = 先頭 j 要素を先頭 t 音符に割り当てた最良スコア。
-    区間が促音ッで始まる分割は閉音節ペアの分断なので不可。同点は従来動作
-    (末尾音符へ寄せる=前方の音符ほど区間を短く)に寄せる。
+    区間が促音ッで始まる分割は閉音節ペアの分断なので不可。区間の評価は
+    先頭要素の _pair_score(母音一致優先)に加え、音符の元モーラ数(容量)への
+    一致・超過、引き伸ばしノートへの積み込み、二重母音の結合を加点減点する。
+    note_durs(音符の長さ秒。省略時は長さ由来の項が無効=後方互換)があれば、
+    行内中央値より短い音符への容量超過を追加減点し、十分長い音符では
+    引き伸ばしペナルティを免除する。同点は従来動作(末尾寄せ)に寄せる。
     実行可能な分割がなければ None(従来の左詰めへフォールバック)。
     """
     n, k = len(pronunciation), len(id_kanas)
     if n <= k or k == 0:
         return None
 
+    note_caps = [max(1, len(split_moras(kana))) for kana in id_kanas]
+    note_held = [_held_note(kana) for kana in id_kanas]
+    if note_durs is not None and len(note_durs) == k:
+        med = sorted(note_durs)[k // 2] or 0.0
+        note_short = [med > 0 and dur < 0.6 * med for dur in note_durs]
+        note_long = [med > 0 and dur >= 1.2 * med for dur in note_durs]
+    else:
+        note_short = [False] * k
+        note_long = [False] * k
+
+    # 二重母音ペア: 要素jが母音単独のイ/ウで直前要素に続く(アイ・オイ・ソウ等)。
+    # 直後がンのときは イン/ウン の閉音節を優先し、結合しない
+    diph = [False] * n
+    for j in range(1, n):
+        if pronunciation[j] not in ("イ", "ウ"):
+            continue
+        if not heads[j - 1] or heads[j - 1] == "ー":
+            continue
+        if j + 1 < n and pronunciation[j + 1] == "ン":
+            continue
+        diph[j] = True
+
+    def eff_moras(a: int, b: int, allow_diph: bool) -> int:
+        """区間 [a,b) の実効音節数。「ー」と区間末尾の「ン」は引き伸ばし・
+        ハミングとしてどの音符でも自然に歌えるため容量に数えない
+        (サー=1、マン=1、ゼニ=2)。allow_diph のとき(引き伸ばしノート)は
+        二重母音のイ/ウ(オイ・コウ等)も直前と同音節として数えない。"""
+        cnt = 0
+        for j in range(a, b):
+            if allow_diph and j > a and diph[j]:
+                continue  # 二重母音の2モーラ目は直前と同音節
+            cnt += sum(1 for m in split_moras(pronunciation[j]) if m != "ー")
+        last = pronunciation[b - 1].rstrip("ー")
+        if cnt > 1 and last.endswith("ン"):
+            cnt -= 1
+        return max(1, cnt)
+
     def seg_score(a: int, b: int, t: int) -> int | None:
         """要素 [a,b) を音符 t に載せるスコア。ッ頭は不可。"""
         if heads[a].startswith(_SOKUON):
             return None
         s = _pair_score(heads[a], id_kanas[t], elem_drop[a], note_drop[t])
-        note_multi = len(split_moras(id_kanas[t])) >= 2
+        note_multi = note_caps[t] >= 2
         for j in range(a + 1, b):
             if elem_drop[j]:
                 s += _STACK_BONUS
             if note_multi:
                 s += _STACK_NOTE_BONUS
+            if diph[j]:  # 二重母音を同じ音符で保つ
+                s += _DIPHTHONG_BONUS
+        moras = eff_moras(a, b, note_held[t])
+        over = max(0, moras - note_caps[t])
+        s -= _CAP_OVER_PENALTY * over
+        if moras == note_caps[t]:
+            s += _CAP_MATCH_BONUS
+        if note_held[t] and not note_long[t] and moras > 1:
+            s -= _HELD_STACK_PENALTY * (moras - 1)
+        if note_short[t] and over:
+            s -= _CAP_OVER_PENALTY * over  # 短い音符への超過は倍のペナルティ
         return s
 
     neg = float("-inf")
@@ -545,6 +621,7 @@ def _map_word_to_notes(
     pronunciation: list[str] | None = None,
     word_kana: str = "",
     notes_kana: list[str] | None = None,
+    notes_dur: list[float] | None = None,
 ) -> tuple[list[int], list[str]]:
     """periodユニット区間 → 重なる音符indexの列と音符ごとの歌唱カナ。
 
@@ -615,7 +692,10 @@ def _map_word_to_notes(
     # 全音符が実音を持つのでユニット内の空き音符への圧縮復元は不要。
     if id_kanas is not None and len(pronunciation) > len(ids):
         assert elem_drop is not None and note_drop is not None
-        alloc = _overflow_alloc(pronunciation, heads, elem_drop, note_drop, id_kanas)
+        id_durs = [notes_dur[i] for i in ids] if notes_dur is not None else None
+        alloc = _overflow_alloc(
+            pronunciation, heads, elem_drop, note_drop, id_kanas, id_durs
+        )
         if alloc is not None:
             return ids, alloc
 
@@ -810,12 +890,16 @@ def apply_converted_lines(
         # 1st pass: 単語ごとに音符割り当てを計算(この時点では複合音符が
         # 単語境界を跨ぐと隣接2単語に二重割り当てされうる)
         notes_kana = [project.notes[i].kana for i in line.note_ids]
+        notes_dur = [
+            project.notes[i].end_sec - project.notes[i].start_sec
+            for i in line.note_ids
+        ]
         pending: list[list[Any]] = []
         for word in converted["words"]:
             note_idx, note_kana = _map_word_to_notes(
                 unit_lens, note_lens, offset_map, tuple(word["period"]),
                 word.get("pronunciation"), word.get("kana", ""),
-                notes_kana=notes_kana,
+                notes_kana=notes_kana, notes_dur=notes_dur,
             )
             start_c, end_c = _word_char_span(
                 unit_lens, offset_map, tuple(word["period"])
