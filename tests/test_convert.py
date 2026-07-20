@@ -675,3 +675,58 @@ def test_dropout_flags_and_pair_score_tolerate_empty_kana():
     from soramimic_video.convert import _pair_score
     assert _pair_score("", "カ", False, False) == 0
     assert _pair_score("カ", "", False, False) == 0
+
+
+def _overflow(pron, kanas, durs=None):
+    from soramimic_video.convert import _dropout_flags, _overflow_alloc
+
+    heads = [p.rstrip("ー") for p in pron]
+    return _overflow_alloc(
+        pron, heads, _dropout_flags(heads), _dropout_flags(kanas), kanas, durs
+    )
+
+
+def test_overflow_capacity_mirrors_note_moras():
+    # うっせぇわ実例: 音符の元モーラ数(ウッ=2)を鏡写しにし、母音一致
+    # (ガ-ワ)のために末尾へ詰め込まない
+    assert _overflow(
+        ["ゼ", "ニ", "ガ", "メ"], ["ウッ", "セェ", "ワ"], [0.17, 0.34, 0.34]
+    ) == ["ゼニ", "ガ", "メ"]
+    assert _overflow(
+        ["ア", "ル", "バ", "ニ", "ア"], ["ウッ", "セェ", "ワ"], [0.17, 0.34, 0.34]
+    ) == ["アル", "バニ", "ア"]
+
+
+def test_overflow_trailing_n_rides_free():
+    # 区間末尾のンはハミングとして容量に数えない: ダマ|ン ではなく ダ|マン
+    assert _overflow(["ラ", "ダ", "マ", "ン"], ["ラ", "ダッ", "テ"]) == [
+        "ラ", "ダ", "マン"
+    ]
+
+
+def test_overflow_keeps_diphthong_on_held_note():
+    # 相生山実例: オイ(二重母音)は引き伸ばしノート(セェ)に1音節として載る
+    assert _overflow(
+        ["ア", "イ", "オ", "イ", "ヤ", "マ"],
+        ["ウッ", "セェ", "ウッ", "セェ"],
+        [0.17, 0.34, 0.17, 0.34],
+    ) == ["アイ", "オイ", "ヤ", "マ"]
+
+
+def test_overflow_without_durs_backward_compatible():
+    # note_durs 省略時も動作し、長さ由来の項だけが無効になる
+    assert _overflow(["ラ", "グ", "ナ", "ッ", "ト"], ["ダ", "ケ", "ダッ", "タ"]) == [
+        "ラ", "グ", "ナッ", "ト"
+    ]
+
+
+def test_bunsetsu_head_flags():
+    from soramimic_video.convert import _bunsetsu_head_flags
+
+    # 沈むように: 文節 [沈む][ように]。漢字は文節頭側の音符に乗り継続音符は空
+    flags = _bunsetsu_head_flags(["沈", "", "む", "よ", "う", "に"])
+    if flags is None:  # jphrase未導入環境ではオフ(後方互換)
+        return
+    assert flags == [True, False, False, True, False, False]
+    # surfaceが全て空(読みカナのみの入力)は機能オフ
+    assert _bunsetsu_head_flags(["", "", ""]) is None
