@@ -718,3 +718,15 @@ def test_overflow_without_durs_backward_compatible():
     assert _overflow(["ラ", "グ", "ナ", "ッ", "ト"], ["ダ", "ケ", "ダッ", "タ"]) == [
         "ラ", "グ", "ナッ", "ト"
     ]
+
+
+def test_bunsetsu_head_flags():
+    from soramimic_video.convert import _bunsetsu_head_flags
+
+    # 沈むように: 文節 [沈む][ように]。漢字は文節頭側の音符に乗り継続音符は空
+    flags = _bunsetsu_head_flags(["沈", "", "む", "よ", "う", "に"])
+    if flags is None:  # jphrase未導入環境ではオフ(後方互換)
+        return
+    assert flags == [True, False, False, True, False, False]
+    # surfaceが全て空(読みカナのみの入力)は機能オフ
+    assert _bunsetsu_head_flags(["", "", ""]) is None

@@ -323,8 +323,58 @@ _HELD_STACK_PENALTY = 200
 # とき、同じ音符に載せる(音節を分断しない)ことを優遇する
 _DIPHTHONG_BONUS = 250
 
+# 文節頭ノートへの詰め込み(2音節以上)1音節あたりのペナルティ。
+# 文節の立ち上がりは息継ぎ・アタックの位置なので実音1つで刻む方が歌いやすい
+_BUNSETSU_HEAD_STACK = 150
+# 文節頭ノートを継続ー(空ユニット)にするペナルティ(語頭固定の文節版)
+_BUNSETSU_HEAD_BAR = 150
+
 # 引き伸ばしノート判定に使う継続文字(小書き母音・長音)
 _HELD_CHARS = set("ァィゥェォー")
+
+_phrase_splitter: Any = None
+_phrase_splitter_failed = False
+
+
+def _bunsetsu_head_flags(surfaces: list[str]) -> list[bool] | None:
+    """行内の各音符が文節頭かどうか(漢字かな混じりsurfaceから)。
+
+    XFのsurfaceは文節頭側の音符に文字が乗り、継続音符は空になる。音符surface
+    の連結を jphrase で文節分割し、文節開始文字を含む音符を True にする。
+    jphrase が無い・surfaceが空・分割結果が突合しないときは None(機能オフ=
+    後方互換。読み上げカナしか無い入力でも従来どおり動く)。
+    """
+    global _phrase_splitter, _phrase_splitter_failed
+    if _phrase_splitter_failed:
+        return None
+    text = "".join(surfaces)
+    if not text:
+        return None
+    if _phrase_splitter is None:
+        try:
+            from jphrase import PhraseSplitter
+
+            _phrase_splitter = PhraseSplitter()
+        except Exception:  # ImportError・辞書無しなど。以後は試さない
+            _phrase_splitter_failed = True
+            return None
+    try:
+        phrases = _phrase_splitter.split_text(text)
+    except Exception:
+        return None
+    if "".join(phrases) != text:
+        return None
+    starts = set()
+    off = 0
+    for ph in phrases:
+        starts.add(off)
+        off += len(ph)
+    flags = []
+    off = 0
+    for s in surfaces:
+        flags.append(bool(s) and off in starts)
+        off += len(s)
+    return flags
 
 
 def _held_note(kana: str) -> bool:
@@ -340,6 +390,7 @@ def _overflow_alloc(
     note_drop: list[bool],
     id_kanas: list[str],
     note_durs: list[float] | None = None,
+    note_bheads: list[bool] | None = None,
 ) -> list[str] | None:
     """溢れ時の音符ごとの歌唱カナ。要素列を音符数個の連続非空区間へ分割する。
 
@@ -415,6 +466,8 @@ def _overflow_alloc(
             s -= _HELD_STACK_PENALTY * (moras - 1)
         if note_short[t] and over:
             s -= _CAP_OVER_PENALTY * over  # 短い音符への超過は倍のペナルティ
+        if note_bheads is not None and note_bheads[t] and moras > 1:
+            s -= _BUNSETSU_HEAD_STACK * (moras - 1)  # 文節頭は実音1つで刻む
         return s
 
     neg = float("-inf")
@@ -506,10 +559,14 @@ def _seg_score(
     start: int,
     length: int,
     paired: list[bool] | None = None,
+    bheads: list[bool] | None = None,
 ) -> int | None:
     """音節 u に要素 [start, start+length) を載せたときの内側配置スコア合計。
     促音ッのペアが分断(区間先頭がッ)・隣接不能な区間は制約違反として None を返す。"""
     if length <= 0:
+        # 空ユニット(継続ー)。文節頭の音符をーにするのは避ける(語頭固定の文節版)
+        if bheads is not None and any(bheads[k] for k in unit_note_ks[u]):
+            return -_BUNSETSU_HEAD_BAR
         return 0
     if paired is not None and paired[start]:
         return None  # 区間先頭がペア後半(ッ)= ペア分断
@@ -542,13 +599,15 @@ def _distribution_score(
     note_drop: list[bool] | None,
     unit_note_ks: list[list[int]],
     paired: list[bool] | None = None,
+    bheads: list[bool] | None = None,
 ) -> int | None:
     """個数配分 e の内側配置スコア合計。制約違反を含むなら None。"""
     s = 0
     start = 0
     for u, cnt in enumerate(e):
         seg = _seg_score(
-            heads, id_kanas, elem_drop, note_drop, unit_note_ks, u, start, cnt, paired
+            heads, id_kanas, elem_drop, note_drop, unit_note_ks, u, start, cnt,
+            paired, bheads,
         )
         if seg is None:
             return None
@@ -565,6 +624,7 @@ def _distribute_moras(
     unit_note_ks: list[list[int]],
     n_pron: int,
     paired: list[bool] | None = None,
+    bheads: list[bool] | None = None,
 ) -> tuple[list[int] | None, int]:
     """外側DP: 要素列を順序保持で音節へ連続割り当てする個数配分 e[] を、内側配置
     スコアの総和が最大になるよう選ぶ。各音節の要素数はその音符数まで(1音符1実音)。
@@ -594,7 +654,7 @@ def _distribute_moras(
                     continue
                 seg = _seg_score(
                     heads, id_kanas, elem_drop, note_drop, unit_note_ks,
-                    u - 1, j, i - j, paired,
+                    u - 1, j, i - j, paired, bheads,
                 )
                 if seg is None:  # ペア制約違反の区間は不可
                     continue
@@ -622,6 +682,7 @@ def _map_word_to_notes(
     word_kana: str = "",
     notes_kana: list[str] | None = None,
     notes_dur: list[float] | None = None,
+    notes_bunsetsu: list[bool] | None = None,
 ) -> tuple[list[int], list[str]]:
     """periodユニット区間 → 重なる音符indexの列と音符ごとの歌唱カナ。
 
@@ -693,8 +754,11 @@ def _map_word_to_notes(
     if id_kanas is not None and len(pronunciation) > len(ids):
         assert elem_drop is not None and note_drop is not None
         id_durs = [notes_dur[i] for i in ids] if notes_dur is not None else None
+        id_bheads = (
+            [notes_bunsetsu[i] for i in ids] if notes_bunsetsu is not None else None
+        )
         alloc = _overflow_alloc(
-            pronunciation, heads, elem_drop, note_drop, id_kanas, id_durs
+            pronunciation, heads, elem_drop, note_drop, id_kanas, id_durs, id_bheads
         )
         if alloc is not None:
             return ids, alloc
@@ -705,12 +769,15 @@ def _map_word_to_notes(
     n_units = len(units)
     e = _positional_distribution(len(pronunciation), unit_note_ks)
     if id_kanas is not None and n_units and len(pronunciation) <= len(ids):
+        id_bheads = (
+            [notes_bunsetsu[i] for i in ids] if notes_bunsetsu is not None else None
+        )
         e_opt, opt_score = _distribute_moras(
             heads, id_kanas, elem_drop, note_drop,  # type: ignore[arg-type]
-            unit_note_ks, len(pronunciation), paired,
+            unit_note_ks, len(pronunciation), paired, id_bheads,
         )
         pos_score = _distribution_score(
-            e, heads, id_kanas, elem_drop, note_drop, unit_note_ks, paired
+            e, heads, id_kanas, elem_drop, note_drop, unit_note_ks, paired, id_bheads
         )
         # e_opt が制約を満たし、かつ現行配分より良い(または現行が制約違反)なら採用
         if e_opt is not None and (pos_score is None or opt_score > pos_score):
@@ -894,12 +961,16 @@ def apply_converted_lines(
             project.notes[i].end_sec - project.notes[i].start_sec
             for i in line.note_ids
         ]
+        notes_bunsetsu = _bunsetsu_head_flags(
+            [project.notes[i].surface for i in line.note_ids]
+        )
         pending: list[list[Any]] = []
         for word in converted["words"]:
             note_idx, note_kana = _map_word_to_notes(
                 unit_lens, note_lens, offset_map, tuple(word["period"]),
                 word.get("pronunciation"), word.get("kana", ""),
                 notes_kana=notes_kana, notes_dur=notes_dur,
+                notes_bunsetsu=notes_bunsetsu,
             )
             start_c, end_c = _word_char_span(
                 unit_lens, offset_map, tuple(word["period"])

@@ -809,6 +809,15 @@ wheels = [
 ]
 
 [[package]]
+name = "jphrase"
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f1/14/9cc8511481f6e68a63f6cf7dd8027638833888e3274625112630cd04418b/jphrase-0.0.3.tar.gz", hash = "sha256:62ec5ccb8955edcae3ad7a6554597a235d67115f3f6f6cd14daee0eaf8e86661", size = 6562, upload-time = "2024-05-14T15:00:25.02Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/bf/5564fc64d17894810ce70a0727111caa5d46b32013908916d0a359f32482/jphrase-0.0.3-py3-none-any.whl", hash = "sha256:bd8721a6fad00da7dc771b8fbfdac7fa6931477b344ccf24806902b27a034db5", size = 6651, upload-time = "2024-05-14T15:00:08.101Z" },
+]
+
+[[package]]
 name = "julius"
 version = "0.2.8"
 source = { registry = "https://pypi.org/simple" }
@@ -2451,6 +2460,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "jaconv" },
+    { name = "jphrase" },
     { name = "mido" },
     { name = "pillow" },
     { name = "requests" },
@@ -2497,6 +2507,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110" },
     { name = "faster-whisper", marker = "extra == 'audio'", specifier = ">=1.0" },
     { name = "jaconv", specifier = ">=0.3" },
+    { name = "jphrase", specifier = ">=0.0.3" },
     { name = "librosa", marker = "extra == 'audio'", specifier = ">=0.10" },
     { name = "mecab-python3", marker = "extra == 'audio'", specifier = ">=1.0" },
     { name = "mido", specifier = ">=1.3" },
