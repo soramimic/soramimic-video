@@ -133,35 +133,31 @@ def test_convert_params_default_empty(client):
     assert body["params"]["convert_params"] == ""
 
 
-def test_index_html_score_param_select_mapping():
-    # 変換スコア調整セレクトの option value(=送信する値)が本家app.js由来の
-    # 対応表と一致し、各セレクトに「既定」(value="")が先頭にあることを固定する。
+def test_index_html_param_sliders():
+    # 変換パラメータのスライダーが本家(external/soramimic 4443a7b frontend/src/app.js
+    # の createSliderItem 呼び出し)と同じ範囲・既定値であることを固定する。
     import re
 
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # 各セレクトの id → 期待する option value 列(既定は空文字)
     expected = {
-        "p-vowel": ["", "0.9", "0.5", "0.1"],       # SAME_VOWEL_REWARD (10-v)*0.1
-        "p-consonant": ["", "1", "0.9", "0.1"],     # SAME_CONSONANT_REWARD (10-v)*0.1
-        "p-phrasebreak": ["", "0", "30", "80"],     # SAME_PHRASE_BREAK_REWARD v*10
-        "p-wordnum": ["", "0", "20", "60"],         # WORD_NUMBER_PENALTY v*10
+        "p-sound": ("0.1", "0.9", "0.1", "0.8"),  # 音の合わせ方(vowelRatio)
+        "p-phrase": ("0", "8", "1", "1"),         # 文節の区切り
+        "p-wordnum": ("0", "6", "1", "2"),        # 単語の長さ
     }
-    for sel_id, values in expected.items():
-        m = re.search(
-            rf'<select id="{sel_id}">(.*?)</select>', html, re.DOTALL
-        )
-        assert m, f"{sel_id} のセレクトが見つからない"
-        opts = re.findall(r'<option value="([^"]*)">', m.group(1))
-        assert opts == values, f"{sel_id}: {opts} != {values}"
-        assert opts[0] == "", f"{sel_id} の先頭は既定(空文字)であること"
+    for sid, (mn, mx, step, val) in expected.items():
+        m = re.search(rf'<input type="range" id="{sid}"([^>]*)>', html)
+        assert m, f"{sid} のスライダーが見つからない"
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        assert (attrs["min"], attrs["max"], attrs["step"], attrs["value"]) == (
+            mn, mx, step, val,
+        ), sid
 
 
 def test_index_html_preset_mapping():
-    # プリセット(本家 external/soramimic 4443a7b frontend/src/app.js の PRESETS と
-    # 同名)の選択肢と、旧パラメータモデル(同梱soramimic 0.1.2)への写像
-    # PRESET_VALUES を固定する。写像の根拠は index.html のコメント参照。
+    # プリセットが本家 app.js の PRESETS(バランス/音そっくり/文節重視/長い単語、
+    # 全プリセット r=0.8)と同一であることを固定する。既定はバランス。
     import re
 
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
@@ -170,21 +166,42 @@ def test_index_html_preset_mapping():
     m = re.search(r'<select id="p-preset">(.*?)</select>', html, re.DOTALL)
     assert m, "p-preset のセレクトが見つからない"
     opts = re.findall(r'<option value="([^"]*)"', m.group(1))
-    assert opts == ["", "バランス", "音そっくり", "文節重視", "長い単語"]
+    assert opts == ["バランス", "音そっくり", "文節重視", "長い単語", ""]
+    assert re.search(r'<option value="バランス" selected>', m.group(1))
 
     expected = {
-        "バランス": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "30", "p-wordnum": "20"},
-        "音そっくり": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "0", "p-wordnum": "0"},
-        "文節重視": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "80", "p-wordnum": "20"},
-        "長い単語": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "30", "p-wordnum": "60"},
+        "バランス": {"p-sound": "0.8", "p-phrase": "1", "p-wordnum": "2"},
+        "音そっくり": {"p-sound": "0.8", "p-phrase": "0", "p-wordnum": "0"},
+        "文節重視": {"p-sound": "0.8", "p-phrase": "8", "p-wordnum": "2"},
+        "長い単語": {"p-sound": "0.8", "p-phrase": "1", "p-wordnum": "6"},
     }
-    body = re.search(r"const PRESET_VALUES = \{(.*?)\n\};", html, re.DOTALL)
-    assert body, "PRESET_VALUES が見つからない"
+    body = re.search(r"const PRESETS = \{(.*?)\n\};", html, re.DOTALL)
+    assert body, "PRESETS が見つからない"
     for name, params in expected.items():
         row = re.search(rf'"{name}":\s*\{{([^}}]*)\}}', body.group(1))
         assert row, f"プリセット {name} が見つからない"
         got = dict(re.findall(r'"(p-[a-z]+)":\s*"([^"]*)"', row.group(1)))
         assert got == params, f"{name}: {got} != {params}"
+
+
+def test_index_html_convert_params_new_model():
+    # buildConvertParams が本家 getParam と同じ新パラメータモデルで送ることを固定する
+    # (VOWEL_RATIO / VARIATION_COST=20r / SAME_PHRASE_BREAK_REWARD=0 /
+    #  MID_PHRASE_BREAK_PENALTY=文節×20 / WORD_NUMBER_PENALTY=単語長×10)。
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    for needle in (
+        '"VOWEL_RATIO=" + r',
+        '"VARIATION_COST=" + 20 * r',
+        '"SAME_PHRASE_BREAK_REWARD=0"',
+        '"MID_PHRASE_BREAK_PENALTY=" + Number($("p-phrase").value) * 20',
+        '"WORD_NUMBER_PENALTY=" + Number($("p-wordnum").value) * 10',
+    ):
+        assert needle in html, needle
+    # 旧モデルの掛け算ハック(#102で撤廃)を送っていないこと
+    assert "SAME_VOWEL_REWARD" not in html
+    assert "SAME_CONSONANT_REWARD" not in html
 
 
 def test_index_html_model_layout_use_select_not_datalist():
