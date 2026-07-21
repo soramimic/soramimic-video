@@ -20,6 +20,7 @@ import hashlib
 import logging
 import os
 import shutil
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -374,15 +375,22 @@ def _to_hiragana(text: str) -> str:
     return "".join(_KATA_TO_HIRA.get(ch, ch) for ch in text)
 
 
+def _strip_symbols(text: str) -> str:
+    """記号(中黒・スペースなど。Unicodeの記号・句読点・区切り)を取り除く。"""
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] not in "PSZ")
+
+
 def _needs_ruby(surface: str, kana: str) -> bool:
     """この単語にルビを振るべきか(表記がすでにカナで読みと同じなら不要)。
 
-    ひらがな/カタカナ・長音表記のゆれを吸収してから比較する。
+    ひらがな/カタカナ・長音表記のゆれを吸収し、中黒やスペースなどの記号は
+    無視して比較する(「ボルナ・セブン」に読み「ボルナセブン」のルビを
+    振らないため)。
     """
     if not surface or not kana:
         return False
-    a = normalize_long_vowels(_to_katakana(surface))
-    b = normalize_long_vowels(_to_katakana(kana))
+    a = normalize_long_vowels(_to_katakana(_strip_symbols(surface)))
+    b = normalize_long_vowels(_to_katakana(_strip_symbols(kana)))
     return a != b
 
 

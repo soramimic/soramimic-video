@@ -9,7 +9,16 @@
      "size": 0.036, "color": "white", "align": "left", "require": "title"},
     {"type": "text", "text": "{description}", "box": [0.448, 0.414, 0.445, 0.11],
      "size": 0.04, "color": "white", "align": "left", "valign": "top", "wrap": true,
-     "require": "description"}
+     "require": "description"},
+    {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.10],
+     "size": 0.065, "color": "white", "bold": true, "ruby": true},
+    {"type": "subtitle", "source": "original", "box": [0.02, 0.895, 0.96, 0.05],
+     "size": 0.042, "color": "#b8b8b8"}
+  ],
+  "idle": [
+    {"type": "text", "text": "{title}", "box": [0.1, 0.36, 0.8, 0.16], "size": 0.09},
+    {"type": "text", "text": "単語リスト: {wordlist}", "box": [0.1, 0.56, 0.8, 0.07],
+     "size": 0.045, "color": "#b8b8b8"}
   ],
   "fallback": [
     {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},

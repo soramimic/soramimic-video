@@ -297,6 +297,10 @@ def test_needs_ruby():
     assert not _needs_ruby("しずむ", "シズム")  # ひらがな⇔カタカナで同じ
     assert not _needs_ruby("トウキョウ", "トーキョー")  # 長音表記ゆれを吸収
     assert not _needs_ruby("", "シズ")  # 表記が空ならルビなし
+    # 中黒・スペースなどの記号は無視して比較する(カタカナ語に不要なルビを振らない)
+    assert not _needs_ruby("ボルナ・セブン", "ボルナセブン")
+    assert not _needs_ruby("イチゼロゴイチ・リオセット", "イチゼロゴイチ リオセット")
+    assert _needs_ruby("ヴォルテ04", "ヴォルテゼロヨン")  # 数字表記にはルビを振る
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
