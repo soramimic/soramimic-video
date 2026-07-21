@@ -158,6 +158,35 @@ def test_index_html_score_param_select_mapping():
         assert opts[0] == "", f"{sel_id} の先頭は既定(空文字)であること"
 
 
+def test_index_html_preset_mapping():
+    # プリセット(本家 external/soramimic 4443a7b frontend/src/app.js の PRESETS と
+    # 同名)の選択肢と、旧パラメータモデル(同梱soramimic 0.1.2)への写像
+    # PRESET_VALUES を固定する。写像の根拠は index.html のコメント参照。
+    import re
+
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    m = re.search(r'<select id="p-preset">(.*?)</select>', html, re.DOTALL)
+    assert m, "p-preset のセレクトが見つからない"
+    opts = re.findall(r'<option value="([^"]*)"', m.group(1))
+    assert opts == ["", "バランス", "音そっくり", "文節重視", "長い単語"]
+
+    expected = {
+        "バランス": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "30", "p-wordnum": "20"},
+        "音そっくり": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "0", "p-wordnum": "0"},
+        "文節重視": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "80", "p-wordnum": "20"},
+        "長い単語": {"p-vowel": "", "p-consonant": "", "p-phrasebreak": "30", "p-wordnum": "60"},
+    }
+    body = re.search(r"const PRESET_VALUES = \{(.*?)\n\};", html, re.DOTALL)
+    assert body, "PRESET_VALUES が見つからない"
+    for name, params in expected.items():
+        row = re.search(rf'"{name}":\s*\{{([^}}]*)\}}', body.group(1))
+        assert row, f"プリセット {name} が見つからない"
+        got = dict(re.findall(r'"(p-[a-z]+)":\s*"([^"]*)"', row.group(1)))
+        assert got == params, f"{name}: {got} != {params}"
+
+
 def test_index_html_model_layout_use_select_not_datalist():
     # iOS Safari が datalist を表示しない問題への対応:
     # 歌声モデル(#model)・レイアウト(#layout)は select + 手入力 + 隠しvalue に置換。

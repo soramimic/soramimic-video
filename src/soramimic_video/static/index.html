@@ -155,6 +155,20 @@
       <option value="false" selected>なし</option>
     </select>
     <p class="hint">替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
+    <!-- 「プリセット」は本家 soramimic のパラメータプリセットボタン
+         (external/soramimic 4443a7b の frontend/src/app.js PRESETS:
+          バランス/音そっくり/文節重視/長い単語)を選択式にしたもの。
+         選ぶと下の4項目に値を流し込むだけで、送信値の正本は下の4セレクトのまま。
+         値の対応は JS の PRESET_VALUES(とそのコメント)を参照。 -->
+    <label>プリセット</label>
+    <select id="p-preset">
+      <option value="" selected>手動(下の項目で個別指定)</option>
+      <option value="バランス">バランス</option>
+      <option value="音そっくり">音そっくり</option>
+      <option value="文節重視">文節重視</option>
+      <option value="長い単語">長い単語</option>
+    </select>
+    <p class="hint">本家soramimicと同名のプリセット。選ぶと下の4項目に値が入ります(下の項目を個別に変えるとプリセット選択は「手動」に戻ります)。</p>
     <!-- 変換スコアの調整パラメータ。選択肢の値は本家 soramimic フロントエンド
          (external/soramimic 53dcff1 の frontend/src/app.js)の実装が出典。
          createParamItem(小/中/大, スライダー生値, 既定index=1) の生値を getParam() の
@@ -1718,6 +1732,38 @@ const SCORE_PARAM_KEYS = {
   "p-wordnum": "WORD_NUMBER_PENALTY",
 };
 
+// 本家 soramimic のプリセット(external/soramimic 4443a7b frontend/src/app.js PRESETS)。
+// 本家は新パラメータモデル(VOWEL_RATIO / MID_PHRASE_BREAK_PENALTY)へ移行済みだが、
+// 同梱の Python 版 soramimic(0.1.2)は旧モデルのみ対応なので、既存4セレクトの
+// 段階値(小/中/大)へ写像して近似する:
+// - 母音・子音: 本家は全プリセット共通 r=0.8(=新既定。SAME_VOWEL/CONSONANT_REWARD の
+//   掛け算ハックは #102 で撤廃し未送信)なので、いずれも「既定」("")に戻す。
+// - 文節: 本家スライダー 0(音そっくり)→小(0)、8=上限(文節重視)→大(80)は段階が
+//   一致。バランス/長い単語の 1(新既定)は旧モデルに対応値が無く、旧UIの既定位置
+//   だった中(30)を充てる。
+// - 単語長: 本家スライダー 0/2/6 は旧UIの小(0)/中(20)/大(60)の生値と同一。
+const PRESET_VALUES = {
+  "バランス":   { "p-vowel": "", "p-consonant": "", "p-phrasebreak": "30", "p-wordnum": "20" },
+  "音そっくり": { "p-vowel": "", "p-consonant": "", "p-phrasebreak": "0",  "p-wordnum": "0" },
+  "文節重視":   { "p-vowel": "", "p-consonant": "", "p-phrasebreak": "80", "p-wordnum": "20" },
+  "長い単語":   { "p-vowel": "", "p-consonant": "", "p-phrasebreak": "30", "p-wordnum": "60" },
+};
+
+// プリセット選択で4セレクトへ流し込む。「手動」("")は何も流し込まず現状維持。
+// 値の設定はプログラム代入なのでchangeは発火せず、下の「手動に戻す」処理とは干渉しない。
+$("p-preset").addEventListener("change", () => {
+  const p = PRESET_VALUES[$("p-preset").value];
+  if (p) for (const [id, v] of Object.entries(p)) $(id).value = v;
+  saveForm();
+});
+
+// 4セレクトを手で変えたらプリセット選択を「手動」に戻す(値はカスタム扱い。
+// 本家の「詳細設定を触るとプリセットの選択表示が外れる」と同じ挙動)。
+// 後段で登録される saveForm のchangeリスナーより先に実行され、"" が保存される。
+for (const id of Object.keys(SCORE_PARAM_KEYS)) {
+  $(id).addEventListener("change", () => { $("p-preset").value = ""; });
+}
+
 // 生成時に送る変換パラメータ(KEY=VALUE を改行区切り)を組み立てる。
 // スコア項目が「既定」(value="")なら送らない=エンジン既定のまま(現行出力と一致)。
 function buildConvertParams() {
@@ -1738,6 +1784,7 @@ function saveForm() {
       wordlist: $("wordlist").value,
       where: $("where").value,
       duplicate: $("duplicate").value,
+      preset: $("p-preset").value,
       scoreParams: Object.fromEntries(
         Object.keys(SCORE_PARAM_KEYS).map((id) => [id, $(id).value])
       ),
@@ -1918,6 +1965,12 @@ async function doRestoreForm() {
           $(id).value = v;
         }
       }
+    }
+    // プリセットは表示状態の復元のみ(changeは発火しない=値の流し込みはしない)。
+    // 実際の送信値は上のscoreParams復元がそのまま持つ
+    if (state.preset != null
+        && [...$("p-preset").options].some((o) => o.value === state.preset)) {
+      $("p-preset").value = state.preset;
     }
     if (state.transpose != null) $("transpose").value = state.transpose;
     if (state.model) setChoice("model", state.model);
