@@ -259,6 +259,38 @@ def test_convert_project_default_duplicate_preserved(tmp_path: Path):
     assert project.parody.params["DUPLICATE"] is False
 
 
+def test_convert_project_defaults_to_balance_preset(tmp_path: Path):
+    # パラメータ未指定は本家Web UIの既定プリセット「バランス」相当
+    # (r=0.8・文節1→MID20・単語長2→WNP20・VARIATION_COST=20r)で変換される
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",
+        encoding="utf-8",
+    )
+    project = _tiny_project()
+    convert_project(project, wordlist=str(csv_path))
+    assert project.parody is not None
+    p = project.parody.params
+    assert p["VOWEL_RATIO"] == 0.8
+    assert p["SAME_PHRASE_BREAK_REWARD"] == 0
+    assert p["MID_PHRASE_BREAK_PENALTY"] == 20
+    assert p["WORD_NUMBER_PENALTY"] == 20
+    assert p["VARIATION_COST"] == 20 * 0.8
+
+
+def test_convert_project_variation_cost_follows_vowel_ratio(tmp_path: Path):
+    # VOWEL_RATIO だけ指定したとき VARIATION_COST は本家と同じく 20×r で補完される
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",
+        encoding="utf-8",
+    )
+    project = _tiny_project()
+    convert_project(project, wordlist=str(csv_path), params={"VOWEL_RATIO": "0.3"})
+    assert project.parody is not None
+    assert project.parody.params["VARIATION_COST"] == 20 * 0.3
+
+
 def test_convert_project_passes_params_through(tmp_path: Path):
     # 文字列パラメータが型変換されて変換エンジン・parody に渡る
     csv_path = tmp_path / "words.csv"
