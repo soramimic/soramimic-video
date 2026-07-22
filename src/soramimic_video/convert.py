@@ -915,6 +915,19 @@ def convert_project(
     # エンジン既定はDUPLICATE:true(単語重複あり)だが、本家Web UIの既定は
     # 「なし」。未指定時はWeb UIに合わせ、同じ単語ばかり選ばれるのを防ぐ
     coerced.setdefault("DUPLICATE", False)
+    # 未指定パラメータは本家Web UIの既定プリセット「バランス」
+    # (r=0.8・文節1・単語長2 → getParam の写像値)に合わせる。CLI・APIの
+    # パラメータ無し変換も同梱Web UI・本家soramimic.comと同じ出力になる
+    coerced.setdefault("VOWEL_RATIO", 0.8)
+    coerced.setdefault("SAME_PHRASE_BREAK_REWARD", 0)
+    coerced.setdefault("MID_PHRASE_BREAK_PENALTY", 20)
+    coerced.setdefault("WORD_NUMBER_PENALTY", 20)
+    # ン/ッ/ー変換コストは本家と同じく r に連動(実効=20×r。editor.jsの補完と同じ)
+    try:
+        r = float(coerced["VOWEL_RATIO"])
+    except (TypeError, ValueError):  # 数値でない指定はエンジン側の既定と同じ0.8扱い
+        r = 0.8
+    coerced.setdefault("VARIATION_COST", 20 * r)
 
     phrases = [line.xf_kana for line in project.lines]
     result = run_convert(phrases, csv_path, where, coerced)

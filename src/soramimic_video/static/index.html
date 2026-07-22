@@ -24,6 +24,9 @@
   }
   button:disabled { background: #94a3b8; cursor: default; }
   .hint { font-size: .8rem; opacity: .7; margin-top: .1rem; }
+  .slider-row { display: flex; align-items: center; gap: .5rem; }
+  .slider-row span { font-size: .8rem; opacity: .7; white-space: nowrap; }
+  .slider-row input[type=range] { flex: 1; margin: 0; }
   .wordlist-filters { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; margin-top: .4rem; }
   .wordlist-facet { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; flex: 1 0 100%; }
   .wordlist-filters-label { font-size: .8rem; opacity: .7; }
@@ -155,47 +158,35 @@
       <option value="false" selected>なし</option>
     </select>
     <p class="hint">替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
-    <!-- 変換スコアの調整パラメータ。選択肢の値は本家 soramimic フロントエンド
-         (external/soramimic 53dcff1 の frontend/src/app.js)の実装が出典。
-         createParamItem(小/中/大, スライダー生値, 既定index=1) の生値を getParam() の
-         スケーリングに通した結果を option の value に直接埋め込んでいる:
-           母音   [1,5,9] → SAME_VOWEL_REWARD    = (10 - v) * 0.1  (app.js:181,192)
-           子音   [0,1,9] → SAME_CONSONANT_REWARD = (10 - v) * 0.1  (app.js:182,191)
-           文節   [0,3,8] → SAME_PHRASE_BREAK_REWARD = v * 10       (app.js:183,193)
-           単語長 [0,2,6] → WORD_NUMBER_PENALTY      = v * 10       (app.js:184,194)
-         「既定」を選ぶとそのパラメータを convert_params に含めず、同梱soramimic本体の
-         既定にまかせる(=現行出力と完全一致)。DUPLICATE の既定「なし」も本体既定と同じ。 -->
-    <!-- ラベル(母音/子音/文節/単語長)と段階名(小/中/大)は本家 app.js の
-         createParamItem 呼び出しと完全一致。先頭の「既定」だけがこのアプリ独自。 -->
-    <label>母音</label>
-    <select id="p-vowel">
-      <option value="">既定</option>
-      <option value="0.9">小</option>
-      <option value="0.5">中</option>
-      <option value="0.1">大</option>
+    <!-- パラメータUIは本家 soramimic(external/soramimic 4443a7b frontend)の
+         「プリセット + スライダー3本」構成に合わせたもの。プリセット定義と
+         スライダーの範囲・既定値は app.js の PRESETS / createSliderItem 呼び出しと同一。
+         送信値の組み立て(本家 getParam 相当)は JS の buildConvertParams を参照。 -->
+    <label>プリセット</label>
+    <select id="p-preset">
+      <option value="バランス" selected>バランス</option>
+      <option value="音そっくり">音そっくり</option>
+      <option value="文節重視">文節重視</option>
+      <option value="長い単語">長い単語</option>
+      <option value="">カスタム(下のスライダーで調整)</option>
     </select>
-    <label>子音</label>
-    <select id="p-consonant">
-      <option value="">既定</option>
-      <option value="1">小</option>
-      <option value="0.9">中</option>
-      <option value="0.1">大</option>
-    </select>
-    <label>文節</label>
-    <select id="p-phrasebreak">
-      <option value="">既定</option>
-      <option value="0">小</option>
-      <option value="30">中</option>
-      <option value="80">大</option>
-    </select>
-    <label>単語長</label>
-    <select id="p-wordnum">
-      <option value="">既定</option>
-      <option value="0">小</option>
-      <option value="20">中</option>
-      <option value="60">大</option>
-    </select>
-    <p class="hint">変換スコアの調整(本家soramimicと同じ項目・段階)。いずれも「既定」なら現行のまま変化せず、明示的に選んだ項目だけが効きます。</p>
+    <p class="hint">本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
+    <label>音の合わせ方</label>
+    <div class="slider-row"><span>子音重視</span>
+      <input type="range" id="p-sound" min="0.1" max="0.9" step="0.1" value="0.8"
+        aria-label="音の合わせ方(子音重視〜母音重視)">
+      <span>母音重視</span></div>
+    <label>文節の区切り</label>
+    <div class="slider-row"><span>無視</span>
+      <input type="range" id="p-phrase" min="0" max="8" step="1" value="1"
+        aria-label="文節の区切り(無視〜がっちり守る)">
+      <span>がっちり守る</span></div>
+    <label>単語の長さ</label>
+    <div class="slider-row"><span>細かめ</span>
+      <input type="range" id="p-wordnum" min="0" max="6" step="1" value="2"
+        aria-label="単語の長さ(細かめ〜長め)">
+      <span>長め</span></div>
+    <p class="hint">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
   </details>
 </fieldset>
 
@@ -1709,24 +1700,54 @@ $("download-editor").addEventListener("click", async () => {
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
 
-// 変換スコア調整セレクト(id)→ 同梱soramimicエンジンのパラメータ名の対応。
-// option value(=送る値)の出典は本家app.js。詳細は替え歌欄のHTMLコメント参照。
-const SCORE_PARAM_KEYS = {
-  "p-vowel": "SAME_VOWEL_REWARD",
-  "p-consonant": "SAME_CONSONANT_REWARD",
-  "p-phrasebreak": "SAME_PHRASE_BREAK_REWARD",
-  "p-wordnum": "WORD_NUMBER_PENALTY",
+// 変換パラメータのスライダー(本家 external/soramimic 4443a7b frontend/src/app.js の
+// createSliderItem 3本と同一の範囲・既定値)。
+const PARAM_SLIDER_IDS = ["p-sound", "p-phrase", "p-wordnum"];
+
+// 本家 app.js の PRESETS と同一。全プリセット r=0.8(母音ロック)固定で、
+// 文節・単語長の強さだけ変える(#102):
+//   バランス   文節1/単語長2(既定)
+//   音そっくり 文節0/単語長0(音韻マックス)
+//   文節重視   文節8(スライダー最大)/単語長2
+//   長い単語   文節1/単語長6(スライダー最大)
+const PRESETS = {
+  "バランス":   { "p-sound": "0.8", "p-phrase": "1", "p-wordnum": "2" },
+  "音そっくり": { "p-sound": "0.8", "p-phrase": "0", "p-wordnum": "0" },
+  "文節重視":   { "p-sound": "0.8", "p-phrase": "8", "p-wordnum": "2" },
+  "長い単語":   { "p-sound": "0.8", "p-phrase": "1", "p-wordnum": "6" },
 };
 
-// 生成時に送る変換パラメータ(KEY=VALUE を改行区切り)を組み立てる。
-// スコア項目が「既定」(value="")なら送らない=エンジン既定のまま(現行出力と一致)。
+// 生成時に送る変換パラメータ(KEY=VALUE を改行区切り)。本家 app.js の getParam と
+// 同じ写像で新パラメータモデルへ送る:
+//   VOWEL_RATIO = r(音の合わせ方)、VARIATION_COST = 20×r(#105)、
+//   SAME_PHRASE_BREAK_REWARD = 0(報酬方式は廃止 #98)、
+//   MID_PHRASE_BREAK_PENALTY = 文節×20(#98)、WORD_NUMBER_PENALTY = 単語長×10。
+// SAME_VOWEL/CONSONANT_REWARD は撤廃(#102)。母音/子音の重みは VOWEL_RATIO が担う。
 function buildConvertParams() {
-  const pairs = ["DUPLICATE=" + $("duplicate").value];
-  for (const [id, key] of Object.entries(SCORE_PARAM_KEYS)) {
-    const v = $(id).value;
-    if (v !== "") pairs.push(key + "=" + v);
-  }
-  return pairs.join("\n");
+  const r = Number($("p-sound").value);
+  return [
+    "DUPLICATE=" + $("duplicate").value,
+    "VOWEL_RATIO=" + r,
+    "VARIATION_COST=" + 20 * r,
+    "SAME_PHRASE_BREAK_REWARD=0",
+    "MID_PHRASE_BREAK_PENALTY=" + Number($("p-phrase").value) * 20,
+    "WORD_NUMBER_PENALTY=" + Number($("p-wordnum").value) * 10,
+  ].join("\n");
+}
+
+// プリセット選択でスライダーへ流し込む(本家 applyPreset 相当)。
+// 「カスタム」("")は何も流し込まず現状維持。プログラム代入なので input は発火しない。
+$("p-preset").addEventListener("change", () => {
+  const p = PRESETS[$("p-preset").value];
+  if (p) for (const [id, v] of Object.entries(p)) $(id).value = v;
+  saveForm();
+});
+
+// スライダーを手で動かしたらプリセット選択を「カスタム」に戻す
+// (本家の「詳細設定を触るとプリセットの選択表示が外れる」と同じ挙動)。
+// 保存は後段で登録される saveForm の change リスナーが行う(input より後に発火)。
+for (const id of PARAM_SLIDER_IDS) {
+  $(id).addEventListener("input", () => { $("p-preset").value = ""; });
 }
 
 function saveForm() {
@@ -1738,8 +1759,9 @@ function saveForm() {
       wordlist: $("wordlist").value,
       where: $("where").value,
       duplicate: $("duplicate").value,
-      scoreParams: Object.fromEntries(
-        Object.keys(SCORE_PARAM_KEYS).map((id) => [id, $(id).value])
+      preset: $("p-preset").value,
+      convertSliders: Object.fromEntries(
+        PARAM_SLIDER_IDS.map((id) => [id, $(id).value])
       ),
       transpose: $("transpose").value,
       layout: $("layout").value,
@@ -1810,7 +1832,7 @@ $("layout-select").addEventListener("change", () => {
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)。
 // model / layout は上の syncChoice が保存するのでここには入れない。
 ["lyrics", "wordlist", "where", "duplicate",
- "p-vowel", "p-consonant", "p-phrasebreak", "p-wordnum",
+ "p-sound", "p-phrase", "p-wordnum",
  "transpose", "layout-json",
  "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
@@ -1911,12 +1933,19 @@ async function doRestoreForm() {
         && [...$("duplicate").options].some((o) => o.value === state.duplicate)) {
       $("duplicate").value = state.duplicate;
     }
-    if (state.scoreParams) {
-      for (const id of Object.keys(SCORE_PARAM_KEYS)) {
-        const v = state.scoreParams[id];
-        if (v != null && [...$(id).options].some((o) => o.value === v)) {
-          $(id).value = v;
-        }
+    if (state.convertSliders) {
+      for (const id of PARAM_SLIDER_IDS) {
+        const v = state.convertSliders[id];
+        if (v != null && v !== "") $(id).value = v;
+      }
+    }
+    // プリセットは表示状態の復元(値の正本はスライダー)。旧形式の保存
+    // (convertSliders無し・プリセット名のみ)はプリセット値を流し込んで揃える
+    if (state.preset != null
+        && [...$("p-preset").options].some((o) => o.value === state.preset)) {
+      $("p-preset").value = state.preset;
+      if (!state.convertSliders && PRESETS[state.preset]) {
+        for (const [id, v] of Object.entries(PRESETS[state.preset])) $(id).value = v;
       }
     }
     if (state.transpose != null) $("transpose").value = state.transpose;
