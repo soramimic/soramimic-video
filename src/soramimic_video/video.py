@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -386,6 +387,69 @@ def _needs_ruby(surface: str, kana: str) -> bool:
     return a != b
 
 
+# そのまま読める文字(ひらがな・カタカナ・長音記号など)。部分ルビのラン分割用
+_KANA_CHARS = frozenset(
+    [chr(c) for c in range(0x3041, 0x3097)]  # ひらがな
+    + [chr(c) for c in range(0x30A1, 0x30FB)]  # カタカナ(ァ〜ヺ)
+    + list("ーゝゞヽヾ")
+)
+
+
+def _kana_runs(surface: str) -> list[tuple[int, int, bool]]:
+    """表記をカナ/非カナの連続ランに分ける。(開始idx, 終了idx, カナか) の列。"""
+    runs: list[tuple[int, int, bool]] = []
+    for i, ch in enumerate(surface):
+        is_kana = ch in _KANA_CHARS
+        if runs and runs[-1][2] == is_kana:
+            runs[-1] = (runs[-1][0], i + 1, is_kana)
+        else:
+            runs.append((i, i + 1, is_kana))
+    return runs
+
+
+def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None:
+    """読みを表記の非カナ部分(漢字等)へ割り付ける。
+
+    表記をカナ/非カナのランに分け、カナランはリテラル・非カナランは「1文字以上の
+    任意」として組んだ正規表現を読み全体にfullmatchさせる。返すのは非カナランごとの
+    (表記の開始idx, 終了idx, そのランの読み)。素のカタカナ化で一致しなければ長音の
+    表記ゆれを吸収して再試行し、それでも対応づけできなければNone(呼び出し側は
+    単語全体ルビにフォールバックする)。
+
+    例: 「燦花シノノ」×「サンカシノノ」→ [(0, 2, "サンカ")]
+    """
+    if not surface or not kana:
+        return None
+    runs = _kana_runs(surface)
+    surface_kata = _to_katakana(surface)
+    kana_kata = _to_katakana(kana)
+
+    def _match(normalize: bool) -> re.Match[str] | None:
+        pattern = ""
+        for s, e, is_kana in runs:
+            if is_kana:
+                part = surface_kata[s:e]
+                pattern += re.escape(normalize_long_vowels(part) if normalize else part)
+            else:
+                pattern += "(.+?)"
+        target = normalize_long_vowels(kana_kata) if normalize else kana_kata
+        return re.fullmatch(pattern, target)
+
+    m = _match(False) or _match(True)
+    if m is None:
+        return None
+    # normalize_long_vowels は1文字を1文字に置き換えるので、マッチ位置は元の読みと揃う
+    segments: list[tuple[int, int, str]] = []
+    group = 0
+    for s, e, is_kana in runs:
+        if is_kana:
+            continue
+        group += 1
+        gs, ge = m.span(group)
+        segments.append((s, e, kana[gs:ge]))
+    return segments
+
+
 def _measuring_font(font_path: Path | None, ass_fontsize: int):
     """ASSの本文と同じ字面幅を測るためのPillowフォント。
 
@@ -417,11 +481,13 @@ def _ruby_events(
     height: int,
     font_path: Path | None,
 ) -> list[str]:
-    """替え歌字幕の各単語の真上にルビ(ふりがな)を置くASSイベント列。
+    """替え歌字幕の漢字等の部分の真上にルビ(ふりがな)を置くASSイベント列。
 
-    本文行と同じフォント・同じピクセルサイズでPillowで文字幅を測り、本文の
-    各単語のx中心を求める。本文と同一レイヤー・同一区間で、単語ごとに小さい
+    本文行と同じフォント・同じピクセルサイズでPillowで文字幅を測り、ルビを振る
+    範囲のx中心を求める。本文と同一レイヤー・同一区間で、範囲ごとに小さい
     フォントの別イベントを本文の上端すぐ上に \\pos で配置する。
+    ルビは表記の非カナ部分にだけ振る(_ruby_segments)。読みを割り付けられない
+    単語だけ、従来どおり単語全体に読み全体を置く。
     """
     body_px = int(el.size * height)
     if body_px <= 0 or not words:
@@ -454,12 +520,29 @@ def _ruby_events(
         end_x = font.getlength(prefix)
         if not _needs_ruby(w.surface, w.kana):
             continue
-        cx = x0 + (start_x + end_x) / 2  # 単語の中心x
-        # \an2: ルビの下端中央を単語中心・本文上端に合わせる(本文のすぐ上に載る)
-        events.append(
-            f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
-            f"{{\\an2\\pos({cx:.0f},{top:.0f})\\fs{ruby_px}}}{_ass_escape(_to_hiragana(w.kana))}"
-        )
+        # 表記のカナ部分(そのまま読める部分)にはルビを振らず、漢字等のランごとに
+        # 対応する読みだけをその真上へ置く。対応づけできない語は単語全体に読み全体
+        segments = _ruby_segments(w.surface, w.kana)
+        if segments is None:
+            spans = [(start_x, end_x, w.kana)]
+        else:
+            spans = []
+            for s, e, reading in segments:
+                if _to_katakana(w.surface[s:e]) == reading:
+                    continue  # 表記どおりの読みならルビ不要
+                spans.append((
+                    start_x + font.getlength(w.surface[:s]),
+                    start_x + font.getlength(w.surface[:e]),
+                    reading,
+                ))
+        for sx, ex, reading in spans:
+            cx = x0 + (sx + ex) / 2  # ルビを振る範囲の中心x
+            # \an2: ルビの下端中央をその範囲の中心・本文上端に合わせる(本文のすぐ上に載る)
+            events.append(
+                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
+                f"{{\\an2\\pos({cx:.0f},{top:.0f})\\fs{ruby_px}}}"
+                f"{_ass_escape(_to_hiragana(reading))}"
+            )
     return events
 
 

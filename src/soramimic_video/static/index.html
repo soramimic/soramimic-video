@@ -758,7 +758,25 @@ function leContent(e) {
   const span = document.createElement("span");
   span.textContent = text;
   if (e.background) Object.assign(span.style, { background: e.background, padding: "0 .2em" });
-  div.appendChild(span);
+  if (e.type === "subtitle" && e.source === "parody" && e.ruby) {
+    // ルビ(ふりがな)が本文の上に占有する帯を編集中に見えるようにする。
+    // 実際の読みはここでは持っていないのでプレースホルダ。本文spanは
+    // 縦積みラッパの中に残す(leFitText/leGrowToFitのspan測定を壊さないため)
+    const stack = document.createElement("div");
+    stack.style.cssText = "display:flex; flex-direction:column; align-items:center;";
+    const ruby = document.createElement("div");
+    ruby.textContent = "ふりがな";
+    Object.assign(ruby.style, {
+      fontSize: (e.ruby_size ?? 0.5) * size * H + "px",
+      lineHeight: "1",
+      fontWeight: "400",
+      whiteSpace: "nowrap",
+    });
+    stack.append(ruby, span);
+    div.appendChild(stack);
+  } else {
+    div.appendChild(span);
+  }
   Object.assign(div.style, {
     fontSize: size * H + "px",
     color: e.color || "white",

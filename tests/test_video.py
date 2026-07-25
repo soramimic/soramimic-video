@@ -299,6 +299,72 @@ def test_needs_ruby():
     assert not _needs_ruby("", "シズ")  # 表記が空ならルビなし
 
 
+def test_ruby_segments():
+    from soramimic_video.video import _ruby_segments
+
+    # カナ混じり: 漢字部分にだけ読みが割り当たる(「シノノ」はそのまま読めるので対象外)
+    assert _ruby_segments("燦花シノノ", "サンカシノノ") == [(0, 2, "サンカ")]
+    # 全部漢字: 単語全体が1ラン
+    assert _ruby_segments("空色", "ソライロ") == [(0, 2, "ソライロ")]
+    # カナ挟み: ランごとに読みが分かれる
+    assert _ruby_segments("夜ノ街", "ヨルノマチ") == [(0, 1, "ヨル"), (2, 3, "マチ")]
+    # 送りがな(ひらがな)もカナランとして扱う
+    assert _ruby_segments("走る", "ハシル") == [(0, 1, "ハシ")]
+    # 長音の表記ゆれは吸収する(ケイ⇔ケー)
+    assert _ruby_segments("少女ケイ", "ショージョケー") == [(0, 2, "ショージョ")]
+    # 対応づけ不能(カナランが読みと合わない)→ None でフォールバック
+    assert _ruby_segments("コーヒ", "コーヒー") is None
+    assert _ruby_segments("静カ", "シズケサ") is None
+    assert _ruby_segments("", "シズ") is None
+
+
+def test_build_ass_ruby_partial(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    # 混在表記「燦花シノノ」: ルビは漢字部分の読み「さんか」だけ
+    project.parody.lines[0].words = [
+        ParodyWord(surface="燦花シノノ", kana="サンカシノノ", original="", original_surface="",
+                   originalkana="", note_ids=[0]),
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    ruby = _ruby_events(ass)
+    assert len(ruby) == 1
+    assert "さんか" in ruby[0] and "しのの" not in ruby[0]
+
+
+def test_build_ass_ruby_partial_positions(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    # 「夜ノ街」は漢字ランごとに2つのルビが出て、表記順にx位置が並ぶ
+    project.parody.lines[0].words = [
+        ParodyWord(surface="夜ノ街", kana="ヨルノマチ", original="", original_surface="",
+                   originalkana="", note_ids=[0]),
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    ruby = _ruby_events(ass)
+    assert len(ruby) == 2
+    assert "よる" in ruby[0] and "まち" in ruby[1]
+    xs = [_pos_x(ln) for ln in ruby]
+    assert xs[0] < xs[1]
+
+
+def test_build_ass_ruby_fallback_whole_word(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    # 読みをランに割り付けられない語は、従来どおり単語全体に読み全体を置く
+    project.parody.lines[0].words = [
+        ParodyWord(surface="静カ", kana="シズケサ", original="", original_surface="",
+                   originalkana="", note_ids=[0]),
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    ruby = _ruby_events(ass)
+    assert len(ruby) == 1
+    assert "しずけさ" in ruby[0]
+
+
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
 def test_black_frame_creates_missing_dir(tmp_path: Path):
     # キュー画像ゼロのジョブではframesディレクトリを誰も作らない。
