@@ -67,8 +67,10 @@ def test_credit_from_extmetadata_truncates_long_artist():
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code: int = 200):
         self._payload = payload
+        self.status_code = status_code  # http_get_with_retry が参照する
+        self.headers: dict = {}
 
     def raise_for_status(self):
         pass
@@ -129,6 +131,9 @@ def test_fetch_image_credit_non_commons_skips_network(tmp_path: Path, monkeypatc
 
 def test_fetch_image_credit_failure_not_cached(tmp_path: Path, monkeypatch):
     import requests
+
+    # 再試行のバックオフ待ちを飛ばす
+    monkeypatch.setattr(image_credit.time, "sleep", lambda s: None)
 
     def fail_get(url, **kwargs):
         raise requests.ConnectionError("offline")

@@ -17,6 +17,7 @@ import html
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -27,6 +28,68 @@ logger = logging.getLogger(__name__)
 USER_AGENT = "soramimic-video/0.1 (https://github.com/soramimic/soramimic-video)"
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 _MAX_ARTIST_LEN = 40  # Artistは長いHTML(表など)のことがあるので焼き込み用に切り詰める
+
+_RETRY_STATUS = {429, 503}  # レート制限・一時的な過負荷は再試行の価値がある
+_MAX_RETRY_AFTER = 30.0  # Retry-Afterが極端に長くても待つのはここまで
+
+
+def _retry_after_seconds(resp: requests.Response, fallback: float) -> float:
+    """429/503応答のRetry-Afterヘッダ(秒数形式)を尊重する。上限は _MAX_RETRY_AFTER。
+
+    HTTP-date形式のRetry-Afterは解釈せずバックオフのfallbackにフォールバックする。
+    """
+    value = resp.headers.get("Retry-After")
+    if value:
+        try:
+            return min(float(value), _MAX_RETRY_AFTER)
+        except ValueError:
+            pass
+    return fallback
+
+
+def http_get_with_retry(
+    url: str,
+    *,
+    headers: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 30,
+    max_attempts: int = 3,
+) -> requests.Response:
+    """requests.getに429/503リトライ+指数バックオフを足した共通ヘルパ。
+
+    - 最大 max_attempts 回試行。429/503応答はRetry-Afterヘッダ(あれば、上限30秒)か
+      指数バックオフ(1秒→4秒)を待って再試行する
+    - 接続エラー/タイムアウトも同じバックオフで再試行する
+    - リトライを使い切ったら requests.RequestException(HTTPError含む)を送出するので、
+      既存の「失敗したらwarningログを出してNoneを返す」呼び出し側はそのまま機能する
+    """
+    delay = 1.0
+    for attempt in range(1, max_attempts + 1):
+        last = attempt == max_attempts
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if last:
+                raise
+            logger.warning(
+                "接続に失敗、%.1f秒後に再試行 (%d/%d): %s (%s)",
+                delay, attempt, max_attempts, url, e,
+            )
+        else:
+            if resp.status_code in _RETRY_STATUS and not last:
+                wait = _retry_after_seconds(resp, delay)
+                logger.warning(
+                    "HTTP %d、%.1f秒後に再試行 (%d/%d): %s",
+                    resp.status_code, wait, attempt, max_attempts, url,
+                )
+                time.sleep(wait)
+                delay *= 4
+                continue
+            resp.raise_for_status()  # 最終試行の429/503もここでHTTPErrorになる
+            return resp
+        time.sleep(delay)  # 接続エラーのバックオフ
+        delay *= 4
+    raise AssertionError("unreachable")  # ループは必ずreturnかraiseで抜ける
 
 
 def commons_file_title(image_url: str, image_page: str = "") -> str | None:
@@ -83,7 +146,7 @@ def fetch_image_credit(image_url: str, image_page: str, cache_dir: Path) -> dict
     if cache.exists():
         return json.loads(cache.read_text(encoding="utf-8"))
     try:
-        resp = requests.get(
+        resp = http_get_with_retry(
             COMMONS_API,
             params={
                 "action": "query",
@@ -96,7 +159,6 @@ def fetch_image_credit(image_url: str, image_page: str, cache_dir: Path) -> dict
             headers={"User-Agent": USER_AGENT},
             timeout=30,
         )
-        resp.raise_for_status()
         pages = resp.json()["query"]["pages"]
         meta = pages[0].get("imageinfo", [{}])[0].get("extmetadata", {})
     except (requests.RequestException, KeyError, IndexError, ValueError) as e:

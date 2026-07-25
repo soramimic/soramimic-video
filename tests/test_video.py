@@ -293,9 +293,12 @@ def test_needs_ruby():
     from soramimic_video.video import _needs_ruby
 
     assert _needs_ruby("静", "シズ")  # 漢字
+    assert _needs_ruby("時計", "トケー")  # 漢字は読みの表記に関わらずルビ
     assert not _needs_ruby("カワ", "カワ")  # 既にカタカナで同じ
     assert not _needs_ruby("しずむ", "シズム")  # ひらがな⇔カタカナで同じ
     assert not _needs_ruby("トウキョウ", "トーキョー")  # 長音表記ゆれを吸収
+    assert not _needs_ruby("ウィキ", "ウイキ")  # 全カナ表記は発音とゆれてもルビ不要
+    assert not _needs_ruby("こんにちは", "コンニチワ")  # ひらがな表記も同様
     assert not _needs_ruby("", "シズ")  # 表記が空ならルビなし
 
 
@@ -429,6 +432,52 @@ def test_image_cues_fallback_for_unknown_word(tmp_path: Path):
     cues2, _ = build_image_cues(project, tmp_path / "v2", 320, 180, layout=load_layout(str(fb)))
     assert len(cues2) == 1
     assert cues2[0].frame.exists()
+
+
+def test_image_cues_fallback_for_missing_image(tmp_path: Path):
+    # 行はあるが画像が無い/取得できない既知語も、未知語と同じfallbackの文字フレームで出る
+    import json
+
+    from soramimic_video.layout import load_layout
+
+    fb = tmp_path / "fb.json"
+    fb.write_text(json.dumps({
+        "elements": [{"type": "image", "box": [0, 0, 1, 0.7]}],
+        "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2],
+                      "size": 0.1}],
+    }), encoding="utf-8")
+
+    # image列が空
+    project = _project(tmp_path)
+    project.parody.lines[0].words[0].wordlist_row = {"image": ""}
+    cues, _ = build_image_cues(project, tmp_path / "v1", 320, 180, layout=load_layout(str(fb)))
+    assert len(cues) == 1 and cues[0].frame.exists()
+
+    # image列はあるがローカルパスが存在しない(ダウンロード失敗と同じ経路)
+    project2 = _project(tmp_path)
+    project2.parody.lines[0].words[0].wordlist_row = {"image": str(tmp_path / "nai.png")}
+    cues2, _ = build_image_cues(project2, tmp_path / "v2", 320, 180, layout=load_layout(str(fb)))
+    assert len(cues2) == 1 and cues2[0].frame.exists()
+
+
+def test_effective_fallback_keeps_normal_texts():
+    # 通常側にまだ出せるテキストがある単語はfallbackへ落とさない
+    from soramimic_video.layout import parse_layout
+    from soramimic_video.video import effective_fallback
+
+    layout = parse_layout({
+        "elements": [
+            {"type": "image", "box": [0, 0, 1, 0.7]},
+            {"type": "text", "text": "{original}", "box": [0.1, 0.8, 0.8, 0.1]},
+        ],
+        "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2]}],
+    }, "<test>")
+    data = {"surface": "静", "original": "沈"}
+    assert effective_fallback(layout, data, False, has_image=False) is False
+    assert effective_fallback(layout, {"surface": "静", "original": ""}, False,
+                              has_image=False) is True
+    assert effective_fallback(layout, data, False, has_image=True) is False
+    assert effective_fallback(layout, data, True, has_image=False) is True
 
 
 def test_image_cues_require_skips_empty_column(tmp_path: Path):
@@ -654,3 +703,134 @@ def test_resolve_total_sec_falls_back_when_audio_duration_unknown():
 
     # ffprobe失敗(None)のケース: 従来の計算にフォールバックする
     assert _resolve_total_sec(10.0, None) == 10.0
+# ---- リトライ / プリフェッチ / prewarm ----
+
+
+class _FakeResp:
+    """requests.Response の代わり(http_get_with_retry / download_image のモック用)。"""
+
+    def __init__(self, content: bytes = b"", status_code: int = 200, headers=None):
+        self.content = content
+        self.status_code = status_code
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(str(self.status_code), response=self)
+
+    def json(self):
+        import json
+
+        return json.loads(self.content.decode())
+
+
+def _png_bytes(color: str = "red") -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_http_get_retries_on_429(monkeypatch):
+    # 429を1回返してから200を返すと、再試行して成功レスポンスを返す
+    import soramimic_video.image_credit as ic
+
+    monkeypatch.setattr(ic.time, "sleep", lambda s: None)  # バックオフ待ちを飛ばす
+    seq = [
+        _FakeResp(status_code=429, headers={"Retry-After": "0"}),
+        _FakeResp(content=b"ok", status_code=200),
+    ]
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=30):
+        calls.append(url)
+        return seq.pop(0)
+
+    monkeypatch.setattr(ic.requests, "get", fake_get)
+    resp = ic.http_get_with_retry("https://example.com/x")
+    assert resp.status_code == 200 and resp.content == b"ok"
+    assert len(calls) == 2  # 429で1回再試行している
+
+
+def test_http_get_raises_after_retries(monkeypatch):
+    # 429が続けば最終的にHTTPErrorを送出する(呼び出し側はNone扱いにできる)
+    import requests
+
+    import soramimic_video.image_credit as ic
+
+    monkeypatch.setattr(ic.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=30):
+        calls.append(url)
+        return _FakeResp(status_code=503)
+
+    monkeypatch.setattr(ic.requests, "get", fake_get)
+    with pytest.raises(requests.HTTPError):
+        ic.http_get_with_retry("https://example.com/x", max_attempts=3)
+    assert len(calls) == 3  # 最大試行回数まで試す
+
+
+def _same_url_project(tmp_path: Path, url: str) -> Project:
+    project = _project(tmp_path)
+    row = {"image": url, "image_page": ""}  # 非Commons=クレジット取得は即Noneでネット無し
+    project.parody.lines[0].words = [
+        ParodyWord(surface="静", kana="シズ", original="", original_surface="", originalkana="",
+                   note_ids=[0], wordlist_row=dict(row)),
+        ParodyWord(surface="山", kana="ヤマ", original="", original_surface="", originalkana="",
+                   note_ids=[1], wordlist_row=dict(row)),
+    ]
+    return project
+
+
+def test_prefetch_downloads_each_url_once(tmp_path: Path, monkeypatch):
+    # 同一URLを持つ2単語でも、プリフェッチ+逐次ループを通して画像取得は1回だけ
+    import soramimic_video.image_credit as ic
+
+    url = "https://example.com/shizu.jpg"
+    png = _png_bytes()
+    calls = []
+
+    def fake_get(url_, headers=None, params=None, timeout=30):
+        calls.append(url_)
+        return _FakeResp(content=png)
+
+    monkeypatch.setattr(ic.requests, "get", fake_get)
+    project = _same_url_project(tmp_path, url)
+    cues, _ = build_image_cues(project, tmp_path / "video", 320, 180)
+    assert len(cues) == 2  # 両単語ともフレームが出る
+    assert calls == [url]  # ダウンロードは重複せず1回だけ
+
+
+def test_prewarm_skips_cached(tmp_path: Path, monkeypatch):
+    # キャッシュ済みURLはダウンロードせずスキップ、未キャッシュだけ取得する
+    import soramimic_video.image_credit as ic
+    from soramimic_video.prewarm import prewarm_images
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cached_url = "https://example.com/a.jpg"
+    new_url = "https://example.com/b.jpg"
+    name = hashlib.sha1(cached_url.encode()).hexdigest()[:16]
+    (cache / f"{name}.jpg").write_bytes(_png_bytes())  # 事前にキャッシュ配置
+
+    calls = []
+
+    def fake_get(url_, headers=None, params=None, timeout=30):
+        calls.append(url_)
+        return _FakeResp(content=_png_bytes("blue"))
+
+    monkeypatch.setattr(ic.requests, "get", fake_get)
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "image,image_page,image_credit\n" f"{cached_url},,\n{new_url},,\n",
+        encoding="utf-8",
+    )
+    summary = prewarm_images([csv_path], cache, delay=0)
+    assert summary["skipped"] == 1 and summary["fetched"] == 1 and summary["failed"] == 0
+    assert calls == [new_url]  # キャッシュ済みURLはダウンロードされない

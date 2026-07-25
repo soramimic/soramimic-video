@@ -139,7 +139,7 @@ def build_editor_preview(
         segment_text_by_line,
     )
     from .convert import _find_row, _load_wordlist_rows
-    from .video import WORD_SEP, word_frame_data, word_is_shown
+    from .video import WORD_SEP, effective_fallback, word_frame_data, word_is_shown
 
     results = payload.get("results")
     if not isinstance(results, list):
@@ -209,6 +209,10 @@ def build_editor_preview(
                 note_ids=[],
             )
             data = word_frame_data(word, row)
+            # 画像列が空の既知語も実動画(build_image_cues)と同じく文字フレームに落とす
+            use_fallback = effective_fallback(
+                layout, data, use_fallback, has_image=bool(data.get("image"))
+            )
             if not word_is_shown(layout, data, use_fallback):
                 continue  # このレイアウトでは表示できるものがない単語
             cues.append(

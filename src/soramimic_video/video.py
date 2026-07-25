@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +29,7 @@ import requests
 from PIL import ImageColor, ImageFont
 
 from . import runproc
-from .image_credit import USER_AGENT, fetch_image_credit
+from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
 from .kana import normalize_long_vowels
 from .layout import (
     DEFAULT_SUBTITLES,
@@ -49,6 +50,10 @@ logger = logging.getLogger(__name__)
 VIDEO_DIR = "video"
 HOLD_MAX_SEC = 3.0  # 次の単語が来ないとき画像を表示し続ける最大時間
 SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
+# build_image_cues 前の画像/クレジットのプリフェッチ並列数。
+# Commonsのサムネイル生成(Special:FilePath?width=)は並列4だと429が返ることを実測済み。
+# 2なら429なしで、リトライ待ちが入る4より速かった(20枚: 24.6秒 vs 31.5秒)
+IMAGE_FETCH_WORKERS = 2
 
 
 def _run(cmd: list[str], what: str) -> None:
@@ -133,8 +138,7 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
     if "Special:FilePath" in url and "?" not in url:
         fetch_url = url + "?width=1200"  # フル解像度は不要なのでサムネイルをもらう
     try:
-        resp = requests.get(fetch_url, headers={"User-Agent": USER_AGENT}, timeout=30)
-        resp.raise_for_status()
+        resp = http_get_with_retry(fetch_url, headers={"User-Agent": USER_AGENT}, timeout=30)
     except requests.RequestException as e:
         logger.warning("画像の取得に失敗: %s (%s)", url, e)
         return None
@@ -158,6 +162,51 @@ def _black_frame(out_dir: Path, width: int, height: int) -> Path:
             "黒フレーム生成",
         )
     return out
+
+
+def _prefetch_image_assets(
+    words: list[tuple[float, float, dict, bool]], cache: Path
+) -> None:
+    """逐次ループの前に、使う画像とクレジットをスレッドプールで温めておく。
+
+    download_image はファイルキャッシュ(cache/<hash>.*)へ、fetch_image_credit は
+    ファイルキャッシュ(cache/credits/<hash>.json)へ書き込むので、ここで先に走らせて
+    おけば後続の逐次ループの同名呼び出しはネットワークに出ずキャッシュを読む。
+    URLごとに1回だけ「画像→(必要なら)クレジット」の順で実行し、重複は排除する。
+
+    キャンセル要求時は未実行のfutureをcancelして Cancelled を伝播する
+    (実行中のダウンロードは高々 IMAGE_FETCH_WORKERS 本で、タイムアウトで終わる)。
+    """
+    # URLごとに: クレジット取得が要るか / どの image_page で引くか(初出を採用)
+    need_credit: dict[str, str] = {}
+    urls: list[str] = []
+    for _start, _end, data, _use_fallback in words:
+        url = data.get("image") or ""
+        if not url:
+            continue
+        if url not in need_credit and url not in urls:
+            urls.append(url)
+        if not str(data.get("image_credit") or "").strip() and url not in need_credit:
+            need_credit[url] = data.get("image_page", "")
+    if not urls:
+        return
+
+    def _fetch(url: str) -> None:
+        raw = download_image(url, cache)
+        # クレジットは画像が取れたものだけ(逐次ループの条件と揃える)
+        if raw is not None and url in need_credit:
+            fetch_image_credit(url, need_credit[url], cache)
+
+    with ThreadPoolExecutor(max_workers=IMAGE_FETCH_WORKERS) as ex:
+        futures = {ex.submit(_fetch, url): url for url in urls}
+        try:
+            for fut in as_completed(futures):
+                runproc.raise_if_cancelled()  # プリフェッチ中でも中断できるように
+                fut.result()  # Cancelled等の例外は握りつぶさず伝播(通常は例外なし)
+        except BaseException:
+            for f in futures:
+                f.cancel()  # 未実行分は捨てる(実行中の分は__exit__が待つ)
+            raise
 
 
 # ---- タイムライン ----
@@ -204,6 +253,20 @@ def word_is_shown(layout: Layout, data: dict, use_fallback: bool) -> bool:
     return bool(data.get("image")) or any(layout.render_texts(data, use_fallback))
 
 
+def effective_fallback(
+    layout: Layout, data: dict, use_fallback: bool, has_image: bool
+) -> bool:
+    """画像が無く通常側に出せるテキストも無い単語を、未知語と同じfallbackへ落とす判定。
+
+    既知語でも画像列が空だったり画像が取得できなかったときに、何も出さない
+    のではなく文字フレーム(fallback)で描くために使う。editorのキュープレビュー
+    (editor_io)と build_image_cues で共用する。
+    """
+    if use_fallback or has_image:
+        return use_fallback
+    return not any(layout.render_texts(data, False))
+
+
 def build_image_cues(
     project: Project,
     work: Path,
@@ -229,6 +292,10 @@ def build_image_cues(
             use_fallback = not row
             # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
             data = word_frame_data(w, row)
+            # 画像列が空の既知語も文字フレーム(fallback)で出す
+            use_fallback = effective_fallback(
+                layout, data, use_fallback, has_image=bool(data.get("image"))
+            )
             if not word_is_shown(layout, data, use_fallback):
                 continue  # このレイアウトでは表示できるものがない単語
             start, end = project.word_time_range(w)
@@ -243,12 +310,18 @@ def build_image_cues(
         os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
     )
     norm = work / "frames"
+    # 逐次ループが読む画像/クレジットを先に並列で温める(キャッシュが冷えていると
+    # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
+    _prefetch_image_assets(words, cache)
     for i, (start, end, data, use_fallback) in enumerate(words):
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
-        if raw is None and not any(layout.render_texts(data, use_fallback)):
-            continue  # 画像が取れずテキストもないフレームは出さない
+        if raw is None:
+            # 画像が取得できなかった既知語も未知語と同じ文字フレームに落とす
+            use_fallback = effective_fallback(layout, data, use_fallback, has_image=False)
+            if not any(layout.render_texts(data, use_fallback)):
+                continue  # 画像が取れずテキストもないフレームは出さない
         # 画像クレジット文言: 単語リストのimage_credit列があればそれを、なければ
         # Commonsから取得(表記不要な画像では空になり、フレームには描かれない)
         if raw is not None and url and not str(data.get("image_credit") or "").strip():
@@ -375,12 +448,20 @@ def _to_hiragana(text: str) -> str:
     return "".join(_KATA_TO_HIRA.get(ch, ch) for ch in text)
 
 
-def _needs_ruby(surface: str, kana: str) -> bool:
-    """この単語にルビを振るべきか(表記がすでにカナで読みと同じなら不要)。
+def _is_all_kana(text: str) -> bool:
+    return all(ch in _KANA_CHARS for ch in text)
 
-    ひらがな/カタカナ・長音表記のゆれを吸収してから比較する。
+
+def _needs_ruby(surface: str, kana: str) -> bool:
+    """この単語にルビを振るべきか。
+
+    表記が全部カナなら読みは表記から自明なのでルビ不要(カタカナ表記に
+    ひらがなルビを重ねない)。カナ以外(漢字等)を含む場合は、ひらがな/
+    カタカナ・長音表記のゆれを吸収したうえで読みと違うときだけ振る。
     """
     if not surface or not kana:
+        return False
+    if _is_all_kana(surface):
         return False
     a = normalize_long_vowels(_to_katakana(surface))
     b = normalize_long_vowels(_to_katakana(kana))
