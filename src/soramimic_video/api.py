@@ -146,6 +146,20 @@ class Job:
         return d
 
 
+def _download_filename(job: Job) -> str:
+    """曲名・単語リスト入りのダウンロード名。落とした後もどのジョブか分かるように。"""
+
+    def clean(value: str) -> str:
+        return re.sub(r'[\\/:*?"<>|\s]+', "_", value).strip("_")[:40]
+
+    # Path.stem だと曲名中の「/」でパス扱いになるので拡張子だけ正規表現で落とす
+    song = clean(re.sub(r"\.[^.]*$", "", job.params.get("midi_filename") or ""))
+    if job.video is not None and job.video.suffix == ".wav":  # プレビュー(歌声のみ)
+        return "_".join(filter(None, ["preview", song, job.id])) + ".wav"
+    wordlist = clean(job.params.get("wordlist") or "")
+    return "_".join(filter(None, ["soramimic", song, wordlist, job.id])) + ".mp4"
+
+
 class _JobLogHandler(logging.Handler):
     """パイプラインのログをジョブごとに取り込む(ワーカーは1本なので混線しない)。"""
 
@@ -758,10 +772,11 @@ def create_app(
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
         editor_bytes = None
+        editor_payload: Any = None
         if editor is not None and editor.filename:
             editor_bytes = await editor.read()
             try:
-                json.loads(editor_bytes)
+                editor_payload = json.loads(editor_bytes)
             except json.JSONDecodeError as exc:
                 raise HTTPException(
                     status_code=400, detail="editorのJSONが読めません"
@@ -796,6 +811,15 @@ def create_app(
             auto_octave = (
                 voicevox_auto_octave if voicevox_auto_octave is not None else True
             )
+        wordlist = wordlist.strip()
+        # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
+        # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
+        if isinstance(editor_payload, dict):
+            from .editor_io import _resolve_preview_wordlist
+
+            resolved = _resolve_preview_wordlist(editor_payload, wordlist or None)
+            if resolved:
+                wordlist = Path(resolved).stem if resolved.endswith(".csv") else resolved
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
@@ -803,7 +827,7 @@ def create_app(
             "auto_octave": auto_octave,
             "transpose": transpose,
             "preview": max(0.0, min(preview, 60.0)),
-            "wordlist": wordlist.strip(),
+            "wordlist": wordlist,
             "where": where.strip(),
             "convert_params": convert_params.strip(),
             "layout": layout,
@@ -834,10 +858,10 @@ def create_app(
             raise HTTPException(status_code=409, detail="動画はまだできていません")
         if job.video.suffix == ".wav":  # プレビュー(歌声のみ)
             return FileResponse(
-                job.video, media_type="audio/wav", filename=f"preview_{job.id}.wav"
+                job.video, media_type="audio/wav", filename=_download_filename(job)
             )
         return FileResponse(
-            job.video, media_type="video/mp4", filename=f"soramimic_{job.id}.mp4"
+            job.video, media_type="video/mp4", filename=_download_filename(job)
         )
 
     # ---- 同梱editor(/editor/)向けの配信・シード(A-2) ----
