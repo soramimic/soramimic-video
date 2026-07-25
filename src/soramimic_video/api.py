@@ -843,7 +843,8 @@ def create_app(
     # ---- 同梱editor(/editor/)向けの配信・シード(A-2) ----
     # 以下のルートは StaticFiles マウントより前に登録して優先させる
     # (単語リストは submodule内のダミーではなく external/soramimic-wordlists の
-    #  正データを、kuromoji辞書は Content-Encoding を付けず素のバイナリで返す)。
+    #  正データを、confは dist のスナップショットではなくソース側を、
+    #  kuromoji辞書は Content-Encoding を付けず素のバイナリで返す)。
 
     @app.get("/editor/wordlists/{name}.csv")
     def editor_wordlist(name: str) -> FileResponse:
@@ -864,6 +865,24 @@ def create_app(
                 status_code=404, detail="単語リストが見つかりません"
             ) from exc
         return FileResponse(path, media_type="text/csv")
+
+    @app.get("/editor/conf/setting.json")
+    def editor_setting_json() -> FileResponse:
+        """editorのconf(setting.json)をソース側の正データから返す。
+
+        dist側の conf はビルド時にコピーされたスナップショットで古いことが
+        あり、後から追加された単語リスト(youtuber等)が選択肢に出ない。
+        external/soramimic/conf/setting.json を優先し、無ければ dist の
+        conf にフォールバックする。
+        """
+        from .editor_io import SETTING_JSON
+
+        path = SETTING_JSON
+        if not path.is_file():
+            path = editor_root / "conf" / "setting.json"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="設定が見つかりません")
+        return FileResponse(path, media_type="application/json")
 
     @app.get("/editor/kuromoji/dict/{name}")
     def editor_kuromoji_dict(name: str) -> FileResponse:
