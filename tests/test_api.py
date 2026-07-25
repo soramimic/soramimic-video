@@ -466,6 +466,41 @@ def test_layout_json_saved_to_job_dir(client):
     assert (manager.jobs[job_id].dir / "layout.json").read_text(encoding="utf-8") == spec
 
 
+def test_editor_job_records_wordlist(client):
+    # editor JSON側の単語リスト指定がフォーム選択より優先されて履歴(params)に残る
+    from soramimic_video.convert import resolve_wordlist
+
+    try:
+        resolve_wordlist("stations")
+    except FileNotFoundError:
+        pytest.skip("external/soramimic-wordlists のsubmoduleが無い環境")
+    editor = b'{"wordlist": {"filepath": "wordlists/stations.csv"}}'
+    job_id = submit(client, editor=editor, wordlist="pokemon")
+    body = wait_done(client, job_id)
+    assert body["params"]["wordlist"] == "stations"
+
+
+def test_download_filename_includes_song_and_wordlist(client):
+    job_id = submit(client, wordlist="stations")
+    body = wait_done(client, job_id)
+    res = client.get(body["video_url"])
+    assert f"soramimic_song_stations_{job_id}.mp4" in res.headers["content-disposition"]
+
+
+def test_download_filename_sanitizes():
+    job = api_mod.Job(
+        id="abc", dir=Path("/tmp"),
+        params={"midi_filename": "ふる/さと.mid", "wordlist": "pokemon"},
+    )
+    job.video = Path("out.mp4")
+    assert api_mod._download_filename(job) == "soramimic_ふる_さと_pokemon_abc.mp4"
+    job.video = Path("out.wav")  # プレビューは単語リストを使わない
+    assert api_mod._download_filename(job) == "preview_ふる_さと_abc.wav"
+    job.params = {}
+    job.video = Path("out.mp4")
+    assert api_mod._download_filename(job) == "soramimic_abc.mp4"
+
+
 def test_video_not_ready(client, monkeypatch):
     # 実行前に取りに来たら409
     slow = api_mod.run_pipeline

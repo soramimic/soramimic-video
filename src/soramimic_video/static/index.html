@@ -400,10 +400,18 @@ async function loadHistory() {
   if (!res.ok) return [];
   const jobs = await res.json();
   if (!jobs.length) { $("history-body").textContent = "まだありません"; return jobs; }
-  $("history-body").innerHTML = "<table><tr><th>ID</th><th>日時</th><th>状態</th><th></th></tr>" +
-    jobs.map((j) => `<tr><td>${j.id}</td><td>${j.created_at.replace("T", " ")}</td>` +
-      `<td>${j.status}${j.total_seconds ? ` (${Math.round(j.total_seconds)}秒)` : ""}</td>` +
-      `<td>${j.video_url ? `<a href="${qs(j.video_url)}">${j.result_kind === "audio" ? "音声" : "動画"}</a>` : ""}</td></tr>`).join("") +
+  $("history-body").innerHTML = "<table><tr><th>ID</th><th>日時</th><th>曲</th><th>単語リスト</th><th>状態</th><th></th></tr>" +
+    jobs.map((j) => {
+      const p = j.params || {};
+      const song = (p.midi_filename || "").replace(/\.midi?$/i, "");
+      // プレビューは元歌詞のまま歌わせるので単語リストは使われない
+      const wordlist = p.preview > 0 ? "(プレビュー)"
+        : (p.wordlist || "") + (p.where ? ` (${p.where})` : "");
+      return `<tr><td>${j.id}</td><td>${j.created_at.replace("T", " ")}</td>` +
+        `<td>${escapeHtml(song)}</td><td>${escapeHtml(wordlist)}</td>` +
+        `<td>${j.status}${j.total_seconds ? ` (${Math.round(j.total_seconds)}秒)` : ""}</td>` +
+        `<td>${j.video_url ? `<a href="${qs(j.video_url)}">${j.result_kind === "audio" ? "音声" : "動画"}</a>` : ""}</td></tr>`;
+    }).join("") +
     "</table>";
   return jobs;
 }
