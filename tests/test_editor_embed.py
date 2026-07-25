@@ -2,11 +2,13 @@
 
 - POST /api/editor-session: MIDI+単語リスト→変換済みeditorセッションJSON
 - GET /editor/wordlists/{name}.csv: editorのDB構築が取りに来る単語リスト
+- GET /editor/conf/setting.json: editorのconf(ソース側の正データ)
 - GET /api/config の editor 可否フラグ(dist の有無で切り替わる)
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -110,6 +112,19 @@ def test_wordlist_csv_route(client, tmp_path, monkeypatch):
     assert "静岡" in res.text
 
     assert client.get("/editor/wordlists/unknown.csv").status_code == 404
+
+
+def test_setting_json_from_source_conf(client):
+    """/editor/conf/setting.json は dist ではなくソース側の conf を返す。"""
+    from soramimic_video.editor_io import SETTING_JSON
+
+    if not SETTING_JSON.is_file():
+        pytest.skip("external/soramimic のsubmoduleが無い環境")
+
+    res = client.get("/editor/conf/setting.json")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("application/json")
+    assert res.json() == json.loads(SETTING_JSON.read_text(encoding="utf-8"))
 
 
 def test_config_editor_flag_true(tmp_path):
