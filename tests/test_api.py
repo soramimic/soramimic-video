@@ -468,6 +468,12 @@ def test_layout_json_saved_to_job_dir(client):
 
 def test_editor_job_records_wordlist(client):
     # editor JSON側の単語リスト指定がフォーム選択より優先されて履歴(params)に残る
+    from soramimic_video.convert import resolve_wordlist
+
+    try:
+        resolve_wordlist("stations")
+    except FileNotFoundError:
+        pytest.skip("external/soramimic-wordlists のsubmoduleが無い環境")
     editor = b'{"wordlist": {"filepath": "wordlists/stations.csv"}}'
     job_id = submit(client, editor=editor, wordlist="pokemon")
     body = wait_done(client, job_id)
