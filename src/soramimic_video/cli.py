@@ -192,6 +192,29 @@ def cmd_video(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prewarm_images(args: argparse.Namespace) -> int:
+    import os
+
+    from .prewarm import prewarm_images
+
+    if args.cache_dir:
+        cache_dir = Path(args.cache_dir)
+    else:
+        # 既定はAPIの共有画像キャッシュ(work/api-jobs/image-cache)に揃える。
+        # SORAMIMIC_VIDEO_IMAGE_CACHE が設定されていればそちらを優先(video側と同じ挙動)
+        cache_dir = Path(
+            os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or "work/api-jobs/image-cache"
+        )
+    summary = prewarm_images(
+        [Path(p) for p in args.csv], cache_dir, delay=args.delay
+    )
+    print(
+        f"prewarm完了: 取得 {summary['fetched']} / スキップ {summary['skipped']} / "
+        f"失敗 {summary['failed']} (URL計 {summary['total']}) -> {cache_dir}"
+    )
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -374,6 +397,21 @@ def build_parser() -> argparse.ArgumentParser:
         "(書き方は examples/layouts/ と layout.py 冒頭を参照)",
     )
     p.set_defaults(func=cmd_video)
+
+    p = sub.add_parser(
+        "prewarm-images",
+        help="単語リストCSVの画像を画像キャッシュへ事前ダウンロードする",
+    )
+    p.add_argument("csv", nargs="+", help="単語リストCSV(複数可)。image列のhttp(s) URLが対象")
+    p.add_argument(
+        "--cache-dir",
+        help="画像キャッシュの場所(既定は SORAMIMIC_VIDEO_IMAGE_CACHE か "
+        "work/api-jobs/image-cache)",
+    )
+    p.add_argument(
+        "--delay", type=float, default=1.0, help="リクエスト間の待機秒(既定1.0)"
+    )
+    p.set_defaults(func=cmd_prewarm_images)
 
     p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
     p.add_argument("--host", default="127.0.0.1", help="LANに公開するなら 0.0.0.0")
