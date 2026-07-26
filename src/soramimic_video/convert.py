@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .kana import split_fine_moras, split_moras
+from .kana import split_fine_moras, split_moras, vowel_of
 from .project import Parody, ParodyLine, ParodyWord, Project
 from .soramimic_engine import run_convert
 
@@ -300,18 +300,21 @@ _SOKUON = "ッ"
 # (ラグナット→ラ|グ|ナ|ット)。代わりに要素列を音符数個の連続非空区間に分割し、
 # 各音符へ順に載せる分割をDPで選ぶ(全音符が実音を持ち、促音ッが音符頭に来ない)。
 # 区間先頭要素は _pair_score(母音一致優先)、2要素目以降は「脱落系モーラ
-# (ッ/ン/ー/エイ・オウ連鎖のイ・ウ)」や「元音符が複数モーラ(ダッ/テイ等の
-# 閉音節・長音)」ほど載せやすいボーナスで評価する。
+# (ッ/ン/ー/エイ・オウ連鎖のイ・ウ)」ほど載せやすいボーナスで評価する
+# (複合ノート ダッ/テイ への積みボーナスは、積む要素が脱落系のときだけ)。
 
 # 脱落系モーラを同一音符へ積む優先ボーナス。母音一致(1000)より小さくし、
 # 母音一致数を犠牲にしてまで脱落系ペアを作らない。
 _STACK_BONUS = 200
-# 元音符が複数モーラ(閉音節・長音)のとき、その音符へ積む追加ボーナス
+# 元音符が複数モーラ(閉音節・長音)のとき、その音符へ積む追加ボーナス。
+# 複合ノート(タイ・ダッ等)は実アタック1つなので、積む要素が脱落系(ッ/ン/ー/
+# エイ・オウ連鎖のイ・ウ)のときだけ与える。実音節の積みは優遇しない
+# (溢れ時に積むこと自体は依然可能)
 _STACK_NOTE_BONUS = 100
-# 音符の元モーラ数(容量)に対する超過1音節あたりのペナルティ。
+# 音符のアタック数(容量)に対する超過1音節あたりのペナルティ。
 # 母音一致(1000)より重くし、詰め込みは母音が合っても避ける
 _CAP_OVER_PENALTY = 1200
-# 載せる音節数が元モーラ数と一致したときのボーナス(配分の鏡写しを優遇)。
+# 載せる音節数が音符のアタック数と一致したときのボーナス(配分の鏡写しを優遇)。
 # 脱落系スタックボーナス(200)より小さくし、マン・クン等の閉音節ペアを
 # 容量一致のために引き剥がさない
 _CAP_MATCH_BONUS = 50
@@ -377,6 +380,46 @@ def _bunsetsu_head_flags(surfaces: list[str]) -> list[bool] | None:
     return flags
 
 
+def _stack_bonus(elem_drop: bool, note_multi: bool) -> int:
+    """区間2要素目以降(=同じ音符に積む要素)のボーナス。
+
+    脱落系モーラ(ッ/ン/ー/エイ・オウ連鎖のイ・ウ)は音符へ積んでも実アタックが
+    増えないので優遇する。複合ノート(ダッ/テイ等)への追加ボーナスも脱落系限定:
+    複合ノートも実アタックは1つで、実音節を積めば原曲に無い発音が音符の途中に
+    立つため、積みを推奨しない(溢れ時に積むこと自体は依然可能)。
+    """
+    if not elem_drop:
+        return 0
+    return _STACK_BONUS + (_STACK_NOTE_BONUS if note_multi else 0)
+
+
+def _note_attacks(kana: str) -> int:
+    """音符カナの実アタック数(=載せられる実音節数の目安)。
+
+    複合ノート(タイ・コイ・マン・ダッ等)は元歌でも1回の発音で歌われ、2モーラ目は
+    短い渡り・閉じ音でしかない。モーラ数をそのまま容量にすると「2音節入る容器」と
+    誤認して積みを誘発し、合成側でノート中央に2音節目が立って遅れて聞こえる。
+    2モーラ目以降が添えかな(二重母音のイ/ウ・撥音ン・促音ッ)なら数えない。
+    小書きカナ・長音ーは split_moras が直前へ結合するのでここには現れない。
+    """
+    moras = split_moras(kana)
+    cnt = 0
+    for i, m in enumerate(moras):
+        if i > 0 and _tail_mora(m, moras[i - 1]):
+            continue
+        cnt += 1
+    return max(1, cnt)
+
+
+def _tail_mora(mora: str, prev: str) -> bool:
+    """直前モーラと同じアタックで歌われる添えかなか(ン・ッ・二重母音のイ/ウ)。"""
+    if mora in ("ン", _SOKUON):
+        return True
+    if mora in ("イ", "ウ"):  # 母音単独のイ/ウのみ(キ・ル等は独立アタック)
+        return vowel_of(prev) is not None
+    return False
+
+
 def _held_note(kana: str) -> bool:
     """ハァ・セェ・オー のような「1音節を引き伸ばした」音符かどうか。
     2文字目以降がすべて小書き母音か長音なら True(ダッ/ナン/テイは False)。"""
@@ -396,7 +439,7 @@ def _overflow_alloc(
 
     dp[j][t] = 先頭 j 要素を先頭 t 音符に割り当てた最良スコア。
     区間が促音ッで始まる分割は閉音節ペアの分断なので不可。区間の評価は
-    先頭要素の _pair_score(母音一致優先)に加え、音符の元モーラ数(容量)への
+    先頭要素の _pair_score(母音一致優先)に加え、音符のアタック数(容量)への
     一致・超過、引き伸ばしノートへの積み込み、二重母音の結合を加点減点する。
     note_durs(音符の長さ秒。省略時は長さ由来の項が無効=後方互換)があれば、
     行内中央値より短い音符への容量超過を追加減点し、十分長い音符では
@@ -407,8 +450,15 @@ def _overflow_alloc(
     if n <= k or k == 0:
         return None
 
-    note_caps = [max(1, len(split_moras(kana))) for kana in id_kanas]
+    # 容量はモーラ数ではなくアタック数(タイ・マン等の複合ノートは1)
+    note_caps = [_note_attacks(kana) for kana in id_kanas]
     note_held = [_held_note(kana) for kana in id_kanas]
+    # 添えかな付きの複合ノート(タイ・ウッ等)。引き伸ばしノートと同じく、替え歌側の
+    # 二重母音(アイ・オイ)は添えかなの位置に収まるので1音節として数える
+    note_compound = [
+        len(split_moras(kana)) > cap
+        for kana, cap in zip(id_kanas, note_caps, strict=True)
+    ]
     if note_durs is not None and len(note_durs) == k:
         med = sorted(note_durs)[k // 2] or 0.0
         note_short = [med > 0 and dur < 0.6 * med for dur in note_durs]
@@ -432,7 +482,7 @@ def _overflow_alloc(
     def eff_moras(a: int, b: int, allow_diph: bool) -> int:
         """区間 [a,b) の実効音節数。「ー」と区間末尾の「ン」は引き伸ばし・
         ハミングとしてどの音符でも自然に歌えるため容量に数えない
-        (サー=1、マン=1、ゼニ=2)。allow_diph のとき(引き伸ばしノート)は
+        (サー=1、マン=1、ゼニ=2)。allow_diph のとき(引き伸ばし・複合ノート)は
         二重母音のイ/ウ(オイ・コウ等)も直前と同音節として数えない。"""
         cnt = 0
         for j in range(a, b):
@@ -449,15 +499,12 @@ def _overflow_alloc(
         if heads[a].startswith(_SOKUON):
             return None
         s = _pair_score(heads[a], id_kanas[t], elem_drop[a], note_drop[t])
-        note_multi = note_caps[t] >= 2
+        note_multi = len(split_moras(id_kanas[t])) >= 2
         for j in range(a + 1, b):
-            if elem_drop[j]:
-                s += _STACK_BONUS
-            if note_multi:
-                s += _STACK_NOTE_BONUS
+            s += _stack_bonus(elem_drop[j], note_multi)
             if diph[j]:  # 二重母音を同じ音符で保つ
                 s += _DIPHTHONG_BONUS
-        moras = eff_moras(a, b, note_held[t])
+        moras = eff_moras(a, b, note_held[t] or note_compound[t])
         over = max(0, moras - note_caps[t])
         s -= _CAP_OVER_PENALTY * over
         if moras == note_caps[t]:
