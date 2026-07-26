@@ -194,6 +194,34 @@ def test_build_score_short_note_falls_back_to_even_split():
     assert min(lengths) * 2 >= max(lengths)  # ほぼ均等
 
 
+def test_stacked_mora_mode_back(monkeypatch):
+    # back: 先頭モーラが伸ばしを持ち、後続を固定アタック長で末尾に置く(たーい型)
+    monkeypatch.setenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "back")
+    score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
+    lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
+    attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
+    total = round(0.675 * FRAME_RATE)
+    assert lengths == [total - attack, attack]
+    # 短い音符は front と同じく均等へフォールバック
+    score = build_score(_project([_note(0, 60, 0.0, 0.2, "タリ")]))
+    lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
+    assert min(lengths) * 2 >= max(lengths)
+
+
+def test_stacked_mora_mode_first(monkeypatch):
+    # first: 最初のモーラだけを発音して音符いっぱいに伸ばす
+    monkeypatch.setenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "first")
+    score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
+    pitched = [n for n in score["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["タ"]
+    assert pitched[0]["frame_length"] == round(0.675 * FRAME_RATE)
+
+
+def test_stacked_mora_mode_unknown_falls_back_to_front(monkeypatch):
+    monkeypatch.setenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "bogus")
+    assert vv.stacked_mora_mode() == "front"
+
+
 def test_mora_frame_bounds_edges():
     attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
     min_final = round(vv.MIN_LAST_MORA_SEC * FRAME_RATE)
