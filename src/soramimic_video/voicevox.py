@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import time
 import wave
 from collections.abc import Callable
@@ -157,20 +158,36 @@ def split_voicevox_moras(kana: str) -> list[str]:
     return out
 
 
+def stacked_mora_mode() -> str:
+    """1音符複数モーラ時の配分方式。環境変数で聴き比べ実験ができる。
+
+    - front(既定): 前詰め。非最終モーラを短く頭に並べ、最終モーラの母音を伸ばす
+      (「たいー」型)
+    - back: 後ろ寄せ。先頭モーラが伸ばしを持ち、2モーラ目以降を短く末尾に置く
+      (「たーい」型)
+    - first: 最初のモーラだけ発音し、残りは落とす(1音符は結局1アタックという説)
+    """
+    mode = os.environ.get("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "").strip().lower()
+    return mode if mode in ("back", "first") else "front"
+
+
 def mora_frame_bounds(total: int, m: int) -> list[int]:
     """1音符(total フレーム)へ m モーラを載せるときの境界(0..total, 長さ m+1)。
 
-    前詰め: 非最終モーラは STACKED_MORA_ATTACK_SEC の固定長で頭から並べ、
-    最終モーラが残りを全部持つ(母音を伸ばす)。非最終モーラぶんを引いて
-    最終モーラに MIN_LAST_MORA_SEC を確保できない短い音符では、音節が潰れるので
-    均等割りに戻す。
+    front: 非最終モーラは STACKED_MORA_ATTACK_SEC の固定長で頭から並べ、
+    最終モーラが残りを全部持つ(母音を伸ばす)。back はその鏡像で、先頭モーラが
+    残りを持ち、後続モーラを固定長で末尾に並べる。固定長ぶんを引いて残りに
+    MIN_LAST_MORA_SEC を確保できない短い音符では、音節が潰れるので均等割りに戻す。
     """
     if m <= 1:
         return [0, total]
     attack = max(1, round(STACKED_MORA_ATTACK_SEC * FRAME_RATE))
-    min_final = max(1, round(MIN_LAST_MORA_SEC * FRAME_RATE))
-    if total < attack * (m - 1) + min_final:
+    min_hold = max(1, round(MIN_LAST_MORA_SEC * FRAME_RATE))
+    if total < attack * (m - 1) + min_hold:
         return [round(total * i / m) for i in range(m + 1)]
+    if stacked_mora_mode() == "back":
+        head = total - attack * (m - 1)
+        return [0] + [head + attack * i for i in range(m)]
     return [attack * i for i in range(m)] + [total]
 
 
@@ -229,6 +246,8 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         morae = split_voicevox_moras(kana)
         if not morae:  # カナが無い継続モーラ等: 直前の母音を引き継ぐ
             morae = [prev_vowel]
+        if len(morae) > 1 and stacked_mora_mode() == "first":
+            morae = morae[:1]  # 最初のモーラだけ発音し、音符いっぱいに伸ばす
         total = ef - sf
         m = len(morae)
         bounds = mora_frame_bounds(total, m)
