@@ -184,14 +184,32 @@ def test_build_score_three_moras_back_loaded():
     assert lengths == [total - 2 * attack, attack, attack]
 
 
-def test_build_score_short_note_falls_back_to_even_split():
-    # 200msに2モーラ: 前詰め(160ms)だと最終モーラが約40msで潰れるため均等割りへ
+def test_build_score_short_note_scales_attack_by_ratio():
+    # 200msに2モーラ: 返しは固定160msではなくノート長の30%(約64ms)に縮む
     score = build_score(_project([_note(0, 60, 0.0, 0.2, "タリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     total = round(0.2 * FRAME_RATE)
     assert sum(lengths) == total
-    assert lengths == [total - total // 2, total // 2]
-    assert min(lengths) * 2 >= max(lengths)  # ほぼ均等
+    attack = round(total * vv.STACKED_MORA_ATTACK_MAX_RATIO)
+    assert lengths == [total - attack, attack]
+
+
+def test_build_score_desu_note_keeps_short_return():
+    # うっせぇわ「デス」実例: 336msノートに ゲ+ツ。固定160msだとほぼ等分に
+    # 聞こえるため、返しはノート長の30%(約100ms)に縮めて 主音長め+短い返し にする
+    score = build_score(_project([_note(0, 83, 0.0, 0.336, "ゲツ")]))
+    lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
+    total = round(0.336 * FRAME_RATE)
+    attack = round(total * vv.STACKED_MORA_ATTACK_MAX_RATIO)
+    assert lengths == [total - attack, attack]
+    assert lengths[0] > lengths[1] * 2  # 等分には聞こえない
+
+
+def test_build_score_tiny_note_falls_back_to_even_split():
+    # 極端に短い音符(比率キャップ後でも伸ばし側が確保できない)は均等割りへ
+    total = 7  # 7フレーム(約75ms): attack=2, min_hold=6 で 2+6 > 7
+    bounds = vv.mora_frame_bounds(total, 2, "back")
+    assert bounds == [0, round(total / 2), total]
 
 
 def test_stacked_mora_mode_front(monkeypatch):
@@ -202,10 +220,12 @@ def test_stacked_mora_mode_front(monkeypatch):
     attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
     total = round(0.675 * FRAME_RATE)
     assert lengths == [attack, total - attack]
-    # 短い音符は back と同じく均等へフォールバック
+    # 短い音符は back と同様に返しがノート長の30%へ縮む(頭側に置かれる)
     score = build_score(_project([_note(0, 60, 0.0, 0.2, "タリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
-    assert min(lengths) * 2 >= max(lengths)
+    short_total = round(0.2 * FRAME_RATE)
+    short_attack = round(short_total * vv.STACKED_MORA_ATTACK_MAX_RATIO)
+    assert lengths == [short_attack, short_total - short_attack]
 
 
 def test_stacked_mora_mode_first(monkeypatch):
@@ -247,15 +267,15 @@ def test_mora_frame_bounds_edges():
     attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
     min_final = round(vv.MIN_LAST_MORA_SEC * FRAME_RATE)
     assert vv.mora_frame_bounds(63, 1) == [0, 63]
+    # 63フレーム(672ms)では比率キャップ(30%=19)より固定160ms(15)が小さい
     assert vv.mora_frame_bounds(63, 2) == [0, 63 - attack, 63]
-    # 伸ばし側に MIN_LAST_MORA_SEC を確保できる境目までは後ろ寄せ
+    # 短いノートでは返しが30%に縮み、その分後ろ寄せが維持される
     edge = attack + min_final
-    assert vv.mora_frame_bounds(edge, 2) == [0, min_final, edge]
-    assert vv.mora_frame_bounds(edge - 1, 2) == [
-        0,
-        round((edge - 1) / 2),
-        edge - 1,
-    ]
+    ratio_attack = round(edge * vv.STACKED_MORA_ATTACK_MAX_RATIO)
+    assert vv.mora_frame_bounds(edge, 2) == [0, edge - ratio_attack, edge]
+    prev = edge - 1
+    prev_attack = round(prev * vv.STACKED_MORA_ATTACK_MAX_RATIO)
+    assert vv.mora_frame_bounds(prev, 2) == [0, prev - prev_attack, prev]
 
 
 def test_build_score_clips_overlap():

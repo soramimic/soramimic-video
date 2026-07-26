@@ -42,7 +42,11 @@ LEAD_REST_FRAMES = max(2, round(0.3 * FRAME_RATE))
 # ど真ん中に立ち「遅れた別の音節」に聞こえるため、短い固定アタック長のモーラと
 # 伸ばしを持つモーラに分ける。並べ方(どちらを伸ばすか)は stacked_mora_mode 参照
 # (既定は後ろ寄せ=「たーい」型。先頭モーラが伸ばしを持ち、後続を短く末尾に置く)。
-STACKED_MORA_ATTACK_SEC = 0.16  # 短いモーラ1つあたりの長さ
+STACKED_MORA_ATTACK_SEC = 0.16  # 短いモーラ1つあたりの長さ(上限)
+# 短いモーラがノートに占める割合の上限。固定160msだと短いノート(例:「デス」336ms)
+# で返しが半分近くを占めて等分に聞こえるため、ノート長に応じて縮める
+# (336ms→約100ms。本家の「でーす」のような 主音長め+短い返し になる)
+STACKED_MORA_ATTACK_MAX_RATIO = 0.3
 # 伸ばしを持つモーラの最短長(秒)。短いモーラぶんを引いてこれを確保できない
 # 短い音符では音節が潰れるので均等割りへフォールバックする
 MIN_LAST_MORA_SEC = 0.06
@@ -184,10 +188,11 @@ def _resolve_stacked_mode(gap_after_sec: float) -> str:
 def mora_frame_bounds(total: int, m: int, mode: str | None = None) -> list[int]:
     """1音符(total フレーム)へ m モーラを載せるときの境界(0..total, 長さ m+1)。
 
-    front: 非最終モーラは STACKED_MORA_ATTACK_SEC の固定長で頭から並べ、
-    最終モーラが残りを全部持つ(母音を伸ばす)。back はその鏡像で、先頭モーラが
-    残りを持ち、後続モーラを固定長で末尾に並べる。固定長ぶんを引いて残りに
-    MIN_LAST_MORA_SEC を確保できない短い音符では、音節が潰れるので均等割りに戻す。
+    front: 非最終モーラは短い固定長(STACKED_MORA_ATTACK_SEC、ただしノート長の
+    STACKED_MORA_ATTACK_MAX_RATIO まで)で頭から並べ、最終モーラが残りを全部持つ
+    (母音を伸ばす)。back はその鏡像で、先頭モーラが残りを持ち、後続モーラを
+    固定長で末尾に並べる。固定長ぶんを引いて残りに MIN_LAST_MORA_SEC を確保
+    できない短い音符では、音節が潰れるので均等割りに戻す。
     mode未指定は環境変数から(autoは音符間の間隔を知れないのでbackとして扱う)。
     """
     if m <= 1:
@@ -196,7 +201,13 @@ def mora_frame_bounds(total: int, m: int, mode: str | None = None) -> list[int]:
         mode = stacked_mora_mode()
         if mode in ("auto", "first"):  # firstの間引きは呼び出し側(build_score)の責務
             mode = "back"
-    attack = max(1, round(STACKED_MORA_ATTACK_SEC * FRAME_RATE))
+    attack = max(
+        1,
+        min(
+            round(STACKED_MORA_ATTACK_SEC * FRAME_RATE),
+            round(total * STACKED_MORA_ATTACK_MAX_RATIO),
+        ),
+    )
     min_hold = max(1, round(MIN_LAST_MORA_SEC * FRAME_RATE))
     if total < attack * (m - 1) + min_hold:
         return [round(total * i / m) for i in range(m + 1)]
