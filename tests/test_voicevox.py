@@ -161,8 +161,8 @@ def test_build_score_splits_multimora_note_across_frames():
 
 def test_build_score_back_loads_stacked_moras_by_default():
     # Lemon「嘘みたい」実例: 675msの複合ノートに タ+リ が載る。均等割りだと
-    # リが音符のど真ん中(+338ms)に立って「遅れた別音節」に聞こえる。既定は
-    # 後ろ寄せ(タが伸ばしを持ち、リは固定160msの短い返しで末尾)=「たーい」型
+    # リが音符のど真ん中(+338ms)に立って「遅れた別音節」に聞こえる。最終音符は
+    # 後ろが無音(auto既定でback)なので、タが伸ばし・リは160msの短い返し=「たーい」型
     score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
     pitched = [n for n in score["notes"] if n["key"] is not None]
     assert [n["lyric"] for n in pitched] == ["タ", "リ"]
@@ -219,9 +219,28 @@ def test_stacked_mora_mode_first(monkeypatch):
 
 def test_stacked_mora_mode_unknown_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "bogus")
-    assert vv.stacked_mora_mode() == "back"
+    assert vv.stacked_mora_mode() == "auto"
     monkeypatch.delenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE")
-    assert vv.stacked_mora_mode() == "back"
+    assert vv.stacked_mora_mode() == "auto"
+
+
+def test_auto_mode_drops_tail_when_next_note_is_close():
+    # 次の音符がすぐ続く(間<TAIL_GAP_MIN_SEC)複合ノートは first 相当(返しを落とす)
+    notes = [_note(0, 68, 0.0, 0.675, "タリ"), _note(1, 70, 0.7, 1.0, "ラ")]
+    score = build_score(_project(notes))
+    lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
+    assert lyrics == ["タ", "ラ"]
+
+
+def test_auto_mode_sings_tail_when_gap_follows():
+    # 後ろに間(>=TAIL_GAP_MIN_SEC)があれば back(短い返しを歌う)
+    notes = [_note(0, 68, 0.0, 0.675, "タリ"), _note(1, 70, 1.0, 1.5, "ラ")]
+    score = build_score(_project(notes))
+    lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
+    assert lyrics == ["タ", "リ", "ラ"]
+    attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
+    lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
+    assert lengths[1] == attack  # リは短い返し(末尾)
 
 
 def test_mora_frame_bounds_edges():

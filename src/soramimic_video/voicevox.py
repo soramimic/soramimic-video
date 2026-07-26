@@ -46,6 +46,10 @@ STACKED_MORA_ATTACK_SEC = 0.16  # 短いモーラ1つあたりの長さ
 # 伸ばしを持つモーラの最短長(秒)。短いモーラぶんを引いてこれを確保できない
 # 短い音符では音節が潰れるので均等割りへフォールバックする
 MIN_LAST_MORA_SEC = 0.06
+# autoモードで2モーラ目以降を歌う(back)条件となる、音符の後ろの無音の最短秒。
+# 実際の歌でも複合ノートの返し(たいの「イ」)を歌うのは後ろに間があるときで、
+# 次の音符がすぐ続く詰まったパッセージでは返しを挟む余裕がなく耳にも残らない
+TAIL_GAP_MIN_SEC = 0.1
 # 歌唱用の「歌の先生」スタイル(sing型)。クエリ生成に使う。frame_synthesisは
 # 選んだスタイル(frame_decode/sing)で行う。現状 sing型は 波音リツ ノーマル(6000)のみ。
 SING_TEACHER_ID = 6000
@@ -159,32 +163,47 @@ def split_voicevox_moras(kana: str) -> list[str]:
 def stacked_mora_mode() -> str:
     """1音符複数モーラ時の配分方式。環境変数で聴き比べ実験ができる。
 
-    - back(既定): 後ろ寄せ。先頭モーラが伸ばしを持ち、2モーラ目以降を短く末尾に
-      置く(「たーい」型)。Lemonでの聴き比べで最も自然だったため既定
+    - auto(既定): 音符の後ろの無音で per-note に切り替える。間(TAIL_GAP_MIN_SEC
+      以上)があれば back、次の音符がすぐ続くなら first
+    - back: 後ろ寄せ。先頭モーラが伸ばしを持ち、2モーラ目以降を短く末尾に
+      置く(「たーい」型)。Lemon「嘘みたい」の聴き比べで自然だった
     - front: 前詰め。非最終モーラを短く頭に並べ、最終モーラの母音を伸ばす
       (「たいー」型)
-    - first: 最初のモーラだけ発音し、残りは落とす(違和感は最少だが、替え歌の
-      モーラを歌い落とすため既定にしない)
+    - first: 最初のモーラだけ発音し、残りは落とす(詰まったパッセージで自然。
+      うっせぇわの聴き比べより)
     """
     mode = os.environ.get("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "").strip().lower()
-    return mode if mode in ("front", "first") else "back"
+    return mode if mode in ("front", "back", "first") else "auto"
 
 
-def mora_frame_bounds(total: int, m: int) -> list[int]:
+def _resolve_stacked_mode(gap_after_sec: float) -> str:
+    """この音符に適用する配分方式。autoは後ろの無音の長さでback/firstを選ぶ。"""
+    mode = stacked_mora_mode()
+    if mode != "auto":
+        return mode
+    return "back" if gap_after_sec >= TAIL_GAP_MIN_SEC else "first"
+
+
+def mora_frame_bounds(total: int, m: int, mode: str | None = None) -> list[int]:
     """1音符(total フレーム)へ m モーラを載せるときの境界(0..total, 長さ m+1)。
 
     front: 非最終モーラは STACKED_MORA_ATTACK_SEC の固定長で頭から並べ、
     最終モーラが残りを全部持つ(母音を伸ばす)。back はその鏡像で、先頭モーラが
     残りを持ち、後続モーラを固定長で末尾に並べる。固定長ぶんを引いて残りに
     MIN_LAST_MORA_SEC を確保できない短い音符では、音節が潰れるので均等割りに戻す。
+    mode未指定は環境変数から(autoは音符間の間隔を知れないのでbackとして扱う)。
     """
     if m <= 1:
         return [0, total]
+    if mode is None or mode == "auto":
+        mode = stacked_mora_mode()
+        if mode in ("auto", "first"):  # firstの間引きは呼び出し側(build_score)の責務
+            mode = "back"
     attack = max(1, round(STACKED_MORA_ATTACK_SEC * FRAME_RATE))
     min_hold = max(1, round(MIN_LAST_MORA_SEC * FRAME_RATE))
     if total < attack * (m - 1) + min_hold:
         return [round(total * i / m) for i in range(m + 1)]
-    if stacked_mora_mode() == "back":
+    if mode == "back":
         head = total - attack * (m - 1)
         return [0] + [head + attack * i for i in range(m)]
     return [attack * i for i in range(m)] + [total]
@@ -220,7 +239,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     def frame(sec: float) -> int:
         return round(sec * FRAME_RATE)
 
-    for n in notes:
+    for i, n in enumerate(notes):
         sf = frame(n.start_sec)
         ef = frame(n.end_sec)
         if sf < cursor:  # 重なり: 前音に食い込む分を切り詰め
@@ -245,11 +264,22 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         morae = split_voicevox_moras(kana)
         if not morae:  # カナが無い継続モーラ等: 直前の母音を引き継ぐ
             morae = [prev_vowel]
-        if len(morae) > 1 and stacked_mora_mode() == "first":
-            morae = morae[:1]  # 最初のモーラだけ発音し、音符いっぱいに伸ばす
+        gap_after = (
+            notes[i + 1].start_sec - n.end_sec if i + 1 < len(notes) else float("inf")
+        )
+        note_mode = _resolve_stacked_mode(gap_after)
+        if len(morae) > 1 and note_mode == "first":
+            # 最初のモーラ以降の「発音」は落とす。ただし長音由来の母音継続
+            # (ビー→[ビ,イ]のイ)は別アタックではないので残す(落とす意味もない)
+            kept = [morae[0]]
+            for mora in morae[1:]:
+                if mora != vowel_of(kept[-1]):
+                    break
+                kept.append(mora)
+            morae = kept
         total = ef - sf
         m = len(morae)
-        bounds = mora_frame_bounds(total, m)
+        bounds = mora_frame_bounds(total, m, note_mode)
         for i, mora in enumerate(morae):
             length = bounds[i + 1] - bounds[i]
             if length <= 0:  # モーラが多すぎてフレームが足りない場合は最低1
