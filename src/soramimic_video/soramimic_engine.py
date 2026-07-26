@@ -16,8 +16,14 @@ app(同梱辞書データ + fugashi/ipadic MeCab トークナイザ)の構築は
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+# 「行ごとのユニット列(音節単位)」から「行ごとのユニット重み列」を作る関数。
+# run_convert に渡すと、エンジン内部と同じユニット列を使って重みを計算できる
+# (トークナイズをやり直さずに済む)。None を返せば重み無し(従来動作)。
+UnitWeightsFunc = Callable[[list[list[dict[str, Any]]]], "list[list[float]] | None"]
 
 _base: dict[str, Any] | None = None  # 辞書データ(monotie行列)+ トークナイザ
 _apps: dict[str, Any] = {}  # r(小数2桁キー) → Soramimic インスタンス
@@ -84,6 +90,7 @@ def run_convert(
     wordlist_csv: Path,
     where: str | None,
     params: dict[str, Any],
+    weights_per_line: list[list[float]] | UnitWeightsFunc | None = None,
 ) -> dict:
     """bridge/convert.mjs と同じ入出力の変換。
 
@@ -91,6 +98,14 @@ def run_convert(
     editor 再生成用の tokensList・phrases を返す。
     params の VOWEL_RATIO は app の行列スケーリングに使い、本家 app.js と
     同様にそのままエンジンにも渡す(エンジン側では未知キーとして無害)。
+
+    weights_per_line: エンジンの generate_from_tokens にそのまま渡す
+        「行ごとのユニット位置別重み」(行の長さはその行の音節ユニット数)。
+        重みはターゲット側ユニットの一致距離だけに掛かり、行ごとに平均1へ
+        正規化される。None なら重み無しの従来動作と完全に同一。
+        重みの計算にユニット列そのものが要る場合は UnitWeightsFunc(callable)を
+        渡せる。エンジンが使うのと同じユニット列を引数に呼ばれるので、
+        MeCabトークナイズを二重に走らせずに済む。
     """
     params = params or {}
     app = _get_app(params.get("VOWEL_RATIO"))
@@ -99,6 +114,18 @@ def run_convert(
 
     # 生成画面(app.js)と同じ経路: トークナイズ → 生成
     tokens_list = app.text_analyzer.tokenize_together(phrases)
+
+    # callable が渡されたら、エンジンが内部で作るのと同じユニット列
+    # (get_yomi_and_phrase_break の結果)を先に作って重み計算に渡す。
+    # tokenize_together(MeCab)は上の1回きりで、ここでは走らない。
+    weights: list[list[float]] | None
+    if callable(weights_per_line):
+        units_per_line = [
+            app.text_analyzer.get_yomi_and_phrase_break(t) for t in tokens_list
+        ]
+        weights = weights_per_line(units_per_line)
+    else:
+        weights = weights_per_line
 
     units_list: list[list[dict[str, Any]]] = [[] for _ in phrases]
 
@@ -113,7 +140,9 @@ def run_convert(
             for u in tokenized_phrases[i]
         ]
 
-    results = app.soramimi_maker.generate_from_tokens(tokens_list, db, params, update_func)
+    results = app.soramimi_maker.generate_from_tokens(
+        tokens_list, db, params, update_func, weights_per_line=weights
+    )
 
     lines = [
         {"units": units_list[i], "words": [_json_safe(w) for w in words]}

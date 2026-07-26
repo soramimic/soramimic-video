@@ -2442,7 +2442,7 @@ wheels = [
 [[package]]
 name = "soramimic"
 version = "0.2.0"
-source = { git = "https://github.com/soramimic/soramimic-python?rev=4933ce629d68bb209bf2d5c3e2ae979cdf9b9919#4933ce629d68bb209bf2d5c3e2ae979cdf9b9919" }
+source = { git = "https://github.com/soramimic/soramimic-python?rev=de54e6352a0b9e0fa0c64ae386c493227ae2ddab#de54e6352a0b9e0fa0c64ae386c493227ae2ddab" }
 
 [package.optional-dependencies]
 mecab = [
@@ -2511,7 +2511,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.1" },
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.9" },
     { name = "requests", specifier = ">=2.31" },
-    { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=4933ce629d68bb209bf2d5c3e2ae979cdf9b9919" },
+    { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=de54e6352a0b9e0fa0c64ae386c493227ae2ddab" },
     { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi" },
     { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi" },
     { name = "torch", marker = "extra == 'audio'", specifier = ">=2.1" },

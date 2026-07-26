@@ -12,7 +12,10 @@ from soramimic_video.convert import (
     _paired_sokuon,
     apply_converted_lines,
     convert_project,
+    note_length_weights,
     parse_convert_params,
+    pop_note_length_weight,
+    unit_note_seconds,
 )
 from soramimic_video.kana import split_moras
 from soramimic_video.project import Line, Note, Project, SongInfo
@@ -826,3 +829,166 @@ def test_bunsetsu_head_flags():
     assert flags == [True, False, False, True, False, False]
     # surfaceが全て空(読みカナのみの入力)は機能オフ
     assert _bunsetsu_head_flags(["", "", ""]) is None
+
+
+# ---- ノート長由来の重み付け(NOTE_LENGTH_WEIGHT・soramimic-video独自) ----
+
+
+def test_pop_note_length_weight():
+    # 取り出すと元のdictからは消える(エンジンへ渡るparamsに漏らさない)
+    params = {"DUPLICATE": "false", "NOTE_LENGTH_WEIGHT": "0.5"}
+    assert pop_note_length_weight(params) == 0.5
+    assert params == {"DUPLICATE": "false"}
+    # 未指定・0・負値・数値でない値はすべて 0.0(=重み無し)
+    assert pop_note_length_weight({}) == 0.0
+    assert pop_note_length_weight({"NOTE_LENGTH_WEIGHT": "0"}) == 0.0
+    assert pop_note_length_weight({"NOTE_LENGTH_WEIGHT": "-1"}) == 0.0
+    assert pop_note_length_weight({"NOTE_LENGTH_WEIGHT": "abc"}) == 0.0
+    assert pop_note_length_weight({"NOTE_LENGTH_WEIGHT": "nan"}) == 0.0
+
+
+def test_parse_convert_params_carries_note_length_weight():
+    # UIが送る convert_params 文字列から拾えること(他のキーと同じ書式)
+    spec = "DUPLICATE=false\nVOWEL_RATIO=0.8\nNOTE_LENGTH_WEIGHT=0.7"
+    assert parse_convert_params(spec)["NOTE_LENGTH_WEIGHT"] == "0.7"
+
+
+def test_unit_note_seconds_long_short():
+    # 短-長-短 の音符列。1ユニット=1音符なので raw はそのまま音符の秒数
+    assert unit_note_seconds(
+        ["カ", "キ", "ク"], ["カ", "キ", "ク"], [0.2, 1.6, 0.2]
+    ) == [0.2, 1.6, 0.2]
+
+
+def test_unit_note_seconds_multi_kana_note():
+    # 複合音符「キャ」1つを2ユニット(キ/ャ)が分け合う → 両方がその長さを受け取る。
+    # 逆に1ユニットが複数音符にまたがる場合は合計になる。
+    assert unit_note_seconds(["キ", "ャ", "ク"], ["キャ", "ク"], [1.5, 0.3]) == [
+        1.5, 1.5, 0.3
+    ]
+    assert unit_note_seconds(["キャ", "ク"], ["キ", "ャ", "ク"], [1.0, 0.5, 0.3]) == [
+        1.5, 0.3
+    ]
+
+
+def test_unit_note_seconds_unmatched_unit_uses_line_mean():
+    # 音符側に対応が無いユニット(読みが余る)は行平均で埋め、重みを持たせない
+    raws = unit_note_seconds(["カ", "キ", "ク"], ["カ", "ク"], [0.2, 0.8])
+    assert raws[0] == 0.2 and raws[2] == 0.8
+    assert raws[1] == (0.2 + 0.8) / 2
+
+
+def test_note_length_weights_alpha():
+    kanas = ["カ", "キ", "ク"]
+    durs = [0.25, 4.0, 0.25]
+    # α=1 は raw そのまま。正規化(平均1)はエンジン側がやるのでここではしない
+    assert note_length_weights(kanas, kanas, durs, 1.0) == [0.25, 4.0, 0.25]
+    # α=0.5 は平方根、α=2 は二乗。αが大きいほど長短の差が開く
+    assert note_length_weights(kanas, kanas, durs, 0.5) == [0.5, 2.0, 0.5]
+    assert note_length_weights(kanas, kanas, durs, 2.0) == [0.0625, 16.0, 0.0625]
+
+
+def _weights_spy(monkeypatch) -> dict:
+    """convert.run_convert をラップして weights_per_line の実引数を記録する。"""
+    from soramimic_video import convert as convert_mod
+
+    real = convert_mod.run_convert
+    seen: dict = {}
+
+    def spy(phrases, csv_path, where, params, weights_per_line=None):
+        seen["params"] = params
+        seen["weights_per_line"] = weights_per_line
+        if callable(weights_per_line):
+            # コールバックならエンジンが実際に受け取る重みも覗く
+            def wrapped(units_per_line):
+                seen["units"] = units_per_line
+                seen["weights"] = weights_per_line(units_per_line)
+                return seen["weights"]
+
+            return real(phrases, csv_path, where, params, weights_per_line=wrapped)
+        return real(phrases, csv_path, where, params, weights_per_line=weights_per_line)
+
+    monkeypatch.setattr(convert_mod, "run_convert", spy)
+    return seen
+
+
+def test_convert_project_alpha_zero_is_unweighted(tmp_path: Path, monkeypatch):
+    # α=0(既定)は weights_per_line=None で、結果も未指定時と完全に一致する
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",
+        encoding="utf-8",
+    )
+    baseline = _tiny_project()
+    convert_project(baseline, wordlist=str(csv_path))
+
+    seen = _weights_spy(monkeypatch)
+    project = _tiny_project()
+    convert_project(project, wordlist=str(csv_path), params={"NOTE_LENGTH_WEIGHT": "0"})
+    assert seen["weights_per_line"] is None
+    # video専用パラメータはエンジンにも parody.params にも漏れない
+    assert "NOTE_LENGTH_WEIGHT" not in seen["params"]
+    assert project.parody is not None and baseline.parody is not None
+    assert "NOTE_LENGTH_WEIGHT" not in project.parody.params
+    assert [
+        [(w.surface, w.note_ids) for w in line.words] for line in project.parody.lines
+    ] == [
+        [(w.surface, w.note_ids) for w in line.words] for line in baseline.parody.lines
+    ]
+
+
+def test_convert_project_alpha_positive_passes_weights(tmp_path: Path, monkeypatch):
+    # α>0 なら実エンジンに行ごとの重みが渡り、変換も正常に完了する
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",
+        encoding="utf-8",
+    )
+    project = _tiny_project()  # 音符 シ/ズ/ム がそれぞれ0.5秒
+    seen = _weights_spy(monkeypatch)
+    convert_project(project, wordlist=str(csv_path), params={"NOTE_LENGTH_WEIGHT": "1"})
+    assert "NOTE_LENGTH_WEIGHT" not in seen["params"]
+    weights = seen["weights"]
+    assert len(weights) == 1
+    # 行の重みの長さはエンジンが使うユニット数と一致(=エンジンに無視されない)
+    assert len(weights[0]) == len(seen["units"][0])
+    assert weights[0] == [0.5, 0.5, 0.5]  # 全音符同じ長さなので一様
+    assert project.parody is not None
+    assert project.parody.lines[0].words, "α>0 で変換結果が空になった"
+
+
+def test_convert_project_alpha_prefers_long_note_match(tmp_path: Path):
+    # 長い音符の位置で音が合う候補が選ばれるようになることを実エンジンで確認する。
+    # 音符 カ(0.1秒) / キ(3.0秒) / ク(0.1秒)。
+    #   タキト: 長音符の位置(キ)が完全一致、短い両端が不一致
+    #   カチク: 短い両端が完全一致、長音符の位置(キ→チ)が不一致
+    # 重み無しなら一致数の多い「カチク」、ノート長重視なら「タキト」。
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n"
+        "0,タキト,タキト,タキト\n"
+        "1,カチク,カチク,カチク",
+        encoding="utf-8",
+    )
+
+    def convert(alpha: str | None) -> list[str]:
+        spans = [("カ", 0.0, 0.1), ("キ", 0.1, 3.1), ("ク", 3.1, 3.2)]
+        notes = [
+            Note(
+                id=i, midi_note=60, start_tick=0, end_tick=1,
+                start_sec=s, end_sec=e, line=0, surface=k, kana=k, raw=k,
+            )
+            for i, (k, s, e) in enumerate(spans)
+        ]
+        lines = [Line(id=0, xf_surface="カキク", xf_kana="カキク", note_ids=[0, 1, 2])]
+        project = Project(
+            song=SongInfo(midi_path="x.mid", ticks_per_beat=480),
+            notes=notes, lines=lines,
+        )
+        params = {"NOTE_LENGTH_WEIGHT": alpha} if alpha else {}
+        convert_project(project, wordlist=str(csv_path), params=params)
+        assert project.parody is not None
+        return [w.surface for w in project.parody.lines[0].words]
+
+    assert convert(None) == ["カチク"]
+    assert convert("1") == ["タキト"]
