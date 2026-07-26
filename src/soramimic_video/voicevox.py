@@ -25,7 +25,7 @@ from typing import Any
 import requests
 
 from . import runproc
-from .kana import split_moras, vowel_of
+from .kana import SMALL_TO_LARGE, split_moras, vowel_of
 from .octave import VOICEVOX_SAFE_KEY_MAX, VOICEVOX_SAFE_KEY_MIN
 from .octave import auto_octave_shift as _octave_shift
 from .project import Project
@@ -117,9 +117,6 @@ def _wait_for_engine(base: str, timeout: float = ENGINE_RECOVERY_TIMEOUT) -> boo
         time.sleep(ENGINE_POLL_INTERVAL)
 
 
-_SMALL_TO_LARGE = {"ァ": "ア", "ィ": "イ", "ゥ": "ウ", "ェ": "エ", "ォ": "オ"}
-
-
 def _split_redundant_small_vowels(mora: str) -> list[str]:
     """同母音の小書き母音(ハァ・ヒィ等)を独立した母音モーラに分ける。
 
@@ -128,8 +125,8 @@ def _split_redundant_small_vowels(mora: str) -> list[str]:
     ファ(フ=ウ段+ァ)のような異母音はそのまま返す。
     """
     tail: list[str] = []
-    while len(mora) > 1 and mora[-1] in _SMALL_TO_LARGE:
-        large = _SMALL_TO_LARGE[mora[-1]]
+    while len(mora) > 1 and mora[-1] in SMALL_TO_LARGE:
+        large = SMALL_TO_LARGE[mora[-1]]
         if vowel_of(mora[:-1]) != large:
             break
         tail.append(large)
