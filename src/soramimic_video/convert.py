@@ -11,13 +11,14 @@ from __future__ import annotations
 import csv
 import difflib
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
 
 from .kana import normalize_small_vowels, split_fine_moras, split_moras, vowel_of
 from .project import Parody, ParodyLine, ParodyWord, Project
-from .soramimic_engine import run_convert
+from .soramimic_engine import UnitWeightsFunc, run_convert
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,35 @@ def parse_convert_params(spec: str | None) -> dict[str, str]:
     return out
 
 
+# soramimic-video 独自の変換パラメータ(本家 soramimic のエンジンには無いキー)。
+# エンジンに渡す params dict には載せず、ここで取り出して重み計算に使う。
+NOTE_LENGTH_WEIGHT = "NOTE_LENGTH_WEIGHT"
+
+
+def pop_note_length_weight(params: dict[str, Any]) -> float:
+    """params から video 専用パラメータ NOTE_LENGTH_WEIGHT(α)を破壊的に取り出す。
+
+    α はノート長由来のユニット重み ``w_i = (音符の合計秒数) ** α`` の指数。
+    0(既定)・負値・数値でない指定はすべて 0.0 = 重み無し(従来動作)を意味する。
+    エンジンは未知キーを無害に無視するが、本家に無いキーを混ぜると
+    parody.params 経由で editor 側にも漏れるのでここで取り除く。
+    """
+    raw = params.pop(NOTE_LENGTH_WEIGHT, None)
+    if raw is None:
+        return 0.0
+    try:
+        alpha = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s の値が数値ではありません: %r。無効(0)として扱います",
+            NOTE_LENGTH_WEIGHT, raw,
+        )
+        return 0.0
+    if not math.isfinite(alpha) or alpha <= 0:
+        return 0.0
+    return alpha
+
+
 def _coerce_params(params: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in params.items():
@@ -97,6 +127,84 @@ def _offset_map(src: str, dst: str) -> list[int]:
             table[i] = max(table[i], last_dst)
     table[len(src)] = max(table[len(src)], len(dst))
     return table
+
+
+def unit_note_seconds(
+    unit_prons: list[str], note_kanas: list[str], note_durs: list[float]
+) -> list[float]:
+    """各ユニットが覆う音符の合計秒数(raw_i)を求める。
+
+    ユニット(変換エンジンの音節単位)と音符(XFの歌唱モーラ)の対応づけは
+    apply_converted_lines と同じ「読みを連結した文字オフセット + _offset_map」で行う。
+    ユニットの文字区間に少しでも重なる音符の長さを足す。したがって
+    複数音符にまたがるユニット(キャ→キ+ャ)はその合計、複数ユニットを覆う
+    長音符(ヨウ)は両ユニットがその長さを受け取る。
+    どの音符にも対応づかなかったユニットは行平均の raw で埋める(重みを持たせない)。
+    """
+    unit_concat = normalize_small_vowels("".join(unit_prons))
+    note_concat = normalize_small_vowels("".join(note_kanas))
+    offset_map = _offset_map(unit_concat, note_concat)
+    note_cum = [0]
+    for kana in note_kanas:
+        note_cum.append(note_cum[-1] + len(kana))
+
+    raws: list[float | None] = []
+    pos = 0
+    for pron in unit_prons:
+        start, end = pos, pos + len(pron)
+        pos = end
+        # ユニットの文字区間を音符側のオフセットへ写す
+        dst_start = offset_map[min(start, len(unit_concat))]
+        dst_end = offset_map[min(end, len(unit_concat))]
+        total = 0.0
+        hit = False
+        for j in range(len(note_kanas)):
+            a, b = note_cum[j], note_cum[j + 1]
+            if a < dst_end and dst_start < b:  # 文字区間が重なる音符
+                total += note_durs[j]
+                hit = True
+        raws.append(total if hit else None)
+
+    known = [v for v in raws if v is not None]
+    mean = sum(known) / len(known) if known else 1.0
+    return [mean if v is None else v for v in raws]
+
+
+def note_length_weights(
+    unit_prons: list[str], note_kanas: list[str], note_durs: list[float], alpha: float
+) -> list[float]:
+    """ノート長由来のユニット重み ``w_i = raw_i ** α``(1行分)。
+
+    正規化(行ごとに平均1)は変換エンジン側が行うのでここではしない。
+    """
+    return [
+        (raw**alpha if raw > 0 else 0.0)
+        for raw in unit_note_seconds(unit_prons, note_kanas, note_durs)
+    ]
+
+
+def project_note_length_weights(project: Project, alpha: float) -> UnitWeightsFunc:
+    """run_convert に渡す「ユニット列 → 行ごとのノート長重み」コールバックを作る。
+
+    重み計算にはエンジンが実際に使うユニット列が要るので、run_convert から
+    呼び戻してもらう形にしている(トークナイズを二重に走らせないため)。
+    """
+
+    def compute(units_per_line: list[list[dict[str, Any]]]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for line, units in zip(project.lines, units_per_line, strict=True):
+            notes = [project.notes[i] for i in line.note_ids]
+            out.append(
+                note_length_weights(
+                    [u["pronunciation"] for u in units],
+                    [n.kana for n in notes],
+                    [n.end_sec - n.start_sec for n in notes],
+                    alpha,
+                )
+            )
+        return out
+
+    return compute
 
 
 # 変換のバリエーション分割で直前の音節に吸収されうるモーラ
@@ -958,7 +1066,10 @@ def convert_project(
     csv_path = resolve_wordlist(wordlist)
     if where is None:
         where = DEFAULT_WHERE.get(csv_path.stem)
-    coerced = _coerce_params(params or {})
+    # video 専用パラメータはエンジンへ渡す前に取り除く(呼び出し側のdictは壊さない)
+    params = dict(params or {})
+    alpha = pop_note_length_weight(params)
+    coerced = _coerce_params(params)
     # エンジン既定はDUPLICATE:true(単語重複あり)だが、本家Web UIの既定は
     # 「なし」。未指定時はWeb UIに合わせ、同じ単語ばかり選ばれるのを防ぐ
     coerced.setdefault("DUPLICATE", False)
@@ -980,7 +1091,10 @@ def convert_project(
     # 「ェ」に一致する単語が無いためその行の変換結果が空になる。1文字→1文字で
     # 開いて(ウッセエワ)から渡す(文字数もモーラ位置も変わらない)
     phrases = [normalize_small_vowels(line.xf_kana) for line in project.lines]
-    result = run_convert(phrases, csv_path, where, coerced)
+
+    # α>0 のときだけ重みを渡す。α=0(既定)は weights_per_line=None で従来と完全に同一
+    weights = project_note_length_weights(project, alpha) if alpha > 0 else None
+    result = run_convert(phrases, csv_path, where, coerced, weights_per_line=weights)
     apply_converted_lines(project, result["lines"], wordlist, where, coerced)
     return result
 

@@ -204,6 +204,36 @@ def test_index_html_convert_params_new_model():
     assert "SAME_CONSONANT_REWARD" not in html
 
 
+def test_index_html_note_length_weight_input():
+    # soramimic-video 独自の「ノート長重視 α」の数値入力(0〜2 / 0.1刻み / 既定0)。
+    # 本家準拠のプリセット・スライダーとは別枠なので PARAM_SLIDER_IDS には入れない。
+    import re
+
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    m = re.search(r'<input type="number" id="p-notelen"([^>]*)>', html)
+    assert m, "p-notelen の数値入力が見つからない"
+    attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+    assert (attrs["min"], attrs["max"], attrs["step"], attrs["value"]) == (
+        "0", "2", "0.1", "0",
+    )
+    # 本家由来のスライダー群には混ぜない(プリセット選択で上書きされないこと)
+    assert 'const PARAM_SLIDER_IDS = ["p-sound", "p-phrase", "p-wordnum"];' in html
+    # video独自であることがUI上わかる注記
+    assert "soramimic-video独自" in html
+
+
+def test_index_html_note_length_weight_sent_only_when_positive():
+    # α>0 のときだけ NOTE_LENGTH_WEIGHT を convert_params に追記する
+    # (0=既定では送らない → 本家と完全に同じパラメータになる)。
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'const noteLen = Number($("p-notelen").value);' in html
+    assert 'if (noteLen > 0) out.push("NOTE_LENGTH_WEIGHT=" + noteLen);' in html
+
+
 def test_index_html_model_layout_use_select_not_datalist():
     # iOS Safari が datalist を表示しない問題への対応:
     # 歌声モデル(#model)・レイアウト(#layout)は select + 手入力 + 隠しvalue に置換。

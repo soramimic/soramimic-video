@@ -187,6 +187,13 @@
         aria-label="単語の長さ(細かめ〜長め)">
       <span>長め</span></div>
     <p class="hint">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
+    <!-- ここから下は soramimic-video 独自(本家 soramimic には無い項目)。
+         上のプリセット・スライダーは本家準拠なので、独自項目は混ぜず末尾に置く。
+         送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
+    <label>ノート長重視 α(soramimic-video独自)</label>
+    <input type="number" id="p-notelen" min="0" max="2" step="0.1" value="0"
+      aria-label="ノート長重視 α(0でオフ)">
+    <p class="hint">この項目だけ本家soramimicにはありません。0より大きくすると、MIDIで長く伸ばす音符ほど音を合わせることを優先します(サビの伸ばしなど、耳に残る音を優先したいとき)。目安は0.5〜1。<strong>既定の0では従来とまったく同じ結果</strong>になります。</p>
   </details>
 </fieldset>
 
@@ -1749,16 +1756,21 @@ const PRESETS = {
 //   SAME_PHRASE_BREAK_REWARD = 0(報酬方式は廃止 #98)、
 //   MID_PHRASE_BREAK_PENALTY = 文節×20(#98)、WORD_NUMBER_PENALTY = 単語長×10。
 // SAME_VOWEL/CONSONANT_REWARD は撤廃(#102)。母音/子音の重みは VOWEL_RATIO が担う。
+// soramimic-video 独自の NOTE_LENGTH_WEIGHT(ノート長重視α)だけは本家に無いので、
+// 0(既定=OFF)のときは送らない。送らなければ本家とまったく同じパラメータになる。
 function buildConvertParams() {
   const r = Number($("p-sound").value);
-  return [
+  const out = [
     "DUPLICATE=" + $("duplicate").value,
     "VOWEL_RATIO=" + r,
     "VARIATION_COST=" + 20 * r,
     "SAME_PHRASE_BREAK_REWARD=0",
     "MID_PHRASE_BREAK_PENALTY=" + Number($("p-phrase").value) * 20,
     "WORD_NUMBER_PENALTY=" + Number($("p-wordnum").value) * 10,
-  ].join("\n");
+  ];
+  const noteLen = Number($("p-notelen").value);
+  if (noteLen > 0) out.push("NOTE_LENGTH_WEIGHT=" + noteLen);
+  return out.join("\n");
 }
 
 // プリセット選択でスライダーへ流し込む(本家 applyPreset 相当)。
@@ -1789,6 +1801,8 @@ function saveForm() {
       convertSliders: Object.fromEntries(
         PARAM_SLIDER_IDS.map((id) => [id, $(id).value])
       ),
+      // 独自項目はプリセット(本家準拠)と無関係なので convertSliders には入れない
+      noteLenWeight: $("p-notelen").value,
       transpose: $("transpose").value,
       layout: $("layout").value,
       layoutJson: $("layout-json").value,
@@ -1858,7 +1872,7 @@ $("layout-select").addEventListener("change", () => {
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)。
 // model / layout は上の syncChoice が保存するのでここには入れない。
 ["lyrics", "wordlist", "where", "duplicate",
- "p-sound", "p-phrase", "p-wordnum",
+ "p-sound", "p-phrase", "p-wordnum", "p-notelen",
  "transpose", "layout-json",
  "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
@@ -1973,6 +1987,9 @@ async function doRestoreForm() {
       if (!state.convertSliders && PRESETS[state.preset]) {
         for (const [id, v] of Object.entries(PRESETS[state.preset])) $(id).value = v;
       }
+    }
+    if (state.noteLenWeight != null && state.noteLenWeight !== "") {
+      $("p-notelen").value = state.noteLenWeight;
     }
     if (state.transpose != null) $("transpose").value = state.transpose;
     if (state.model) setChoice("model", state.model);
