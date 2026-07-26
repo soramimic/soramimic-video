@@ -452,18 +452,33 @@ def _is_all_kana(text: str) -> bool:
     return all(ch in _KANA_CHARS for ch in text)
 
 
+# 読みを持たない記号(区切り・つなぎ)。表記には出るが読みには現れないので、
+# ルビの要否判定でも読みの割り付けでも「無いもの」として扱う。
+# (例: 「バリッシュ・コノル」の読みは「バリッシュコノル」で中黒は現れない)
+# 中黒(全角・半角)、イコール類(人名の区切り)、空白。
+_SILENT_SYMBOLS = frozenset("・･＝=゠ 　")
+
+
+def _strip_silent(text: str) -> str:
+    """読みを持たない記号を取り除く。"""
+    return "".join(ch for ch in text if ch not in _SILENT_SYMBOLS)
+
+
 def _needs_ruby(surface: str, kana: str) -> bool:
     """この単語にルビを振るべきか。
 
     表記が全部カナなら読みは表記から自明なのでルビ不要(カタカナ表記に
     ひらがなルビを重ねない)。カナ以外(漢字等)を含む場合は、ひらがな/
     カタカナ・長音表記のゆれを吸収したうえで読みと違うときだけ振る。
+    読みを持たない記号(中黒等)は判定前に除去する(「バリッシュ・コノル」は
+    実質全カナなのでルビ不要)。
     """
     if not surface or not kana:
         return False
-    if _is_all_kana(surface):
+    bare = _strip_silent(surface)
+    if _is_all_kana(bare):
         return False
-    a = normalize_long_vowels(_to_katakana(surface))
+    a = normalize_long_vowels(_to_katakana(bare))
     b = normalize_long_vowels(_to_katakana(kana))
     return a != b
 
@@ -477,10 +492,13 @@ _KANA_CHARS = frozenset(
 
 
 def _kana_runs(surface: str) -> list[tuple[int, int, bool]]:
-    """表記をカナ/非カナの連続ランに分ける。(開始idx, 終了idx, カナか) の列。"""
+    """表記をカナ/非カナの連続ランに分ける。(開始idx, 終了idx, カナか) の列。
+
+    読みを持たない記号(中黒等)はカナ側に含める(ルビを振る対象ではないため)。
+    """
     runs: list[tuple[int, int, bool]] = []
     for i, ch in enumerate(surface):
-        is_kana = ch in _KANA_CHARS
+        is_kana = ch in _KANA_CHARS or ch in _SILENT_SYMBOLS
         if runs and runs[-1][2] == is_kana:
             runs[-1] = (runs[-1][0], i + 1, is_kana)
         else:
@@ -497,7 +515,11 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
     表記ゆれを吸収して再試行し、それでも対応づけできなければNone(呼び出し側は
     単語全体ルビにフォールバックする)。
 
+    読みを持たない記号(中黒等)はカナ側のランに含めたうえで、リテラルからは
+    除去する(読みには現れないため)。
+
     例: 「燦花シノノ」×「サンカシノノ」→ [(0, 2, "サンカ")]
+        「アテル＝参」×「アテルサン」→ [(4, 5, "サン")]
     """
     if not surface or not kana:
         return None
@@ -509,7 +531,8 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
         pattern = ""
         for s, e, is_kana in runs:
             if is_kana:
-                part = surface_kata[s:e]
+                # 読みを持たない記号(中黒等)は読みに現れないのでリテラルから外す
+                part = _strip_silent(surface_kata[s:e])
                 pattern += re.escape(normalize_long_vowels(part) if normalize else part)
             else:
                 pattern += "(.+?)"
