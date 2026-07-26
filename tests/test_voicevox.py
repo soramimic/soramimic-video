@@ -72,6 +72,18 @@ def test_split_moras_long_vowel_becomes_vowel():
     assert split_voicevox_moras("ー") == ["ア"]  # 前音が無ければア
 
 
+def test_split_moras_redundant_small_vowel_becomes_vowel():
+    # 同母音の小書き(ハァ等)はVOICEVOXが400で弾くので独立母音に分ける
+    # (うっせぇわの歌詞「はぁ？」で実際に発生)
+    assert split_voicevox_moras("ハァ") == ["ハ", "ア"]
+    assert split_voicevox_moras("ヒィ") == ["ヒ", "イ"]
+    assert split_voicevox_moras("ハァー") == ["ハ", "ア", "ア"]
+    # 異母音の組み合わせ(ファ・ティ等)は正規のモーラなのでそのまま
+    assert split_voicevox_moras("ファ") == ["ファ"]
+    assert split_voicevox_moras("ティ") == ["ティ"]
+    assert split_voicevox_moras("ヴォ") == ["ヴォ"]
+
+
 # ---- build_score ----
 
 
