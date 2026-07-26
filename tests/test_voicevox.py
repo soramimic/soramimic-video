@@ -147,32 +147,33 @@ def test_build_score_splits_multimora_note_across_frames():
     assert all(n["frame_length"] >= 1 for n in pitched)
 
 
-def test_build_score_weights_first_mora_of_stacked_note():
+def test_build_score_front_loads_stacked_moras():
     # Lemon「嘘みたい」実例: 675msの複合ノートに タ+リ が載る。均等割りだと
     # リが音符のど真ん中(+338ms)に立って「遅れた別音節」に聞こえるので、
-    # 3:1 に寄せて リ を短い添え音にする(タ約506ms / リ約169ms)
+    # 前詰め(タは固定160ms、リが残りを持って母音を伸ばす)にする
     score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
     pitched = [n for n in score["notes"] if n["key"] is not None]
     assert [n["lyric"] for n in pitched] == ["タ", "リ"]
     lengths = [n["frame_length"] for n in pitched]
     total = round(0.675 * FRAME_RATE)
     assert sum(lengths) == total
-    assert lengths[0] / lengths[1] == pytest.approx(vv.HEAD_MORA_WEIGHT, abs=0.2)
-    assert lengths[0] / FRAME_RATE == pytest.approx(0.506, abs=0.01)
-    assert lengths[1] / FRAME_RATE == pytest.approx(0.169, abs=0.01)
+    assert lengths[0] / FRAME_RATE == pytest.approx(
+        vv.STACKED_MORA_ATTACK_SEC, abs=0.01
+    )
+    assert lengths[1] / FRAME_RATE == pytest.approx(0.515, abs=0.01)
 
 
-def test_build_score_three_moras_keep_tail_short_and_even():
-    # 3モーラ以上は先頭を厚く(3:1:1)、後続は均等に短く
+def test_build_score_three_moras_front_loaded():
+    # 3モーラ以上も非最終モーラは同じアタック長で頭に並び、最終モーラが残りを持つ
     score = build_score(_project([_note(0, 60, 0.0, 1.0, "タラリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
-    assert sum(lengths) == round(1.0 * FRAME_RATE)
-    assert lengths[1] == lengths[2]
-    assert lengths[0] / lengths[1] == pytest.approx(vv.HEAD_MORA_WEIGHT, abs=0.2)
+    attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
+    total = round(1.0 * FRAME_RATE)
+    assert lengths == [attack, attack, total - 2 * attack]
 
 
 def test_build_score_short_note_falls_back_to_even_split():
-    # 200msに2モーラ: 3:1だと後続が約53msで潰れるため均等割りへ戻す
+    # 200msに2モーラ: 前詰め(160ms)だと最終モーラが約40msで潰れるため均等割りへ
     score = build_score(_project([_note(0, 60, 0.0, 0.2, "タリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     total = round(0.2 * FRAME_RATE)
@@ -182,11 +183,18 @@ def test_build_score_short_note_falls_back_to_even_split():
 
 
 def test_mora_frame_bounds_edges():
+    attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
+    min_final = round(vv.MIN_LAST_MORA_SEC * FRAME_RATE)
     assert vv.mora_frame_bounds(63, 1) == [0, 63]
-    assert vv.mora_frame_bounds(63, 2) == [0, 47, 63]
-    # 後続モーラが MIN_TAIL_MORA_SEC を割る短さなら均等割り
-    short = round(3 * vv.MIN_TAIL_MORA_SEC * FRAME_RATE)
-    assert vv.mora_frame_bounds(short, 2) == [0, short // 2, short]
+    assert vv.mora_frame_bounds(63, 2) == [0, attack, 63]
+    # 最終モーラに MIN_LAST_MORA_SEC を確保できる境目までは前詰め
+    edge = attack + min_final
+    assert vv.mora_frame_bounds(edge, 2) == [0, attack, edge]
+    assert vv.mora_frame_bounds(edge - 1, 2) == [
+        0,
+        round((edge - 1) / 2),
+        edge - 1,
+    ]
 
 
 def test_build_score_clips_overlap():
