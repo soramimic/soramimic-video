@@ -147,6 +147,48 @@ def test_build_score_splits_multimora_note_across_frames():
     assert all(n["frame_length"] >= 1 for n in pitched)
 
 
+def test_build_score_weights_first_mora_of_stacked_note():
+    # Lemon「嘘みたい」実例: 675msの複合ノートに タ+リ が載る。均等割りだと
+    # リが音符のど真ん中(+338ms)に立って「遅れた別音節」に聞こえるので、
+    # 3:1 に寄せて リ を短い添え音にする(タ約506ms / リ約169ms)
+    score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
+    pitched = [n for n in score["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["タ", "リ"]
+    lengths = [n["frame_length"] for n in pitched]
+    total = round(0.675 * FRAME_RATE)
+    assert sum(lengths) == total
+    assert lengths[0] / lengths[1] == pytest.approx(vv.HEAD_MORA_WEIGHT, abs=0.2)
+    assert lengths[0] / FRAME_RATE == pytest.approx(0.506, abs=0.01)
+    assert lengths[1] / FRAME_RATE == pytest.approx(0.169, abs=0.01)
+
+
+def test_build_score_three_moras_keep_tail_short_and_even():
+    # 3モーラ以上は先頭を厚く(3:1:1)、後続は均等に短く
+    score = build_score(_project([_note(0, 60, 0.0, 1.0, "タラリ")]))
+    lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
+    assert sum(lengths) == round(1.0 * FRAME_RATE)
+    assert lengths[1] == lengths[2]
+    assert lengths[0] / lengths[1] == pytest.approx(vv.HEAD_MORA_WEIGHT, abs=0.2)
+
+
+def test_build_score_short_note_falls_back_to_even_split():
+    # 200msに2モーラ: 3:1だと後続が約53msで潰れるため均等割りへ戻す
+    score = build_score(_project([_note(0, 60, 0.0, 0.2, "タリ")]))
+    lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
+    total = round(0.2 * FRAME_RATE)
+    assert sum(lengths) == total
+    assert lengths == [total - total // 2, total // 2]
+    assert min(lengths) * 2 >= max(lengths)  # ほぼ均等
+
+
+def test_mora_frame_bounds_edges():
+    assert vv.mora_frame_bounds(63, 1) == [0, 63]
+    assert vv.mora_frame_bounds(63, 2) == [0, 47, 63]
+    # 後続モーラが MIN_TAIL_MORA_SEC を割る短さなら均等割り
+    short = round(3 * vv.MIN_TAIL_MORA_SEC * FRAME_RATE)
+    assert vv.mora_frame_bounds(short, 2) == [0, short // 2, short]
+
+
 def test_build_score_clips_overlap():
     # 音符が重なる: 後の音符は前の終端まで切り詰められ、絶対時間は単調増加
     notes = [_note(0, 60, 0.5, 1.5, "ド"), _note(1, 62, 1.0, 2.0, "レ")]

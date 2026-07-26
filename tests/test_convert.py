@@ -718,15 +718,60 @@ def _overflow(pron, kanas, durs=None):
     )
 
 
-def test_overflow_capacity_mirrors_note_moras():
-    # うっせぇわ実例: 音符の元モーラ数(ウッ=2)を鏡写しにし、母音一致
-    # (ガ-ワ)のために末尾へ詰め込まない
+def test_overflow_capacity_follows_note_attacks():
+    # うっせぇわ実例: 容量はモーラ数ではなくアタック数(ウッ=1、ッは閉鎖で
+    # 実アタックを持たない)。行内最短の0.17s音符へ実音節2つを積むより、
+    # 母音一致するガ-ワに合わせて末尾の長い音符へ添える方が歌える
     assert _overflow(
         ["ゼ", "ニ", "ガ", "メ"], ["ウッ", "セェ", "ワ"], [0.17, 0.34, 0.34]
-    ) == ["ゼニ", "ガ", "メ"]
+    ) == ["ゼ", "ニ", "ガメ"]
     assert _overflow(
         ["ア", "ル", "バ", "ニ", "ア"], ["ウッ", "セェ", "ワ"], [0.17, 0.34, 0.34]
-    ) == ["アル", "バニ", "ア"]
+    ) == ["ア", "ル", "バニア"]
+
+
+def test_note_attacks_counts_compound_note_as_one():
+    from soramimic_video.convert import _note_attacks
+
+    # 二重母音・撥音・促音・長音の添えかなは実アタックを持たない
+    for kana in ("タイ", "コイ", "ソウ", "マン", "ダッ", "オー", "セェ"):
+        assert _note_attacks(kana) == 1, kana
+    # 子音付きのi/u段は独立アタック(リク=2)。1モーラ音符は当然1
+    assert _note_attacks("リク") == 2
+    assert _note_attacks("ミ") == 1
+
+
+def test_stack_bonus_only_for_dropout_elements():
+    from soramimic_video.convert import (
+        _STACK_BONUS,
+        _STACK_NOTE_BONUS,
+        _stack_bonus,
+    )
+
+    # 複合ノート(note_multi)への積みボーナスは脱落系モーラ限定。
+    # 実音節を積んでも複合ノートは優遇しない(実アタックは1つだから)
+    assert _stack_bonus(True, True) == _STACK_BONUS + _STACK_NOTE_BONUS
+    assert _stack_bonus(True, False) == _STACK_BONUS
+    assert _stack_bonus(False, True) == 0
+    assert _stack_bonus(False, False) == 0
+
+
+def test_overflow_does_not_prefer_compound_note_for_real_syllable():
+    # 複合ノート(タイ)は実アタック1つなので、実音節の受け皿として優遇しない。
+    # 従来は タ|リラ|ヨ とタイへ積んでいたが、母音一致(ラ-タイ)を取る配分になる
+    assert _overflow(
+        ["タ", "リ", "ラ", "ヨ"], ["ラ", "タイ", "ヨ"], [0.3, 0.6, 0.3]
+    ) == ["タリ", "ラ", "ヨ"]
+
+
+def test_overflow_lemon_usomitai_still_stacks_on_only_candidate():
+    # Lemon「嘘みたい」実例: 音符2(ミ・タイ)に要素3(シー・タ・リ)。
+    # どちらかの音符が必ず2音節を持つため配分は変わらない(シータを0.3sの
+    # ミへ積む方が悪い)。この場合の遅れ感は voicevox 側の重み付き配分で緩和する
+    assert _overflow(["シー", "タ", "リ"], ["ミ", "タイ"], [0.3, 0.675]) == [
+        "シー",
+        "タリ",
+    ]
 
 
 def test_overflow_trailing_n_rides_free():

@@ -37,6 +37,12 @@ DEFAULT_CHUNK_SEC = 60.0  # チャンク合成の1チャンク最大秒数(0以�
 # 分割時、2番目以降のチャンク先頭に残す休符フレーム数(ボコーダの立ち上がり安定用)。
 # エンジンは1フレーム休符を弾くため2以上必須。約0.3秒を目安にする。
 LEAD_REST_FRAMES = max(2, round(0.3 * FRAME_RATE))
+# 1音符に複数モーラが載るときの長さ配分。元歌詞の複合ノート(タイ・コイ等)は
+# 「主音節が長く、添え音は短い渡り」という1アタックの歌い方なので、均等割りにすると
+# 2モーラ目が音符のど真ん中に立ち「遅れた別の音節」に聞こえる。先頭を厚く配分する。
+HEAD_MORA_WEIGHT = 3.0  # 先頭モーラの重み(後続モーラは1.0ずつ)
+# 後続モーラの最短長(秒)。短い音符でこれを割るなら潰れるので均等割りへフォールバック
+MIN_TAIL_MORA_SEC = 0.06
 # 歌唱用の「歌の先生」スタイル(sing型)。クエリ生成に使う。frame_synthesisは
 # 選んだスタイル(frame_decode/sing)で行う。現状 sing型は 波音リツ ノーマル(6000)のみ。
 SING_TEACHER_ID = 6000
@@ -127,6 +133,28 @@ def split_voicevox_moras(kana: str) -> list[str]:
     return out
 
 
+def mora_frame_bounds(total: int, m: int) -> list[int]:
+    """1音符(total フレーム)へ m モーラを載せるときの境界(0..total, 長さ m+1)。
+
+    先頭モーラを HEAD_MORA_WEIGHT 倍で重み付けする(2モーラなら 3:1)。
+    後続モーラが MIN_TAIL_MORA_SEC を下回るほど音符が短いときは、
+    音節が潰れるので均等割りに戻す。
+    """
+    if m <= 1:
+        return [0, total]
+    weights = [HEAD_MORA_WEIGHT] + [1.0] * (m - 1)
+    cum = 0.0
+    total_w = sum(weights)
+    bounds = [0]
+    for w in weights:
+        cum += w
+        bounds.append(round(total * cum / total_w))
+    tails = [bounds[i + 1] - bounds[i] for i in range(1, m)]
+    if min(tails) < MIN_TAIL_MORA_SEC * FRAME_RATE:
+        return [round(total * i / m) for i in range(m + 1)]
+    return bounds
+
+
 def auto_octave_shift(keys: list[int], transpose: int = 0) -> int:
     """VOICEVOX安全音域に収まる音符が最も多くなるオクターブシフト(半音)を返す。
 
@@ -141,7 +169,8 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
 
     - 曲頭(t=0)から休符で埋める(絶対時間を保つ)。
     - 音符の重なりは後勝ちでクリップ、隙間は休符で埋める。
-    - 1音符=1モーラ。複数モーラのカナは音符フレームを分配する。
+    - 1音符=1モーラ。複数モーラのカナは音符フレームを分配する(先頭モーラを厚く。
+      mora_frame_bounds 参照)。
     - transposeは非休符のkeyに半音単位で加算。
     """
     from .synthesize import build_lyric_map
@@ -183,10 +212,9 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             morae = [prev_vowel]
         total = ef - sf
         m = len(morae)
+        bounds = mora_frame_bounds(total, m)
         for i, mora in enumerate(morae):
-            b0 = sf + round(total * i / m)
-            b1 = sf + round(total * (i + 1) / m)
-            length = b1 - b0
+            length = bounds[i + 1] - bounds[i]
             if length <= 0:  # モーラが多すぎてフレームが足りない場合は最低1
                 length = 1
             out_notes.append(
