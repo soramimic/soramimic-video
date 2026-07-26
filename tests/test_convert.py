@@ -323,6 +323,25 @@ def test_convert_project(tmp_path: Path):
         assert set(w.note_ids) <= {0, 1, 2}
 
 
+def test_convert_project_small_vowel_line_not_empty(tmp_path: Path):
+    # 同母音の小書き(セェ)を含む行。正規化前はエンジンが「セ」「ェ」に割り、
+    # 「ェ」に一致する単語が無いので行ごと変換結果が空になっていた
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n"
+        "0,フレイア,フレイア,フレイア\n"
+        "1,ウスヤ,ウスヤ,ウスヤ\n"
+        "2,セイワ,セイワ,セイワ",
+        encoding="utf-8",
+    )
+    project = _line_project(["ハァ", "ウッ", "セェ", "ワ"])
+    convert_project(project, wordlist=str(csv_path))
+    assert project.parody is not None
+    words = project.parody.lines[0].words
+    assert words, "小書き母音を含む行の変換結果が空"
+    _assert_no_shared_notes(project)
+
+
 def _empty_wordlist(tmp_path: Path) -> str:
     csv_path = tmp_path / "words.csv"
     csv_path.write_text("id,original,surface,pronunciation\n", encoding="utf-8")

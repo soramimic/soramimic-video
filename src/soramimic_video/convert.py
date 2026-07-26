@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .kana import split_fine_moras, split_moras, vowel_of
+from .kana import normalize_small_vowels, split_fine_moras, split_moras, vowel_of
 from .project import Parody, ParodyLine, ParodyWord, Project
 from .soramimic_engine import run_convert
 
@@ -976,7 +976,10 @@ def convert_project(
         r = 0.8
     coerced.setdefault("VARIATION_COST", 20 * r)
 
-    phrases = [line.xf_kana for line in project.lines]
+    # 同母音の小書き(ウッセェワ)はエンジンのトークナイズで「セ」「ェ」に割れ、
+    # 「ェ」に一致する単語が無いためその行の変換結果が空になる。1文字→1文字で
+    # 開いて(ウッセエワ)から渡す(文字数もモーラ位置も変わらない)
+    phrases = [normalize_small_vowels(line.xf_kana) for line in project.lines]
     result = run_convert(phrases, csv_path, where, coerced)
     apply_converted_lines(project, result["lines"], wordlist, where, coerced)
     return result
@@ -1001,9 +1004,15 @@ def apply_converted_lines(
     for line, converted in zip(project.lines, lines, strict=True):
         pline = ParodyLine(line_id=line.id)
         unit_lens = [len(u["pronunciation"]) for u in converted["units"]]
-        unit_concat = "".join(u["pronunciation"] for u in converted["units"])
+        # 小書き母音の開き(セェ→セエ)はエンジンに渡す側だけに掛かるので、
+        # 突き合わせる音符側にも同じ正規化を掛けて位置対応を恒等に保つ
+        unit_concat = normalize_small_vowels(
+            "".join(u["pronunciation"] for u in converted["units"])
+        )
         note_lens = [len(project.notes[i].kana) for i in line.note_ids]
-        note_concat = "".join(project.notes[i].kana for i in line.note_ids)
+        note_concat = normalize_small_vowels(
+            "".join(project.notes[i].kana for i in line.note_ids)
+        )
         if unit_concat != note_concat:
             logger.debug(
                 "行%d: ユニット列と音符列の読みが不一致 (%r != %r)。difflibで対応づけます",
