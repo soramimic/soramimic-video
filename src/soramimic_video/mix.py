@@ -6,6 +6,7 @@ vocal.wav は曲頭(tick 0)からレンダリングされているので、そ�
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -20,6 +21,15 @@ from .synthesize import vocal_path
 logger = logging.getLogger(__name__)
 
 MIX_DIR = "mix"
+
+# 伴奏を歌声より何dB下に置くか(歌のためのヘッドルーム)
+TARGET_VOCAL_HEADROOM_DB = 2.0
+# 自動計算した伴奏ゲインの上限。従来の固定値と同じで、今より持ち上げる方向にはしない
+ACCOMPANIMENT_GAIN_MAX = 0.6
+# 下限。下げすぎると伴奏が消えてカラオケ感がなくなる
+ACCOMPANIMENT_GAIN_MIN = 0.15
+# loudnorm が返す無音相当のラウドネス(これ以下は測定失敗とみなす)
+SILENCE_LUFS = -70.0
 
 
 def make_accompaniment_midi(project: Project, out_path: Path) -> Path:
@@ -82,13 +92,90 @@ def resolve_accompaniment(
     return render_midi(acc_mid, work / "accompaniment.wav", soundfont)
 
 
+def measure_loudness(path: Path) -> float | None:
+    """wavの integrated loudness (LUFS) を ffmpeg の loudnorm で測る。
+
+    loudnorm はゲート付きなので、前奏・間奏の無音や小音量区間に引きずられにくい。
+    測れなかった場合(ffmpeg異常・JSON解析不能・無音)は警告を出して None を返す。
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        logger.warning("ffmpeg が見つからないのでラウドネス測定を省略します(%s)", path)
+        return None
+    cmd = [
+        ffmpeg, "-hide_banner", "-nostats",
+        "-i", str(path),
+        "-af", "loudnorm=print_format=json",
+        "-f", "null", "-",
+    ]
+    proc = runproc.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        logger.warning(
+            "ラウドネス測定に失敗しました(%s):\n%s", path, (proc.stderr or "")[-500:]
+        )
+        return None
+    # loudnorm のJSONは stderr の末尾に出る(フラットなオブジェクト)
+    text = proc.stderr or ""
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start < 0 or end < start:
+        logger.warning("ラウドネス測定のJSONが見つかりません(%s)", path)
+        return None
+    try:
+        value = float(json.loads(text[start : end + 1])["input_i"])
+    except (ValueError, TypeError, KeyError):
+        logger.warning("ラウドネス測定のJSONを解釈できません(%s)", path)
+        return None
+    if value <= SILENCE_LUFS:
+        logger.warning("ラウドネスが無音相当です(%s: %.1f LUFS)", path, value)
+        return None
+    return value
+
+
+def auto_accompaniment_gain(
+    vocal_lufs: float | None, accompaniment_lufs: float | None
+) -> float:
+    """伴奏が歌声より TARGET_VOCAL_HEADROOM_DB だけ低くなる伴奏ゲインを求める。
+
+    どちらかが測れていなければ従来の固定値(=上限)にフォールバックする。
+    求めたゲインは ACCOMPANIMENT_GAIN_MIN〜MAX にクリップする。
+    """
+    if vocal_lufs is None or accompaniment_lufs is None:
+        logger.warning(
+            "ラウドネスを測れなかったので伴奏ゲインは固定値 %.2f を使います",
+            ACCOMPANIMENT_GAIN_MAX,
+        )
+        return ACCOMPANIMENT_GAIN_MAX
+    gain_db = (vocal_lufs - TARGET_VOCAL_HEADROOM_DB) - accompaniment_lufs
+    gain = 10 ** (gain_db / 20)
+    clipped = min(max(gain, ACCOMPANIMENT_GAIN_MIN), ACCOMPANIMENT_GAIN_MAX)
+    if clipped != gain:
+        logger.info(
+            "伴奏ゲインをクリップしました(歌声 %.1f LUFS / 伴奏 %.1f LUFS → "
+            "計算値 %.3f, 採用 %.3f)",
+            vocal_lufs, accompaniment_lufs, gain, clipped,
+        )
+    else:
+        logger.info(
+            "伴奏ゲインを自動決定しました(歌声 %.1f LUFS / 伴奏 %.1f LUFS → %.3f)",
+            vocal_lufs, accompaniment_lufs, clipped,
+        )
+    return clipped
+
+
 def mix(
     project: Project,
     project_dir: Path,
     soundfont: str | None = None,
     vocal_gain: float = 1.0,
-    accompaniment_gain: float = 0.6,
+    accompaniment_gain: float | None = None,
 ) -> Path:
+    """歌唱wavと伴奏wavを重ねて song.wav を作る。
+
+    accompaniment_gain を省略すると、歌声と伴奏のラウドネスを測って
+    歌が埋もれないゲインを自動計算する(auto_accompaniment_gain)。
+    明示指定した場合はその値をそのまま使う。
+    """
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("ffmpeg が見つかりません")
@@ -99,6 +186,10 @@ def mix(
     work = project_dir / MIX_DIR
     work.mkdir(parents=True, exist_ok=True)
     acc_wav = resolve_accompaniment(project, work, soundfont)
+    if accompaniment_gain is None:
+        accompaniment_gain = auto_accompaniment_gain(
+            measure_loudness(vocal), measure_loudness(acc_wav)
+        )
 
     out = work / "song.wav"
     cmd = [
