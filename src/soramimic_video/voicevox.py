@@ -114,19 +114,39 @@ def _wait_for_engine(base: str, timeout: float = ENGINE_RECOVERY_TIMEOUT) -> boo
         time.sleep(ENGINE_POLL_INTERVAL)
 
 
+_SMALL_TO_LARGE = {"ァ": "ア", "ィ": "イ", "ゥ": "ウ", "ェ": "エ", "ォ": "オ"}
+
+
+def _split_redundant_small_vowels(mora: str) -> list[str]:
+    """同母音の小書き母音(ハァ・ヒィ等)を独立した母音モーラに分ける。
+
+    VOICEVOXのlyricはファ・ティのような異母音の組み合わせモーラしか受け付けず、
+    同母音の引き伸ばし表記(ハァ)は400になる。ハ+ア に落とせば発音は同じ。
+    ファ(フ=ウ段+ァ)のような異母音はそのまま返す。
+    """
+    tail: list[str] = []
+    while len(mora) > 1 and mora[-1] in _SMALL_TO_LARGE:
+        large = _SMALL_TO_LARGE[mora[-1]]
+        if vowel_of(mora[:-1]) != large:
+            break
+        tail.append(large)
+        mora = mora[:-1]
+    return [mora, *reversed(tail)]
+
+
 def split_voicevox_moras(kana: str) -> list[str]:
     """VOICEVOXのlyric用にモーラ分割する(1要素=1モーラ)。
 
     拗音(小書きカナ)は直前にまとめ、長音「ー」は直前モーラの母音に置換して
     独立モーラにする(VOICEVOXは「ー」を含むlyricを弾くため)。
-    ッ・ンは独立モーラ。
+    ッ・ンは独立モーラ。同母音の小書き(ハァ等)は独立母音に分ける。
     """
     out: list[str] = []
     for mora in split_moras(kana):
         base = mora.rstrip("ー")
         n_long = len(mora) - len(base)
         if base:
-            out.append(base)
+            out.extend(_split_redundant_small_vowels(base))
         elif n_long:
             # 先頭が「ー」のみ(前音の母音を伸ばす継続モーラ)。母音1つに落とす。
             out.append((vowel_of(out[-1]) if out else None) or "ア")
