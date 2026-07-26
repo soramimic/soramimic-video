@@ -37,12 +37,16 @@ DEFAULT_CHUNK_SEC = 60.0  # チャンク合成の1チャンク最大秒数(0以�
 # 分割時、2番目以降のチャンク先頭に残す休符フレーム数(ボコーダの立ち上がり安定用)。
 # エンジンは1フレーム休符を弾くため2以上必須。約0.3秒を目安にする。
 LEAD_REST_FRAMES = max(2, round(0.3 * FRAME_RATE))
-# 1音符に複数モーラが載るときの長さ配分。元歌詞の複合ノート(タイ・コイ等)は
-# 「主音節が長く、添え音は短い渡り」という1アタックの歌い方なので、均等割りにすると
-# 2モーラ目が音符のど真ん中に立ち「遅れた別の音節」に聞こえる。先頭を厚く配分する。
-HEAD_MORA_WEIGHT = 3.0  # 先頭モーラの重み(後続モーラは1.0ずつ)
-# 後続モーラの最短長(秒)。短い音符でこれを割るなら潰れるので均等割りへフォールバック
-MIN_TAIL_MORA_SEC = 0.06
+# 1音符に複数モーラが載るときの長さ配分(前詰め)。均等割りだと2モーラ目が音符の
+# ど真ん中に立ち「遅れた別の音節」に聞こえるため、非最終モーラは短い固定アタック長で
+# 頭から並べ、最終モーラが残り時間を全部持つ(母音を伸ばす)。元歌詞の複合ノートの
+# 「たいー」型(頭で素早く音節を並べ最後の母音を保持)に合わせた配分。
+# 「たーい」型(主音節を長く、添え音は短く末尾に置く)へ寄せたいときは、アタック長を
+# 伸ばせばよい(非最終モーラが長くなり、最終モーラの伸ばしが短くなる)。
+STACKED_MORA_ATTACK_SEC = 0.16  # 非最終モーラ1つあたりの長さ
+# 最終モーラの最短長(秒)。非最終モーラ×アタック長を引いてこれを確保できない
+# 短い音符では音節が潰れるので均等割りへフォールバックする
+MIN_LAST_MORA_SEC = 0.06
 # 歌唱用の「歌の先生」スタイル(sing型)。クエリ生成に使う。frame_synthesisは
 # 選んだスタイル(frame_decode/sing)で行う。現状 sing型は 波音リツ ノーマル(6000)のみ。
 SING_TEACHER_ID = 6000
@@ -136,23 +140,18 @@ def split_voicevox_moras(kana: str) -> list[str]:
 def mora_frame_bounds(total: int, m: int) -> list[int]:
     """1音符(total フレーム)へ m モーラを載せるときの境界(0..total, 長さ m+1)。
 
-    先頭モーラを HEAD_MORA_WEIGHT 倍で重み付けする(2モーラなら 3:1)。
-    後続モーラが MIN_TAIL_MORA_SEC を下回るほど音符が短いときは、
-    音節が潰れるので均等割りに戻す。
+    前詰め: 非最終モーラは STACKED_MORA_ATTACK_SEC の固定長で頭から並べ、
+    最終モーラが残りを全部持つ(母音を伸ばす)。非最終モーラぶんを引いて
+    最終モーラに MIN_LAST_MORA_SEC を確保できない短い音符では、音節が潰れるので
+    均等割りに戻す。
     """
     if m <= 1:
         return [0, total]
-    weights = [HEAD_MORA_WEIGHT] + [1.0] * (m - 1)
-    cum = 0.0
-    total_w = sum(weights)
-    bounds = [0]
-    for w in weights:
-        cum += w
-        bounds.append(round(total * cum / total_w))
-    tails = [bounds[i + 1] - bounds[i] for i in range(1, m)]
-    if min(tails) < MIN_TAIL_MORA_SEC * FRAME_RATE:
+    attack = max(1, round(STACKED_MORA_ATTACK_SEC * FRAME_RATE))
+    min_final = max(1, round(MIN_LAST_MORA_SEC * FRAME_RATE))
+    if total < attack * (m - 1) + min_final:
         return [round(total * i / m) for i in range(m + 1)]
-    return bounds
+    return [attack * i for i in range(m)] + [total]
 
 
 def auto_octave_shift(keys: list[int], transpose: int = 0) -> int:
@@ -169,7 +168,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
 
     - 曲頭(t=0)から休符で埋める(絶対時間を保つ)。
     - 音符の重なりは後勝ちでクリップ、隙間は休符で埋める。
-    - 1音符=1モーラ。複数モーラのカナは音符フレームを分配する(先頭モーラを厚く。
+    - 1音符=1モーラ。複数モーラのカナは音符フレームを分配する(前詰め。
       mora_frame_bounds 参照)。
     - transposeは非休符のkeyに半音単位で加算。
     """
