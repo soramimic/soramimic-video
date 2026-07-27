@@ -11,11 +11,15 @@ bridge/convert.mjs と同一の出力構造
 
 app(同梱辞書データ + fugashi/ipadic MeCab トークナイザ)の構築は重いので、
 辞書データ・トークナイザは一度だけ読み、r ごとの app をキャッシュする。
+単語リストCSVの前処理(parse_tidy: 読み推定 → 音節バリエーション展開)も
+行数が多いと支配的なコストになるため、プロセス内でLRUキャッシュする。
 """
 
 from __future__ import annotations
 
 import math
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -45,17 +49,23 @@ def _get_base() -> dict[str, Any]:
     return _base
 
 
-def _get_app(vowel_ratio: Any = None) -> Any:
-    """「音の合わせ方」r に応じた soramimic アプリを返す(appCore.js の appFor)。"""
-    from soramimic import create_soramimic, scale_similarity
-
+def _app_key(vowel_ratio: Any = None) -> str:
+    """「音の合わせ方」r を _apps のキー(小数2桁)に正規化する。"""
     try:
         r = float(vowel_ratio)
     except (TypeError, ValueError):
         r = 0.0
     # JSの Number(vowelRatio) || 0.8 相当(0/NaN/未指定 → 既定)
     r = min(0.9, max(0.1, r or DEFAULT_VOWEL_RATIO))
-    key = f"{r:.2f}"
+    return f"{r:.2f}"
+
+
+def _get_app(vowel_ratio: Any = None) -> Any:
+    """「音の合わせ方」r に応じた soramimic アプリを返す(appCore.js の appFor)。"""
+    from soramimic import create_soramimic, scale_similarity
+
+    key = _app_key(vowel_ratio)
+    r = float(key)
     if key not in _apps:
         base = _get_base()
         data = base["data"]
@@ -74,6 +84,86 @@ def _get_app(vowel_ratio: Any = None) -> Any:
             get_yomi=tok.get_yomi,
         )
     return _apps[key]
+
+
+# --- 単語リストDB(parse_tidy の結果)のプロセス内LRUキャッシュ ---
+#
+# parse_tidy は「漢字表記の読み推定 → 読みの音節バリエーション展開」を全行に対して
+# 行うため、行数の多いリスト(動物辞書16,731行で約4分)では変換本体より桁違いに重い。
+# 結果は同じ (app, CSV内容, where) なら決定的で、呼び出し先でも読み取り専用なので
+# ジョブをまたいで使い回せる。
+#
+# 【破壊的変更が無いことの確認】
+#   * ResultDB の値(Word)は str/float だけの浅い dict で、入れ子の可変オブジェクトが無い
+#   * soramimic/maker.py が wordlist に触るのは `clen not in wordlist` と
+#     `for w in wordlist[key]` の読み取りのみ(代入・pop は一切無い)
+#   * get_similar_word は共有オブジェクトの書き換えを避けるため `{**w, "sim": sim}` と
+#     コピーを作る(soramimic 側 issue #99 の修正)。generate_from_tokens が
+#     `v["original_surface"] = ...` で書き込むのはこのコピーであってDB本体ではない
+#   * run_convert の戻り値も _json_safe が dict(word) でコピーする
+#   よって deepcopy は不要で、同じ db を複数ジョブ・複数スレッドで共有してよい。
+#
+# 【容量の決め方】DBは大きい。sekitsui.csv(16,731行/4.3MB)は 172万バリエーション =
+# 実測RSS約6.6GB(1バリエーションあたり約3.9KB)。件数だけで上限を切ると大きいリストを
+# 数本抱えた時点でOOMするので、バリエーション総数の予算でも切る。予算超過時はLRU順に
+# 捨てるが、直近に入れた1本だけは(単体で予算を超えていても)必ず残す
+# ——そうしないと大きいリストが永久にキャッシュされず、この最適化の意味が無くなる。
+_DB_CACHE_MAXSIZE = 8
+_DB_CACHE_MAX_VARIANTS = 2_000_000  # 約8GB相当
+# キー: (appキー, CSVの絶対パス, mtime_ns, ファイルサイズ, where)
+_DbCacheKey = tuple[str, str, int, int, str]
+_db_cache: OrderedDict[_DbCacheKey, Any] = OrderedDict()
+_db_cache_lock = threading.Lock()
+
+
+def clear_db_cache() -> None:
+    """単語リストDBキャッシュを空にする(主にテスト用)。"""
+    with _db_cache_lock:
+        _db_cache.clear()
+
+
+def _db_variants(db: Any) -> int:
+    """DBが保持する単語バリエーション数(メモリ量の代理指標)。"""
+    return sum(len(v) for v in db.values())
+
+
+def _evict_locked() -> None:
+    """上限(件数・バリエーション総数)を満たすまでLRU順に捨てる。要ロック。"""
+    total = sum(_db_variants(db) for db in _db_cache.values())
+    while len(_db_cache) > 1 and (
+        len(_db_cache) > _DB_CACHE_MAXSIZE or total > _DB_CACHE_MAX_VARIANTS
+    ):
+        _, dropped = _db_cache.popitem(last=False)
+        total -= _db_variants(dropped)
+
+
+def db_cache_key(app_key: str, wordlist_csv: Path, where: str) -> _DbCacheKey:
+    """キャッシュキー。CSVの内容が変われば作り直せるよう mtime(ns)とサイズを含める。"""
+    path = Path(wordlist_csv).resolve()
+    st = path.stat()
+    return (app_key, str(path), st.st_mtime_ns, st.st_size, where)
+
+
+def _get_db(app: Any, app_key: str, wordlist_csv: Path, where: str) -> Any:
+    """parse_tidy の結果をキャッシュ付きで返す。"""
+    path = Path(wordlist_csv).resolve()
+    key = db_cache_key(app_key, path, where)
+
+    with _db_cache_lock:
+        if key in _db_cache:
+            _db_cache.move_to_end(key)
+            return _db_cache[key]
+
+    # 構築はロックの外で行う(数分かかることがあるので、その間ほかのスレッドの
+    # キャッシュヒットまで止めない)。同一キーが同時に来ると二重に構築されるが、
+    # parse_tidy は決定的で結果は読み取り専用なので正しさには影響しない。
+    db = app.word_list.parse_tidy(path.read_text(encoding="utf-8"), where)
+
+    with _db_cache_lock:
+        _db_cache[key] = db
+        _db_cache.move_to_end(key)
+        _evict_locked()
+    return db
 
 
 def _json_safe(word: dict[str, Any]) -> dict[str, Any]:
@@ -108,9 +198,9 @@ def run_convert(
         MeCabトークナイズを二重に走らせずに済む。
     """
     params = params or {}
+    app_key = _app_key(params.get("VOWEL_RATIO"))
     app = _get_app(params.get("VOWEL_RATIO"))
-    csv_text = Path(wordlist_csv).read_text(encoding="utf-8")
-    db = app.word_list.parse_tidy(csv_text, where or "")
+    db = _get_db(app, app_key, Path(wordlist_csv), where or "")
 
     # 生成画面(app.js)と同じ経路: トークナイズ → 生成
     tokens_list = app.text_analyzer.tokenize_together(phrases)

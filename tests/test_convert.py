@@ -992,3 +992,177 @@ def test_convert_project_alpha_prefers_long_note_match(tmp_path: Path):
 
     assert convert(None) == ["カチク"]
     assert convert("1") == ["タキト"]
+
+
+# --- 単語リストDB(parse_tidy)キャッシュ ---
+
+
+def _db_cache_size() -> int:
+    from soramimic_video import soramimic_engine as engine
+
+    return len(engine._db_cache)
+
+
+def test_db_cache_hit_keeps_same_object_and_output(tmp_path: Path):
+    """同じCSV・同じwhereならDBは再構築されず、変換結果も完全に一致する。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation,tag\n"
+        "0,静岡駅,静岡,シズオカ,a\n"
+        "1,鈴鹿,鈴鹿,スズカ,b",
+        encoding="utf-8",
+    )
+    engine.clear_db_cache()
+
+    first = _tiny_project()
+    convert_project(first, wordlist=str(csv_path))
+    assert _db_cache_size() == 1
+    cached = next(iter(engine._db_cache.values()))
+
+    # 2回目は parse_tidy を呼ばない(呼んだら例外にして検出する)
+    app = engine._get_app(0.8)
+    original_parse_tidy = app.word_list.parse_tidy
+
+    def boom(*a, **k):  # pragma: no cover - 呼ばれたら失敗
+        raise AssertionError("parse_tidy がキャッシュヒット時に呼ばれた")
+
+    app.word_list.parse_tidy = boom
+    try:
+        second = _tiny_project()
+        convert_project(second, wordlist=str(csv_path))
+    finally:
+        app.word_list.parse_tidy = original_parse_tidy
+
+    assert next(iter(engine._db_cache.values())) is cached
+    assert first.parody is not None and second.parody is not None
+    assert first.parody == second.parody
+
+
+def test_db_cache_not_mutated_by_convert(tmp_path: Path):
+    """変換はキャッシュ中のDBを書き換えない(ジョブ間で共有しても安全)。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,静岡駅,静岡,シズオカ\n1,鈴鹿,鈴鹿,スズカ",
+        encoding="utf-8",
+    )
+    engine.clear_db_cache()
+    convert_project(_tiny_project(), wordlist=str(csv_path))
+    db = next(iter(engine._db_cache.values()))
+    snapshot = json.dumps(
+        {str(k): v for k, v in sorted(db.items())}, sort_keys=True, default=str
+    )
+
+    convert_project(_tiny_project(), wordlist=str(csv_path))
+    after = json.dumps(
+        {str(k): v for k, v in sorted(db.items())}, sort_keys=True, default=str
+    )
+    assert after == snapshot
+    # generate 側が付ける sim/original_surface がDBに漏れていない
+    for words in db.values():
+        for w in words:
+            assert "sim" not in w and "original_surface" not in w
+
+
+def test_db_cache_rebuilds_on_file_change(tmp_path: Path):
+    """CSVを書き換えると(mtimeが変わり)DBが作り直され、結果も新内容に従う。"""
+    import os
+
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,沈む,沈む,シズム", encoding="utf-8"
+    )
+    engine.clear_db_cache()
+    before = _tiny_project()
+    convert_project(before, wordlist=str(csv_path))
+    assert before.parody is not None
+    assert [w.surface for w in before.parody.lines[0].words] == ["沈む"]
+
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,鈴鹿,鈴鹿,スズカ", encoding="utf-8"
+    )
+    # 同一秒内の書き換えでも検知できることを示すため mtime_ns を明示的に進める
+    st = csv_path.stat()
+    os.utime(csv_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    after = _tiny_project()
+    convert_project(after, wordlist=str(csv_path))
+    assert after.parody is not None
+    assert [w.surface for w in after.parody.lines[0].words] == ["鈴鹿"]
+    assert _db_cache_size() == 2
+
+
+def test_db_cache_separates_where_and_vowel_ratio(tmp_path: Path):
+    """where / VOWEL_RATIO が違えば別エントリになる。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation,tag\n"
+        "0,沈む,沈む,シズム,a\n"
+        "1,鈴鹿,鈴鹿,スズカ,b",
+        encoding="utf-8",
+    )
+    engine.clear_db_cache()
+    a = _tiny_project()
+    convert_project(a, wordlist=str(csv_path), where="tag=a")
+    b = _tiny_project()
+    convert_project(b, wordlist=str(csv_path), where="tag=b")
+    assert _db_cache_size() == 2
+    assert a.parody is not None and b.parody is not None
+    assert [w.surface for w in a.parody.lines[0].words] == ["沈む"]
+    assert [w.surface for w in b.parody.lines[0].words] == ["鈴鹿"]
+
+    # where 無しでも r が違えば別キー(app ごとに前処理が変わりうるため)
+    convert_project(_tiny_project(), wordlist=str(csv_path), params={"VOWEL_RATIO": "0.5"})
+    convert_project(_tiny_project(), wordlist=str(csv_path))
+    assert _db_cache_size() == 4
+
+
+def test_db_cache_evicts_lru(tmp_path: Path, monkeypatch):
+    """上限を超えたら最も古く使われたエントリから捨てる。"""
+    from soramimic_video import soramimic_engine as engine
+
+    monkeypatch.setattr(engine, "_DB_CACHE_MAXSIZE", 2)
+    engine.clear_db_cache()
+    paths = []
+    for i in range(3):
+        p = tmp_path / f"w{i}.csv"
+        p.write_text(
+            f"id,original,surface,pronunciation\n{i},沈む,沈む,シズム", encoding="utf-8"
+        )
+        paths.append(p)
+
+    convert_project(_tiny_project(), wordlist=str(paths[0]))
+    convert_project(_tiny_project(), wordlist=str(paths[1]))
+    # paths[0] を再利用して「最近使った」側に上げる
+    convert_project(_tiny_project(), wordlist=str(paths[0]))
+    convert_project(_tiny_project(), wordlist=str(paths[2]))
+
+    assert _db_cache_size() == 2
+    keys = [k[1] for k in engine._db_cache]
+    assert str(paths[1].resolve()) not in keys
+    assert str(paths[0].resolve()) in keys
+    assert str(paths[2].resolve()) in keys
+
+
+def test_db_cache_evicts_over_variant_budget(tmp_path: Path, monkeypatch):
+    """件数に余裕があっても、バリエーション総数の予算を超えたらLRUで捨てる。"""
+    from soramimic_video import soramimic_engine as engine
+
+    monkeypatch.setattr(engine, "_DB_CACHE_MAX_VARIANTS", 1)
+    engine.clear_db_cache()
+    for i in range(2):
+        p = tmp_path / f"w{i}.csv"
+        p.write_text(
+            f"id,original,surface,pronunciation\n{i},沈む,沈む,シズム", encoding="utf-8"
+        )
+        convert_project(_tiny_project(), wordlist=str(p))
+    # 単体で予算超過でも直近の1本は必ず残る(残さないとキャッシュの意味が無い)
+    assert _db_cache_size() == 1
+    assert str((tmp_path / "w1.csv").resolve()) == next(iter(engine._db_cache))[1]
