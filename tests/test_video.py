@@ -543,12 +543,12 @@ def _write(path: Path, obj) -> Path:
     return path
 
 
-def _two_word_project() -> Project:
+def _two_word_project(second_start: float = 4.5) -> Project:
     # 2単語を大きく離して配置(単語0: 0.5〜0.75s / 単語1: 4.5〜4.75s、隙間3.75s)
     song = SongInfo(midi_path="mysong.mid", ticks_per_beat=480)
     notes = [
         Note(0, 60, 0, 240, 0.5, 0.75, 0, "静", "シズ", ""),
-        Note(1, 62, 0, 240, 4.5, 4.75, 1, "山", "ヤマ", ""),
+        Note(1, 62, 0, 240, second_start, second_start + 0.25, 1, "山", "ヤマ", ""),
     ]
     lines = [Line(0, "", "", [0]), Line(1, "", "", [1])]
     parody = Parody(wordlist="test", lines=[
@@ -560,22 +560,104 @@ def _two_word_project() -> Project:
 
 def test_hold_next_extends_show_end(tmp_path: Path):
     project = _two_word_project()
-    els = {"elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.3],
-                         "size": 0.1}]}
-    from soramimic_video.layout import load_layout
+    cap, hold = _text_layouts(tmp_path)
 
     # 既定: 3秒(HOLD_MAX_SEC)で上限。1単語目は3.75s(0.75+3.0)で切れる
-    cap = load_layout(str(_write(tmp_path / "cap.json", els)))
     cues, _ = build_image_cues(project, tmp_path / "cap", 320, 180, layout=cap)
     assert len(cues) == 2
     assert abs(cues[0].end - 3.75) < 0.01
     assert abs(cues[1].end - 7.75) < 0.01  # 最終単語は end+3.0
 
     # hold=next: 1単語目は次の歌唱(4.5s)まで持続。最終単語は end 止め(後奏はidle/黒)
-    hold = load_layout(str(_write(tmp_path / "hold.json", {**els, "hold": "next"})))
     cues_h, _ = build_image_cues(project, tmp_path / "hold", 320, 180, layout=hold)
     assert abs(cues_h[0].end - 4.5) < 0.01
     assert abs(cues_h[1].end - 4.75) < 0.01
+
+
+_TEXT_LAYOUT = {
+    "elements": [
+        {"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.3], "size": 0.1}
+    ]
+}
+
+
+def _text_layouts(tmp_path: Path):
+    """同じ表示内容で hold なし/あり(hold=next)の2レイアウト。"""
+    from soramimic_video.layout import load_layout
+
+    cap = load_layout(str(_write(tmp_path / "cap.json", _TEXT_LAYOUT)))
+    hold = load_layout(str(_write(tmp_path / "hold.json", {**_TEXT_LAYOUT, "hold": "next"})))
+    return cap, hold
+
+
+def _dialogue_spans(ass: str, style: str = "Parody") -> list[tuple[float, float]]:
+    """ASSのDialogue行から、指定スタイルの表示区間(秒)を順に取り出す。"""
+
+    def _sec(t: str) -> float:
+        h, m, s = t.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+
+    spans = []
+    for ln in ass.splitlines():
+        if not ln.startswith("Dialogue:"):
+            continue
+        parts = ln.split(",")
+        if parts[3] == style:
+            spans.append((_sec(parts[1]), _sec(parts[2])))
+    return spans
+
+
+def test_subtitle_end_matches_image_hold(tmp_path: Path):
+    # 間奏の手前(次の単語まで3.75s)で、字幕が画像より先に消えない
+    from soramimic_video.video import HOLD_MAX_SEC, SUB_PAD_SEC
+
+    project = _two_word_project()
+    cap, hold = _text_layouts(tmp_path)
+
+    # 既定: 画像と同じく 行末+HOLD_MAX_SEC まで残る(従来は 行末+0.15s で消えていた)
+    spans = _dialogue_spans(build_ass(project, 1280, 720, "Font", cap))
+    assert abs(spans[0][1] - (0.75 + HOLD_MAX_SEC)) < 0.01
+    assert abs(spans[1][1] - (4.75 + HOLD_MAX_SEC)) < 0.01  # 最終行も画像に揃える
+    cues, _ = build_image_cues(project, tmp_path / "cap", 320, 180, layout=cap)
+    assert abs(spans[0][1] - cues[0].end) < 0.01
+
+    # hold=next: 次の単語(4.5s)まで。ただし次の行の字幕開始(4.5-0.15s)で交代する
+    spans_h = _dialogue_spans(build_ass(project, 1280, 720, "Font", hold))
+    assert abs(spans_h[0][1] - (4.5 - SUB_PAD_SEC)) < 0.01
+    assert abs(spans_h[1][0] - (4.5 - SUB_PAD_SEC)) < 0.01
+    # hold=next の最終単語は余韻なし(後奏はidle/黒)なので従来のパディングのまま
+    assert abs(spans_h[1][1] - (4.75 + SUB_PAD_SEC)) < 0.01
+
+
+def test_subtitle_end_kept_when_next_line_is_close(tmp_path: Path):
+    # 次の行がすぐ来る通常の並びでは、従来どおり次の行の開始で詰める
+    from soramimic_video.video import SUB_PAD_SEC
+
+    project = _two_word_project(second_start=1.0)
+    for layout in _text_layouts(tmp_path):
+        spans = _dialogue_spans(build_ass(project, 1280, 720, "Font", layout))
+        assert abs(spans[0][1] - (1.0 - SUB_PAD_SEC)) < 0.01
+        assert abs(spans[1][0] - (1.0 - SUB_PAD_SEC)) < 0.01
+
+
+def test_subtitle_end_keeps_padding_without_word_frames(tmp_path: Path):
+    # このレイアウトで表示できる単語が無い行(画像なし等)は従来のパディング挙動
+    from soramimic_video.layout import load_layout
+    from soramimic_video.video import SUB_PAD_SEC
+
+    project = _two_word_project()
+    for pl in project.parody.lines:
+        pl.words[0].wordlist_row = {"death": ""}
+    layout = load_layout(str(_write(tmp_path / "req2.json", {
+        "elements": [
+            {"type": "text", "text": "没年 {death}", "box": [0.1, 0.3, 0.8, 0.2],
+             "require": "death"},
+        ],
+    })))
+    cues, _ = build_image_cues(project, tmp_path / "none", 320, 180, layout=layout)
+    assert cues == []
+    spans = _dialogue_spans(build_ass(project, 1280, 720, "Font", layout))
+    assert abs(spans[0][1] - (0.75 + SUB_PAD_SEC)) < 0.01
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")

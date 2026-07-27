@@ -164,9 +164,7 @@ def _black_frame(out_dir: Path, width: int, height: int) -> Path:
     return out
 
 
-def _prefetch_image_assets(
-    words: list[tuple[float, float, dict, bool]], cache: Path
-) -> None:
+def _prefetch_image_assets(frames: list[WordFrame], cache: Path) -> None:
     """逐次ループの前に、使う画像とクレジットをスレッドプールで温めておく。
 
     download_image はファイルキャッシュ(cache/<hash>.*)へ、fetch_image_credit は
@@ -180,7 +178,8 @@ def _prefetch_image_assets(
     # URLごとに: クレジット取得が要るか / どの image_page で引くか(初出を採用)
     need_credit: dict[str, str] = {}
     urls: list[str] = []
-    for _start, _end, data, _use_fallback in words:
+    for frame in frames:
+        data = frame.data
         url = data.get("image") or ""
         if not url:
             continue
@@ -267,6 +266,71 @@ def effective_fallback(
     return not any(layout.render_texts(data, False))
 
 
+@dataclass
+class WordFrame:
+    """1単語ぶんのフレーム候補(表示区間+テンプレートに渡すデータ)。"""
+
+    line_id: int
+    start: float
+    end: float
+    data: dict
+    use_fallback: bool
+
+
+def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
+    """このレイアウトで表示できる替え歌単語を、歌唱順に並べたフレーム候補列。
+
+    画像のダウンロード結果に依存しない純粋な計算で、build_image_cues(実際の
+    フレーム生成)と build_ass(字幕の消灯タイミング)が同じ並び・同じ時間軸を
+    共有するために使う。
+    """
+    if project.parody is None:
+        return []
+    frames: list[WordFrame] = []
+    for pline in project.parody.lines:
+        for w in pline.words:
+            row = w.wordlist_row or {}
+            # 単語リストに行がない単語(手入力の未知語など)はfallback側で描く
+            use_fallback = not row
+            # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
+            data = word_frame_data(w, row)
+            # 画像列が空の既知語も文字フレーム(fallback)で出す
+            use_fallback = effective_fallback(
+                layout, data, use_fallback, has_image=bool(data.get("image"))
+            )
+            if not word_is_shown(layout, data, use_fallback):
+                continue  # このレイアウトでは表示できるものがない単語
+            start, end = project.word_time_range(w)
+            frames.append(WordFrame(pline.line_id, start, end, data, use_fallback))
+    frames.sort(key=lambda f: f.start)
+    return frames
+
+
+def frame_show_end(frames: list[WordFrame], i: int, hold_next: bool) -> float:
+    """frames[i] の表示を次の単語まで持続させたときの終了時刻。
+
+    既定は最大 HOLD_MAX_SEC 秒。hold_next(レイアウトの "hold": "next")なら
+    次の単語まで隙間を埋め続ける(間奏まるごと持続する)。最終単語より後(後奏)は
+    hold_next でも持続させず idle/黒に任せる。
+    字幕(build_ass)も行末の単語のこの値に合わせて消える。
+    """
+    end = frames[i].end
+    if i + 1 >= len(frames):
+        return end if hold_next else end + HOLD_MAX_SEC
+    next_start = frames[i + 1].start
+    if hold_next:
+        return max(end, next_start)
+    return min(max(end, next_start), end + HOLD_MAX_SEC)
+
+
+def line_show_ends(project: Project, layout: Layout) -> dict[int, float]:
+    """行ID -> その行の最後の単語フレームの表示終了時刻(単語フレームが無い行は含まない)。"""
+    frames = collect_word_frames(project, layout)
+    return {
+        f.line_id: frame_show_end(frames, i, layout.hold_next) for i, f in enumerate(frames)
+    }
+
+
 def build_image_cues(
     project: Project,
     work: Path,
@@ -284,23 +348,7 @@ def build_image_cues(
         return [], []
     if layout is None:
         layout = load_layout(None)
-    words: list[tuple[float, float, dict, bool]] = []
-    for pline in project.parody.lines:
-        for w in pline.words:
-            row = w.wordlist_row or {}
-            # 単語リストに行がない単語(手入力の未知語など)はfallback側で描く
-            use_fallback = not row
-            # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
-            data = word_frame_data(w, row)
-            # 画像列が空の既知語も文字フレーム(fallback)で出す
-            use_fallback = effective_fallback(
-                layout, data, use_fallback, has_image=bool(data.get("image"))
-            )
-            if not word_is_shown(layout, data, use_fallback):
-                continue  # このレイアウトでは表示できるものがない単語
-            start, end = project.word_time_range(w)
-            words.append((start, end, data, use_fallback))
-    words.sort(key=lambda x: x[0])
+    frames = collect_word_frames(project, layout)
 
     cues: list[ImageCue] = []
     credits: dict[str, dict] = {}
@@ -312,8 +360,9 @@ def build_image_cues(
     norm = work / "frames"
     # 逐次ループが読む画像/クレジットを先に並列で温める(キャッシュが冷えていると
     # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
-    _prefetch_image_assets(words, cache)
-    for i, (start, end, data, use_fallback) in enumerate(words):
+    _prefetch_image_assets(frames, cache)
+    for i, wf in enumerate(frames):
+        start, data, use_fallback = wf.start, wf.data, wf.use_fallback
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
@@ -331,18 +380,8 @@ def build_image_cues(
         frame = render_frame(layout, raw, data, width, height, norm, use_fallback)
         if frame is None:
             continue
-        # 次の単語まで表示を持続。既定は最大 HOLD_MAX_SEC 秒。
-        # layout.hold_next(="hold":"next")なら隙間を直前フレームで埋め続ける。
-        # 最終単語より後(後奏)は hold_next でも持続させず idle/黒に任せる
-        if i + 1 < len(words):
-            next_start = words[i + 1][0]
-            show_end = (
-                max(end, next_start)
-                if layout.hold_next
-                else min(max(end, next_start), end + HOLD_MAX_SEC)
-            )
-        else:
-            show_end = end if layout.hold_next else end + HOLD_MAX_SEC
+        # 次の単語まで表示を持続(字幕の消灯も build_ass が同じ値に合わせる)
+        show_end = frame_show_end(frames, i, layout.hold_next)
         if cues and cues[-1].end > start:
             cues[-1].end = start
         cues.append(ImageCue(start=start, end=show_end, frame=frame))
@@ -660,8 +699,9 @@ def build_ass(
 ) -> str:
     """歌詞字幕(替え歌/元歌詞)のASSを作る。行の歌唱区間で表示する。
 
-    位置・サイズ・色はレイアウトのsubtitle要素から決める。subtitle要素の
-    ないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
+    消灯はその行の最後の単語画像の余韻(frame_show_end)に合わせる(次の行の
+    表示が始まればそこで交代)。位置・サイズ・色はレイアウトのsubtitle要素から
+    決める。subtitle要素のないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
     表示粒度(行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
     (Web UIの一括指定)、それも無ければ source 既定に従う。
     """
@@ -699,10 +739,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # 同時に表示される字幕があるとASSレンダラの衝突回避が働いて
     # 字幕が上に積み上がり、行の切り替わりで位置が跳ねるため
     shown = [line for line in project.lines if line.note_ids]
+    # 行の消灯は単語画像の余韻(frame_show_end)に合わせる。間奏の手前で
+    # 字幕だけ先に消えて画像が残る、というずれをなくすため。
+    # 単語フレームが無い行(画像なしレイアウト等)は従来のパディングのみ
+    show_ends = line_show_ends(project, layout or load_layout(None))
     spans = []
     for line in shown:
         start, end = project.line_time_range(line)
-        spans.append([start - SUB_PAD_SEC, end + SUB_PAD_SEC])
+        stop = max(end + SUB_PAD_SEC, show_ends.get(line.id, end))
+        spans.append([start - SUB_PAD_SEC, stop])
     for j in range(len(spans) - 1):
         spans[j][1] = min(spans[j][1], spans[j + 1][0])
         spans[j][1] = max(spans[j][1], spans[j][0] + 0.2)  # 行の重なりが極端でも一瞬は出す
