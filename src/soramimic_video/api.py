@@ -286,6 +286,15 @@ def _download_filename(job: Job) -> str:
     return "_".join(filter(None, ["soramimic", song, wordlist, job.id])) + ".mp4"
 
 
+def song_title_of(params: dict[str, Any]) -> str:
+    """サムネに出す曲名。UIが送ってきた曲名(サンプル曲は samples.json の title)を
+    優先し、無ければアップロード時のファイル名(midi_filename)を使う。
+
+    ジョブのMIDIは input.mid に固定されるので、曲名は params からしか取れない。
+    """
+    return str(params.get("song_title") or params.get("midi_filename") or "")
+
+
 def _thumbnail_filename(job: Job) -> str:
     """サムネ画像のダウンロード名(動画と同じ命名で拡張子だけpng)。"""
     song, wordlist = _job_slug(job)
@@ -408,9 +417,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             image_cache=config.get("image_cache"),
             layout=layout,
             granularity=parse_granularity_override(job.params.get("subtitle_granularity")),
-            # サムネの曲名。ジョブのMIDIは input.mid に固定されるので、
-            # アップロード時のファイル名を渡す
-            song_title=job.params.get("midi_filename"),
+            song_title=song_title_of(job.params),
         )
 
 
@@ -1052,6 +1059,9 @@ def create_app(
         voicevox_auto_octave: bool | None = Form(None),
         transpose: int = Form(0),
         preview: float = Form(0),
+        # サムネ・表示用の曲名。WebUIはサンプル曲なら samples.json の title、
+        # 自分のMIDIならファイル名(拡張子なし)を送る。未指定なら midi_filename を使う
+        song_title: str = Form(""),
         wordlist: str = Form(""),
         where: str = Form(""),
         convert_params: str = Form(""),
@@ -1130,6 +1140,7 @@ def create_app(
             "subtitle_granularity": subtitle_granularity.strip(),
             "parody_source": "editor" if editor_bytes else "convert",
             "midi_filename": midi.filename,
+            "song_title": song_title.strip(),
         }
         job = manager.create(
             midi_bytes, editor_bytes, lyrics, params,

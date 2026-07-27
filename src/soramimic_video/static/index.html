@@ -874,6 +874,7 @@ async function submitJob(previewSec) {
   form.append("auto_octave", $("auto-octave").checked ? "true" : "false");
   form.append("transpose", $("transpose").value.trim() || "0");
   form.append("preview", String(previewSec));
+  form.append("song_title", songTitleOf(midi));
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
@@ -896,6 +897,14 @@ async function submitJob(previewSec) {
     // Turnstileのトークンは1回きり。次の投入用に取り直す
     resetTurnstile();
   }
+}
+
+// サムネ・表示に使う曲名。サンプル曲(ファイル名が <サンプルID>.mid)は
+// samples.json の曲名を、自分で選んだMIDIはファイル名(拡張子なし)を送る。
+function songTitleOf(file) {
+  const base = ((file && file.name) || "").replace(/\.[^.]+$/, "");
+  const opt = [...$("sample-select").options].find((o) => o.value && o.value === base);
+  return opt ? opt.textContent : base;
 }
 
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す

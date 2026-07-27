@@ -664,3 +664,21 @@ def test_thumbnail_missing_is_404(client):
 
 def test_thumbnail_unknown_job_is_404(client):
     assert client.get("/api/jobs/nosuchjob/thumbnail").status_code == 404
+
+
+def test_song_title_is_stored(client):
+    # UIはサンプル曲なら samples.json の曲名、自分のMIDIならファイル名を送る
+    job_id = submit(client, wordlist="stations", song_title=" うっせぇわ(確認用) ")
+    body = wait_done(client, job_id)
+    assert body["params"]["song_title"] == "うっせぇわ(確認用)"
+
+
+def test_song_title_falls_back_to_midi_filename():
+    # 曲名の指定があればそれ、無ければアップロード時のファイル名
+    assert api_mod.song_title_of(
+        {"song_title": "うっせぇわ", "midi_filename": "ussewa.mid"}
+    ) == "うっせぇわ"
+    assert api_mod.song_title_of(
+        {"song_title": "", "midi_filename": "ussewa.mid"}
+    ) == "ussewa.mid"
+    assert api_mod.song_title_of({}) == ""
