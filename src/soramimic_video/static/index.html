@@ -749,8 +749,6 @@ function finish() {
   $("cancel").hidden = true;
   currentJob = null;
   setBusy(false);
-  // おまかせの「…で生成中…」は実行中だけの表示。終わったら組み合わせだけ残す
-  if (luckyCombo) { $("lucky-status").textContent = `🎲 ${luckyCombo}`; luckyCombo = ""; }
   loadHistory();
 }
 
@@ -763,7 +761,7 @@ function setBusy(busy) {
 async function submitJob(previewSec) {
   const midi = $("midi").files[0];
   if (!midi) {
-    setBusy(false);  // おまかせ経由で先に無効化されている場合に戻す
+    setBusy(false);  // 先に無効化されている場合に戻す
     alert("曲を選んでください(サンプル曲か、詳細を開いてXF MIDIファイル)");
     return;
   }
@@ -817,11 +815,16 @@ async function submitJob(previewSec) {
   }
 }
 
+// サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
+let sampleDescriptions = {};
+
 async function loadSamples() {
   try {
     const res = await fetch("/api/samples");
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
+    sampleDescriptions = {};
+    samples.forEach((s) => { if (s.description) sampleDescriptions[s.id] = s.description; });
     $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
   } catch {
@@ -855,7 +858,8 @@ async function applySample() {
       $("wordlist").value = "stations";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
     }
-    $("sample-status").textContent = `✓ ${title}(童謡・PD)をセットしました`;
+    const desc = sampleDescriptions[sid] || "";
+    $("sample-status").textContent = `✓ ${title}${desc ? `(${desc})` : ""}をセットしました`;
     return true;
   } catch (err) {
     $("sample-status").textContent = err.message;
@@ -866,13 +870,11 @@ $("sample-select").addEventListener("change", applySample);
 
 // ---- 🎲 おまかせで試す ----
 // サンプル曲と単語リストをランダムに選び、既存のchangeイベント経路(単語リストの
-// レイアウト自動切替 applyWordlistLayout など)を通してフォームへ反映してから、
-// そのまま生成を開始する。初見の人が何も決めずに1本作れるようにするための入口。
+// レイアウト自動切替 applyWordlistLayout など)を通してフォームへ反映する。生成は
+// 開始せず、生成ボタンへスクロールして「あとは押すだけ」の状態を見せるところまで。
+// 初見の人が何も決めずに始められて、かつ何が起きるか分かってから押せるようにする。
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
-
-// 実行中のおまかせの組み合わせ表示(「ふるさと × 野球選手」)。終わったら「生成中…」を外す
-let luckyCombo = "";
 
 async function luckyRun() {
   const status = $("lucky-status");
@@ -887,8 +889,8 @@ async function luckyRun() {
   const song = pickRandom(samples);
   const wl = wordlists.length ? pickRandom(wordlists) : null;
   setBusy(true);
-  luckyCombo = `${song.textContent} × ${wl ? wl.textContent : "単語リスト"}`;
-  status.textContent = `${luckyCombo} で生成中…`;
+  const combo = `${song.textContent} × ${wl ? wl.textContent : "単語リスト"}`;
+  status.textContent = `${combo} を準備中…`;
   try {
     // 1. 単語リスト: セレクトのchangeと同じ経路(#wordlist/#where設定・レイアウト自動切替)
     if (wl) {
@@ -912,7 +914,11 @@ async function luckyRun() {
     setBusy(false);
     return;
   }
-  await submitJob(0);  // 進行状況・エラー表示とsetBusy(false)はsubmitJob側が行う
+  // 投入はしない。何がセットされたかを伝えて、生成ボタンまで視線を運ぶ
+  setBusy(false);
+  status.textContent =
+    `🎲 ${combo} をセットしました。よければ『🎬 動画を生成』を押してください`;
+  $("submit").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 $("lucky").addEventListener("click", luckyRun);
@@ -1793,11 +1799,14 @@ async function loadWordlistSelect(editorAvailable) {
       sel.appendChild(o);
     }
   });
-  // サーバーはconfにないリストも名前で解決できるので、手入力の逃げ道を常に用意する
-  const other = document.createElement("option");
-  other.value = "__other__";
-  other.textContent = "その他(名前を入力)";
-  sel.appendChild(other);
+  // サーバーはconfにないリストも名前で解決できるので、手入力の逃げ道を用意する。
+  // 公開モードでは案内していないリスト名を入れる欄になるだけなので出さない。
+  if (!publicMode) {
+    const other = document.createElement("option");
+    other.value = "__other__";
+    other.textContent = "その他(名前を入力)";
+    sel.appendChild(other);
+  }
   sel.hidden = false;
   applyWordlistSelection();
 }
@@ -1937,16 +1946,17 @@ function renderWordlistFilters(g) {
 // チェック済みのファセット値から #where を組み立てる。各ファセット = チェック済み値の
 // 述語を定義順に " or " 連結した1節。1節なら括弧なし、複数節は各節を括弧で包み
 // " and " 連結する。値の述語は where があればそれ、なければ col=v(複数列は全列ぶん)。
+// 全部ONのファセットは無条件と同義なので節を出さない(式が伸びるぶん変換が遅くなる)。
 function updateWhereFromFilters() {
   const filters = $("wordlist-filters");
   const hint = filters.querySelector(".wordlist-filter-hint");
   const rows = [...filters.querySelectorAll(".wordlist-facet")];
   const clauses = [];
   rows.forEach((row) => {
-    const checked = [...row.querySelectorAll('input[type="checkbox"]')]
-      .filter((b) => b.checked)
-      .flatMap((b) => JSON.parse(b.dataset.preds));
-    if (checked.length) clauses.push(checked.join(" or "));
+    const boxes = [...row.querySelectorAll('input[type="checkbox"]')];
+    const checked = boxes.filter((b) => b.checked);
+    if (!checked.length || checked.length === boxes.length) return;
+    clauses.push(checked.flatMap((b) => JSON.parse(b.dataset.preds)).join(" or "));
   });
   let where = "";
   if (clauses.length === 1) where = clauses[0];
@@ -1993,7 +2003,15 @@ function restoreWordlistFilters(where) {
   const known = new Set(boxes.flatMap(boxPreds));
   if (preds !== null && preds.every((p) => known.has(p))) {
     const want = new Set(preds);
-    boxes.forEach((b) => { b.checked = boxPreds(b).every((k) => want.has(k)); });
+    // 節が出ていないファセットは「そのファセットでは絞り込まない」= 全選択として戻す
+    // (全部ONなら節を出さない updateWhereFromFilters と対になる)
+    [...filters.querySelectorAll(".wordlist-facet")].forEach((row) => {
+      const rowBoxes = [...row.querySelectorAll('input[type="checkbox"]')];
+      const inWhere = rowBoxes.some((b) => boxPreds(b).some((k) => want.has(k)));
+      rowBoxes.forEach((b) => {
+        b.checked = inWhere ? boxPreds(b).every((k) => want.has(k)) : true;
+      });
+    });
     updateWhereFromFilters();
   } else {
     filters.hidden = true;
@@ -2324,6 +2342,8 @@ async function doRestoreForm() {
         applyWordlistSelection();  // #wordlist/#where設定 + チェックボックス + change
         restoreWordlistFilters(state.where || "");  // 復元whereに合わせてチェック
       } else {
+        // 公開モードには「その他」が無いので選択なし(selectedIndex=-1)になるが、
+        // applyWordlistSelection は同じくテキスト欄を出す経路に落ちる
         sel.value = "__other__";
         applyWordlistSelection();  // チェックボックスを隠しテキスト欄を出す
         $("wordlist").value = state.wordlist || "";
