@@ -284,8 +284,16 @@
   </details>
 </fieldset>
 
+<!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
+     設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
+<div id="turnstile-wrap" hidden>
+  <div id="turnstile-widget"></div>
+  <p class="hint">自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
+</div>
+
 <button id="submit">動画を生成</button>
 <button id="preview" style="background:#64748b">声プレビュー(歌い出しから20秒)</button>
+<p class="hint" id="public-limits" hidden></p>
 <p class="hint">プレビューは替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
 <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
   style="background:#64748b; font-size:.8rem; padding:.2rem .8rem; margin-left:.3rem">保存した入力をクリア</button></p>
@@ -307,6 +315,11 @@
 <div id="result" hidden></div>
 
 <details id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
+
+<!-- 公開モードのときだけ出す歌声合成のクレジット表記(利用規約上必要) -->
+<footer id="public-footer" hidden style="margin-top:1.5rem; border-top:1px solid #8883; padding-top:.6rem">
+  <p class="hint" id="public-credit"></p>
+</footer>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -343,6 +356,8 @@ async function loadConfig() {
   fillChoiceOptions("layout", conf.layouts || [], "サーバー既定");
   setChoice("layout", $("layout").value || "");
   $("editor-embed-controls").hidden = !conf.editor;
+  setupPublicMode(conf);
+  setupTurnstile(conf.turnstile_site_key || "");
   await loadWordlistSelect(conf.editor);
   updateParodyStatus();
   await restoreForm();  // wordlist選択肢が揃った後に前回の入力を復元(初回のみ)
@@ -387,6 +402,72 @@ function updateVoicevoxCredit() {
   const name = o ? (o.getAttribute("data-name") || "") : "";
   $("voicevox-credit").textContent =
     `生成音声の利用には『VOICEVOX:${name}』のクレジット表記が必要です。`;
+  updatePublicCredit();
+}
+
+// ---- 公開モード(SORAMIMIC_PUBLIC)向けの表示 ----
+
+let publicMode = false;
+
+// 公開インスタンスでは投入制限の目安とクレジット表記を常時出す。
+function setupPublicMode(conf) {
+  publicMode = !!conf.public;
+  if (!publicMode) return;
+  const limits = [];
+  if (conf.daily_quota) limits.push(`1日に作れるのは${conf.daily_quota}本までです`);
+  if (conf.max_song_seconds) {
+    limits.push(conf.max_song_seconds >= 60
+      ? `曲の長さは約${Math.round(conf.max_song_seconds / 60)}分までです`
+      : `曲の長さは約${Math.round(conf.max_song_seconds)}秒までです`);
+  }
+  if (limits.length) {
+    $("public-limits").textContent = limits.join("。") + "。混雑時は順番待ちになります。";
+    $("public-limits").hidden = false;
+  }
+  updatePublicCredit();
+}
+
+// 歌声合成のクレジット表記(VOICEVOXは選択中のキャラ名を出す)。
+function updatePublicCredit() {
+  if (!publicMode) return;
+  const sel = $("voicevox-style");
+  const o = sel.options[sel.selectedIndex];
+  const name = o ? (o.getAttribute("data-name") || "") : "";
+  $("public-credit").textContent = $("synthesizer").value === "voicevox"
+    ? `歌声合成: VOICEVOX${name ? ":" + name : ""}`
+    : `歌声合成: NEUTRINO${$("model").value ? "(" + $("model").value + ")" : ""}`;
+  $("public-footer").hidden = false;
+}
+
+// ---- Cloudflare Turnstile(サーバーで設定されているときだけ) ----
+
+let turnstileSiteKey = "";
+let turnstileWidget = null;
+
+function setupTurnstile(siteKey) {
+  if (!siteKey || turnstileSiteKey) return;  // 未設定、または読み込み済み
+  turnstileSiteKey = siteKey;
+  $("turnstile-wrap").hidden = false;
+  // explicit renderにして、スクリプト読み込み完了後に自分で描画する
+  window.onTurnstileLoad = () => {
+    turnstileWidget = window.turnstile.render("#turnstile-widget", { sitekey: siteKey });
+  };
+  const s = document.createElement("script");
+  s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js"
+    + "?onload=onTurnstileLoad&render=explicit";
+  s.async = true;
+  s.defer = true;
+  document.head.appendChild(s);
+}
+
+// 現在のトークン(未設定・未完了なら空文字)。トークンは1回きりなので投入後にreset。
+function turnstileToken() {
+  if (turnstileWidget === null || !window.turnstile) return "";
+  return window.turnstile.getResponse(turnstileWidget) || "";
+}
+
+function resetTurnstile() {
+  if (turnstileWidget !== null && window.turnstile) window.turnstile.reset(turnstileWidget);
 }
 
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
@@ -395,6 +476,7 @@ function toggleSynthOpts() {
   $("neutrino-opts").hidden = isVv;
   $("voicevox-opts").hidden = !isVv;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
+  updatePublicCredit();
   $("auto-octave-hint").textContent = isVv
     ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
       + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"
@@ -519,6 +601,7 @@ async function submitJob(previewSec) {
   form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
   form.append("layout_json", $("layout-json").value);
+  if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
   setBusy(true);
   $("result").hidden = true;
   $("progress").hidden = false;
@@ -531,6 +614,9 @@ async function submitJob(previewSec) {
   } catch (err) {
     $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
     setBusy(false);
+  } finally {
+    // Turnstileのトークンは1回きり。次の投入用に取り直す
+    resetTurnstile();
   }
 }
 
@@ -1841,6 +1927,7 @@ function syncChoice(base) {
   const isOther = sel.value === CHOICE_OTHER;
   other.hidden = !isOther;
   hidden.value = isOther ? other.value.trim() : sel.value;
+  if (base === "model") updatePublicCredit();  // クレジット表記のモデル名を追随させる
   if (!restoring) saveForm();
 }
 

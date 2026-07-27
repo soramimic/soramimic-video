@@ -9,6 +9,11 @@ GET /api/jobs/{id}/video で取得する。GET / に簡易Web UIを同梱。
 (または api_key クエリ)を必須にする(LAN外に公開するとき用)。
 依存は `pip install -e '.[api]'` で入る。NEUTRINOの実行が重いので
 ワーカーは1本、ジョブは投入順に直列実行する。
+
+SORAMIMIC_PUBLIC=1 を設定すると「公開モード」になり、匿名セッション
+(HttpOnly cookie)ごとにジョブを分離し、キュー上限・日次クォータ・
+曲長上限で投入を制限する。環境変数を何も設定しなければ従来と同じ挙動
+(全ジョブが全員から見え、制限なし)。詳細は docs/public-mode.md を参照。
 """
 
 from __future__ import annotations
@@ -45,6 +50,23 @@ from .layout import LAYOUTS_DIR, builtin_layout_names, load_layout, parse_layout
 logger = logging.getLogger(__name__)
 
 API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
+# ---- 公開モード(一般公開インスタンス)向けの環境変数 ----
+# いずれも未設定なら従来どおりの挙動(制限なし・ジョブは全員から見える)。
+PUBLIC_ENV = "SORAMIMIC_PUBLIC"  # 1/true で公開モード
+QUEUE_LIMIT_ENV = "SORAMIMIC_QUEUE_LIMIT"  # 待機+実行中ジョブの上限
+DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の投入上限
+MAX_SONG_SECONDS_ENV = "SORAMIMIC_MAX_SONG_SECONDS"  # 入力MIDIの演奏時間の上限(秒)
+JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除するまでの時間(0=無効)
+SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
+TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
+TURNSTILE_SITE_ENV = "TURNSTILE_SITE_KEY"  # 同・サイトキー(フロントに渡す)
+DEFAULT_QUEUE_LIMIT = 5
+DEFAULT_DAILY_QUOTA = 5
+DEFAULT_MAX_SONG_SECONDS = 420.0
+SESSION_COOKIE = "sv_session"
+SESSION_MAX_AGE = 30 * 24 * 3600  # 30日
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+CLEANUP_INTERVAL_SECONDS = 3600  # ジョブ自動削除の巡回間隔
 STATIC_DIR = Path(__file__).parent / "static"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # soramimic editor(submodule)のビルド出力。scripts/build-editor.sh で生成する。
@@ -71,6 +93,88 @@ def resolve_soundfont(soundfont: str | None) -> str | None:
     return None
 
 
+def is_public_mode() -> bool:
+    """公開モード(SORAMIMIC_PUBLIC)かどうか。未設定なら従来どおりの非公開モード。"""
+    return os.environ.get(PUBLIC_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _env_float(name: str, default: float) -> float:
+    """数値の環境変数を読む。未設定・読めない値は既定値にフォールバックする。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("環境変数 %s の値が数値ではありません: %r", name, raw)
+        return default
+
+
+def samples_dir() -> Path:
+    """同梱サンプル曲のディレクトリ。SORAMIMIC_SAMPLES_DIR があればそちらを使う。"""
+    override = os.environ.get(SAMPLES_DIR_ENV, "").strip()
+    return Path(override).expanduser() if override else STATIC_DIR / "sample"
+
+
+def turnstile_site_key() -> str:
+    """Turnstileのサイトキー。秘密鍵とサイトキーが両方揃っているときだけ返す。"""
+    site = os.environ.get(TURNSTILE_SITE_ENV, "").strip()
+    secret = os.environ.get(TURNSTILE_SECRET_ENV, "").strip()
+    return site if site and secret else ""
+
+
+def verify_turnstile(token: str, remote_ip: str | None = None) -> bool:
+    """Cloudflare TurnstileのトークンをCloudflareに問い合わせて検証する。
+
+    TURNSTILE_SECRET_KEY が未設定なら検証自体を行わない(常にTrue)。
+    Cloudflareに繋がらない場合は通してしまわず False にする(bot対策優先)。
+    """
+    secret = os.environ.get(TURNSTILE_SECRET_ENV, "").strip()
+    if not secret:
+        return True
+    if not token:
+        return False
+    import requests
+
+    payload = {"secret": secret, "response": token}
+    if remote_ip:
+        payload["remoteip"] = remote_ip
+    try:
+        res = requests.post(TURNSTILE_VERIFY_URL, data=payload, timeout=10)
+        return bool(res.json().get("success"))
+    except (requests.RequestException, ValueError):
+        logger.warning("Turnstileの検証に失敗しました(通信エラー)")
+        return False
+
+
+def fmt_duration_ja(seconds: float) -> str:
+    """秒数を「約7分」「約40秒」のように読める日本語にする(制限の説明文用)。"""
+    if seconds < 60:
+        return f"約{round(seconds)}秒"
+    return f"約{round(seconds / 60)}分"
+
+
+def song_seconds(midi_bytes: bytes) -> float | None:
+    """入力MIDIの演奏時間(最後の音符の終わり)の秒数。解析できなければNone。
+
+    曲長上限の判定用。解析は run_pipeline と同じ xfparse.analyze_midi を使う
+    (壊れたMIDIはここで弾かず、従来どおりジョブ実行時のエラーに任せる)。
+    """
+    import tempfile
+
+    from .xfparse import analyze_midi
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "input.mid"
+        path.write_bytes(midi_bytes)
+        try:
+            project = analyze_midi(path)
+        except Exception:  # noqa: BLE001 - 解析不能なら上限判定をスキップする
+            logger.info("曲長の判定用のMIDI解析に失敗しました(上限チェックはスキップ)")
+            return None
+    return max((n.end_sec for n in project.notes), default=0.0)
+
+
 def list_models() -> list[str]:
     root = os.environ.get("NEUTRINO_ROOT")
     if not root:
@@ -86,6 +190,8 @@ class Job:
     id: str
     dir: Path
     params: dict[str, Any]
+    # 公開モードでの持ち主(匿名セッションID)。非公開モードでは常にNone(全員が見る)
+    owner: str | None = None
     status: str = "queued"  # queued / running / done / canceled / error
     stage: str | None = None
     stages: list[dict[str, Any]] = field(default_factory=list)
@@ -349,6 +455,11 @@ class JobManager:
         self._load_existing()
         self._worker = threading.Thread(target=self._loop, daemon=True)
         self._worker.start()
+        # 自動削除はTTLが正のときだけ。無効なら従来どおりスレッドも作らない
+        self._cleaner: threading.Thread | None = None
+        if _env_float(JOB_TTL_HOURS_ENV, 0.0) > 0:
+            self._cleaner = threading.Thread(target=self._cleanup_loop, daemon=True)
+            self._cleaner.start()
 
     def _load_existing(self) -> None:
         if not self.jobs_dir.is_dir():
@@ -362,12 +473,14 @@ class JobManager:
                 id=data["id"],
                 dir=status_path.parent,
                 params=data.get("params", {}),
+                owner=data.get("owner"),
                 status=data.get("status", "error"),
                 stages=data.get("stages", []),
                 error=data.get("error"),
             )
             if data.get("created_at"):
                 job.created_at = datetime.fromisoformat(data["created_at"]).timestamp()
+            job.finished_at = data.get("finished_at")
             if job.status in ("queued", "running"):
                 job.status = "error"
                 job.error = "サーバー再起動により中断されました"
@@ -383,6 +496,7 @@ class JobManager:
         lyrics: str,
         params: dict[str, Any],
         layout_json: str = "",
+        owner: str | None = None,
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
@@ -394,21 +508,77 @@ class JobManager:
             (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
         if layout_json.strip():
             (job_dir / "layout.json").write_text(layout_json, encoding="utf-8")
-        job = Job(id=job_id, dir=job_dir, params=params)
+        job = Job(id=job_id, dir=job_dir, params=params, owner=owner)
         with self._lock:
             self.jobs[job_id] = job
         self._save(job)
         self._queue.put(job)
         return job
 
-    def get(self, job_id: str) -> Job:
+    def get(self, job_id: str, owner: str | None = None) -> Job:
+        """ジョブを引く。ownerを渡すと持ち主が違うジョブは404にする(公開モード)。"""
         job = self.jobs.get(job_id)
-        if job is None:
+        if job is None or (owner is not None and job.owner != owner):
             raise HTTPException(status_code=404, detail="ジョブが見つかりません")
         return job
 
+    def visible_jobs(self, owner: str | None = None) -> list[Job]:
+        """一覧に出すジョブ。ownerを渡すとそのセッションのぶんだけ返す(公開モード)。"""
+        jobs = list(self.jobs.values())
+        if owner is not None:
+            jobs = [j for j in jobs if j.owner == owner]
+        return sorted(jobs, key=lambda j: j.created_at, reverse=True)
+
+    def active_count(self) -> int:
+        """待機中+実行中のジョブ数(キュー上限の判定用。ワーカーは1本で全員共用)。"""
+        return sum(1 for j in self.jobs.values() if j.status in ("queued", "running"))
+
+    def recent_count(self, owner: str, since: float) -> int:
+        """since 以降にこのセッションが投入したジョブ数(日次クォータの判定用)。"""
+        return sum(
+            1 for j in self.jobs.values() if j.owner == owner and j.created_at >= since
+        )
+
+    def _cleanup_loop(self) -> None:
+        """完了から一定時間経ったジョブを定期的に消す(公開インスタンスの容量対策)。"""
+        while True:
+            time.sleep(CLEANUP_INTERVAL_SECONDS)
+            try:
+                self.cleanup_expired()
+            except Exception:  # noqa: BLE001 - 掃除の失敗でスレッドを落とさない
+                logger.exception("ジョブの自動削除に失敗しました")
+
+    def cleanup_expired(self, now: float | None = None) -> list[str]:
+        """SORAMIMIC_JOB_TTL_HOURS を過ぎた完了ジョブを削除し、そのIDを返す。
+
+        TTLが0以下(既定)なら何もしない。実行中・待機中のジョブは対象外。
+        """
+        hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
+        if hours <= 0:
+            return []
+        deadline = (now or time.time()) - hours * 3600
+        with self._lock:
+            expired = [
+                job
+                for job in self.jobs.values()
+                if job.status in ("done", "error", "canceled")
+                and (job.finished_at or job.created_at) <= deadline
+            ]
+            for job in expired:
+                self.jobs.pop(job.id, None)
+        for job in expired:
+            shutil.rmtree(job.dir, ignore_errors=True)
+            logger.info("[job %s] 保存期間を過ぎたので削除しました", job.id)
+        return [job.id for job in expired]
+
     def _save(self, job: Job) -> None:
         data = job.to_dict(with_log=False)
+        # owner/finished_at はAPIのレスポンス(to_dict)には出さないが、再起動後も
+        # 持ち主判定・自動削除ができるよう status.json には残す
+        if job.owner:
+            data["owner"] = job.owner
+        if job.finished_at:
+            data["finished_at"] = job.finished_at
         if job.video:
             # job.video が絶対パス・job.dir が相対パスの組み合わせでも落ちない
             # よう、両方を resolve してから相対化する。ジョブディレクトリ外の
@@ -424,8 +594,8 @@ class JobManager:
             json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
         )
 
-    def cancel(self, job_id: str) -> Job:
-        job = self.get(job_id)
+    def cancel(self, job_id: str, owner: str | None = None) -> Job:
+        job = self.get(job_id, owner)
         if job.status not in ("queued", "running"):
             return job
         job.cancel_event.set()
@@ -532,6 +702,38 @@ def create_app(
     )
     app.state.manager = manager
 
+    @app.middleware("http")
+    async def _session_cookie(request: Request, call_next):
+        """公開モードで匿名セッションID(HttpOnly cookie)を発行・引き回す。
+
+        非公開モードでは何もしない(cookieも発行しない)ので従来と同じ挙動。
+        """
+        if not is_public_mode():
+            return await call_next(request)
+        session = request.cookies.get(SESSION_COOKIE) or ""
+        issued = not re.fullmatch(r"[0-9a-f]{32}", session)
+        if issued:
+            session = uuid.uuid4().hex
+        request.state.session = session
+        response = await call_next(request)
+        if issued:
+            response.set_cookie(
+                SESSION_COOKIE,
+                session,
+                max_age=SESSION_MAX_AGE,
+                httponly=True,
+                samesite="lax",
+            )
+        return response
+
+    def owner_of(request: Request) -> str | None:
+        """このリクエストのジョブ所有者。非公開モードではNone(=全ジョブ共有)。"""
+        if not is_public_mode():
+            return None
+        # 何かの拍子にセッションが無いときは、誰のジョブにも一致しない値にして
+        # 他人のジョブが見えてしまわないようにする(fail-closed)
+        return getattr(request.state, "session", None) or "-"
+
     # editorの静的ビルド(scripts/build-editor.sh の出力)があれば /editor/ で配信する。
     # 無くてもサーバーは起動する(WebUIはeditor連携ボタンを隠すだけ)。
     editor_root = (editor_dist or DEFAULT_EDITOR_DIST).resolve()
@@ -541,23 +743,24 @@ def create_app(
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
-    # 同梱サンプル曲(いずれも詞・曲パブリックドメイン、examples/gen_samples.py で生成)
-    sample_dir = STATIC_DIR / "sample"
-
+    # 同梱サンプル曲(いずれも詞・曲パブリックドメイン、examples/gen_samples.py で生成)。
+    # SORAMIMIC_SAMPLES_DIR を設定するとそのディレクトリのサンプルに差し替わる。
     def _sample_ids() -> set[str]:
-        manifest = json.loads((sample_dir / "samples.json").read_text(encoding="utf-8"))
+        manifest = json.loads(
+            (samples_dir() / "samples.json").read_text(encoding="utf-8")
+        )
         return {s["id"] for s in manifest}
 
     @app.get("/api/samples")
     def list_samples() -> list[dict[str, str]]:
-        return json.loads((sample_dir / "samples.json").read_text(encoding="utf-8"))
+        return json.loads((samples_dir() / "samples.json").read_text(encoding="utf-8"))
 
     @app.get("/api/sample/{sample_id}/midi")
     def sample_midi(sample_id: str) -> FileResponse:
         if sample_id not in _sample_ids():
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return FileResponse(
-            sample_dir / f"{sample_id}.mid",
+            samples_dir() / f"{sample_id}.mid",
             media_type="audio/midi",
             filename=f"{sample_id}.mid",
         )
@@ -567,7 +770,7 @@ def create_app(
         if sample_id not in _sample_ids():
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return FileResponse(
-            sample_dir / f"{sample_id}_lyrics.txt", media_type="text/plain"
+            samples_dir() / f"{sample_id}_lyrics.txt", media_type="text/plain"
         )
 
     @app.get("/api/config")
@@ -577,7 +780,7 @@ def create_app(
             _require_api_key(request)
         except HTTPException:
             return {"auth_required": True}
-        return {
+        conf: dict[str, Any] = {
             "auth_required": auth_required,
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
@@ -586,6 +789,17 @@ def create_app(
             "layouts": builtin_layout_names(),
             "editor": editor_available,
         }
+        # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
+        if is_public_mode():
+            conf["public"] = True
+            conf["daily_quota"] = int(_env_float(DAILY_QUOTA_ENV, DEFAULT_DAILY_QUOTA))
+            conf["max_song_seconds"] = int(
+                _env_float(MAX_SONG_SECONDS_ENV, DEFAULT_MAX_SONG_SECONDS)
+            )
+        site_key = turnstile_site_key()
+        if site_key:
+            conf["turnstile_site_key"] = site_key
+        return conf
 
     def _voicevox_config() -> dict[str, Any] | None:
         """VOICEVOXエンジンが起動していればスタイル一覧、いなければNone。
@@ -747,8 +961,55 @@ def create_app(
             "image_url": image_url,
         }
 
+    def _check_turnstile(request: Request, token: str) -> None:
+        """Turnstileが設定されていればトークンを検証する(未設定なら何もしない)。"""
+        if not os.environ.get(TURNSTILE_SECRET_ENV, "").strip():
+            return
+        client_ip = request.client.host if request.client else None
+        if not verify_turnstile(token, client_ip):
+            raise HTTPException(
+                status_code=403,
+                detail="人間かどうかの確認に失敗しました。"
+                "ページを再読み込みしてもう一度お試しください。",
+            )
+
+    def _check_public_limits(owner: str | None, midi_bytes: bytes) -> None:
+        """公開モードの投入制限(キュー上限・日次クォータ・曲長)をまとめて確認する。
+
+        非公開モードでは何もしない。超過は429(混雑・クォータ)か400(曲長)。
+        """
+        if not is_public_mode():
+            return
+        queue_limit = int(_env_float(QUEUE_LIMIT_ENV, DEFAULT_QUEUE_LIMIT))
+        if queue_limit > 0 and manager.active_count() >= queue_limit:
+            raise HTTPException(
+                status_code=429,
+                detail=f"順番待ちが混み合っています(同時に{queue_limit}件まで)。"
+                "しばらく待ってからもう一度お試しください。",
+            )
+        quota = int(_env_float(DAILY_QUOTA_ENV, DEFAULT_DAILY_QUOTA))
+        if owner and quota > 0:
+            used = manager.recent_count(owner, time.time() - 24 * 3600)
+            if used >= quota:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"1日に作れる本数の上限({quota}本)に達しました。"
+                    "24時間ほど空けてからまたお試しください。",
+                )
+        max_seconds = _env_float(MAX_SONG_SECONDS_ENV, DEFAULT_MAX_SONG_SECONDS)
+        if max_seconds > 0:
+            seconds = song_seconds(midi_bytes)
+            if seconds is not None and seconds > max_seconds:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"曲が長すぎます(この曲は{fmt_duration_ja(seconds)}、"
+                    f"上限は{fmt_duration_ja(max_seconds)}です)。"
+                    "もっと短い曲でお試しください。",
+                )
+
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])
     async def create_job(
+        request: Request,
         midi: UploadFile,
         editor: UploadFile | None = None,
         lyrics: str = Form(""),
@@ -767,10 +1028,15 @@ def create_app(
         layout: str = Form(""),
         layout_json: str = Form(""),
         subtitle_granularity: str = Form(""),
+        # Cloudflare Turnstile(TURNSTILE_SECRET_KEY 設定時のみ検証する)
+        turnstile_token: str = Form(""),
     ) -> dict[str, Any]:
+        _check_turnstile(request, turnstile_token)
         midi_bytes = await midi.read()
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
+        owner = owner_of(request)
+        _check_public_limits(owner, midi_bytes)
         editor_bytes = None
         editor_payload: Any = None
         if editor is not None and editor.filename:
@@ -835,25 +1101,28 @@ def create_app(
             "parody_source": "editor" if editor_bytes else "convert",
             "midi_filename": midi.filename,
         }
-        job = manager.create(midi_bytes, editor_bytes, lyrics, params, layout_json=layout_json)
+        job = manager.create(
+            midi_bytes, editor_bytes, lyrics, params,
+            layout_json=layout_json, owner=owner,
+        )
         return {"id": job.id}
 
     @app.get("/api/jobs", dependencies=[Depends(_require_api_key)])
-    def list_jobs() -> list[dict[str, Any]]:
-        jobs = sorted(manager.jobs.values(), key=lambda j: j.created_at, reverse=True)
+    def list_jobs(request: Request) -> list[dict[str, Any]]:
+        jobs = manager.visible_jobs(owner_of(request))
         return [j.to_dict(with_log=False) for j in jobs[:30]]
 
     @app.get("/api/jobs/{job_id}", dependencies=[Depends(_require_api_key)])
-    def get_job(job_id: str) -> dict[str, Any]:
-        return manager.get(job_id).to_dict()
+    def get_job(job_id: str, request: Request) -> dict[str, Any]:
+        return manager.get(job_id, owner_of(request)).to_dict()
 
     @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(_require_api_key)])
-    def cancel_job(job_id: str) -> dict[str, Any]:
-        return manager.cancel(job_id).to_dict(with_log=False)
+    def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
+        return manager.cancel(job_id, owner_of(request)).to_dict(with_log=False)
 
     @app.get("/api/jobs/{job_id}/video", dependencies=[Depends(_require_api_key)])
-    def get_video(job_id: str) -> FileResponse:
-        job = manager.get(job_id)
+    def get_video(job_id: str, request: Request) -> FileResponse:
+        job = manager.get(job_id, owner_of(request))
         if job.status != "done" or not job.video or not job.video.exists():
             raise HTTPException(status_code=409, detail="動画はまだできていません")
         if job.video.suffix == ".wav":  # プレビュー(歌声のみ)
