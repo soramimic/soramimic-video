@@ -205,7 +205,9 @@ def test_index_html_convert_params_new_model():
 
 
 def test_index_html_note_length_weight_input():
-    # soramimic-video 独自の「ノート長重視 α」の数値入力(0〜2 / 0.1刻み / 既定0)。
+    # soramimic-video 独自の「ノート長重視 α」の数値入力(0〜2 / 0.05刻み / 既定0.25)。
+    # 既定0.25はタイブレーク運用(2曲のスイープ実験で単語長・短ノートへの
+    # 副作用がほぼゼロのまま長ノートの母音一致だけ改善する点として選定)。
     # 本家準拠のプリセット・スライダーとは別枠なので PARAM_SLIDER_IDS には入れない。
     import re
 
@@ -216,7 +218,7 @@ def test_index_html_note_length_weight_input():
     assert m, "p-notelen の数値入力が見つからない"
     attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
     assert (attrs["min"], attrs["max"], attrs["step"], attrs["value"]) == (
-        "0", "2", "0.1", "0",
+        "0", "2", "0.05", "0.25",
     )
     # 本家由来のスライダー群には混ぜない(プリセット選択で上書きされないこと)
     assert 'const PARAM_SLIDER_IDS = ["p-sound", "p-phrase", "p-wordnum"];' in html

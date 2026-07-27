@@ -191,9 +191,9 @@
          上のプリセット・スライダーは本家準拠なので、独自項目は混ぜず末尾に置く。
          送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
     <label>ノート長重視 α(soramimic-video独自)</label>
-    <input type="number" id="p-notelen" min="0" max="2" step="0.1" value="0"
+    <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
       aria-label="ノート長重視 α(0でオフ)">
-    <p class="hint">この項目だけ本家soramimicにはありません。0より大きくすると、MIDIで長く伸ばす音符ほど音を合わせることを優先します(サビの伸ばしなど、耳に残る音を優先したいとき)。目安は0.5〜1。<strong>既定の0では従来とまったく同じ結果</strong>になります。</p>
+    <p class="hint">この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
   </details>
 </fieldset>
 
