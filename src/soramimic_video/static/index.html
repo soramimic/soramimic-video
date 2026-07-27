@@ -288,7 +288,7 @@
      設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
 <div id="turnstile-wrap" hidden>
   <div id="turnstile-widget"></div>
-  <p class="hint">自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
+  <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
 </div>
 
 <button id="submit">動画を生成</button>
@@ -450,9 +450,16 @@ function setupTurnstile(siteKey) {
   if (!siteKey || turnstileSiteKey) return;  // 未設定、または読み込み済み
   turnstileSiteKey = siteKey;
   $("turnstile-wrap").hidden = false;
-  // explicit renderにして、スクリプト読み込み完了後に自分で描画する
+  // explicit renderにして、スクリプト読み込み完了後に自分で描画する。
+  // appearance: interaction-only で普段は何も表示せず、Cloudflareが人間の
+  // 操作を求めるときだけウィジェット(と説明文)を出す。
   window.onTurnstileLoad = () => {
-    turnstileWidget = window.turnstile.render("#turnstile-widget", { sitekey: siteKey });
+    turnstileWidget = window.turnstile.render("#turnstile-widget", {
+      sitekey: siteKey,
+      theme: "auto",
+      appearance: "interaction-only",
+      "before-interactive-callback": () => { $("turnstile-hint").hidden = false; },
+    });
   };
   const s = document.createElement("script");
   s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js"
