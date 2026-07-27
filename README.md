@@ -70,6 +70,17 @@ uv run soramimic-video serve            # http://127.0.0.1:8300/
 MIDIと単語リスト(または editor の書き出しJSON)を入れて「動画を生成」するだけ。
 `SORAMIMIC_VIDEO_API_KEY` を設定すると全APIで `X-API-Key` を必須にできる(LAN外公開時)。
 
+### 単語リストごとの既定レイアウト
+
+単語リストを選ぶと、その列構成に合う組み込みレイアウトが自動で「レイアウト」欄に入る。
+対応表は `src/soramimic_video/wordlist_layouts.json` で、`{"単語リスト名": "組み込みレイアウト名"}`
+(単語リスト名は `external/soramimic-wordlists/*.csv` のファイル名から `.csv` を除いたもの、
+レイアウト名は `src/soramimic_video/layouts/*.json` の同じくstem)の1階層のJSON。
+行を足す・消すだけで反映される(サーバー再起動が必要。`/api/config` の `wordlist_layouts`
+としてUIに渡る)。組み込みレイアウトに無い名前を書いたエントリは警告ログを出して無視されるので、
+レイアウトを追加してから対応表に足すこと。載っていない単語リストはサーバー既定のレイアウトのまま。
+自動で入った値はユーザーがレイアウトを選び直せば上書きされない。
+
 ### 一般公開する(公開モード)
 
 `SORAMIMIC_PUBLIC=1` を設定すると、匿名セッション(cookie)ごとのジョブ分離と

@@ -74,6 +74,17 @@ def _csv_header(name: str) -> list[str]:
         return next(csv.reader(f))
 
 
+def test_wordlist_layouts_point_to_existing_wordlists():
+    """単語リスト別レイアウト(wordlist_layouts.json)のキーがCSVとして実在すること。"""
+    from soramimic_video.layout import load_wordlist_layouts
+
+    stems = {p.stem for p in WORDLISTS.glob("*.csv")}
+    if not stems:
+        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+    for name in load_wordlist_layouts():
+        assert name in stems, f"wordlist_layouts.jsonの {name} が単語リストにありません"
+
+
 def test_conf_wordlists_exist_and_facet_columns_match():
     entries = _conf_entries()
     assert entries, "confに単語リストがありません"

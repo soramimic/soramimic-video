@@ -45,7 +45,13 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import runproc, synth_estimate
-from .layout import LAYOUTS_DIR, builtin_layout_names, load_layout, parse_layout
+from .layout import (
+    LAYOUTS_DIR,
+    builtin_layout_names,
+    load_layout,
+    load_wordlist_layouts,
+    parse_layout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -786,6 +792,8 @@ def create_app(
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "voicevox": _voicevox_config(),
             "layouts": builtin_layout_names(),
+            # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_layouts.json)
+            "wordlist_layouts": load_wordlist_layouts(),
             "editor": editor_available,
         }
         # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
