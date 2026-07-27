@@ -95,6 +95,15 @@ _FONT_CANDIDATES = [
 _MIN_FONT_PX = 9
 
 
+# 単語リストCSVで「値なし」を表す文字列(R由来のNA等)。値として描画せず空扱いにする。
+MISSING_VALUES = frozenset({"na", "n/a", "nan", "none", "null"})
+
+
+def is_missing(value: object) -> bool:
+    """CSVの値が実質的に空か(空文字・空白のみ・NA等の欠損マーカー)。"""
+    return str(value or "").strip().lower() in MISSING_VALUES or not str(value or "").strip()
+
+
 class _SafeDict(dict):
     """テンプレートにない列を空文字にする(リストごとに列構成が違うため)。"""
 
@@ -154,10 +163,10 @@ DEFAULT_SUBTITLES = [
 
 
 def _require_met(el: ImageElement | TextElement, values: dict) -> bool:
-    """要素の require 列が埋まっているか(未指定なら常にTrue)。"""
+    """要素の require 列が埋まっているか(未指定なら常にTrue)。NA等の欠損は空と見なす。"""
     if not el.require:
         return True
-    return bool(str(values.get(el.require) or "").strip())
+    return not is_missing(values.get(el.require))
 
 
 def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> list[str]:
@@ -165,7 +174,10 @@ def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> li
 
     require 列が空の要素は空文字にする(描画側でスキップされる)。
     """
-    values = _SafeDict({k: v for k, v in data.items() if v is not None})
+    values = _SafeDict(
+        # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
+        {k: ("" if is_missing(v) else v) for k, v in data.items() if v is not None}
+    )
     out = []
     for el in elements:
         if isinstance(el, TextElement):
@@ -542,7 +554,10 @@ def _render_canvas(
 ) -> Image.Image:
     canvas = Image.new("RGB", (width, height), layout.background)
     font_path = resolve_font_path(layout.font)
-    values = _SafeDict({k: v for k, v in data.items() if v is not None})
+    values = _SafeDict(
+        # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
+        {k: ("" if is_missing(v) else v) for k, v in data.items() if v is not None}
+    )
     ti = 0
     for el in elements:
         if isinstance(el, ImageElement):
@@ -573,7 +588,10 @@ def _render_to_cache(
 ) -> Path:
     """要素列とテンプレート展開済みテキストからフレームPNGを合成(同内容なら再利用)。"""
     out_dir.mkdir(parents=True, exist_ok=True)
-    values = _SafeDict({k: v for k, v in data.items() if v is not None})
+    values = _SafeDict(
+        # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
+        {k: ("" if is_missing(v) else v) for k, v in data.items() if v is not None}
+    )
     # 実際に描く側(通常/fallback/idle)の要素だけをキャッシュキーに使う。
     # subtitle要素はASS側で描くので内容に影響しない(除外)。require が
     # 満たされない要素も描かれないので除外し、画像のrequireも取りこぼさない
