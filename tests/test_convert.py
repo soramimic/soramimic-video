@@ -1166,3 +1166,79 @@ def test_db_cache_evicts_over_variant_budget(tmp_path: Path, monkeypatch):
     # 単体で予算超過でも直近の1本は必ず残る(残さないとキャッシュの意味が無い)
     assert _db_cache_size() == 1
     assert str((tmp_path / "w1.csv").resolve()) == next(iter(engine._db_cache))[1]
+
+
+# --- 起動時ウォームアップ ---
+
+
+def test_warmup_makes_first_convert_a_cache_hit(tmp_path: Path):
+    """ウォームアップ後の変換は parse_tidy を呼ばない(=キャッシュヒット)。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,沈む,沈む,シズム", encoding="utf-8"
+    )
+    engine.clear_db_cache()
+    engine.warmup_wordlists([str(csv_path)])
+    assert _db_cache_size() == 1
+
+    app = engine._get_app(engine.DEFAULT_VOWEL_RATIO)
+    original_parse_tidy = app.word_list.parse_tidy
+
+    def boom(*a, **k):  # pragma: no cover - 呼ばれたら失敗
+        raise AssertionError("ウォームアップ後なのに parse_tidy が呼ばれた")
+
+    app.word_list.parse_tidy = boom
+    try:
+        project = _tiny_project()
+        convert_project(project, wordlist=str(csv_path))
+    finally:
+        app.word_list.parse_tidy = original_parse_tidy
+
+    assert project.parody is not None
+    assert [w.surface for w in project.parody.lines[0].words] == ["沈む"]
+    assert _db_cache_size() == 1
+
+
+def test_warmup_skips_unknown_and_continues(tmp_path: Path, caplog):
+    """未知のリスト名は警告してスキップし、残りの構築は続ける。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,沈む,沈む,シズム", encoding="utf-8"
+    )
+    engine.clear_db_cache()
+    with caplog.at_level("WARNING"):
+        engine.warmup_wordlists(["no_such_wordlist", str(csv_path)])
+    assert "no_such_wordlist" in caplog.text
+    assert _db_cache_size() == 1
+    # 2回目は「ウォームアップ済み」でスキップされ、キャッシュは増えない
+    engine.warmup_wordlists([str(csv_path)])
+    assert _db_cache_size() == 1
+
+
+def test_start_warmup_thread_unset_is_noop(monkeypatch):
+    """環境変数が未設定なら何もしない(従来どおり)。"""
+    from soramimic_video import soramimic_engine as engine
+
+    monkeypatch.delenv(engine.WARMUP_ENV, raising=False)
+    assert engine.start_warmup_thread() is None
+
+
+def test_start_warmup_thread_builds_cache(tmp_path: Path, monkeypatch):
+    """環境変数の指定があればdaemonスレッドでキャッシュを構築する。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,沈む,沈む,シズム", encoding="utf-8"
+    )
+    engine.clear_db_cache()
+    monkeypatch.setenv(engine.WARMUP_ENV, f" , {csv_path} ,")
+    thread = engine.start_warmup_thread()
+    assert thread is not None and thread.daemon
+    thread.join(timeout=60)
+    assert not thread.is_alive()
+    assert _db_cache_size() == 1

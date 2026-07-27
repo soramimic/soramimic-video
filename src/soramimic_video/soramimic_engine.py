@@ -17,12 +17,17 @@ app(同梱辞書データ + fugashi/ipadic MeCab トークナイザ)の構築は
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # 「行ごとのユニット列(音節単位)」から「行ごとのユニット重み列」を作る関数。
 # run_convert に渡すと、エンジン内部と同じユニット列を使って重みを計算できる
@@ -164,6 +169,72 @@ def _get_db(app: Any, app_key: str, wordlist_csv: Path, where: str) -> Any:
         _db_cache.move_to_end(key)
         _evict_locked()
     return db
+
+
+# --- 起動時ウォームアップ ---
+#
+# キャッシュは「2回目以降が速い」だけなので、よく使うリストはサーバー起動直後に
+# バックグラウンドで先に構築しておく。ユーザーから見た初回変換も速くなる。
+WARMUP_ENV = "SORAMIMIC_WARMUP_WORDLISTS"  # カンマ区切りの単語リスト名
+
+
+def warmup_wordlists(names: list[str], where: str = "") -> None:
+    """指定の単語リストのDBを順に構築してキャッシュに載せる(同期・例外を出さない)。
+
+    where は既定で空文字(絞り込み無し)。同梱Web UIはファセットが全ONのとき
+    where="" を送るので、これが最も当たりやすいキーになる。
+    """
+    from .convert import resolve_wordlist
+
+    app_key = _app_key(DEFAULT_VOWEL_RATIO)
+    for name in names:
+        try:
+            csv_path = resolve_wordlist(name)
+        except FileNotFoundError as e:
+            logger.warning("ウォームアップをスキップ: %s (%s)", name, e)
+            continue
+        try:
+            with _db_cache_lock:
+                cached = db_cache_key(app_key, csv_path, where) in _db_cache
+            if cached:
+                logger.info("ウォームアップ済み(スキップ): %s", name)
+                continue
+            logger.info("ウォームアップ開始: %s", name)
+            started = time.monotonic()
+            db = _get_db(_get_app(DEFAULT_VOWEL_RATIO), app_key, csv_path, where)
+            elapsed = time.monotonic() - started
+            with _db_cache_lock:
+                entries = len(_db_cache)
+                total = sum(_db_variants(v) for v in _db_cache.values())
+            logger.info(
+                "ウォームアップ完了: %s (%.1f秒, %d バリエーション / キャッシュ %d件・計%d)",
+                name,
+                elapsed,
+                _db_variants(db),
+                entries,
+                total,
+            )
+        except Exception:
+            logger.warning("ウォームアップ失敗: %s", name, exc_info=True)
+
+
+def start_warmup_thread() -> threading.Thread | None:
+    """環境変数の指定があればウォームアップをdaemonスレッドで開始する。
+
+    起動そのものはブロックしない。未設定なら何もせず None を返す。
+    """
+    names = [n.strip() for n in os.environ.get(WARMUP_ENV, "").split(",") if n.strip()]
+    if not names:
+        return None
+    thread = threading.Thread(
+        target=warmup_wordlists,
+        args=(names,),
+        name="wordlist-warmup",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("単語リストのウォームアップを開始しました: %s", ", ".join(names))
+    return thread
 
 
 def _json_safe(word: dict[str, Any]) -> dict[str, Any]:
