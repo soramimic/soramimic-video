@@ -42,18 +42,20 @@
   }
   .wrap { max-width: 720px; margin: 0 auto; padding: 0 .8rem 3rem; }
   a { color: var(--link); }
+  .site-header { padding: .7rem .2rem .5rem; }
   h1 { font-size: 1.25rem; margin: 0; color: var(--accent); }
+  .lead { margin: .1rem 0 0; font-size: .9rem; color: var(--muted); }
   fieldset, .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: .9rem; margin: 0 0 .8rem;
+    padding: .8rem; margin: 0 0 .6rem;
   }
   legend { font-size: .85rem; font-weight: 700; color: var(--muted); padding: 0 .3rem; }
   .card > h2 { font-size: .95rem; margin: 0 0 .7rem; }
-  .field + .field { margin-top: .8rem; }
-  label { display: block; margin: .6rem 0 .25rem; font-weight: 600; font-size: .85rem; color: var(--muted); }
+  .field + .field { margin-top: .6rem; }
+  label { display: block; margin: .5rem 0 .2rem; font-weight: 600; font-size: .85rem; color: var(--muted); }
   .field > label:first-child { margin-top: 0; }
   input[type=text], input[type=password], input[type=number], textarea, select {
-    width: 100%; padding: .5rem .6rem; font: inherit; min-height: 2.6rem;
+    width: 100%; padding: .5rem .6rem; font: inherit; min-height: 2.5rem;
     border: 1px solid var(--border); border-radius: 8px;
     background: var(--panel); color: inherit;
   }
@@ -77,17 +79,24 @@
   button:disabled { opacity: .55; cursor: not-allowed; }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .btn-primary:hover:not(:disabled) { background: var(--accent-dark); border-color: var(--accent-dark); }
-  .btn-lg { width: 100%; padding: .75rem 1.2rem; font-size: 1.05rem; border-radius: 10px; }
+  .btn-lg { width: 100%; padding: .7rem 1.2rem; font-size: 1.05rem; border-radius: 10px; }
+  /* 生成ボタンは必須項目の直後。指を置きやすいよう少しだけ間を空ける */
+  #submit { margin-top: .8rem; }
   .btn-sm { padding: .3rem .8rem; min-height: 0; font-size: .82rem; }
   .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .btn-x { background: #000; border-color: #000; color: #fff; }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-  .row > select { width: auto; flex: 1 1 9rem; min-width: 0; }
+  .row > select { width: auto; flex: 1 1 7rem; min-width: 0; }
+  /* 歌声の行: エンジン選択の隣にモデル/キャラ選択を並べる(375px幅でも1行に収まる) */
+  .row-grow { display: flex; gap: .4rem; flex: 1 1 7rem; min-width: 0; }
+  .row-grow > * { flex: 1 1 auto; min-width: 0; }
   .check {
     display: inline-flex; align-items: center; gap: .45rem;
     font-weight: 400; font-size: .9rem; color: var(--text);
   }
   .hint { font-size: .8rem; color: var(--muted); margin: .25rem 0 0; }
+  /* 状態表示用の空の .hint(サンプル状態・クレジットなど)が余白を作らないように */
+  .hint:empty { margin: 0; }
   .slider-row { display: flex; align-items: center; gap: .5rem; }
   .slider-row span { font-size: .75rem; color: var(--muted); white-space: nowrap; }
   .slider-row input[type=range] { flex: 1; margin: 0; min-width: 0; }
@@ -172,52 +181,144 @@
 <body>
 <div class="wrap">
 <header class="site-header">
-  <h1>🎤 soramimic-video 動画生成</h1>
+  <h1>🎤 soramimic-video</h1>
+  <p class="lead">歌詞が空耳で置き換わった替え歌動画を作れます。</p>
   <p class="hint" id="server-info"></p>
 </header>
 
-<div id="auth" hidden>
-  <label>APIキー</label>
-  <input type="password" id="api-key" placeholder="X-API-Key">
-</div>
+<!-- 1. まず押す入口。サンプル曲と単語リストをランダムに選んで、そのまま生成まで走らせる。 -->
+<section class="card">
+  <button type="button" id="lucky" class="btn-primary btn-lg">🎲 おまかせで試す</button>
+  <p class="hint" id="lucky-status">曲と単語リストはランダム。自分で選ぶなら下へ。</p>
+</section>
 
-<fieldset>
-  <legend>入力</legend>
-  <label>XF MIDIファイル(必須)</label>
-  <input type="file" id="midi" accept=".mid,.midi">
-  <p class="hint" id="midi-restore-hint" hidden></p>
-  <p class="hint" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
-    <select id="sample-select" style="width:auto;font-size:.85rem;padding:.25rem .3rem"></select>
-    <span id="sample-status"></span>
-  </p>
-  <label>元歌詞(任意・字幕用)</label>
-  <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
-</fieldset>
-
-<fieldset>
-  <legend>替え歌</legend>
-  <label>単語リスト</label>
-  <select id="wordlist-select" hidden></select>
-  <div id="wordlist-filters" class="wordlist-filters" hidden></div>
-  <input type="text" id="wordlist" placeholder="例: stations">
-  <p class="hint">替え歌に使う単語のリスト。MIDIの元歌詞に音が近い単語へ置き換えます。</p>
-  <div id="editor-embed-controls" hidden>
-    <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
-    <p class="hint">MIDIと単語リストから替え歌に変換し、その場のエディタで編集できます。
-      「取り込んで閉じる」でこの替え歌が動画生成に使われます。</p>
-    <span id="open-editor-msg" class="error"></span>
-  </div>
-  <div id="editor-frame-wrap" hidden style="margin-top:.8rem">
-    <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.4rem">
-      <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
-      <button type="button" id="editor-close" class="btn-sm">閉じる(取り込まない)</button>
-      <span class="hint">編集はエディタ内で自動保存されます。</span>
+<!-- 2. 必須設定と生成ボタン。スマホ(375px幅)でもここまでが1画面に収まるよう、
+     項目は曲・単語リスト・歌声の3つだけにして、生成ボタンまで同じカードに置く。 -->
+<section class="card">
+  <div class="field">
+    <label for="sample-select">曲</label>
+    <!-- サンプルが取れない環境では loadSamples がこの div ごと隠す -->
+    <div id="sample-field">
+      <select id="sample-select" aria-label="サンプル曲"></select>
+      <p class="hint" id="sample-status"></p>
     </div>
-    <iframe id="editor-frame" title="soramimic editor"></iframe>
+    <p class="hint" id="midi-restore-hint" hidden></p>
+    <details class="sub-details" id="midi-details">
+      <summary>自分の曲を使う(XF MIDIファイル)</summary>
+      <input type="file" id="midi" accept=".mid,.midi">
+      <p class="hint">歌詞入りのXF形式MIDIファイル。サンプル曲を選んだときは不要です。</p>
+    </details>
   </div>
-  <p id="parody-status" class="hint"></p>
-  <details id="parody-advanced">
-    <summary>詳細(上級者向け)</summary>
+
+  <div class="field">
+    <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
+    <select id="wordlist-select" hidden></select>
+    <input type="text" id="wordlist" placeholder="例: stations">
+    <div id="wordlist-filters" class="wordlist-filters" hidden></div>
+    <p id="parody-status" class="hint"></p>
+  </div>
+
+  <div class="field">
+    <label for="synthesizer">歌声</label>
+    <div class="row">
+      <select id="synthesizer" aria-label="合成エンジン">
+        <option value="neutrino">NEUTRINO</option>
+        <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
+      </select>
+      <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
+           送信値の正本は隠し input#model。選択肢は /api/config の models。 -->
+      <span id="neutrino-opts" class="row-grow">
+        <select id="model-select"></select>
+        <input type="text" id="model-other" hidden placeholder="モデル名を入力">
+        <input type="hidden" id="model" value="MERROW">
+      </span>
+      <span id="voicevox-opts" class="row-grow" hidden>
+        <select id="voicevox-style" aria-label="歌声(キャラ・スタイル)"></select>
+      </span>
+    </div>
+    <p class="hint" id="voicevox-credit"></p>
+  </div>
+
+  <!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
+       設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
+  <div id="turnstile-wrap" hidden>
+    <div id="turnstile-widget"></div>
+    <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
+  </div>
+  <button id="submit" class="btn-primary btn-lg">🎬 動画を生成</button>
+  <p class="hint" id="public-limits" hidden></p>
+  <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
+    class="btn-sm" style="margin-left:.3rem">保存した入力をクリア</button></p>
+
+  <div id="progress" hidden>
+    <ul class="stages">
+      <li data-stage="analyze">MIDI解析</li>
+      <li data-stage="convert">空耳変換</li>
+      <li data-stage="import-editor">編集の取り込み</li>
+      <li data-stage="synthesize">歌唱合成</li>
+      <li data-stage="mix">ミックス</li>
+      <li data-stage="video">動画生成</li>
+    </ul>
+    <p id="status-line"></p>
+    <button id="cancel" class="btn-danger btn-sm" hidden>中断</button>
+    <details><summary>ログ</summary><pre id="log"></pre></details>
+  </div>
+
+  <div id="result" hidden></div>
+</section>
+
+<!-- 3. 玄人向けの設定はすべてこの折りたたみの中。初見の画面には出さない。 -->
+<details class="card" id="advanced">
+  <summary>⚙️ 詳細設定(歌詞・移調・レイアウト・変換パラメータ)</summary>
+
+  <div class="field" id="auth" hidden>
+    <label for="api-key">APIキー</label>
+    <input type="password" id="api-key" placeholder="X-API-Key">
+  </div>
+
+  <div class="field">
+    <label for="lyrics">元歌詞(任意・字幕用)</label>
+    <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+    <p class="hint">MIDIに歌詞が入っていれば不要。字幕の元歌詞を差し替えたいときに使います。</p>
+  </div>
+
+  <div class="field">
+    <label class="check">
+      <input type="checkbox" id="auto-octave" checked>
+      音域に合わせて自動でオクターブ調整
+    </label>
+    <p class="hint" id="auto-octave-hint"></p>
+    <label for="transpose">移調(半音)</label>
+    <input type="text" id="transpose" value="0" inputmode="numeric">
+    <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
+  </div>
+
+  <div class="field">
+    <label>お試し合成</label>
+    <button id="preview">声プレビュー(歌い出しから20秒)</button>
+    <p class="hint">替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
+  </div>
+
+  <div class="field">
+    <label>替え歌の編集</label>
+    <div id="editor-embed-controls" hidden>
+      <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
+      <p class="hint">MIDIと単語リストから替え歌に変換し、その場のエディタで編集できます。
+        「取り込んで閉じる」でこの替え歌が動画生成に使われます。</p>
+      <span id="open-editor-msg" class="error"></span>
+    </div>
+    <div id="editor-frame-wrap" hidden style="margin-top:.8rem">
+      <div class="row" style="margin-bottom:.4rem">
+        <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
+        <button type="button" id="editor-close" class="btn-sm">閉じる(取り込まない)</button>
+        <span class="hint">編集はエディタ内で自動保存されます。</span>
+      </div>
+      <iframe id="editor-frame" title="soramimic editor"></iframe>
+    </div>
+  </div>
+
+  <details id="parody-advanced" class="sub-details">
+    <summary>替え歌の変換パラメータ(上級者向け)</summary>
     <label>外部で編集した替え歌JSONの読み込み</label>
     <input type="file" id="editor" accept=".json">
     <p class="hint">soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
@@ -270,126 +371,69 @@
       aria-label="ノート長重視 α(0でオフ)">
     <p class="hint">この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
   </details>
-</fieldset>
 
-<fieldset>
-  <legend>オプション</legend>
-  <label>合成エンジン</label>
-  <select id="synthesizer">
-    <option value="neutrino">NEUTRINO</option>
-    <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
-  </select>
-  <div id="neutrino-opts">
-    <label>歌声モデル</label>
+  <div class="field">
+    <label for="layout-select">レイアウト(任意)</label>
     <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
-         送信値の正本は隠し input#model。選択肢は /api/config の models。 -->
-    <select id="model-select"></select>
-    <input type="text" id="model-other" hidden placeholder="モデル名を入力">
-    <input type="hidden" id="model" value="MERROW">
-  </div>
-  <div id="voicevox-opts" hidden>
-    <label>歌声(キャラ・スタイル)</label>
-    <select id="voicevox-style"></select>
-    <p class="hint" id="voicevox-credit"></p>
-  </div>
-  <label class="check">
-    <input type="checkbox" id="auto-octave" checked>
-    音域に合わせて自動でオクターブ調整
-  </label>
-  <p class="hint" id="auto-octave-hint"></p>
-  <label>移調(半音)</label>
-  <input type="text" id="transpose" value="0" inputmode="numeric">
-  <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
-  <label>レイアウト(任意)</label>
-  <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
-       送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。 -->
-  <select id="layout-select"></select>
-  <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
-  <input type="hidden" id="layout">
-  <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。</p>
-  <details id="le-details">
-    <summary>レイアウトを編集(ドラッグで配置)</summary>
-    <div class="le-toolbar">
-      <button type="button" id="layout-load">レイアウトを読み込む</button>
-      <button type="button" id="le-add-text">テキスト追加</button>
-      <button type="button" id="le-add-subtitle">字幕追加</button>
-      <button type="button" id="le-add-image">画像枠追加</button>
-      <button type="button" id="le-delete" disabled>選択を削除</button>
-      <button type="button" id="le-export">エクスポート</button>
-      <span id="le-msg"></span>
-    </div>
-    <div class="le-tabs">
-      <button type="button" id="le-tab-elements" class="active">通常</button>
-      <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
-      <button type="button" id="le-tab-idle">歌唱なし区間(前奏・間奏・後奏)</button>
-    </div>
-    <div class="le-idle-opts" id="le-idle-opts" hidden>
-      <label class="check" style="margin:.5rem 0 0">
-        <input type="checkbox" id="le-hold">
-        単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
-      </label>
-      <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
-        単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
-        idle要素を1つも置かなければその区間は黒画面のままです。</p>
-    </div>
-    <div class="le-cue-nav" id="le-cue-nav" hidden>
-      <button type="button" id="le-cue-prev">◀ 前</button>
-      <span id="le-cue-indicator">- / -枚目</span>
-      <button type="button" id="le-cue-next">次 ▶</button>
-      <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
-    </div>
-    <div id="le-canvas">
-      <div id="le-guide-v" class="le-guide" hidden></div>
-      <div id="le-guide-h" class="le-guide" hidden></div>
-    </div>
-    <div id="le-props" hidden></div>
-    <p class="hint">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
-      箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
-      右下の角でリサイズ、クリックで選択して文言・サイズ・色を変更。
-      選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
-      本番と同じく、枠に収まらない文字は自動で縮小されます。
-      編集した内容はジョブ投入時にレイアウト名より優先で使われます。
-      「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
-      列({achievement}など)は空になるので{surface}/{original}だけで組みます
-      (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。
-      「歌唱なし区間」タブは前奏・間奏・後奏に出す固定フレームの配置です。</p>
-    <details><summary>JSON</summary>
-      <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
+         送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。 -->
+    <select id="layout-select"></select>
+    <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
+    <input type="hidden" id="layout">
+    <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
+    <details id="le-details" class="sub-details">
+      <summary>レイアウトを編集(ドラッグで配置)</summary>
+      <div class="le-toolbar">
+        <button type="button" id="layout-load">レイアウトを読み込む</button>
+        <button type="button" id="le-add-text">テキスト追加</button>
+        <button type="button" id="le-add-subtitle">字幕追加</button>
+        <button type="button" id="le-add-image">画像枠追加</button>
+        <button type="button" id="le-delete" disabled>選択を削除</button>
+        <button type="button" id="le-export">エクスポート</button>
+        <span id="le-msg"></span>
+      </div>
+      <div class="le-tabs">
+        <button type="button" id="le-tab-elements" class="active">通常</button>
+        <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
+        <button type="button" id="le-tab-idle">歌唱なし区間(前奏・間奏・後奏)</button>
+      </div>
+      <div class="le-idle-opts" id="le-idle-opts" hidden>
+        <label class="check" style="margin:.5rem 0 0">
+          <input type="checkbox" id="le-hold">
+          単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
+        </label>
+        <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
+          単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
+          idle要素を1つも置かなければその区間は黒画面のままです。</p>
+      </div>
+      <div class="le-cue-nav" id="le-cue-nav" hidden>
+        <button type="button" id="le-cue-prev">◀ 前</button>
+        <span id="le-cue-indicator">- / -枚目</span>
+        <button type="button" id="le-cue-next">次 ▶</button>
+        <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
+      </div>
+      <div id="le-canvas">
+        <div id="le-guide-v" class="le-guide" hidden></div>
+        <div id="le-guide-h" class="le-guide" hidden></div>
+      </div>
+      <div id="le-props" hidden></div>
+      <p class="hint">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
+        箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
+        右下の角でリサイズ、クリックで選択して文言・サイズ・色を変更。
+        選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
+        本番と同じく、枠に収まらない文字は自動で縮小されます。
+        編集した内容はジョブ投入時にレイアウト名より優先で使われます。
+        「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
+        列({achievement}など)は空になるので{surface}/{original}だけで組みます
+        (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。
+        「歌唱なし区間」タブは前奏・間奏・後奏に出す固定フレームの配置です。</p>
+      <details><summary>JSON</summary>
+        <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
+      </details>
     </details>
-  </details>
-</fieldset>
+  </div>
+</details>
 
-<!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
-     設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
-<div id="turnstile-wrap" hidden>
-  <div id="turnstile-widget"></div>
-  <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
-</div>
-
-<button id="submit" class="btn-primary btn-lg">動画を生成</button>
-<button id="preview">声プレビュー(歌い出しから20秒)</button>
-<p class="hint" id="public-limits" hidden></p>
-<p class="hint">プレビューは替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
-<p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
-  class="btn-sm" style="margin-left:.3rem">保存した入力をクリア</button></p>
-
-<div id="progress" hidden>
-  <ul class="stages">
-    <li data-stage="analyze">MIDI解析</li>
-    <li data-stage="convert">空耳変換</li>
-    <li data-stage="import-editor">編集の取り込み</li>
-    <li data-stage="synthesize">歌唱合成</li>
-    <li data-stage="mix">ミックス</li>
-    <li data-stage="video">動画生成</li>
-  </ul>
-  <p id="status-line"></p>
-  <button id="cancel" class="btn-danger btn-sm" hidden>中断</button>
-  <details><summary>ログ</summary><pre id="log"></pre></details>
-</div>
-
-<div id="result" hidden></div>
-
-<details id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
+<details class="card" id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
 
 <!-- 公開モードのときだけ出す歌声合成のクレジット表記(利用規約上必要) -->
 <footer id="public-footer" hidden style="margin-top:1.5rem; border-top:1px solid var(--border); padding-top:.6rem">
@@ -423,7 +467,8 @@ async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
-  if (conf.auth_required && !apiKey()) return;
+  // APIキー欄は詳細設定の中にあるので、キー待ちのときは折りたたみを開いて見えるようにする
+  if (conf.auth_required && !apiKey()) { $("advanced").open = true; return; }
   // 接続先や合成エンジンの設定状況は運用者向けの情報なので、公開モードでは出さない
   $("server-info").hidden = !!conf.public;
   $("server-info").textContent =
@@ -526,6 +571,9 @@ function updatePublicCredit() {
 
 let turnstileSiteKey = "";
 let turnstileWidget = null;
+// callbackで受け取った最新トークン。ページを開いた直後はまだ発行されていないことが
+// あるので、投入前に ensureTurnstileToken() で少しだけ待てるようにこれを見る。
+let turnstileLastToken = "";
 
 function setupTurnstile(siteKey) {
   if (!siteKey || turnstileSiteKey) return;  // 未設定、または読み込み済み
@@ -540,6 +588,9 @@ function setupTurnstile(siteKey) {
       theme: "auto",
       appearance: "interaction-only",
       "before-interactive-callback": () => { $("turnstile-hint").hidden = false; },
+      callback: (token) => { turnstileLastToken = token || ""; },
+      "expired-callback": () => { turnstileLastToken = ""; },
+      "error-callback": () => { turnstileLastToken = ""; },
     });
   };
   const s = document.createElement("script");
@@ -553,11 +604,31 @@ function setupTurnstile(siteKey) {
 // 現在のトークン(未設定・未完了なら空文字)。トークンは1回きりなので投入後にreset。
 function turnstileToken() {
   if (turnstileWidget === null || !window.turnstile) return "";
-  return window.turnstile.getResponse(turnstileWidget) || "";
+  return window.turnstile.getResponse(turnstileWidget) || turnstileLastToken || "";
 }
 
 function resetTurnstile() {
+  turnstileLastToken = "";
   if (turnstileWidget !== null && window.turnstile) window.turnstile.reset(turnstileWidget);
+}
+
+// Turnstileが有効なら、トークンが発行されるまで少しだけ待つ。ページを開いた直後や
+// 「おまかせ」のように即投入するときは、まだトークンが無いことがあるため。
+// トークンが必須なのはサーバーに TURNSTILE_SECRET_KEY があるとき(=サイトキーが
+// 配られたとき)だけなので、無効な構成では何もしない。
+async function ensureTurnstileToken(timeoutMs = 8000) {
+  if (!turnstileSiteKey) return true;
+  const t0 = Date.now();
+  let executed = false;
+  while (!turnstileToken() && Date.now() - t0 < timeoutMs) {
+    // ウィジェットが描画済みなのに待っても出ないときは一度だけ明示実行する
+    if (!executed && turnstileWidget !== null && Date.now() - t0 > 1500) {
+      executed = true;
+      try { window.turnstile.execute(turnstileWidget); } catch { /* 実行中なら無視 */ }
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return !!turnstileToken();
 }
 
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
@@ -565,6 +636,8 @@ function toggleSynthOpts() {
   const isVv = $("synthesizer").value === "voicevox";
   $("neutrino-opts").hidden = isVv;
   $("voicevox-opts").hidden = !isVv;
+  // クレジット表記はVOICEVOXを選んでいるときだけ(歌声セレクトの外に置いてあるので明示的に)
+  $("voicevox-credit").hidden = !isVv;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
   updatePublicCredit();
   $("auto-octave-hint").textContent = isVv
@@ -676,25 +749,40 @@ function finish() {
   $("cancel").hidden = true;
   currentJob = null;
   setBusy(false);
+  // おまかせの「…で生成中…」は実行中だけの表示。終わったら組み合わせだけ残す
+  if (luckyCombo) { $("lucky-status").textContent = `🎲 ${luckyCombo}`; luckyCombo = ""; }
   loadHistory();
 }
 
 function setBusy(busy) {
   $("submit").disabled = busy;
   $("preview").disabled = busy;
+  $("lucky").disabled = busy;
 }
 
 async function submitJob(previewSec) {
   const midi = $("midi").files[0];
-  if (!midi) { alert("MIDIファイルを選んでください"); return; }
+  if (!midi) {
+    setBusy(false);  // おまかせ経由で先に無効化されている場合に戻す
+    alert("曲を選んでください(サンプル曲か、詳細を開いてXF MIDIファイル)");
+    return;
+  }
   // editor.jsonがあると単語リスト指定は無視されるため、食い違ったまま
   // 高コストな生成が走る前に最終確認を挟む
   if ($("editor").files[0] && parodyMismatch()
       && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
         + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
+    setBusy(false);
     return;
   }
   if (apiKey()) localStorage.setItem("apiKey", apiKey());
+  // Turnstileが有効なら、トークンが出るまで少し待ってから組み立てる
+  if (turnstileSiteKey) {
+    setBusy(true);
+    $("progress").hidden = false;
+    $("status-line").textContent = "確認中…";
+    await ensureTurnstileToken();
+  }
   const form = new FormData();
   form.append("midi", midi);
   if ($("editor").files[0]) form.append("editor", $("editor").files[0]);
@@ -734,18 +822,22 @@ async function loadSamples() {
     const res = await fetch("/api/samples");
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
-    $("sample-select").innerHTML = '<option value="">サンプル曲を選んでセット…</option>' +
+    $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
   } catch {
-    // サンプルが取れない環境ではUIごと隠す
+    // サンプルが取れない環境ではサンプル選択(#sample-field)ごと隠し、
+    // 代わりに自分のMIDIを入れる折りたたみを開いておく
     $("sample-select").parentElement.hidden = true;
+    $("midi-details").open = true;
   }
 }
 loadSamples();
 
-$("sample-select").addEventListener("change", async () => {
+// 選択中のサンプル曲をフォームに反映する(MIDI・元歌詞)。
+// おまかせからも使うので、changeハンドラ本体をawaitできる関数に切り出してある。
+async function applySample() {
   const sid = $("sample-select").value;
-  if (!sid) return;
+  if (!sid) return false;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
     const [midiRes, lyricsRes] = await Promise.all([
@@ -764,10 +856,66 @@ $("sample-select").addEventListener("change", async () => {
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
     }
     $("sample-status").textContent = `✓ ${title}(童謡・PD)をセットしました`;
+    return true;
   } catch (err) {
     $("sample-status").textContent = err.message;
+    return false;
   }
-});
+}
+$("sample-select").addEventListener("change", applySample);
+
+// ---- 🎲 おまかせで試す ----
+// サンプル曲と単語リストをランダムに選び、既存のchangeイベント経路(単語リストの
+// レイアウト自動切替 applyWordlistLayout など)を通してフォームへ反映してから、
+// そのまま生成を開始する。初見の人が何も決めずに1本作れるようにするための入口。
+
+const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+// 実行中のおまかせの組み合わせ表示(「ふるさと × 野球選手」)。終わったら「生成中…」を外す
+let luckyCombo = "";
+
+async function luckyRun() {
+  const status = $("lucky-status");
+  const samples = [...$("sample-select").options].filter((o) => o.value);
+  if (!samples.length) {
+    status.textContent = "サンプル曲を読み込めませんでした。曲を選んで生成してください。";
+    return;
+  }
+  const wlSel = $("wordlist-select");
+  const wordlists = wlSel.hidden ? []
+    : [...wlSel.options].filter((o) => o.value && o.value !== "__other__");
+  const song = pickRandom(samples);
+  const wl = wordlists.length ? pickRandom(wordlists) : null;
+  setBusy(true);
+  luckyCombo = `${song.textContent} × ${wl ? wl.textContent : "単語リスト"}`;
+  status.textContent = `${luckyCombo} で生成中…`;
+  try {
+    // 1. 単語リスト: セレクトのchangeと同じ経路(#wordlist/#where設定・レイアウト自動切替)
+    if (wl) {
+      wlSel.value = wl.value;
+      wlSel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    // 2. 前回の編集済み替え歌が残っていると単語リストより優先されてしまうので外す
+    if ($("editor").files[0]) {
+      $("editor").value = "";
+      $("editor").dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    // 3. サンプル曲(MIDI・元歌詞)。changeと同じ処理をawaitして完了を待つ
+    $("sample-select").value = song.value;
+    if (!await applySample()) {
+      status.textContent = "サンプル曲の取得に失敗しました。もう一度お試しください。";
+      setBusy(false);
+      return;
+    }
+  } catch (err) {
+    status.textContent = "おまかせの準備に失敗しました: " + err.message;
+    setBusy(false);
+    return;
+  }
+  await submitJob(0);  // 進行状況・エラー表示とsetBusy(false)はsubmitJob側が行う
+}
+
+$("lucky").addEventListener("click", luckyRun);
 
 $("submit").addEventListener("click", () => submitJob(0));
 $("preview").addEventListener("click", () => submitJob(20));
@@ -1880,7 +2028,8 @@ function parodyMismatch() {
 function renderParodyStatus() {
   const s = $("parody-status");
   if (!$("editor").files[0]) {
-    s.textContent = "未編集: 投入時に単語リストで自動変換します";
+    // 未編集(=単語リストから自動変換)はこの画面の既定なので、初見の人向けに何も出さない
+    s.textContent = "";
     return;
   }
   // エディタありなら基本「再編集」のみ: 外して自動変換に任せるのと変換し直して
