@@ -5,46 +5,117 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>soramimic-video</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* デザイントークンは本家 soramimic(external/soramimic frontend/src/style.css)から移植。
+     色・フォント・角丸・ダークテーマの切り替え方をそろえている。 */
+  :root {
+    color-scheme: light dark;
+    --accent: #2563eb;
+    --accent-dark: #1d4ed8;
+    --bg: #f8fafc;
+    --panel: #ffffff;
+    --panel-2: #f1f5f9;   /* パネルの中でもう一段落とす面(ログ・ファイル入力など) */
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --link: #2563eb;
+    --danger: #dc2626;
+    --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-2: #0f172a;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --border: #334155;
+      --link: #93c5fd;
+    }
+  }
+  * { box-sizing: border-box; }
+  /* [hidden] はJSの表示制御の要。display指定を持つレイアウト用クラスに負けないよう固定する */
+  [hidden] { display: none !important; }
   body {
-    font-family: "Hiragino Sans", "Noto Sans CJK JP", sans-serif;
-    max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6;
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.6;
+    font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans",
+      "Noto Sans JP", "Noto Sans CJK JP", sans-serif;
   }
-  h1 { font-size: 1.3rem; }
-  fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; }
-  label { display: block; margin: .6rem 0 .2rem; font-weight: 600; font-size: .9rem; }
-  input[type=text], input[type=password], textarea, select {
-    width: 100%; box-sizing: border-box; padding: .4rem; font-size: 1rem;
-    border: 1px solid #8886; border-radius: 6px; background: transparent; color: inherit;
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 .8rem 3rem; }
+  a { color: var(--link); }
+  h1 { font-size: 1.25rem; margin: 0; color: var(--accent); }
+  fieldset, .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: .9rem; margin: 0 0 .8rem;
   }
-  textarea { height: 6rem; }
+  legend { font-size: .85rem; font-weight: 700; color: var(--muted); padding: 0 .3rem; }
+  .card > h2 { font-size: .95rem; margin: 0 0 .7rem; }
+  .field + .field { margin-top: .8rem; }
+  label { display: block; margin: .6rem 0 .25rem; font-weight: 600; font-size: .85rem; color: var(--muted); }
+  .field > label:first-child { margin-top: 0; }
+  input[type=text], input[type=password], input[type=number], textarea, select {
+    width: 100%; padding: .5rem .6rem; font: inherit; min-height: 2.6rem;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: inherit;
+  }
+  textarea { height: 6rem; min-height: 4rem; resize: vertical; }
+  input[type=file] {
+    width: 100%; padding: .5rem; font-size: .85rem;
+    border: 1px dashed var(--border); border-radius: 8px; background: var(--panel-2); color: inherit;
+  }
+  input[type=checkbox] { width: auto; min-height: 0; }
+  input[type=checkbox], input[type=range] { accent-color: var(--accent); }
+  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
   button {
-    font-size: 1rem; padding: .5rem 1.5rem; border-radius: 8px; border: none;
-    background: #2563eb; color: #fff; cursor: pointer;
+    font: inherit; padding: .5rem 1.1rem; min-height: 2.6rem; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text);
   }
-  button:disabled { background: #94a3b8; cursor: default; }
-  .hint { font-size: .8rem; opacity: .7; margin-top: .1rem; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-dark); border-color: var(--accent-dark); }
+  .btn-lg { width: 100%; padding: .75rem 1.2rem; font-size: 1.05rem; border-radius: 10px; }
+  .btn-sm { padding: .3rem .8rem; min-height: 0; font-size: .82rem; }
+  .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .btn-x { background: #000; border-color: #000; color: #fff; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+  .row > select { width: auto; flex: 1 1 9rem; min-width: 0; }
+  .check {
+    display: inline-flex; align-items: center; gap: .45rem;
+    font-weight: 400; font-size: .9rem; color: var(--text);
+  }
+  .hint { font-size: .8rem; color: var(--muted); margin: .25rem 0 0; }
   .slider-row { display: flex; align-items: center; gap: .5rem; }
-  .slider-row span { font-size: .8rem; opacity: .7; white-space: nowrap; }
-  .slider-row input[type=range] { flex: 1; margin: 0; }
+  .slider-row span { font-size: .75rem; color: var(--muted); white-space: nowrap; }
+  .slider-row input[type=range] { flex: 1; margin: 0; min-width: 0; }
   .wordlist-filters { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; margin-top: .4rem; }
   .wordlist-facet { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; flex: 1 0 100%; }
-  .wordlist-filters-label { font-size: .8rem; opacity: .7; }
-  .wordlist-filter { display: inline-flex; align-items: center; gap: .2rem; margin: 0; font-weight: normal; font-size: .85rem; }
+  .wordlist-filters-label { font-size: .8rem; color: var(--muted); font-weight: 600; }
+  .wordlist-filter { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-weight: normal; font-size: .85rem; color: var(--text); }
   .wordlist-filter input[type=checkbox] { width: auto; margin: 0; }
-  .wordlist-filter-hint { font-size: .8rem; opacity: .6; }
-  .stages { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; padding: 0; list-style: none; }
+  .wordlist-filter-hint { font-size: .8rem; color: var(--muted); }
+  .stages { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 .8rem; padding: 0; list-style: none; }
   .stages li {
     padding: .2rem .6rem; border-radius: 999px; font-size: .85rem;
-    background: #8882; opacity: .5;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
   }
-  .stages li.done { opacity: 1; background: #16a34a33; }
-  .stages li.now { opacity: 1; background: #2563eb33; animation: pulse 1.2s infinite; }
+  .stages li.done { color: var(--text); background: #16a34a33; border-color: #16a34a55; }
+  .stages li.now { color: var(--text); background: #2563eb33; border-color: #2563eb55; animation: pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity: .5; } }
   #result video { width: 100%; border-radius: 8px; margin-top: .5rem; }
-  .error { color: #dc2626; white-space: pre-wrap; }
-  pre { background: #8881; padding: .6rem; border-radius: 6px; overflow-x: auto; font-size: .75rem; }
+  .error { color: var(--danger); white-space: pre-wrap; }
+  pre {
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: .6rem; border-radius: 8px; overflow-x: auto; font-size: .75rem;
+  }
   details { margin-top: .6rem; }
+  summary { cursor: pointer; }
+  details.card > summary { font-weight: 700; font-size: .95rem; color: var(--text); }
+  details.card[open] > summary { margin-bottom: .7rem; }
+  .sub-details > summary { font-size: .85rem; color: var(--muted); }
   #le-canvas {
     position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000;
     border-radius: 8px; overflow: hidden; margin-top: .5rem; user-select: none;
@@ -76,28 +147,34 @@
     background: #38bdf8; cursor: nwse-resize;
   }
   .le-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; align-items: center; }
-  .le-toolbar button { font-size: .8rem; padding: .3rem .7rem; background: #64748b; }
-  .le-tabs { display: flex; gap: .3rem; margin-top: .5rem; }
-  .le-tabs button { font-size: .8rem; padding: .3rem .9rem; background: #334155; opacity: .6; }
-  .le-tabs button.active { background: #2563eb; opacity: 1; }
+  .le-toolbar button, .le-cue-nav button, .le-tabs button {
+    font-size: .8rem; padding: .3rem .8rem; min-height: 0;
+  }
+  .le-tabs { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .5rem; }
+  .le-tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
   .le-idle-opts { font-size: .85rem; margin-top: .2rem; }
   .le-cue-nav { display: flex; gap: .5rem; margin-top: .5rem; align-items: center; }
-  .le-cue-nav button { font-size: .8rem; padding: .3rem .7rem; background: #64748b; }
   .le-cue-nav button:disabled { opacity: .4; }
   #le-cue-indicator { font-size: .85rem; font-variant-numeric: tabular-nums; }
   #le-cue-hint { margin: 0; }
-  #le-msg { font-size: .8rem; color: #dc2626; }
+  #le-msg { font-size: .8rem; color: var(--danger); }
   #le-props { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin-top: .5rem; }
   #le-props label { margin: 0; font-weight: 400; font-size: .75rem; }
-  #le-props input, #le-props select { width: auto; font-size: .85rem; padding: .2rem .3rem; }
+  #le-props input, #le-props select {
+    width: auto; font-size: .85rem; padding: .2rem .3rem; min-height: 0;
+  }
   #history table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-  #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid #8883; text-align: left; }
-  a { color: #2563eb; }
+  #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid var(--border); text-align: left; }
+  #editor-frame { width: 100%; height: 72vh; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+  #turnstile-widget:not(:empty) { margin: .6rem 0; }
 </style>
 </head>
 <body>
-<h1>🎤 soramimic-video 動画生成</h1>
-<p class="hint" id="server-info"></p>
+<div class="wrap">
+<header class="site-header">
+  <h1>🎤 soramimic-video 動画生成</h1>
+  <p class="hint" id="server-info"></p>
+</header>
 
 <div id="auth" hidden>
   <label>APIキー</label>
@@ -125,19 +202,18 @@
   <input type="text" id="wordlist" placeholder="例: stations">
   <p class="hint">替え歌に使う単語のリスト。MIDIの元歌詞に音が近い単語へ置き換えます。</p>
   <div id="editor-embed-controls" hidden>
-    <button type="button" id="open-editor">✏️ editorで変換・編集</button>
+    <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
     <p class="hint">MIDIと単語リストから替え歌に変換し、その場のエディタで編集できます。
       「取り込んで閉じる」でこの替え歌が動画生成に使われます。</p>
     <span id="open-editor-msg" class="error"></span>
   </div>
   <div id="editor-frame-wrap" hidden style="margin-top:.8rem">
     <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.4rem">
-      <button type="button" id="editor-import">編集内容を取り込んで閉じる</button>
-      <button type="button" id="editor-close" style="background:#64748b">閉じる(取り込まない)</button>
+      <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
+      <button type="button" id="editor-close" class="btn-sm">閉じる(取り込まない)</button>
       <span class="hint">編集はエディタ内で自動保存されます。</span>
     </div>
-    <iframe id="editor-frame" title="soramimic editor"
-      style="width:100%; height:72vh; border:1px solid #8884; border-radius:8px"></iframe>
+    <iframe id="editor-frame" title="soramimic editor"></iframe>
   </div>
   <p id="parody-status" class="hint"></p>
   <details id="parody-advanced">
@@ -145,8 +221,7 @@
     <label>外部で編集した替え歌JSONの読み込み</label>
     <input type="file" id="editor" accept=".json">
     <p class="hint">soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
-    <button type="button" id="download-editor" disabled
-      style="background:#64748b; font-size:.85rem; padding:.35rem 1rem">現在の替え歌JSONをダウンロード</button>
+    <button type="button" id="download-editor" class="btn-sm" disabled>現在の替え歌JSONをダウンロード</button>
     <label>絞り込み(where・任意)</label>
     <input type="text" id="where" placeholder="例: type=family or type=full">
     <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
@@ -217,8 +292,8 @@
     <select id="voicevox-style"></select>
     <p class="hint" id="voicevox-credit"></p>
   </div>
-  <label style="display:inline-flex; align-items:center; gap:.4rem; font-weight:400">
-    <input type="checkbox" id="auto-octave" checked style="width:auto">
+  <label class="check">
+    <input type="checkbox" id="auto-octave" checked>
     音域に合わせて自動でオクターブ調整
   </label>
   <p class="hint" id="auto-octave-hint"></p>
@@ -249,8 +324,8 @@
       <button type="button" id="le-tab-idle">歌唱なし区間(前奏・間奏・後奏)</button>
     </div>
     <div class="le-idle-opts" id="le-idle-opts" hidden>
-      <label style="display:inline-flex; align-items:center; gap:.4rem; font-weight:400; margin:.5rem 0 0">
-        <input type="checkbox" id="le-hold" style="width:auto">
+      <label class="check" style="margin:.5rem 0 0">
+        <input type="checkbox" id="le-hold">
         単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
       </label>
       <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
@@ -291,12 +366,12 @@
   <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
 </div>
 
-<button id="submit">動画を生成</button>
-<button id="preview" style="background:#64748b">声プレビュー(歌い出しから20秒)</button>
+<button id="submit" class="btn-primary btn-lg">動画を生成</button>
+<button id="preview">声プレビュー(歌い出しから20秒)</button>
 <p class="hint" id="public-limits" hidden></p>
 <p class="hint">プレビューは替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
 <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
-  style="background:#64748b; font-size:.8rem; padding:.2rem .8rem; margin-left:.3rem">保存した入力をクリア</button></p>
+  class="btn-sm" style="margin-left:.3rem">保存した入力をクリア</button></p>
 
 <div id="progress" hidden>
   <ul class="stages">
@@ -308,7 +383,7 @@
     <li data-stage="video">動画生成</li>
   </ul>
   <p id="status-line"></p>
-  <button id="cancel" hidden style="background:#dc2626">中断</button>
+  <button id="cancel" class="btn-danger btn-sm" hidden>中断</button>
   <details><summary>ログ</summary><pre id="log"></pre></details>
 </div>
 
@@ -317,9 +392,10 @@
 <details id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
 
 <!-- 公開モードのときだけ出す歌声合成のクレジット表記(利用規約上必要) -->
-<footer id="public-footer" hidden style="margin-top:1.5rem; border-top:1px solid #8883; padding-top:.6rem">
+<footer id="public-footer" hidden style="margin-top:1.5rem; border-top:1px solid var(--border); padding-top:.6rem">
   <p class="hint" id="public-credit"></p>
 </footer>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -583,8 +659,7 @@ async function poll(id) {
 // Xの投稿画面は本文しか渡せない(動画の自動添付はできない)ので、
 // 動画は各自で保存して添付してもらう前提のヒントを添える。
 const SHARE_X_HTML =
-  `<p><button type="button" id="share-x"` +
-  ` style="background:#000; font-size:.85rem; padding:.35rem 1rem">Xでシェア</button></p>` +
+  `<p><button type="button" id="share-x" class="btn-x btn-sm">Xでシェア</button></p>` +
   `<p class="hint">Xには動画を自動で添付できません。上の「ダウンロード」で動画を保存して投稿に添付してください。</p>`;
 
 function bindShareX() {
@@ -1139,7 +1214,7 @@ function leRenderProps() {
     if (e.ruby) {
       const note = document.createElement("p");
       note.textContent = "※ プレビューにはルビは表示されません(動画には各単語の上に振られます)";
-      note.style.cssText = "font-size:11px;color:#999;margin:4px 0 0";
+      note.className = "hint";
       panel.appendChild(note);
     }
   }
