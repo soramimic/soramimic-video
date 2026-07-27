@@ -268,6 +268,22 @@ def test_public_config_reports_limits(public_app, monkeypatch):
     assert conf["daily_quota"] == 3 and conf["max_song_seconds"] == 300
 
 
+def test_index_html_turnstile_and_credit():
+    # フロントはサイトキーが来たときだけTurnstileを読み込み、トークンを添えて投入する
+    from pathlib import Path
+
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "https://challenges.cloudflare.com/turnstile/v0/api.js" in html
+    assert 'setupTurnstile(conf.turnstile_site_key || "")' in html
+    assert 'if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());' in html
+    # 公開モードのときだけ歌声合成のクレジットと制限の目安を出す
+    assert 'publicMode = !!conf.public;' in html
+    assert "歌声合成: VOICEVOX" in html
+    assert 'id="public-footer"' in html and 'id="public-limits"' in html
+
+
 def test_private_config_has_no_public_keys(tmp_path, monkeypatch):
     monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
