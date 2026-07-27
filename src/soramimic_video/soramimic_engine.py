@@ -12,7 +12,8 @@ bridge/convert.mjs と同一の出力構造
 app(同梱辞書データ + fugashi/ipadic MeCab トークナイザ)の構築は重いので、
 辞書データ・トークナイザは一度だけ読み、r ごとの app をキャッシュする。
 単語リストCSVの前処理(parse_tidy: 読み推定 → 音節バリエーション展開)も
-行数が多いと支配的なコストになるため、プロセス内でLRUキャッシュする。
+行数が多いと支配的なコストになるため、プロセス内でLRUキャッシュし、
+さらに歌詞側が引きうる最大ユニット数(max_units)で展開を枝刈りする。
 """
 
 from __future__ import annotations
@@ -95,8 +96,9 @@ def _get_app(vowel_ratio: Any = None) -> Any:
 #
 # parse_tidy は「漢字表記の読み推定 → 読みの音節バリエーション展開」を全行に対して
 # 行うため、行数の多いリスト(動物辞書16,731行で約4分)では変換本体より桁違いに重い。
-# 結果は同じ (app, CSV内容, where) なら決定的で、呼び出し先でも読み取り専用なので
-# ジョブをまたいで使い回せる。
+# 結果は同じ (app, CSV内容, where, max_units) なら決定的で、呼び出し先でも読み取り専用
+# なのでジョブをまたいで使い回せる。上限(max_units)の違うDBは別エントリにするが、
+# より大きい上限で作ったDBは小さい上限の要求にそのまま流用する(_lookup_db_locked)。
 #
 # 【破壊的変更が無いことの確認】
 #   * ResultDB の値(Word)は str/float だけの浅い dict で、入れ子の可変オブジェクトが無い
@@ -115,8 +117,8 @@ def _get_app(vowel_ratio: Any = None) -> Any:
 # ——そうしないと大きいリストが永久にキャッシュされず、この最適化の意味が無くなる。
 _DB_CACHE_MAXSIZE = 8
 _DB_CACHE_MAX_VARIANTS = 2_000_000  # 約8GB相当
-# キー: (appキー, CSVの絶対パス, mtime_ns, ファイルサイズ, where)
-_DbCacheKey = tuple[str, str, int, int, str]
+# キー: (appキー, CSVの絶対パス, mtime_ns, ファイルサイズ, where, max_units)
+_DbCacheKey = tuple[str, str, int, int, str, int | None]
 _db_cache: OrderedDict[_DbCacheKey, Any] = OrderedDict()
 _db_cache_lock = threading.Lock()
 
@@ -142,27 +144,65 @@ def _evict_locked() -> None:
         total -= _db_variants(dropped)
 
 
-def db_cache_key(app_key: str, wordlist_csv: Path, where: str) -> _DbCacheKey:
+def db_cache_key(
+    app_key: str, wordlist_csv: Path, where: str, max_units: int | None = None
+) -> _DbCacheKey:
     """キャッシュキー。CSVの内容が変われば作り直せるよう mtime(ns)とサイズを含める。"""
     path = Path(wordlist_csv).resolve()
     st = path.stat()
-    return (app_key, str(path), st.st_mtime_ns, st.st_size, where)
+    return (app_key, str(path), st.st_mtime_ns, st.st_size, where, max_units)
 
 
-def _get_db(app: Any, app_key: str, wordlist_csv: Path, where: str) -> Any:
-    """parse_tidy の結果をキャッシュ付きで返す。"""
+def _lookup_db_locked(key: _DbCacheKey) -> Any | None:
+    """キャッシュから使えるDBを探す(無ければ None)。要ロック。
+
+    完全一致が無くても、同じCSV・同じ where で「より大きい上限(または無制限)」で
+    作られたDBは流用できる。max_units はユニット数の大きいバケツを落とすだけなので、
+    上限 M のDBは上限 m(≤M)のDBを部分集合として含み、m を超えるバケツは
+    そもそも引かれない(_max_variation_units の上界より長い候補は作られない)。
+    """
+    if key in _db_cache:
+        _db_cache.move_to_end(key)
+        return _db_cache[key]
+
+    base, want = key[:-1], key[-1]
+    if want is None:
+        return None
+    for k in reversed(_db_cache):  # 新しい順に見て、使える中で最も直近のものを使う
+        if k[:-1] != base:
+            continue
+        cached = k[-1]
+        if cached is None or cached >= want:
+            _db_cache.move_to_end(k)
+            return _db_cache[k]
+    return None
+
+
+def _get_db(
+    app: Any, app_key: str, wordlist_csv: Path, where: str, max_units: int | None = None
+) -> Any:
+    """parse_tidy の結果をキャッシュ付きで返す。
+
+    max_units: DBに載せる発音バリエーションのユニット数の上限(None なら無制限)。
+        変換対象の歌詞が引きうる最大ユニット数(_max_variation_units)を渡すと、
+        結果を変えずに前処理(読み推定 → バリエーション展開)を大きく削れる。
+    """
     path = Path(wordlist_csv).resolve()
-    key = db_cache_key(app_key, path, where)
+    key = db_cache_key(app_key, path, where, max_units)
 
     with _db_cache_lock:
-        if key in _db_cache:
-            _db_cache.move_to_end(key)
-            return _db_cache[key]
+        hit = _lookup_db_locked(key)
+        if hit is not None:
+            return hit
 
     # 構築はロックの外で行う(数分かかることがあるので、その間ほかのスレッドの
     # キャッシュヒットまで止めない)。同一キーが同時に来ると二重に構築されるが、
     # parse_tidy は決定的で結果は読み取り専用なので正しさには影響しない。
-    db = app.word_list.parse_tidy(path.read_text(encoding="utf-8"), where)
+    # max_units はキーワードで渡す(未対応の古い soramimic に当たったとき、
+    # 位置引数より TypeError のメッセージが分かりやすい)
+    db = app.word_list.parse_tidy(
+        path.read_text(encoding="utf-8"), where, max_units=max_units
+    )
 
     with _db_cache_lock:
         _db_cache[key] = db
@@ -183,6 +223,10 @@ def warmup_wordlists(names: list[str], where: str = "") -> None:
 
     where は既定で空文字(絞り込み無し)。同梱Web UIはファセットが全ONのとき
     where="" を送るので、これが最も当たりやすいキーになる。
+
+    ユニット数の上限は付けない(max_units=None)。歌詞ごとに必要な上限は違うが、
+    上限無しのDBはどの上限の要求にも流用できる(_lookup_db_locked)ので、
+    こうしておけばどんな曲の初回変換もキャッシュヒットにできる。
     """
     from .convert import resolve_wordlist
 
@@ -237,6 +281,51 @@ def start_warmup_thread() -> threading.Thread | None:
     return thread
 
 
+# --- 単語DBに載せるバリエーションの上限(max_units) ---
+#
+# エンジンは歌詞行を区間に切り、区間の音節列を syllable_to_variation で展開して
+# 「ユニット数が完全に一致する」単語とだけ照合する(maker._ld は長さ不一致を
+# Infinity にする)。つまりDBのうち、歌詞側が作りうる最大ユニット数を超えた
+# バケツは絶対に引かれない。そこを parse_tidy の段階で刈っておく。
+#
+# 効き目はリスト次第。同梱リストは format_kana の修正(英字を含む読みの膨張)後は
+# そもそも展開が爆発しないので、刈れるのは数百バリエーション=誤差の範囲でしかない。
+# 効くのは読みが極端に長い単語(英字表記の複数語など)を含むリストで、そこでは
+# 音節数に対して指数的に増える展開そのものを避けられる。持ち込みCSVへの保険。
+#
+# 上限は歌詞から算出する(決め打ちにしない)。1音節は展開でユニット数が
+# 増えることがある(アンッ→ア/ン/ッ)ので、音節数ではなく「音節ごとの最大
+# ユニット数」の合計で数える。
+_MAX_UNITS_PER_SYLLABLE = 3  # syllable_variations が使えないときの安全側フォールバック
+_MAX_UNITS_MARGIN = 2  # 念のための余裕(結果は変わらない。テストで担保)
+
+
+def _syllable_max_units(pronunciation: str) -> int:
+    """1音節が発音バリエーション展開で生みうる最大ユニット数。"""
+    try:
+        from soramimic.kana_to_syllable import syllable_variations
+    except ImportError:  # pragma: no cover - 上限を緩める側のフォールバック
+        return _MAX_UNITS_PER_SYLLABLE
+    return max((len(units) for units, _ in syllable_variations(pronunciation)), default=0)
+
+
+def _max_variation_units(units_per_line: list[list[dict[str, Any]]]) -> int | None:
+    """歌詞側(変換対象)がDBに問い合わせうる最大ユニット数を返す。
+
+    行ごとに「音節ごとの最大ユニット数」を合計し、その最大値に余裕を足す。
+    区間は行の部分列なので、行全体の上界を取れば全区間をカバーできる。
+    ユニットが1つも無い(空フレーズだけ)なら None を返し、上限無しの
+    従来動作にフォールバックする。
+    """
+    longest = 0
+    for units in units_per_line:
+        longest = max(
+            longest,
+            sum(_syllable_max_units(u.get("pronunciation") or "") for u in units),
+        )
+    return longest + _MAX_UNITS_MARGIN if longest else None
+
+
 def _json_safe(word: dict[str, Any]) -> dict[str, Any]:
     """単語 dict の非有限 float(inf/nan)を None にする(JSON.stringify 相当)。"""
     out = dict(word)
@@ -267,23 +356,30 @@ def run_convert(
         重みの計算にユニット列そのものが要る場合は UnitWeightsFunc(callable)を
         渡せる。エンジンが使うのと同じユニット列を引数に呼ばれるので、
         MeCabトークナイズを二重に走らせずに済む。
+
+    単語DBは、この歌詞が引きうる最大ユニット数(_max_variation_units)を上限に
+    作る。上限を超えるバリエーションは照合されようがないので、出力は上限無しの
+    場合と完全に同一で、前処理だけが軽くなる。
     """
     params = params or {}
     app_key = _app_key(params.get("VOWEL_RATIO"))
     app = _get_app(params.get("VOWEL_RATIO"))
-    db = _get_db(app, app_key, Path(wordlist_csv), where or "")
 
     # 生成画面(app.js)と同じ経路: トークナイズ → 生成
     tokens_list = app.text_analyzer.tokenize_together(phrases)
 
-    # callable が渡されたら、エンジンが内部で作るのと同じユニット列
-    # (get_yomi_and_phrase_break の結果)を先に作って重み計算に渡す。
+    # エンジンが内部で作るのと同じユニット列(get_yomi_and_phrase_break の結果)。
+    # 単語DBの上限(max_units)と、callable な重み計算の両方で使う。
     # tokenize_together(MeCab)は上の1回きりで、ここでは走らない。
+    units_per_line = [app.text_analyzer.get_yomi_and_phrase_break(t) for t in tokens_list]
+
+    # DBは歌詞が引きうる範囲だけ作る(結果は上限無しと完全に同一)
+    db = _get_db(
+        app, app_key, Path(wordlist_csv), where or "", _max_variation_units(units_per_line)
+    )
+
     weights: list[list[float]] | None
     if callable(weights_per_line):
-        units_per_line = [
-            app.text_analyzer.get_yomi_and_phrase_break(t) for t in tokens_list
-        ]
         weights = weights_per_line(units_per_line)
     else:
         weights = weights_per_line
