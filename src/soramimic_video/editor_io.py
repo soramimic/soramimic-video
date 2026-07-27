@@ -34,18 +34,49 @@ def save_raw(raw: dict, project_dir: Path) -> Path:
     return path
 
 
-def _wordlist_entry(name: str, where: str | None) -> dict[str, Any]:
-    """editorのconf(setting.json)と同じ形の単語リスト設定を返す。"""
+def _setting_wordlists() -> list[dict[str, Any]]:
+    """conf/setting.json の単語リスト定義を平坦に並べる。
+
+    setting.json のトップレベルには、単体のリストのほかに
+    ``{"label": "生物", "items": [...]}`` のグループ(editorの選択肢の見出し)が
+    混ざる。グループ内のリスト(動物・ファンタジーなど)も同じように扱えるよう、
+    items を展開して1つのリストにする。
+    """
     try:
         conf = json.loads(SETTING_JSON.read_text(encoding="utf-8"))
-        for entry in conf.get("wordlist", []):
-            if entry.get("filepath", "").endswith(f"/{name}.csv"):
-                entry = dict(entry)
-                if where is not None:
-                    entry["where"] = where
-                return entry
-    except OSError:
+    except (OSError, ValueError):
         logger.warning("conf/setting.json が読めません(汎用の単語リスト設定を使います)")
+        return []
+    return _flatten_wordlists(conf.get("wordlist", []))
+
+
+def _flatten_wordlists(items: list) -> list[dict[str, Any]]:
+    """{label, items:[...]} のグループを再帰的に均してリスト定義だけにする。"""
+    out: list[dict[str, Any]] = []
+    for entry in items or []:
+        if not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("items"), list):  # グループ(label + items)
+            out.extend(_flatten_wordlists(entry["items"]))
+        else:
+            out.append(entry)
+    return out
+
+
+def _wordlist_entry(name: str, where: str | None) -> dict[str, Any]:
+    """editorのconf(setting.json)と同じ形の単語リスト設定を返す。
+
+    リスト名(stem)は filepath(wordlists/<stem>.csv)か value(SEKITSUI などの
+    大文字表記)で引き当てる。設定に無いリストは汎用の設定を組み立てて返す。
+    """
+    for entry in _setting_wordlists() if name else []:
+        filepath = str(entry.get("filepath", ""))
+        value = str(entry.get("value", ""))
+        if filepath.endswith(f"/{name}.csv") or value.lower() == name.lower():
+            entry = dict(entry)
+            if where is not None:
+                entry["where"] = where
+            return entry
     entry = {
         "value": name.upper(),
         "text": name,
