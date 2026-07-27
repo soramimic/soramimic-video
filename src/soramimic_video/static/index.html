@@ -198,6 +198,7 @@
     position: absolute; top: .5rem; right: .5rem; width: 2rem; padding: 0;
     min-height: 2rem; line-height: 1; font-size: 1.1rem; border-radius: 8px;
   }
+  .modal-reroll { right: 3rem; font-size: .95rem; }
   .modal-combo { display: grid; grid-template-columns: auto 1fr; gap: .2rem .7rem; margin: 0; }
   .modal-combo dt { font-size: .8rem; color: var(--muted); font-weight: 700; align-self: center; }
   .modal-combo dd { margin: 0; font-weight: 700; }
@@ -489,6 +490,7 @@
 <div class="modal" id="lucky-modal" hidden>
   <div class="modal-overlay" id="lucky-modal-overlay"></div>
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="lucky-modal-title">
+    <button type="button" class="modal-close modal-reroll" id="lucky-reroll" aria-label="引き直す" title="別の組み合わせにする">🔄</button>
     <button type="button" class="modal-close" id="lucky-modal-close" aria-label="閉じる">×</button>
     <h2 class="modal-title" id="lucky-modal-title">この組み合わせで作りますか？</h2>
     <dl class="modal-combo">
@@ -502,8 +504,6 @@
     <p class="error" id="lucky-modal-msg" hidden></p>
     <div class="modal-actions">
       <button type="button" class="btn-primary" id="lucky-go">🎬 この組み合わせで生成</button>
-      <button type="button" id="lucky-reroll">🎲 引き直す</button>
-      <button type="button" id="lucky-modal-cancel">キャンセル</button>
     </div>
   </div>
 </div>
@@ -970,17 +970,18 @@ $("sample-select").addEventListener("change", applySample);
 //   song / list: ボタンやモーダルに出すラベルの控え。曲名は samples.json、
 //             単語リスト名は editor conf(setting.json)の表示名が取れればそちらを優先し、
 //             取れないときだけここの文字列を使う。
-// 例示には「変換が速い小さめの辞書」だけを選ぶこと。行数の多い辞書(SLOW_WORDLISTS)は
-// 空耳変換に数分かかるので、初見の人に最初に押させる組み合わせには向かない。
+// 例示は実在系を中心に、架空系は1つまで。SORAMIMIC_WARMUP_WORDLISTS で
+// ここの辞書をウォームアップしておくと、例示コンボの変換が待ちなしになる。
 const SUGGESTED_COMBOS = [
-  { sample: "furusato", wordlist: "fictional_anime_character", song: "ふるさと", list: "架空のファンタジーキャラ" },
-  { sample: "akatombo", wordlist: "fictional_scientist", song: "赤とんぼ", list: "架空の科学者" },
-  { sample: "momotarou", wordlist: "fictional_daily_anime_character", song: "桃太郎", list: "架空の日常系キャラ" },
+  { sample: "furusato", wordlist: "baseball", song: "ふるさと", list: "野球選手" },
+  { sample: "akatombo", wordlist: "stations", song: "赤とんぼ", list: "駅名" },
+  { sample: "momotarou", wordlist: "fictional_anime_character", song: "桃太郎", list: "架空のファンタジーキャラ" },
 ];
 
-// 行数が飛び抜けて多く、空耳変換に数分かかる単語リスト。ランダム抽選の対象から外し、
+// 空耳変換に時間がかかる単語リスト。ランダム抽選の対象から外し、
 // それしか無くて選ばれてしまったときはモーダルに時間の注意を出す。
-const SLOW_WORDLISTS = ["sekitsui", "baseball", "football"];
+// (sekitsuiは不正データ3行が原因で数分かかる。上流のデータ修正が入ったら外してよい)
+const SLOW_WORDLISTS = ["sekitsui"];
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -1175,7 +1176,6 @@ $("lucky-reroll").addEventListener("click", () => {
   luckyRenderModal();
 });
 $("lucky-modal-close").addEventListener("click", luckyCloseModal);
-$("lucky-modal-cancel").addEventListener("click", luckyCloseModal);
 $("lucky-modal-overlay").addEventListener("click", luckyCloseModal);
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !$("lucky-modal").hidden) luckyCloseModal();
