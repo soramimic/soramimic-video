@@ -213,6 +213,13 @@ class Job:
     video: Path | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
+    @property
+    def thumbnail(self) -> Path:
+        """サムネ画像(video ステージが作る)のパス。未生成なら存在しない。"""
+        from .thumbnail import THUMBNAIL_FILENAME
+
+        return self.dir / THUMBNAIL_FILENAME
+
     def _synth_progress(self, elapsed: float) -> tuple[int | None, float | None]:
         """synthesizeステージの進捗率(%)と残り秒の目安を返す。
 
@@ -254,23 +261,45 @@ class Job:
         if self.status == "done" and self.video:
             d["video_url"] = f"/api/jobs/{self.id}/video"
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
+            if self.thumbnail.exists():
+                d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
         if with_log:
             d["log"] = list(self.log)
         return d
 
 
+def _clean_name(value: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", value).strip("_")[:40]
+
+
+def _job_slug(job: Job) -> tuple[str, str]:
+    """ダウンロード名に使う (曲名, 単語リスト名)。"""
+    # Path.stem だと曲名中の「/」でパス扱いになるので拡張子だけ正規表現で落とす
+    song = _clean_name(re.sub(r"\.[^.]*$", "", job.params.get("midi_filename") or ""))
+    return song, _clean_name(job.params.get("wordlist") or "")
+
+
 def _download_filename(job: Job) -> str:
     """曲名・単語リスト入りのダウンロード名。落とした後もどのジョブか分かるように。"""
-
-    def clean(value: str) -> str:
-        return re.sub(r'[\\/:*?"<>|\s]+', "_", value).strip("_")[:40]
-
-    # Path.stem だと曲名中の「/」でパス扱いになるので拡張子だけ正規表現で落とす
-    song = clean(re.sub(r"\.[^.]*$", "", job.params.get("midi_filename") or ""))
+    song, wordlist = _job_slug(job)
     if job.video is not None and job.video.suffix == ".wav":  # プレビュー(歌声のみ)
         return "_".join(filter(None, ["preview", song, job.id])) + ".wav"
-    wordlist = clean(job.params.get("wordlist") or "")
     return "_".join(filter(None, ["soramimic", song, wordlist, job.id])) + ".mp4"
+
+
+def song_title_of(params: dict[str, Any]) -> str:
+    """サムネに出す曲名。UIが送ってきた曲名(サンプル曲は samples.json の title)を
+    優先し、無ければアップロード時のファイル名(midi_filename)を使う。
+
+    ジョブのMIDIは input.mid に固定されるので、曲名は params からしか取れない。
+    """
+    return str(params.get("song_title") or params.get("midi_filename") or "")
+
+
+def _thumbnail_filename(job: Job) -> str:
+    """サムネ画像のダウンロード名(動画と同じ命名で拡張子だけpng)。"""
+    song, wordlist = _job_slug(job)
+    return "_".join(filter(None, ["soramimic", song, wordlist, job.id])) + ".png"
 
 
 class _JobLogHandler(logging.Handler):
@@ -389,6 +418,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             image_cache=config.get("image_cache"),
             layout=layout,
             granularity=parse_granularity_override(job.params.get("subtitle_granularity")),
+            song_title=song_title_of(job.params),
         )
 
 
@@ -1038,6 +1068,9 @@ def create_app(
         voicevox_auto_octave: bool | None = Form(None),
         transpose: int = Form(0),
         preview: float = Form(0),
+        # サムネ・表示用の曲名。WebUIはサンプル曲なら samples.json の title、
+        # 自分のMIDIならファイル名(拡張子なし)を送る。未指定なら midi_filename を使う
+        song_title: str = Form(""),
         wordlist: str = Form(""),
         where: str = Form(""),
         convert_params: str = Form(""),
@@ -1116,6 +1149,7 @@ def create_app(
             "subtitle_granularity": subtitle_granularity.strip(),
             "parody_source": "editor" if editor_bytes else "convert",
             "midi_filename": midi.filename,
+            "song_title": song_title.strip(),
         }
         job = manager.create(
             midi_bytes, editor_bytes, lyrics, params,
@@ -1147,6 +1181,16 @@ def create_app(
             )
         return FileResponse(
             job.video, media_type="video/mp4", filename=_download_filename(job)
+        )
+
+    @app.get("/api/jobs/{job_id}/thumbnail", dependencies=[Depends(_require_api_key)])
+    def get_thumbnail(job_id: str, request: Request) -> FileResponse:
+        """サムネ画像(video ステージが作る thumbnail.png)。未生成なら404。"""
+        job = manager.get(job_id, owner_of(request))
+        if not job.thumbnail.exists():
+            raise HTTPException(status_code=404, detail="サムネ画像がありません")
+        return FileResponse(
+            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job)
         )
 
     # ---- 同梱editor(/editor/)向けの配信・シード(A-2) ----

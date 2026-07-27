@@ -63,8 +63,8 @@ HttpOnly cookie `sv_session`(有効期限30日)で発行する。ジョブには
 セッションIDが持ち主(owner)として記録され、
 
 - `GET /api/jobs` は自分のジョブだけを返す
-- `GET /api/jobs/{id}` / `GET /api/jobs/{id}/video` / `POST /api/jobs/{id}/cancel` は
-  持ち主が違えば404(存在しないものとして扱う)
+- `GET /api/jobs/{id}` / `GET /api/jobs/{id}/video` / `GET /api/jobs/{id}/thumbnail` /
+  `POST /api/jobs/{id}/cancel` は持ち主が違えば404(存在しないものとして扱う)
 
 持ち主はジョブディレクトリの `status.json` にも保存されるので、サーバーを
 再起動しても同じブラウザからは履歴が見える。非公開モードでは cookie を

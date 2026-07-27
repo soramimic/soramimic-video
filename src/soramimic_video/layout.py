@@ -436,7 +436,7 @@ def _paste_image(canvas: Image.Image, image_path: Path, el: ImageElement) -> Non
     canvas.paste(img, (x + (w - nw) // 2, y + (h - nh) // 2))
 
 
-def _fitted_image_box(
+def fitted_image_box(
     image_path: Path, box: tuple[float, float, float, float], width: int, height: int
 ) -> tuple[float, float, float, float] | None:
     """image要素のboxにアスペクト維持で収めた画像の実表示領域(フレーム比率)。
@@ -639,7 +639,7 @@ def render_frame(
             # boxより写真が狭いと帯が背景上に浮くので、実表示領域の右下に寄せる
             image_el = next((e for e in elements if isinstance(e, ImageElement)), None)
             if image_path is not None and image_el is not None:
-                fitted = _fitted_image_box(image_path, image_el.box, width, height)
+                fitted = fitted_image_box(image_path, image_el.box, width, height)
                 if fitted is not None:
                     credit_el = replace(credit_el, box=fitted)
             elements.append(credit_el)
@@ -649,6 +649,24 @@ def render_frame(
         layout, image_path, data, width, height, out_dir,
         elements, texts, layout.raw.get(raw_key, []), tag=raw_key,
     )
+
+
+def render_image(
+    layout: Layout,
+    image_path: Path | None,
+    data: dict,
+    width: int,
+    height: int,
+    use_fallback: bool = False,
+) -> Image.Image:
+    """レイアウトに従って1枚のPillow画像を合成して返す(ファイルには書かない)。
+
+    render_frame と違いフレームキャッシュを使わないので、保存先とファイル名を
+    呼び出し側が決めたいとき(サムネ画像など)に使う。
+    """
+    elements = list(layout.active_elements(use_fallback))
+    texts = layout.render_texts(data, use_fallback)
+    return _render_canvas(layout, image_path, data, width, height, elements, texts)
 
 
 def render_idle_frame(

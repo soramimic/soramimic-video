@@ -1,9 +1,17 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from helpers import build_xf_midi
 from soramimic_video.convert import convert_project
-from soramimic_video.editor_io import export_editor, import_editor, save_raw
+from soramimic_video.editor_io import (
+    SETTING_JSON,
+    export_editor,
+    import_editor,
+    save_raw,
+    wordlist_display_name,
+)
 from soramimic_video.xfparse import analyze_midi
 
 
@@ -83,3 +91,52 @@ def test_import_editor_without_convert(tmp_path: Path):
     assert project.parody is not None
     assert project.parody.lines[0].words, "取り込んだ単語が空"
     assert project.parody.lines[0].words[0].note_ids
+
+
+# ---- 単語リストの表示名(conf/setting.json) ----
+
+_SETTING = {
+    "wordlist": [
+        {"value": "STATION", "text": "駅名", "filepath": "wordlists/stations.csv"},
+        # editorの選択肢は見出し(label)でグループ化されることがある
+        {"label": "生物", "items": [
+            {"value": "SEKITSUI", "text": "動物", "filepath": "wordlists/sekitsui.csv"},
+            {"value": "PLANT", "text": "植物"},  # filepathが無ければvalueで引く
+        ]},
+    ]
+}
+
+
+def test_wordlist_display_name_from_group(tmp_path: Path, monkeypatch):
+    import soramimic_video.editor_io as editor_io
+
+    setting = tmp_path / "setting.json"
+    setting.write_text(json.dumps(_SETTING, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(editor_io, "SETTING_JSON", setting)
+
+    assert editor_io.wordlist_display_name("stations") == "駅名"
+    assert editor_io.wordlist_display_name("sekitsui") == "動物"  # グループ内のリスト
+    assert editor_io.wordlist_display_name("plant") == "植物"  # value(大小無視)で照合
+    assert editor_io.wordlist_display_name("unknown") == "unknown"  # 設定に無ければstem
+    assert editor_io.wordlist_display_name("") == ""
+
+
+def test_wordlist_display_name_without_setting(tmp_path: Path, monkeypatch):
+    import soramimic_video.editor_io as editor_io
+
+    monkeypatch.setattr(editor_io, "SETTING_JSON", tmp_path / "missing.json")
+    assert editor_io.wordlist_display_name("stations") == "stations"
+
+
+@pytest.mark.skipif(not SETTING_JSON.is_file(), reason="submoduleのconfが無い")
+@pytest.mark.parametrize(
+    ("stem", "text"),
+    [
+        ("sekitsui", "動物"),
+        ("baseball", "野球選手"),
+        ("stations", "駅名"),
+        ("fictional_anime_character", "ファンタジー"),
+    ],
+)
+def test_wordlist_display_name_real_setting(stem: str, text: str):
+    assert wordlist_display_name(stem) == text

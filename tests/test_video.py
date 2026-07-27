@@ -955,3 +955,45 @@ def test_prewarm_skips_cached(tmp_path: Path, monkeypatch):
     summary = prewarm_images([csv_path], cache, delay=0)
     assert summary["skipped"] == 1 and summary["fetched"] == 1 and summary["failed"] == 0
     assert calls == [new_url]  # キャッシュ済みURLはダウンロードされない
+
+
+# ---- サムネ(前奏区間の表示) ----
+
+
+def test_thumbnail_show_end_uses_intro(tmp_path: Path):
+    from soramimic_video.video import THUMBNAIL_MIN_SEC, thumbnail_show_end
+
+    project = _two_word_project()  # 最初の歌唱ノートは0.5s(前奏が短い曲)
+    assert thumbnail_show_end(project) == THUMBNAIL_MIN_SEC  # 冒頭3秒は出す
+
+    project.notes[0].start_sec = 8.0  # 前奏8秒の曲はその終わり(歌い出し)まで
+    project.notes[1].start_sec = 9.0
+    assert abs(thumbnail_show_end(project) - 8.0) < 0.01
+
+
+def test_prepend_thumbnail_cue_shifts_overlapping_cues(tmp_path: Path):
+    from soramimic_video.video import prepend_thumbnail_cue
+
+    thumb = tmp_path / "thumbnail.png"
+    frame = tmp_path / "frame.png"
+    cues = [
+        ImageCue(start=0.5, end=1.0, frame=frame),  # サムネに完全に隠れる
+        ImageCue(start=2.0, end=5.0, frame=frame),  # 途中から出る
+        ImageCue(start=6.0, end=8.0, frame=frame),  # そのまま
+    ]
+    out = prepend_thumbnail_cue(cues, thumb, 3.0)
+    assert [(c.start, c.end) for c in out] == [(0.0, 3.0), (3.0, 5.0), (6.0, 8.0)]
+    assert out[0].frame == thumb
+    # 区間が重ならない=スライドショーの連結で以降の映像がずれない
+    assert all(a.end <= b.start for a, b in zip(out, out[1:], strict=False))
+
+
+def test_prepend_thumbnail_cue_without_intro_overlap(tmp_path: Path):
+    from soramimic_video.video import prepend_thumbnail_cue
+
+    thumb = tmp_path / "thumbnail.png"
+    cues = [ImageCue(start=10.0, end=12.0, frame=tmp_path / "frame.png")]
+    out = prepend_thumbnail_cue(cues, thumb, 9.0)
+    assert [(c.start, c.end) for c in out] == [(0.0, 9.0), (10.0, 12.0)]
+    # end<=0(サムネを出さない)ならキューは変えない
+    assert prepend_thumbnail_cue(cues, thumb, 0.0) == cues

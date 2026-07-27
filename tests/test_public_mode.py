@@ -296,3 +296,24 @@ def test_private_config_has_no_public_keys(tmp_path, monkeypatch):
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
     conf = client.get("/api/config").json()
     assert "public" not in conf and "daily_quota" not in conf
+
+
+def test_thumbnail_is_owner_checked(tmp_path, monkeypatch):
+    """サムネも動画と同じく持ち主以外からは404(公開モード)。"""
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+
+    def pipeline_with_thumbnail(job, config):
+        (job.dir / "thumbnail.png").write_bytes(b"\x89PNG\r\n\x1a\n-fake")
+        return fast_pipeline(job, config)
+
+    monkeypatch.setattr(api_mod, "run_pipeline", pipeline_with_thumbnail)
+    app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
+    alice, bob = TestClient(app), TestClient(app)
+    a_id = submit(alice).json()["id"]
+    body = wait_done(alice, a_id)
+
+    assert body["thumbnail_url"] == f"/api/jobs/{a_id}/thumbnail"
+    assert alice.get(f"/api/jobs/{a_id}/thumbnail").status_code == 200
+    bob.get("/api/config")  # bobにも別セッションのcookieを発行させる
+    assert bob.get(f"/api/jobs/{a_id}/thumbnail").status_code == 404

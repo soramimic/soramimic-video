@@ -7,6 +7,9 @@
     (単語数が多くてもffmpegの入力数が増えない)
  3. ASS字幕(下部: 替え歌歌詞/元歌詞)と音声を焼き込んで完成
 
+あわせて曲名を空耳変換したサムネ画像(thumbnail.py)をプロジェクトディレクトリに
+作り、前奏区間(t=0〜歌い出し)のフレームとしても差し込む。
+
 画像はWikimedia Commons等のURL(wordlist_rowのimage列)。クレジット表記が
 必要な画像(CommonsでAttributionRequiredのもの)は出典文言をフレームに自動で
 焼き込む(image_credit.py / layout.py参照。単語リストにimage_credit列があれば
@@ -44,11 +47,14 @@ from .layout import (
 from .mix import MIX_DIR
 from .project import ParodyWord, Project
 from .synthesize import NEUTRINO_DIR
+from .thumbnail import generate_thumbnail
 
 logger = logging.getLogger(__name__)
 
 VIDEO_DIR = "video"
 HOLD_MAX_SEC = 3.0  # 次の単語が来ないとき画像を表示し続ける最大時間
+# 前奏(t=0〜歌い出し)にサムネを出す。前奏が短い・無い曲でも冒頭これだけは出す
+THUMBNAIL_MIN_SEC = 3.0
 SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
 # build_image_cues 前の画像/クレジットのプリフェッチ並列数。
 # Commonsのサムネイル生成(Special:FilePath?width=)は並列4だと429が返ることを実測済み。
@@ -148,6 +154,17 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
     path = cache_dir / f"{name}.{ext}"
     path.write_bytes(resp.content)
     return path
+
+
+def image_cache_dir(work: Path, image_cache: Path | None = None) -> Path:
+    """単語画像のダウンロード先。明示指定 > 環境変数 > 作業ディレクトリ内。
+
+    ダウンロード画像はプロジェクトをまたいで使い回せる(URLベースのキー)ので、
+    共有キャッシュを指定すると同じ単語リストの2回目以降が速くなる。
+    """
+    return image_cache or Path(
+        os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
+    )
 
 
 def _black_frame(out_dir: Path, width: int, height: int) -> Path:
@@ -352,11 +369,7 @@ def build_image_cues(
 
     cues: list[ImageCue] = []
     credits: dict[str, dict] = {}
-    # ダウンロード画像はプロジェクトをまたいで使い回せる(URLベースのキー)。
-    # 共有キャッシュを指定すると、同じ単語リストの2回目以降が速くなる
-    cache = image_cache or Path(
-        os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
-    )
+    cache = image_cache_dir(work, image_cache)
     norm = work / "frames"
     # 逐次ループが読む画像/クレジットを先に並列で温める(キャッシュが冷えていると
     # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
@@ -394,6 +407,40 @@ def build_image_cues(
                 "credit": str(data.get("image_credit") or ""),
             }
     return cues, list(credits.values())
+
+
+def thumbnail_show_end(project: Project) -> float:
+    """サムネを出す区間の終わり(=前奏の終わり)。
+
+    前奏は t=0 から最初の歌唱ノートの開始まで。前奏が THUMBNAIL_MIN_SEC 未満
+    (無い曲を含む)のときは冒頭 THUMBNAIL_MIN_SEC 秒まで出す(歌い出しに
+    少し被るが、サムネを見せる方を優先する)。
+    """
+    starts = [n.start_sec for n in project.notes if n.kana] or [
+        n.start_sec for n in project.notes
+    ]
+    return max(min(starts, default=0.0), THUMBNAIL_MIN_SEC)
+
+
+def prepend_thumbnail_cue(
+    cues: list[ImageCue], frame: Path, end: float
+) -> list[ImageCue]:
+    """先頭に [0, end) のサムネキューを足し、被る単語キューを後ろへ詰める。
+
+    スライドショーはキューを順に連結するので(write_slideshow)、区間が重なると
+    以降の映像がまるごと後ろへずれる。サムネに完全に隠れるキューは捨て、
+    途中から出るキューは開始をサムネの終わりに合わせる。
+    """
+    if end <= 0:
+        return cues
+    kept: list[ImageCue] = []
+    for cue in cues:
+        if cue.end <= end:
+            continue  # サムネに完全に覆われる単語(字幕はそのまま焼かれる)
+        kept.append(
+            ImageCue(start=max(cue.start, end), end=cue.end, frame=cue.frame)
+        )
+    return [ImageCue(start=0.0, end=end, frame=frame), *kept]
 
 
 def write_slideshow(
@@ -847,6 +894,7 @@ def make_video(
     image_cache: Path | None = None,
     layout: str | None = None,
     granularity: dict[str, str] | None = None,
+    song_title: str | None = None,
 ) -> Path:
     layout_obj = load_layout(layout)
     work = project_dir / VIDEO_DIR
@@ -874,6 +922,13 @@ def make_video(
         # 画像取得の全滅(ネットワーク・レート制限)や、画像もテキストも無い
         # レイアウトで起きる。動画は生成されるが全編無地になるので目立たせる
         logger.warning("画像キューが0件です。動画の背景は全編無地になります")
+    # 曲名の空耳変換つきサムネ(thumbnail.png)。前奏区間に出すほか、SNS投稿用に
+    # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)
+    thumbnail = generate_thumbnail(
+        project, project_dir, width, height, image_cache, song_title
+    )
+    if thumbnail is not None:
+        cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
     # 歌唱がない区間(前奏・間奏・後奏)用のidleフレーム(定義があるときだけ)
     idle_frame = render_idle_frame(
         layout_obj, idle_frame_data(project), width, height, work / "frames"
