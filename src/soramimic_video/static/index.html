@@ -344,8 +344,10 @@ async function loadConfig() {
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
   if (conf.auth_required && !apiKey()) return;
+  // 接続先や合成エンジンの設定状況は運用者向けの情報なので、公開モードでは出さない
+  $("server-info").hidden = !!conf.public;
   $("server-info").textContent =
-    `サーバー: ${conf.host || location.host}` + (conf.neutrino ? "" : " ⚠ NEUTRINO_ROOT未設定");
+    `サーバー: ${location.host}` + (conf.neutrino ? "" : " ⚠ NEUTRINO_ROOT未設定");
   fillChoiceOptions("model", conf.models || []);
   let model0 = $("model").value || "MERROW";
   if (conf.models && conf.models.length && !conf.models.includes(model0)) {
