@@ -57,6 +57,14 @@ def _wordlist_entry(name: str, where: str | None) -> dict[str, Any]:
     return entry
 
 
+def wordlist_display_name(name: str) -> str:
+    """単語リストの表示名(conf/setting.json の text。例: stations → 駅名)。
+
+    設定に無いリスト・設定を読めないときはリスト名(stem)をそのまま返す。
+    """
+    return str(_wordlist_entry(name, None).get("text") or name)
+
+
 def export_editor(project: Project, project_dir: Path) -> Path:
     """editorの「読み込み」で開けるJSONを書き出す。"""
     if project.parody is None:
