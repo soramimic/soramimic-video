@@ -597,9 +597,14 @@ class JobManager:
                 )
             except ValueError:
                 data["video"] = str(job.video)
-        (job.dir / STATUS_FILENAME).write_text(
+        # 同じディレクトリの一時ファイルに書いてから置換する。ジョブ実行中も
+        # APIスレッドが status.json を読むので、書きかけの中身を読ませない
+        status_path = job.dir / STATUS_FILENAME
+        tmp_path = status_path.with_suffix(".json.tmp")
+        tmp_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
         )
+        os.replace(tmp_path, status_path)
 
     def cancel(self, job_id: str, owner: str | None = None) -> Job:
         job = self.get(job_id, owner)
