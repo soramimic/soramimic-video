@@ -189,12 +189,52 @@
 <!-- 1. まず押す入口。サンプル曲と単語リストをランダムに選んで、そのまま生成まで走らせる。 -->
 <section class="card">
   <button type="button" id="lucky" class="btn-primary btn-lg">🎲 おまかせで試す</button>
-  <p class="hint" id="lucky-status">曲と単語リストはランダム。自分で選ぶなら下へ。</p>
+  <p class="hint" id="lucky-status">曲と単語リストはランダム。自分で選ぶなら「⚙️ 詳細設定」から。</p>
 </section>
 
-<!-- 2. 必須設定と生成ボタン。スマホ(375px幅)でもここまでが1画面に収まるよう、
-     項目は曲・単語リスト・歌声の3つだけにして、生成ボタンまで同じカードに置く。 -->
+<!-- 2. 生成ボタンと進捗・結果。入力欄はすべて詳細設定の中にあるので、
+     初見の画面は「おまかせ → 生成」だけで完結する。 -->
 <section class="card">
+  <!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
+       設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
+  <div id="turnstile-wrap" hidden>
+    <div id="turnstile-widget"></div>
+    <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
+  </div>
+  <button id="submit" class="btn-primary btn-lg">🎬 動画を生成</button>
+  <!-- 曲が未セットのまま押されたときの案内(投入はしない) -->
+  <p class="error" id="submit-msg" hidden></p>
+  <p class="hint" id="public-limits" hidden></p>
+  <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
+    class="btn-sm" style="margin-left:.3rem">保存した入力をクリア</button></p>
+
+  <div id="progress" hidden>
+    <ul class="stages">
+      <li data-stage="analyze">MIDI解析</li>
+      <li data-stage="convert">空耳変換</li>
+      <li data-stage="import-editor">編集の取り込み</li>
+      <li data-stage="synthesize">歌唱合成</li>
+      <li data-stage="mix">ミックス</li>
+      <li data-stage="video">動画生成</li>
+    </ul>
+    <p id="status-line"></p>
+    <button id="cancel" class="btn-danger btn-sm" hidden>中断</button>
+    <details><summary>ログ</summary><pre id="log"></pre></details>
+  </div>
+
+  <div id="result" hidden></div>
+</section>
+
+<!-- 3. 自分で選ぶための設定はすべてこの折りたたみの中。初見の画面には出さない。
+     曲・単語リスト・歌声もここに置き、メイン画面は「おまかせ → 生成」だけにする。 -->
+<details class="card" id="advanced">
+  <summary>⚙️ 詳細設定(曲・単語リスト・歌声・歌詞・レイアウト・変換パラメータ)</summary>
+
+  <div class="field" id="auth" hidden>
+    <label for="api-key">APIキー</label>
+    <input type="password" id="api-key" placeholder="X-API-Key">
+  </div>
+
   <div class="field">
     <label for="sample-select">曲</label>
     <!-- サンプルが取れない環境では loadSamples がこの div ごと隠す -->
@@ -237,43 +277,6 @@
       </span>
     </div>
     <p class="hint" id="voicevox-credit"></p>
-  </div>
-
-  <!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
-       設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
-  <div id="turnstile-wrap" hidden>
-    <div id="turnstile-widget"></div>
-    <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
-  </div>
-  <button id="submit" class="btn-primary btn-lg">🎬 動画を生成</button>
-  <p class="hint" id="public-limits" hidden></p>
-  <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
-    class="btn-sm" style="margin-left:.3rem">保存した入力をクリア</button></p>
-
-  <div id="progress" hidden>
-    <ul class="stages">
-      <li data-stage="analyze">MIDI解析</li>
-      <li data-stage="convert">空耳変換</li>
-      <li data-stage="import-editor">編集の取り込み</li>
-      <li data-stage="synthesize">歌唱合成</li>
-      <li data-stage="mix">ミックス</li>
-      <li data-stage="video">動画生成</li>
-    </ul>
-    <p id="status-line"></p>
-    <button id="cancel" class="btn-danger btn-sm" hidden>中断</button>
-    <details><summary>ログ</summary><pre id="log"></pre></details>
-  </div>
-
-  <div id="result" hidden></div>
-</section>
-
-<!-- 3. 玄人向けの設定はすべてこの折りたたみの中。初見の画面には出さない。 -->
-<details class="card" id="advanced">
-  <summary>⚙️ 詳細設定(歌詞・移調・レイアウト・変換パラメータ)</summary>
-
-  <div class="field" id="auth" hidden>
-    <label for="api-key">APIキー</label>
-    <input type="password" id="api-key" placeholder="X-API-Key">
   </div>
 
   <div class="field">
@@ -758,13 +761,24 @@ function setBusy(busy) {
   $("lucky").disabled = busy;
 }
 
+// 生成ボタン直下の案内(曲が未セットのときなど)。空文字で消す。
+function showSubmitMsg(text) {
+  const el = $("submit-msg");
+  el.textContent = text || "";
+  el.hidden = !text;
+}
+
 async function submitJob(previewSec) {
   const midi = $("midi").files[0];
   if (!midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
-    alert("曲を選んでください(サンプル曲か、詳細を開いてXF MIDIファイル)");
+    // 曲は詳細設定の中なので、まずおまかせへ誘導する
+    showSubmitMsg("曲がまだセットされていません。"
+      + "上の「おまかせ」から組み合わせを選ぶか、「⚙️ 詳細設定」で曲"
+      + "(サンプル曲か、自分のXF MIDIファイル)を選んでください。");
     return;
   }
+  showSubmitMsg("");
   // editor.jsonがあると単語リスト指定は無視されるため、食い違ったまま
   // 高コストな生成が走る前に最終確認を挟む
   if ($("editor").files[0] && parodyMismatch()
@@ -829,9 +843,11 @@ async function loadSamples() {
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
   } catch {
     // サンプルが取れない環境ではサンプル選択(#sample-field)ごと隠し、
-    // 代わりに自分のMIDIを入れる折りたたみを開いておく
+    // 代わりに自分のMIDIを入れる折りたたみを開いておく。入力欄は詳細設定の中に
+    // あるので、それも開いて迷子にならないようにする
     $("sample-select").parentElement.hidden = true;
     $("midi-details").open = true;
+    $("advanced").open = true;
   }
 }
 loadSamples();
