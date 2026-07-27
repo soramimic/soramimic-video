@@ -5,7 +5,14 @@ import json
 import pytest
 from PIL import Image
 
-from soramimic_video.layout import load_layout, render_frame, render_idle_frame
+from soramimic_video import layout as layout_mod
+from soramimic_video.layout import (
+    builtin_layout_names,
+    load_layout,
+    load_wordlist_layouts,
+    render_frame,
+    render_idle_frame,
+)
 
 
 def test_load_builtin_layouts():
@@ -13,6 +20,39 @@ def test_load_builtin_layouts():
     assert len(default.elements) == 1
     caption = load_layout("caption")
     assert len(caption.elements) == 2
+
+
+def test_wordlist_layouts_are_builtin():
+    """同梱の対応表は組み込みレイアウト名だけを指していること。"""
+    mapping = load_wordlist_layouts()
+    assert mapping["scientist"] == "scientist_card"
+    assert set(mapping.values()) <= set(builtin_layout_names())
+
+
+def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):
+    p = tmp_path / "wordlist_layouts.json"
+    p.write_text(json.dumps({
+        "scientist": "caption",
+        "stations": "no-such-layout",  # 組み込みに無いので捨てられる
+        "plant": 123,                   # 文字列でないので捨てられる
+    }), encoding="utf-8")
+    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", p)
+    with caplog.at_level("WARNING"):
+        assert load_wordlist_layouts() == {"scientist": "caption"}
+    assert "no-such-layout" in caplog.text
+
+
+def test_load_wordlist_layouts_missing_or_broken(tmp_path, monkeypatch):
+    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", tmp_path / "none.json")
+    assert load_wordlist_layouts() == {}
+    broken = tmp_path / "broken.json"
+    broken.write_text("[not json", encoding="utf-8")
+    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", broken)
+    assert load_wordlist_layouts() == {}
+    listed = tmp_path / "list.json"
+    listed.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", listed)
+    assert load_wordlist_layouts() == {}
 
 
 def test_load_unknown_layout():

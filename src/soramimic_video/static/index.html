@@ -339,6 +339,10 @@ function fmtDuration(sec) {
 
 let resumed = false;
 
+// 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
+// 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
+let wordlistLayouts = {};
+
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
@@ -357,6 +361,7 @@ async function loadConfig() {
   setupVoicevox(conf.voicevox);
   fillChoiceOptions("layout", conf.layouts || [], "サーバー既定");
   setChoice("layout", $("layout").value || "");
+  wordlistLayouts = conf.wordlist_layouts || {};
   $("editor-embed-controls").hidden = !conf.editor;
   setupPublicMode(conf);
   setupTurnstile(conf.turnstile_site_key || "");
@@ -1343,7 +1348,28 @@ $("le-details").addEventListener("toggle", async () => {
   leRender();
 });
 
+// 直前に自動でセットしたレイアウト名。これと現在値が同じなら「まだ自動のまま」と見なす
+let lastAutoLayout = "";
+
+// 単語リストに対応する既定レイアウト(wordlistLayouts)を#layoutに当てる。
+// ユーザーが自分で選んだレイアウトは上書きしない。自動と見なすのは
+// 「現在値が空(=サーバー既定)」か「直前に自動でセットした値のまま」のときだけ。
+function applyWordlistLayout() {
+  // 復元中は保存済みのレイアウト(手動選択かもしれない)をrestoreForm側が入れるので触らない
+  if (restoring) return;
+  const cur = $("layout").value.trim();
+  if (cur && cur !== lastAutoLayout) return;
+  const next = wordlistLayouts[$("wordlist").value.trim()] || "";
+  if (next === cur) return;
+  setChoice("layout", next);
+  lastAutoLayout = next;
+  saveForm();
+  // 既存のchange処理(leLoadでの編集エディタ更新)に合わせる
+  $("layout").dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 $("wordlist").addEventListener("change", () => {
+  applyWordlistLayout();
   leFetchColumns();
   leFetchCue(leCueIndex);  // editor JSONのwordlist解決がフォーム欄に依存する場合に更新
 });
@@ -1900,6 +1926,8 @@ function saveForm() {
       noteLenWeight: $("p-notelen").value,
       transpose: $("transpose").value,
       layout: $("layout").value,
+      // 自動でセットしたレイアウト名も持ち回る(復元後も手動選択と区別するため)
+      layoutAuto: lastAutoLayout,
       layoutJson: $("layout-json").value,
       model: $("model").value,
       synthesizer: $("synthesizer").value,
@@ -2110,6 +2138,8 @@ async function doRestoreForm() {
     // 4. layout名: 値だけ入れる(changeを発火するとleLoadがlayoutJsonを上書きするため)。
     // setChoice はchangeを発火しないのでlayoutJsonを上書きしない。
     if (state.layout) setChoice("layout", state.layout);
+    // 復元した値が「前回自動でセットされたもの」なら、単語リスト変更で入れ替えてよい
+    lastAutoLayout = state.layoutAuto || "";
     // 5. layoutJson: 既存ハンドラでleLayoutにパースさせる
     if (state.layoutJson) {
       $("layout-json").value = state.layoutJson;

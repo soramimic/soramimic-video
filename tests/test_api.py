@@ -448,6 +448,14 @@ def test_config_lists_layouts(client):
     assert "default" in conf["layouts"] and "caption" in conf["layouts"]
 
 
+def test_config_has_wordlist_layouts(client):
+    conf = client.get("/api/config").json()
+    wl = conf["wordlist_layouts"]
+    assert wl["scientist"] == "scientist_card"
+    # 値はすべて組み込みレイアウト名(UIがそのまま#layoutに入れるため)
+    assert set(wl.values()) <= set(conf["layouts"])
+
+
 def test_get_builtin_layout(client):
     body = client.get("/api/layouts/default").json()
     assert body["elements"][0]["type"] == "image"

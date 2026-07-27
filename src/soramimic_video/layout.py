@@ -77,6 +77,8 @@ from PIL import Image, ImageDraw, ImageFont
 logger = logging.getLogger(__name__)
 
 LAYOUTS_DIR = Path(__file__).resolve().parent / "layouts"
+# 単語リスト名(external/soramimic-wordlists のCSVのstem)→ 組み込みレイアウト名のマップ
+WORDLIST_LAYOUTS_PATH = Path(__file__).resolve().parent / "wordlist_layouts.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
 
 # 日本語が描けるフォントの探索先(上から順に使う。macOS / Linux(Colab))
@@ -205,6 +207,38 @@ class Layout:
 
 def builtin_layout_names() -> list[str]:
     return sorted(p.stem for p in LAYOUTS_DIR.glob("*.json"))
+
+
+def load_wordlist_layouts() -> dict[str, str]:
+    """単語リストごとの既定レイアウト(wordlist_layouts.json)を読む。
+
+    「stationsを選んだらcaption」のように、単語リストの列構成に合うレイアウトを
+    UIの初期選択にするためのマップ。組み込みレイアウトに無い名前を指しているエントリは
+    警告を出して捨てる(マップの編集ミスでUIが壊れないように)。ファイルが無ければ空。
+    """
+    if not WORDLIST_LAYOUTS_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(WORDLIST_LAYOUTS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning("単語リスト別レイアウトを読めません: %s (%s)", WORDLIST_LAYOUTS_PATH, e)
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "単語リスト別レイアウトはオブジェクトで書いてください: %s", WORDLIST_LAYOUTS_PATH
+        )
+        return {}
+    builtin = set(builtin_layout_names())
+    out: dict[str, str] = {}
+    for wordlist, layout in raw.items():
+        if not isinstance(layout, str) or layout not in builtin:
+            logger.warning(
+                "組み込みレイアウトに無いので無視します: %s -> %s (%s)",
+                wordlist, layout, WORDLIST_LAYOUTS_PATH,
+            )
+            continue
+        out[str(wordlist)] = layout
+    return out
 
 
 def load_layout(name_or_path: str | None) -> Layout:
