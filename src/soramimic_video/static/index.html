@@ -782,7 +782,11 @@ async function poll(id) {
     $("result").innerHTML = job.result_kind === "audio"
       ? `<audio controls autoplay style="width:100%" src="${qs(job.video_url)}"></audio>`
       : `<video controls src="${qs(job.video_url)}"></video>` +
-        `<p><a href="${qs(job.video_url)}" download>ダウンロード</a></p>` +
+        `<p><a href="${qs(job.video_url)}" download>ダウンロード</a>` +
+        (job.thumbnail_url
+          ? ` / <a href="${qs(job.thumbnail_url)}" target="_blank" rel="noopener">サムネ画像</a>`
+          : "") +
+        `</p>` +
         SHARE_X_HTML;
     bindShareX();
     finish();
@@ -800,7 +804,7 @@ async function poll(id) {
 // 動画は各自で保存して添付してもらう前提のヒントを添える。
 const SHARE_X_HTML =
   `<p><button type="button" id="share-x" class="btn-x btn-sm">Xでシェア</button></p>` +
-  `<p class="hint">Xには動画を自動で添付できません。上の「ダウンロード」で動画を保存して投稿に添付してください。</p>`;
+  `<p class="hint">Xには動画を自動で添付できません。上の「ダウンロード」で動画を保存して投稿に添付してください。「サムネ画像」も投稿に使えます。</p>`;
 
 function bindShareX() {
   const btn = $("share-x");

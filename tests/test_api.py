@@ -621,3 +621,46 @@ def test_restart_recovers_history(tmp_path, monkeypatch):
     assert [j["id"] for j in jobs] == [job_id]
     assert jobs[0]["status"] == "done"
     assert client2.get(f"/api/jobs/{job_id}/video").content == FAKE_MP4
+
+
+# ---- サムネ画像 ----
+
+FAKE_PNG = b"\x89PNG\r\n\x1a\n-fake"
+
+
+@pytest.fixture
+def thumb_client(tmp_path, monkeypatch):
+    """パイプラインが動画とサムネ(thumbnail.png)を両方作るクライアント。"""
+
+    def fake_pipeline(job, config):
+        out = job.dir / "video" / "song.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(FAKE_MP4)
+        (job.dir / "thumbnail.png").write_bytes(FAKE_PNG)
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    return TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+
+def test_thumbnail_download(thumb_client):
+    job_id = submit(thumb_client, wordlist="stations")
+    body = wait_done(thumb_client, job_id)
+    assert body["thumbnail_url"] == f"/api/jobs/{job_id}/thumbnail"
+    res = thumb_client.get(body["thumbnail_url"])
+    assert res.status_code == 200
+    assert res.content == FAKE_PNG
+    assert res.headers["content-type"] == "image/png"
+    assert f"{job_id}.png" in res.headers["content-disposition"]
+
+
+def test_thumbnail_missing_is_404(client):
+    # 既定のfake_pipelineはサムネを作らない(旧ジョブ・生成失敗と同じ状態)
+    job_id = submit(client, wordlist="stations")
+    body = wait_done(client, job_id)
+    assert "thumbnail_url" not in body
+    assert client.get(f"/api/jobs/{job_id}/thumbnail").status_code == 404
+
+
+def test_thumbnail_unknown_job_is_404(client):
+    assert client.get("/api/jobs/nosuchjob/thumbnail").status_code == 404
