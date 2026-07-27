@@ -1,0 +1,18 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "image", "box": [0.09, 0.05, 0.82, 0.5]},
+    {"type": "text", "text": "{original}", "box": [0.05, 0.58, 0.9, 0.09],
+     "size": 0.062, "color": "white", "stroke_width": 0.004},
+    {"type": "text", "text": "{team}", "box": [0.05, 0.68, 0.9, 0.05],
+     "size": 0.04, "color": "#d4d4d4", "require": "team"},
+    {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.1],
+     "size": 0.065, "color": "white", "bold": true, "ruby": true},
+    {"type": "subtitle", "source": "original", "box": [0.02, 0.895, 0.96, 0.05],
+     "size": 0.042, "color": "#b8b8b8"}
+  ],
+  "fallback": [
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08], "size": 0.05, "color": "#aaa"}
+  ]
+}
