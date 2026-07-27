@@ -566,7 +566,9 @@ async function poll(id) {
     $("result").innerHTML = job.result_kind === "audio"
       ? `<audio controls autoplay style="width:100%" src="${qs(job.video_url)}"></audio>`
       : `<video controls src="${qs(job.video_url)}"></video>` +
-        `<p><a href="${qs(job.video_url)}" download>ダウンロード</a></p>`;
+        `<p><a href="${qs(job.video_url)}" download>ダウンロード</a></p>` +
+        SHARE_X_HTML;
+    bindShareX();
     finish();
   } else if (job.status === "canceled") {
     $("status-line").textContent = "中断しました";
@@ -575,6 +577,24 @@ async function poll(id) {
     $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
     finish();
   }
+}
+
+// ---- 完成した動画をXでシェアする ----
+// Xの投稿画面は本文しか渡せない(動画の自動添付はできない)ので、
+// 動画は各自で保存して添付してもらう前提のヒントを添える。
+const SHARE_X_HTML =
+  `<p><button type="button" id="share-x"` +
+  ` style="background:#000; font-size:.85rem; padding:.35rem 1rem">Xでシェア</button></p>` +
+  `<p class="hint">Xには動画を自動で添付できません。上の「ダウンロード」で動画を保存して投稿に添付してください。</p>`;
+
+function bindShareX() {
+  const btn = $("share-x");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const text = "ソラミミックで替え歌動画を作りました🎤 #ソラミミック\n" + location.origin;
+    const url = "https://twitter.com/intent/tweet?text=" + encodeURIComponent(text);
+    window.open(url, "_blank", "noopener");
+  });
 }
 
 function finish() {
