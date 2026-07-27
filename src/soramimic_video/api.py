@@ -785,7 +785,6 @@ def create_app(
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "voicevox": _voicevox_config(),
-            "host": platform.node(),
             "layouts": builtin_layout_names(),
             "editor": editor_available,
         }
