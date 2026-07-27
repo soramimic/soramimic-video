@@ -1168,6 +1168,144 @@ def test_db_cache_evicts_over_variant_budget(tmp_path: Path, monkeypatch):
     assert str((tmp_path / "w1.csv").resolve()) == next(iter(engine._db_cache))[1]
 
 
+# --- 単語DBのユニット数上限(max_units) ---
+
+# 読みが長く、ン・ッ・母音連続でバリエーションが増える単語を混ぜた単語リスト。
+# 上限を付けると「歌詞が届かない長さ」のバケツが落ちることを見るために使う
+_LONG_WORDS_CSV = (
+    "id,original,surface,pronunciation\n"
+    "0,沈む,沈む,シズム\n"
+    "1,鈴鹿,鈴鹿,スズカ\n"
+    "2,静岡,静岡,シズオカ\n"
+    "3,長い名前,長い名前,カンタンオンセンリョコウアンナイジョウ"
+)
+
+
+def _kana_project(kana: str) -> Project:
+    """1音1文字の歌詞から、_tiny_project と同じ形のプロジェクトを作る。"""
+    notes = [
+        Note(
+            id=i,
+            midi_note=60,
+            start_tick=i * 480,
+            end_tick=(i + 1) * 480,
+            start_sec=i * 0.5,
+            end_sec=(i + 1) * 0.5,
+            line=0,
+            surface=k,
+            kana=k,
+            raw=k,
+        )
+        for i, k in enumerate(kana)
+    ]
+    lines = [Line(id=0, xf_surface=kana, xf_kana=kana, note_ids=list(range(len(kana))))]
+    return Project(
+        song=SongInfo(midi_path="x.mid", ticks_per_beat=480), notes=notes, lines=lines
+    )
+
+
+def test_max_variation_units_counts_expanded_units():
+    """上限は音節数ではなく、展開でユニットが増えたあとの数で数える。"""
+    from soramimic_video import soramimic_engine as engine
+
+    margin = engine._MAX_UNITS_MARGIN
+    # アンッ は ["ア","ン","ッ"] まで割れる(3ユニット)、カ は1ユニット
+    units = [{"pronunciation": "アンッ"}, {"pronunciation": "カ"}]
+    assert engine._max_variation_units([units]) == 4 + margin
+    # 行が複数あれば最長の行に合わせる
+    assert engine._max_variation_units([units, [{"pronunciation": "カ"}]]) == 4 + margin
+    # ユニットが1つも無ければ上限無し(従来動作)へフォールバック
+    assert engine._max_variation_units([]) is None
+    assert engine._max_variation_units([[], []]) is None
+
+
+def test_max_units_prunes_only_unreachable_buckets(tmp_path: Path):
+    """上限付きDBは、上限以下のバケツだけを残した上限無しDBと完全に一致する。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(_LONG_WORDS_CSV, encoding="utf-8")
+    engine.clear_db_cache()
+
+    app_key = engine._app_key(engine.DEFAULT_VOWEL_RATIO)
+    app = engine._get_app(engine.DEFAULT_VOWEL_RATIO)
+    limited = engine._get_db(app, app_key, csv_path, "", 5)
+    full = engine._get_db(app, app_key, csv_path, "")
+
+    assert max(full) > 5  # 上限を超える(=歌詞が届かない)バケツが実際にある
+    assert limited == {k: v for k, v in full.items() if k <= 5}
+
+
+def test_max_units_does_not_change_conversion(tmp_path: Path, monkeypatch):
+    """max_units の有無・余裕の大小で変換結果は変わらない。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(_LONG_WORDS_CSV, encoding="utf-8")
+
+    def convert(kana: str) -> list[str]:
+        project = _kana_project(kana)
+        convert_project(project, wordlist=str(csv_path))
+        assert project.parody is not None
+        return [w.surface for w in project.parody.lines[0].words]
+
+    engine.clear_db_cache()
+    limited = convert("シズオカスズカ")
+
+    # 上限無し(従来動作)
+    engine.clear_db_cache()
+    with monkeypatch.context() as m:
+        m.setattr(engine, "_max_variation_units", lambda units_per_line: None)
+        unlimited = convert("シズオカスズカ")
+
+    # 余裕を多めに取った上限
+    engine.clear_db_cache()
+    with monkeypatch.context() as m:
+        m.setattr(engine, "_MAX_UNITS_MARGIN", 30)
+        generous = convert("シズオカスズカ")
+
+    assert limited == unlimited == generous
+
+
+def test_db_cache_separates_and_reuses_by_max_units(tmp_path: Path):
+    """上限が違えば別エントリ。ただし大きい上限のDBは小さい要求に流用する。"""
+    from soramimic_video import soramimic_engine as engine
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(_LONG_WORDS_CSV, encoding="utf-8")
+    engine.clear_db_cache()
+
+    # 短い歌詞 → 小さい上限。次に長い歌詞 → 大きい上限で作り直し(別エントリ)
+    convert_project(_kana_project("シズム"), wordlist=str(csv_path))
+    assert _db_cache_size() == 1
+    convert_project(_kana_project("シズオカスズカシズム"), wordlist=str(csv_path))
+    assert _db_cache_size() == 2
+    limits = sorted(k[-1] for k in engine._db_cache)
+    assert limits[0] < limits[1]
+
+    # 上限無し(ウォームアップ)のDBが載っていれば、上限付きの要求はそれを流用する
+    engine.clear_db_cache()
+    engine.warmup_wordlists([str(csv_path)])
+    assert _db_cache_size() == 1
+
+    app = engine._get_app(engine.DEFAULT_VOWEL_RATIO)
+    original_parse_tidy = app.word_list.parse_tidy
+
+    def boom(*a, **k):  # pragma: no cover - 呼ばれたら失敗
+        raise AssertionError("流用できるDBがあるのに parse_tidy が呼ばれた")
+
+    app.word_list.parse_tidy = boom
+    try:
+        project = _kana_project("シズム")
+        convert_project(project, wordlist=str(csv_path))
+    finally:
+        app.word_list.parse_tidy = original_parse_tidy
+
+    assert project.parody is not None
+    assert [w.surface for w in project.parody.lines[0].words] == ["沈む"]
+    assert _db_cache_size() == 1
+
+
 # --- 起動時ウォームアップ ---
 
 
