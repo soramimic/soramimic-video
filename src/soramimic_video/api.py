@@ -52,6 +52,7 @@ from .layout import (
     load_wordlist_layouts,
     parse_layout,
 )
+from .soramimic_engine import start_warmup_thread
 
 logger = logging.getLogger(__name__)
 
@@ -699,6 +700,9 @@ def create_app(
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
     }
     manager = JobManager(jobs_dir, config)
+    # よく使う単語リストの前処理(parse_tidy)は大きいリストだと数分かかる。
+    # 指定があればバックグラウンドで先に構築しておき、初回変換も速くする
+    start_warmup_thread()
     app = FastAPI(title="soramimic-video API")
     app.add_middleware(
         CORSMiddleware,

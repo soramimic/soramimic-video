@@ -24,11 +24,34 @@ uv run soramimic-video serve --host 0.0.0.0
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420 | 入力MIDIの演奏時間の上限(秒)。超過は400 |
 | `SORAMIMIC_JOB_TTL_HOURS` | 0(無効) | 完了・失敗・中断から何時間でジョブのディレクトリと履歴を消すか。正の値で1時間ごとに掃除する |
 | `SORAMIMIC_SAMPLES_DIR` | 未設定 | 同梱サンプル曲(`static/sample`)の差し替え先ディレクトリ。`samples.json` と `<id>.mid` / `<id>_lyrics.txt` を置く |
+| `SORAMIMIC_WARMUP_WORDLISTS` | 未設定 | カンマ区切りの単語リスト名。起動時にバックグラウンドで前処理(parse_tidy)を済ませ、キャッシュに載せておく |
 | `TURNSTILE_SITE_KEY` | 未設定 | Cloudflare Turnstileのサイトキー。秘密鍵と両方揃うとフロントにウィジェットが出る |
 | `TURNSTILE_SECRET_KEY` | 未設定 | 同・秘密鍵。設定するとジョブ投入時にトークンを検証し、失敗は403 |
 
 `SORAMIMIC_VIDEO_API_KEY`(X-API-Keyによる全API認証)は公開モードとは独立で、
 併用も単独利用もできる。公開インスタンスでは通常は設定しない。
+
+## 単語リストのウォームアップ
+
+単語リストの前処理(読み推定 → 音節バリエーション展開)は行数の多いリストだと重く、
+`sekitsui`(16,731行)で約3分かかる。結果はプロセス内にキャッシュされるので2回目以降の
+変換は数秒で済むが、初回だけは待たされる。`SORAMIMIC_WARMUP_WORDLISTS` を設定すると、
+サーバー起動直後にdaemonスレッドが指定順にキャッシュを構築するので、ユーザーから見た
+初回変換も速くなる。
+
+```
+SORAMIMIC_WARMUP_WORDLISTS=pokemon,nations,sekitsui uv run soramimic-video serve
+```
+
+- 起動はブロックしない。構築の開始・完了・所要秒は `soramimic_video.soramimic_engine`
+  のINFOログに出る
+- 絞り込み条件は空(全行)で構築する。同梱Web UIはファセットが全ONのとき `where=""`
+  を送るので、これが最も当たりやすいキーになる。ファセットを絞った変換は別キーになり、
+  その分は改めて構築が要る
+- 未知のリスト名やエラーは警告ログを出してスキップし、残りの構築は続く
+- **メモリに注意**: DBは大きい。`sekitsui` 1本で約6.6GB(172万バリエーション)を保持する。
+  キャッシュはバリエーション総数200万(約8GB)を上限にLRUで捨てるので、大きいリストを
+  複数指定しても最後の1本しか残らない。ウォームアップ対象は搭載メモリと相談して選ぶこと
 
 各上限は `SORAMIMIC_PUBLIC` が有効なときだけ効く(`0` 以下を指定すると個別に無効化)。
 上限に触れた投稿には日本語の理由文がそのままフォームに表示される。
