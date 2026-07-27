@@ -70,6 +70,14 @@ uv run soramimic-video serve            # http://127.0.0.1:8300/
 MIDIと単語リスト(または editor の書き出しJSON)を入れて「動画を生成」するだけ。
 `SORAMIMIC_VIDEO_API_KEY` を設定すると全APIで `X-API-Key` を必須にできる(LAN外公開時)。
 
+### 一般公開する(公開モード)
+
+`SORAMIMIC_PUBLIC=1` を設定すると、匿名セッション(cookie)ごとのジョブ分離と
+投入制限(キュー上限・日次クォータ・曲長上限)、完了ジョブの自動削除、
+Cloudflare Turnstile が有効になる。環境変数を設定しなければ従来と同じ挙動なので、
+自分専用インスタンスの設定はそのままでよい。環境変数の一覧は
+[docs/public-mode.md](docs/public-mode.md) を参照。
+
 ### soramimic editor を同梱して画面内で替え歌を編集する(任意)
 
 soramimic の編集ツール(submodule `external/soramimic/frontend`)を静的ビルドして

@@ -147,6 +147,13 @@ def verify_turnstile(token: str, remote_ip: str | None = None) -> bool:
         return False
 
 
+def fmt_duration_ja(seconds: float) -> str:
+    """秒数を「約7分」「約40秒」のように読める日本語にする(制限の説明文用)。"""
+    if seconds < 60:
+        return f"約{round(seconds)}秒"
+    return f"約{round(seconds / 60)}分"
+
+
 def song_seconds(midi_bytes: bytes) -> float | None:
     """入力MIDIの演奏時間(最後の音符の終わり)の秒数。解析できなければNone。
 
@@ -995,8 +1002,9 @@ def create_app(
             if seconds is not None and seconds > max_seconds:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"曲が長すぎます(この曲は約{round(seconds / 60)}分、"
-                    f"上限は{round(max_seconds / 60)}分です)。短い曲でお試しください。",
+                    detail=f"曲が長すぎます(この曲は{fmt_duration_ja(seconds)}、"
+                    f"上限は{fmt_duration_ja(max_seconds)}です)。"
+                    "もっと短い曲でお試しください。",
                 )
 
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])

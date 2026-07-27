@@ -150,7 +150,14 @@ def test_song_length_limit_returns_400(public_app, monkeypatch):
     monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 600.0)
     res = submit(TestClient(public_app))
     assert res.status_code == 400
-    assert "長すぎます" in res.json()["detail"]
+    detail = res.json()["detail"]
+    assert "長すぎます" in detail and "約10分" in detail and "約7分" in detail
+
+
+def test_fmt_duration_ja():
+    # 上限が1分未満のときに「0分」と出ないよう、秒と分を出し分ける
+    assert api_mod.fmt_duration_ja(30) == "約30秒"
+    assert api_mod.fmt_duration_ja(420) == "約7分"
 
 
 def test_song_seconds_reads_real_midi(tmp_path):
