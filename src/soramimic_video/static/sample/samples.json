@@ -1,18 +1,52 @@
 [
  {
   "id": "furusato",
-  "title": "ふるさと"
+  "title": "ふるさと",
+  "description": "唱歌・PD"
  },
  {
   "id": "akatombo",
-  "title": "赤とんぼ"
+  "title": "赤とんぼ",
+  "description": "童謡・PD"
  },
  {
   "id": "momotarou",
-  "title": "桃太郎"
+  "title": "桃太郎",
+  "description": "文部省唱歌・PD"
  },
  {
   "id": "katatsumuri",
-  "title": "かたつむり"
+  "title": "かたつむり",
+  "description": "文部省唱歌・PD"
+ },
+ {
+  "id": "harugakita",
+  "title": "春が来た",
+  "description": "唱歌・PD"
+ },
+ {
+  "id": "oborodukiyo",
+  "title": "朧月夜",
+  "description": "唱歌・PD"
+ },
+ {
+  "id": "chatsumi",
+  "title": "茶摘",
+  "description": "文部省唱歌・PD"
+ },
+ {
+  "id": "nanatsunoko",
+  "title": "七つの子",
+  "description": "童謡・PD"
+ },
+ {
+  "id": "momiji",
+  "title": "紅葉",
+  "description": "唱歌・PD"
+ },
+ {
+  "id": "shabondama",
+  "title": "しゃぼん玉",
+  "description": "童謡・PD"
  }
 ]
