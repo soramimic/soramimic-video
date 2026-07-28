@@ -479,6 +479,7 @@ def build_thumbnail(
     missing_images: list[tuple[str, str]] | None = None,
     app_credit: str = "",
     image_wait_sec: float = 0.0,
+    song_kana: str = "",
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -490,13 +491,18 @@ def build_thumbnail(
     (URL, 画像ページ)が積まれる(download_images=False のときだけ起きる)。
     image_wait_sec を渡すと、download_images=False でも「合計その秒数まで」は
     画像のダウンロードを待つ(プレビューの1回目から絵を出すため)。
+    song_kana(曲名の読み・カタカナ)があれば、変換の入力にはそちらを使う
+    (「紅葉」→ MeCab推定の「コーヨー」ではなく「モミジ」で変換したいときに使う。
+    サンプル曲は samples.json の title_kana から来る)。キャプションに出す
+    曲名は読みの有無にかかわらず song(漢字まじりの表記)のまま。
     """
     wordlist_text = wordlist_text_of(wordlist)
+    convert_input = song_kana.strip() or song
 
     found: list[tuple[dict[str, Any], dict[str, str] | None]] = []
-    if song and wordlist:
+    if convert_input and wordlist:
         try:
-            found = title_paraphrase(song, wordlist, where, params)
+            found = title_paraphrase(convert_input, wordlist, where, params)
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - サムネの失敗でジョブを落とさない
@@ -550,11 +556,13 @@ def generate_thumbnail(
     image_cache: Path | None = None,
     title: str | None = None,
     app_credit: str = "",
+    title_kana: str = "",
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
     変換条件(単語リスト・where・パラメータ)はジョブ本体の変換と同じものを
     project.parody から取る。失敗時の扱いは build_thumbnail と同じ。
+    title_kana(曲名の読み)があれば変換の入力にそちらを使う(build_thumbnail 参照)。
     """
     from .video import VIDEO_DIR, image_cache_dir
 
@@ -568,4 +576,5 @@ def generate_thumbnail(
         width=width,
         height=height,
         app_credit=app_credit,
+        song_kana=title_kana,
     )

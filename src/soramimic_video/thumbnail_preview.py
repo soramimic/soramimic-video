@@ -125,6 +125,9 @@ class PreviewSpec:
     # 単語画像を貼るか。Falseなら文字だけのサムネにする(昆虫など、画像を
     # 初期非表示にしている単語リスト向け。index.html の HIDDEN_PREVIEW_WORDLISTS)
     with_images: bool = True
+    # 曲名の読み(カタカナ)。あれば変換の入力に使う(samples.json の title_kana)。
+    # 見出しに出す曲名は title のまま
+    title_kana: str = ""
 
     @classmethod
     def create(
@@ -136,6 +139,7 @@ class PreviewSpec:
         width: int = PREVIEW_WIDTH,
         height: int = PREVIEW_HEIGHT,
         with_images: bool = True,
+        title_kana: str = "",
     ) -> PreviewSpec:
         """where・変換パラメータの既定をジョブ本体と同じ経路で解決して組み立てる。
 
@@ -153,6 +157,7 @@ class PreviewSpec:
             width=width,
             height=height,
             with_images=with_images,
+            title_kana=title_kana,
         )
 
     @property
@@ -166,6 +171,7 @@ class PreviewSpec:
         payload = json.dumps(
             {
                 "title": self.title,
+                "title_kana": self.title_kana,
                 "csv": str(self.csv_path),
                 "csv_mtime_ns": st.st_mtime_ns,
                 "csv_size": st.st_size,
@@ -230,6 +236,7 @@ class PreviewSpec:
             download_images=False,
             missing_images=missing,
             image_wait_sec=wait_sec if image_cache is not None else 0.0,
+            song_kana=self.title_kana,
         )
         if out is None:
             tmp.unlink(missing_ok=True)
