@@ -322,9 +322,12 @@ def test_index_html_builder_card_is_bare():
     # 例示コンボのボタンは廃止(組み立てるコードごと消えている)
     assert "renderLuckyCombos" not in html
     assert "lucky-combo" not in html
-    # 🎲ランダムはカードの右上に小さく置くだけ
+    # 🎲ランダムはカードの右上に小さく置くだけ。ただしアイコンだけだと気づかれない
+    # ので、文字ラベルを添えたピルにする(絵文字は読み上げ対象から外す)
     assert '<div class="builder-topbar">' in html
     assert '<button type="button" id="lucky" class="btn-sm"' in html
+    assert '<span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>' in html
+    assert "border-radius: 999px; background: var(--panel-2);" in html
 
 
 def test_index_html_builder_frame_runs_the_whole_flow():
@@ -332,7 +335,7 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # 枠のタップで生成が始まる(「🎬 動画を生成」ボタンと同じ動作)
+    # 枠のタップで生成が始まる(これが唯一の生成導線)
     assert '<button type="button" class="builder-play" id="builder-play"' in html
     assert '$("builder-play").addEventListener("click", () => submitJob(0));' in html
     assert "タップで動画を生成" in html
@@ -348,6 +351,45 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     assert '$("builder-share").innerHTML = SHARE_HTML;' in html
     # 選び直したら枠は新しいプレビューに戻る
     assert 'setBuilderState("preview");   // 完成した動画が出ていれば' in html
+
+
+def test_index_html_has_no_separate_submit_button():
+    """生成ボタンは枠のタップ1本に絞る(カード下の青い「🎬 動画を生成」は廃止)。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert '<button id="submit"' not in html
+    assert "🎬 動画を生成" not in html
+    assert '$("submit")' not in html          # setBusy などの参照も残さない
+    assert ".btn-lg" not in html              # このボタン専用のスタイルも消す
+    # 投入できるかは submit ボタンの disabled ではなくフラグで持つ
+    assert "let submitBusy = false;" in html
+    assert "submitBusy = busy;" in html
+    assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
+    # 詳細設定への導線と、曲が未セットのときの案内は残す
+    assert "「⚙️ 詳細設定」から。" in html
+    assert '<p class="error" id="submit-msg" hidden></p>' in html
+
+
+def test_index_html_settings_change_returns_frame_to_preview():
+    """完成した動画が出ていても、設定を触れば枠はプレビュー(=タップで生成)に戻る。
+
+    生成の導線が枠のタップだけになったので、詳細設定(歌声・変換パラメータ・
+    レイアウトなど)を変えたあとに再生成できなくなる状態を作ってはいけない。
+    """
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "function releaseBuilderDone() {" in html
+    assert 'if (builderState !== "done") return;' in html
+    # 入力の変化は文書全体でまとめて拾う(詳細設定の中のどれでも戻る)
+    assert 'for (const type of ["change", "input"]) {' in html
+    assert "document.addEventListener(type, (ev) => {" in html
+    # ドラッグでのレイアウト編集は change を発火しないので自分で呼ぶ
+    assert "releaseBuilderDone();   // 同じ理由で" in html
+    # サムネが用意できなくても枠は残す(押せる場所が無くならないように)
+    assert "指で押せる高さを自分で持つ" in html
+    assert "fig.hidden = false;\n    updateBuilderOverlay();\n  };" in html
 
 
 def test_index_html_polling_survives_background():

@@ -73,7 +73,8 @@ uv run soramimic-video video --project work/song --layout caption
 uv run soramimic-video serve            # http://127.0.0.1:8300/
 ```
 
-MIDIと単語リスト(または editor の書き出しJSON)を入れて「動画を生成」するだけ。
+曲と単語リストを選び、その場に出るサムネ枠をタップするだけで生成が始まる。
+自分のMIDIや editor の書き出しJSONを使うときは「⚙️ 詳細設定」から入れる。
 `SORAMIMIC_VIDEO_API_KEY` を設定すると全APIで `X-API-Key` を必須にできる(LAN外公開時)。
 
 ### 🎲ランダムのプレビュー画像を隠す単語リスト

@@ -79,9 +79,6 @@
   button:disabled { opacity: .55; cursor: not-allowed; }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .btn-primary:hover:not(:disabled) { background: var(--accent-dark); border-color: var(--accent-dark); }
-  .btn-lg { width: 100%; padding: .7rem 1.2rem; font-size: 1.05rem; border-radius: 10px; }
-  /* 生成ボタンは必須項目の直後。指を置きやすいよう少しだけ間を空ける */
-  #submit { margin-top: .8rem; }
   .btn-sm { padding: .3rem .8rem; min-height: 0; font-size: .82rem; }
   .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .btn-x { background: #000; border-color: #000; color: #fff; }
@@ -177,12 +174,16 @@
   #editor-frame { width: 100%; height: 72vh; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + その場のサムネプレビュー ---- */
-  /* 🎲ランダムはカードの右上に小さく置く(プルダウンのショートカットで主役ではない) */
+  /* 🎲ランダムはカードの右上に小さく置く(プルダウンのショートカットで主役ではない)。
+     ただしアイコンだけだと気づかれないので、文字ラベルを添えたピルにして
+     「押せるもの」だと一目で分かるようにする(主張しすぎない大きさに留める) */
   .builder-topbar { display: flex; justify-content: flex-end; margin-bottom: .3rem; }
   #lucky {
-    padding: .2rem .5rem; min-height: 0; font-size: 1rem; line-height: 1.2;
-    border-radius: 999px;
+    display: inline-flex; align-items: center; gap: .3rem;
+    padding: .25rem .7rem; min-height: 0; line-height: 1.4;
+    border-radius: 999px; background: var(--panel-2);
   }
+  #lucky .lucky-icon { font-size: 1rem; line-height: 1; }
   /* プルダウンは横並び(狭い画面では1列に折り返す) */
   .builder-selects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
   @media (max-width: 26rem) { .builder-selects { grid-template-columns: 1fr; } }
@@ -208,9 +209,12 @@
   /* 枠ぜんぶが「動画を生成」ボタン。押せることが分かるよう再生アイコンを重ねる */
   .builder-play {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: .5rem; padding: 0; border: 0; border-radius: 0; min-height: 0; color: #fff;
+    gap: .5rem; padding: 0; border: 0; border-radius: 0; color: #fff;
     background: linear-gradient(180deg, #0000 0%, #0000 40%, #0009 100%);
     cursor: pointer; z-index: 1;
+    /* サムネが用意できなかったときはこのボタンだけが枠の中身になるので、
+       指で押せる高さを自分で持つ(絵があるときは絵の高さが勝つ) */
+    min-height: 7rem;
   }
   .builder-play:hover, .builder-play:focus-visible { background: #0006; }
   .builder-play-icon {
@@ -269,13 +273,15 @@
 <!-- 1. ビルダーカード(この画面の主役)。曲と単語リストのプルダウンを選ぶと、その
      組み合わせで実際に作られるサムネがその場に出る(/api/thumbnail-preview)。
      選択は詳細設定側の #sample-select / #wordlist-select と双方向に同期し、
-     そのまま同じカードの「🎬 動画を生成」(#submit)で生成できる。
+     そのサムネ枠(#builder-play)をタップすればそのまま生成が走る。
      見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
   <!-- 🎲ランダムはプルダウンのショートカット。主役ではないので右上に小さく置く -->
   <div class="builder-topbar">
-    <button type="button" id="lucky" class="btn-sm" title="ランダムに選ぶ"
-      aria-label="ランダムに選ぶ">🎲</button>
+    <!-- アイコンだけだと気づかれないので「ランダム」の文字を添える(読み上げは
+         文字の方だけでよいので、絵文字は aria-hidden にする) -->
+    <button type="button" id="lucky" class="btn-sm" title="曲と単語リストをランダムに選ぶ">
+      <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
   </div>
   <div class="builder-selects">
     <div class="field" id="builder-sample-field">
@@ -293,7 +299,7 @@
        だけが枠の大きさを決める。
        - プレビュー: 生成されるサムネ。作成中はスピナー、失敗・タイムアウト・429では
          単語リストの代表画像にフォールバックする(どちらも取れなければ枠ごと隠す)
-       - #builder-play: 枠ぜんぶがボタン。押すと「🎬 動画を生成」と同じ生成が走る
+       - #builder-play: 枠ぜんぶがボタン。生成を始める導線はこれ1つだけ
        - #builder-progress: 生成中の進捗(中断もここから)
        - #builder-video: 完成した動画。poster にサムネを敷くので絵が途切れない -->
   <div class="builder-figure" id="builder-figure" hidden>
@@ -334,8 +340,7 @@
     <div id="turnstile-widget"></div>
     <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
   </div>
-  <button id="submit" class="btn-primary btn-lg">🎬 動画を生成</button>
-  <!-- 曲が未セットのまま押されたときの案内(投入はしない) -->
+  <!-- 曲が未セットのまま枠をタップされたときの案内(投入はしない) -->
   <p class="error" id="submit-msg" hidden></p>
   <p class="hint" id="public-limits" hidden></p>
   <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
@@ -1070,6 +1075,10 @@ function bindShare(videoUrl) {
   });
 }
 
+// ジョブを投入できない状態か(投入中・実行中)。生成の導線はサムネ枠のタップ
+// (#builder-play)だけなので、ボタンのdisabledではなくこのフラグで持つ。
+let submitBusy = false;
+
 function finish() {
   stopPolling();
   $("cancel").hidden = true;
@@ -1079,7 +1088,7 @@ function finish() {
 }
 
 function setBusy(busy) {
-  $("submit").disabled = busy;
+  submitBusy = busy;
   $("preview").disabled = busy;
   // ビルダーカードのプルダウンとショートカット(🎲ランダム)
   $("builder-sample").disabled = busy;
@@ -1248,7 +1257,7 @@ $("sample-select").addEventListener("change", () => trackSample(applySample()));
 // 選択は必ずそちらへ流してから change を発火する。こうすると従来の経路(applySample、
 // applyWordlistSelection → #wordlist/#where、レイアウト自動切替 applyWordlistLayout、
 // フォーム保存)がそのまま動き、詳細設定側で変えたときもカードが追従する。
-// 生成はカード内の 🎬 ボタン(#submit)で、既存の submitJob をそのまま使う。
+// 生成はサムネ枠のタップ(#builder-play)で、既存の submitJob をそのまま使う。
 
 // 初回表示の既定の組み合わせ(前回の入力が残っていればそちらが優先)。
 //   sample:   /api/samples の id(static/sample/samples.json の id)。
@@ -1349,8 +1358,8 @@ function showBuilderMsg(text) {
 //   preview … 組み合わせのサムネ +「タップで動画を生成」
 //   running … 同じ枠に進捗と中断ボタンを重ねる
 //   done    … 同じ枠が動画プレイヤーになり、直下にシェアボタンが出る
-// preview へ戻すのは「選択を変えたとき」(loadThumbnailPreview)と
-// 「中断・失敗したとき」(poll)。
+// preview へ戻すのは「選択を変えたとき」(loadThumbnailPreview)、
+// 「中断・失敗したとき」(poll)、「設定を触ったとき」(releaseBuilderDone)。
 let builderState = "preview";
 
 function setBuilderState(state) {
@@ -1381,11 +1390,34 @@ function setBuilderState(state) {
   updateBuilderOverlay();
 }
 
-// 「タップで動画を生成」を出してよいのは、プレビューの絵が見えていて、
-// いまジョブを投入できるときだけ。
+// 「タップで動画を生成」を出してよいのは、枠が見えていて、いまジョブを投入
+// できるときだけ。生成の導線はこれ1つしかないので、サムネの絵が用意できて
+// いない(#builder-image が無い)ときでも枠だけは出して押せるようにする。
 function updateBuilderOverlay() {
   $("builder-play").hidden = !(builderState === "preview"
-    && !$("builder-figure").hidden && !$("builder-image").hidden && !$("submit").disabled);
+    && !$("builder-figure").hidden && $("builder-loading").hidden && !submitBusy);
+}
+
+// 完成した動画が出ているあいだに設定を変えたら、枠をプレビュー(=タップで生成)
+// に戻す。生成の導線は枠のタップだけなので、これが無いと「歌声を変えてもう一度」
+// が押せなくなる。曲・単語リストはプレビューを作り直す経路(loadThumbnailPreview)
+// でも戻るが、歌声・変換パラメータ・レイアウトのようにサムネが変わらない設定は
+// ここでしか拾えない。
+function releaseBuilderDone() {
+  if (builderState !== "done") return;
+  setBuilderState("preview");
+}
+
+// 生成に効く入力は詳細設定・レイアウトエディタ・替え歌エディタに散っているので、
+// どれが変わっても拾えるよう文書全体でまとめて見る(枠の中の動画・シェアは除く。
+// ドラッグでのレイアウト編集は change を発火しないので leToJson から呼ぶ)。
+for (const type of ["change", "input"]) {
+  document.addEventListener(type, (ev) => {
+    const t = ev.target;
+    if (t instanceof Node
+        && ($("builder-figure").contains(t) || $("builder-share").contains(t))) return;
+    releaseBuilderDone();
+  }, true);
 }
 
 // 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
@@ -1450,11 +1482,13 @@ const currentCombo = () => luckyCombo($("sample-select").value, currentWordlistN
 // HIDDEN_PREVIEW_WORDLISTS のリストは「画像を表示する」を押すまで読み込まない。
 function loadWordlistImage(name, seq) {
   const fig = $("builder-figure"), img = $("builder-image");
-  // 代表画像が読めるまではローディング表示のまま(空の枠を見せない)
+  // 絵が1枚も用意できなかったとき。生成の導線は枠のタップだけなので、枠は
+  // 残したまま(絵なしの「タップで動画を生成」)にして、押せなくならないようにする
   const hide = () => {
     if (seq !== previewSeq) return;
     $("builder-loading").hidden = true;
-    fig.hidden = true;
+    img.hidden = true;
+    fig.hidden = false;
     updateBuilderOverlay();
   };
   if (!name || hiddenPreviewReason(name)) { hide(); return; }
@@ -1743,8 +1777,7 @@ async function initBuilder() {
   schedulePreview();
 }
 
-$("submit").addEventListener("click", () => submitJob(0));
-// サムネ枠そのものが生成ボタン(「🎬 動画を生成」と同じ動作)
+// サムネ枠そのものが唯一の生成ボタン(カード下の青い生成ボタンは廃止した)
 $("builder-play").addEventListener("click", () => submitJob(0));
 $("preview").addEventListener("click", () => submitJob(20));
 $("synthesizer").addEventListener("change", () => {
@@ -1867,6 +1900,7 @@ function leLabel(e) {
 function leToJson() {
   $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
   saveForm();  // ドラッグ編集はchangeを発火しないのでここで保存する
+  releaseBuilderDone();   // 同じ理由で、完成した動画も自分でプレビューに戻す
 }
 
 // 替え歌単語フィールドのサンプル(未知語には行がないのでこれだけ埋まる)
