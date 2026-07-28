@@ -21,6 +21,12 @@
   存在しない列は空文字になる
 - wrap: true でboxの幅に合わせて文字単位で折り返す(説明文など長い列向け)。
   折り返してもboxに収まらないときはフォントを縮めて収める
+- columns: 2以上を書くと段組みになる。改行(\n)区切りの各行を1項目として
+  列優先(上から下へ、埋まったら次の列へ)に並べる。短い語をたくさん並べる
+  用途(エンドロールの単語一覧)向け。行の高さは全列共通で、列幅から
+  はみ出す語だけそのフォントを縮める(1語のせいで一覧全部が小さくならない)。
+  値は段数の「上限」で、実際の段数は語の実測幅から自動で決まる(駅名のように
+  短い語だけなら上限まで、外国人のフルネームが混ざるリストでは段を減らす)
 - 文字の可読性(背景写真の明暗に負けない)は次の3つで作る。いずれも
   size と同じくフレーム高さ比率で指定する
     - stroke_width / stroke_color: 1重の縁取り(従来から)
@@ -90,15 +96,18 @@
         {"type": "text", "text": "間奏({interlude_sec}秒)", "box": [0.1, 0.44, 0.8, 0.12]}
       ],
       "outro": [
-        {"type": "text", "text": "{used_words}", "box": [0.06, 0.2, 0.88, 0.5], "wrap": true}
+        {"type": "text", "text": "{used_words}", "box": [0.06, 0.2, 0.88, 0.5],
+         "columns": 3, "align": "left"}
       ]
     }
 
 - 区間ごとに追加で参照できる列(idle の title / wordlist / app_credit に加えて):
     - interlude_sec: 歌が止まっている長さ(整数秒。直前の単語フレームの余韻を含む
       ので、間奏フレームが実際に映っている時間より少し長い)。間奏以外では空文字
-    - used_words: 使った替え歌単語の一覧(後奏のエンドロール用)
-    - image_credits: 使用画像のクレジットをまとめた文言(後奏のエンドロール用)
+    - used_words: 使った替え歌単語の一覧(後奏のエンドロール用)。1語1行の
+      改行区切りなので、columns を付ければ段組み、付けなければ縦一列になる
+    - image_credits: 使用画像のクレジットをまとめた文言。既定のエンドロールでは
+      使っていない(各単語フレームの右下に個別のクレジットを焼いているため)
     - page / pages: 後奏が複数枚に分かれたときのページ番号と総ページ数
 - 短い間奏(video.INTERLUDE_MIN_SEC 未満)や短い後奏(video.OUTRO_MIN_SEC 未満)
   では専用の表示を出さず idle(なければ黒)に戻る。一瞬だけ出て消えるのを避けるため
@@ -143,6 +152,9 @@ _FONT_CANDIDATES = [
 ]
 
 _MIN_FONT_PX = 9
+_COLUMN_GAP_RATIO = 0.04  # 段組みのカラム間の余白(box幅に対する比)
+# 段数を決めるとき、列幅からはみ出す語(=その語だけ縮める)を何割まで許すか
+_COLUMN_OVERFLOW_RATIO = 0.15
 
 # 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
 # 歌声合成側のクレジット表記が要るときは呼び出し側が
@@ -181,6 +193,9 @@ class TextElement:
     align: str = "center"  # left / center / right
     valign: str = "middle"  # top / middle / bottom
     wrap: bool = False
+    # 2以上で段組み(値は段数の上限。実際の段数は語の幅から自動で決める)。
+    # 改行区切りの各行を列優先(上から下へ、次の列へ)に並べる
+    columns: int = 1
     stroke_width: float = 0.0
     stroke_color: str = "black"
     # 二重(以上)の縁取り。(幅, 色) を太い順に重ねて描く。指定すると
@@ -451,6 +466,7 @@ def _parse_elements(
                     align=e.get("align", "center"),
                     valign=e.get("valign", "middle"),
                     wrap=bool(e.get("wrap", False)),
+                    columns=max(1, int(e.get("columns", 1))),
                     stroke_width=float(e.get("stroke_width", 0)),
                     stroke_color=e.get("stroke_color", "black"),
                     strokes=_parse_strokes(e.get("strokes"), origin),
@@ -602,7 +618,12 @@ def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
 
 # ---- フォント ----
 
-_font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+# Pillowのフォント型(TrueType or 既定のビットマップフォント)
+_Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
+# 描画位置の確定した1行: (x, y, 文字列, フォント)。カラム組みでは語ごとに
+# フォントサイズが変わりうるので、行ごとにフォントを持たせる
+_Placed = tuple[float, float, str, _Font]
+_font_cache: dict[tuple[str, int], _Font] = {}
 _warned_no_font = False
 
 
@@ -616,7 +637,7 @@ def resolve_font_path(layout_font: str | None) -> Path | None:
     return None
 
 
-def _font(path: Path | None, px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _font(path: Path | None, px: int) -> _Font:
     global _warned_no_font
     key = (str(path), px)
     f = _font_cache.get(key)
@@ -730,6 +751,130 @@ def _stroke_layers(el: TextElement, frame_h: int) -> list[tuple[int, str]]:
     return layers
 
 
+def _font_px(font: _Font, fallback: float) -> float:
+    """フォントの実サイズ(px)。日本語フォントが見つからないときに使う既定の
+    ビットマップフォント(ImageFont.ImageFont)は size を持たないので fallback。"""
+    return float(getattr(font, "size", fallback))
+
+
+def _fit_line(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font_path: Path | None,
+    base_px: int,
+    max_w: float,
+) -> _Font:
+    """1行が max_w に収まるフォント(収まるなら base_px のまま)。
+
+    カラム組みで、幅からはみ出す語だけを縮めるために使う。全体を base_px から
+    下げると長い外国人名1件のせいで一覧全部が小さくなるので、はみ出した語の
+    フォントだけ落とす。
+    """
+    font = _font(font_path, base_px)
+    if not text:
+        return font
+    w = draw.textlength(text, font=font)
+    if w <= max_w:
+        return font
+    px = max(_MIN_FONT_PX, int(base_px * max_w / w))
+    font = _font(font_path, px)
+    while px > _MIN_FONT_PX and draw.textlength(text, font=font) > max_w:
+        px = max(_MIN_FONT_PX, px - max(1, px // 16))
+        font = _font(font_path, px)
+    return font
+
+
+def _column_base_px(el: TextElement, cols: int, n_items: int, h: int, frame_h: int) -> int:
+    """段数 cols のときの本文フォントサイズ(行数が box の高さに収まる最大)。"""
+    rows = max(1, -(-n_items // cols))
+    return max(_MIN_FONT_PX, min(int(el.size * frame_h), int(h / (rows * 1.25))))
+
+
+def _choose_columns(
+    draw: ImageDraw.ImageDraw,
+    items: list[str],
+    el: TextElement,
+    w: int,
+    h: int,
+    frame_h: int,
+    font_path: Path | None,
+) -> tuple[int, int]:
+    """段数(1〜el.columns)と本文フォントサイズを決める。
+
+    段が多いほど本文は大きくできるので上限から順に試し、列幅からはみ出す語が
+    許容数(_COLUMN_OVERFLOW_RATIO)を超えたところで1段減らす。はみ出した語は
+    _fit_line がその語だけ縮めるので、少数なら許容して全体を大きく保つ方が読める。
+    """
+    if not items:
+        return 1, _column_base_px(el, 1, 0, h, frame_h)
+    allowed = max(1, int(len(items) * _COLUMN_OVERFLOW_RATIO))
+    cols = max(1, min(el.columns, len(items)))
+    while cols > 1:
+        base_px = _column_base_px(el, cols, len(items), h, frame_h)
+        gap = w * _COLUMN_GAP_RATIO
+        col_w = (w - gap * (cols - 1)) / cols
+        font = _font(font_path, base_px)
+        over = sum(1 for it in items if draw.textlength(it, font=font) > col_w)
+        if over <= allowed:
+            return cols, base_px
+        cols -= 1
+    return 1, _column_base_px(el, 1, len(items), h, frame_h)
+
+
+def _layout_columns(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    el: TextElement,
+    box: tuple[int, int, int, int],
+    frame_h: int,
+    font_path: Path | None,
+    pad: int,
+) -> tuple[list[_Placed], float]:
+    """改行区切りの各行を段に割り付ける(列優先=上から下へ、次の列へ)。
+
+    エンドロールの単語一覧のように「短い語がたくさん」並ぶときは、流し込みの
+    1段落より段組みの方が読める。行の高さは全列で共通(base_px)にして段が
+    ガタつかないようにし、列幅からはみ出す語だけ _fit_line で縮める。
+
+    段数は el.columns を上限に自動で決める。段を増やすほど行数が減って本文は
+    大きくできるが、そのぶん列幅が狭くなって長い語がはみ出す。駅名のような
+    短い語だけなら上限まで、外国人のフルネームが混ざるリストでは段を減らす、
+    という判断を語の実測幅でやる(_choose_columns)。
+    """
+    x, y, w, h = box
+    x, y = x + pad, y + pad
+    w, h = max(1, w - 2 * pad), max(1, h - 2 * pad)
+    items = [t for t in text.split("\n") if t.strip()]
+    cols, base_px = _choose_columns(draw, items, el, w, h, frame_h, font_path)
+    gap = w * _COLUMN_GAP_RATIO if cols > 1 else 0.0
+    col_w = (w - gap * (cols - 1)) / cols
+    rows = -(-len(items) // cols) if items else 1
+    line_h = base_px * 1.25
+    total_h = line_h * rows
+    if el.valign == "top":
+        ty = float(y)
+    elif el.valign == "bottom":
+        ty = y + h - total_h
+    else:
+        ty = y + (h - total_h) / 2
+    placed: list[_Placed] = []
+    for i, item in enumerate(items):
+        col, row = divmod(i, rows)
+        font = _fit_line(draw, item, font_path, base_px, col_w)
+        cx = x + col * (col_w + gap)
+        lw = draw.textlength(item, font=font)
+        if el.align == "right":
+            lx = cx + col_w - lw
+        elif el.align == "center":
+            lx = cx + (col_w - lw) / 2
+        else:
+            lx = cx
+        # 縮んだ語も行の帯の中で縦中央に置き、ベースラインの乱れを目立たせない
+        ly = ty + row * line_h + (line_h - _font_px(font, base_px) * 1.25) / 2
+        placed.append((lx, ly, item, font))
+    return placed, line_h
+
+
 def _draw_text(
     canvas: Image.Image, text: str, el: TextElement, font_path: Path | None
 ) -> None:
@@ -740,50 +885,53 @@ def _draw_text(
     strokes = _stroke_layers(el, canvas.height)
     # 縁取り・影は文字の外側に広がるので、そのぶん内側にグリフを収める
     pad = max([px for px, _ in strokes] + [int(el.shadow * canvas.height)] + [0])
-    font, lines, line_h = _fit_text(
-        draw, text, el, w, h, canvas.height, font_path, pad=pad
-    )
-    total_h = int(line_h * len(lines))
-    if el.valign == "top":
-        ty = y
-    elif el.valign == "bottom":
-        ty = y + h - total_h
+    placed: list[_Placed] = []
+    if el.columns > 1:
+        placed, line_h = _layout_columns(
+            draw, text, el, (x, y, w, h), canvas.height, font_path, pad
+        )
     else:
-        ty = y + (h - total_h) // 2
+        font, lines, line_h = _fit_text(
+            draw, text, el, w, h, canvas.height, font_path, pad=pad
+        )
+        total_h = int(line_h * len(lines))
+        if el.valign == "top":
+            ty = float(y)
+        elif el.valign == "bottom":
+            ty = y + h - total_h
+        else:
+            ty = y + (h - total_h) // 2
+        ly = float(ty)
+        for line in lines:
+            lw = draw.textlength(line, font=font)
+            if el.align == "left":
+                lx = float(x)
+            elif el.align == "right":
+                lx = x + w - lw
+            else:
+                lx = x + (w - lw) / 2
+            placed.append((lx, ly, line, font))
+            ly += line_h
+    if not placed:
+        return
 
     if el.background:
-        pad = max(4, int(line_h * 0.2))
-        max_w = int(max(draw.textlength(ln, font=font) for ln in lines))
-        if el.align == "left":
-            bx = x
-        elif el.align == "right":
-            bx = x + w - max_w
-        else:
-            bx = x + (w - max_w) // 2
+        bpad = max(4, int(line_h * 0.2))
+        left = min(lx for lx, _, _, _ in placed)
+        right = max(lx + draw.textlength(t, font=f) for lx, _, t, f in placed)
+        top = min(ly for _, ly, _, _ in placed)
+        bottom = max(ly + _font_px(f, line_h) * 1.25 for _, ly, _, f in placed)
         draw.rectangle(
-            (bx - pad, ty - pad, bx + max_w + pad, ty + total_h + pad), fill=el.background
+            (left - bpad, top - bpad, right + bpad, bottom + bpad), fill=el.background
         )
 
     stroke = int(el.stroke_width * canvas.height)
-    placed: list[tuple[float, float, str]] = []
-    ly = float(ty)
-    for line in lines:
-        lw = draw.textlength(line, font=font)
-        if el.align == "left":
-            lx = float(x)
-        elif el.align == "right":
-            lx = x + w - lw
-        else:
-            lx = x + (w - lw) / 2
-        placed.append((lx, ly, line))
-        ly += line_h
-
     if el.shadow:
         # 文字の形にぼかした影。矩形の帯を敷かずに文字の周りだけを暗くする
         radius = max(1, int(el.shadow * canvas.height))
         shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(shadow)
-        for lx, ly, line in placed:
+        for lx, ly, line, font in placed:
             sdraw.text(
                 (lx, ly), line, font=font, fill=el.shadow_color,
                 stroke_width=radius, stroke_fill=el.shadow_color,
@@ -791,7 +939,7 @@ def _draw_text(
         shadow = shadow.filter(ImageFilter.GaussianBlur(radius))
         canvas.paste(shadow, (0, 0), shadow)
 
-    for lx, ly, line in placed:
+    for lx, ly, line, font in placed:
         if strokes:
             # 太い順に「その色で塗った文字の輪郭」を重ね、最後に本体を乗せる。
             # 幅の差が同心の環になるので二重・三重の縁取りになる
