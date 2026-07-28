@@ -124,6 +124,15 @@
   details.card > summary { font-weight: 700; font-size: .95rem; color: var(--text); }
   details.card[open] > summary { margin-bottom: .7rem; }
   .sub-details > summary { font-size: .85rem; color: var(--muted); }
+  /* ---- 詳細設定の中のグループ分け ---- */
+  /* 曲・歌詞・単語リスト・歌声・レイアウトがフラットに並ぶと、初見の人がどこから
+     触ればいいか分からない。役割ごとに区切り、よく使う順に並べる。小見出しと
+     1行の説明を付けて「上から読めば分かる」形にする。 */
+  .opt-group + .opt-group {
+    margin-top: 1.1rem; padding-top: .9rem; border-top: 1px solid var(--border);
+  }
+  .opt-group-title { font-size: .9rem; margin: 0; color: var(--text); }
+  .opt-group-lead { margin: .15rem 0 .7rem; }
   /* 「生成の詳細」はビルダーカード最下部の控えめなテキストリンク。
      エラー・中断で自動的に開いたときだけ警告色にして見つけやすくする(openJobDetails) */
   #job-card { margin-top: .8rem; }
@@ -404,221 +413,270 @@
      曲・単語リストの欄もここに残し(送信値の正本)、上のビルダーカードと双方向に
      同期する。歌声・歌詞・レイアウト・変換パラメータはここだけにある。 -->
 <details class="card" id="advanced">
-  <summary>⚙️ 詳細設定(曲・単語リスト・歌声・歌詞・レイアウト・変換パラメータ)</summary>
+  <summary>⚙️ 詳細設定(曲と歌詞・空耳のもと・歌声・見た目)</summary>
+
+  <!-- 中身は役割ごとに5つのグループに分け、よく使う順(曲 → 空耳のもと → 歌声 →
+       見た目 → その他)に並べる。フラットに並べると初見の人がどこから触ればいいか
+       分からないため、小見出し+1行の説明で区切る。
+       DOMの移動だけで、ID・同期・復元・来歴ガードのロジックは触っていない。 -->
 
   <!-- 前回の入力の復元は、この中の設定がどこから来たのかの説明。詳細設定をいじる人
        だけに関係する情報なので、ビルダーカードの下ではなくここの先頭に置く。
        復元が1つでもあったときだけ restoreForm が hidden を外す。 -->
-  <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
-    class="btn-sm" style="margin-left:.3rem">保存した入力をクリア</button></p>
+  <p class="hint" id="restore-notice" hidden>前回の入力を復元しました(最初からやり直すなら、いちばん下の「その他」にある「保存した入力をクリア」)。</p>
 
-  <div class="field" id="auth" hidden>
-    <label for="api-key">APIキー</label>
-    <input type="password" id="api-key" placeholder="X-API-Key">
-  </div>
+  <!-- ① 曲と歌詞 -->
+  <section class="opt-group">
+    <h3 class="opt-group-title">① 曲と歌詞</h3>
+    <p class="hint opt-group-lead">どの曲を歌わせるか。字幕に出す元の歌詞もここ。</p>
 
-  <!-- 曲。詳細設定を開く人の目的は「自分の曲でやる」なので、ここではMIDIファイル
-       選択を主役にして直に見せる。サンプル曲はビルダーカードのプルダウンで選べる
-       ので、この中では「サンプルから選ぶ」の折りたたみに格下げする。
-       ただし送信・同期の正本は従来どおり #sample-select なので、DOMからは消さずに
-       折りたたみの中へ移すだけにする(ビルダーカードとの双方向同期・applySample・
-       前回入力の復元はそのまま動く)。 -->
-  <div class="field">
-    <label for="midi">曲(XF MIDIファイル)</label>
-    <input type="file" id="midi" accept=".mid,.midi">
-    <p class="hint">歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
-    <p class="hint" id="midi-restore-hint" hidden></p>
-    <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
-    <details class="sub-details" id="sample-details">
-      <summary>サンプルから選ぶ</summary>
-      <div id="sample-field">
-        <select id="sample-select" aria-label="サンプル曲"></select>
-        <p class="hint" id="sample-status"></p>
-      </div>
-    </details>
-  </div>
-
-  <!-- 元歌詞は曲とセットの情報(その曲の歌詞)なので、曲のすぐ下に置く。
-       字幕の元歌詞行はここ(かMIDIの歌詞)が出どころなので「推奨」扱いにする。 -->
-  <div class="field">
-    <label for="lyrics">元歌詞(推奨・字幕用)</label>
-    <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
-    <p class="hint">MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
-  </div>
-
-  <div class="field">
-    <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
-    <select id="wordlist-select" hidden></select>
-    <input type="text" id="wordlist" placeholder="例: stations">
-    <div id="wordlist-filters" class="wordlist-filters" hidden></div>
-    <p id="parody-status" class="hint"></p>
-  </div>
-
-  <div class="field">
-    <label for="synthesizer">歌声</label>
-    <div class="row">
-      <select id="synthesizer" aria-label="合成エンジン">
-        <option value="neutrino">NEUTRINO</option>
-        <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
-      </select>
-      <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
-           送信値の正本は隠し input#model。選択肢は /api/config の models。 -->
-      <span id="neutrino-opts" class="row-grow">
-        <select id="model-select"></select>
-        <input type="text" id="model-other" hidden placeholder="モデル名を入力">
-        <input type="hidden" id="model" value="MERROW">
-      </span>
-      <span id="voicevox-opts" class="row-grow" hidden>
-        <select id="voicevox-style" aria-label="歌声(キャラ・スタイル)"></select>
-      </span>
-    </div>
-    <p class="hint" id="voicevox-credit"></p>
-  </div>
-
-  <div class="field">
-    <label class="check">
-      <input type="checkbox" id="auto-octave" checked>
-      音域に合わせて自動でオクターブ調整
-    </label>
-    <p class="hint" id="auto-octave-hint"></p>
-    <label for="transpose">移調(半音)</label>
-    <input type="text" id="transpose" value="0" inputmode="numeric">
-    <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
-  </div>
-
-  <div class="field">
-    <label>お試し合成</label>
-    <button id="preview">声プレビュー(歌い出しから20秒)</button>
-    <p class="hint">替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
-  </div>
-
-  <div class="field">
-    <label>替え歌の編集</label>
-    <div id="editor-embed-controls" hidden>
-      <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
-      <p class="hint">MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
-        編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
-      <span id="open-editor-msg" class="error"></span>
-    </div>
-    <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
-         「使われます」「別の入力から作られた編集なので使いません」を出す -->
-    <p class="hint" id="editor-auto-status" hidden></p>
-  </div>
-
-  <details id="parody-advanced" class="sub-details">
-    <summary>替え歌の変換パラメータ(上級者向け)</summary>
-    <label>外部で編集した替え歌JSONの読み込み</label>
-    <input type="file" id="editor" accept=".json">
-    <p class="hint">soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
-    <button type="button" id="download-editor" class="btn-sm" disabled>現在の替え歌JSONをダウンロード</button>
-    <label>絞り込み(where・任意)</label>
-    <input type="text" id="where" placeholder="例: type=family or type=full">
-    <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
-    <!-- 「単語重複」は本家 soramimic の単語重複トグル(frontend/index.html: あり/なし、
-         なしが既定)と文言・選択肢・既定をそろえたもの(external/soramimic 53dcff1)。 -->
-    <label>単語重複</label>
-    <select id="duplicate">
-      <option value="true">あり</option>
-      <option value="false" selected>なし</option>
-    </select>
-    <p class="hint">替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
-    <!-- パラメータUIは本家 soramimic(external/soramimic 4443a7b frontend)の
-         「プリセット + スライダー3本」構成に合わせたもの。プリセット定義と
-         スライダーの範囲・既定値は app.js の PRESETS / createSliderItem 呼び出しと同一。
-         送信値の組み立て(本家 getParam 相当)は JS の buildConvertParams を参照。 -->
-    <label>プリセット</label>
-    <select id="p-preset">
-      <option value="バランス" selected>バランス</option>
-      <option value="音そっくり">音そっくり</option>
-      <option value="文節重視">文節重視</option>
-      <option value="長い単語">長い単語</option>
-      <option value="">カスタム(下のスライダーで調整)</option>
-    </select>
-    <p class="hint">本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
-    <label>音の合わせ方</label>
-    <div class="slider-row"><span>子音重視</span>
-      <input type="range" id="p-sound" min="0.1" max="0.9" step="0.1" value="0.8"
-        aria-label="音の合わせ方(子音重視〜母音重視)">
-      <span>母音重視</span></div>
-    <label>文節の区切り</label>
-    <div class="slider-row"><span>無視</span>
-      <input type="range" id="p-phrase" min="0" max="8" step="1" value="1"
-        aria-label="文節の区切り(無視〜がっちり守る)">
-      <span>がっちり守る</span></div>
-    <label>単語の長さ</label>
-    <div class="slider-row"><span>細かめ</span>
-      <input type="range" id="p-wordnum" min="0" max="6" step="1" value="2"
-        aria-label="単語の長さ(細かめ〜長め)">
-      <span>長め</span></div>
-    <p class="hint">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
-    <!-- ここから下は soramimic-video 独自(本家 soramimic には無い項目)。
-         上のプリセット・スライダーは本家準拠なので、独自項目は混ぜず末尾に置く。
-         送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
-    <label>ノート長重視 α(soramimic-video独自)</label>
-    <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
-      aria-label="ノート長重視 α(0でオフ)">
-    <p class="hint">この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
-  </details>
-
-  <div class="field">
-    <label for="layout-select">レイアウト(任意)</label>
-    <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
-         送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。 -->
-    <select id="layout-select"></select>
-    <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
-    <input type="hidden" id="layout">
-    <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
-    <details id="le-details" class="sub-details">
-      <summary>レイアウトを編集(ドラッグで配置)</summary>
-      <div class="le-toolbar">
-        <button type="button" id="layout-load">レイアウトを読み込む</button>
-        <button type="button" id="le-add-text">テキスト追加</button>
-        <button type="button" id="le-add-subtitle">字幕追加</button>
-        <button type="button" id="le-add-image">画像枠追加</button>
-        <button type="button" id="le-delete" disabled>選択を削除</button>
-        <button type="button" id="le-export">エクスポート</button>
-        <span id="le-msg"></span>
-      </div>
-      <div class="le-tabs">
-        <button type="button" id="le-tab-elements" class="active">通常</button>
-        <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
-        <button type="button" id="le-tab-idle">歌唱なし区間(前奏・間奏・後奏)</button>
-      </div>
-      <div class="le-idle-opts" id="le-idle-opts" hidden>
-        <label class="check" style="margin:.5rem 0 0">
-          <input type="checkbox" id="le-hold">
-          単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
-        </label>
-        <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
-          単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
-          idle要素を1つも置かなければ、その区間は隅のクレジットだけの背景色になります。</p>
-      </div>
-      <div class="le-cue-nav" id="le-cue-nav" hidden>
-        <button type="button" id="le-cue-prev">◀ 前</button>
-        <span id="le-cue-indicator">- / -枚目</span>
-        <button type="button" id="le-cue-next">次 ▶</button>
-        <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
-      </div>
-      <div id="le-canvas">
-        <div id="le-guide-v" class="le-guide" hidden></div>
-        <div id="le-guide-h" class="le-guide" hidden></div>
-      </div>
-      <div id="le-props" hidden></div>
-      <p class="hint">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
-        箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
-        右下の角でリサイズ、クリックで選択して文言・サイズ・色を変更。
-        選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
-        本番と同じく、枠に収まらない文字は自動で縮小されます。
-        編集した内容はジョブ投入時にレイアウト名より優先で使われます。
-        「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
-        列({achievement}など)は空になるので{surface}/{original}だけで組みます
-        (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。
-        「歌唱なし区間」タブは前奏・間奏・後奏に出す固定フレームの配置です。</p>
-      <details><summary>JSON</summary>
-        <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
+    <!-- 曲。詳細設定を開く人の目的は「自分の曲でやる」なので、ここではMIDIファイル
+         選択を主役にして直に見せる。サンプル曲はビルダーカードのプルダウンで選べる
+         ので、この中では「サンプルから選ぶ」の折りたたみに格下げする。
+         ただし送信・同期の正本は従来どおり #sample-select なので、DOMからは消さずに
+         折りたたみの中へ移すだけにする(ビルダーカードとの双方向同期・applySample・
+         前回入力の復元はそのまま動く)。 -->
+    <div class="field">
+      <label for="midi">曲(XF MIDIファイル)</label>
+      <input type="file" id="midi" accept=".mid,.midi">
+      <p class="hint">歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
+      <p class="hint" id="midi-restore-hint" hidden></p>
+      <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
+      <details class="sub-details" id="sample-details">
+        <summary>サンプルから選ぶ</summary>
+        <div id="sample-field">
+          <select id="sample-select" aria-label="サンプル曲"></select>
+          <p class="hint" id="sample-status"></p>
+        </div>
       </details>
+    </div>
+
+    <!-- 元歌詞は曲とセットの情報(その曲の歌詞)なので、曲のすぐ下に置く。
+         字幕の元歌詞行はここ(かMIDIの歌詞)が出どころなので「推奨」扱いにする。 -->
+    <div class="field">
+      <label for="lyrics">元歌詞(推奨・字幕用)</label>
+      <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+      <p class="hint">MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
+    </div>
+  </section>
+
+  <!-- ② 空耳のもと -->
+  <section class="opt-group">
+    <h3 class="opt-group-title">② 空耳のもと</h3>
+    <p class="hint opt-group-lead">歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタや変換パラメータに進んでください。</p>
+
+    <div class="field">
+      <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
+      <select id="wordlist-select" hidden></select>
+      <input type="text" id="wordlist" placeholder="例: stations">
+      <div id="wordlist-filters" class="wordlist-filters" hidden></div>
+    </div>
+
+    <div class="field">
+      <label>替え歌の編集</label>
+      <div id="editor-embed-controls" hidden>
+        <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
+        <p class="hint">MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
+          編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
+        <span id="open-editor-msg" class="error"></span>
+      </div>
+      <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
+           「使われます」「別の入力から作られた編集なので使いません」を出す -->
+      <p class="hint" id="editor-auto-status" hidden></p>
+      <!-- 編集済み替え歌JSONの状態(renderParodyStatus)。再編集・取り消しの導線もここ -->
+      <p id="parody-status" class="hint"></p>
+    </div>
+
+    <details id="parody-advanced" class="sub-details">
+      <summary>変換のしかたを細かく調整する(上級者向け)</summary>
+      <p class="hint">単語の選ばれ方を決める値です。既定のままでも作れます。</p>
+      <label>絞り込み(where・任意)</label>
+      <input type="text" id="where" placeholder="例: type=family or type=full">
+      <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
+      <!-- 「単語重複」は本家 soramimic の単語重複トグル(frontend/index.html: あり/なし、
+           なしが既定)と文言・選択肢・既定をそろえたもの(external/soramimic 53dcff1)。 -->
+      <label>単語重複</label>
+      <select id="duplicate">
+        <option value="true">あり</option>
+        <option value="false" selected>なし</option>
+      </select>
+      <p class="hint">替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
+      <!-- パラメータUIは本家 soramimic(external/soramimic 4443a7b frontend)の
+           「プリセット + スライダー3本」構成に合わせたもの。プリセット定義と
+           スライダーの範囲・既定値は app.js の PRESETS / createSliderItem 呼び出しと同一。
+           送信値の組み立て(本家 getParam 相当)は JS の buildConvertParams を参照。 -->
+      <label>プリセット</label>
+      <select id="p-preset">
+        <option value="バランス" selected>バランス</option>
+        <option value="音そっくり">音そっくり</option>
+        <option value="文節重視">文節重視</option>
+        <option value="長い単語">長い単語</option>
+        <option value="">カスタム(下のスライダーで調整)</option>
+      </select>
+      <p class="hint">本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
+      <label>音の合わせ方</label>
+      <div class="slider-row"><span>子音重視</span>
+        <input type="range" id="p-sound" min="0.1" max="0.9" step="0.1" value="0.8"
+          aria-label="音の合わせ方(子音重視〜母音重視)">
+        <span>母音重視</span></div>
+      <label>文節の区切り</label>
+      <div class="slider-row"><span>無視</span>
+        <input type="range" id="p-phrase" min="0" max="8" step="1" value="1"
+          aria-label="文節の区切り(無視〜がっちり守る)">
+        <span>がっちり守る</span></div>
+      <label>単語の長さ</label>
+      <div class="slider-row"><span>細かめ</span>
+        <input type="range" id="p-wordnum" min="0" max="6" step="1" value="2"
+          aria-label="単語の長さ(細かめ〜長め)">
+        <span>長め</span></div>
+      <p class="hint">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
+      <!-- ここから下は soramimic-video 独自(本家 soramimic には無い項目)。
+           上のプリセット・スライダーは本家準拠なので、独自項目は混ぜず末尾に置く。
+           送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
+      <label>ノート長重視 α(soramimic-video独自)</label>
+      <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
+        aria-label="ノート長重視 α(0でオフ)">
+      <p class="hint">この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
     </details>
-  </div>
+
+    <!-- 替え歌JSONの入出力はさらに出番が少ないので、パラメータとは別の折りたたみに分ける -->
+    <details id="parody-io" class="sub-details">
+      <summary>替え歌JSONを読み書きする(上級者向け)</summary>
+      <label for="editor">外部で編集した替え歌JSONの読み込み</label>
+      <input type="file" id="editor" accept=".json">
+      <p class="hint">soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
+      <button type="button" id="download-editor" class="btn-sm" disabled>現在の替え歌JSONをダウンロード</button>
+    </details>
+  </section>
+
+  <!-- ③ 歌声 -->
+  <section class="opt-group">
+    <h3 class="opt-group-title">③ 歌声</h3>
+    <p class="hint opt-group-lead">誰の声で、どの高さで歌うか。</p>
+
+    <div class="field">
+      <label for="synthesizer">歌声</label>
+      <div class="row">
+        <select id="synthesizer" aria-label="合成エンジン">
+          <option value="neutrino">NEUTRINO</option>
+          <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
+        </select>
+        <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
+             送信値の正本は隠し input#model。選択肢は /api/config の models。 -->
+        <span id="neutrino-opts" class="row-grow">
+          <select id="model-select"></select>
+          <input type="text" id="model-other" hidden placeholder="モデル名を入力">
+          <input type="hidden" id="model" value="MERROW">
+        </span>
+        <span id="voicevox-opts" class="row-grow" hidden>
+          <select id="voicevox-style" aria-label="歌声(キャラ・スタイル)"></select>
+        </span>
+      </div>
+      <p class="hint" id="voicevox-credit"></p>
+    </div>
+
+    <div class="field">
+      <label class="check">
+        <input type="checkbox" id="auto-octave" checked>
+        音域に合わせて自動でオクターブ調整
+      </label>
+      <p class="hint" id="auto-octave-hint"></p>
+      <label for="transpose">移調(半音)</label>
+      <input type="text" id="transpose" value="0" inputmode="numeric">
+      <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
+    </div>
+
+    <div class="field">
+      <label>お試し合成</label>
+      <button id="preview">声プレビュー(歌い出しから20秒)</button>
+      <p class="hint">替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
+    </div>
+  </section>
+
+  <!-- ④ 見た目 -->
+  <section class="opt-group">
+    <h3 class="opt-group-title">④ 見た目</h3>
+    <p class="hint opt-group-lead">動画の画面の作り。画像・説明文・字幕の置き方。</p>
+
+    <div class="field">
+      <label for="layout-select">レイアウト(任意)</label>
+      <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
+           送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。 -->
+      <select id="layout-select"></select>
+      <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
+      <input type="hidden" id="layout">
+      <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
+      <details id="le-details" class="sub-details">
+        <summary>レイアウトを編集(ドラッグで配置)</summary>
+        <div class="le-toolbar">
+          <button type="button" id="layout-load">レイアウトを読み込む</button>
+          <button type="button" id="le-add-text">テキスト追加</button>
+          <button type="button" id="le-add-subtitle">字幕追加</button>
+          <button type="button" id="le-add-image">画像枠追加</button>
+          <button type="button" id="le-delete" disabled>選択を削除</button>
+          <button type="button" id="le-export">エクスポート</button>
+          <span id="le-msg"></span>
+        </div>
+        <div class="le-tabs">
+          <button type="button" id="le-tab-elements" class="active">通常</button>
+          <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
+          <button type="button" id="le-tab-idle">歌唱なし区間(前奏・間奏・後奏)</button>
+        </div>
+        <div class="le-idle-opts" id="le-idle-opts" hidden>
+          <label class="check" style="margin:.5rem 0 0">
+            <input type="checkbox" id="le-hold">
+            単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
+          </label>
+          <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
+            単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
+            idle要素を1つも置かなければ、その区間は隅のクレジットだけの背景色になります。</p>
+        </div>
+        <div class="le-cue-nav" id="le-cue-nav" hidden>
+          <button type="button" id="le-cue-prev">◀ 前</button>
+          <span id="le-cue-indicator">- / -枚目</span>
+          <button type="button" id="le-cue-next">次 ▶</button>
+          <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
+        </div>
+        <div id="le-canvas">
+          <div id="le-guide-v" class="le-guide" hidden></div>
+          <div id="le-guide-h" class="le-guide" hidden></div>
+        </div>
+        <div id="le-props" hidden></div>
+        <p class="hint">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
+          箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
+          右下の角でリサイズ、クリックで選択して文言・サイズ・色・字幕の粒度を変更。
+          選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
+          本番と同じく、枠に収まらない文字は自動で縮小されます。
+          編集した内容はジョブ投入時にレイアウト名より優先で使われます。
+          「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
+          列({achievement}など)は空になるので{surface}/{original}だけで組みます
+          (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。
+          「歌唱なし区間」タブは前奏・間奏・後奏に出す固定フレームの配置です。</p>
+        <details><summary>JSON</summary>
+          <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
+        </details>
+      </details>
+    </div>
+  </section>
+
+  <!-- ⑤ その他 -->
+  <section class="opt-group">
+    <h3 class="opt-group-title">⑤ その他</h3>
+    <p class="hint opt-group-lead">ふだんは触らない項目。</p>
+
+    <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig)。出るときは
+         入力しないと何も動かないので、このグループは畳まずに置く。 -->
+    <div class="field" id="auth" hidden>
+      <label for="api-key">APIキー</label>
+      <input type="password" id="api-key" placeholder="X-API-Key">
+    </div>
+
+    <div class="field">
+      <label>保存した入力</label>
+      <button type="button" id="clear-form" class="btn-sm">保存した入力をクリア</button>
+      <p class="hint">この画面の入力(曲・歌詞・単語リスト・歌声・レイアウトなど)はブラウザに保存され、次に開いたときに復元されます。まっさらな状態から始めたいときに押してください(APIキーは消えません)。</p>
+    </div>
+  </section>
 </details>
 
 <details class="card" id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
@@ -671,8 +729,13 @@ async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
-  // APIキー欄は詳細設定の中にあるので、キー待ちのときは折りたたみを開いて見えるようにする
-  if (conf.auth_required && !apiKey()) { $("advanced").open = true; return; }
+  // APIキー欄は詳細設定の中(「⑤ その他」)にあるので、キー待ちのときは折りたたみを
+  // 開いたうえで、そこまでスクロールして見えるようにする
+  if (conf.auth_required && !apiKey()) {
+    $("advanced").open = true;
+    $("auth").scrollIntoView({ block: "center" });
+    return;
+  }
   // 接続先はページのURLと同じなので出さない(アドレスバーと重複するだけ)。
   // 合成エンジンの設定漏れだけは運用者向けの警告として残す(公開モードでは出さない)。
   $("server-info").hidden = !!conf.public || !!conf.neutrino;

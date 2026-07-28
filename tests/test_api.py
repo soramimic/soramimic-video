@@ -1239,6 +1239,83 @@ def test_index_html_lyrics_follows_the_song_and_is_recommended():
     assert "字幕に元歌詞の行が出ません" in advanced
 
 
+# ---- 詳細設定(#advanced)の情報整理: 役割ごとのグループを使用頻度順に並べる ----
+
+
+def _opt_groups() -> dict[str, str]:
+    """詳細設定のグループ見出し → そのグループのHTML。"""
+    import re
+
+    out: dict[str, str] = {}
+    for part in _advanced_html().split('<section class="opt-group">')[1:]:
+        body = part.split("</section>")[0]
+        title = re.search(r'<h3 class="opt-group-title">(.*?)</h3>', body)
+        assert title, body[:200]
+        out[title.group(1)] = body
+    return out
+
+
+def test_index_html_advanced_is_grouped_by_role():
+    """フラットな長い並びをやめ、役割ごとの5グループを使用頻度順に置く。"""
+    assert list(_opt_groups()) == [
+        "① 曲と歌詞",
+        "② 空耳のもと",
+        "③ 歌声",
+        "④ 見た目",
+        "⑤ その他",
+    ]
+    # どのグループにも1行の説明を添える
+    assert _advanced_html().count('class="hint opt-group-lead"') == 5
+    # 区切りは見た目にも出す(小見出し + 罫線)
+    html = _index_html()
+    assert ".opt-group + .opt-group {" in html
+    assert ".opt-group-title { font-size: .9rem;" in html
+
+
+def test_index_html_advanced_groups_hold_the_right_fields():
+    """DOMの移動だけ。既存のIDはすべて残し、役割どおりのグループに入れる。"""
+    g = _opt_groups()
+    song = g["① 曲と歌詞"]
+    assert 'id="midi"' in song and 'id="sample-select"' in song and 'id="lyrics"' in song
+    parody = g["② 空耳のもと"]
+    assert 'id="wordlist-select"' in parody
+    assert 'id="wordlist-filters"' in parody
+    assert 'id="open-editor"' in parody
+    assert 'id="editor-auto-status"' in parody
+    assert 'id="parody-status"' in parody
+    voice = g["③ 歌声"]
+    assert 'id="synthesizer"' in voice
+    assert 'id="auto-octave"' in voice and 'id="transpose"' in voice
+    assert 'id="preview"' in voice
+    look = g["④ 見た目"]
+    assert 'id="layout-select"' in look and 'id="le-details"' in look
+    other = g["⑤ その他"]
+    assert 'id="auth"' in other and 'id="clear-form"' in other
+
+
+def test_index_html_convert_params_are_demoted_to_a_collapsible():
+    """変換パラメータと替え歌JSONの読み書きは折りたたみでさらに格下げする。"""
+    parody = _opt_groups()["② 空耳のもと"]
+    assert '<details id="parody-advanced" class="sub-details">' in parody
+    assert "<summary>変換のしかたを細かく調整する(上級者向け)</summary>" in parody
+    assert 'id="where"' in parody and 'id="p-preset"' in parody
+    # 替え歌JSONの入出力はさらに出番が少ないので別の折りたたみに分ける
+    assert '<details id="parody-io" class="sub-details">' in parody
+    assert 'id="editor" accept=".json"' in parody
+    assert 'id="download-editor"' in parody
+    # よく触る単語リストの選択は畳まない(折りたたみより前に置く)
+    assert parody.index('id="wordlist-select"') < parody.index('id="parody-advanced"')
+    assert parody.index('id="parody-advanced"') < parody.index('id="parody-io"')
+
+
+def test_index_html_api_key_is_reachable_when_auth_is_required():
+    """APIキー欄は「⑤ その他」の中。キー待ちのときはそこまでスクロールする。"""
+    html = _index_html()
+    assert 'if (conf.auth_required && !apiKey()) {' in html
+    assert '$("advanced").open = true;' in html
+    assert '$("auth").scrollIntoView({ block: "center" });' in html
+
+
 # ---- 替え歌エディタ: 画面全面のモーダルで開く ----
 
 
