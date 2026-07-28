@@ -42,14 +42,16 @@ from PIL import Image, ImageEnhance
 from . import runproc
 from .convert import _find_row, _load_wordlist_rows, resolve_wordlist
 from .editor_io import wordlist_phrase_name
-from .layout import Layout, fitted_image_box, parse_layout, render_image
+from .layout import APP_CREDIT, Layout, fitted_image_box, parse_layout, render_image
 from .project import Project
 from .soramimic_engine import run_convert
 
 logger = logging.getLogger(__name__)
 
 THUMBNAIL_FILENAME = "thumbnail.png"
-SIGNATURE = "lyrics by Soramimic"
+# 動画本編の左下に焼き込むものと同じ署名(layout.APP_CREDIT)。
+# サムネは署名を自前で配置する({app_credit})ので、レイアウト側の自動追加はされない
+SIGNATURE = APP_CREDIT
 # 単語画像を貼る枠(フレーム比率)。旧スタイル(STYLE_SIDE)専用
 IMAGE_BOX = (0.53, 0.08, 0.41, 0.55)
 
@@ -69,7 +71,7 @@ _CAPTION_ELEMENT = {
     "size": 0.075, "color": "white", "wrap": True,
 }
 _SIGNATURE_ELEMENT = {
-    "type": "text", "text": SIGNATURE, "box": [0.04, 0.89, 0.92, 0.05],
+    "type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
     "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom",
 }
 # 全面スタイルの下段。背景画像の明暗に関わらず読めるよう、半透明の帯を必ず敷く
@@ -85,7 +87,7 @@ _FULLBLEED_CREDIT = {
     "background": "#000000a6",
 }
 _FULLBLEED_SIGNATURE = {
-    "type": "text", "text": SIGNATURE, "box": [0.55, 0.895, 0.42, 0.055],
+    "type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
     "size": 0.032, "color": "#e8e8e8", "align": "right", "valign": "bottom",
     "background": "#000000a6",
 }
@@ -193,8 +195,9 @@ def thumbnail_data(
     wordlist_text: str,
     word: str | Sequence[str] = "",
     image_credit: str | Sequence[str] = "",
+    app_credit: str = "",
 ) -> dict:
-    """サムネのテンプレートに渡す値(headline / caption / image_credit)。
+    """サムネのテンプレートに渡す値(headline / caption / image_credit / app_credit)。
 
     word は1語でも複数語でもよく、複数なら【】の中に空白区切りで並べる
     (「【モノカ 加藤】」)。クレジットも複数渡せる(重複は畳んで「 / 」で連結)。
@@ -218,6 +221,8 @@ def thumbnail_data(
         "headline": f"【{headline}】" if headline else "",
         "caption": caption,
         "image_credit": credit_text,
+        # 動画本編の隅と同じ署名(歌声合成のクレジットが要るときは連結済みで渡る)
+        "app_credit": app_credit or SIGNATURE,
     }
 
 
@@ -322,17 +327,19 @@ def render_thumbnail(
     width: int = 1280,
     height: int = 720,
     style: str = DEFAULT_STYLE,
+    app_credit: str = "",
 ) -> Path:
     """サムネPNGを描いて out_path に保存する。
 
     words / image_paths / image_credits は1件でも複数(言い換え2語)でもよい。
     STYLE_FULLBLEED では画像を全面に敷いた背景を先に合成し、その上に文字を描く。
+    app_credit は隅の署名(既定は「lyrics by Soramimic」。動画本編と同じ文言)。
     """
     if isinstance(image_paths, Path):
         images = [image_paths]
     else:
         images = list(image_paths or [])
-    data = thumbnail_data(title, wordlist_text, words, image_credits)
+    data = thumbnail_data(title, wordlist_text, words, image_credits, app_credit)
     has_word = bool(data["headline"])
 
     if style == STYLE_FULLBLEED:
@@ -411,6 +418,7 @@ def build_thumbnail(
     download_images: bool = True,
     style: str = DEFAULT_STYLE,
     missing_images: list[tuple[str, str]] | None = None,
+    app_credit: str = "",
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -460,6 +468,7 @@ def build_thumbnail(
             width=width,
             height=height,
             style=style,
+            app_credit=app_credit,
         )
     except Exception as e:  # noqa: BLE001 - 描画失敗もジョブは落とさない
         logger.warning("サムネ画像を生成できませんでした: %s", e)
@@ -475,6 +484,7 @@ def generate_thumbnail(
     height: int = 720,
     image_cache: Path | None = None,
     title: str | None = None,
+    app_credit: str = "",
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
@@ -492,4 +502,5 @@ def generate_thumbnail(
         image_cache=image_cache_dir(project_dir / VIDEO_DIR, image_cache),
         width=width,
         height=height,
+        app_credit=app_credit,
     )

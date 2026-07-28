@@ -7,11 +7,13 @@ from PIL import Image
 
 from soramimic_video import layout as layout_mod
 from soramimic_video.layout import (
+    APP_CREDIT,
     builtin_layout_names,
     load_layout,
     load_wordlist_layouts,
     render_frame,
     render_idle_frame,
+    resolve_app_credit,
 )
 
 
@@ -263,9 +265,22 @@ def test_render_idle_frame(tmp_path):
     assert other != out
 
 
-def test_render_idle_frame_absent_is_none(tmp_path):
-    # idleセクションのないレイアウトでは None(呼び出し側は黒画面のまま)
+def test_render_idle_frame_absent_has_app_credit_only(tmp_path):
+    # idleセクションが無くても、アプリクレジットだけを載せたフレームは作る
+    # (間奏でだけ表記が消えないように)
     layout = load_layout("caption")
+    out = render_idle_frame(layout, {"title": "x"}, 320, 180, tmp_path / "f")
+    assert out is not None and out.exists()
+
+
+def test_render_idle_frame_absent_is_none_without_app_credit(tmp_path):
+    # idleセクションもクレジットも無ければ None(呼び出し側は黒画面のまま)
+    p = tmp_path / "nocredit.json"
+    p.write_text(json.dumps({
+        "app_credit": False,
+        "elements": [{"type": "image", "box": [0, 0, 1, 0.7]}],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
     assert render_idle_frame(layout, {"title": "x"}, 320, 180, tmp_path / "f") is None
 
 
@@ -324,6 +339,80 @@ def test_render_frame_draws_credit(tmp_path):
     # 文言が空(表記不要)ならクレジットなしと同じフレーム
     empty = render_frame(layout, img, {**data, "image_credit": ""}, 320, 180, tmp_path / "f")
     assert empty == plain
+
+
+def test_app_credit_element_auto_added(tmp_path):
+    # どのレイアウトにも {app_credit} の自動焼き込み要素が付く(既定は左下)
+    for name in builtin_layout_names():
+        layout = load_layout(name)
+        assert layout.app_credit is not None, name
+        assert layout.app_credit.template == "{app_credit}"
+        assert layout.app_credit.align == "left"
+        assert layout.app_credit.valign == "bottom"
+        # 画像クレジットより小さく、既定字幕(下端0.945)と重ならない最下段
+        assert layout.app_credit.size <= 0.025
+        assert layout.app_credit.box[1] >= 0.945
+    # elements自体には混ぜない(render_textsや要素数は従来どおり)
+    assert len(load_layout(None).elements) == 1
+
+
+def test_app_credit_element_disabled_by_flag(tmp_path):
+    p = tmp_path / "noapp.json"
+    p.write_text(json.dumps({
+        "app_credit": False,
+        "elements": [{"type": "image", "box": [0, 0, 1, 0.7]}],
+    }), encoding="utf-8")
+    assert load_layout(str(p)).app_credit is None
+
+
+def test_app_credit_element_skipped_when_placed_manually(tmp_path):
+    # text要素で {app_credit} を自分で配置したレイアウトには自動追加しない
+    p = tmp_path / "manualapp.json"
+    p.write_text(json.dumps({
+        "elements": [
+            {"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.2]},
+            {"type": "text", "text": "{app_credit}", "box": [0.7, 0.9, 0.3, 0.05],
+             "size": 0.03},
+        ],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert layout.app_credit is None
+    assert layout.render_texts(
+        {"surface": "x", "app_credit": f"{APP_CREDIT} / VOICEVOX:四国めたん"}
+    )[1].endswith("VOICEVOX:四国めたん")
+    # 描画時は data に文言が無くても既定の署名が入る(自前配置でも空にならない)
+    assert resolve_app_credit({"surface": "x"}) == APP_CREDIT
+    assert resolve_app_credit({"app_credit": "  "}) == APP_CREDIT
+    assert resolve_app_credit({"app_credit": "X / Y"}) == "X / Y"
+
+
+def test_render_frame_draws_app_credit(tmp_path):
+    layout = load_layout("caption")
+    data = {"surface": "ホシズム", "original": "静岡駅"}
+    plain = render_frame(layout, None, data, 320, 180, tmp_path / "f")
+    # 署名の文言が変わればフレーム(キャッシュキー)も変わる
+    with_synth = render_frame(
+        layout, None, {**data, "app_credit": f"{APP_CREDIT} / VOICEVOX:四国めたん"},
+        320, 180, tmp_path / "f",
+    )
+    assert plain is not None and with_synth is not None and with_synth != plain
+    # 既定の署名を明示指定したものは既定と同じフレーム
+    same = render_frame(
+        layout, None, {**data, "app_credit": APP_CREDIT}, 320, 180, tmp_path / "f"
+    )
+    assert same == plain
+    # 無効化したレイアウトでは描かれない(=別フレームになる)
+    p = tmp_path / "noapp.json"
+    p.write_text(json.dumps({
+        "app_credit": False,
+        "elements": [
+            {"type": "image", "box": [0.09, 0.05, 0.82, 0.56]},
+            {"type": "text", "text": "{original}", "box": [0.05, 0.63, 0.9, 0.1],
+             "size": 0.065, "color": "white", "stroke_width": 0.004},
+        ],
+    }), encoding="utf-8")
+    off = render_frame(load_layout(str(p)), None, data, 320, 180, tmp_path / "f")
+    assert off != plain
 
 
 def test_render_frame_wrap_long_text(tmp_path):

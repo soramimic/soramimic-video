@@ -41,6 +41,7 @@ from .thumbnail import (
     BACKGROUND_DIM,
     DEFAULT_STYLE,
     HEADLINE_MAX_WORDS,
+    SIGNATURE,
     build_thumbnail,
     thumbnail_layout_spec,
     wordlist_text_of,
@@ -84,14 +85,19 @@ def preview_cache_dir(jobs_dir: Path) -> Path:
 
 
 def _layout_fingerprint() -> str:
-    """サムネの見た目を決めるものの指紋。デザインを変えたらキャッシュが自動で無効になる。"""
+    """サムネの見た目を決めるものの指紋。デザインを変えたらキャッシュが自動で無効になる。
+
+    署名は要素側が {app_credit} テンプレートなので、文言(SIGNATURE)を変えても
+    spec は変わらない。文言そのものも指紋に入れて古いプレビューが残らないようにする
+    (プレビューは常に既定の署名で描く。歌声合成のクレジットはジョブ側でのみ足す)。
+    """
     specs = [
         thumbnail_layout_spec(has_word=True, has_image=True),
         thumbnail_layout_spec(has_word=True, has_image=False),
         thumbnail_layout_spec(has_word=False, has_image=False),
     ]
     return json.dumps(
-        [DEFAULT_STYLE, BACKGROUND_DIM, HEADLINE_MAX_WORDS, specs],
+        [DEFAULT_STYLE, BACKGROUND_DIM, HEADLINE_MAX_WORDS, SIGNATURE, specs],
         ensure_ascii=False,
         sort_keys=True,
     )
