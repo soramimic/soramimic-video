@@ -176,42 +176,24 @@
   #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid var(--border); text-align: left; }
   #editor-frame { width: 100%; height: 72vh; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
-  /* おまかせカード: 例示3つ + ランダムの4ボタン。スマホでも2列で収まるようグリッドに */
-  .lucky-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
-  .lucky-grid button {
-    width: 100%; padding: .6rem .5rem; font-size: .9rem; line-height: 1.3;
-    border-radius: 10px; white-space: normal; word-break: break-word;
-  }
-  /* ---- モーダル(おまかせの確認)。CSSのみ・position:fixed で組む ---- */
-  .modal { position: fixed; inset: 0; z-index: 100; display: flex; padding: 1rem .6rem;
-    align-items: center; justify-content: center; }
-  .modal-overlay { position: absolute; inset: 0; background: rgba(15, 23, 42, .55); }
-  .modal-card {
-    position: relative; z-index: 1; width: min(30rem, 100%);
-    max-height: calc(100vh - 2rem); overflow-y: auto;
-    background: var(--panel); color: var(--text);
-    border: 1px solid var(--border); border-radius: 12px; padding: 1rem;
-    box-shadow: 0 12px 32px rgba(15, 23, 42, .35);
-  }
-  .modal-title { font-size: 1.05rem; margin: 0 1.8rem .6rem 0; }
-  .modal-close {
-    position: absolute; top: .5rem; right: .5rem; width: 2rem; padding: 0;
-    min-height: 2rem; line-height: 1; font-size: 1.1rem; border-radius: 8px;
-  }
-  .modal-reroll { right: 3rem; font-size: .95rem; }
-  .modal-combo { display: grid; grid-template-columns: auto 1fr; gap: .2rem .7rem; margin: 0; }
-  .modal-combo dt { font-size: .8rem; color: var(--muted); font-weight: 700; align-self: center; }
-  .modal-combo dd { margin: 0; font-weight: 700; }
-  .modal-figure {
+  /* ---- ビルダーカード: 曲×単語リストのプルダウン + その場のサムネプレビュー ---- */
+  /* プルダウンは横並び(狭い画面では1列に折り返す) */
+  .builder-selects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+  @media (max-width: 26rem) { .builder-selects { grid-template-columns: 1fr; } }
+  .builder-selects label { margin: 0 0 .2rem; }
+  /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
+     2つ目だけ下にずれるので消す */
+  .builder-selects .field + .field { margin-top: 0; }
+  .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
   }
-  .modal-figure img { display: block; width: 100%; max-height: 40vh; object-fit: contain; }
+  .builder-figure img { display: block; width: 100%; max-height: 40vh; object-fit: contain; }
   /* プレビュー画像を初期非表示にしている単語リストの説明+「見る」ボタン */
-  .modal-figure.hidden-preview { padding: 1rem; }
-  .modal-figure.hidden-preview .hint { margin: 0 0 .6rem; }
+  .builder-figure.hidden-preview { padding: 1rem; }
+  .builder-figure.hidden-preview .hint { margin: 0 0 .6rem; }
   /* サムネ生成待ちのプレースホルダ。画像と同じ16:9で場所を先に取り、差し替えでガタつかせない */
-  .modal-figure-loading {
+  .builder-figure-loading {
     display: flex; align-items: center; justify-content: center; gap: .5rem;
     aspect-ratio: 16 / 9; max-height: 40vh; font-size: .85rem; color: var(--muted);
   }
@@ -222,9 +204,12 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
-  .modal-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .9rem; }
-  .modal-actions button { flex: 1 1 auto; }
-  .modal-actions .btn-primary { flex: 1 1 100%; }
+  /* 例示ボタンと🎲ランダムはプルダウンのショートカット。主役ではないので小さく */
+  .lucky-grid { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
+  .lucky-grid button {
+    flex: 1 1 auto; padding: .3rem .8rem; min-height: 0; font-size: .82rem;
+    line-height: 1.4; border-radius: 999px; white-space: normal; word-break: break-word;
+  }
 </style>
 </head>
 <body>
@@ -235,22 +220,46 @@
   <p class="hint" id="server-info"></p>
 </header>
 
-<!-- 1. まず押す入口。曲×単語リストの組み合わせを選ぶと確認モーダルが開き、
-     「この組み合わせで生成」でそのまま生成まで走る。
-     例示3つは JS の SUGGESTED_COMBOS から組み立てる(#lucky-combos に差し込む)。 -->
+<!-- 1. ビルダーカード(この画面の主役)。曲と単語リストのプルダウンを選ぶと、その
+     組み合わせで実際に作られるサムネがその場に出る(/api/thumbnail-preview)。
+     選択は詳細設定側の #sample-select / #wordlist-select と双方向に同期し、
+     そのまま同じカードの「🎬 動画を生成」(#submit)で生成できる。
+     例示ボタンは JS の SUGGESTED_COMBOS から組み立てる(#lucky-combos に差し込む)。 -->
 <section class="card" id="lucky-card">
   <h2>まずはここから</h2>
-  <p class="hint" id="lucky-lead">曲と単語リストの組み合わせを選ぶと、内容を確認してからそのまま動画を作れます。</p>
+  <p class="hint" id="lucky-lead">曲と単語リストを選ぶと、できあがりのサムネが見られます。</p>
+  <div class="builder-selects">
+    <div class="field" id="builder-sample-field">
+      <label for="builder-sample">曲</label>
+      <select id="builder-sample" aria-label="曲(サンプル曲)"></select>
+    </div>
+    <div class="field" id="builder-wordlist-field">
+      <label for="builder-wordlist">単語リスト(何に空耳させるか)</label>
+      <select id="builder-wordlist" aria-label="単語リスト"></select>
+    </div>
+  </div>
+  <!-- 生成されるサムネのプレビュー。作成中はスピナー、失敗・タイムアウト・429では
+       単語リストの代表画像にフォールバックする(どちらも取れなければ枠ごと隠す) -->
+  <div class="builder-figure" id="builder-figure" hidden>
+    <img id="builder-image" alt="この組み合わせのサムネイル" hidden>
+    <div class="builder-figure-loading" id="builder-loading" hidden>
+      <span class="spinner" aria-hidden="true"></span>
+      <span>プレビューを作成中…</span>
+    </div>
+  </div>
+  <!-- プレビュー画像を初期非表示にする単語リスト(HIDDEN_PREVIEW_WORDLISTS)では、
+       黙って出さずに理由を書き、見たい人だけがボタンで表示できるようにする -->
+  <div class="builder-figure hidden-preview" id="builder-image-hidden" hidden>
+    <p class="hint" id="builder-image-hidden-note"></p>
+    <button type="button" id="builder-show-image">画像を表示する</button>
+  </div>
+  <p class="hint" id="builder-note" hidden></p>
+  <p class="error" id="builder-msg" hidden></p>
   <div class="lucky-grid" id="lucky-combos">
     <!-- 例示ボタンは JS がこのボタンの前に挿入する -->
-    <button type="button" id="lucky" class="btn-primary">🎲 ランダム</button>
+    <button type="button" id="lucky">🎲 ランダム</button>
   </div>
-  <p class="hint" id="lucky-status">自分で曲や単語リストを選ぶなら「⚙️ 詳細設定」から。</p>
-</section>
 
-<!-- 2. 生成ボタンと進捗・結果。入力欄はすべて詳細設定の中にあるので、
-     初見の画面は「おまかせ → 生成」だけで完結する。 -->
-<section class="card">
   <!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
        設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
   <div id="turnstile-wrap" hidden>
@@ -263,7 +272,11 @@
   <p class="hint" id="public-limits" hidden></p>
   <p class="hint" id="restore-notice" hidden>前回の入力を復元しました。<button type="button" id="clear-form"
     class="btn-sm" style="margin-left:.3rem">保存した入力をクリア</button></p>
+  <p class="hint" id="lucky-status">歌声や歌詞、レイアウトまで自分で決めるなら「⚙️ 詳細設定」から。</p>
+</section>
 
+<!-- 2. 進捗と結果。ジョブを投入するまでは出さない(初見の画面はビルダーカードだけ)。 -->
+<section class="card" id="job-card" hidden>
   <div id="progress" hidden>
     <ul class="stages">
       <li data-stage="analyze">MIDI解析</li>
@@ -281,8 +294,9 @@
   <div id="result" hidden></div>
 </section>
 
-<!-- 3. 自分で選ぶための設定はすべてこの折りたたみの中。初見の画面には出さない。
-     曲・単語リスト・歌声もここに置き、メイン画面は「おまかせ → 生成」だけにする。 -->
+<!-- 3. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
+     曲・単語リストの欄もここに残し(送信値の正本)、上のビルダーカードと双方向に
+     同期する。歌声・歌詞・レイアウト・変換パラメータはここだけにある。 -->
 <details class="card" id="advanced">
   <summary>⚙️ 詳細設定(曲・単語リスト・歌声・歌詞・レイアウト・変換パラメータ)</summary>
 
@@ -500,41 +514,6 @@
 </footer>
 </div>
 
-<!-- おまかせの確認モーダル。例示ボタンもランダムも同じこのモーダルを開く。
-     CSSだけの実装(overlay + position:fixed)。Esc・外側クリック・×で閉じる。 -->
-<div class="modal" id="lucky-modal" hidden>
-  <div class="modal-overlay" id="lucky-modal-overlay"></div>
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="lucky-modal-title">
-    <button type="button" class="modal-close modal-reroll" id="lucky-reroll" aria-label="引き直す" title="別の組み合わせにする">🔄</button>
-    <button type="button" class="modal-close" id="lucky-modal-close" aria-label="閉じる">×</button>
-    <h2 class="modal-title" id="lucky-modal-title">この組み合わせで作りますか？</h2>
-    <dl class="modal-combo">
-      <dt>曲</dt><dd id="lucky-modal-song">-</dd>
-      <dt>単語リスト</dt><dd id="lucky-modal-wordlist">-</dd>
-    </dl>
-    <!-- 生成されるサムネのプレビュー。作成中はスピナー、失敗・タイムアウト・429では
-         単語リストの代表画像にフォールバックする(どちらも取れなければ枠ごと隠す) -->
-    <div class="modal-figure" id="lucky-modal-figure" hidden>
-      <img id="lucky-modal-image" alt="この組み合わせのサムネイル" hidden>
-      <div class="modal-figure-loading" id="lucky-modal-loading" hidden>
-        <span class="spinner" aria-hidden="true"></span>
-        <span>プレビューを作成中…</span>
-      </div>
-    </div>
-    <!-- プレビュー画像を初期非表示にする単語リスト(HIDDEN_PREVIEW_WORDLISTS)では、
-         黙って出さずに理由を書き、見たい人だけがボタンで表示できるようにする -->
-    <div class="modal-figure hidden-preview" id="lucky-modal-image-hidden" hidden>
-      <p class="hint" id="lucky-modal-image-hidden-note"></p>
-      <button type="button" id="lucky-show-image">画像を表示する</button>
-    </div>
-    <p class="hint" id="lucky-modal-note" hidden></p>
-    <p class="error" id="lucky-modal-msg" hidden></p>
-    <div class="modal-actions">
-      <button type="button" class="btn-primary" id="lucky-go">🎬 この組み合わせで生成</button>
-    </div>
-  </div>
-</div>
-
 <script>
 const $ = (id) => document.getElementById(id);
 const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
@@ -583,13 +562,15 @@ async function loadConfig() {
   await loadWordlistSelect(conf.editor);
   updateParodyStatus();
   await restoreForm();  // wordlist選択肢が揃った後に前回の入力を復元(初回のみ)
+  // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
+  await initBuilder();
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
   const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
   if (active && !resumed) {
     resumed = true;
     setBusy(true);
-    $("progress").hidden = false;
+    showProgress();
     $("status-line").textContent = "実行中のジョブに再接続しました";
     watch(active.id);
   }
@@ -896,8 +877,16 @@ function finish() {
 function setBusy(busy) {
   $("submit").disabled = busy;
   $("preview").disabled = busy;
-  // おまかせの4ボタン(例示3つ + ランダム。#lucky もこの中にある)
+  // ビルダーカードのプルダウンとショートカット(例示 + 🎲ランダム)
+  $("builder-sample").disabled = busy;
+  $("builder-wordlist").disabled = busy;
   $("lucky-combos").querySelectorAll("button").forEach((b) => { b.disabled = busy; });
+}
+
+// 進捗・結果のカードは投入するまで出さない(空の枠を見せない)
+function showProgress() {
+  $("job-card").hidden = false;
+  $("progress").hidden = false;
 }
 
 // 生成ボタン直下の案内(曲が未セットのときなど)。空文字で消す。
@@ -908,12 +897,14 @@ function showSubmitMsg(text) {
 }
 
 async function submitJob(previewSec) {
+  // 曲を選んだ直後に押されたときは、MIDIの取得が終わるのを待ってから見る
+  if (samplePending) await samplePending;
   const midi = $("midi").files[0];
   if (!midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
-    // 曲は詳細設定の中なので、まずおまかせへ誘導する
+    // 曲はカードのプルダウンで選べる。自分のMIDIを使う人は詳細設定へ誘導する
     showSubmitMsg("曲がまだセットされていません。"
-      + "上の「おまかせ」から組み合わせを選ぶか、「⚙️ 詳細設定」で曲"
+      + "上の「曲」から選び直すか、「⚙️ 詳細設定」で曲"
       + "(サンプル曲か、自分のXF MIDIファイル)を選んでください。");
     return;
   }
@@ -930,7 +921,7 @@ async function submitJob(previewSec) {
   // Turnstileが有効なら、トークンが出るまで少し待ってから組み立てる
   if (turnstileSiteKey) {
     setBusy(true);
-    $("progress").hidden = false;
+    showProgress();
     $("status-line").textContent = "確認中…";
     await ensureTurnstileToken();
   }
@@ -953,7 +944,7 @@ async function submitJob(previewSec) {
   if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
   setBusy(true);
   $("result").hidden = true;
-  $("progress").hidden = false;
+  showProgress();
   $("status-line").textContent = "送信中…";
   try {
     const res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
@@ -989,18 +980,20 @@ async function loadSamples() {
     samples.forEach((s) => { if (s.description) sampleDescriptions[s.id] = s.description; });
     $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
+    syncBuilderOptions();  // カードの曲プルダウンへ写す
     renderLuckyCombos();   // 例示ボタンのラベルに曲名が入るのはここから
   } catch {
     // サンプルが取れない環境ではサンプル選択(#sample-field)ごと隠し、
-    // 代わりに自分のMIDIを入れる折りたたみを開いておく。おまかせも成立しないので
-    // カードごと隠し、入力欄のある詳細設定を開いて迷子にならないようにする
+    // 代わりに自分のMIDIを入れる折りたたみを開いておく。ビルダーカードも成立しない
+    // ので隠し、入力欄のある詳細設定を開いて迷子にならないようにする
     $("sample-select").parentElement.hidden = true;
     $("midi-details").open = true;
     $("lucky-card").hidden = true;
     $("advanced").open = true;
   }
 }
-loadSamples();
+// 初期表示のプレビューはサンプル一覧が揃ってからなので、完了を待てるよう持っておく
+const samplesReady = loadSamples();
 
 // 選択中のサンプル曲をフォームに反映する(MIDI・元歌詞)。
 // おまかせからも使うので、changeハンドラ本体をawaitできる関数に切り出してある。
@@ -1032,19 +1025,29 @@ async function applySample() {
     return false;
   }
 }
-$("sample-select").addEventListener("change", applySample);
+// 進行中の applySample。MIDIの取得は非同期なので、選んだ直後に「生成」を押されても
+// 曲が未セットにならないよう、投入前(submitJob)にこれを待つ。
+let samplePending = null;
+function trackSample(p) {
+  samplePending = p.catch(() => false);   // 失敗は呼び出し側が拾う
+  return p;
+}
+$("sample-select").addEventListener("change", () => trackSample(applySample()));
 
-// ---- 🎲 おまかせ(例示3つ + ランダム) ----
-// 曲×単語リストの組み合わせを選ぶと確認モーダルが開き、「この組み合わせで生成」で
-// フォームへ反映(既存のchangeイベント経路: 単語リストのレイアウト自動切替
-// applyWordlistLayout など)してそのまま生成まで走る。4つのボタンはどれも同じ
-// モーダルを開き、例示は固定の組み合わせ、ランダムは抽選済みの組み合わせが入る。
+// ---- ビルダーカード(曲 × 単語リスト → サムネプレビュー → 生成) ----
+// トップのカードで曲と単語リストを選ぶと、その組み合わせで実際に作られるサムネを
+// その場に出す。プルダウンは詳細設定側の #sample-select / #wordlist-select の写しで、
+// 選択は必ずそちらへ流してから change を発火する。こうすると従来の経路(applySample、
+// applyWordlistSelection → #wordlist/#where、レイアウト自動切替 applyWordlistLayout、
+// フォーム保存)がそのまま動き、詳細設定側で変えたときもカードが追従する。
+// 生成はカード内の 🎬 ボタン(#submit)で、既存の submitJob をそのまま使う。
 
 // 例示ボタンの組み合わせ。増減・差し替えはこの配列を編集するだけでよい。
+// 先頭は初回表示の既定の組み合わせも兼ねる(前回の選択があればそちらが優先)。
 //   sample:   /api/samples の id(static/sample/samples.json の id)。
 //             samples.json に無い id はボタンごと出さない。
 //   wordlist: 単語リストのファイル名(external/soramimic-wordlists の <name>.csv)。
-//   song / list: ボタンやモーダルに出すラベルの控え。曲名は samples.json、
+//   song / list: ボタンに出すラベルの控え。曲名は samples.json、
 //             単語リスト名は editor conf(setting.json)の表示名が取れればそちらを優先し、
 //             取れないときだけここの文字列を使う。
 // 例示は実在系を中心に、架空系は1つまで。SORAMIMIC_WARMUP_WORDLISTS で
@@ -1056,13 +1059,13 @@ const SUGGESTED_COMBOS = [
 ];
 
 // 空耳変換に時間がかかる単語リスト。ランダム抽選の対象から外し、
-// それしか無くて選ばれてしまったときはモーダルに時間の注意を出す。
+// それでも選ばれているときはカードに時間の注意を出す。
 // (sekitsuiは不正データ3行が原因で数分かかる。上流のデータ修正が入ったら外してよい)
 const SLOW_WORDLISTS = ["sekitsui"];
 
-// 🎲ランダムの確認モーダルで、代表画像のプレビューを初期非表示にする単語リスト。
+// カードのサムネプレビューで、単語画像を初期非表示にする単語リスト。
 // 「自分では選んでいないのに苦手な画像に出会う」のを防ぐのが目的なので、対象は
-// このプレビューだけ(動画・サムネや、自分で単語リストを選んだときの表示は変えない)。
+// このプレビューだけ(動画・サムネの画像は変えない)。
 // 値は隠している理由の文言。別のリストを足すときは1行追加する。
 const HIDDEN_PREVIEW_WORDLISTS = {
   insect: "昆虫の画像が苦手な方への配慮で、プレビューを隠しています。",
@@ -1108,7 +1111,7 @@ function luckyCombo(sampleId, wordlistName, fallback) {
 }
 
 // ランダム抽選。曲はサンプル全体から、単語リストは重い辞書を除いた中から選ぶ。
-// 除いた結果が空になる構成では重い辞書も対象に含める(モーダルで注意を出す)。
+// 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
 function luckyRandomCombo() {
   const samples = [...$("sample-select").options].filter((o) => o.value);
   if (!samples.length) return null;
@@ -1123,47 +1126,100 @@ function luckyRandomCombo() {
   return luckyCombo(song.value, wl ? nameOf(wl) : "");
 }
 
-// ---- 確認モーダル ----
+// ---- カードのプルダウンと詳細設定の双方向同期 ----
+// カード側のプルダウンは詳細設定側セレクトの「写し」で、選択の正本は常に
+// #sample-select / #wordlist-select(さらにその先の #wordlist / #where)。
+// カードで選んだときは正本へ流して change を発火し(applySample、
+// applyWordlistSelection → レイアウト自動切替・フォーム保存がそのまま動く)、
+// 詳細設定で選んだときはカードへ写し戻す。
 
-let luckyCurrent = null;   // 表示中の組み合わせ
-let luckyOpener = null;    // モーダルを開いたボタン(閉じたらフォーカスを戻す)
-let luckyImageSeq = 0;     // プレビュー画像の取得世代(引き直しの取り違え防止)
-let luckyPreviewUrl = "";  // 表示中のプレビュー画像(blob URL。差し替え時にrevoke)
-let luckyPreviewAbort = null;  // 進行中のプレビュー取得(引き直し・閉じるで中断)
-const LUCKY_PREVIEW_TIMEOUT_MS = 8000;  // これを過ぎたら代表画像にフォールバック
+let builderReady = false;   // 初期化済みか(loadConfigはAPIキー変更で再実行される)
+let builderLive = false;    // 初期選択が決まったか(それまでプレビューは出さない)
+
+// 詳細設定側の選択肢をカードのプルダウンへ複製する(optgroupごとそのまま)。
+// サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
+function syncBuilderOptions() {
+  $("builder-sample").innerHTML = $("sample-select").innerHTML;
+  const wl = $("wordlist-select");
+  $("builder-wordlist").innerHTML = wl.innerHTML;
+  // 単語リストのプルダウンが出ない構成(editor conf が無い)ではカード側も出さない
+  $("builder-wordlist-field").hidden = wl.hidden;
+  syncBuilderValues();
+}
+
+// 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
+function syncBuilderValues() {
+  $("builder-sample").value = $("sample-select").value;
+  const wl = $("wordlist-select");
+  $("builder-wordlist").value = wl.hidden ? "" : wl.value;
+}
+
+// カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
+function showBuilderMsg(text) {
+  const el = $("builder-msg");
+  el.textContent = text || "";
+  el.hidden = !text;
+}
+
+// ---- サムネプレビュー ----
+
+let previewSeq = 0;            // 取得の世代(古い結果の取り違え防止)
+let previewUrl = "";           // 表示中のプレビュー(blob URL。差し替え時にrevoke)
+let previewAbort = null;       // 進行中の取得(組み合わせが変わったら中断)
+let previewTimer = null;       // デバウンスのタイマー
+let previewKey = "";           // 直近に表示を頼んだ内容(同じなら作り直さない)
+let previewComboKey = "";      // 直近の組み合わせ(変わったら画像の表示指定を戻す)
+let previewShowImages = false; // 「画像を表示する」を押した(組み合わせが変わると戻る)
+const PREVIEW_TIMEOUT_MS = 8000;   // これを過ぎたら代表画像にフォールバック
 // 単語画像が間に合わず文字だけで返ってきた(X-Preview-Images: pending)ときに、
 // 絵入りへ差し替えられないか1回だけ聞き直す間隔。サーバーは裏で作り直しているので
 // このリクエストはキャッシュヒットになり、レート制限も変換も追加で消費しない
-const LUCKY_PREVIEW_RETRY_MS = 4000;
+const PREVIEW_RETRY_MS = 4000;
+// プルダウンを続けて動かしたときに毎回APIを叩かないための待ち
+const PREVIEW_DEBOUNCE_MS = 400;
 
 // 画像を初期非表示にする単語リストか。隠すなら理由の文言、出してよいなら空文字。
-// force(「画像を表示する」を押した)なら隠さない。
-function luckyHiddenReason(name, force) {
-  return (!force && HIDDEN_PREVIEW_WORDLISTS[name]) || "";
+function hiddenPreviewReason(name) {
+  return (!previewShowImages && HIDDEN_PREVIEW_WORDLISTS[name]) || "";
 }
+
+// いま正本のフォームが指している単語リスト名(セレクト優先、無ければ手入力欄)
+function currentWordlistName() {
+  const sel = $("wordlist-select");
+  if (!sel.hidden) {
+    const opt = sel.selectedOptions[0];
+    if (opt && opt.value && opt.value !== "__other__") {
+      return (wordlistGroups[Number(opt.value)] || {}).name || "";
+    }
+  }
+  return $("wordlist").value.trim();
+}
+
+// いま選ばれている組み合わせ
+const currentCombo = () => luckyCombo($("sample-select").value, currentWordlistName());
 
 // 単語リストの代表画像(サムネプレビューが取れなかったときのフォールバック)。
 // どちらも取れなければ画像なしで成立させる(枠ごと隠す)。
-// HIDDEN_PREVIEW_WORDLISTS のリストは force が無いかぎり読み込まない。
-function luckyLoadImage(name, seq, force) {
-  const fig = $("lucky-modal-figure"), img = $("lucky-modal-image");
+// HIDDEN_PREVIEW_WORDLISTS のリストは「画像を表示する」を押すまで読み込まない。
+function loadWordlistImage(name, seq) {
+  const fig = $("builder-figure"), img = $("builder-image");
   // 代表画像が読めるまではローディング表示のまま(空の枠を見せない)
   const hide = () => {
-    if (seq !== luckyImageSeq) return;
-    $("lucky-modal-loading").hidden = true;
+    if (seq !== previewSeq) return;
+    $("builder-loading").hidden = true;
     fig.hidden = true;
   };
-  if (!name || luckyHiddenReason(name, force)) { hide(); return; }
+  if (!name || hiddenPreviewReason(name)) { hide(); return; }
   const url = "/api/wordlist-image?wordlist=" + encodeURIComponent(name)
     + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
   const probe = new Image();
   probe.onload = () => {
-    if (seq !== luckyImageSeq) return;
+    if (seq !== previewSeq) return;
     img.src = url;
     img.alt = "単語リストの代表画像";
     img.hidden = false;
-    $("lucky-modal-loading").hidden = true;
+    $("builder-loading").hidden = true;
     fig.hidden = false;
   };
   probe.onerror = hide;
@@ -1174,29 +1230,29 @@ function luckyLoadImage(name, seq, force) {
 // 出し、8秒で打ち切る。エラー・429・タイムアウトはすべて代表画像に落とす
 // (プレビューは飾りなので、待たずに「生成」を押せることを優先する)。
 // HIDDEN_PREVIEW_WORDLISTS のリストでは単語画像を含めない(images=0)サムネを
-// 頼み、隠している理由と「画像を表示する」ボタンを添える。押されたとき(force)
-// だけ画像入りで作り直す(引き直すとまた隠れる)。
-function luckyLoadPreview(combo, force) {
-  const seq = ++luckyImageSeq;
-  const fig = $("lucky-modal-figure"), img = $("lucky-modal-image");
-  if (luckyPreviewAbort) luckyPreviewAbort.abort();
-  luckyPreviewAbort = null;
+// 頼み、隠している理由と「画像を表示する」ボタンを添える。押されたときだけ
+// 画像入りで作り直す(別の組み合わせに変えるとまた隠れる)。
+function loadThumbnailPreview(combo) {
+  const seq = ++previewSeq;
+  const fig = $("builder-figure"), img = $("builder-image");
+  if (previewAbort) previewAbort.abort();
+  previewAbort = null;
   img.hidden = true;
   img.removeAttribute("src");
-  if (luckyPreviewUrl) { URL.revokeObjectURL(luckyPreviewUrl); luckyPreviewUrl = ""; }
-  const reason = luckyHiddenReason(combo.wordlistName, force);
-  $("lucky-modal-image-hidden").hidden = !reason;
-  $("lucky-modal-image-hidden-note").textContent = reason;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = ""; }
+  const reason = hiddenPreviewReason(combo.wordlistName);
+  $("builder-image-hidden").hidden = !reason;
+  $("builder-image-hidden-note").textContent = reason;
   if (!combo.wordlistName || !combo.sampleId) {
-    luckyLoadImage(combo.wordlistName, seq, force);
+    loadWordlistImage(combo.wordlistName, seq);
     return;
   }
   fig.hidden = false;
-  $("lucky-modal-loading").hidden = false;
+  $("builder-loading").hidden = false;
 
   const ctrl = new AbortController();
-  luckyPreviewAbort = ctrl;
-  const timer = setTimeout(() => ctrl.abort(), LUCKY_PREVIEW_TIMEOUT_MS);
+  previewAbort = ctrl;
+  const timer = setTimeout(() => ctrl.abort(), PREVIEW_TIMEOUT_MS);
   const params = { sample: combo.sampleId, wordlist: combo.wordlistName };
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
@@ -1208,133 +1264,153 @@ function luckyLoadPreview(combo, force) {
       return res.blob();
     })
     .then((blob) => {
-      if (seq !== luckyImageSeq) return;   // 引き直し済み: 古い結果は捨てる
-      luckyPreviewUrl = URL.createObjectURL(blob);
-      img.src = luckyPreviewUrl;
+      if (seq !== previewSeq) return;   // 選び直し済み: 古い結果は捨てる
+      previewUrl = URL.createObjectURL(blob);
+      img.src = previewUrl;
       img.alt = "この組み合わせで作られるサムネイル(プレビュー)";
       img.hidden = false;
-      $("lucky-modal-loading").hidden = true;
+      $("builder-loading").hidden = true;
       fig.hidden = false;
       // 単語画像が間に合わなかったぶんは裏で取り切られる。少し待って1回だけ聞き直す
-      if (pending) luckyRetryPreview(url, seq);
+      if (pending) retryThumbnailPreview(url, seq);
     })
-    .catch(() => { if (seq === luckyImageSeq) luckyLoadImage(combo.wordlistName, seq, force); })
-    .finally(() => { clearTimeout(timer); if (luckyPreviewAbort === ctrl) luckyPreviewAbort = null; });
+    .catch(() => { if (seq === previewSeq) loadWordlistImage(combo.wordlistName, seq); })
+    .finally(() => { clearTimeout(timer); if (previewAbort === ctrl) previewAbort = null; });
 }
 
 // 画像なしで返ってきたプレビューを、少し後に1回だけ取り直して静かに差し替える。
 // 表示中の絵は消さない(ローディングも出さない)のでちらつかない。まだ絵が
 // 入っていなければ何もしない(繰り返さない)。
-function luckyRetryPreview(url, seq) {
+function retryThumbnailPreview(url, seq) {
   setTimeout(() => {
-    if (seq !== luckyImageSeq) return;   // 引き直し・モーダルを閉じた
+    if (seq !== previewSeq) return;   // 選び直された
     fetch(url, { headers: headers() })
       .then((res) => (res.ok && res.headers.get("X-Preview-Images") !== "pending")
         ? res.blob() : null)
       .then((blob) => {
-        if (!blob || seq !== luckyImageSeq) return;
+        if (!blob || seq !== previewSeq) return;
         const next = URL.createObjectURL(blob);
-        $("lucky-modal-image").src = next;
-        if (luckyPreviewUrl) URL.revokeObjectURL(luckyPreviewUrl);
-        luckyPreviewUrl = next;
+        $("builder-image").src = next;
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = next;
       })
       .catch(() => {});   // 取り直せなくても文字だけのプレビューのままでよい
-  }, LUCKY_PREVIEW_RETRY_MS);
+  }, PREVIEW_RETRY_MS);
 }
 
-function luckyRenderModal() {
-  const c = luckyCurrent;
-  if (!c) return;
-  $("lucky-modal-song").textContent = c.songLabel;
-  $("lucky-modal-wordlist").textContent = c.listLabel;
-  $("lucky-modal-note").hidden = !c.slow;
-  $("lucky-modal-note").textContent = c.slow
+// いまの選択でカードの表示(時間の注意 + プレビュー)を作り直す。
+function renderBuilder() {
+  const c = currentCombo();
+  $("builder-note").hidden = !c.slow;
+  $("builder-note").textContent = c.slow
     ? "⏳ この組み合わせは単語リストが大きいため、空耳変換に数分かかります。" : "";
-  $("lucky-modal-msg").hidden = true;
-  $("lucky-modal-msg").textContent = "";
-  luckyLoadPreview(c);
+  loadThumbnailPreview(c);
 }
 
-function luckyOpenModal(combo, opener) {
-  if (!combo) {
-    $("lucky-status").textContent =
-      "サンプル曲を読み込めませんでした。「⚙️ 詳細設定」で曲を選んでください。";
-    return;
-  }
-  luckyCurrent = combo;
-  luckyOpener = opener || null;
-  luckyRenderModal();
-  $("lucky-modal").hidden = false;
-  $("lucky-go").focus();
+// プレビューの更新予約。プルダウンの連続変更・ボタン連打で毎回サムネを作らせない
+// よう、少し待ってから1回だけ取りに行く。同じ組み合わせなら何もしない。
+// force は「画像を表示する」用(同じ組み合わせでも作り直す)。
+function schedulePreview(force) {
+  if (!builderLive || $("lucky-card").hidden) return;
+  showBuilderMsg("");
+  const c = currentCombo();
+  const combo = `${c.sampleId}\n${c.wordlistName}`;
+  // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
+  if (!force && combo !== previewComboKey) previewShowImages = false;
+  previewComboKey = combo;
+  const key = `${combo}\n${previewShowImages ? 1 : 0}`;
+  if (key === previewKey) return;
+  previewKey = key;
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(renderBuilder, force ? 0 : PREVIEW_DEBOUNCE_MS);
 }
 
-// 「画像を表示する」を押したときだけ単語画像入りで作り直す(引き直すとまた隠れる)
-$("lucky-show-image").addEventListener("click", () => {
-  if (luckyCurrent) luckyLoadPreview(luckyCurrent, true);
-});
+// ---- 組み合わせをフォームへ反映する ----
 
-function luckyCloseModal() {
-  $("lucky-modal").hidden = true;
-  luckyImageSeq++;   // 未完了の画像読み込みを無効化する
-  if (luckyPreviewAbort) { luckyPreviewAbort.abort(); luckyPreviewAbort = null; }
-  if (luckyOpener && document.contains(luckyOpener)) luckyOpener.focus();
-  luckyOpener = null;
-}
-
-// 組み合わせをフォームへ反映する(既存のセット処理・change経路をそのまま使う)。
-async function luckyApply(c) {
-  // 1. 単語リスト: セレクトのchangeと同じ経路(#wordlist/#where設定・レイアウト自動切替)
-  const wlOpt = c.wordlistName ? wordlistOptionByName(c.wordlistName) : null;
-  if (wlOpt) {
-    const wlSel = $("wordlist-select");
-    wlSel.value = wlOpt.value;
-    wlSel.dispatchEvent(new Event("change", { bubbles: true }));
-  } else if (c.wordlistName) {
-    // セレクトが無い構成。サーバーは名前で解決できるのでテキスト欄に直接入れる
-    $("wordlist").value = c.wordlistName;
-    $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
-  }
-  // 2. 前回の編集済み替え歌が残っていると単語リストより優先されてしまうので外す
+// 前回の編集済み替え歌が残っていると単語リストより優先されてしまうので外す
+function clearEditorFile() {
   if ($("editor").files[0]) {
     $("editor").value = "";
     $("editor").dispatchEvent(new Event("change", { bubbles: true }));
   }
-  // 3. サンプル曲(MIDI・元歌詞)。changeと同じ処理をawaitして完了を待つ
-  $("sample-select").value = c.sampleId;
-  return await applySample();
 }
 
-// 「この組み合わせで生成」: モーダルを閉じ、フォームへ反映してそのまま投入する。
-async function luckyGenerate() {
-  const c = luckyCurrent;
-  if (!c) return;
-  const combo = `${c.songLabel} × ${c.listLabel}`;
-  const status = $("lucky-status");
-  setBusy(true);
-  try {
-    if (!await luckyApply(c)) {
-      $("lucky-modal-msg").textContent = "サンプル曲の取得に失敗しました。もう一度お試しください。";
-      $("lucky-modal-msg").hidden = false;
-      setBusy(false);
-      return;
-    }
-  } catch (err) {
-    $("lucky-modal-msg").textContent = "おまかせの準備に失敗しました: " + err.message;
-    $("lucky-modal-msg").hidden = false;
-    setBusy(false);
+// 単語リストを名前で選ぶ。セレクトがある構成では選択を、無ければ手入力欄を使う
+// (サーバーは名前で解決できる)。どちらも既存の change 経路をそのまま通す。
+function selectWordlist(name) {
+  if (!name) return;
+  const opt = wordlistOptionByName(name);
+  if (opt) {
+    const sel = $("wordlist-select");
+    sel.value = opt.value;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  } else {
+    $("wordlist").value = name;
+    $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
+
+// 組み合わせ(例示ボタン・🎲ランダム)をカードとフォームへ反映する。
+// 曲のMIDI取得まで待ち、成功したかを返す。
+async function applyCombo(c) {
+  if (c.wordlistName) {
+    selectWordlist(c.wordlistName);
+    clearEditorFile();
+  }
+  $("sample-select").value = c.sampleId;
+  syncBuilderValues();
+  schedulePreview();
+  return await trackSample(applySample());
+}
+
+// 例示ボタン・🎲ランダムの共通処理。失敗はカードの案内に出す。
+async function pickCombo(c) {
+  if (!c) {
+    showBuilderMsg("サンプル曲を読み込めませんでした。「⚙️ 詳細設定」で曲を選んでください。");
     return;
   }
-  luckyCloseModal();
-  status.textContent = `🎲 ${combo} で生成中です`;
-  // Turnstileが有効ならトークンが出るまで待ってから投入する(おまかせはページを
-  // 開いた直後に押されることがあり、まだトークンが無いことがあるため)。
-  if (turnstileSiteKey) {
-    $("progress").hidden = false;
-    $("status-line").textContent = "確認中…";
-    await ensureTurnstileToken();
+  try {
+    if (!await applyCombo(c)) {
+      showBuilderMsg("サンプル曲の取得に失敗しました。もう一度お試しください。");
+    }
+  } catch (err) {
+    showBuilderMsg("組み合わせの準備に失敗しました: " + err.message);
   }
-  await submitJob(0);
 }
+
+// ---- カードの配線 ----
+
+// カードのプルダウン: 正本へ流して change を発火し、プレビューを予約する
+$("builder-sample").addEventListener("change", () => {
+  $("sample-select").value = $("builder-sample").value;
+  $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  schedulePreview();
+});
+$("builder-wordlist").addEventListener("change", () => {
+  const v = $("builder-wordlist").value;
+  const sel = $("wordlist-select");
+  sel.value = v;
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  // 「その他(名前を入力)」は詳細設定の手入力欄に切り替わるので、そちらを開いて見せる
+  if (v === "__other__") $("advanced").open = true;
+  else clearEditorFile();
+  schedulePreview();
+});
+
+// 詳細設定側で変えたときはカードのプルダウンとプレビューを追従させる
+$("sample-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+$("wordlist-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+// セレクトが無い構成・「その他」の手入力でもプレビューは追従する
+$("wordlist").addEventListener("change", () => schedulePreview());
+
+// 「画像を表示する」を押したときだけ単語画像入りで作り直す
+$("builder-show-image").addEventListener("click", () => {
+  previewShowImages = true;
+  schedulePreview(true);
+});
+
+// 🎲ランダム: カードの選択そのものをランダムな組み合わせに差し替える(生成はしない)
+$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));
 
 // 例示ボタンを #lucky-combos の「🎲 ランダム」の前に並べる。
 // サンプル一覧・単語リスト一覧が揃うたびに呼ばれ、ラベルを最新の表示名で作り直す。
@@ -1350,24 +1426,38 @@ function renderLuckyCombos() {
     btn.className = "lucky-combo";
     btn.textContent = `${c.songLabel} × ${c.listLabel}`;
     btn.disabled = $("lucky").disabled;
-    btn.addEventListener("click", () => luckyOpenModal(luckyCombo(def.sample, def.wordlist, def), btn));
+    btn.addEventListener("click", () => pickCombo(luckyCombo(def.sample, def.wordlist, def)));
     box.insertBefore(btn, $("lucky"));
   }
 }
 
-$("lucky").addEventListener("click", () => luckyOpenModal(luckyRandomCombo(), $("lucky")));
-$("lucky-go").addEventListener("click", luckyGenerate);
-$("lucky-reroll").addEventListener("click", () => {
-  const c = luckyRandomCombo();
-  if (!c) return;
-  luckyCurrent = c;
-  luckyRenderModal();
-});
-$("lucky-modal-close").addEventListener("click", luckyCloseModal);
-$("lucky-modal-overlay").addEventListener("click", luckyCloseModal);
-document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && !$("lucky-modal").hidden) luckyCloseModal();
-});
+// カードの初期選択を決めて最初のプレビューを出す。restoreForm より後に呼ばれるので、
+// 前回の入力があればそれが既定になる。曲はMIDIファイルとして保存されているので、
+// 復元されたファイル名からサンプルIDを引き当てて選択に戻す。
+async function initBuilder() {
+  if (builderReady) return;   // loadConfig はAPIキー変更で再実行される
+  builderReady = true;
+  await samplesReady;         // 曲のプルダウンが揃うのを待つ
+  if ($("lucky-card").hidden) return;   // サンプルが取れない環境ではカードごと出ない
+  syncBuilderOptions();
+  const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
+  const def = SUGGESTED_COMBOS[0] || {};
+  // 1. 曲: 復元されたMIDIがサンプル曲なら、その選択に戻す(MIDIは取り直さない)
+  const restoredId = (($("midi").files[0] || {}).name || "").replace(/\.[^.]+$/, "");
+  if (!$("sample-select").value && known.has(restoredId)) {
+    $("sample-select").value = restoredId;
+  }
+  // 2. 単語リストが未設定なら例示の先頭を既定にする
+  if (!currentWordlistName() && def.wordlist) selectWordlist(def.wordlist);
+  // 3. 曲がまだ無ければ例示の先頭をセットする(MIDIと元歌詞をここで取りに行く)
+  if (!$("sample-select").value && known.has(def.sample)) {
+    $("sample-select").value = def.sample;
+    trackSample(applySample());
+  }
+  syncBuilderValues();
+  builderLive = true;
+  schedulePreview();
+}
 
 $("submit").addEventListener("click", () => submitJob(0));
 $("preview").addEventListener("click", () => submitJob(20));
@@ -2200,6 +2290,7 @@ async function loadWordlistSelect(editorAvailable) {
   wordlistGroups = [];
   const bail = () => {
     sel.hidden = true; filters.hidden = true; $("wordlist").hidden = false;
+    syncBuilderOptions();  // カード側の単語リストプルダウンも引っ込める
   };
   if (!editorAvailable) { bail(); return; }
   let entries;
@@ -2258,6 +2349,7 @@ async function loadWordlistSelect(editorAvailable) {
   }
   sel.hidden = false;
   applyWordlistSelection();
+  syncBuilderOptions();  // カードの単語リストプルダウンへ写す
   renderLuckyCombos();   // 例示ボタンのラベルを conf の表示名で作り直す
 }
 

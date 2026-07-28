@@ -256,7 +256,7 @@ def test_index_html_model_layout_use_select_not_datalist():
 
 
 def test_index_html_hides_preview_for_sensitive_wordlists():
-    """🎲ランダムの確認モーダルで、昆虫などのプレビュー画像を初期非表示にする。
+    """ビルダーカードのサムネプレビューで、昆虫などの画像を初期非表示にする。
 
     黙って出さないのではなく「隠している理由」と「画像を表示する」ボタンを出す。
     対象はこのプレビューだけで、動画・サムネの画像は従来どおり。
@@ -268,12 +268,41 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
     assert "const HIDDEN_PREVIEW_WORDLISTS = {" in html
     assert "insect:" in html
     # 隠していることが分かる説明と、その場で表示できるボタンがある
-    assert '<div class="modal-figure hidden-preview" id="lucky-modal-image-hidden" hidden>' in html
-    assert '<p class="hint" id="lucky-modal-image-hidden-note"></p>' in html
-    assert '<button type="button" id="lucky-show-image">画像を表示する</button>' in html
-    # 表示ボタンを押したときだけ画像入りで読み込む(force)。プレビューは
-    # サムネ(/api/thumbnail-preview)になったので、そちらを画像ありで作り直す
-    assert 'luckyLoadPreview(luckyCurrent, true)' in html
+    assert (
+        '<div class="builder-figure hidden-preview" id="builder-image-hidden" hidden>'
+        in html
+    )
+    assert '<p class="hint" id="builder-image-hidden-note"></p>' in html
+    assert '<button type="button" id="builder-show-image">画像を表示する</button>' in html
+    # 表示ボタンを押したときだけ画像入りで作り直す(組み合わせを変えるとまた隠れる)
+    assert "previewShowImages = true;" in html
+    assert "schedulePreview(true);" in html
+
+
+def test_index_html_builder_card_syncs_with_advanced():
+    """トップのビルダーカードと詳細設定の曲・単語リストは双方向に同期する。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # カードのプルダウン
+    assert '<select id="builder-sample"' in html
+    assert '<select id="builder-wordlist"' in html
+    # カード → 詳細設定(正本へ流して change を発火する)
+    assert '$("sample-select").value = $("builder-sample").value;' in html
+    # 詳細設定 → カード(写し戻し)
+    assert (
+        '$("sample-select").addEventListener("change", '
+        "() => { syncBuilderValues(); schedulePreview(); });" in html
+    )
+    assert (
+        '$("wordlist-select").addEventListener("change", '
+        "() => { syncBuilderValues(); schedulePreview(); });" in html
+    )
+    # 確認モーダルは廃止し、🎲ランダムはカードの選択を差し替えるだけになった
+    assert "lucky-modal" not in html
+    assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
+    # 進捗・結果は別セクション
+    assert '<section class="card" id="job-card" hidden>' in html
 
 
 def test_config_has_voicevox_key(client):
