@@ -202,60 +202,66 @@ def render_thumbnail(
 
 
 def _word_image(
-    row: dict[str, str] | None, cache: Path
+    row: dict[str, str] | None, cache: Path, download: bool = True
 ) -> tuple[Path | None, str]:
-    """単語リスト行の image 列から画像とクレジット文言を取る(取れなければ空)。"""
+    """単語リスト行の image 列から画像とクレジット文言を取る(取れなければ空)。
+
+    download=False ならネットワークを使わず、キャッシュ済みの画像・クレジットだけを
+    使う(待てないプレビュー生成向け。無ければ画像なしのサムネになる)。
+    """
     from .image_credit import fetch_image_credit
-    from .video import download_image
+    from .video import cached_image, download_image
 
     url = (row or {}).get("image") or ""
     if not url:
         return None, ""
-    path = download_image(url, cache)
+    path = download_image(url, cache) if download else cached_image(url, cache)
     if path is None:
         return None, ""
     credit = str((row or {}).get("image_credit") or "").strip()
     if not credit:
-        info = fetch_image_credit(url, (row or {}).get("image_page", ""), cache)
+        info = fetch_image_credit(
+            url, (row or {}).get("image_page", ""), cache, cached_only=not download
+        )
         credit = info["credit_text"] if info else ""
     return path, credit
 
 
-def generate_thumbnail(
-    project: Project,
-    project_dir: Path,
-    width: int = 1280,
-    height: int = 720,
-    image_cache: Path | None = None,
-    title: str | None = None,
-) -> Path | None:
-    """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
-
-    変換・画像取得が失敗しても言い換えなしのサムネにフォールバックし、
-    描画自体に失敗したときだけ None を返す(いずれも警告ログのみで、
-    動画生成は止めない)。中断要求(Cancelled)だけはそのまま伝播する。
-    """
-    from .video import VIDEO_DIR, image_cache_dir
-
-    song = song_title(project, title)
-    wordlist = project.parody.wordlist if project.parody else ""
+def wordlist_text_of(wordlist: str) -> str:
+    """サムネのキャプションに出す単語リストの表示名(解決できなければ空)。"""
     stem = wordlist
     try:
         stem = resolve_wordlist(wordlist).stem if wordlist else ""
     except FileNotFoundError:
         logger.warning("単語リストが見つかりません(表示名はそのまま使います): %s", wordlist)
-    wordlist_text = wordlist_display_name(stem) if stem else ""
+    return wordlist_display_name(stem) if stem else ""
+
+
+def build_thumbnail(
+    out_path: Path,
+    song: str,
+    wordlist: str,
+    where: str | None = None,
+    params: dict[str, Any] | None = None,
+    image_cache: Path | None = None,
+    width: int = 1280,
+    height: int = 720,
+    download_images: bool = True,
+) -> Path | None:
+    """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
+
+    ジョブのサムネ(generate_thumbnail)と、生成前のプレビュー
+    (thumbnail_preview.py)が共有する。変換・画像取得が失敗しても
+    言い換えなし・画像なしのサムネにフォールバックし、描画自体に失敗した
+    ときだけ None を返す(いずれも警告ログのみ)。中断要求(Cancelled)は伝播する。
+    """
+    wordlist_text = wordlist_text_of(wordlist)
 
     word = ""
     row: dict[str, str] | None = None
     if song and wordlist:
         try:
-            found = title_paraphrase(
-                song,
-                wordlist,
-                project.parody.where if project.parody else None,
-                project.parody.params if project.parody else None,
-            )
+            found = title_paraphrase(song, wordlist, where, params)
             if found is not None:
                 raw_word, row = found
                 word = str(raw_word.get("surface") or "")
@@ -266,11 +272,9 @@ def generate_thumbnail(
 
     image_path: Path | None = None
     image_credit = ""
-    if word:
+    if word and image_cache is not None:
         try:
-            image_path, image_credit = _word_image(
-                row, image_cache_dir(project_dir / VIDEO_DIR, image_cache)
-            )
+            image_path, image_credit = _word_image(row, image_cache, download_images)
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - 画像なしのサムネにフォールバック
@@ -278,7 +282,7 @@ def generate_thumbnail(
 
     try:
         path = render_thumbnail(
-            project_dir / THUMBNAIL_FILENAME,
+            out_path,
             song,
             wordlist_text,
             word=word,
@@ -292,3 +296,30 @@ def generate_thumbnail(
         return None
     logger.info("サムネ画像を生成しました: %s", path)
     return path
+
+
+def generate_thumbnail(
+    project: Project,
+    project_dir: Path,
+    width: int = 1280,
+    height: int = 720,
+    image_cache: Path | None = None,
+    title: str | None = None,
+) -> Path | None:
+    """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
+
+    変換条件(単語リスト・where・パラメータ)はジョブ本体の変換と同じものを
+    project.parody から取る。失敗時の扱いは build_thumbnail と同じ。
+    """
+    from .video import VIDEO_DIR, image_cache_dir
+
+    return build_thumbnail(
+        project_dir / THUMBNAIL_FILENAME,
+        song_title(project, title),
+        project.parody.wordlist if project.parody else "",
+        where=project.parody.where if project.parody else None,
+        params=project.parody.params if project.parody else None,
+        image_cache=image_cache_dir(project_dir / VIDEO_DIR, image_cache),
+        width=width,
+        height=height,
+    )

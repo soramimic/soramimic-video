@@ -1052,18 +1052,17 @@ def _find_row(
     return rows[0]
 
 
-def convert_project(
-    project: Project,
-    wordlist: str,
+def resolve_convert_settings(
+    csv_path: Path,
     where: str | None = None,
-    params: dict[str, str] | None = None,
-) -> dict:
-    """project.parody を埋める(破壊的)。変換エンジンの生の応答を返す。
+    params: dict[str, Any] | None = None,
+) -> tuple[str | None, dict[str, Any], float]:
+    """変換の実効設定 (where, エンジンに渡すparams, NOTE_LENGTH_WEIGHTのα) を決める。
 
-    生の応答(units・period付きの単語列・tokensList)は editor 連携の
-    書き出しに必要なので、呼び出し側でプロジェクトディレクトリに保存する。
+    convert_project の入口と、曲名だけを同じ条件で変換したいところ
+    (thumbnail.py のサムネ生成・そのプレビュー)で共有する。
+    渡された params は壊さない(コピーして返す)。
     """
-    csv_path = resolve_wordlist(wordlist)
     if where is None:
         where = DEFAULT_WHERE.get(csv_path.stem)
     # video 専用パラメータはエンジンへ渡す前に取り除く(呼び出し側のdictは壊さない)
@@ -1086,6 +1085,22 @@ def convert_project(
     except (TypeError, ValueError):  # 数値でない指定はエンジン側の既定と同じ0.8扱い
         r = 0.8
     coerced.setdefault("VARIATION_COST", 20 * r)
+    return where, coerced, alpha
+
+
+def convert_project(
+    project: Project,
+    wordlist: str,
+    where: str | None = None,
+    params: dict[str, str] | None = None,
+) -> dict:
+    """project.parody を埋める(破壊的)。変換エンジンの生の応答を返す。
+
+    生の応答(units・period付きの単語列・tokensList)は editor 連携の
+    書き出しに必要なので、呼び出し側でプロジェクトディレクトリに保存する。
+    """
+    csv_path = resolve_wordlist(wordlist)
+    where, coerced, alpha = resolve_convert_settings(csv_path, where, params)
 
     # 同母音の小書き(ウッセェワ)はエンジンのトークナイズで「セ」「ェ」に割れ、
     # 「ェ」に一致する単語が無いためその行の変換結果が空になる。1文字→1文字で

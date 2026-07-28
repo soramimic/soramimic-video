@@ -134,10 +134,14 @@ def credit_from_extmetadata(meta: dict) -> dict:
     }
 
 
-def fetch_image_credit(image_url: str, image_page: str, cache_dir: Path) -> dict | None:
+def fetch_image_credit(
+    image_url: str, image_page: str, cache_dir: Path, cached_only: bool = False
+) -> dict | None:
     """Commons画像のクレジット情報を取得する(URLごとにキャッシュ)。
 
     Commons以外のURLや取得失敗は None(呼び出し側は表記なしで続行)。
+    cached_only=True なら通信せず、キャッシュ済みのぶんだけ返す
+    (待てない用途=サムネのプレビュー生成向け)。
     """
     title = commons_file_title(image_url, image_page)
     if title is None:
@@ -145,6 +149,8 @@ def fetch_image_credit(image_url: str, image_page: str, cache_dir: Path) -> dict
     cache = cache_dir / "credits" / f"{hashlib.sha1(image_url.encode()).hexdigest()[:16]}.json"
     if cache.exists():
         return json.loads(cache.read_text(encoding="utf-8"))
+    if cached_only:
+        return None
     try:
         resp = http_get_with_retry(
             COMMONS_API,

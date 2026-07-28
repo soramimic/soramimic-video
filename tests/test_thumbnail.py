@@ -194,7 +194,7 @@ def test_generate_thumbnail_returns_none_on_render_failure(tmp_path: Path, monke
 def test_generate_thumbnail_image_failure_falls_back(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert("米原"))
 
-    def boom(row, cache):
+    def boom(row, cache, download=True):
         raise RuntimeError("取得できません")
 
     monkeypatch.setattr(thumb_mod, "_word_image", boom)
