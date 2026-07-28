@@ -59,8 +59,7 @@ DEFAULT_STYLE = STYLE_FULLBLEED
 
 # 見出しに使う言い換え単語の最大数と、「1語で済ませてよい」最小文字数。
 # 「モノカ」のような短い1語だけでは意味が取りにくいので、その場合は2語目を足す。
-HEADLINE_MAX_WORDS = 2
-HEADLINE_MIN_CHARS = 4
+HEADLINE_MAX_WORDS = 4  # 見出しに並べる言い換え単語の上限(長い曲名の保険)
 # 背景に敷いた画像の明るさ(1.0=そのまま)。文字側の帯・輪郭と合わせて可読性を作る
 BACKGROUND_DIM = 0.62
 
@@ -223,17 +222,14 @@ def thumbnail_data(
 
 
 def pick_headline_words(words: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """見出しに使う言い換え単語を選ぶ(1語、短ければ2語)。
+    """見出しに使う言い換え単語(曲名全体の言い換え)。
 
-    先頭1語が短い(HEADLINE_MIN_CHARS 未満)と「モノカ」のように意味が取りにくい
-    ので、次の語があれば足して2語にする。長い語は1語で充分読めるので増やさない。
+    変換結果は曲名を最後まで覆う単語列なので、先頭だけ採ると
+    「春が来た → ダブラン」のように曲名の一部しか言い換えていない
+    見出しになる。全部並べるのが正しい。長すぎる曲名の保険としてのみ
+    HEADLINE_MAX_WORDS で切る。
     """
-    picked = [w for w in words[:HEADLINE_MAX_WORDS] if str(w.get("surface") or "")]
-    if not picked:
-        return []
-    if len(str(picked[0].get("surface") or "")) >= HEADLINE_MIN_CHARS:
-        return picked[:1]
-    return picked
+    return [w for w in words if str(w.get("surface") or "")][:HEADLINE_MAX_WORDS]
 
 
 def _cover(img: Image.Image, width: int, height: int) -> Image.Image:

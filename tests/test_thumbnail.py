@@ -62,21 +62,26 @@ def _fake_convert(*surfaces: str):
 # ---- 見出しに使う単語の選び方 ----
 
 
-def test_pick_headline_uses_one_long_word():
-    words = [{"surface": "ダイオージャ"}, {"surface": "加藤"}]
+def test_pick_headline_uses_all_words_of_the_title():
+    # 変換結果は曲名を最後まで覆う単語列なので、途中で切らず全部並べる
+    # (「春が来た → ダブラン」だけだと曲名の一部しか言い換えていない見出しになる)
+    words = [{"surface": "ダブラン"}, {"surface": "キタ"}]
+    assert [w["surface"] for w in pick_headline_words(words)] == ["ダブラン", "キタ"]
+
+    words = [{"surface": "ダイオージャ"}]
     assert [w["surface"] for w in pick_headline_words(words)] == ["ダイオージャ"]
 
 
-def test_pick_headline_adds_second_word_when_first_is_short():
-    words = [{"surface": "モノカ"}, {"surface": "加藤"}, {"surface": "鈴木"}]
-    # 短い1語だけでは意味が取りにくいので2語目まで。3語目は足さない
-    assert [w["surface"] for w in pick_headline_words(words)] == ["モノカ", "加藤"]
+def test_pick_headline_caps_very_long_titles():
+    from soramimic_video.thumbnail import HEADLINE_MAX_WORDS
+
+    words = [{"surface": f"語{i}"} for i in range(HEADLINE_MAX_WORDS + 3)]
+    assert len(pick_headline_words(words)) == HEADLINE_MAX_WORDS
 
 
 def test_pick_headline_handles_missing_and_empty():
     assert pick_headline_words([]) == []
     assert pick_headline_words([{"surface": ""}]) == []
-    # 短い語しか無ければ1語のまま
     assert len(pick_headline_words([{"surface": "モノ"}])) == 1
 
 
