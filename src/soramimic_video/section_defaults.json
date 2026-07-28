@@ -20,6 +20,6 @@
      "size": 0.042, "color": "#a8a8a8", "align": "center"},
     {"type": "text", "text": "{used_words}", "box": [0.08, 0.17, 0.84, 0.74],
      "size": 0.05, "color": "white", "align": "left", "valign": "middle",
-     "columns": 4}
+     "columns": 8}
   ]
 }

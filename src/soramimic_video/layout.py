@@ -25,8 +25,9 @@
   列優先(上から下へ、埋まったら次の列へ)に並べる。短い語をたくさん並べる
   用途(エンドロールの単語一覧)向け。行の高さは全列共通で、列幅から
   はみ出す語だけそのフォントを縮める(1語のせいで一覧全部が小さくならない)。
-  値は段数の「上限」で、実際の段数は語の実測幅から自動で決まる(駅名のように
-  短い語だけなら上限まで、外国人のフルネームが混ざるリストでは段を減らす)
+  値は段数の「上限」で、実際の段数は語の実測幅から自動で決まる。いちばん大きく
+  組める段数を採るので、駅名のように短い語だけなら上限まで段が伸び、外国人の
+  フルネームが混ざるリストでは列幅が足りず段が減る
 - 文字の可読性(背景写真の明暗に負けない)は次の3つで作る。いずれも
   size と同じくフレーム高さ比率で指定する
     - stroke_width / stroke_color: 1重の縁取り(従来から)
@@ -97,7 +98,7 @@
       ],
       "outro": [
         {"type": "text", "text": "{used_words}", "box": [0.06, 0.2, 0.88, 0.5],
-         "columns": 3, "align": "left"}
+         "columns": 8, "align": "left"}
       ]
     }
 
@@ -152,9 +153,13 @@ _FONT_CANDIDATES = [
 ]
 
 _MIN_FONT_PX = 9
-_COLUMN_GAP_RATIO = 0.04  # 段組みのカラム間の余白(box幅に対する比)
+# 段組みのカラム間の余白。「1段あたりの持ち幅」に対する比なので、段数を増やしても
+# 余白だけが画面を食い潰さない(box幅に対する比にすると8段で幅の3割が余白になる)
+_COLUMN_GAP_RATIO = 0.12
 # 段数を決めるとき、列幅からはみ出す語(=その語だけ縮める)を何割まで許すか
 _COLUMN_OVERFLOW_RATIO = 0.15
+# 段を増やしすぎて「横に長い帯」にならないよう、1段あたり最低これだけの行数を残す
+_COLUMN_MIN_ROWS = 4
 
 # 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
 # 歌声合成側のクレジット表記が要るときは呼び出し側が
@@ -784,10 +789,40 @@ def _fit_line(
     return font
 
 
-def _column_base_px(el: TextElement, cols: int, n_items: int, h: int, frame_h: int) -> int:
-    """段数 cols のときの本文フォントサイズ(行数が box の高さに収まる最大)。"""
-    rows = max(1, -(-n_items // cols))
-    return max(_MIN_FONT_PX, min(int(el.size * frame_h), int(h / (rows * 1.25))))
+def _column_geometry(w: float, cols: int) -> tuple[float, float]:
+    """段数 cols のときの (列幅, 列間) 。列間は1段の持ち幅に対する比で取る。"""
+    unit = w / cols
+    gap = unit * _COLUMN_GAP_RATIO if cols > 1 else 0.0
+    return unit - gap, gap
+
+
+def _column_fit_px(
+    draw: ImageDraw.ImageDraw,
+    items: list[str],
+    el: TextElement,
+    cols: int,
+    w: float,
+    h: float,
+    frame_h: int,
+    font_path: Path | None,
+) -> int:
+    """段数 cols のときの本文フォントサイズ(高さにも列幅にも収まる最大)。
+
+    行数から決まる上限に加えて、語の実測幅からも上限がかかる。ただし
+    はみ出しを許す数(_COLUMN_OVERFLOW_RATIO)だけ幅の広い語は無視する。
+    そこは _fit_line がその語だけ縮めるので、少数のために全体を小さくしない。
+    """
+    rows = max(1, -(-len(items) // cols)) if items else 1
+    px = max(_MIN_FONT_PX, min(int(el.size * frame_h), int(h / (rows * 1.25))))
+    if not items:
+        return px
+    col_w, _gap = _column_geometry(w, cols)
+    widths = sorted(draw.textlength(it, font=_font(font_path, px)) for it in items)
+    allowed = max(1, int(len(widths) * _COLUMN_OVERFLOW_RATIO))
+    ref = widths[max(0, len(widths) - 1 - allowed)]
+    if ref > col_w:
+        px = max(_MIN_FONT_PX, int(px * col_w / ref))
+    return px
 
 
 def _choose_columns(
@@ -801,24 +836,24 @@ def _choose_columns(
 ) -> tuple[int, int]:
     """段数(1〜el.columns)と本文フォントサイズを決める。
 
-    段が多いほど本文は大きくできるので上限から順に試し、列幅からはみ出す語が
-    許容数(_COLUMN_OVERFLOW_RATIO)を超えたところで1段減らす。はみ出した語は
-    _fit_line がその語だけ縮めるので、少数なら許容して全体を大きく保つ方が読める。
+    段を増やすほど行数は減る(高さに余裕が出る)が列幅は狭くなるので、本文サイズは
+    その両方の小さい方で決まる。いちばん大きく組める段数を選ぶと、駅名のような
+    短い語では上限いっぱいまで段が伸び(高さが効くので段を増やすほど大きくなる)、
+    外国人のフルネームが並ぶリストでは自然に段が減る(列幅が効くので段を減らした
+    方が大きくなる)。同点なら段数の多い方=詰まった方を採る。
+
+    「段数を最大化」ではなく「文字サイズを最大化」なのは、列幅で頭打ちになる段数を
+    選ぶと本文が小さいうえに行数も減って、boxの上下が大きく余ってしまうため。
     """
     if not items:
-        return 1, _column_base_px(el, 1, 0, h, frame_h)
-    allowed = max(1, int(len(items) * _COLUMN_OVERFLOW_RATIO))
-    cols = max(1, min(el.columns, len(items)))
-    while cols > 1:
-        base_px = _column_base_px(el, cols, len(items), h, frame_h)
-        gap = w * _COLUMN_GAP_RATIO
-        col_w = (w - gap * (cols - 1)) / cols
-        font = _font(font_path, base_px)
-        over = sum(1 for it in items if draw.textlength(it, font=font) > col_w)
-        if over <= allowed:
-            return cols, base_px
-        cols -= 1
-    return 1, _column_base_px(el, 1, len(items), h, frame_h)
+        return 1, _column_fit_px(draw, [], el, 1, w, h, frame_h, font_path)
+    top = max(1, min(el.columns, -(-len(items) // _COLUMN_MIN_ROWS)))
+    best = (0, 1)
+    for cols in range(top, 0, -1):
+        px = _column_fit_px(draw, items, el, cols, w, h, frame_h, font_path)
+        if px > best[0]:
+            best = (px, cols)
+    return best[1], best[0]
 
 
 def _layout_columns(
@@ -836,18 +871,16 @@ def _layout_columns(
     1段落より段組みの方が読める。行の高さは全列で共通(base_px)にして段が
     ガタつかないようにし、列幅からはみ出す語だけ _fit_line で縮める。
 
-    段数は el.columns を上限に自動で決める。段を増やすほど行数が減って本文は
-    大きくできるが、そのぶん列幅が狭くなって長い語がはみ出す。駅名のような
-    短い語だけなら上限まで、外国人のフルネームが混ざるリストでは段を減らす、
-    という判断を語の実測幅でやる(_choose_columns)。
+    段数は el.columns を上限に、いちばん大きく組める段数を自動で選ぶ。駅名の
+    ような短い語だけなら上限まで段が伸び、外国人のフルネームが混ざるリストでは
+    列幅が足りず段が減る(_choose_columns)。
     """
     x, y, w, h = box
     x, y = x + pad, y + pad
     w, h = max(1, w - 2 * pad), max(1, h - 2 * pad)
     items = [t for t in text.split("\n") if t.strip()]
     cols, base_px = _choose_columns(draw, items, el, w, h, frame_h, font_path)
-    gap = w * _COLUMN_GAP_RATIO if cols > 1 else 0.0
-    col_w = (w - gap * (cols - 1)) / cols
+    col_w, gap = _column_geometry(w, cols)
     rows = -(-len(items) // cols) if items else 1
     line_h = base_px * 1.25
     total_h = line_h * rows
