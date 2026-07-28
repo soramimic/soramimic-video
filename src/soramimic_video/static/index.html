@@ -94,6 +94,29 @@
   .hint { font-size: .8rem; color: var(--muted); margin: .25rem 0 0; }
   /* 状態表示用の空の .hint(サンプル状態・クレジットなど)が余白を作らないように */
   .hint:empty { margin: 0; }
+  /* ---- 補足説明を畳む ⓘ ボタン(setupInfoHints) ---- */
+  /* 詳細設定は項目ごとにグレーの説明文が常時出ていて、初見だと文字の壁になる。
+     「必要なときだけ読めばいい説明」はこのボタンの中に畳み、状態・警告など
+     出ていないと困るものだけを常時表示のまま残す。
+     ボタンはラベル・小見出し・summary の末尾に生やし(見出しの文脈で読める)、
+     ちょうどいい親が無いときだけ元の位置に単独で置く。 */
+  .info-btn {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    width: 1.5rem; height: 1.5rem; min-height: 0; padding: 0; margin-left: .1rem;
+    vertical-align: -.3rem;
+    border: 0; border-radius: 50%; background: transparent; color: var(--muted);
+    font-size: 1rem; line-height: 1;
+  }
+  /* 見た目は小さいままで、指で押せる大きさ(44px以上)の当たり判定を持たせる */
+  .info-btn::after { content: ""; position: absolute; inset: -.65rem; }
+  .info-btn:hover:not(:disabled) { border-color: transparent; }
+  .info-btn:hover, .info-btn[aria-expanded="true"] { color: var(--accent); background: var(--panel-2); }
+  .info-btn-standalone { margin: .2rem 0 0; }
+  /* 開いた説明は、どのボタンの中身なのかが分かるように一段へこませる */
+  .hint[data-info] {
+    margin: .3rem 0 .1rem; padding: .35rem .6rem;
+    background: var(--panel-2); border-left: 2px solid var(--border); border-radius: 6px;
+  }
   .slider-row { display: flex; align-items: center; gap: .5rem; }
   .slider-row span { font-size: .75rem; color: var(--muted); white-space: nowrap; }
   .slider-row input[type=range] { flex: 1; margin: 0; min-width: 0; }
@@ -428,7 +451,7 @@
   <!-- ① 曲と歌詞 -->
   <section class="opt-group">
     <h3 class="opt-group-title">① 曲と歌詞</h3>
-    <p class="hint opt-group-lead">どの曲を歌わせるか。字幕に出す元の歌詞もここ。</p>
+    <p class="hint opt-group-lead" data-info>どの曲を歌わせるか。字幕に出す元の歌詞もここ。</p>
 
     <!-- 曲。詳細設定を開く人の目的は「自分の曲でやる」なので、ここではMIDIファイル
          選択を主役にして直に見せる。サンプル曲はビルダーカードのプルダウンで選べる
@@ -439,7 +462,7 @@
     <div class="field">
       <label for="midi">曲(XF MIDIファイル)</label>
       <input type="file" id="midi" accept=".mid,.midi">
-      <p class="hint">歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
+      <p class="hint" data-info>歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
       <p class="hint" id="midi-restore-hint" hidden></p>
       <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
       <details class="sub-details" id="sample-details">
@@ -456,14 +479,14 @@
     <div class="field">
       <label for="lyrics">元歌詞(推奨・字幕用)</label>
       <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
-      <p class="hint">MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
+      <p class="hint" data-info>MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
     </div>
   </section>
 
   <!-- ② 空耳のもと -->
   <section class="opt-group">
     <h3 class="opt-group-title">② 空耳のもと</h3>
-    <p class="hint opt-group-lead">歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタや変換パラメータに進んでください。</p>
+    <p class="hint opt-group-lead" data-info>歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタや変換パラメータに進んでください。</p>
 
     <div class="field">
       <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
@@ -476,7 +499,7 @@
       <label>替え歌の編集</label>
       <div id="editor-embed-controls" hidden>
         <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
-        <p class="hint">MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
+        <p class="hint" data-info>MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
           編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
         <span id="open-editor-msg" class="error"></span>
       </div>
@@ -489,10 +512,10 @@
 
     <details id="parody-advanced" class="sub-details">
       <summary>変換のしかたを細かく調整する(上級者向け)</summary>
-      <p class="hint">単語の選ばれ方を決める値です。既定のままでも作れます。</p>
+      <p class="hint" data-info>単語の選ばれ方を決める値です。既定のままでも作れます。</p>
       <label>絞り込み(where・任意)</label>
       <input type="text" id="where" placeholder="例: type=family or type=full">
-      <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
+      <p class="hint" data-info>単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
       <!-- 「単語重複」は本家 soramimic の単語重複トグル(frontend/index.html: あり/なし、
            なしが既定)と文言・選択肢・既定をそろえたもの(external/soramimic 53dcff1)。 -->
       <label>単語重複</label>
@@ -500,7 +523,7 @@
         <option value="true">あり</option>
         <option value="false" selected>なし</option>
       </select>
-      <p class="hint">替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
+      <p class="hint" data-info>替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
       <!-- パラメータUIは本家 soramimic(external/soramimic 4443a7b frontend)の
            「プリセット + スライダー3本」構成に合わせたもの。プリセット定義と
            スライダーの範囲・既定値は app.js の PRESETS / createSliderItem 呼び出しと同一。
@@ -513,7 +536,7 @@
         <option value="長い単語">長い単語</option>
         <option value="">カスタム(下のスライダーで調整)</option>
       </select>
-      <p class="hint">本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
+      <p class="hint" data-info>本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
       <label>音の合わせ方</label>
       <div class="slider-row"><span>子音重視</span>
         <input type="range" id="p-sound" min="0.1" max="0.9" step="0.1" value="0.8"
@@ -529,14 +552,14 @@
         <input type="range" id="p-wordnum" min="0" max="6" step="1" value="2"
           aria-label="単語の長さ(細かめ〜長め)">
         <span>長め</span></div>
-      <p class="hint">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
+      <p class="hint" data-info data-info-standalone data-info-label="変換パラメータ">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
       <!-- ここから下は soramimic-video 独自(本家 soramimic には無い項目)。
            上のプリセット・スライダーは本家準拠なので、独自項目は混ぜず末尾に置く。
            送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
       <label>ノート長重視 α(soramimic-video独自)</label>
       <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
         aria-label="ノート長重視 α(0でオフ)">
-      <p class="hint">この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
+      <p class="hint" data-info>この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
     </details>
 
     <!-- 替え歌JSONの入出力はさらに出番が少ないので、パラメータとは別の折りたたみに分ける -->
@@ -544,7 +567,7 @@
       <summary>替え歌JSONを読み書きする(上級者向け)</summary>
       <label for="editor">外部で編集した替え歌JSONの読み込み</label>
       <input type="file" id="editor" accept=".json">
-      <p class="hint">soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
+      <p class="hint" data-info>soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
       <button type="button" id="download-editor" class="btn-sm" disabled>現在の替え歌JSONをダウンロード</button>
     </details>
   </section>
@@ -552,7 +575,7 @@
   <!-- ③ 歌声 -->
   <section class="opt-group">
     <h3 class="opt-group-title">③ 歌声</h3>
-    <p class="hint opt-group-lead">誰の声で、どの高さで歌うか。</p>
+    <p class="hint opt-group-lead" data-info>誰の声で、どの高さで歌うか。</p>
 
     <div class="field">
       <label for="synthesizer">歌声</label>
@@ -583,20 +606,20 @@
       <p class="hint" id="auto-octave-hint"></p>
       <label for="transpose">移調(半音)</label>
       <input type="text" id="transpose" value="0" inputmode="numeric">
-      <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
+      <p class="hint" data-info>高すぎるときは -12(1オクターブ下)がおすすめ。</p>
     </div>
 
     <div class="field">
       <label>お試し合成</label>
       <button id="preview">声プレビュー(歌い出しから20秒)</button>
-      <p class="hint">替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
+      <p class="hint" data-info>替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
     </div>
   </section>
 
   <!-- ④ 見た目 -->
   <section class="opt-group">
     <h3 class="opt-group-title">④ 見た目</h3>
-    <p class="hint opt-group-lead">動画の画面の作り。画像・説明文・字幕の置き方。</p>
+    <p class="hint opt-group-lead" data-info>動画の画面の作り。画像・説明文・字幕の置き方。</p>
 
     <div class="field">
       <label for="layout-select">レイアウト(任意)</label>
@@ -605,7 +628,7 @@
       <select id="layout-select"></select>
       <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
       <input type="hidden" id="layout">
-      <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
+      <p class="hint" data-info>画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
       <details id="le-details" class="sub-details">
         <summary>レイアウトを編集(ドラッグで配置)</summary>
         <div class="le-toolbar">
@@ -627,7 +650,7 @@
             <input type="checkbox" id="le-hold">
             単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
           </label>
-          <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
+          <p class="hint" id="le-idle-hint" data-info data-info-standalone data-info-label="歌唱なし区間">歌唱がない区間に出す固定フレーム。
             単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
             idle要素を1つも置かなければ、その区間は隅のクレジットだけの背景色になります。</p>
         </div>
@@ -642,7 +665,7 @@
           <div id="le-guide-h" class="le-guide" hidden></div>
         </div>
         <div id="le-props" hidden></div>
-        <p class="hint">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
+        <p class="hint" data-info data-info-standalone data-info-label="レイアウト編集">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
           箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
           右下の角でリサイズ、クリックで選択して文言・サイズ・色・字幕の粒度を変更。
           選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
@@ -662,7 +685,7 @@
   <!-- ⑤ その他 -->
   <section class="opt-group">
     <h3 class="opt-group-title">⑤ その他</h3>
-    <p class="hint opt-group-lead">ふだんは触らない項目。</p>
+    <p class="hint opt-group-lead" data-info>ふだんは触らない項目。</p>
 
     <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig)。出るときは
          入力しないと何も動かないので、このグループは畳まずに置く。 -->
@@ -674,7 +697,7 @@
     <div class="field">
       <label>保存した入力</label>
       <button type="button" id="clear-form" class="btn-sm">保存した入力をクリア</button>
-      <p class="hint">この画面の入力(曲・歌詞・単語リスト・歌声・レイアウトなど)はブラウザに保存され、次に開いたときに復元されます。まっさらな状態から始めたいときに押してください(APIキーは消えません)。</p>
+      <p class="hint" data-info>この画面の入力(曲・歌詞・単語リスト・歌声・レイアウトなど)はブラウザに保存され、次に開いたときに復元されます。まっさらな状態から始めたいときに押してください(APIキーは消えません)。</p>
     </div>
   </section>
 </details>
@@ -708,6 +731,64 @@ const $ = (id) => document.getElementById(id);
 const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
 const headers = () => apiKey() ? { "X-API-Key": apiKey() } : {};
 const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) : url;
+
+// ---- 補足説明を ⓘ に畳む ----
+// 詳細設定は項目ごとにグレーの説明が常時並んでいて、初見だと文字の壁になる。
+// 「読まなくても操作できる説明」には data-info を付けておき、ここで既定は隠して
+// ⓘ ボタンからだけ開けるようにする。状態・警告・エラー(「〜をセットしました」
+// 「編集済みの替え歌を使用します」など、出ていないと困る動的メッセージ)には
+// data-info を付けないので、従来どおり常時表示のまま。
+//   data-info-standalone  ちょうどいい見出しが無いので、元の位置に単独で置く
+//   data-info-label       読み上げ・title に使う名前(既定は見出しの文字)
+const INFO_ANCHOR_TAGS = new Set(["LABEL", "H3", "LEGEND", "SUMMARY"]);
+
+// 説明を生やす相手(直前のラベル・小見出し・summary)を探す。
+// 同じ .field の中に無ければ一段外へ出て探し、グループの外までは行かない。
+function findInfoAnchor(body) {
+  for (let el = body; el && el.id !== "advanced"; el = el.parentElement) {
+    for (let p = el.previousElementSibling; p; p = p.previousElementSibling) {
+      if (INFO_ANCHOR_TAGS.has(p.tagName)) return p;
+    }
+    const par = el.parentElement;
+    if (par && par.tagName === "DETAILS") {
+      const s = par.querySelector(":scope > summary");
+      if (s) return s;
+    }
+    if (el.classList && el.classList.contains("opt-group")) return null;
+  }
+  return null;
+}
+
+function setupInfoHints() {
+  let seq = 0;
+  document.querySelectorAll("[data-info]").forEach((body) => {
+    if (!body.id) body.id = `info-body-${++seq}`;
+    body.hidden = true;
+    const anchor = body.hasAttribute("data-info-standalone") ? null : findInfoAnchor(body);
+    const name = body.getAttribute("data-info-label")
+      || (anchor ? anchor.textContent.replace(/\s+/g, " ").trim() : "")
+      || "補足";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = anchor ? "info-btn" : "info-btn info-btn-standalone";
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-controls", body.id);
+    btn.setAttribute("aria-label", `${name}の説明`);
+    btn.title = `${name}の説明`;
+    btn.innerHTML = '<span aria-hidden="true">ⓘ</span>';
+    btn.addEventListener("click", (ev) => {
+      // <label> や <summary> の中に置くので、チェック切り替え・開閉の巻き添えを止める
+      ev.preventDefault();
+      ev.stopPropagation();
+      const open = btn.getAttribute("aria-expanded") === "true";
+      btn.setAttribute("aria-expanded", open ? "false" : "true");
+      body.hidden = open;
+    });
+    if (anchor) anchor.appendChild(btn);
+    else body.parentNode.insertBefore(btn, body);
+  });
+}
+setupInfoHints();
 
 // 秒数を「30秒」「1分30秒」のように整形する(残り時間の目安の表示用)
 function fmtDuration(sec) {
