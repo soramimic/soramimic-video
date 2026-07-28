@@ -456,6 +456,24 @@ def test_config_has_wordlist_layouts(client):
     assert set(wl.values()) <= set(conf["layouts"])
 
 
+def test_config_has_wordlist_image_optout(client):
+    """画像を既定で隠す単語リストの設定がUIに配られること。"""
+    conf = client.get("/api/config").json()
+    optout = conf["wordlist_image_optout"]
+    assert optout["insect"]["layout"] == "noimage_card"
+    assert optout["insect"]["reason"]
+    # 画像なしの既定レイアウトも組み込みとして配られている(UIがそのまま#layoutに入れる)
+    assert "noimage_card" in conf["layouts"]
+
+
+def test_show_images_defaults_off_and_can_be_enabled(client):
+    """画像表示は既定オフ(=隠す)で、明示指定でのみオンになる。"""
+    body = wait_done(client, submit(client, wordlist="stations"))
+    assert body["params"]["show_images"] is False
+    body = wait_done(client, submit(client, wordlist="stations", show_images="true"))
+    assert body["params"]["show_images"] is True
+
+
 def test_get_builtin_layout(client):
     body = client.get("/api/layouts/default").json()
     assert body["elements"][0]["type"] == "image"

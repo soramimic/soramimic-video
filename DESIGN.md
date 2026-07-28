@@ -203,6 +203,17 @@ f0とMIDIの音高差の中央値で移調も自動補正。メロディチャ�
   変えられる。subtitle 要素のないレイアウトでは既定(下部2段)になるので、
   その場合 image/text 要素は下部約25%を空けて配置する。
 - ffmpeg 一発(背景+overlay enable=between(t,a,b)+subtitles)で合成。
+- **画像を既定で隠す単語リスト**: 昆虫のように「写真は見たくない」人がいるリストは、
+  `src/soramimic_video/wordlist_image_optout.json` に
+  `{"insect": {"reason": "...", "layout": "noimage_card"}}` の形で登録すると、
+  明示的に有効化しない限り単語画像を出さない(opt-in)。有効化の指定は
+  API `POST /api/jobs` の `show_images=true`(Web UIは単語リスト欄の
+  「画像を表示する」チェック)、CLIは `video --show-images`。
+  隠すときは make_video がレイアウトから image 要素を外し(layout.without_images)、
+  単語データの image 列も落とすので、**サムネだけでなく動画も画像なしになり、
+  画像のダウンロードもクレジット収集も走らない**(どのレイアウトを選んでいても同じ)。
+  UIの既定レイアウトは、隠しているあいだは上記 `layout`(画像なしの `noimage_card`)、
+  表示に切り替えると `wordlist_layouts.json` の割り当て(insect は `animal_card`)。
 - サムネ画像(thumbnail.py): 曲名を同じ単語リスト・パラメータで空耳変換し、
   「【言い換え単語】+ <曲名> を <リスト名> で歌ってみた」の1枚をプロジェクト
   ディレクトリ直下に `thumbnail.png` として作る。前奏(t=0〜歌い出し、最低3秒)の

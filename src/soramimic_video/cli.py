@@ -187,6 +187,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         audio=args.audio,
         image_cache=Path(args.image_cache) if args.image_cache else None,
         layout=args.layout,
+        show_images=args.show_images,
     )
     print(f"動画完成: {out}")
     return 0
@@ -395,6 +396,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--layout",
         help="フレームレイアウト。組み込み名(default/caption)またはJSONファイルパス"
         "(書き方は examples/layouts/ と layout.py 冒頭を参照)",
+    )
+    p.add_argument(
+        "--show-images",
+        action="store_true",
+        help="画像を既定で隠す単語リスト(昆虫など。wordlist_image_optout.json)でも"
+        "単語画像を表示する",
     )
     p.set_defaults(func=cmd_video)
 

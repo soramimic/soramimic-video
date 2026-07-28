@@ -444,6 +444,23 @@ def test_image_cues_and_slideshow(tmp_path: Path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_image_cues_skip_images_for_hidden_layout(tmp_path: Path, monkeypatch):
+    """画像を隠す単語リスト(without_images)では画像を取りに行かない。"""
+    from soramimic_video import video as video_mod
+    from soramimic_video.layout import load_layout, without_images
+
+    project = _project(tmp_path)
+
+    def unexpected(url, cache_dir):
+        raise AssertionError("画像を隠す設定なのにダウンロードした")
+
+    monkeypatch.setattr(video_mod, "download_image", unexpected)
+    layout = without_images(load_layout("animal_card"))
+    cues, credits = build_image_cues(project, tmp_path / "hidden", 320, 180, layout=layout)
+    assert len(cues) == 1  # 文字だけのフレームは従来どおり出る
+    assert credits == []   # 画像を使わないのでクレジット一覧にも載らない
+
+
 def test_image_cues_fallback_for_unknown_word(tmp_path: Path):
     # 単語リストに行がない単語(未知語)は、fallback定義があればフレームが出る
     import json
