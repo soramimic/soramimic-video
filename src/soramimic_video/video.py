@@ -15,6 +15,11 @@
 焼き込む(image_credit.py / layout.py参照。単語リストにimage_credit列があれば
 その文言を優先)。あわせて image_page からクレジット一覧(credits.md)も生成
 するので、公開時はライセンス表記に従うこと。
+
+フレームの左下には「lyrics by Soramimic」(歌声合成のクレジット表記が要るときは
+「lyrics by Soramimic / VOICEVOX:キャラ名」)を小さく焼き込む。単語フレーム・
+fallback・idle・サムネで共通で、レイアウトの "app_credit": false で外せる
+(layout.py 参照)。
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
 from .kana import normalize_long_vowels
 from .layout import (
+    APP_CREDIT,
     DEFAULT_SUBTITLES,
     Layout,
     SubtitleElement,
@@ -264,14 +270,26 @@ def word_frame_data(word: ParodyWord, row: dict) -> dict:
     }
 
 
-def idle_frame_data(project: Project) -> dict:
+def idle_frame_data(project: Project, app_credit: str = "") -> dict:
     """idle(歌唱なし区間)フレームのテンプレートに渡すプロジェクトレベルの情報。
 
-    単語データはないので、曲(入力MIDIのファイル名)と単語リスト名だけを渡す。
+    単語データはないので、曲(入力MIDIのファイル名)と単語リスト名、それに
+    全フレーム共通のアプリクレジット({app_credit})だけを渡す。
     """
     title = Path(project.song.midi_path).stem if project.song.midi_path else ""
     wordlist = project.parody.wordlist if project.parody else ""
-    return {"title": title, "wordlist": wordlist}
+    return {"title": title, "wordlist": wordlist, "app_credit": app_credit or APP_CREDIT}
+
+
+def app_credit_text(synth_credit: str = "") -> str:
+    """フレームに焼き込むクレジット文言。
+
+    既定は「lyrics by Soramimic」。歌声合成側にもクレジット表記が要るとき
+    (VOICEVOXのキャラ名など)は「lyrics by Soramimic / VOICEVOX:四国めたん」の
+    ように後ろに足す。表記の並びはWeb UIの「公開時のクレジット表記」と揃える。
+    """
+    synth = (synth_credit or "").strip()
+    return f"{APP_CREDIT} / {synth}" if synth else APP_CREDIT
 
 
 def word_is_shown(layout: Layout, data: dict, use_fallback: bool) -> bool:
@@ -368,11 +386,13 @@ def build_image_cues(
     height: int,
     image_cache: Path | None = None,
     layout: Layout | None = None,
+    app_credit: str = "",
 ) -> tuple[list[ImageCue], list[dict]]:
     """替え歌単語の歌唱区間に対応するフレームキュー列と、使用画像のクレジット情報。
 
     フレームは単語リスト行の画像+列情報をレイアウト定義で合成したもの。
     画像がなくてもレイアウトのtext要素が埋まる単語はテキストのみで表示する。
+    app_credit は全フレームの隅に焼き込む署名(既定は「lyrics by Soramimic」)。
     """
     if project.parody is None:
         return [], []
@@ -389,6 +409,8 @@ def build_image_cues(
     _prefetch_image_assets(frames, cache)
     for i, wf in enumerate(frames):
         start, data, use_fallback = wf.start, wf.data, wf.use_fallback
+        # 全フレーム共通の署名(レイアウトが左下に焼き込む)
+        data["app_credit"] = app_credit or APP_CREDIT
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
@@ -910,8 +932,11 @@ def make_video(
     layout: str | None = None,
     granularity: dict[str, str] | None = None,
     song_title: str | None = None,
+    synth_credit: str = "",
 ) -> Path:
     layout_obj = load_layout(layout)
+    # 動画に焼き込むクレジット(サムネ・単語フレーム・idleで共通)
+    credit_text = app_credit_text(synth_credit)
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 
@@ -930,7 +955,9 @@ def make_video(
     sung_end_sec = max(n.end_sec for n in project.notes) + 3.0
     total_sec = _resolve_total_sec(sung_end_sec, _audio_duration_sec(audio_path))
 
-    cues, credits = build_image_cues(project, work, width, height, image_cache, layout_obj)
+    cues, credits = build_image_cues(
+        project, work, width, height, image_cache, layout_obj, credit_text
+    )
     if cues:
         logger.info("画像キュー: %d件", len(cues))
     else:
@@ -940,13 +967,13 @@ def make_video(
     # 曲名の空耳変換つきサムネ(thumbnail.png)。前奏区間に出すほか、SNS投稿用に
     # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)
     thumbnail = generate_thumbnail(
-        project, project_dir, width, height, image_cache, song_title
+        project, project_dir, width, height, image_cache, song_title, credit_text
     )
     if thumbnail is not None:
         cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
     # 歌唱がない区間(前奏・間奏・後奏)用のidleフレーム(定義があるときだけ)
     idle_frame = render_idle_frame(
-        layout_obj, idle_frame_data(project), width, height, work / "frames"
+        layout_obj, idle_frame_data(project, credit_text), width, height, work / "frames"
     )
     slideshow = write_slideshow(cues, work, width, height, total_sec, idle_frame)
 

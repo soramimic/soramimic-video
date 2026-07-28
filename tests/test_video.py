@@ -499,6 +499,49 @@ def test_image_cues_fallback_for_missing_image(tmp_path: Path):
     assert len(cues2) == 1 and cues2[0].frame.exists()
 
 
+def test_app_credit_text_appends_synth_credit():
+    from soramimic_video.layout import APP_CREDIT
+    from soramimic_video.video import app_credit_text
+
+    assert app_credit_text() == APP_CREDIT
+    assert app_credit_text("  ") == APP_CREDIT
+    assert app_credit_text("VOICEVOX:四国めたん") == f"{APP_CREDIT} / VOICEVOX:四国めたん"
+
+
+def test_idle_frame_data_carries_app_credit(tmp_path: Path):
+    from soramimic_video.layout import APP_CREDIT
+    from soramimic_video.video import idle_frame_data
+
+    project = _project(tmp_path)
+    assert idle_frame_data(project)["app_credit"] == APP_CREDIT
+    data = idle_frame_data(project, f"{APP_CREDIT} / VOICEVOX:四国めたん")
+    assert data["app_credit"].endswith("VOICEVOX:四国めたん")
+
+
+def test_image_cues_bake_app_credit(tmp_path: Path):
+    # 単語フレームにも署名が入る(文言が変わればフレームも変わる)
+    import json
+
+    from soramimic_video.layout import load_layout
+
+    lay = tmp_path / "l.json"
+    lay.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2],
+                      "size": 0.1}],
+    }), encoding="utf-8")
+    layout = load_layout(str(lay))
+
+    project = _project(tmp_path)
+    plain, _ = build_image_cues(project, tmp_path / "v1", 320, 180, layout=layout)
+    project2 = _project(tmp_path)
+    credited, _ = build_image_cues(
+        project2, tmp_path / "v2", 320, 180, layout=layout,
+        app_credit="lyrics by Soramimic / VOICEVOX:四国めたん",
+    )
+    assert plain and credited
+    assert plain[0].frame.name != credited[0].frame.name
+
+
 def test_effective_fallback_keeps_normal_texts():
     # 通常側にまだ出せるテキストがある単語はfallbackへ落とさない
     from soramimic_video.layout import parse_layout
