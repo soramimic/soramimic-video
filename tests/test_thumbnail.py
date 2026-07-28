@@ -118,33 +118,193 @@ def test_layout_texts_fallback_without_word():
 
 
 def test_fullbleed_texts_are_outlined_without_band():
-    """全面スタイルの文字は二重の縁取り+影で読ませる(黒帯は敷かない)。"""
+    """どの可読性デザインでも、全面スタイルの文字は縁取りで読ませる(黒帯は敷かない)。"""
     from soramimic_video.layout import TextElement
 
-    for has_word in (True, False):
-        for has_image in (True, False):
-            layout = thumbnail_layout(has_word=has_word, has_image=has_image)
-            texts = [e for e in layout.elements if isinstance(e, TextElement)]
-            assert texts, "文字要素が無い"
-            for el in texts:
-                assert el.background is None, el.template  # 帯は使わない
-                # 明るい背景で効く暗色と、暗い背景で効く明色の2重
-                assert len(el.strokes) >= 2, el.template
-                widths = [w for w, _ in el.strokes]
-                assert widths == sorted(widths, reverse=True)  # 太い順
-                assert el.shadow > 0, el.template
+    for design in thumb_mod.TEXT_DESIGNS:
+        for has_word in (True, False):
+            for has_image in (True, False):
+                layout = thumbnail_layout(
+                    has_word=has_word, has_image=has_image, design=design
+                )
+                texts = [e for e in layout.elements if isinstance(e, TextElement)]
+                assert texts, "文字要素が無い"
+                for el in texts:
+                    assert el.background is None, (design, el.template)  # 帯は使わない
+                    assert el.strokes, (design, el.template)
+                    widths = [w for w, _ in el.strokes]
+                    assert widths == sorted(widths, reverse=True)  # 太い順
+
+
+def test_double_outline_keeps_two_rings_and_a_shadow():
+    """現行(比較の基準)は明色・暗色の2重の環+ぼかし影のまま。"""
+    from soramimic_video.layout import TextElement
+
+    layout = thumbnail_layout(
+        has_word=True, has_image=True, design=thumb_mod.DESIGN_DOUBLE_OUTLINE
+    )
+    for el in layout.elements:
+        if isinstance(el, TextElement):
+            assert len(el.strokes) == 2, el.template
+            assert el.shadow > 0, el.template
+
+
+def test_thin_designs_have_thinner_strokes_than_the_current_one():
+    """案1〜3の狙いは「文字の形を潰さない」こと。縁は現行より細い。"""
+    current = thumb_mod.outline_style(0.19, thumb_mod.DESIGN_DOUBLE_OUTLINE)
+    widest = max(s["width"] for s in current["strokes"])
+    for design in (
+        thumb_mod.DESIGN_SCRIM, thumb_mod.DESIGN_SOFT_SHADOW, thumb_mod.DESIGN_ADAPTIVE
+    ):
+        style = thumb_mod.outline_style(0.19, design)
+        assert len(style["strokes"]) == 1, design  # 環は1本だけ
+        assert style["strokes"][0]["width"] < widest / 2, design
 
 
 def test_outline_scales_with_text_size():
     """縁取りは文字サイズに比例する(小さい文字だけ縁が太くならない)。"""
-    big = thumb_mod.outline_style(0.19)
-    small = thumb_mod.outline_style(0.075)
-    assert big["strokes"][0]["width"] > small["strokes"][0]["width"]
-    assert big["shadow"] > small["shadow"]
-    # どんなに小さい文字でも輪郭が消えない下限がある
-    tiny = thumb_mod.outline_style(0.001)
-    assert tiny["strokes"][-1]["width"] >= thumb_mod.MIN_INNER_STROKE
-    assert tiny["shadow"] >= thumb_mod.MIN_SHADOW
+    for design in thumb_mod.TEXT_DESIGNS:
+        big = thumb_mod.outline_style(0.19, design)
+        small = thumb_mod.outline_style(0.075, design)
+        assert big["strokes"][0]["width"] > small["strokes"][0]["width"], design
+        # どんなに小さい文字でも輪郭が消えない下限がある
+        d = thumb_mod.resolve_design(design)
+        tiny = thumb_mod.outline_style(0.001, design)
+        assert tiny["strokes"][-1]["width"] >= d.min_contrast_stroke, design
+        if d.shadow:
+            assert big["shadow"] > small["shadow"], design
+            assert thumb_mod.outline_style(0.001, design)["shadow"] >= d.min_shadow
+
+
+def test_unknown_design_falls_back_to_the_default():
+    assert thumb_mod.resolve_design("なにこれ") is thumb_mod.resolve_design(None)
+    assert thumb_mod.resolve_design(None).name == thumb_mod.TEXT_DESIGN
+
+
+# ---- 案1: 背景の上下グラデーション(帯ではない) ----
+
+
+def test_scrim_darkens_the_edges_without_a_visible_border(tmp_path: Path):
+    image = tmp_path / "a.png"
+    Image.new("RGB", (10, 10), (200, 200, 200)).save(image)
+    scrimmed = compose_background(
+        [image], 1280, 720, dim=1.0, design=thumb_mod.DESIGN_SCRIM
+    )
+    assert scrimmed is not None
+    column = [scrimmed.getpixel((640, y))[0] for y in range(720)]
+    assert column[0] < 120  # 上端はしっかり暗い
+    assert column[719] < 120  # 下端も暗い
+    assert max(column) == 200  # 上下のグラデーションが切れる所は写真のまま
+    # 帯と違って段差が出ない(隣の行との差はどこでも数階調まで)
+    assert max(abs(a - b) for a, b in zip(column, column[1:], strict=False)) <= 4
+
+
+def test_only_scrim_designs_touch_the_background(tmp_path: Path):
+    image = tmp_path / "a.png"
+    Image.new("RGB", (10, 10), (200, 200, 200)).save(image)
+    for design in thumb_mod.TEXT_DESIGNS.values():
+        bg = compose_background([image], 320, 180, dim=1.0, design=design)
+        assert bg is not None
+        darkened = bg.getpixel((160, 2))[0] < 200
+        assert darkened == bool(design.scrim), design.name
+
+
+# ---- 案3: 背景の明るさによる白黒反転 ----
+
+
+def test_region_luminance_looks_at_the_darker_side_of_the_box():
+    img = Image.new("RGB", (100, 100), (0, 0, 0))
+    for x in range(100):  # 上半分だけ白
+        for y in range(50):
+            img.putpixel((x, y), (255, 255, 255))
+    assert thumb_mod.region_luminance(img, [0.0, 0.0, 1.0, 0.5]) == 255
+    assert thumb_mod.region_luminance(img, [0.0, 0.5, 1.0, 0.5]) == 0
+    # 明暗が半々の枠は「暗いほう」で見る(中央値なら明るい側に振れてしまう)
+    assert thumb_mod.region_luminance(img, [0.0, 0.0, 1.0, 1.0]) == 0
+
+
+def _text_colors(spec: dict) -> list[str]:
+    return [e["color"] for e in spec["elements"] if e.get("type") == "text"]
+
+
+def test_adaptive_keeps_white_text_where_the_box_spans_bright_and_dark():
+    """左が明るく右が暗い写真では、黒文字にすると暗いほうで消えるので白のまま。"""
+    design = thumb_mod.resolve_design(thumb_mod.DESIGN_ADAPTIVE)
+    background = Image.new("RGB", (320, 180), (0, 0, 0))
+    for x in range(160):  # 左半分だけ真っ白
+        for y in range(180):
+            background.putpixel((x, y), (255, 255, 255))
+    spec = thumb_mod.thumbnail_layout_spec(True, True, design=design)
+    applied = thumb_mod.apply_adaptive_colors(spec, background, design)
+    assert _text_colors(applied)[0] == design.light_ink
+
+
+def test_adaptive_flips_to_dark_text_on_a_bright_background():
+    design = thumb_mod.resolve_design(thumb_mod.DESIGN_ADAPTIVE)
+    spec = thumb_mod.thumbnail_layout_spec(True, True, design=design)
+    bright = thumb_mod.apply_adaptive_colors(
+        spec, Image.new("RGB", (320, 180), "white"), design
+    )
+    dark = thumb_mod.apply_adaptive_colors(
+        spec, Image.new("RGB", (320, 180), "black"), design
+    )
+    assert _text_colors(bright) == [design.dark_ink] * 4
+    assert _text_colors(dark) == [design.light_ink] * 4
+    # 縁と影は文字の反対色になる(黒文字なら白い縁・白い光背)
+    headline = bright["elements"][0]
+    assert headline["strokes"][0]["color"] == design.light_ink
+    assert headline["shadow_color"].startswith(design.light_ink)
+
+
+def test_adaptive_judges_each_element_independently():
+    """上が明るく下が暗い写真では、見出しだけ黒文字・下の文字は白文字になる。"""
+    design = thumb_mod.resolve_design(thumb_mod.DESIGN_ADAPTIVE)
+    background = Image.new("RGB", (320, 180), "black")
+    for x in range(320):
+        for y in range(90):
+            background.putpixel((x, y), (255, 255, 255))
+    spec = thumb_mod.thumbnail_layout_spec(True, True, design=design)
+    applied = thumb_mod.apply_adaptive_colors(spec, background, design)
+    # 見出し(上部)/ キャプション・クレジット・署名(下部)
+    assert _text_colors(applied) == [design.dark_ink] + [design.light_ink] * 3
+
+
+def test_non_adaptive_designs_keep_white_text():
+    for name in (thumb_mod.DESIGN_DOUBLE_OUTLINE, thumb_mod.DESIGN_SCRIM):
+        design = thumb_mod.resolve_design(name)
+        spec = thumb_mod.thumbnail_layout_spec(True, True, design=design)
+        applied = thumb_mod.apply_adaptive_colors(
+            spec, Image.new("RGB", (320, 180), "white"), design
+        )
+        assert applied == spec
+        assert _text_colors(applied) == [design.light_ink] * 4
+
+
+def test_adaptive_render_is_readable_on_a_white_photo(tmp_path: Path):
+    """白っぽい写真でも文字が背景に溶けない(黒に反転して描かれる)。"""
+    image = tmp_path / "a.png"
+    Image.new("RGB", (40, 40), (250, 250, 250)).save(image)
+    out = render_thumbnail(
+        tmp_path / THUMBNAIL_FILENAME, "夜に駆ける", "駅名", words="米原",
+        image_paths=image, width=640, height=360, design=thumb_mod.DESIGN_ADAPTIVE,
+    )
+    with Image.open(out) as img:
+        dark = sum(count for value, count in enumerate(img.convert("L").histogram())
+                   if value < 60)
+    assert dark > 1000  # 黒い文字が実際に乗っている
+
+
+# ---- デザインの指紋(プレビューのキャッシュ) ----
+
+
+def test_design_fingerprint_differs_between_designs():
+    seen = {
+        name: str(thumb_mod.design_fingerprint(name)) for name in thumb_mod.TEXT_DESIGNS
+    }
+    assert len(set(seen.values())) == len(seen)
+    # specに出てこない背景側の設定(暗転・グラデーション・反転)も入っている
+    text = seen[thumb_mod.DESIGN_SCRIM_ADAPTIVE]
+    assert "background_dim" in text and "scrim" in text and "adaptive" in text
 
 
 def test_layout_image_credit_hidden_when_empty():

@@ -38,11 +38,11 @@ from typing import Any
 
 from .convert import resolve_convert_settings, resolve_wordlist
 from .thumbnail import (
-    BACKGROUND_DIM,
     DEFAULT_STYLE,
     HEADLINE_MAX_WORDS,
     SIGNATURE,
     build_thumbnail,
+    design_fingerprint,
     thumbnail_layout_spec,
     wordlist_text_of,
 )
@@ -90,6 +90,9 @@ def _layout_fingerprint() -> str:
     署名は要素側が {app_credit} テンプレートなので、文言(SIGNATURE)を変えても
     spec は変わらない。文言そのものも指紋に入れて古いプレビューが残らないようにする
     (プレビューは常に既定の署名で描く。歌声合成のクレジットはジョブ側でのみ足す)。
+
+    可読性デザイン(TEXT_DESIGN)は背景の暗転・グラデーション・白黒反転のように
+    spec に現れない設定を持つので、design_fingerprint() でまとめて入れる。
     """
     specs = [
         thumbnail_layout_spec(has_word=True, has_image=True),
@@ -97,7 +100,7 @@ def _layout_fingerprint() -> str:
         thumbnail_layout_spec(has_word=False, has_image=False),
     ]
     return json.dumps(
-        [DEFAULT_STYLE, BACKGROUND_DIM, HEADLINE_MAX_WORDS, SIGNATURE, specs],
+        [DEFAULT_STYLE, design_fingerprint(), HEADLINE_MAX_WORDS, SIGNATURE, specs],
         ensure_ascii=False,
         sort_keys=True,
     )
