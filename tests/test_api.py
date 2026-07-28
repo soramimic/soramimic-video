@@ -1239,6 +1239,135 @@ def test_index_html_lyrics_follows_the_song_and_is_recommended():
     assert "字幕に元歌詞の行が出ません" in advanced
 
 
+# ---- 詳細設定(#advanced)の情報整理: 役割ごとのグループを使用頻度順に並べる ----
+
+
+def _opt_groups() -> dict[str, str]:
+    """詳細設定のグループ見出し → そのグループのHTML。"""
+    import re
+
+    out: dict[str, str] = {}
+    for part in _advanced_html().split('<section class="opt-group">')[1:]:
+        body = part.split("</section>")[0]
+        title = re.search(r'<h3 class="opt-group-title">(.*?)</h3>', body)
+        assert title, body[:200]
+        out[title.group(1)] = body
+    return out
+
+
+def test_index_html_advanced_is_grouped_by_role():
+    """フラットな長い並びをやめ、役割ごとの5グループを使用頻度順に置く。"""
+    assert list(_opt_groups()) == [
+        "① 曲と歌詞",
+        "② 空耳のもと",
+        "③ 歌声",
+        "④ 見た目",
+        "⑤ その他",
+    ]
+    # どのグループにも1行の説明を添える
+    assert _advanced_html().count('class="hint opt-group-lead"') == 5
+    # 区切りは見た目にも出す(小見出し + 罫線)
+    html = _index_html()
+    assert ".opt-group + .opt-group {" in html
+    assert ".opt-group-title { font-size: .9rem;" in html
+
+
+def test_index_html_advanced_groups_hold_the_right_fields():
+    """DOMの移動だけ。既存のIDはすべて残し、役割どおりのグループに入れる。"""
+    g = _opt_groups()
+    song = g["① 曲と歌詞"]
+    assert 'id="midi"' in song and 'id="sample-select"' in song and 'id="lyrics"' in song
+    parody = g["② 空耳のもと"]
+    assert 'id="wordlist-select"' in parody
+    assert 'id="wordlist-filters"' in parody
+    assert 'id="open-editor"' in parody
+    assert 'id="editor-auto-status"' in parody
+    assert 'id="parody-status"' in parody
+    voice = g["③ 歌声"]
+    assert 'id="synthesizer"' in voice
+    assert 'id="auto-octave"' in voice and 'id="transpose"' in voice
+    assert 'id="preview"' in voice
+    look = g["④ 見た目"]
+    assert 'id="layout-select"' in look and 'id="le-details"' in look
+    other = g["⑤ その他"]
+    assert 'id="auth"' in other and 'id="clear-form"' in other
+
+
+def test_index_html_convert_params_are_demoted_to_a_collapsible():
+    """変換パラメータと替え歌JSONの読み書きは折りたたみでさらに格下げする。"""
+    parody = _opt_groups()["② 空耳のもと"]
+    assert '<details id="parody-advanced" class="sub-details">' in parody
+    assert "<summary>変換のしかたを細かく調整する(上級者向け)</summary>" in parody
+    assert 'id="where"' in parody and 'id="p-preset"' in parody
+    # 替え歌JSONの入出力はさらに出番が少ないので別の折りたたみに分ける
+    assert '<details id="parody-io" class="sub-details">' in parody
+    assert 'id="editor" accept=".json"' in parody
+    assert 'id="download-editor"' in parody
+    # よく触る単語リストの選択は畳まない(折りたたみより前に置く)
+    assert parody.index('id="wordlist-select"') < parody.index('id="parody-advanced"')
+    assert parody.index('id="parody-advanced"') < parody.index('id="parody-io"')
+
+
+def test_index_html_api_key_is_reachable_when_auth_is_required():
+    """APIキー欄は「⑤ その他」の中。キー待ちのときはそこまでスクロールする。"""
+    html = _index_html()
+    assert 'if (conf.auth_required && !apiKey()) {' in html
+    assert '$("advanced").open = true;' in html
+    assert '$("auth").scrollIntoView({ block: "center" });' in html
+
+
+# ---- 替え歌エディタ: 画面全面のモーダルで開く ----
+
+
+def test_index_html_editor_opens_as_fullscreen_modal():
+    """エディタは詳細設定の中に展開せず、画面全面のモーダルで開く。"""
+    html = _index_html()
+    # モーダル本体は .wrap の外(bodyの直下)。position:fixed が親のスタッキング
+    # 文脈に巻き込まれないようにするため、詳細設定より後ろに置く
+    assert (
+        '<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" '
+        'aria-modal="true"' in html
+    )
+    assert html.index('id="editor-frame-wrap"') > html.index('id="public-footer"')
+    # 全面に広げる(モバイルでも同じ)。iframeが残りの高さを全部使う
+    assert ".editor-modal {\n    position: fixed; inset: 0; z-index: 50;" in html
+    assert "flex: 1 1 auto; width: 100%; min-height: 0; border: 0;" in html
+    # 旧構成(詳細設定の中に72vhのiframeをインライン展開)は残っていない
+    assert "height: 72vh" not in html
+    assert '$("editor-frame-wrap").scrollIntoView' not in html
+
+
+def test_index_html_editor_modal_close_controls_are_pinned_to_the_head():
+    """閉じる導線(取り込んで閉じる/閉じる)はモーダル上部に固定する。"""
+    html = _index_html()
+    head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
+    assert 'id="editor-import"' in head
+    assert 'id="editor-close"' in head
+    # ヘッダは縮まず、下のiframeだけがスクロール領域になる
+    assert ".editor-modal-head {\n    flex: 0 0 auto;" in html
+    # 閉じても編集は生きている(自動取り込み)ことをその場に書く
+    assert "編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。" in html
+
+
+def test_index_html_editor_modal_closes_with_escape():
+    """Escで閉じる。iframeにフォーカスがあるときのために子documentにも付ける。"""
+    html = _index_html()
+    assert "function onEditorModalKeydown(ev) {" in html
+    assert (
+        'if (ev.key !== "Escape" || $("editor-frame-wrap").hidden) return;' in html
+    )
+    assert 'document.addEventListener("keydown", onEditorModalKeydown);' in html
+    assert 'doc.addEventListener("keydown", onEditorModalKeydown);' in html
+
+
+def test_index_html_editor_modal_locks_background_scroll():
+    """モーダルを開いているあいだは裏のページをスクロールさせない。"""
+    html = _index_html()
+    assert "body.modal-open { overflow: hidden; }" in html
+    assert 'document.body.classList.add("modal-open");' in html
+    assert 'document.body.classList.remove("modal-open");' in html
+
+
 # ---- 替え歌エディタ: 取り込み操作なしで最新の編集を使う(来歴ガード付き) ----
 
 
