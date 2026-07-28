@@ -334,8 +334,10 @@ def test_index_html_job_card_lives_in_the_builder_card():
     )
     builder = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
     assert 'id="job-card"' in builder
-    # 最下部(サムネ枠・案内文のあと)
-    assert builder.index('id="job-card"') > builder.index('id="lucky-status"')
+    # 最下部(サムネ枠・上限や確認の表示のあと)
+    assert builder.index('id="job-card"') > builder.index('id="public-limits"')
+    # 詳細設定への案内文は置かない(折りたたみ自体が同じ視野にあるので冗長)
+    assert 'id="lucky-status"' not in html
     # 控えめな置き場のぶん、エラー・中断で開いたときだけ警告色にして見つけやすくする
     assert '#job-card.attention > summary { color: var(--danger);' in html
     assert '$("job-card").classList.add("attention");' in html
@@ -421,8 +423,9 @@ def test_index_html_has_no_separate_submit_button():
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    # 詳細設定への導線と、曲が未セットのときの案内は残す
-    assert "「⚙️ 詳細設定」から。" in html
+    # 曲が未セットのときの案内は残す(詳細設定の折りたたみは同じ視野にあるので、
+    # カード下の常設の案内文は置かない)
+    assert '「⚙️ 詳細設定」で曲' in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
@@ -490,8 +493,8 @@ def test_index_html_elapsed_seconds_come_from_server():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # ステージ名と経過秒(+全体の中での位置)を組み立てるのはこの1か所だけ
-    assert "`${label}${step}${elapsed}`" in html
+    # ステージ名と経過秒を組み立てるのはこの1か所だけ
+    assert "`${label}${elapsed}`" in html
     assert "const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)`" in html
     # 経過秒を進めるためだけのタイマーは持たない
     assert "elapsedTimer" not in html
@@ -1435,11 +1438,11 @@ def test_index_html_editor_auto_import_checks_provenance():
     assert "if (editorSrc.file && !editorSrc.live && parodyMismatch()" in html
 
 
-# ---- 進捗表示: 全体の中での位置(あと何段階か) ----
+# ---- 進捗表示: ステージ名とプログレスバー(段階数の「X/Y」は出さない) ----
 
 
-def test_index_html_progress_shows_step_position():
-    """サムネ枠の進捗に「いま何段階目か」を出す。"""
+def test_index_html_progress_has_no_step_numbers():
+    """サムネ枠の進捗は「ステージ名 (経過秒)」だけ。位置はプログレスバーが見せる。"""
     import re
 
     html = _index_html()
@@ -1449,15 +1452,13 @@ def test_index_html_progress_shows_step_position():
     # convert / import-editor は排他(parody_source で決まる)
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
-    step = re.search(r"function stageStepText\(job\) \{.*?\n\}", html, re.S).group(0)
-    assert "return i < 0 ? \"\" : ` ${i + 1}/${plan.length}`;" in step
-    # 枠内の文言に添える(詳細側の文言は従来どおり)
-    assert "const step = stageStepText(job);" in html
+    # 「2/5」のような段階数の表示は持たない(stagePlan はバーの分母としてだけ使う)
+    assert "stageStepText" not in html
+    assert "${plan.length}" not in html
     assert (
-        'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, '
-        "`${label}${step}${elapsed}`);" in html
+        'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
     )
-    assert "setJobStatus(`歌唱合成${tail}`, `歌唱合成${step}${tail}`);" in html
+    assert "setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);" in html
 
 
 def test_index_html_stage_chips_match_the_step_count():

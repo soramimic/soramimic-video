@@ -410,7 +410,6 @@
   <!-- 曲が未セットのまま枠をタップされたときの案内(投入はしない) -->
   <p class="error" id="submit-msg" hidden></p>
   <p class="hint" id="public-limits" hidden></p>
-  <p class="hint" id="lucky-status">歌声や歌詞、レイアウトまで自分で決めるなら「⚙️ 詳細設定」から。</p>
 
   <!-- 進捗と結果の詳細。ジョブを投入するまでは出さない(初見の画面はビルダーカードだけ)。
        主役の進捗はサムネ枠の中(#builder-progress)に出るので、こちらはビルダーカードの
@@ -1126,18 +1125,11 @@ function stagePlan(job) {
   return ["analyze", parody, "synthesize", "mix", "video"];
 }
 
-// 「いま何段階目か」の表示(例 " 2/5")。現在のステージが並びに無ければ空。
-function stageStepText(job) {
-  const plan = stagePlan(job);
-  const i = plan.indexOf(job && job.stage);
-  return i < 0 ? "" : ` ${i + 1}/${plan.length}`;
-}
-
 function renderStages(job) {
   const doneNames = new Set(job.stages.map((s) => s.name));
   const secs = Object.fromEntries(job.stages.map((s) => [s.name, s.seconds]));
-  // 走らないステージのチップは出さない。枠内の「2/5」と数が食い違わないようにする
-  // (使わない方の変換ステージ(editor / convert は排他)もこれで消える)
+  // 走らないステージのチップは出さない。枠内のバーの進み具合と数が食い違わない
+  // ようにする(使わない方の変換ステージ(editor / convert は排他)もこれで消える)
   const plan = stagePlan(job);
   document.querySelectorAll(".stages li").forEach((li) => {
     const name = li.dataset.stage;
@@ -1162,7 +1154,7 @@ function setJobStatus(text, builderText) {
 }
 
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
-// 分母は「このジョブで実際に走るステージ数」(枠内の 2/5 表示と同じ数)。
+// 分母は「このジョブで実際に走るステージ数」(stagePlan)。
 function renderBuilderBar(job) {
   const total = stagePlan(job).length || 6;
   const done = job && job.stages ? job.stages.length : 0;
@@ -1218,17 +1210,16 @@ async function poll(id, seq = pollSeq) {
   renderBuilderBar(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
   const label = STAGE_LABELS[job.stage] || job.stage || "…";
-  // 枠の中では「全体の何段階目か」も添える(あと何回待てばよいかが分かるように)
-  const step = stageStepText(job);
+  // 「何段階目か」の数字は出さない。どこまで進んだかはプログレスバーが見せている
   if (job.status === "running") {
     if (job.stage === "synthesize" && job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
-      setJobStatus(`歌唱合成${tail}`, `歌唱合成${step}${tail}`);
+      setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${step}${elapsed}`);
+      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
