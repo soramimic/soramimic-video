@@ -306,6 +306,50 @@ def test_index_html_builder_card_syncs_with_advanced():
     assert '<section class="card" id="job-card" hidden>' in html
 
 
+def test_index_html_builder_card_is_bare():
+    """ビルダーカードは見出し・説明文・例示ボタンを置かない(見れば分かる形にする)。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # 見出しと導入文は削除済み
+    assert "まずはここから" not in html
+    assert "lucky-lead" not in html
+    # ラベルはプルダウンと同じ行。補足「何に空耳させるか」は title に退避する
+    assert ".builder-selects .field { display: flex; align-items: center;" in html
+    assert (
+        '<label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>' in html
+    )
+    # 例示コンボのボタンは廃止(組み立てるコードごと消えている)
+    assert "renderLuckyCombos" not in html
+    assert "lucky-combo" not in html
+    # 🎲ランダムはカードの右上に小さく置くだけ
+    assert '<div class="builder-topbar">' in html
+    assert '<button type="button" id="lucky" class="btn-sm"' in html
+
+
+def test_index_html_builder_frame_runs_the_whole_flow():
+    """サムネ枠がそのまま「生成ボタン → 進捗 → 動画プレイヤー」に変わる。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # 枠のタップで生成が始まる(「🎬 動画を生成」ボタンと同じ動作)
+    assert '<button type="button" class="builder-play" id="builder-play"' in html
+    assert '$("builder-play").addEventListener("click", () => submitJob(0));' in html
+    assert "タップで動画を生成" in html
+    # 進捗は同じ枠の中に重ねる。別の場所へスクロールさせない
+    assert '<div class="builder-progress" id="builder-progress" hidden>' in html
+    assert 'setBuilderState("running");' in html
+    assert "$(\"job-card\").scrollIntoView" not in html
+    # 中断は生成中も枠の中から押せる
+    assert '$("builder-cancel").addEventListener("click", cancelJob);' in html
+    # 完成したら同じ枠が動画プレイヤーになり、シェアは枠の直下に出る
+    assert '<video id="builder-video" controls playsinline hidden></video>' in html
+    assert "video.poster = qs(job.thumbnail_url);" in html
+    assert '$("builder-share").innerHTML = SHARE_HTML;' in html
+    # 選び直したら枠は新しいプレビューに戻る
+    assert 'setBuilderState("preview");   // 完成した動画が出ていれば' in html
+
+
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone
