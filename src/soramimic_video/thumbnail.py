@@ -40,7 +40,12 @@ from typing import Any
 from PIL import Image, ImageEnhance
 
 from . import runproc
-from .convert import _find_row, _load_wordlist_rows, resolve_wordlist
+from .convert import (
+    _find_row,
+    _load_wordlist_rows,
+    resolve_convert_settings,
+    resolve_wordlist,
+)
 from .editor_io import wordlist_phrase_name
 from .layout import APP_CREDIT, Layout, fitted_image_box, parse_layout, render_image
 from .project import Project
@@ -307,7 +312,11 @@ def title_paraphrase(
     変換できる単語が無ければ空リスト。
     """
     csv_path = resolve_wordlist(wordlist)
-    result = run_convert([title], csv_path, where, dict(params or {}))
+    # ジョブ経由では解決済みのparamsが来るが、直接呼び(プレビュー等)では素の
+    # 辞書が来る。エンジン既定(VARIATION_COST=0等)のままだと音の近さより
+    # 変形の自由度が勝ってしまうので、本編と同じ既定解決を必ず通す
+    eff_where, coerced, _alpha = resolve_convert_settings(csv_path, where, params)
+    result = run_convert([title], csv_path, eff_where, coerced)
     lines = result.get("lines") or []
     words = lines[0].get("words") if lines else []
     picked = pick_headline_words(words or [])
