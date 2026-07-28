@@ -7,11 +7,15 @@ from PIL import Image
 
 from soramimic_video import layout as layout_mod
 from soramimic_video.layout import (
+    ImageElement,
     builtin_layout_names,
+    images_hidden_by_default,
     load_layout,
+    load_wordlist_image_optout,
     load_wordlist_layouts,
     render_frame,
     render_idle_frame,
+    without_images,
 )
 
 
@@ -338,3 +342,81 @@ def test_render_frame_wrap_long_text(tmp_path):
     data = {"achievement": "天然鉱石と光の拡散関係の初期論説" * 5}
     out = render_frame(layout, None, data, 320, 180, tmp_path / "f")
     assert out is not None and out.exists()
+
+
+# ---- 画像を既定で隠す単語リスト(wordlist_image_optout.json) ----
+
+
+def _optout_file(tmp_path, monkeypatch, mapping):
+    p = tmp_path / "wordlist_image_optout.json"
+    p.write_text(json.dumps(mapping), encoding="utf-8")
+    monkeypatch.setattr(layout_mod, "WORDLIST_IMAGE_OPTOUT_PATH", p)
+    return p
+
+
+def test_wordlist_image_optout_is_builtin():
+    """同梱の設定は組み込みレイアウト名だけを指していること。"""
+    conf = load_wordlist_image_optout()
+    assert conf["insect"]["layout"] == "noimage_card"
+    assert {c["layout"] for c in conf.values() if "layout" in c} <= set(builtin_layout_names())
+
+
+def test_load_wordlist_image_optout_skips_unknown_layout(tmp_path, monkeypatch, caplog):
+    _optout_file(tmp_path, monkeypatch, {
+        "insect": {"reason": "苦手な人がいるため", "layout": "no-such-layout"},
+        "spider": {"reason": "同上"},          # layout省略は理由だけ持つ
+        "broken": "画像を隠す",                 # オブジェクトでないので捨てられる
+    })
+    with caplog.at_level("WARNING"):
+        conf = load_wordlist_image_optout()
+    assert conf == {
+        "insect": {"reason": "苦手な人がいるため"},
+        "spider": {"reason": "同上"},
+    }
+    assert "no-such-layout" in caplog.text
+
+
+def test_load_wordlist_image_optout_missing_or_broken(tmp_path, monkeypatch):
+    monkeypatch.setattr(layout_mod, "WORDLIST_IMAGE_OPTOUT_PATH", tmp_path / "none.json")
+    assert load_wordlist_image_optout() == {}
+    broken = tmp_path / "broken.json"
+    broken.write_text("[not json", encoding="utf-8")
+    monkeypatch.setattr(layout_mod, "WORDLIST_IMAGE_OPTOUT_PATH", broken)
+    assert load_wordlist_image_optout() == {}
+
+
+def test_images_hidden_by_default_accepts_name_or_csv_path(tmp_path, monkeypatch):
+    _optout_file(tmp_path, monkeypatch, {"insect": {"reason": "苦手な人がいるため"}})
+    assert images_hidden_by_default("insect")
+    assert images_hidden_by_default("/data/wordlists/insect.csv")
+    assert not images_hidden_by_default("stations")
+    assert not images_hidden_by_default("")
+    assert not images_hidden_by_default(None)
+
+
+def test_without_images_drops_image_elements_and_credit():
+    layout = load_layout("animal_card")
+    assert any(isinstance(el, ImageElement) for el in layout.elements)
+    assert layout.credit is not None  # image要素があるとクレジットが自動で載る
+
+    hidden = without_images(layout)
+    assert hidden.hide_images
+    assert not any(isinstance(el, ImageElement) for el in hidden.elements)
+    assert hidden.credit is None
+    # テキストと字幕はそのまま残る(単語名・分類・歌詞は出したい)
+    assert len(hidden.elements) == len(layout.elements) - 1
+    assert len(hidden.subtitles) == len(layout.subtitles)
+    # 元のレイアウトは書き換えない
+    assert any(isinstance(el, ImageElement) for el in layout.elements)
+
+
+def test_without_images_frame_has_no_image(tmp_path):
+    img = tmp_path / "word.png"
+    Image.new("RGB", (300, 200), "red").save(img)
+    layout = without_images(load_layout("animal_card"))
+    data = {"surface": "ホシズム", "original": "アゲハチョウ", "order": "チョウ目"}
+    out = render_frame(layout, img, data, 320, 180, tmp_path / "f")
+    assert out is not None
+    with Image.open(out) as frame:
+        # image要素を外したので、画像枠(上半分)は背景のまま
+        assert frame.getpixel((160, 60)) == (0, 0, 0)
