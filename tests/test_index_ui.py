@@ -3,6 +3,7 @@
 ブラウザを起動せずに守れる約束だけを見る。
 - 詳細設定の「読まなくても操作できる説明」は data-info で ⓘ に畳まれている
 - 状態・警告・エラーの動的メッセージは畳まれていない(常時表示のまま)
+- エディタへの導線はボタン1つ("✏️ 替え歌を編集")で、保存済みの選択UIがある
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ def test_info_hints_cover_the_static_explanations():
         "voicevox-credit",
         "auto-octave-hint",
         "le-cue-hint",
+        "editor-resume-note",
     }
     assert not (ids & always_visible)
 
@@ -67,6 +69,25 @@ def test_static_hints_in_advanced_are_all_folded():
     for m in re.finditer(r"<p class=\"hint[^\"]*\"([^>]*)>", body):
         attrs = m.group(1)
         assert "data-info" in attrs or "id=" in attrs, m.group(0)
+
+
+def test_editor_entry_point_is_a_single_button():
+    markup = _markup()
+    assert "✏️ 替え歌を編集" in markup
+    assert "editorで変換・編集" not in markup
+    ids = [a.get("id") for tag, a in _tags() if tag == "button" and a.get("id")]
+    # エディタを開く導線はこれ1つ(モーダル側の閉じる/取り込みは別物)
+    assert ids.count("open-editor") == 1
+    # 保存済みがあるときの2択(+やめる)
+    for btn in ("editor-resume-continue", "editor-resume-regen", "editor-resume-cancel"):
+        assert btn in ids
+
+
+def test_editor_resume_panel_is_hidden_by_default():
+    panel = next(a for tag, a in _tags() if a.get("id") == "editor-resume")
+    assert "hidden" in panel
+    assert panel.get("role") == "group"
+    assert panel.get("aria-labelledby") == "editor-resume-title"
 
 
 def test_info_toggle_sets_aria_state():
