@@ -34,6 +34,11 @@ H, DH = 960, 1440  # 2分/付点2分
 
 BR = "/"  # 行区切りだけ入れる(休符は入れない。小節の途中で行が変わる曲用)
 
+# 各曲の "title_kana": 曲名の読み(カタカナ)。サムネの見出しは曲名を空耳変換して
+# 作るが、読みをMeCabの推定に任せると「紅葉」が「コーヨー」になってしまう。
+# サンプル曲は読みが確定しているのでデータとして持たせ、推定を回避する
+# (samples.json に出力し、サーバーが変換入力に使う)。
+#
 # 各曲の "score": 次の4種類を並べた列。
 #   (歌詞かな, MIDIノート, 長さtick) … 1音符=1モーラ
 #   int                              … その長さの休符(フレーズ頭の休符など)
@@ -42,6 +47,7 @@ BR = "/"  # 行区切りだけ入れる(休符は入れない。小節の途中�
 SONGS: dict[str, dict] = {
     "furusato": {
         "title": "ふるさと",
+        "title_kana": "フルサト",
         "description": "唱歌・PD",
         "tempo": 600_000,  # ♩=100
         "time": (3, 4),
@@ -73,6 +79,7 @@ SONGS: dict[str, dict] = {
     },
     "akatombo": {
         "title": "赤とんぼ",
+        "title_kana": "アカトンボ",
         "description": "童謡・PD",
         "tempo": 666_000,  # ♩≒90
         "time": (3, 4),
@@ -94,6 +101,7 @@ SONGS: dict[str, dict] = {
     },
     "momotarou": {
         "title": "桃太郎",
+        "title_kana": "モモタロー",
         "description": "文部省唱歌・PD",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
@@ -118,6 +126,7 @@ SONGS: dict[str, dict] = {
     },
     "katatsumuri": {
         "title": "かたつむり",
+        "title_kana": "カタツムリ",
         "description": "文部省唱歌・PD",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
@@ -144,6 +153,7 @@ SONGS: dict[str, dict] = {
     },
     "harugakita": {
         "title": "春が来た",
+        "title_kana": "ハルガキタ",
         "description": "唱歌・PD",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
@@ -163,6 +173,7 @@ SONGS: dict[str, dict] = {
     },
     "oborodukiyo": {
         "title": "朧月夜",
+        "title_kana": "オボロヅキヨ",
         "description": "唱歌・PD",
         "tempo": 750_000,  # ♩=80
         "time": (3, 4),
@@ -201,6 +212,7 @@ SONGS: dict[str, dict] = {
     },
     "chatsumi": {
         "title": "茶摘",
+        "title_kana": "チャツミ",
         "description": "文部省唱歌・PD",
         "tempo": 576_923,  # ♩=104
         "time": (4, 4),
@@ -237,6 +249,7 @@ SONGS: dict[str, dict] = {
     },
     "nanatsunoko": {
         "title": "七つの子",
+        "title_kana": "ナナツノコ",
         "description": "童謡・PD",
         "tempo": 750_000,  # ♩=80
         "time": (4, 4),
@@ -283,6 +296,7 @@ SONGS: dict[str, dict] = {
     },
     "momiji": {
         "title": "紅葉",
+        "title_kana": "モミジ",
         "description": "唱歌・PD",
         "tempo": 652_174,  # ♩=92
         "time": (4, 4),
@@ -316,6 +330,7 @@ SONGS: dict[str, dict] = {
     },
     "shabondama": {
         "title": "しゃぼん玉",
+        "title_kana": "シャボンダマ",
         "description": "童謡・PD",
         "tempo": 833_333,  # ♩=72
         "time": (2, 4),
@@ -421,7 +436,12 @@ if __name__ == "__main__":
         (out_dir / f"{sid}.mid").write_bytes(data)
         (out_dir / f"{sid}_lyrics.txt").write_text(song["lyrics"], encoding="utf-8")
         manifest.append(
-            {"id": sid, "title": song["title"], "description": song["description"]}
+            {
+                "id": sid,
+                "title": song["title"],
+                "title_kana": song["title_kana"],
+                "description": song["description"],
+            }
         )
         print(f"wrote {sid}.mid ({len(data)} bytes)")
     (out_dir / "samples.json").write_text(

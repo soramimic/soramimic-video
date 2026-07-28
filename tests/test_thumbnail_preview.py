@@ -24,6 +24,7 @@ from soramimic_video import thumbnail_preview as preview_mod  # noqa: E402
 
 SAMPLE_ID = "mysong"
 SAMPLE_TITLE = "夜に駆ける"
+SAMPLE_KANA = "ヨルニカケル"
 
 
 def _fake_convert(surface: str = "米原"):
@@ -111,6 +112,70 @@ def test_cache_key_changes_with_wordlist_content(
         "id,surface,original,image\n1,米原,米原駅,\n2,大津,大津駅,\n", encoding="utf-8"
     )
     assert get_preview(client).headers["x-preview-cache"] == "miss"
+
+
+# ---- 曲名の読み(samples.json の title_kana) ----
+
+
+def test_preview_converts_the_sample_reading(
+    client: TestClient, samples: Path, monkeypatch
+):
+    """変換の入力は samples.json の読み(「紅葉」を「コーヨー」と推定させない)。"""
+    (samples / "samples.json").write_text(
+        json.dumps([
+            {
+                "id": SAMPLE_ID,
+                "title": SAMPLE_TITLE,
+                "title_kana": SAMPLE_KANA,
+                "description": "テスト",
+            }
+        ]),
+        encoding="utf-8",
+    )
+    seen: list[list[str]] = []
+
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+        seen.append(list(phrases))
+        return {
+            "lines": [{"units": [], "words": [{"surface": "米原", "id": "1"}]}],
+            "tokensList": [],
+            "phrases": phrases,
+        }
+
+    monkeypatch.setattr(thumb_mod, "run_convert", fake)
+    assert get_preview(client).status_code == 200
+    assert seen == [[SAMPLE_KANA]]
+
+
+def test_preview_without_reading_converts_the_title(
+    client: TestClient, monkeypatch
+):
+    # 読みの無い(古い・差し替えの)samples.json では従来どおり曲名を変換に渡す
+    seen: list[list[str]] = []
+
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+        seen.append(list(phrases))
+        return {
+            "lines": [{"units": [], "words": [{"surface": "米原", "id": "1"}]}],
+            "tokensList": [],
+            "phrases": phrases,
+        }
+
+    monkeypatch.setattr(thumb_mod, "run_convert", fake)
+    assert get_preview(client).status_code == 200
+    assert seen == [[SAMPLE_TITLE]]
+
+
+def test_cache_key_changes_with_reading(wordlist_dir: Path):
+    # 読みを足した/変えたら作り直す(古い読みのPNGを返し続けない)
+    plain = preview_mod.PreviewSpec.create(SAMPLE_TITLE, "mylist")
+    with_kana = preview_mod.PreviewSpec.create(
+        SAMPLE_TITLE, "mylist", title_kana=SAMPLE_KANA
+    )
+    other = preview_mod.PreviewSpec.create(
+        SAMPLE_TITLE, "mylist", title_kana="ヨルニカケール"
+    )
+    assert len({plain.key, with_kana.key, other.key}) == 3
 
 
 # ---- 不正な引数 ----

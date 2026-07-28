@@ -21,6 +21,15 @@
   存在しない列は空文字になる
 - wrap: true でboxの幅に合わせて文字単位で折り返す(説明文など長い列向け)。
   折り返してもboxに収まらないときはフォントを縮めて収める
+- 文字の可読性(背景写真の明暗に負けない)は次の3つで作る。いずれも
+  size と同じくフレーム高さ比率で指定する
+    - stroke_width / stroke_color: 1重の縁取り(従来から)
+    - strokes: 二重以上の縁取り。太い順に重ねて描くので
+      [{"width": 0.011, "color": "white"}, {"width": 0.007, "color": "black"}]
+      と書くと「白い文字 → 黒い内側の環 → 白い外側の環」になり、明るい背景でも
+      暗い背景でもどちらかの環が効く。指定すると stroke_width は使われない
+    - shadow / shadow_color: 文字の形にぼかした影(矩形の帯ではなく文字の
+      周りだけを局所的に暗くする)。shadow はぼかし半径、色はα付きで書ける
 - subtitle は行タイミングの歌詞字幕(ASSで焼く)の配置。source は
   parody(替え歌歌詞) / original(元歌詞)。boxのalign/valign側の辺が
   表示位置になる(既定は中央下)。subtitle要素を1つでも書くと既定の字幕
@@ -82,7 +91,7 @@ import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +152,13 @@ class TextElement:
     wrap: bool = False
     stroke_width: float = 0.0
     stroke_color: str = "black"
+    # 二重(以上)の縁取り。(幅, 色) を太い順に重ねて描く。指定すると
+    # stroke_width / stroke_color は使わない。幅は size と同じフレーム高さ比率
+    strokes: tuple[tuple[float, str], ...] = ()
+    # 文字の形をぼかした影(帯を敷かずに文字の周りだけ暗くする)。ぼかし半径を
+    # フレーム高さ比率で。0で無効
+    shadow: float = 0.0
+    shadow_color: str = "#000000cc"  # α付きで濃さを決める
     background: str | None = None  # テキスト背後の帯。"#00000080" のようにα付き可
     require: str | None = None  # この列が空の単語ではこの要素を出さない
     require_empty: str | None = None  # この列が埋まっている単語ではこの要素を出さない
@@ -302,6 +318,30 @@ def load_layout(name_or_path: str | None) -> Layout:
     return parse_layout(json.loads(path.read_text(encoding="utf-8")), str(path))
 
 
+def _parse_strokes(raw: object, origin: str) -> tuple[tuple[float, str], ...]:
+    """text要素の strokes(多重縁取り)をパースする。太い順に並べて返す。
+
+    書式は [{"width": 0.011, "color": "white"}, ...] か [[0.011, "white"], ...]。
+    描画は太い順に重ねるだけなので、書いた順序は問わない。
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(f"strokes は配列です: {raw!r} ({origin})")
+    out: list[tuple[float, str]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            width, color = item.get("width", 0), item.get("color", "black")
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            width, color = item
+        else:
+            raise ValueError(
+                f'strokes の各要素は {{"width": 幅, "color": 色}} です: {item!r} ({origin})'
+            )
+        out.append((float(width), str(color)))
+    return tuple(sorted(out, key=lambda s: -s[0]))
+
+
 def _parse_elements(
     raw_elements: list, origin: str
 ) -> tuple[list[ImageElement | TextElement], list[SubtitleElement]]:
@@ -358,6 +398,9 @@ def _parse_elements(
                     wrap=bool(e.get("wrap", False)),
                     stroke_width=float(e.get("stroke_width", 0)),
                     stroke_color=e.get("stroke_color", "black"),
+                    strokes=_parse_strokes(e.get("strokes"), origin),
+                    shadow=float(e.get("shadow", 0)),
+                    shadow_color=e.get("shadow_color", "#000000cc"),
                     background=e.get("background"),
                     require=e.get("require"),
                     require_empty=e.get("require_empty"),
@@ -561,8 +604,15 @@ def _fit_text(
     box_h: int,
     frame_h: int,
     font_path: Path | None,
+    pad: int = 0,
 ):
-    """boxに収まるフォントサイズ・行リスト・行送りを決める(収まるまで縮める)。"""
+    """boxに収まるフォントサイズ・行リスト・行送りを決める(収まるまで縮める)。
+
+    pad は縁取りなど文字の外側にはみ出す装飾のぶん(px)。その太さを引いた
+    内側にグリフを収めるので、太い縁取りがboxからはみ出さない。
+    """
+    box_w = max(1, box_w - 2 * pad)
+    box_h = max(1, box_h - 2 * pad)
     px = max(_MIN_FONT_PX, int(el.size * frame_h))
     while True:
         font = _font(font_path, px)
@@ -574,6 +624,13 @@ def _fit_text(
         px = max(_MIN_FONT_PX, px - max(1, px // 8))
 
 
+def _stroke_layers(el: TextElement, frame_h: int) -> list[tuple[int, str]]:
+    """多重縁取りの (太さpx, 色) を太い順に。strokes未指定なら空。"""
+    # 小さい文字では1px未満になりがちなので、幅を指定した縁取りは最低1px残す
+    layers = [(max(1, round(w * frame_h)), c) for w, c in el.strokes if w > 0]
+    return layers
+
+
 def _draw_text(
     canvas: Image.Image, text: str, el: TextElement, font_path: Path | None
 ) -> None:
@@ -581,7 +638,12 @@ def _draw_text(
     # α付きの色(背景帯や半透明文字)を正しく合成するため一旦RGBAに描く
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font, lines, line_h = _fit_text(draw, text, el, w, h, canvas.height, font_path)
+    strokes = _stroke_layers(el, canvas.height)
+    # 縁取り・影は文字の外側に広がるので、そのぶん内側にグリフを収める
+    pad = max([px for px, _ in strokes] + [int(el.shadow * canvas.height)] + [0])
+    font, lines, line_h = _fit_text(
+        draw, text, el, w, h, canvas.height, font_path, pad=pad
+    )
     total_h = int(line_h * len(lines))
     if el.valign == "top":
         ty = y
@@ -604,6 +666,7 @@ def _draw_text(
         )
 
     stroke = int(el.stroke_width * canvas.height)
+    placed: list[tuple[float, float, str]] = []
     ly = float(ty)
     for line in lines:
         lw = draw.textlength(line, font=font)
@@ -613,11 +676,37 @@ def _draw_text(
             lx = x + w - lw
         else:
             lx = x + (w - lw) / 2
-        draw.text(
-            (lx, ly), line, font=font, fill=el.color,
-            stroke_width=stroke, stroke_fill=el.stroke_color,
-        )
+        placed.append((lx, ly, line))
         ly += line_h
+
+    if el.shadow:
+        # 文字の形にぼかした影。矩形の帯を敷かずに文字の周りだけを暗くする
+        radius = max(1, int(el.shadow * canvas.height))
+        shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        sdraw = ImageDraw.Draw(shadow)
+        for lx, ly, line in placed:
+            sdraw.text(
+                (lx, ly), line, font=font, fill=el.shadow_color,
+                stroke_width=radius, stroke_fill=el.shadow_color,
+            )
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius))
+        canvas.paste(shadow, (0, 0), shadow)
+
+    for lx, ly, line in placed:
+        if strokes:
+            # 太い順に「その色で塗った文字の輪郭」を重ね、最後に本体を乗せる。
+            # 幅の差が同心の環になるので二重・三重の縁取りになる
+            for px, color in strokes:
+                draw.text(
+                    (lx, ly), line, font=font, fill=color,
+                    stroke_width=px, stroke_fill=color,
+                )
+            draw.text((lx, ly), line, font=font, fill=el.color)
+        else:
+            draw.text(
+                (lx, ly), line, font=font, fill=el.color,
+                stroke_width=stroke, stroke_fill=el.stroke_color,
+            )
     canvas.paste(overlay, (0, 0), overlay)
 
 

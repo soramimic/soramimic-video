@@ -1027,6 +1027,7 @@ def make_video(
     granularity: dict[str, str] | None = None,
     song_title: str | None = None,
     synth_credit: str = "",
+    song_title_kana: str = "",
 ) -> Path:
     layout_obj = load_layout(layout)
     # 動画に焼き込むクレジット(サムネ・単語フレーム・idleで共通)
@@ -1059,9 +1060,17 @@ def make_video(
         # レイアウトで起きる。動画は生成されるが全編無地になるので目立たせる
         logger.warning("画像キューが0件です。動画の背景は全編無地になります")
     # 曲名の空耳変換つきサムネ(thumbnail.png)。前奏区間に出すほか、SNS投稿用に
-    # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)
+    # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)。
+    # song_title_kana は曲名の読み(分かっていれば変換入力に使う)
     thumbnail = generate_thumbnail(
-        project, project_dir, width, height, image_cache, song_title, credit_text
+        project,
+        project_dir,
+        width,
+        height,
+        image_cache,
+        song_title,
+        credit_text,
+        title_kana=song_title_kana,
     )
     if thumbnail is not None:
         cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))

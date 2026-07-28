@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,17 @@ def test_manifest_matches_generator():
         # description はUIの補足表示(権利区分)。空だと何も出ないので必須にする
         assert entry["description"] == song["description"]
         assert entry["description"]
+        # title_kana は曲名の読み。サムネの曲名変換の入力に使う(MeCabの推定を
+        # 使わずに済ませるためのものなので、空だと意味が無い)
+        assert entry["title_kana"] == song["title_kana"]
+        assert entry["title_kana"]
+
+
+def test_title_kana_is_katakana():
+    """読みはカタカナ(長音符含む)だけ。ひらがな・漢字が混ざっていたら誤り。"""
+    for entry in MANIFEST:
+        kana = entry["title_kana"]
+        assert re.fullmatch(r"[ァ-ヶー]+", kana), (entry["id"], kana)
 
 
 @pytest.mark.parametrize("sample_id", SAMPLE_IDS)

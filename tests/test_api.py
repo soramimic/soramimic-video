@@ -6,6 +6,7 @@ APIキー認証を確認する。NEUTRINO実行込みのE2Eは手動(serve)で�
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -732,6 +733,67 @@ def test_song_title_falls_back_to_midi_filename():
         {"song_title": "", "midi_filename": "ussewa.mid"}
     ) == "ussewa.mid"
     assert api_mod.song_title_of({}) == ""
+
+
+def test_song_title_kana_of_resolves_sample_reading(tmp_path, monkeypatch):
+    # サンプル曲のジョブは midi_filename が <サンプルID>.mid なので、
+    # サーバー側で samples.json を引いて読み(title_kana)を解決できる
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps([{"id": "momiji", "title": "紅葉", "title_kana": "モミジ"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+
+    assert api_mod.song_title_kana_of(
+        {"song_title": "紅葉", "midi_filename": "momiji.mid"}
+    ) == "モミジ"
+    # 曲名の指定が無くてもファイル名だけで引ける
+    assert api_mod.song_title_kana_of({"midi_filename": "momiji.mid"}) == "モミジ"
+    # 自分のMIDIは読みが分からない(従来どおり曲名から推定させる)
+    assert api_mod.song_title_kana_of(
+        {"song_title": "うっせぇわ", "midi_filename": "ussewa.mid"}
+    ) == ""
+    assert api_mod.song_title_kana_of({}) == ""
+    # サンプルと同じファイル名でも曲名が違えば自分のMIDI。読みは使わない
+    assert api_mod.song_title_kana_of(
+        {"song_title": "紅葉(自作)", "midi_filename": "momiji.mid"}
+    ) == ""
+
+
+def test_song_title_kana_of_without_reading_in_manifest(tmp_path, monkeypatch):
+    # title_kana の無い(古い・差し替えの)samples.json でも落ちない
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps([{"id": "momiji", "title": "紅葉"}]), encoding="utf-8"
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    assert api_mod.song_title_kana_of({"midi_filename": "momiji.mid"}) == ""
+
+
+def test_load_samples_tolerates_missing_or_broken_manifest(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(tmp_path / "nope"))
+    assert api_mod.load_samples() == []
+    assert api_mod.sample_entry("momiji") is None
+    d = tmp_path / "broken"
+    d.mkdir()
+    (d / "samples.json").write_text("{", encoding="utf-8")
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    assert api_mod.load_samples() == []
+
+
+def test_bundled_samples_all_have_a_reading():
+    # サムネの曲名変換は読みを使う。同梱サンプルは全曲ぶん揃っていること
+    from soramimic_video.api import STATIC_DIR
+
+    manifest = json.loads(
+        (STATIC_DIR / "sample" / "samples.json").read_text(encoding="utf-8")
+    )
+    assert manifest
+    for entry in manifest:
+        assert entry.get("title_kana"), entry
 
 
 def test_synth_credit_of_voicevox_uses_character_name(monkeypatch):

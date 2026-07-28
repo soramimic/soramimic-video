@@ -4,8 +4,16 @@
 大きく載せた動画と同じアスペクト(既定1280x720)のPNGを作る。
 
 既定のスタイル(STYLE_FULLBLEED)は単語の画像を全面に敷き、その上に見出しと
-説明文を載せる。文字は必ず輪郭(stroke)+半透明の帯の上に置くので、背景画像が
-明るくても暗くても読める。
+説明文を載せる。文字が背景写真に負けないようにする方法は「可読性デザイン」
+(TextDesign / TEXT_DESIGNS)として差し替え可能にしてあり、TEXT_DESIGN を
+書き換えるだけで全経路(本番サムネ・プレビュー・サンプル生成)に反映される。
+どの案も黒帯は敷かない(写真が隠れるし見た目も重いため)。
+
+    double_outline 現行 二重縁取り(白文字→黒環→白環)+ぼかし影
+    scrim          案1  背景の上下を境界線なしに暗くする + 細い縁取りだけ
+    soft_shadow    案2  細い縁取り + 広く薄いぼかし影で背景から浮かせる
+    adaptive       案3  文字の裏の明るさを測り、明るければ黒文字+白縁に反転
+    scrim_adaptive 案1+3 / soft_adaptive 案2+3
 
     ┌─────────────────────────────┐
     │▓▓▓▓▓【ダイオージャ】▓▓▓▓▓▓▓▓▓▓│  ← 背景は単語の画像(1語なら1枚、
@@ -18,7 +26,7 @@
 使う(pick_headline_words)。画像も語ごとに1枚ずつ敷く。
 旧スタイル(STYLE_SIDE: 左に【単語】、右に小さく画像)も比較用に残してある。
 
-描画は layout.py のレイアウト機構(フォント解決・テキスト収め込み・帯・輪郭)を
+描画は layout.py のレイアウト機構(フォント解決・テキスト収め込み・縁取り・影)を
 そのまま使うので、見た目のトーンは動画のカードレイアウトと揃う。
 変換に失敗した・曲名が無い・言い換え単語が取れないときは、言い換えなしの
 「<曲名> を <リスト名> で歌ってみた」だけのサムネにフォールバックする
@@ -36,6 +44,7 @@ import re
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -72,8 +81,198 @@ DEFAULT_STYLE = STYLE_FULLBLEED
 # 見出しに使う言い換え単語の最大数と、「1語で済ませてよい」最小文字数。
 # 「モノカ」のような短い1語だけでは意味が取りにくいので、その場合は2語目を足す。
 HEADLINE_MAX_WORDS = 4  # 見出しに並べる言い換え単語の上限(長い曲名の保険)
-# 背景に敷いた画像の明るさ(1.0=そのまま)。文字側の帯・輪郭と合わせて可読性を作る
-BACKGROUND_DIM = 0.62
+
+# ---- 文字の可読性デザイン(比較中の案を切り替えられるようにしてある) ----
+#
+# どの案も「べた塗りの矩形帯」は敷かない(写真が隠れるし見た目が重い)。
+# 採用案が決まったら TEXT_DESIGN の1行を書き換えるだけで全経路
+# (本番サムネ・プレビュー・サンプル生成)に反映される。
+DESIGN_DOUBLE_OUTLINE = "double_outline"  # 現行: 二重縁取り(白文字→黒環→白環)+影
+DESIGN_SCRIM = "scrim"  # 案1: 上下グラデーション + 細い縁取りだけ
+DESIGN_SOFT_SHADOW = "soft_shadow"  # 案2: 細い縁取り + 広く薄いぼかし影
+DESIGN_ADAPTIVE = "adaptive"  # 案3: 背景の明るさで白黒を反転
+DESIGN_SCRIM_ADAPTIVE = "scrim_adaptive"  # 案1+案3
+DESIGN_SOFT_ADAPTIVE = "soft_adaptive"  # 案2+案3
+
+# 案3の判定。文字を置く領域の「暗いほう」(下位 DARK_PERCENTILE の明るさ)が
+# BRIGHT_THRESHOLD を超えたときだけ黒文字+白縁に反転する。中央値ではなく
+# 低いパーセンタイルを見るのは、左が空・右が黒のような枠で「明るい」と判断して
+# 黒文字にしてしまうと、暗いほうで文字が消えるため(白文字が既定で安全側)
+BRIGHT_THRESHOLD = 150.0
+DARK_PERCENTILE = 0.25
+
+# グラデーション(scrim)1枚ぶん: (辺, 濃さを保つ範囲, 消えるまでの範囲, 端での濃さ)。
+# 範囲はフレーム高さ比率。hold までは端と同じ濃さで、そこから extent まで
+# smoothstep で 0 に落とす。両端とも傾きがゼロになるので帯のような境界線が出ない
+Scrim = tuple[str, float, float, float]
+# 見出しは上、キャプションとクレジットは下にあるので上下の両方から掛ける。
+# hold は文字が乗る範囲(見出し 0.10〜0.48 / キャプション 0.63〜0.80)を覆う長さにし、
+# 上下の extent の合計をちょうど1.0にして中央で両者が0になるようにしてある
+DEFAULT_SCRIMS: tuple[Scrim, ...] = (
+    ("top", 0.38, 0.56, 0.60),
+    ("bottom", 0.30, 0.44, 0.72),
+)
+
+
+@dataclass(frozen=True)
+class TextDesign:
+    """サムネの文字を背景写真に負けさせないための設定一式。
+
+    縁取り・影の太さは「文字サイズに対する比率」で持つ(小さいクレジットだけ
+    縁が相対的に太くならないように)。実寸はフレーム高さ比率に直して layout.py に渡す。
+    """
+
+    name: str
+    # 背景写真の暗転(1.0=そのまま)。可読性を文字側で作るほど 1.0 に近づけられる
+    background_dim: float = 0.82
+    # 背景に掛ける上下グラデーション(空なら掛けない)
+    scrim: tuple[Scrim, ...] = ()
+    # 文字と同色の外側の環 / 文字と反対色の縁取り。太さ = 比率 × 文字サイズ
+    ink_stroke: float = 0.0
+    contrast_stroke: float = 0.03
+    min_ink_stroke: float = 0.0042  # 小さい文字でも縁が消えない下限(フレーム比)
+    min_contrast_stroke: float = 0.0022
+    # 文字の形をぼかした影(矩形の帯ではない)。半径 = 比率 × 文字サイズ
+    shadow: float = 0.05
+    min_shadow: float = 0.003
+    shadow_alpha: float = 0.70
+    # True なら文字を置く領域の明るさを測って白黒を反転する(要素ごとに独立)
+    adaptive: bool = False
+    light_ink: str = "#ffffff"  # 暗い背景で使う文字色
+    dark_ink: str = "#121212"  # 明るい背景で使う文字色(adaptive のときだけ出番がある)
+
+
+TEXT_DESIGNS: dict[str, TextDesign] = {
+    # 現行。白文字の外に黒い環、その外に白い環。明暗どちらの背景でもどれかの環が
+    # 効く代わりに、縁が太くて文字自体の形が潰れやすい(今回の比較対象)
+    DESIGN_DOUBLE_OUTLINE: TextDesign(
+        name=DESIGN_DOUBLE_OUTLINE,
+        background_dim=0.82,
+        ink_stroke=0.085,
+        contrast_stroke=0.055,
+        min_ink_stroke=0.0042,
+        min_contrast_stroke=0.0022,
+        shadow=0.06,
+        shadow_alpha=0.70,
+    ),
+    # 案1: 可読性は背景側のグラデーションで作り、文字には細い縁だけ残す。
+    # 帯と違って境界線が出ないので、写真をほぼそのまま見せられる(暗転も弱くできる)
+    DESIGN_SCRIM: TextDesign(
+        name=DESIGN_SCRIM,
+        background_dim=0.95,
+        scrim=DEFAULT_SCRIMS,
+        contrast_stroke=0.024,
+        shadow=0.0,
+    ),
+    # 案2: 縁を現行の1/2以下に細くして文字の形を残し、代わりに影を広く薄く掛けて
+    # 背景から浮かせる。写真は全面そのまま見える
+    DESIGN_SOFT_SHADOW: TextDesign(
+        name=DESIGN_SOFT_SHADOW,
+        background_dim=0.88,
+        contrast_stroke=0.028,
+        shadow=0.13,
+        min_shadow=0.004,
+        shadow_alpha=0.55,
+    ),
+    # 案3: 文字を置く領域の明るさを測り、明るければ黒文字+白縁、暗ければ
+    # 白文字+黒縁。要素ごとに独立して判定するので上下で明暗が違う写真にも効く
+    DESIGN_ADAPTIVE: TextDesign(
+        name=DESIGN_ADAPTIVE,
+        background_dim=0.95,
+        contrast_stroke=0.035,
+        shadow=0.05,
+        shadow_alpha=0.45,
+        adaptive=True,
+    ),
+    # 案1+3: グラデーションを掛けたうえで、それでも明るい領域だけ黒文字に反転する
+    DESIGN_SCRIM_ADAPTIVE: TextDesign(
+        name=DESIGN_SCRIM_ADAPTIVE,
+        background_dim=0.95,
+        scrim=DEFAULT_SCRIMS,
+        contrast_stroke=0.026,
+        shadow=0.05,
+        shadow_alpha=0.45,
+        adaptive=True,
+    ),
+    # 案2+3: 広く薄い影の色も文字の反対色にする(黒文字のときは白い光背になる)
+    DESIGN_SOFT_ADAPTIVE: TextDesign(
+        name=DESIGN_SOFT_ADAPTIVE,
+        # 反転する案は暗転を揃えておく(暗転が違うと同じ写真で反転の判定が割れる)
+        background_dim=0.95,
+        contrast_stroke=0.028,
+        shadow=0.13,
+        min_shadow=0.004,
+        shadow_alpha=0.55,
+        adaptive=True,
+    ),
+}
+
+# ★ 採用案: スクリム(案1)。背景の上下を境界線なしに暗くするだけで、写真を
+# ほぼそのまま見せつつ文字を読ませる。白黒反転の保険(adaptive)は付けない
+TEXT_DESIGN = DESIGN_SCRIM
+
+# 背景に敷いた画像の明るさ(1.0=そのまま)。案ごとに違うので既定案の値を公開する
+BACKGROUND_DIM = TEXT_DESIGNS[TEXT_DESIGN].background_dim
+
+
+def resolve_design(design: str | TextDesign | None = None) -> TextDesign:
+    """デザイン名(またはそのもの)を TextDesign に解決する。未知の名前は既定に落とす。"""
+    if isinstance(design, TextDesign):
+        return design
+    name = design or TEXT_DESIGN
+    found = TEXT_DESIGNS.get(name)
+    if found is None:
+        logger.warning("知らないサムネデザインです(既定を使います): %s", name)
+        return TEXT_DESIGNS[TEXT_DESIGN]
+    return found
+
+
+def _with_alpha(color: str, alpha: float) -> str:
+    """"#rrggbb" に不透明度を足して "#rrggbbaa" にする。"""
+    return f"{color}{round(min(1.0, max(0.0, alpha)) * 255):02x}"
+
+
+def outline_style(
+    size: float, design: str | TextDesign | None = None, dark_text: bool = False
+) -> dict:
+    """文字サイズに見合う縁取り+影の指定(text要素にマージして使う)。
+
+    dark_text=True で文字と縁の白黒を入れ替える(案3の明るい背景側)。影も
+    反対色にするので、黒文字のときは暗い影ではなく白い光背になる。
+    """
+    d = resolve_design(design)
+    ink = d.dark_ink if dark_text else d.light_ink
+    contrast = d.light_ink if dark_text else d.dark_ink
+    strokes = []
+    if d.ink_stroke > 0:
+        # 文字と同色の外側の環。反対色の縁より太くして同心の環にする
+        strokes.append(
+            {"width": max(size * d.ink_stroke, d.min_ink_stroke), "color": ink}
+        )
+    if d.contrast_stroke > 0:
+        strokes.append(
+            {"width": max(size * d.contrast_stroke, d.min_contrast_stroke), "color": contrast}
+        )
+    style: dict[str, Any] = {"color": ink, "strokes": strokes}
+    if d.shadow > 0:
+        style["shadow"] = max(size * d.shadow, d.min_shadow)
+        style["shadow_color"] = _with_alpha(contrast, d.shadow_alpha)
+    return style
+
+
+def design_fingerprint(design: str | TextDesign | None = None) -> dict:
+    """プレビューのキャッシュ指紋に入れるデザイン定数。
+
+    レイアウト定義(spec)に出てくるのは文字側の縁取り・影だけなので、背景側の
+    暗転やグラデーション、白黒反転の閾値はここで拾う。デザインを差し替えたら
+    プレビューのキャッシュが自動で無効になる。
+    """
+    return {
+        **asdict(resolve_design(design)),
+        "bright_threshold": BRIGHT_THRESHOLD,
+        "dark_percentile": DARK_PERCENTILE,
+    }
+
 
 # 隅の署名と「<曲名> を <リスト名> で歌ってみた」は3パターン共通
 _CAPTION_ELEMENT = {
@@ -84,23 +283,6 @@ _SIGNATURE_ELEMENT = {
     "type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
     "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom",
 }
-# 全面スタイルの下段。背景画像の明暗に関わらず読めるよう、半透明の帯を必ず敷く
-_FULLBLEED_CAPTION = {
-    "type": "text", "text": "{caption}", "box": [0.05, 0.63, 0.90, 0.17],
-    "size": 0.075, "color": "white", "wrap": True,
-    "stroke_width": 0.003, "background": "#000000b3",
-}
-_FULLBLEED_CREDIT = {
-    # 画像クレジット(表記不要な画像では空文字になり描かれない)
-    "type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
-    "size": 0.024, "color": "#e8e8e8", "align": "left", "valign": "bottom",
-    "background": "#000000a6",
-}
-_FULLBLEED_SIGNATURE = {
-    "type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
-    "size": 0.032, "color": "#e8e8e8", "align": "right", "valign": "bottom",
-    "background": "#000000a6",
-}
 
 
 def thumbnail_layout_spec(
@@ -108,12 +290,14 @@ def thumbnail_layout_spec(
     has_image: bool,
     credit_box: tuple[float, float, float, float] | None = None,
     style: str = DEFAULT_STYLE,
+    design: str | TextDesign | None = None,
 ) -> dict:
     """サムネのレイアウト定義(layout.py と同じ書式のdict)。
 
     STYLE_FULLBLEED(既定)では背景画像を呼び出し側が合成して渡すので、この
-    定義に image 要素は出てこない(文字だけ)。文字は輪郭+半透明の帯を敷いて
-    背景の明暗に依存せず読めるようにする。
+    定義に image 要素は出てこない(文字だけ)。文字は縁取りとぼかし影で
+    背景の明暗に依存せず読めるようにする(帯は敷かない)。design で
+    可読性デザインを差し替えられる(既定は TEXT_DESIGN)。
 
     STYLE_SIDE(旧)は
     - 言い換え単語+画像: 左に【単語】、右に画像(クレジットは画像の右下)
@@ -125,7 +309,7 @@ def thumbnail_layout_spec(
     クレジットの帯をその枠(=実際に貼られた画像の領域)の右下に置く(STYLE_SIDE)。
     """
     if style == STYLE_FULLBLEED:
-        return _fullbleed_spec(has_word, has_image)
+        return _fullbleed_spec(has_word, has_image, design)
     if not has_word:
         return {
             "background": "black",
@@ -162,29 +346,49 @@ def thumbnail_layout_spec(
     }
 
 
-def _fullbleed_spec(has_word: bool, has_image: bool) -> dict:
-    """全面スタイルの定義。背景(単色 or 合成済み画像)の上に文字だけを置く。"""
+def _outlined_text(size: float, design: TextDesign, **element: Any) -> dict:
+    """全面スタイルのtext要素(帯ではなく縁取り+影で読ませる)。"""
+    return {"type": "text", "size": size, **outline_style(size, design), **element}
+
+
+def _fullbleed_spec(
+    has_word: bool, has_image: bool, design: str | TextDesign | None = None
+) -> dict:
+    """全面スタイルの定義。背景(単色 or 合成済み画像)の上に文字だけを置く。
+
+    背景写真の明暗に関わらず読めるようにするのは文字ごとの縁取りとぼかし影
+    (outline_style)、および案によっては背景側のグラデーション(apply_scrim)で、
+    半透明の帯は敷かない。
+    """
+    d = resolve_design(design)
+    credit = _outlined_text(
+        # 画像クレジット(表記不要な画像では空文字になり描かれない)
+        0.024, d, text="{image_credit}", box=[0.03, 0.895, 0.50, 0.055],
+        align="left", valign="bottom",
+    )
+    signature = _outlined_text(
+        0.032, d, text="{app_credit}", box=[0.55, 0.895, 0.42, 0.055],
+        align="right", valign="bottom",
+    )
     if not has_word:
         return {
             "background": "black",
             "elements": [
-                {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
-                 "size": 0.11, "color": "white", "wrap": True,
-                 "stroke_width": 0.004,
-                 **({"background": "#000000b3"} if has_image else {})},
-                _FULLBLEED_CREDIT,
-                _FULLBLEED_SIGNATURE,
+                _outlined_text(
+                    0.11, d, text="{caption}", box=[0.06, 0.28, 0.88, 0.34], wrap=True
+                ),
+                credit,
+                signature,
             ],
         }
+    caption_box = [0.05, 0.63, 0.90, 0.17] if has_image else [0.05, 0.70, 0.90, 0.15]
     return {
         "background": "black",
         "elements": [
-            {"type": "text", "text": "{headline}", "box": [0.05, 0.10, 0.90, 0.38],
-             "size": 0.19, "color": "white", "stroke_width": 0.007,
-             **({"background": "#0000008c"} if has_image else {})},
-            _FULLBLEED_CAPTION if has_image else _CAPTION_ELEMENT,
-            _FULLBLEED_CREDIT,
-            _FULLBLEED_SIGNATURE,
+            _outlined_text(0.19, d, text="{headline}", box=[0.05, 0.10, 0.90, 0.38]),
+            _outlined_text(0.075, d, text="{caption}", box=caption_box, wrap=True),
+            credit,
+            signature,
         ],
     }
 
@@ -194,9 +398,11 @@ def thumbnail_layout(
     has_image: bool,
     credit_box: tuple[float, float, float, float] | None = None,
     style: str = DEFAULT_STYLE,
+    design: str | TextDesign | None = None,
 ) -> Layout:
     return parse_layout(
-        thumbnail_layout_spec(has_word, has_image, credit_box, style), "<thumbnail>"
+        thumbnail_layout_spec(has_word, has_image, credit_box, style, design),
+        "<thumbnail>",
     )
 
 
@@ -259,14 +465,102 @@ def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
     return resized.crop((left, top, left + width, top + height))
 
 
+def _scrim_mask(width: int, height: int, scrim: Scrim) -> Image.Image:
+    """上端(または下端)から中央へ薄れていくグラデーションのマスク(Lモード)。
+
+    端から hold までは alpha のまま、そこから extent で 0 に落ちる。減衰は
+    smoothstep なので変化の始めも終わりも傾きがゼロになり、帯のような
+    境界線が見えない(そこがべた塗りの帯との違い)。
+    """
+    edge, hold, extent, alpha = scrim
+    keep = max(0, int(hold * height))
+    span = max(1, int(extent * height) - keep)
+    column = Image.new("L", (1, height), 0)
+    pixels = column.load()
+    assert pixels is not None  # pragma: no cover - Lモードなら必ず取れる
+    for i in range(min(keep + span, height)):
+        t = 1.0 if i < keep else 1.0 - (i - keep) / span  # 端で1、消える位置で0
+        smooth = t * t * (3.0 - 2.0 * t)
+        y = i if edge == "top" else height - 1 - i
+        pixels[0, y] = round(alpha * 255 * smooth)
+    # 縦方向は等倍なので最近傍で引き伸ばせば値は変わらない
+    return column.resize((width, height), Image.Resampling.NEAREST)
+
+
+def apply_scrim(canvas: Image.Image, scrims: Sequence[Scrim]) -> Image.Image:
+    """背景の上下を下地ごと自然に暗くする(案1)。矩形の帯は敷かない。"""
+    if not scrims:
+        return canvas
+    black = Image.new("RGB", canvas.size, "black")
+    for scrim in scrims:
+        canvas.paste(black, (0, 0), _scrim_mask(canvas.width, canvas.height, scrim))
+    return canvas
+
+
+def region_luminance(
+    image: Image.Image, box: Sequence[float], percentile: float = DARK_PERCENTILE
+) -> float:
+    """box(フレーム比率)の領域の明るさ(0-255)。
+
+    既定は下位 DARK_PERCENTILE の値=「その領域の暗いほうの代表値」。平均や
+    中央値だと、左半分が空・右半分が黒い写真のような枠で「明るい」と判断して
+    しまい、黒文字にすると暗いほうで読めなくなる。暗いほうまで明るいときだけ
+    反転させたいので、低いパーセンタイルを見る。
+    """
+    w, h = image.size
+    x0 = max(0, min(w - 1, int(box[0] * w)))
+    y0 = max(0, min(h - 1, int(box[1] * h)))
+    x1 = max(x0 + 1, min(w, int((box[0] + box[2]) * w)))
+    y1 = max(y0 + 1, min(h, int((box[1] + box[3]) * h)))
+    hist = image.convert("L").crop((x0, y0, x1, y1)).histogram()
+    total = sum(hist)
+    if not total:  # pragma: no cover - cropが空になることは上のclampで無い
+        return 0.0
+    target = total * min(1.0, max(0.0, percentile))
+    seen = 0
+    for value, count in enumerate(hist):
+        seen += count
+        if seen >= target:
+            return float(value)
+    return 255.0  # pragma: no cover
+
+
+def apply_adaptive_colors(
+    spec: dict, background: Image.Image | None, design: str | TextDesign | None = None
+) -> dict:
+    """文字要素ごとに背景の明るさを測り、明るい所だけ黒文字+白縁に反転する(案3)。
+
+    要素単位で判定するので、上が空(明るい)・下が影(暗い)のような写真でも
+    見出しとキャプションが別々に最適な色になる。adaptive でない案では素通し。
+    """
+    d = resolve_design(design)
+    if not d.adaptive or background is None:
+        return spec
+    elements = []
+    for el in spec.get("elements", []):
+        if el.get("type") == "text" and "size" in el and "box" in el:
+            dark_text = region_luminance(background, el["box"]) > BRIGHT_THRESHOLD
+            el = {**el, **outline_style(float(el["size"]), d, dark_text=dark_text)}
+        elements.append(el)
+    return {**spec, "elements": elements}
+
+
 def compose_background(
-    image_paths: Sequence[Path], width: int, height: int, dim: float = BACKGROUND_DIM
+    image_paths: Sequence[Path],
+    width: int,
+    height: int,
+    dim: float | None = None,
+    design: str | TextDesign | None = None,
 ) -> Image.Image | None:
     """単語画像を全面に敷いた背景を作る(2枚なら左右に等分)。1枚も読めなければ None。
 
     文字を載せるので、そのままだと明るい写真で白文字が飛ぶ。全体を dim 倍に
-    落としたうえで、文字側にも輪郭と半透明の帯を敷いて可読性を担保する。
+    落としたうえで、文字側の縁取り・影(と案によっては上下のグラデーション)で
+    可読性を担保する。可読性の主役は文字側なので、dim は写真の中身が分かる
+    程度の弱い暗転に留める。
     """
+    d = resolve_design(design)
+    dim = d.background_dim if dim is None else dim
     images: list[Image.Image] = []
     for path in image_paths:
         try:
@@ -282,7 +576,7 @@ def compose_background(
         # 最後の枠は端数ぶんまで受け持つ(1pxの黒すじを残さない)
         w = width - slot_w * i if i == len(images) - 1 else slot_w
         canvas.paste(_cover(source, w, height), (slot_w * i, 0))
-    return ImageEnhance.Brightness(canvas).enhance(dim)
+    return apply_scrim(ImageEnhance.Brightness(canvas).enhance(dim), d.scrim)
 
 
 def song_title(project: Project, fallback: str | None = None) -> str:
@@ -342,12 +636,14 @@ def render_thumbnail(
     height: int = 720,
     style: str = DEFAULT_STYLE,
     app_credit: str = "",
+    design: str | TextDesign | None = None,
 ) -> Path:
     """サムネPNGを描いて out_path に保存する。
 
     words / image_paths / image_credits は1件でも複数(言い換え2語)でもよい。
     STYLE_FULLBLEED では画像を全面に敷いた背景を先に合成し、その上に文字を描く。
     app_credit は隅の署名(既定は「lyrics by Soramimic」。動画本編と同じ文言)。
+    design で文字の可読性デザインを差し替えられる(既定は TEXT_DESIGN)。
     """
     if isinstance(image_paths, Path):
         images = [image_paths]
@@ -357,8 +653,14 @@ def render_thumbnail(
     has_word = bool(data["headline"])
 
     if style == STYLE_FULLBLEED:
-        background = compose_background(images, width, height)
-        layout = thumbnail_layout(has_word, background is not None, style=style)
+        background = compose_background(images, width, height, design=design)
+        spec = thumbnail_layout_spec(
+            has_word, background is not None, style=style, design=design
+        )
+        # 白黒反転は「実際に文字の裏に来る絵」(暗転・グラデーション適用後)で判定する
+        layout = parse_layout(
+            apply_adaptive_colors(spec, background, design), "<thumbnail>"
+        )
         canvas = render_image(
             layout, None, data, width, height, background=background
         )
@@ -465,38 +767,34 @@ def wordlist_text_of(wordlist: str) -> str:
     return wordlist_phrase_name(stem) if stem else ""
 
 
-def build_thumbnail(
-    out_path: Path,
+def resolve_headline(
     song: str,
     wordlist: str,
     where: str | None = None,
     params: dict[str, Any] | None = None,
     image_cache: Path | None = None,
-    width: int = 1280,
-    height: int = 720,
     download_images: bool = True,
-    style: str = DEFAULT_STYLE,
     missing_images: list[tuple[str, str]] | None = None,
-    app_credit: str = "",
     image_wait_sec: float = 0.0,
-) -> Path | None:
-    """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
+    song_kana: str = "",
+) -> tuple[list[str], list[Path], list[str]]:
+    """曲名を1フレーズ変換し、(見出しの単語, 単語画像, クレジット文言)を返す。
 
-    ジョブのサムネ(generate_thumbnail)と、生成前のプレビュー
-    (thumbnail_preview.py)が共有する。変換・画像取得が失敗しても
-    言い換えなし・画像なしのサムネにフォールバックし、描画自体に失敗した
-    ときだけ None を返す(いずれも警告ログのみ)。中断要求(Cancelled)は伝播する。
+    変換や画像取得に失敗しても例外にはせず、取れたところまでを返す
+    (サムネの失敗でジョブを落とさない)。中断要求(Cancelled)は伝播する。
     missing_images を渡すと、使いたかったのにキャッシュに無かった画像・クレジットの
     (URL, 画像ページ)が積まれる(download_images=False のときだけ起きる)。
     image_wait_sec を渡すと、download_images=False でも「合計その秒数まで」は
     画像のダウンロードを待つ(プレビューの1回目から絵を出すため)。
+    song_kana(曲名の読み・カタカナ)があれば、変換の入力にはそちらを使う
+    (「紅葉」→ MeCab推定の「コーヨー」ではなく「モミジ」で変換したいときに使う。
+    サンプル曲は samples.json の title_kana から来る)。
     """
-    wordlist_text = wordlist_text_of(wordlist)
-
+    convert_input = song_kana.strip() or song
     found: list[tuple[dict[str, Any], dict[str, str] | None]] = []
-    if song and wordlist:
+    if convert_input and wordlist:
         try:
-            found = title_paraphrase(song, wordlist, where, params)
+            found = title_paraphrase(convert_input, wordlist, where, params)
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - サムネの失敗でジョブを落とさない
@@ -521,6 +819,53 @@ def build_thumbnail(
             raise
         except Exception as e:  # noqa: BLE001 - 画像なしのサムネにフォールバック
             logger.warning("サムネ用の画像を取得できませんでした: %s", e)
+    return words, image_paths, image_credits
+
+
+def build_thumbnail(
+    out_path: Path,
+    song: str,
+    wordlist: str,
+    where: str | None = None,
+    params: dict[str, Any] | None = None,
+    image_cache: Path | None = None,
+    width: int = 1280,
+    height: int = 720,
+    download_images: bool = True,
+    style: str = DEFAULT_STYLE,
+    missing_images: list[tuple[str, str]] | None = None,
+    app_credit: str = "",
+    design: str | TextDesign | None = None,
+    image_wait_sec: float = 0.0,
+    song_kana: str = "",
+) -> Path | None:
+    """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
+
+    ジョブのサムネ(generate_thumbnail)と、生成前のプレビュー
+    (thumbnail_preview.py)が共有する。変換・画像取得が失敗しても
+    言い換えなし・画像なしのサムネにフォールバックし、描画自体に失敗した
+    ときだけ None を返す(いずれも警告ログのみ)。中断要求(Cancelled)は伝播する。
+    missing_images を渡すと、使いたかったのにキャッシュに無かった画像・クレジットの
+    (URL, 画像ページ)が積まれる(download_images=False のときだけ起きる)。
+    image_wait_sec を渡すと、download_images=False でも「合計その秒数まで」は
+    画像のダウンロードを待つ(プレビューの1回目から絵を出すため)。
+    song_kana(曲名の読み・カタカナ)があれば、変換の入力にはそちらを使う
+    (「紅葉」→ MeCab推定の「コーヨー」ではなく「モミジ」で変換したいときに使う。
+    サンプル曲は samples.json の title_kana から来る)。キャプションに出す
+    曲名は読みの有無にかかわらず song(漢字まじりの表記)のまま。
+    """
+    wordlist_text = wordlist_text_of(wordlist)
+    words, image_paths, image_credits = resolve_headline(
+        song,
+        wordlist,
+        where,
+        params,
+        image_cache,
+        download_images,
+        missing_images,
+        image_wait_sec=image_wait_sec,
+        song_kana=song_kana,
+    )
 
     try:
         path = render_thumbnail(
@@ -534,6 +879,7 @@ def build_thumbnail(
             height=height,
             style=style,
             app_credit=app_credit,
+            design=design,
         )
     except Exception as e:  # noqa: BLE001 - 描画失敗もジョブは落とさない
         logger.warning("サムネ画像を生成できませんでした: %s", e)
@@ -550,11 +896,13 @@ def generate_thumbnail(
     image_cache: Path | None = None,
     title: str | None = None,
     app_credit: str = "",
+    title_kana: str = "",
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
     変換条件(単語リスト・where・パラメータ)はジョブ本体の変換と同じものを
     project.parody から取る。失敗時の扱いは build_thumbnail と同じ。
+    title_kana(曲名の読み)があれば変換の入力にそちらを使う(build_thumbnail 参照)。
     """
     from .video import VIDEO_DIR, image_cache_dir
 
@@ -568,4 +916,5 @@ def generate_thumbnail(
         width=width,
         height=height,
         app_credit=app_credit,
+        song_kana=title_kana,
     )
