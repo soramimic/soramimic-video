@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import threading
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ from .layout import (
     load_layout,
     render_frame,
     render_idle_frame,
+    render_section_frame,
     resolve_font_path,
 )
 from .mix import MIX_DIR
@@ -66,6 +68,14 @@ HOLD_MAX_SEC = 3.0  # 次の単語が来ないとき画像を表示し続ける�
 # 前奏(t=0〜歌い出し)にサムネを出す。前奏が短い・無い曲でも冒頭これだけは出す
 THUMBNAIL_MIN_SEC = 3.0
 SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
+# 「間奏(X秒)」を出す最短の間奏。これ未満は出しても一瞬で消えて目が滑るので出さない。
+# 単語フレームは既定で最大 HOLD_MAX_SEC(3秒)残るため、間奏らしく見えるのはその後さらに
+# 数秒空いたときで、5秒を下回る隙間は「歌の切れ目」であって間奏ではない
+INTERLUDE_MIN_SEC = 5.0
+# 後奏のエンドロールを出す最短の後奏。読み切れない長さでは出さない
+OUTRO_MIN_SEC = 6.0
+ENDROLL_WORDS_PER_PAGE = 30  # これを超えたら2枚に分ける
+ENDROLL_MAX_PAGES = 2  # 分けるのは最大2枚まで(それ以上は1枚あたりの語数を増やす)
 # build_image_cues 前の画像/クレジットのプリフェッチ並列数。
 # Commonsのサムネイル生成(Special:FilePath?width=)は並列4だと429が返ることを実測済み。
 # 2なら429なしで、リトライ待ちが入る4より速かった(20枚: 24.6秒 vs 31.5秒)
@@ -373,6 +383,203 @@ def idle_frame_data(project: Project, app_credit: str = "") -> dict:
     title = Path(project.song.midi_path).stem if project.song.midi_path else ""
     wordlist = project.parody.wordlist if project.parody else ""
     return {"title": title, "wordlist": wordlist, "app_credit": app_credit or APP_CREDIT}
+
+
+# ---- 歌唱なし区間(前奏・間奏・後奏) ----
+
+
+ENDROLL_WORD_SEP = "、"  # エンドロールで使用単語を並べる区切り
+
+
+@dataclass
+class IdleSection:
+    """歌唱フレームが1枚も出ない区間と、その種別。
+
+    kind は "intro"(1単語目より前=前奏) / "interlude"(単語と単語の間=間奏) /
+    "outro"(最終単語より後=後奏)。レイアウトの同名キーで表示を出し分ける。
+    """
+
+    kind: str
+    start: float
+    end: float
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+
+def idle_sections(cues: list[ImageCue], total_sec: float) -> list[IdleSection]:
+    """キュー列の隙間を前奏・間奏・後奏に分類する。
+
+    サムネのキューを載せた後(prepend_thumbnail_cue)に呼ぶ前提なので、前奏が
+    サムネで埋まっている曲では intro は出てこない(=残りの隙間だけが対象)。
+    表示できる単語が1つも無い曲は全編を前奏とみなす(間奏・後奏を定義できない)。
+    """
+    if total_sec <= 0:
+        return []
+    ordered = sorted(cues, key=lambda c: c.start)
+    if not ordered:
+        return [IdleSection("intro", 0.0, total_sec)]
+    out: list[IdleSection] = []
+    if ordered[0].start > 0:
+        out.append(IdleSection("intro", 0.0, ordered[0].start))
+    cursor = ordered[0].end
+    for cue in ordered[1:]:
+        if cue.start > cursor:
+            out.append(IdleSection("interlude", cursor, cue.start))
+        cursor = max(cursor, cue.end)
+    if total_sec > cursor:
+        out.append(IdleSection("outro", cursor, total_sec))
+    return out
+
+
+def sung_gap_sec(project: Project, section: IdleSection) -> float:
+    """区間を挟む「歌が止まっている長さ」(直前の歌唱ノート終端〜次の歌唱ノート始端)。
+
+    間奏フレームが出る区間は、直前の単語フレームの余韻(HOLD_MAX_SEC)のぶん
+    実際の間奏より短い。「間奏(X秒)」の X には見ている人の感覚に合う
+    「歌が止まっている長さ」を出したいので、ノートから測り直す。
+    前後に歌唱ノートが無い(=間奏ではない)ときは区間そのものの長さを返す。
+    """
+    prev = [n.end_sec for n in project.notes if n.end_sec <= section.start]
+    nxt = [n.start_sec for n in project.notes if n.start_sec >= section.end]
+    if not prev or not nxt:
+        return section.duration
+    return max(section.duration, min(nxt) - max(prev))
+
+
+def used_words(project: Project) -> list[str]:
+    """使った替え歌単語の一覧(登場順・重複なし)。後奏のエンドロール用。
+
+    単語リストの original 列(「新宿」「アインシュタイン」など元の語)を出す。
+    リストに無い手入力の単語は original が空なので替え歌側の表記で代用する。
+    """
+    if project.parody is None:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in project.parody.lines:
+        for w in line.words:
+            label = (w.original or w.surface or "").strip()
+            if label and label not in seen:
+                seen.add(label)
+                out.append(label)
+    return out
+
+
+def endroll_pages(
+    words: list[str],
+    per_page: int = ENDROLL_WORDS_PER_PAGE,
+    max_pages: int = ENDROLL_MAX_PAGES,
+) -> list[list[str]]:
+    """使用単語をエンドロールのページに割り振る(1〜max_pages枚・語数は均等)。
+
+    max_pages を超える語数は分割せず1枚あたりを増やす(文字は枠に合わせて縮む)。
+    後奏の尺は限られているので、めくる枚数を増やすより1枚を詰める方が読める。
+    """
+    if not words:
+        return []
+    pages = min(max_pages, max(1, -(-len(words) // per_page)))
+    size = -(-len(words) // pages)
+    return [words[i : i + size] for i in range(0, len(words), size)]
+
+
+def image_credits_text(credits: list[dict]) -> str:
+    """使用画像のクレジットを1つの文言にまとめる(重複は順序を保って畳む)。
+
+    動画本編では画像ごとに右下へ焼き込んでいる文言を、後奏でまとめて出すため。
+    """
+    texts = (str(c.get("credit") or "").strip() for c in credits)
+    return " / ".join(dict.fromkeys(t for t in texts if t))
+
+
+def section_frame_data(
+    project: Project,
+    app_credit: str = "",
+    section: str = "idle",
+    duration: float = 0.0,
+    words: Sequence[str] = (),
+    image_credits: str = "",
+    page: int = 1,
+    pages: int = 1,
+) -> dict:
+    """区間フレームのテンプレートに渡す値(idle_frame_data に区間固有の列を足す)。
+
+    - interlude_sec: その間奏の長さ(整数秒)。間奏以外では空文字
+    - used_words / image_credits: エンドロール用の使用単語とクレジット集約
+    - page / pages / page_label: エンドロールが複数枚に分かれたときのページ表示
+      (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
+    """
+    data = idle_frame_data(project, app_credit)
+    data.update(
+        {
+            "interlude_sec": str(int(round(duration))) if section == "interlude" else "",
+            "used_words": ENDROLL_WORD_SEP.join(words),
+            "image_credits": image_credits,
+            "page": str(page),
+            "pages": str(pages),
+            "page_label": f"({page}/{pages})" if pages > 1 else "",
+        }
+    )
+    return data
+
+
+def build_section_cues(
+    project: Project,
+    cues: list[ImageCue],
+    total_sec: float,
+    layout: Layout,
+    work: Path,
+    width: int,
+    height: int,
+    app_credit: str = "",
+    credits: list[dict] | None = None,
+) -> list[ImageCue]:
+    """前奏・間奏・後奏の専用フレームをキューにする(専用定義が無い区間は空)。
+
+    返したキューを既存のキューに混ぜて write_slideshow に渡すと、残った隙間だけが
+    従来の idle(なければ黒)で埋まる。短い間奏(INTERLUDE_MIN_SEC 未満)や短い
+    後奏(OUTRO_MIN_SEC 未満)には出さない。
+    """
+    out: list[ImageCue] = []
+    frames_dir = work / "frames"
+    words = used_words(project)
+    credit_text = image_credits_text(credits or [])
+    for sec in idle_sections(cues, total_sec):
+        if not layout.has_section(sec.kind):
+            continue
+        if sec.kind == "interlude" and sec.duration < INTERLUDE_MIN_SEC:
+            continue
+        if sec.kind == "outro":
+            # 後奏が短い曲・使用単語が取れない曲ではエンドロールを出さない
+            if sec.duration < OUTRO_MIN_SEC or not words:
+                continue
+            pages = endroll_pages(words)
+            span = sec.duration / len(pages)
+            for i, page_words in enumerate(pages):
+                data = section_frame_data(
+                    project, app_credit, "outro", sec.duration,
+                    page_words, credit_text, i + 1, len(pages),
+                )
+                frame = render_section_frame(
+                    layout, data, width, height, frames_dir, "outro"
+                )
+                if frame is not None:
+                    out.append(
+                        ImageCue(
+                            start=sec.start + span * i,
+                            end=sec.start + span * (i + 1),
+                            frame=frame,
+                        )
+                    )
+            continue
+        # 間奏の「X秒」は区間の長さではなく歌が止まっている長さ(直前の余韻を含む)
+        shown = sung_gap_sec(project, sec) if sec.kind == "interlude" else sec.duration
+        data = section_frame_data(project, app_credit, sec.kind, shown)
+        frame = render_section_frame(layout, data, width, height, frames_dir, sec.kind)
+        if frame is not None:
+            out.append(ImageCue(start=sec.start, end=sec.end, frame=frame))
+    return out
 
 
 def app_credit_text(synth_credit: str = "") -> str:
@@ -1074,7 +1281,14 @@ def make_video(
     )
     if thumbnail is not None:
         cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
-    # 歌唱がない区間(前奏・間奏・後奏)用のidleフレーム(定義があるときだけ)
+    # 間奏の「間奏(X秒)」・後奏のエンドロールを、歌唱フレームの隙間に差し込む
+    section_cues = build_section_cues(
+        project, cues, total_sec, layout_obj, work, width, height, credit_text, credits
+    )
+    if section_cues:
+        logger.info("間奏・後奏のフレーム: %d件", len(section_cues))
+        cues = sorted([*cues, *section_cues], key=lambda c: c.start)
+    # 残った隙間(短い間奏・専用定義の無い区間)用のidleフレーム(定義があるときだけ)
     idle_frame = render_idle_frame(
         layout_obj, idle_frame_data(project, credit_text), width, height, work / "frames"
     )

@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "歌唱がない区間(前奏=intro / 間奏=interlude / 後奏=outro)の既定の表示定義。",
+    "書式は layouts/*.json の elements と同じで、参照できる列は layout.py の",
+    "冒頭のドキュメントを参照(interlude_sec / used_words / image_credits / page など)。",
+    "レイアウトJSON側に同名のキーを書くとそのレイアウトではそちらが使われ、",
+    "空配列を書けばその区間の専用表示を無効化できる(従来の idle に戻る)。",
+    "intro は既定なし(前奏にはサムネイルを出すため)。"
+  ],
+  "interlude": [
+    {"type": "text", "text": "♪", "box": [0.1, 0.30, 0.8, 0.10],
+     "size": 0.075, "color": "#8a8a8a", "align": "center"},
+    {"type": "text", "text": "間奏({interlude_sec}秒)", "box": [0.1, 0.43, 0.8, 0.12],
+     "size": 0.085, "color": "white", "align": "center"},
+    {"type": "text", "text": "{wordlist} で歌ってみた", "box": [0.1, 0.58, 0.8, 0.07],
+     "size": 0.034, "color": "#a8a8a8", "align": "center", "require": "wordlist"}
+  ],
+  "outro": [
+    {"type": "text", "text": "使った単語{page_label}", "box": [0.06, 0.07, 0.88, 0.07],
+     "size": 0.042, "color": "#a8a8a8", "align": "center"},
+    {"type": "text", "text": "{used_words}", "box": [0.06, 0.17, 0.88, 0.45],
+     "size": 0.058, "color": "white", "align": "center", "wrap": true},
+    {"type": "text", "text": "{image_credits}", "box": [0.06, 0.65, 0.88, 0.26],
+     "size": 0.021, "color": "#9a9a9a", "align": "center", "wrap": true,
+     "require": "image_credits"}
+  ]
+}

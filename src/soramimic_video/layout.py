@@ -80,6 +80,30 @@
     - wordlist: 使用した単語リスト名
 - hold と idle を併用した場合、単語と単語の間の隙間は hold(直前フレーム)が、
   先頭(1単語目より前)と末尾(最終単語より後)は idle が受け持つ
+
+さらに、歌唱なし区間は前奏・間奏・後奏の3種に分けて出し分けられる。
+"intro" / "interlude" / "outro" を書くとその区間だけ別の要素で描き、
+書かなければ従来どおり "idle" が受け持つ(どちらも無ければ黒画面):
+
+    {
+      "interlude": [
+        {"type": "text", "text": "間奏({interlude_sec}秒)", "box": [0.1, 0.44, 0.8, 0.12]}
+      ],
+      "outro": [
+        {"type": "text", "text": "{used_words}", "box": [0.06, 0.2, 0.88, 0.5], "wrap": true}
+      ]
+    }
+
+- 区間ごとに追加で参照できる列(idle の title / wordlist / app_credit に加えて):
+    - interlude_sec: 歌が止まっている長さ(整数秒。直前の単語フレームの余韻を含む
+      ので、間奏フレームが実際に映っている時間より少し長い)。間奏以外では空文字
+    - used_words: 使った替え歌単語の一覧(後奏のエンドロール用)
+    - image_credits: 使用画像のクレジットをまとめた文言(後奏のエンドロール用)
+    - page / pages: 後奏が複数枚に分かれたときのページ番号と総ページ数
+- 短い間奏(video.INTERLUDE_MIN_SEC 未満)や短い後奏(video.OUTRO_MIN_SEC 未満)
+  では専用の表示を出さず idle(なければ黒)に戻る。一瞬だけ出て消えるのを避けるため
+- 既定の文言は section_defaults.json(パッケージ直下)に置いてある。レイアウトJSON側に
+  同名のキーを書けばそのレイアウトの指定が優先される("interlude": [] で無効化できる)
 """
 
 from __future__ import annotations
@@ -98,6 +122,10 @@ logger = logging.getLogger(__name__)
 LAYOUTS_DIR = Path(__file__).resolve().parent / "layouts"
 # 単語リスト名(external/soramimic-wordlists のCSVのstem)→ 組み込みレイアウト名のマップ
 WORDLIST_LAYOUTS_PATH = Path(__file__).resolve().parent / "wordlist_layouts.json"
+# 歌唱なし区間の種別。前奏(1単語目より前)・間奏(単語と単語の間)・後奏(最終単語より後)
+IDLE_SECTIONS = ("intro", "interlude", "outro")
+# 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
+SECTION_DEFAULTS_PATH = Path(__file__).resolve().parent / "section_defaults.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
 
 # 日本語が描けるフォントの探索先(上から順に使う。macOS / Linux(Colab))
@@ -243,6 +271,10 @@ class Layout:
     fallback: list[ImageElement | TextElement] = field(default_factory=list)
     # 歌唱がない区間(前奏・間奏・後奏)に出す固定フレームの要素(空なら黒画面)
     idle: list[ImageElement | TextElement] = field(default_factory=list)
+    # 区間種別(IDLE_SECTIONS)ごとの要素。空の種別は idle が受け持つ
+    sections: dict[str, list[ImageElement | TextElement]] = field(default_factory=dict)
+    # sections の元JSON(フレームキャッシュのキー用)
+    section_raw: dict[str, list] = field(default_factory=dict)
     # "hold": "next" で単語フレームを次の歌唱まで持続する(3秒上限を外す)
     hold_next: bool = False
     # 画像クレジット({image_credit})の自動焼き込み要素。credit_textが空の単語
@@ -262,6 +294,23 @@ class Layout:
     def render_texts(self, data: dict, use_fallback: bool = False) -> list[str]:
         """text要素のテンプレートを埋めた文字列(要素順)。imageは含まない。"""
         return _element_texts(self.active_elements(use_fallback), data)
+
+    def section_elements(
+        self, section: str
+    ) -> tuple[list[ImageElement | TextElement], list, str]:
+        """歌唱なし区間の (要素, 元JSON, キャッシュタグ)。
+
+        専用の定義(intro/interlude/outro)があればそれを、無ければ従来の idle を
+        使う。どちらも空なら空リスト(呼び出し側はクレジットだけ or 黒画面にする)。
+        """
+        elements = self.sections.get(section) or []
+        if elements:
+            return elements, self.section_raw.get(section, []), section
+        return self.idle, self.raw.get("idle", []), "idle"
+
+    def has_section(self, section: str) -> bool:
+        """その区間に専用の表示定義があるか(idleへのフォールバックは含めない)。"""
+        return bool(self.sections.get(section))
 
 
 def builtin_layout_names() -> list[str]:
@@ -479,6 +528,36 @@ def _with_app_credit(data: dict) -> dict:
     return {**data, "app_credit": resolve_app_credit(data)}
 
 
+def load_section_defaults() -> dict[str, list]:
+    """区間種別ごとの既定の表示定義(section_defaults.json)を読む。
+
+    間奏の「間奏(X秒)」表示や後奏のエンドロールは、レイアウトごとに書き分けたい
+    ものではないので既定をここに置き、必要なレイアウトだけJSONで上書きする。
+    ファイルが無い・壊れているときは既定なし(=従来どおり idle が受け持つ)。
+    """
+    global _section_defaults_cache
+    if _section_defaults_cache is not None:
+        return _section_defaults_cache
+    out: dict[str, list] = {}
+    if SECTION_DEFAULTS_PATH.exists():
+        try:
+            raw = json.loads(SECTION_DEFAULTS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning("区間の既定表示を読めません: %s (%s)", SECTION_DEFAULTS_PATH, e)
+            raw = {}
+        if isinstance(raw, dict):
+            out = {
+                name: list(raw[name])
+                for name in IDLE_SECTIONS
+                if isinstance(raw.get(name), list)
+            }
+    _section_defaults_cache = out
+    return out
+
+
+_section_defaults_cache: dict[str, list] | None = None
+
+
 def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
     """レイアウトJSON(パース済みdict)を検証してLayoutにする。originはエラー表示用。"""
     elements, subtitles = _parse_elements(raw.get("elements", []), origin)
@@ -487,13 +566,27 @@ def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
     fallback, _ = _parse_elements(raw.get("fallback", []), origin)
     # idle(歌唱なし区間用)の要素。単語も行タイミングもないので subtitle は無視する
     idle, _ = _parse_elements(raw.get("idle", []), origin)
+    # 前奏・間奏・後奏の出し分け。レイアウトに指定が無い種別は既定を使う
+    defaults = load_section_defaults()
+    section_raw = {
+        name: list(raw[name]) if isinstance(raw.get(name), list) else defaults.get(name, [])
+        for name in IDLE_SECTIONS
+    }
+    sections = {
+        name: _parse_elements(items, origin)[0] for name, items in section_raw.items()
+    }
     return Layout(
         elements=elements,
         subtitles=subtitles,
         fallback=fallback,
         idle=idle,
+        sections=sections,
+        section_raw=section_raw,
         hold_next=raw.get("hold") == "next",
         credit=_auto_credit_element(elements, fallback, raw),
+        # 区間側(intro/interlude/outro)は含めない。後奏のエンドロールが自前で
+        # {app_credit} を並べているだけで単語フレームの署名まで消えてしまうため
+        # (区間フレーム側の重複は render_section_frame が個別に避ける)
         app_credit=_auto_app_credit_element([elements, fallback, idle], raw),
         background=raw.get("background", "black"),
         font=raw.get("font"),
@@ -854,27 +947,47 @@ def render_image(
     )
 
 
-def render_idle_frame(
-    layout: Layout, data: dict, width: int, height: int, out_dir: Path
+def render_section_frame(
+    layout: Layout,
+    data: dict,
+    width: int,
+    height: int,
+    out_dir: Path,
+    section: str = "idle",
 ) -> Path | None:
-    """歌唱なし区間(前奏・間奏・後奏)に出す idle フレームPNG。
+    """歌唱なし区間(前奏・間奏・後奏)に出すフレームPNG。
 
-    idle要素もアプリクレジットも無ければ None(呼び出し側は黒画面のまま)。
-    idle要素が無くてもクレジットが有効なら、クレジットだけを載せた背景色の
-    フレームを返す(間奏でだけ表記が消えないように)。単語画像はないので
-    image要素を書いても描かれない(プロジェクトレベルの固定文言向け)。
+    section に IDLE_SECTIONS の種別を渡すとその専用定義で描き、専用定義が
+    無ければ従来の idle 要素にフォールバックする。要素もアプリクレジットも
+    無ければ None(呼び出し側は黒画面のまま)。要素が無くてもクレジットが
+    有効なら、クレジットだけを載せた背景色のフレームを返す(間奏でだけ表記が
+    消えないように)。単語画像はないので image要素を書いても描かれない
+    (プロジェクトレベルの固定文言向け)。
     """
-    if not layout.idle and layout.app_credit is None:
+    section_elements, raw_elements, tag = layout.section_elements(section)
+    if not section_elements and layout.app_credit is None:
         return None
     data = _with_app_credit(data)
-    elements = list(layout.idle)
+    elements = list(section_elements)
     texts = _element_texts(elements, data)
-    if layout.app_credit is not None:
+    # 区間側が自分で {app_credit} を並べているときは自動追加しない(二重表示になる)
+    own_credit = any(
+        isinstance(el, TextElement) and "{app_credit}" in el.template
+        for el in section_elements
+    )
+    if layout.app_credit is not None and not own_credit:
         elements.append(layout.app_credit)
         texts.append(_element_texts([layout.app_credit], data)[0])
     return _render_to_cache(
         layout, None, data, width, height, out_dir,
-        elements, texts, layout.raw.get("idle", []), tag="idle",
+        elements, texts, raw_elements, tag=tag,
     )
+
+
+def render_idle_frame(
+    layout: Layout, data: dict, width: int, height: int, out_dir: Path
+) -> Path | None:
+    """歌唱なし区間の既定(idle)フレーム。区間種別を問わない従来の入口。"""
+    return render_section_frame(layout, data, width, height, out_dir, "idle")
 
 
