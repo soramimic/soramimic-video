@@ -369,8 +369,10 @@ def test_index_html_builder_uses_preview_with_fallback():
     assert "builder-loading" in html  # 生成待ちのローディング表示がある
     assert "PREVIEW_TIMEOUT_MS = 8000" in html  # 8秒で打ち切る
     # 失敗・429・タイムアウトは代表画像(/api/wordlist-image)にフォールバックする
-    assert ".catch(() => { if (seq === previewSeq) loadWordlistImage(" in html
+    assert "loadWordlistImage(combo.wordlistName, seq);" in html
     assert "/api/wordlist-image?wordlist=" in html
+    # フォールバックしたままにはせず、本物のプレビューを裏で聞き直す
+    assert "retryPreviewAfterFallback(url, seq, PREVIEW_FALLBACK_RETRIES," in html
 
 
 def test_index_html_preview_is_debounced():
@@ -385,6 +387,32 @@ def test_index_html_preview_is_debounced():
     assert "if (key === previewKey) return;" in html
 
 
+def test_index_html_retries_after_falling_back_to_wordlist_image():
+    """代表画像へ落ちたあとも本物のプレビューを聞き直し、届いたら差し替える。
+
+    初回の空耳変換や画像取得が8秒に間に合わないだけのことがあり、そのまま
+    代表画像(文字なし)で固定されてしまうのを防ぐ。
+    """
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # 上限つきで間隔を伸ばしながら聞き直す
+    assert "const PREVIEW_FALLBACK_RETRY_MS = 4000;" in html
+    assert "const PREVIEW_FALLBACK_RETRIES = 8;" in html
+    assert "function retryPreviewAfterFallback(url, seq, left, wait)" in html
+    # フォールバックした直後に取り直しを仕掛ける
+    assert "loadWordlistImage(combo.wordlistName, seq);" in html
+    assert "setPreviewPending(true);" in html
+    assert "retryPreviewAfterFallback(url, seq, PREVIEW_FALLBACK_RETRIES," in html
+    # 本物が届いたら差し替え、待っている表示は消える
+    assert "function showPreviewBlob(blob)" in html
+    assert "previewHasReal = true;" in html
+    # 遅れて届いた代表画像で本物を上書きしない
+    assert "if (seq !== previewSeq || previewHasReal) return;" in html
+    # 準備中であることが分かる控えめな表示
+    assert '<p class="hint" id="builder-preview-pending" hidden>プレビューを準備中…</p>' in html
+
+
 def test_index_html_retries_once_when_images_pending():
     """絵なしで返ってきたら数秒後に1回だけ取り直し、ちらつかせずに差し替える。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
@@ -395,8 +423,8 @@ def test_index_html_retries_once_when_images_pending():
     assert "if (pending) retryThumbnailPreview(url, seq);" in html
     # 取り直しは世代番号(previewSeq)で取り違えを防ぎ、1回だけで打ち切る
     assert "if (seq !== previewSeq) return;   // 選び直された" in html
-    # 定義と呼び出しの1回だけ(再帰しない)
-    assert html.count("retryThumbnailPreview(") == 2
+    # 定義と、初回・フォールバック取り直しからの呼び出しだけ(自分では再帰しない)
+    assert html.count("retryThumbnailPreview(") == 3
 
 
 def test_index_html_preview_respects_hidden_wordlists():

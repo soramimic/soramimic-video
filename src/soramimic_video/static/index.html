@@ -315,6 +315,8 @@
       <button type="button" id="builder-cancel" class="btn-danger btn-sm">中断</button>
     </div>
   </div>
+  <!-- 代表画像へ落ちているあいだの控えめな表示(裏で本物を取り直している) -->
+  <p class="hint" id="builder-preview-pending" hidden>プレビューを準備中…</p>
   <!-- 完成した動画のシェア導線。枠のすぐ下に出す(中身は SHARE_HTML) -->
   <div id="builder-share" hidden></div>
   <!-- プレビュー画像を初期非表示にする単語リスト(HIDDEN_PREVIEW_WORDLISTS)では、
@@ -1286,6 +1288,7 @@ function setBuilderState(state) {
     $("builder-figure").hidden = false;   // サムネが無い組み合わせでも進捗は枠に出す
     renderBuilderBar(null);
   }
+  if (state !== "preview") setPreviewPending(false);
   updateBuilderOverlay();
 }
 
@@ -1318,6 +1321,7 @@ let previewTimer = null;       // デバウンスのタイマー
 let previewKey = "";           // 直近に表示を頼んだ内容(同じなら作り直さない)
 let previewComboKey = "";      // 直近の組み合わせ(変わったら画像の表示指定を戻す)
 let previewShowImages = false; // 「画像を表示する」を押した(組み合わせが変わると戻る)
+let previewHasReal = false;    // 本物のサムネを表示済みか(代表画像で上書きしない)
 const PREVIEW_TIMEOUT_MS = 8000;   // これを過ぎたら代表画像にフォールバック
 // 単語画像が間に合わず文字だけで返ってきた(X-Preview-Images: pending)ときに、
 // 絵入りへ差し替えられないか1回だけ聞き直す間隔。サーバーは裏で作り直しているので
@@ -1325,6 +1329,12 @@ const PREVIEW_TIMEOUT_MS = 8000;   // これを過ぎたら代表画像にフォ
 const PREVIEW_RETRY_MS = 4000;
 // プルダウンを続けて動かしたときに毎回APIを叩かないための待ち
 const PREVIEW_DEBOUNCE_MS = 400;
+// 代表画像へ落ちたあとに本物のプレビューを聞き直す間隔(少しずつ伸ばす)と回数。
+// 初回の空耳変換や単語画像のダウンロードが8秒に間に合わなかっただけのことが多く、
+// そのまま待てば数秒〜十数秒で出来上がる。上限まで来たら諦めて代表画像のままにする。
+const PREVIEW_FALLBACK_RETRY_MS = 4000;
+const PREVIEW_FALLBACK_RETRY_MAX_MS = 15000;
+const PREVIEW_FALLBACK_RETRIES = 8;
 
 // 画像を初期非表示にする単語リストか。隠すなら理由の文言、出してよいなら空文字。
 function hiddenPreviewReason(name) {
@@ -1364,7 +1374,8 @@ function loadWordlistImage(name, seq) {
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
   const probe = new Image();
   probe.onload = () => {
-    if (seq !== previewSeq) return;
+    // 待っているあいだに本物のプレビューが届いていたら、代表画像で上書きしない
+    if (seq !== previewSeq || previewHasReal) return;
     img.src = url;
     img.alt = "単語リストの代表画像";
     img.hidden = false;
@@ -1386,6 +1397,8 @@ function loadThumbnailPreview(combo) {
   const seq = ++previewSeq;
   const fig = $("builder-figure"), img = $("builder-image");
   setBuilderState("preview");   // 完成した動画が出ていれば新しいプレビューに戻す
+  setPreviewPending(false);
+  previewHasReal = false;
   if (previewAbort) previewAbort.abort();
   previewAbort = null;
   img.hidden = true;
@@ -1417,18 +1430,66 @@ function loadThumbnailPreview(combo) {
     })
     .then((blob) => {
       if (seq !== previewSeq) return;   // 選び直し済み: 古い結果は捨てる
-      previewUrl = URL.createObjectURL(blob);
-      img.src = previewUrl;
-      img.alt = "この組み合わせで作られるサムネイル(プレビュー)";
-      img.hidden = false;
-      $("builder-loading").hidden = true;
-      fig.hidden = false;
-      updateBuilderOverlay();
+      showPreviewBlob(blob);
       // 単語画像が間に合わなかったぶんは裏で取り切られる。少し待って1回だけ聞き直す
       if (pending) retryThumbnailPreview(url, seq);
     })
-    .catch(() => { if (seq === previewSeq) loadWordlistImage(combo.wordlistName, seq); })
+    .catch(() => {
+      if (seq !== previewSeq) return;
+      // まずは代表画像で場を持たせ、そのあとも本物ができていないか聞き直す
+      loadWordlistImage(combo.wordlistName, seq);
+      setPreviewPending(true);
+      retryPreviewAfterFallback(url, seq, PREVIEW_FALLBACK_RETRIES,
+        PREVIEW_FALLBACK_RETRY_MS);
+    })
     .finally(() => { clearTimeout(timer); if (previewAbort === ctrl) previewAbort = null; });
+}
+
+// 取れたプレビューを枠に出す(初回・取り直しで共通)。
+function showPreviewBlob(blob) {
+  const img = $("builder-image");
+  previewHasReal = true;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(blob);
+  img.src = previewUrl;
+  img.alt = "この組み合わせで作られるサムネイル(プレビュー)";
+  img.hidden = false;
+  $("builder-loading").hidden = true;
+  $("builder-figure").hidden = false;
+  setPreviewPending(false);
+  updateBuilderOverlay();
+}
+
+// 代表画像へ落ちているあいだの控えめな表示。
+function setPreviewPending(on) {
+  $("builder-preview-pending").hidden = !on;
+}
+
+// 代表画像へ落ちたあとの取り直し。8秒に間に合わなかっただけなら、少し待てば
+// サーバー側は出来上がっている(キャッシュに載るので追加の変換は走らない)。
+// 間隔を伸ばしながら上限まで試し、本物が返ったら静かに差し替える。
+function retryPreviewAfterFallback(url, seq, left, wait) {
+  if (left <= 0) { if (seq === previewSeq) setPreviewPending(false); return; }
+  setTimeout(() => {
+    if (seq !== previewSeq) return;   // 選び直された: もう要らない
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), PREVIEW_TIMEOUT_MS);
+    let pending = false;
+    fetch(url, { headers: headers(), signal: ctrl.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+        pending = res.headers.get("X-Preview-Images") === "pending";
+        return res.blob();
+      })
+      .then((blob) => {
+        if (seq !== previewSeq) return;
+        showPreviewBlob(blob);
+        if (pending) retryThumbnailPreview(url, seq);
+      })
+      .catch(() => retryPreviewAfterFallback(url, seq, left - 1,
+        Math.min(PREVIEW_FALLBACK_RETRY_MAX_MS, Math.round(wait * 1.5))))
+      .finally(() => clearTimeout(timer));
+  }, wait);
 }
 
 // 画像なしで返ってきたプレビューを、少し後に1回だけ取り直して静かに差し替える。
