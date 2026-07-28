@@ -350,6 +350,70 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     assert 'setBuilderState("preview");   // 完成した動画が出ていれば' in html
 
 
+def test_index_html_polling_survives_background():
+    """iOSでアプリを切り替えて戻ったとき、進捗ポーリングが再開すること(#139)。
+
+    バックグラウンド中はタイマーが凍り、fetchも失敗する。以前は失敗すると
+    setTimeoutのチェーンが張り直されず、戻っても進捗が止まったままだった。
+    """
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # 可視に戻ったら即座に取り直す(bfcache復帰・回線復帰も同じ入口)
+    assert 'document.addEventListener("visibilitychange", resumePolling);' in html
+    assert 'window.addEventListener("pageshow", resumePolling);' in html
+    assert 'window.addEventListener("online", resumePolling);' in html
+    assert "function resumePolling()" in html
+    assert 'if (document.visibilityState === "hidden") return;' in html
+    assert "restartPolling(currentJob);" in html
+    # 一時的な失敗ではチェーンを殺さず、間隔を伸ばして取り直す
+    assert "function pollFailed(id, seq, detail)" in html
+    assert "pollFailed(id, seq, (e && e.message) || \"通信エラー\");" in html
+    assert "const wait = Math.min(POLL_INTERVAL_MS * pollFailures, POLL_RETRY_MAX_MS);" in html
+    assert "schedulePoll(id, seq, wait);" in html
+    # 恒久エラー(ジョブが無い・権限が無い)だけは諦めて操作を返す
+    assert "const POLL_FATAL_STATUS = [401, 403, 404, 410];" in html
+    assert "if (POLL_FATAL_STATUS.includes(res.status))" in html
+    # 二重にチェーンが走らないよう世代番号で古い方を捨てる
+    assert "if (seq !== pollSeq || id !== currentJob) return;" in html
+    assert "function stopPolling()" in html
+    assert "pollSeq++;" in html
+    # 完了・失敗したらタイマーを確実に止める
+    assert "function finish() {\n  stopPolling();" in html
+    # 進捗の待ち時間は素のsetTimeoutではなくschedulePoll経由(取り消せるように)
+    assert "setTimeout(() => poll(id), 2000)" not in html
+    assert "schedulePoll(id, seq, POLL_INTERVAL_MS);" in html
+
+
+def test_index_html_elapsed_seconds_come_from_server():
+    """経過秒はクライアントで加算せず、サーバーの値をそのまま出す。
+
+    バックグラウンドから戻ったとき、1回ポーリングするだけで正しい値に戻る。
+    """
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "`${label}${elapsed}`" in html
+    assert "const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)`" in html
+    # 経過秒を進めるためだけのタイマーは持たない
+    assert "elapsedTimer" not in html
+
+
+def test_running_job_reports_stage_elapsed(tmp_path):
+    """ジョブの状態は実行中ステージの経過秒を持つ(クライアント表示の基準)。
+
+    画面はこの値をそのまま出すので、バックグラウンドから戻って1回取り直せば
+    経過秒は自動的に正しい値になる。
+    """
+    job = api_mod.Job(id="elapsed-test", dir=tmp_path, params={})
+    job.status = "running"
+    job.stage = "video"
+    job.stage_started_at = time.time() - 12.0
+    d = job.to_dict()
+    assert d["stage"] == "video"
+    assert 11.0 <= d["stage_elapsed"] <= 20.0
+
+
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone
