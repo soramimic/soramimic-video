@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -49,7 +51,12 @@ from typing import Any
 from PIL import Image, ImageEnhance
 
 from . import runproc
-from .convert import _find_row, _load_wordlist_rows, resolve_wordlist
+from .convert import (
+    _find_row,
+    _load_wordlist_rows,
+    resolve_convert_settings,
+    resolve_wordlist,
+)
 from .editor_io import wordlist_phrase_name
 from .layout import APP_CREDIT, Layout, fitted_image_box, parse_layout, render_image
 from .project import Project
@@ -63,6 +70,9 @@ THUMBNAIL_FILENAME = "thumbnail.png"
 SIGNATURE = APP_CREDIT
 # 単語画像を貼る枠(フレーム比率)。旧スタイル(STYLE_SIDE)専用
 IMAGE_BOX = (0.53, 0.08, 0.41, 0.55)
+
+# image_wait_sec の待ちで同時に落とす本数(見出しは高々2語なので少なくてよい)
+IMAGE_WAIT_WORKERS = 4
 
 STYLE_FULLBLEED = "fullbleed"  # 画像を全面に敷き、その上に文字を載せる(既定)
 STYLE_SIDE = "side"  # 旧: 左に【単語】、右に画像
@@ -600,7 +610,11 @@ def title_paraphrase(
     変換できる単語が無ければ空リスト。
     """
     csv_path = resolve_wordlist(wordlist)
-    result = run_convert([title], csv_path, where, dict(params or {}))
+    # ジョブ経由では解決済みのparamsが来るが、直接呼び(プレビュー等)では素の
+    # 辞書が来る。エンジン既定(VARIATION_COST=0等)のままだと音の近さより
+    # 変形の自由度が勝ってしまうので、本編と同じ既定解決を必ず通す
+    eff_where, coerced, _alpha = resolve_convert_settings(csv_path, where, params)
+    result = run_convert([title], csv_path, eff_where, coerced)
     lines = result.get("lines") or []
     words = lines[0].get("words") if lines else []
     picked = pick_headline_words(words or [])
@@ -675,7 +689,7 @@ def _word_image(
     その場合、キャッシュに無かった (画像URL, 画像ページ) を missing に積む
     (呼び出し側が後で先読みできるように)。
     """
-    from .image_credit import fetch_image_credit
+    from .image_credit import commons_file_title, fetch_image_credit
     from .video import cached_image, download_image
 
     url = (row or {}).get("image") or ""
@@ -690,11 +704,56 @@ def _word_image(
     credit = str((row or {}).get("image_credit") or "").strip()
     if not credit:
         info = fetch_image_credit(url, page, cache, cached_only=not download)
-        if info is None and not download and missing is not None:
+        if (
+            info is None
+            and not download
+            and missing is not None
+            # Commons以外(ローカル・生成カード画像)はそもそも表記の取得先が無いので
+            # 「未取得」に数えない(いつまでも取得待ち扱いになってしまう)
+            and commons_file_title(url, page) is not None
+        ):
             # 画像はあるがクレジットが未取得。表記付きで出せるよう次回までに温める
             missing.append((url, page))
         credit = info["credit_text"] if info else ""
     return path, credit
+
+
+def wait_for_images(
+    rows: Sequence[dict[str, str] | None], cache: Path, budget_sec: float
+) -> None:
+    """使う単語画像を「合計 budget_sec 秒まで」待ってダウンロードする。
+
+    プレビュー(download_images=False)で、初見の1回目から絵入りを返すための
+    短い待ち。間に合わなかったスレッドは止めずに走らせたままにするので、
+    そのぶんはそのまま裏読みとしてキャッシュに入る。
+    """
+    from .video import cached_image, download_image
+
+    if budget_sec <= 0:
+        return
+    urls = [
+        url
+        for url in dict.fromkeys(str((row or {}).get("image") or "") for row in rows)
+        if url and cached_image(url, cache) is None
+    ]
+    if not urls:
+        return
+    started = time.monotonic()
+    ex = ThreadPoolExecutor(
+        max_workers=min(IMAGE_WAIT_WORKERS, len(urls)), thread_name_prefix="thumb-image"
+    )
+    try:
+        futures = [ex.submit(download_image, url, cache) for url in urls]
+        wait(futures, timeout=budget_sec)
+    finally:
+        # 期限切れのぶんは待たない(走り続けたスレッドの結果はキャッシュに残る)
+        ex.shutdown(wait=False)
+    logger.info(
+        "サムネ用の画像を%d件だけ待ちました(%.1f秒/上限%.1f秒)",
+        sum(1 for url in urls if cached_image(url, cache) is not None),
+        time.monotonic() - started,
+        budget_sec,
+    )
 
 
 def wordlist_text_of(wordlist: str) -> str:
@@ -715,16 +774,26 @@ def resolve_headline(
     image_cache: Path | None = None,
     download_images: bool = True,
     missing_images: list[tuple[str, str]] | None = None,
+    image_wait_sec: float = 0.0,
+    song_kana: str = "",
 ) -> tuple[list[str], list[Path], list[str]]:
     """曲名を1フレーズ変換し、(見出しの単語, 単語画像, クレジット文言)を返す。
 
     変換や画像取得に失敗しても例外にはせず、取れたところまでを返す
     (サムネの失敗でジョブを落とさない)。中断要求(Cancelled)は伝播する。
+    missing_images を渡すと、使いたかったのにキャッシュに無かった画像・クレジットの
+    (URL, 画像ページ)が積まれる(download_images=False のときだけ起きる)。
+    image_wait_sec を渡すと、download_images=False でも「合計その秒数まで」は
+    画像のダウンロードを待つ(プレビューの1回目から絵を出すため)。
+    song_kana(曲名の読み・カタカナ)があれば、変換の入力にはそちらを使う
+    (「紅葉」→ MeCab推定の「コーヨー」ではなく「モミジ」で変換したいときに使う。
+    サンプル曲は samples.json の title_kana から来る)。
     """
+    convert_input = song_kana.strip() or song
     found: list[tuple[dict[str, Any], dict[str, str] | None]] = []
-    if song and wordlist:
+    if convert_input and wordlist:
         try:
-            found = title_paraphrase(song, wordlist, where, params)
+            found = title_paraphrase(convert_input, wordlist, where, params)
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - サムネの失敗でジョブを落とさない
@@ -735,6 +804,9 @@ def resolve_headline(
     image_credits: list[str] = []
     if found and image_cache is not None:
         try:
+            if not download_images and image_wait_sec > 0:
+                # 待てないなりに少しだけ待つ(初見の1回目から絵入りにするため)
+                wait_for_images([row for _word, row in found], image_cache, image_wait_sec)
             for _word, row in found:
                 path, credit = _word_image(
                     row, image_cache, download_images, missing_images
@@ -763,6 +835,8 @@ def build_thumbnail(
     missing_images: list[tuple[str, str]] | None = None,
     app_credit: str = "",
     design: str | TextDesign | None = None,
+    image_wait_sec: float = 0.0,
+    song_kana: str = "",
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -772,10 +846,24 @@ def build_thumbnail(
     ときだけ None を返す(いずれも警告ログのみ)。中断要求(Cancelled)は伝播する。
     missing_images を渡すと、使いたかったのにキャッシュに無かった画像・クレジットの
     (URL, 画像ページ)が積まれる(download_images=False のときだけ起きる)。
+    image_wait_sec を渡すと、download_images=False でも「合計その秒数まで」は
+    画像のダウンロードを待つ(プレビューの1回目から絵を出すため)。
+    song_kana(曲名の読み・カタカナ)があれば、変換の入力にはそちらを使う
+    (「紅葉」→ MeCab推定の「コーヨー」ではなく「モミジ」で変換したいときに使う。
+    サンプル曲は samples.json の title_kana から来る)。キャプションに出す
+    曲名は読みの有無にかかわらず song(漢字まじりの表記)のまま。
     """
     wordlist_text = wordlist_text_of(wordlist)
     words, image_paths, image_credits = resolve_headline(
-        song, wordlist, where, params, image_cache, download_images, missing_images
+        song,
+        wordlist,
+        where,
+        params,
+        image_cache,
+        download_images,
+        missing_images,
+        image_wait_sec=image_wait_sec,
+        song_kana=song_kana,
     )
 
     try:
@@ -807,11 +895,13 @@ def generate_thumbnail(
     image_cache: Path | None = None,
     title: str | None = None,
     app_credit: str = "",
+    title_kana: str = "",
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
     変換条件(単語リスト・where・パラメータ)はジョブ本体の変換と同じものを
     project.parody から取る。失敗時の扱いは build_thumbnail と同じ。
+    title_kana(曲名の読み)があれば変換の入力にそちらを使う(build_thumbnail 参照)。
     """
     from .video import VIDEO_DIR, image_cache_dir
 
@@ -825,4 +915,5 @@ def generate_thumbnail(
         width=width,
         height=height,
         app_credit=app_credit,
+        song_kana=title_kana,
     )

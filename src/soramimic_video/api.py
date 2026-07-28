@@ -124,6 +124,29 @@ def samples_dir() -> Path:
     return Path(override).expanduser() if override else STATIC_DIR / "sample"
 
 
+def load_samples() -> list[dict[str, Any]]:
+    """samples.json の中身。読めなければ空リスト(サンプル無しとして扱う)。"""
+    try:
+        raw = (samples_dir() / "samples.json").read_text(encoding="utf-8")
+    except OSError:
+        logger.warning("samples.json を読めません: %s", samples_dir())
+        return []
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("samples.json が壊れています: %s", samples_dir())
+        return []
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def sample_entry(sample_id: str) -> dict[str, Any] | None:
+    """samples.json の1件(そのIDが無ければ None)。"""
+    for entry in load_samples():
+        if entry.get("id") == sample_id:
+            return entry
+    return None
+
+
 def turnstile_site_key() -> str:
     """Turnstileのサイトキー。秘密鍵とサイトキーが両方揃っているときだけ返す。"""
     site = os.environ.get(TURNSTILE_SITE_ENV, "").strip()
@@ -297,6 +320,26 @@ def song_title_of(params: dict[str, Any]) -> str:
     return str(params.get("song_title") or params.get("midi_filename") or "")
 
 
+def song_title_kana_of(params: dict[str, Any]) -> str:
+    """サムネの曲名変換に使う読み(カタカナ)。分からなければ空文字。
+
+    読みが確定しているのは同梱サンプル曲だけ(samples.json の title_kana)。
+    UIはサンプル曲を選ぶと `<サンプルID>.mid` をそのまま送ってくるので、
+    midi_filename の拡張子を落としたものでサンプルを引く。
+    自分のMIDIを上げた人がたまたま同じファイル名を付けていることもあるので、
+    UIが送ってきた曲名がサンプルの曲名と食い違うときは読みを使わない
+    (その場合は従来どおり曲名の文字列から変換エンジンが読みを推定する)。
+    """
+    stem = re.sub(r"\.[^.]*$", "", str(params.get("midi_filename") or "")).strip()
+    entry = sample_entry(stem) if stem else None
+    if entry is None:
+        return ""
+    title = str(params.get("song_title") or "").strip()
+    if title and title != str(entry.get("title") or ""):
+        return ""
+    return str(entry.get("title_kana") or "")
+
+
 def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
     """動画に焼き込む歌声合成のクレジット表記(不要なら空文字)。
 
@@ -445,6 +488,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             layout=layout,
             granularity=parse_granularity_override(job.params.get("subtitle_granularity")),
             song_title=song_title_of(job.params),
+            song_title_kana=song_title_kana_of(job.params),
             synth_credit=synth_credit_of(job.params, config),
         )
 
@@ -775,6 +819,9 @@ def create_app(
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
+        # 同梱UIは同一オリジンなので不要だが、別オリジンのUIからも
+        # プレビューの状態(絵が間に合ったか)を読めるようにしておく
+        expose_headers=["X-Preview-Cache", "X-Preview-Images"],
     )
     app.state.manager = manager
 
@@ -822,14 +869,11 @@ def create_app(
     # 同梱サンプル曲(いずれも詞・曲パブリックドメイン、examples/gen_samples.py で生成)。
     # SORAMIMIC_SAMPLES_DIR を設定するとそのディレクトリのサンプルに差し替わる。
     def _sample_ids() -> set[str]:
-        manifest = json.loads(
-            (samples_dir() / "samples.json").read_text(encoding="utf-8")
-        )
-        return {s["id"] for s in manifest}
+        return {str(s["id"]) for s in load_samples() if s.get("id")}
 
     @app.get("/api/samples")
-    def list_samples() -> list[dict[str, str]]:
-        return json.loads((samples_dir() / "samples.json").read_text(encoding="utf-8"))
+    def list_samples() -> list[dict[str, Any]]:
+        return load_samples()
 
     @app.get("/api/sample/{sample_id}/midi")
     def sample_midi(sample_id: str) -> FileResponse:
@@ -978,15 +1022,15 @@ def create_app(
             raise HTTPException(status_code=404, detail="画像を取得できません")
         return FileResponse(path)
 
-    def _sample_title(sample_id: str) -> str:
-        """サンプル曲の曲名(samples.json の title)。未知のIDは404。"""
-        manifest = json.loads(
-            (samples_dir() / "samples.json").read_text(encoding="utf-8")
-        )
-        for entry in manifest:
-            if entry.get("id") == sample_id:
-                return str(entry.get("title") or sample_id)
-        raise HTTPException(status_code=404, detail="そのサンプルはありません")
+    def _sample_title(sample_id: str) -> tuple[str, str]:
+        """サンプル曲の (曲名, 読み)。読みは samples.json の title_kana(無ければ空)。
+
+        未知のIDは404。
+        """
+        entry = sample_entry(sample_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="そのサンプルはありません")
+        return str(entry.get("title") or sample_id), str(entry.get("title_kana") or "")
 
     def _preview_rate_key(request: Request) -> str:
         """レート制限の単位。公開モードは匿名セッション、無ければ接続元IP。"""
@@ -1010,10 +1054,18 @@ def create_app(
         サンプル曲の曲名をその単語リストで1フレーズだけ空耳変換し、実際の
         サムネと同じ描画で小さめのPNG(既定640x360)を返す。結果はディスクに
         キャッシュし、2回目以降は変換せずそのまま返す。
+        変換の入力には samples.json の title_kana(曲名の読み)を使う
+        (「紅葉」を「コーヨー」と推定させないため)。見出しの曲名は title のまま。
 
         images=0 なら単語画像を貼らない文字だけのサムネにする。昆虫など画像を
         初期非表示にしている単語リスト(index.html の HIDDEN_PREVIEW_WORDLISTS)
         で、モーダルが「画像を表示する」を押されるまで使う。
+
+        単語画像は数秒だけ待って貼る。間に合わなかったときは文字だけのPNGを
+        X-Preview-Images: pending で返し、裏で画像を取り切って同じキャッシュキーを
+        絵入りに作り直す。UIは pending を見て数秒後に1回だけ取り直す
+        (そのときには作り直し済み=キャッシュヒットなのでレート制限も変換も
+        追加で消費しない)。
 
         ジョブではないので日次クォータは消費しないが、連打で変換が走り続けない
         ようキャッシュミス時だけセッション単位のレート制限をかける(超過は429)。
@@ -1023,7 +1075,7 @@ def create_app(
         from .convert import parse_convert_params
         from .thumbnail_preview import PreviewSpec, render_slot
 
-        title = _sample_title(sample)
+        title, title_kana = _sample_title(sample)
         wordlist = wordlist.strip()
         if not wordlist:
             raise HTTPException(status_code=400, detail="単語リスト名(wordlist)が必要です")
@@ -1034,6 +1086,7 @@ def create_app(
                 where=where.strip() or None,
                 params=parse_convert_params(convert_params),
                 with_images=images,
+                title_kana=title_kana,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1041,7 +1094,7 @@ def create_app(
         cache_dir = config["preview_cache"]
         hit = spec.cached(cache_dir)
         if hit is not None:
-            return _preview_response(hit, cached=True)
+            return _preview_response(hit, cached=True, pending=spec.images_pending(cache_dir))
         if not preview_limiter.allow(_preview_rate_key(request)):
             raise HTTPException(
                 status_code=429,
@@ -1052,7 +1105,9 @@ def create_app(
                 # 待っている間に他のリクエストが作っているかもしれない
                 hit = spec.cached(cache_dir)
                 if hit is not None:
-                    return _preview_response(hit, cached=True)
+                    return _preview_response(
+                        hit, cached=True, pending=spec.images_pending(cache_dir)
+                    )
                 path = spec.render(cache_dir, image_cache=config["image_cache"])
         except TimeoutError as exc:
             raise HTTPException(
@@ -1061,9 +1116,11 @@ def create_app(
             ) from exc
         if path is None:
             raise HTTPException(status_code=500, detail="プレビューを作成できませんでした")
-        return _preview_response(path, cached=False)
+        return _preview_response(
+            path, cached=False, pending=spec.images_pending(cache_dir)
+        )
 
-    def _preview_response(path: Path, cached: bool) -> FileResponse:
+    def _preview_response(path: Path, cached: bool, pending: bool = False) -> FileResponse:
         return FileResponse(
             path,
             media_type="image/png",
@@ -1073,6 +1130,9 @@ def create_app(
                 # 「絵なし」プレビューを握り続けないようにする
                 "Cache-Control": "private, no-cache",
                 "X-Preview-Cache": "hit" if cached else "miss",
+                # 単語画像が間に合わず文字だけで返したときは pending。UIはこれを見て
+                # 数秒後に1回だけ取り直す(裏で絵入りに作り直されているのでヒットする)
+                "X-Preview-Images": "pending" if pending else "ready",
             },
         )
 

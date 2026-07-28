@@ -1131,6 +1131,10 @@ let luckyImageSeq = 0;     // プレビュー画像の取得世代(引き直し�
 let luckyPreviewUrl = "";  // 表示中のプレビュー画像(blob URL。差し替え時にrevoke)
 let luckyPreviewAbort = null;  // 進行中のプレビュー取得(引き直し・閉じるで中断)
 const LUCKY_PREVIEW_TIMEOUT_MS = 8000;  // これを過ぎたら代表画像にフォールバック
+// 単語画像が間に合わず文字だけで返ってきた(X-Preview-Images: pending)ときに、
+// 絵入りへ差し替えられないか1回だけ聞き直す間隔。サーバーは裏で作り直しているので
+// このリクエストはキャッシュヒットになり、レート制限も変換も追加で消費しない
+const LUCKY_PREVIEW_RETRY_MS = 4000;
 
 // 画像を初期非表示にする単語リストか。隠すなら理由の文言、出してよいなら空文字。
 // force(「画像を表示する」を押した)なら隠さない。
@@ -1196,8 +1200,13 @@ function luckyLoadPreview(combo, force) {
   const params = { sample: combo.sampleId, wordlist: combo.wordlistName };
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
+  let pending = false;
   fetch(url, { headers: headers(), signal: ctrl.signal })
-    .then((res) => { if (!res.ok) throw new Error(String(res.status)); return res.blob(); })
+    .then((res) => {
+      if (!res.ok) throw new Error(String(res.status));
+      pending = res.headers.get("X-Preview-Images") === "pending";
+      return res.blob();
+    })
     .then((blob) => {
       if (seq !== luckyImageSeq) return;   // 引き直し済み: 古い結果は捨てる
       luckyPreviewUrl = URL.createObjectURL(blob);
@@ -1206,9 +1215,31 @@ function luckyLoadPreview(combo, force) {
       img.hidden = false;
       $("lucky-modal-loading").hidden = true;
       fig.hidden = false;
+      // 単語画像が間に合わなかったぶんは裏で取り切られる。少し待って1回だけ聞き直す
+      if (pending) luckyRetryPreview(url, seq);
     })
     .catch(() => { if (seq === luckyImageSeq) luckyLoadImage(combo.wordlistName, seq, force); })
     .finally(() => { clearTimeout(timer); if (luckyPreviewAbort === ctrl) luckyPreviewAbort = null; });
+}
+
+// 画像なしで返ってきたプレビューを、少し後に1回だけ取り直して静かに差し替える。
+// 表示中の絵は消さない(ローディングも出さない)のでちらつかない。まだ絵が
+// 入っていなければ何もしない(繰り返さない)。
+function luckyRetryPreview(url, seq) {
+  setTimeout(() => {
+    if (seq !== luckyImageSeq) return;   // 引き直し・モーダルを閉じた
+    fetch(url, { headers: headers() })
+      .then((res) => (res.ok && res.headers.get("X-Preview-Images") !== "pending")
+        ? res.blob() : null)
+      .then((blob) => {
+        if (!blob || seq !== luckyImageSeq) return;
+        const next = URL.createObjectURL(blob);
+        $("lucky-modal-image").src = next;
+        if (luckyPreviewUrl) URL.revokeObjectURL(luckyPreviewUrl);
+        luckyPreviewUrl = next;
+      })
+      .catch(() => {});   // 取り直せなくても文字だけのプレビューのままでよい
+  }, LUCKY_PREVIEW_RETRY_MS);
 }
 
 function luckyRenderModal() {

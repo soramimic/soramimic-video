@@ -456,6 +456,47 @@ def test_generate_thumbnail_uses_word_image(tmp_path: Path, monkeypatch):
     assert calls and calls[0].endswith(".png") and "ダイオージャ" in calls[0]
 
 
+def _capture_convert_input(monkeypatch) -> list[list[str]]:
+    """run_convert に渡った変換入力(フレーズ列)を記録する。"""
+    seen: list[list[str]] = []
+
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+        seen.append(list(phrases))
+        return {
+            "lines": [{"units": [], "words": [{"surface": "モミジ", "id": "1"}]}],
+            "tokensList": [],
+            "phrases": phrases,
+        }
+
+    monkeypatch.setattr(thumb_mod, "run_convert", fake)
+    return seen
+
+
+def test_generate_thumbnail_converts_the_reading_but_captions_the_title(
+    tmp_path: Path, monkeypatch
+):
+    # 読みが分かっている曲(サンプル)は、MeCabの推定(紅葉→コーヨー)ではなく
+    # データの読みで変換する。キャプションに出す曲名は漢字のまま
+    seen = _capture_convert_input(monkeypatch)
+    calls = _capture_render(monkeypatch)
+    project = _project(_wordlist_csv(tmp_path), midi_path="input.mid")
+    generate_thumbnail(project, tmp_path, title="紅葉.mid", title_kana="モミジ")
+    assert seen == [["モミジ"]]
+    assert calls[0].startswith("紅葉|")
+
+
+def test_generate_thumbnail_without_reading_converts_the_title(
+    tmp_path: Path, monkeypatch
+):
+    # 読みが無い(自分のMIDI)ときは従来どおり曲名の文字列を変換に渡す
+    seen = _capture_convert_input(monkeypatch)
+    _capture_render(monkeypatch)
+    project = _project(_wordlist_csv(tmp_path), midi_path="input.mid")
+    generate_thumbnail(project, tmp_path, title="紅葉.mid")
+    generate_thumbnail(project, tmp_path, title="紅葉.mid", title_kana="  ")
+    assert seen == [["紅葉"], ["紅葉"]]
+
+
 def test_generate_thumbnail_falls_back_when_convert_fails(tmp_path: Path, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("変換できません")
