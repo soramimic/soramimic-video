@@ -234,6 +234,9 @@ class Job:
     stage_progress: int | None = None  # synthesizeの実進捗(%)。NEUTRINO出力から
     stage_estimated_total: float | None = None  # synthesizeの所要秒の見積り
     log: deque[str] = field(default_factory=lambda: deque(maxlen=200))
+    # videoステージが実際に使ったレイアウトの出どころ(resolve_layout が入れる)。
+    # "name:<レイアウト名>" / "json:layout.json" など。あとから食い違いを追うため
+    layout_source: str | None = None
     video: Path | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
@@ -280,6 +283,8 @@ class Job:
                     d["stage_progress"] = pct
                     if eta is not None:
                         d["stage_eta_seconds"] = round(eta)
+        if self.layout_source:
+            d["layout_source"] = self.layout_source
         if self.started_at and self.finished_at:
             d["total_seconds"] = round(self.finished_at - self.started_at, 1)
         if self.status == "done" and self.video:
@@ -474,10 +479,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     with _stage(job, "mix"):
         mix(project, d, soundfont=config.get("soundfont"))
     with _stage(job, "video"):
-        # レイアウトの優先順: ジョブのJSON > ジョブの名前指定 > サーバー既定(--layout)
-        layout: str | None = str(d / "layout.json")
-        if not (d / "layout.json").exists():
-            layout = job.params.get("layout") or config.get("layout")
+        layout, job.layout_source = resolve_layout(job, config)
         from .align import parse_granularity_override
 
         return make_video(
@@ -491,6 +493,37 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             song_title_kana=song_title_kana_of(job.params),
             synth_credit=synth_credit_of(job.params, config),
         )
+
+
+LAYOUT_FILENAME = "layout.json"
+
+
+def resolve_layout(job: Job, config: dict[str, Any]) -> tuple[str | None, str]:
+    """videoステージに渡すレイアウト指定と、その出どころ(status.jsonに残す)。
+
+    優先順は ジョブのJSON(layout.json) > ジョブの名前指定 > サーバー既定(--layout)。
+    両方あるとレイアウト名は黙って無視されるため、UIのバグ(古いlayout.jsonが
+    別の単語リストのジョブに付く)を後から追えるようWARNINGを残す。
+    """
+    layout_path = job.dir / LAYOUT_FILENAME
+    name = str(job.params.get("layout") or "").strip()
+    if layout_path.exists():
+        if name:
+            logger.warning(
+                "[job %s] レイアウト名(%s)と%sの両方が指定されています。"
+                "%sを使います(レイアウト名は無視されます)",
+                job.id,
+                name,
+                LAYOUT_FILENAME,
+                LAYOUT_FILENAME,
+            )
+        return str(layout_path), f"json:{LAYOUT_FILENAME}"
+    if name:
+        return name, f"name:{name}"
+    default: str | None = config.get("layout")
+    if default:
+        return default, f"server-default:{default}"
+    return None, "builtin-default"
 
 
 @contextmanager
@@ -585,6 +618,7 @@ class JobManager:
                 status=data.get("status", "error"),
                 stages=data.get("stages", []),
                 error=data.get("error"),
+                layout_source=data.get("layout_source"),
             )
             if data.get("created_at"):
                 job.created_at = datetime.fromisoformat(data["created_at"]).timestamp()
@@ -615,7 +649,7 @@ class JobManager:
         if lyrics.strip():
             (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
         if layout_json.strip():
-            (job_dir / "layout.json").write_text(layout_json, encoding="utf-8")
+            (job_dir / LAYOUT_FILENAME).write_text(layout_json, encoding="utf-8")
         job = Job(id=job_id, dir=job_dir, params=params, owner=owner)
         with self._lock:
             self.jobs[job_id] = job

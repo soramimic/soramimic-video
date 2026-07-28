@@ -1179,7 +1179,14 @@ async function submitJob(previewSec) {
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
-  form.append("layout_json", $("layout-json").value);
+  // レイアウトJSONは、ユーザーがレイアウトエディタを編集したとき(leDirty)だけ
+  // 送る。読み込んだだけのJSONまで送ると、レイアウト名との食い違い(読み込みに
+  // 失敗して前のリストのJSONが残った等)がそのままサーバー側で優先され、
+  // 別の単語リスト向けのカードで生成されてしまう(api.pyはlayout.jsonを名前より
+  // 優先する)。編集していなければ名前だけ送り、サーバーに読ませる。
+  if (leDirty && $("layout-json").value.trim()) {
+    form.append("layout_json", $("layout-json").value);
+  }
   if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
   setBusy(true);
   $("result").hidden = true;
@@ -1827,6 +1834,12 @@ $("builder-cancel").addEventListener("click", cancelJob);
 // ---- レイアウトエディタ(ドラッグで配置) ----
 
 let leLayout = null;   // 編集中のレイアウト。nullなら未使用(=レイアウト名 or サーバー既定)
+// ユーザーが自分で編集したか(ドラッグ・追加/削除・JSON手入力)。
+// 生成時にlayout_jsonを送るのはこれがtrueのときだけ(読み込んだだけなら名前で送る)
+let leDirty = false;
+// 今の leLayout / #layout-json がどのレイアウト名から来たか。#layout と食い違う
+// JSONは復元しない(restoreForm)ための出どころ記録
+let leLayoutFor = "";
 let leSelected = -1;
 let leDrag = null;
 let leColumns = [];    // 単語リストの列名({列名}挿入プルダウン用)
@@ -1921,10 +1934,25 @@ function leLabel(e) {
   return e.text || "テキスト";
 }
 
+// leLayout を #layout-json に書き戻す。ドラッグ等の手編集から呼ばれるので
+// 「ユーザーが編集した」印(leDirty)を立てる。leLoad は読み込み直後に降ろす
 function leToJson() {
   $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
+  leDirty = true;
+  leLayoutFor = $("layout").value.trim();
   saveForm();  // ドラッグ編集はchangeを発火しないのでここで保存する
   releaseBuilderDone();   // 同じ理由で、完成した動画も自分でプレビューに戻す
+}
+
+// 編集中のレイアウトを捨てる(= レイアウト名だけで生成する状態に戻す)。
+// レイアウト名を変えた瞬間に同期で呼ぶことで、leLoadのfetchが失敗しても
+// 前のレイアウト由来のJSONが残らないようにする
+function leClearLayout() {
+  leLayout = null;
+  leSelected = -1;
+  leDirty = false;
+  leLayoutFor = "";
+  $("layout-json").value = "";
 }
 
 // 替え歌単語フィールドのサンプル(未知語には行がないのでこれだけ埋まる)
@@ -2454,13 +2482,39 @@ document.addEventListener("keydown", (ev) => {
   leRender();
 });
 
+// レイアウト名の内容を取り込んで編集を始める。失敗したら編集中のレイアウトを
+// 捨てる: 前のレイアウトのJSONを残すと、レイアウト名と中身が食い違ったまま
+// 生成に送られて別の単語リスト向けのカードになってしまう(実際に起きた事故)
 async function leLoad() {
   const name = $("layout").value.trim() || "default";
-  const res = await fetch(`/api/layouts/${encodeURIComponent(name)}`, { headers: headers() });
-  if (!res.ok) { leMsg("組み込みレイアウトだけ読み込めます: " + name); return false; }
-  leLayout = await res.json();
+  const fail = (msg) => {
+    leClearLayout();
+    saveForm();
+    leMsg(msg);
+    leRender();
+    return false;
+  };
+  let res;
+  try {
+    res = await fetch(`/api/layouts/${encodeURIComponent(name)}`, { headers: headers() });
+  } catch (err) {
+    // サーバー再起動中などの通信エラー。ここで握りつぶすと古いJSONが焼き付く
+    return fail(`レイアウト「${name}」を読み込めませんでした(${err.message})。`
+      + "編集中のレイアウトは破棄しました。「読み込み」で再試行してください");
+  }
+  if (!res.ok) {
+    return fail("組み込みレイアウトだけ読み込めます: " + name);
+  }
+  try {
+    leLayout = await res.json();
+  } catch (err) {
+    return fail(`レイアウト「${name}」の内容を読めませんでした(${err.message})`);
+  }
   leMsg("");
   leToJson();
+  leDirty = false;   // 読み込んだだけなので「ユーザーの編集」ではない
+  leLayoutFor = $("layout").value.trim();
+  saveForm();        // leToJson が dirty のまま保存しているので上書きし直す
   leSetSide("elements");
   return true;
 }
@@ -2499,6 +2553,9 @@ function applyWordlistLayout() {
   if (next === cur) return;
   setChoice("layout", next);
   lastAutoLayout = next;
+  // レイアウト名を変えたら、前のリスト向けのJSONは同期でその場で捨てる。
+  // (この後のchange→leLoadは非同期fetchなので、失敗すると古いJSONが残る)
+  leClearLayout();
   saveForm();
   // 既存のchange処理(leLoadでの編集エディタ更新)に合わせる
   $("layout").dispatchEvent(new Event("change", { bubbles: true }));
@@ -2525,6 +2582,9 @@ $("le-cue-next").addEventListener("click", () => {
 $("layout-json").addEventListener("change", () => {
   try {
     leLayout = $("layout-json").value.trim() ? JSON.parse($("layout-json").value) : null;
+    // テキストエリアの手入力もユーザーの編集(生成時にlayout_jsonとして送る)
+    leDirty = !!leLayout;
+    leLayoutFor = $("layout").value.trim();
     leMsg("");
     leSetSide("elements");
   } catch (err) {
@@ -3080,6 +3140,10 @@ function saveForm() {
       // 自動でセットしたレイアウト名も持ち回る(復元後も手動選択と区別するため)
       layoutAuto: lastAutoLayout,
       layoutJson: $("layout-json").value,
+      // このJSONがどのレイアウト名から来たか。復元時にlayoutと突き合わせて、
+      // 食い違うJSON(読み込み失敗で古いまま残ったもの)を引き継がないようにする
+      layoutJsonFor: leLayoutFor,
+      layoutDirty: leDirty,
       model: $("model").value,
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
@@ -3296,10 +3360,18 @@ async function doRestoreForm() {
     if (state.layout) setChoice("layout", state.layout);
     // 復元した値が「前回自動でセットされたもの」なら、単語リスト変更で入れ替えてよい
     lastAutoLayout = state.layoutAuto || "";
-    // 5. layoutJson: 既存ハンドラでleLayoutにパースさせる
-    if (state.layoutJson) {
+    // 5. layoutJson: 保存時の出どころ(layoutJsonFor)が復元するlayout名と
+    //    一致するときだけ復元する。食い違うJSON(レイアウト読み込みの失敗で
+    //    前のリストのJSONが残ったもの)を持ち越すと、リロードのたびに
+    //    「名前は新しいリスト・中身は前のリスト」のズレが再生産されるため。
+    //    出どころを持たない古い保存も、由来が分からないので復元しない
+    //    (エディタを開き直せばレイアウト名から読み直される)。
+    if (state.layoutJson && state.layoutJsonFor === (state.layout || "")) {
       $("layout-json").value = state.layoutJson;
       $("layout-json").dispatchEvent(new Event("change", { bubbles: true }));
+      // 手編集でないJSON(レイアウト名から読み込んだだけ)は送信対象に戻さない
+      leDirty = !!state.layoutDirty;
+      leLayoutFor = state.layoutJsonFor;
     }
   }
 

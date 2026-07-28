@@ -1,16 +1,26 @@
+import csv
 import hashlib
+import itertools
+import json
+import logging
 import shutil
 from pathlib import Path
 
 import pytest
 
+import soramimic_video
 from helpers import build_xf_midi
+from soramimic_video.layout import load_layout
 from soramimic_video.project import Line, Note, Parody, ParodyLine, ParodyWord, Project, SongInfo
 from soramimic_video.video import (
     ImageCue,
     build_ass,
     build_image_cues,
+    collect_word_frames,
     download_image,
+    layout_column_mismatch,
+    layout_template_columns,
+    word_frame_data,
     write_slideshow,
 )
 from soramimic_video.xfparse import analyze_midi
@@ -1409,3 +1419,89 @@ def test_build_section_cues_reports_sung_gap(tmp_path: Path):
         320, 180, work / "frames", "interlude",
     )
     assert got[0].frame == expected
+
+
+# ---- レイアウトと単語リストの食い違い検知 ----
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORDLISTS_DIR = REPO_ROOT / "external" / "soramimic-wordlists"
+WORDLIST_LAYOUTS = json.loads(
+    (
+        Path(soramimic_video.__file__).parent / "wordlist_layouts.json"
+    ).read_text(encoding="utf-8")
+)
+
+
+def _wordlist_rows(name: str, limit: int = 20) -> list[dict]:
+    path = WORDLISTS_DIR / f"{name}.csv"
+    if not path.is_file():
+        pytest.skip("external/soramimic-wordlists のsubmoduleが無い環境")
+    with path.open(encoding="utf-8", newline="") as f:
+        return list(itertools.islice(csv.DictReader(f), limit))
+
+
+@pytest.mark.parametrize(("wordlist", "layout_name"), sorted(WORDLIST_LAYOUTS.items()))
+def test_card_layout_renders_more_than_the_name(wordlist: str, layout_name: str):
+    """単語リストの既定カードレイアウトが、そのリストの行で中身まで描けること。
+
+    レイアウト名と layout_json の食い違いで別リストのカードが当たると、列参照が
+    すべて空になり「名前と写真だけ」のカードになる(実際に起きた事故)。
+    """
+    layout = load_layout(layout_name)
+    rows = _wordlist_rows(wordlist)
+    assert rows, f"{wordlist}.csv が空です"
+    # レイアウトが参照する列がリストに存在する(1列も無ければ食い違い)
+    assert layout_column_mismatch(layout, set(rows[0])) == []
+    best = max(
+        len([t for t in layout.render_texts(word_frame_data(_word(row), row)) if t])
+        for row in rows
+    )
+    assert best >= 2, f"{layout_name} が {wordlist} の行で名前だけになっています"
+
+
+def _word(row: dict) -> ParodyWord:
+    return ParodyWord(
+        surface="替", kana="カエ", original=row.get("original", ""),
+        original_surface=row.get("original", ""), originalkana="モト",
+        note_ids=[0], note_kana=["カ"], wordlist_row=row,
+    )
+
+
+def test_layout_column_mismatch_flags_foreign_layout():
+    station = load_layout("station_card")
+    assert "prefecture" in layout_template_columns(station)
+    # scientist の行には station_card が参照する列(prefecture/lines)が1つも無い
+    scientist_keys = {"id", "original", "surface", "field", "country", "image"}
+    assert layout_column_mismatch(station, scientist_keys) == ["lines", "prefecture"]
+    # 自分のリストの行なら黙る。列が一部欠けているだけでも黙る(任意列があるため)
+    assert layout_column_mismatch(station, {"prefecture", "image"}) == []
+    # 列を参照しないレイアウト(caption等)や、行が無いときは判定しない
+    assert layout_column_mismatch(load_layout("caption"), scientist_keys) == []
+    assert layout_column_mismatch(station, set()) == []
+
+
+def _scientist_project(tmp_path: Path):
+    """scientist の行(field/country/birth_year を持つ)を1語だけ持つプロジェクト。"""
+    project = _project(tmp_path)
+    project.parody.wordlist = "scientist"
+    project.parody.lines[0].words[0].wordlist_row = {
+        "id": "1", "original": "湯川秀樹", "surface": "ゆかわ",
+        "field": "物理学", "country": "日本", "birth_year": "1907",
+        "image": "https://example.com/yukawa.jpg",
+    }
+    return project
+
+
+def test_collect_word_frames_warns_on_foreign_layout(tmp_path: Path, caplog):
+    project = _scientist_project(tmp_path)
+    layout = load_layout("station_card")  # stations 向けのカード = 食い違い
+    with caplog.at_level(logging.WARNING, logger="soramimic_video.video"):
+        frames = collect_word_frames(project, layout)
+    assert frames
+    assert "レイアウトが参照する列が単語リストにありません" in caplog.text
+    assert "prefecture" in caplog.text
+    # 素直な組み合わせ(scientist の行 × scientist_card)では警告しない
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="soramimic_video.video"):
+        collect_word_frames(_scientist_project(tmp_path), load_layout("scientist_card"))
+    assert "レイアウトが参照する列が単語リストにありません" not in caplog.text

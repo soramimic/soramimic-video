@@ -7,6 +7,7 @@ APIキー認証を確認する。NEUTRINO実行込みのE2Eは手動(serve)で�
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -1025,3 +1026,101 @@ def test_index_html_no_server_host_line():
     )
     assert "location.host" not in html
     assert "NEUTRINO_ROOT未設定" in html
+
+
+# ---- レイアウト名とlayout.jsonの食い違い(別リストのカードで生成される事故) ----
+
+
+def test_resolve_layout_uses_name_without_layout_json(tmp_path):
+    # レイアウト名だけのジョブは名前がそのままvideoステージに渡る(仕様の明文化)
+    job = api_mod.Job(id="j1", dir=tmp_path, params={"layout": "caption"})
+    assert api_mod.resolve_layout(job, {}) == ("caption", "name:caption")
+
+
+def test_resolve_layout_json_overrides_name_and_warns(tmp_path, caplog):
+    # layout.json はレイアウト名より優先される(従来仕様)。ただし黙って
+    # 名前を無視すると事故の追跡ができないのでWARNINGを残す
+    (tmp_path / "layout.json").write_text("{}", encoding="utf-8")
+    job = api_mod.Job(id="j2", dir=tmp_path, params={"layout": "scientist_card"})
+    with caplog.at_level(logging.WARNING, logger="soramimic_video.api"):
+        layout, source = api_mod.resolve_layout(job, {})
+    assert layout == str(tmp_path / "layout.json")
+    assert source == "json:layout.json"
+    assert "scientist_card" in caplog.text and "layout.json" in caplog.text
+
+
+def test_resolve_layout_falls_back_to_server_default(tmp_path):
+    job = api_mod.Job(id="j3", dir=tmp_path, params={})
+    assert api_mod.resolve_layout(job, {"layout": "caption"}) == (
+        "caption",
+        "server-default:caption",
+    )
+    assert api_mod.resolve_layout(job, {}) == (None, "builtin-default")
+
+
+def test_layout_name_only_job_has_no_layout_json(client):
+    # layout_json を送らないジョブには layout.json が作られず、レイアウト名が使われる
+    job_id = submit(client, wordlist="stations", layout="caption")
+    wait_done(client, job_id)
+    job = client.app.state.manager.jobs[job_id]
+    assert not (job.dir / "layout.json").exists()
+    assert api_mod.resolve_layout(job, {}) == ("caption", "name:caption")
+
+
+def test_index_html_sends_layout_json_only_when_edited():
+    # 事故の本命: レイアウト名を切り替えてもテキストエリアの古いJSONが送られ、
+    # サーバー側で名前より優先されて別リストのカードになっていた。
+    # エディタを編集したとき(leDirty)だけ layout_json を送る。
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'if (leDirty && $("layout-json").value.trim()) {' in html
+    assert '    form.append("layout_json", $("layout-json").value);' in html
+    # 読み込んだだけのJSONは編集扱いにしない。leToJson が dirty のまま保存して
+    # いるので、降ろしたあとに保存し直さないとリロードで編集扱いに戻ってしまう
+    assert (
+        "  leDirty = false;   // 読み込んだだけなので「ユーザーの編集」ではない\n"
+        '  leLayoutFor = $("layout").value.trim();\n'
+        "  saveForm();" in html
+    )
+
+
+def test_index_html_layout_load_clears_on_fetch_error():
+    # leLoad の fetch は try/catch する。失敗したら編集中のレイアウトを捨てて
+    # メッセージを出す(握りつぶすと前のリストのJSONが焼き付く)
+    import re
+
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    body = re.search(r"async function leLoad\(\) \{.*?\n\}", html, re.S).group(0)
+    assert "try {" in body and "} catch (err) {" in body
+    assert "leClearLayout();" in body
+    assert "編集中のレイアウトは破棄しました" in body
+
+
+def test_index_html_wordlist_layout_switch_clears_layout_json():
+    # applyWordlistLayout はレイアウト名を入れた直後に「同期で」JSONを捨てる。
+    # 非同期の leLoad 頼みだと、fetchが失敗したとき古いJSONが残る
+    import re
+
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    body = re.search(r"function applyWordlistLayout\(\) \{.*?\n\}", html, re.S).group(0)
+    assert (
+        body.index('setChoice("layout", next);')
+        < body.index("leClearLayout();")
+        < body.index('$("layout").dispatchEvent(new Event("change"')
+    )
+
+
+def test_index_html_restores_layout_json_only_when_layout_matches():
+    # 保存したJSONの出どころ(layoutJsonFor)が復元するレイアウト名と一致する
+    # ときだけ復元する。ズレたJSONをリロードのたびに再生産しないため
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "layoutJsonFor: leLayoutFor," in html
+    assert "layoutDirty: leDirty," in html
+    assert 'if (state.layoutJson && state.layoutJsonFor === (state.layout || "")) {' in html

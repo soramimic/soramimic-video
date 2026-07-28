@@ -37,6 +37,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from string import Formatter
 
 import requests
 from PIL import ImageColor, ImageFont
@@ -642,6 +643,57 @@ class WordFrame:
     use_fallback: bool
 
 
+# レイアウトのテンプレートに出てくるが単語リストの列ではない変数
+# (word_frame_data / build_image_cues がレイアウトへ渡すフィールド)。
+# 列名の食い違い検知(layout_column_mismatch)で除外する。
+NON_COLUMN_FIELDS = frozenset(
+    {
+        "surface",
+        "kana",
+        "original",
+        "original_surface",
+        "originalkana",
+        "image",
+        "image_credit",
+        "app_credit",
+    }
+)
+
+
+def layout_template_columns(layout: Layout) -> set[str]:
+    """レイアウトの通常側要素が参照する単語リスト列名({prefecture} など)。
+
+    text要素のテンプレート変数と、要素の出し分け条件(require/require_empty)の
+    列名を集める。単語フィールド(NON_COLUMN_FIELDS)は列ではないので除く。
+    """
+    columns: set[str] = set()
+    for el in layout.elements:
+        template = getattr(el, "template", "")
+        if template:
+            for _, field_name, _, _ in Formatter().parse(template):
+                if field_name:
+                    # {a[b]} や {a.b} も先頭の名前だけ見る
+                    columns.add(re.split(r"[.\[]", field_name)[0])
+        for attr in ("require", "require_empty"):
+            name = getattr(el, attr, None)
+            if name:
+                columns.add(str(name))
+    return columns - NON_COLUMN_FIELDS
+
+
+def layout_column_mismatch(layout: Layout, row_keys: set[str]) -> list[str]:
+    """レイアウトが参照する列が単語リストに1つも無いときに、その列名を返す。
+
+    別の単語リスト向けのレイアウト(例: scientist のジョブに station_card)が
+    当たると、列参照がすべて空になり「名前と写真だけ」のカードになる。
+    列が1つでも一致していれば単なる任意列の欠落なので空リストを返す。
+    """
+    columns = layout_template_columns(layout)
+    if not columns or not row_keys or columns & row_keys:
+        return []
+    return sorted(columns)
+
+
 def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
     """このレイアウトで表示できる替え歌単語を、歌唱順に並べたフレーム候補列。
 
@@ -652,9 +704,11 @@ def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
     if project.parody is None:
         return []
     frames: list[WordFrame] = []
+    row_keys: set[str] = set()
     for pline in project.parody.lines:
         for w in pline.words:
             row = w.wordlist_row or {}
+            row_keys |= set(row)
             # 単語リストに行がない単語(手入力の未知語など)はfallback側で描く
             use_fallback = not row
             # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
@@ -668,6 +722,16 @@ def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
             start, end = project.word_time_range(w)
             frames.append(WordFrame(pline.line_id, start, end, data, use_fallback))
     frames.sort(key=lambda f: f.start)
+    missing = layout_column_mismatch(layout, row_keys)
+    if missing:
+        logger.warning(
+            "レイアウトが参照する列が単語リストにありません: %s "
+            "(単語リスト=%s の列=%s)。別の単語リスト向けのレイアウトが"
+            "当たっている可能性があります",
+            ", ".join(missing),
+            project.parody.wordlist,
+            ", ".join(sorted(row_keys)),
+        )
     return frames
 
 
