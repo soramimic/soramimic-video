@@ -834,3 +834,26 @@ def test_synth_credit_of_neutrino_is_empty():
     # NEUTRINOは公式FAQで名称の記載が任意なので焼き込まない
     assert api_mod.synth_credit_of({"synthesizer": "neutrino", "model": "MERROW"}, {}) == ""
     assert api_mod.synth_credit_of({}, {}) == ""
+
+
+def test_index_html_share_buttons_are_separated():
+    # 完成後の導線は「Xでポスト(必ずweb intent)」と「動画を保存(シェアシート
+    # またはダウンロード)」の2本。1つのボタンにまとめ直さない。
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="share-x"' in html and 'id="share-save"' in html
+    # Xボタンは intent を開くだけ(ファイル添付シェアは保存ボタン側)
+    assert 'xBtn.addEventListener("click", () => openXIntent());' in html
+    assert "navigator.share({ files: [file], text: SHARE_TEXT })" in html
+    # シェアシートが使えない環境は動画のダウンロードに落とす
+    assert "if (!navigator.share) return downloadVideo(videoUrl);" in html
+
+
+def test_index_html_no_server_host_line():
+    # 接続先はページのURLと同じなので出さない(NEUTRINO未設定の警告だけ残す)
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "location.host" not in html
+    assert "NEUTRINO_ROOT未設定" in html
