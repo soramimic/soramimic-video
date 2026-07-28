@@ -30,13 +30,7 @@ from typing import Any
 from . import runproc
 from .convert import _find_row, _load_wordlist_rows, resolve_wordlist
 from .editor_io import wordlist_display_name
-from .layout import (
-    Layout,
-    fitted_image_box,
-    images_hidden_by_default,
-    parse_layout,
-    render_image,
-)
+from .layout import Layout, fitted_image_box, parse_layout, render_image
 from .project import Project
 from .soramimic_engine import run_convert
 
@@ -234,17 +228,12 @@ def generate_thumbnail(
     height: int = 720,
     image_cache: Path | None = None,
     title: str | None = None,
-    show_images: bool = False,
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
     変換・画像取得が失敗しても言い換えなしのサムネにフォールバックし、
     描画自体に失敗したときだけ None を返す(いずれも警告ログのみで、
     動画生成は止めない)。中断要求(Cancelled)だけはそのまま伝播する。
-
-    画像を既定で隠す単語リスト(昆虫など。wordlist_image_optout.json)では、
-    show_images=True で明示的に有効化しない限り単語画像を取りに行かず、
-    既存の「画像なしのサムネ」の経路にそのまま乗る。
     """
     from .video import VIDEO_DIR, image_cache_dir
 
@@ -275,15 +264,9 @@ def generate_thumbnail(
         except Exception as e:  # noqa: BLE001 - サムネの失敗でジョブを落とさない
             logger.warning("曲名の空耳変換に失敗しました(言い換えなしのサムネにします): %s", e)
 
-    # 昆虫のように写真を見たくない人がいるリストでは、明示的に有効化されない限り
-    # 画像を取りに行かない(画像なしのサムネにフォールバックする)
-    hide_images = not show_images and images_hidden_by_default(stem or wordlist)
-    if hide_images:
-        logger.info("この単語リストではサムネに画像を出しません: %s", wordlist)
-
     image_path: Path | None = None
     image_credit = ""
-    if word and not hide_images:
+    if word:
         try:
             image_path, image_credit = _word_image(
                 row, image_cache_dir(project_dir / VIDEO_DIR, image_cache)

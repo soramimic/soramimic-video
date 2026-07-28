@@ -6,12 +6,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from PIL import Image
 
-from soramimic_video import layout as layout_mod
 from soramimic_video import thumbnail as thumb_mod
 from soramimic_video.project import Note, Parody, ParodyLine, Project, SongInfo
 from soramimic_video.thumbnail import (
@@ -203,50 +201,3 @@ def test_generate_thumbnail_image_failure_falls_back(tmp_path: Path, monkeypatch
     project = _project(_wordlist_csv(tmp_path, image="https://x/y.jpg"))
     out = generate_thumbnail(project, tmp_path, width=320, height=180)
     assert out is not None and out.exists()
-
-
-# ---- 画像を既定で隠す単語リスト(wordlist_image_optout.json) ----
-
-
-def _hide_images_for(tmp_path: Path, monkeypatch, *names: str) -> None:
-    """指定した単語リストを「画像を既定で隠す」設定にする(同梱設定に依存しない)。"""
-    path = tmp_path / "wordlist_image_optout.json"
-    path.write_text(
-        json.dumps({n: {"reason": "苦手な人がいるため"} for n in names}), encoding="utf-8"
-    )
-    monkeypatch.setattr(layout_mod, "WORDLIST_IMAGE_OPTOUT_PATH", path)
-
-
-def _image_project(tmp_path: Path) -> Project:
-    """image列に実在の画像(ローカルパス)を持つ単語リストのプロジェクト。"""
-    image = tmp_path / "word.png"
-    Image.new("RGB", (32, 24), "red").save(image)
-    return _project(_wordlist_csv(tmp_path, image=str(image)))
-
-
-def test_generate_thumbnail_hides_image_for_optout_wordlist(tmp_path: Path, monkeypatch):
-    _hide_images_for(tmp_path, monkeypatch, "mylist")
-    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert("米原"))
-    calls = _capture_render(monkeypatch)
-    generate_thumbnail(_image_project(tmp_path), tmp_path, image_cache=tmp_path / "cache")
-    # 言い換え単語は載せるが、画像は取りに行かない(画像なしのサムネ)
-    assert calls == ["mysong|mylist|米原|None"]
-
-
-def test_generate_thumbnail_shows_image_when_explicitly_enabled(tmp_path: Path, monkeypatch):
-    _hide_images_for(tmp_path, monkeypatch, "mylist")
-    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert("米原"))
-    calls = _capture_render(monkeypatch)
-    generate_thumbnail(
-        _image_project(tmp_path), tmp_path, image_cache=tmp_path / "cache", show_images=True
-    )
-    assert calls and calls[0].endswith(".png") and "米原" in calls[0]
-
-
-def test_generate_thumbnail_keeps_image_for_other_wordlists(tmp_path: Path, monkeypatch):
-    """対象外の単語リストは従来どおり画像つき。"""
-    _hide_images_for(tmp_path, monkeypatch, "insect")
-    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert("米原"))
-    calls = _capture_render(monkeypatch)
-    generate_thumbnail(_image_project(tmp_path), tmp_path, image_cache=tmp_path / "cache")
-    assert calls and calls[0].endswith(".png")
