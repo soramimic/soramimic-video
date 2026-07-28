@@ -490,7 +490,8 @@ def test_index_html_elapsed_seconds_come_from_server():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert "`${label}${elapsed}`" in html
+    # ステージ名と経過秒(+全体の中での位置)を組み立てるのはこの1か所だけ
+    assert "`${label}${step}${elapsed}`" in html
     assert "const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)`" in html
     # 経過秒を進めるためだけのタイマーは持たない
     assert "elapsedTimer" not in html
@@ -1173,3 +1174,170 @@ def test_index_html_restores_layout_json_only_when_layout_matches():
     assert "layoutJsonFor: leLayoutFor," in html
     assert "layoutDirty: leDirty," in html
     assert 'if (state.layoutJson && state.layoutJsonFor === (state.layout || "")) {' in html
+
+
+# ---- 詳細設定(#advanced)の並べ替え: 曲=MIDIアップロードが主役 ----
+
+
+def _index_html() -> str:
+    return (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def _advanced_html() -> str:
+    return _index_html().split('<details class="card" id="advanced">')[1]
+
+
+def test_index_html_advanced_song_field_leads_with_midi_upload():
+    """詳細設定の「曲」はMIDIファイル選択が主役で、サンプル選択は従属UI。"""
+    advanced = _advanced_html()
+    # MIDIファイル入力は折りたたみの外(直に見える)
+    assert '<label for="midi">曲(XF MIDIファイル)</label>' in advanced
+    assert '<input type="file" id="midi" accept=".mid,.midi">' in advanced
+    # 旧構成(サンプルが主役・MIDIが折りたたみ)は残っていない
+    assert 'id="midi-details"' not in advanced
+    assert "自分の曲を使う(XF MIDIファイル)" not in advanced
+    # サンプル選択は「サンプルから選ぶ」の折りたたみへ格下げし、MIDIより後に置く
+    assert '<details class="sub-details" id="sample-details">' in advanced
+    assert "<summary>サンプルから選ぶ</summary>" in advanced
+    assert advanced.index('id="midi"') < advanced.index('id="sample-select"')
+
+
+def test_index_html_sample_select_stays_the_source_of_truth():
+    """格下げしても #sample-select はDOMに残す(ビルダーカードとの同期の正本)。"""
+    html = _index_html()
+    assert '<select id="sample-select" aria-label="サンプル曲"></select>' in html
+    # カード → 詳細設定 → applySample の経路はそのまま
+    assert '$("sample-select").value = $("builder-sample").value;' in html
+    assert (
+        '$("sample-select").addEventListener("change", () => trackSample(applySample()));'
+        in html
+    )
+    assert (
+        '$("sample-select").addEventListener("change", '
+        "() => { syncBuilderValues(); schedulePreview(); });" in html
+    )
+    # サンプルが取れない環境では折りたたみごと隠す(消えた #midi-details は参照しない)
+    assert '$("sample-details").hidden = true;' in html
+    assert '$("midi-details")' not in html
+
+
+def test_index_html_lyrics_follows_the_song_and_is_recommended():
+    """元歌詞は曲のすぐ後ろに置き、「推奨」と無いときの影響を書く。"""
+    advanced = _advanced_html()
+    assert '<label for="lyrics">元歌詞(推奨・字幕用)</label>' in advanced
+    assert "元歌詞(任意・字幕用)" not in advanced
+    # 曲(MIDI)の直後・単語リストより前(歌声より後ろだった旧位置から移動)
+    assert (
+        advanced.index('id="midi"')
+        < advanced.index('id="lyrics"')
+        < advanced.index('id="wordlist-select"')
+        < advanced.index('id="synthesizer"')
+    )
+    # 無いときに何が起きるかを書く
+    assert "字幕に元歌詞の行が出ません" in advanced
+
+
+# ---- 替え歌エディタ: 取り込み操作なしで最新の編集を使う(来歴ガード付き) ----
+
+
+def test_index_html_editor_edits_are_used_without_import_click():
+    """「取り込んで閉じる」を押さなくても、編集内容が生成に使われる。"""
+    html = _index_html()
+    # 生成時に出どころを決める(#editor のファイル固定ではない)
+    assert "const editorSrc = editorSourceForSubmit();" in html
+    assert 'if (editorSrc.file) form.append("editor", editorSrc.file);' in html
+    assert 'if ($("editor").files[0]) form.append("editor"' not in html
+    # ボタンは残す(押したときの挙動は従来どおり)
+    assert (
+        '<button type="button" id="editor-import" class="btn-primary btn-sm">'
+        "編集内容を取り込んで閉じる</button>" in html
+    )
+
+
+def test_index_html_editor_auto_import_requires_actual_edit():
+    """開いただけ・眺めただけの内容は送らない(dirtyのときだけ)。"""
+    import re
+
+    html = _index_html()
+    body = re.search(r"function liveEditorEdit\(\) \{.*?\n\}", html, re.S).group(0)
+    # シード(=変換直後)と同じ指紋なら「編集していない」
+    assert 'if (!sig || sig === meta.sig) return { state: "none" };' in body
+    # シードはエディタを開くたびに記録する(変換直後・再編集の書き戻しの両方)
+    assert "markEditorSeed(seed);" in html
+    assert html.count("markEditorSeed(seed);") == 2
+    # 指紋は編集で変わる部分だけを見る(paramの正規化や履歴で誤検知しない)
+    assert (
+        "return JSON.stringify([data.results, data.tokensList, data.unitsList]);" in html
+    )
+
+
+def test_index_html_editor_auto_import_checks_provenance():
+    """来歴(曲×単語リスト×パラメータ)が食い違う編集は使わない。"""
+    import re
+
+    html = _index_html()
+    prov = re.search(r"function editorProvenance\(\) \{.*?\n\}", html, re.S).group(0)
+    assert "song: midi ? `${midi.name}:${midi.size}` : \"\"," in prov
+    assert 'wordlist: $("wordlist").value.trim(),' in prov
+    assert 'where: $("where").value.trim(),' in prov
+    assert "params: buildConvertParams()," in prov
+    assert 'const PROVENANCE_KEYS = ["song", "wordlist", "where", "params"];' in html
+    # 食い違えば stale。生成では使わず自動変換(convert)に落とす
+    live = re.search(r"function liveEditorEdit\(\) \{.*?\n\}", html, re.S).group(0)
+    assert (
+        "if (!sameProvenance(from, editorProvenance())) return "
+        '{ state: "stale", from, sig };' in live
+    )
+    src = re.search(r"function editorSourceForSubmit\(\) \{.*?\n\}", html, re.S).group(0)
+    assert 'if (live.state === "ready") {' in src
+    assert 'if (live.state !== "stale") return { file: f };' in src
+    # 取り込み済みJSONがその来歴違いの編集そのものなら、それも使わない
+    assert (
+        "const sameAsFile = !!f && !!editorFileSig && editorFileSig === live.sig;" in src
+    )
+    assert "return { file: sameAsFile ? null : f, dropped: live.from };" in src
+    # 落としたことはユーザーに分かる形で出す(詳細設定の中と生成ボタンの近くの両方)
+    assert "if (editorSrc.dropped) {" in html
+    assert '<p class="hint" id="editor-auto-status" hidden></p>' in html
+    assert "別の入力(曲・単語リストなど)から" in html
+    # 自動取り込みぶんは来歴を確かめてあるので、単語リスト不一致の確認は挟まない
+    assert "if (editorSrc.file && !editorSrc.live && parodyMismatch()" in html
+
+
+# ---- 進捗表示: 全体の中での位置(あと何段階か) ----
+
+
+def test_index_html_progress_shows_step_position():
+    """サムネ枠の進捗に「いま何段階目か」を出す。"""
+    import re
+
+    html = _index_html()
+    plan = re.search(r"function stagePlan\(job\) \{.*?\n\}", html, re.S).group(0)
+    # 走らないステージは分母に入れない(preview は変換・ミックス・動画を作らない)
+    assert 'if (Number(p.preview || 0) > 0) return ["analyze", "synthesize"];' in plan
+    # convert / import-editor は排他(parody_source で決まる)
+    assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
+    assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
+    step = re.search(r"function stageStepText\(job\) \{.*?\n\}", html, re.S).group(0)
+    assert "return i < 0 ? \"\" : ` ${i + 1}/${plan.length}`;" in step
+    # 枠内の文言に添える(詳細側の文言は従来どおり)
+    assert "const step = stageStepText(job);" in html
+    assert (
+        'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, '
+        "`${label}${step}${elapsed}`);" in html
+    )
+    assert "setJobStatus(`歌唱合成${tail}`, `歌唱合成${step}${tail}`);" in html
+
+
+def test_index_html_stage_chips_match_the_step_count():
+    """「生成の詳細」のステージchipsも、走らないステージは出さない。"""
+    import re
+
+    html = _index_html()
+    body = re.search(r"function renderStages\(job\) \{.*?\n\}", html, re.S).group(0)
+    assert "const plan = stagePlan(job);" in body
+    assert "li.hidden = !plan.includes(name) && !doneNames.has(name);" in body
+    # 枠内のバーの分母も同じ数え方にそろえる
+    assert "const total = stagePlan(job).length || 6;" in html
