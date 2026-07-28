@@ -1093,11 +1093,15 @@ def convert_project(
     wordlist: str,
     where: str | None = None,
     params: dict[str, str] | None = None,
+    cache_db: bool = True,
 ) -> dict:
     """project.parody を埋める(破壊的)。変換エンジンの生の応答を返す。
 
     生の応答(units・period付きの単語列・tokensList)は editor 連携の
     書き出しに必要なので、呼び出し側でプロジェクトディレクトリに保存する。
+
+    cache_db=False は単語DBの共有キャッシュを使わない指定。アップロードされた
+    自作リスト(そのジョブ限りのCSV)のように使い回しの効かない入力で使う。
     """
     csv_path = resolve_wordlist(wordlist)
     where, coerced, alpha = resolve_convert_settings(csv_path, where, params)
@@ -1109,7 +1113,9 @@ def convert_project(
 
     # α>0 のときだけ重みを渡す。α=0(既定)は weights_per_line=None で従来と完全に同一
     weights = project_note_length_weights(project, alpha) if alpha > 0 else None
-    result = run_convert(phrases, csv_path, where, coerced, weights_per_line=weights)
+    result = run_convert(
+        phrases, csv_path, where, coerced, weights_per_line=weights, cache_db=cache_db
+    )
     apply_converted_lines(project, result["lines"], wordlist, where, coerced)
     return result
 

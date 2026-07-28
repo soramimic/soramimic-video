@@ -45,6 +45,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import runproc, synth_estimate
+from . import wordlist_csv as wordlist_csv_mod
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -82,6 +83,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EDITOR_DIST = REPO_ROOT / "external" / "soramimic" / "frontend" / "dist"
 STATUS_FILENAME = "status.json"
 THROUGHPUT_FILENAME = "synthesize-throughput.json"
+# アップロードされた自作単語リストを置くジョブ内サブディレクトリ。
+# ファイル名(<表示名>.csv)は editor 連携・サムネのリスト名表示に効くので残す。
+WORDLIST_DIRNAME = "wordlist"
 DEFAULT_SOUNDFONTS = ("/usr/share/sounds/sf2/FluidR3_GM.sf2",)
 
 
@@ -301,6 +305,25 @@ def _clean_name(value: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", value).strip("_")[:40]
 
 
+def custom_wordlist_name(filename: str) -> str:
+    """アップロードされたCSVのファイル名から、リストの表示名(=保存名)を作る。
+
+    ジョブディレクトリ内のファイル名になるので、区切り文字・ドットは潰す。
+    この名前はサムネのキャプション・ダウンロード名にもそのまま出る。
+    """
+    stem = re.sub(r"\.[^.]*$", "", filename or "")
+    return _clean_name(stem).replace(".", "_") or "custom"
+
+
+def custom_wordlist_path(job: Job) -> Path | None:
+    """このジョブが自作リストを持っていればそのCSVパス(無ければ None)。"""
+    name = str(job.params.get("wordlist_csv") or "")
+    if not name:
+        return None
+    path = job.dir / WORDLIST_DIRNAME / name
+    return path if path.exists() else None
+
+
 def _job_slug(job: Job) -> tuple[str, str]:
     """ダウンロード名に使う (曲名, 単語リスト名)。"""
     # Path.stem だと曲名中の「/」でパス扱いになるので拡張子だけ正規表現で落とす
@@ -465,12 +488,16 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     else:
         from .convert import convert_project, parse_convert_params
 
+        # 自作リストをアップロードしたジョブは、リスト名ではなくジョブ内の
+        # CSVを使う。中身はこのジョブ限りなので単語DBの共有キャッシュには載せない
+        custom_csv = custom_wordlist_path(job)
         with _stage(job, "convert"):
             raw = convert_project(
                 project,
-                wordlist=job.params["wordlist"],
+                wordlist=str(custom_csv) if custom_csv else job.params["wordlist"],
                 where=job.params.get("where") or None,
                 params=parse_convert_params(job.params.get("convert_params")),
+                cache_db=custom_csv is None,
             )
             save_raw(raw, d)
             project.save(d)
@@ -639,11 +666,20 @@ class JobManager:
         params: dict[str, Any],
         layout_json: str = "",
         owner: str | None = None,
+        wordlist_csv: str = "",
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
         job_dir.mkdir(parents=True)
         (job_dir / "input.mid").write_bytes(midi)
+        # 自作の単語リスト(正規化済みCSV)はこのジョブの中だけに置く。
+        # 名前は params["wordlist_csv"] 側で決まっている(custom_wordlist_name)
+        if wordlist_csv:
+            wl_dir = job_dir / WORDLIST_DIRNAME
+            wl_dir.mkdir(exist_ok=True)
+            (wl_dir / str(params["wordlist_csv"])).write_text(
+                wordlist_csv, encoding="utf-8"
+            )
         if editor:
             (job_dir / "editor.json").write_bytes(editor)
         if lyrics.strip():
@@ -943,6 +979,9 @@ def create_app(
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_layouts.json)
             "wordlist_layouts": load_wordlist_layouts(),
             "editor": editor_available,
+            # 自作の単語リスト(CSVアップロード)の受け入れ上限
+            "max_wordlist_bytes": wordlist_csv_mod.max_bytes(),
+            "max_wordlist_rows": wordlist_csv_mod.max_rows(),
         }
         # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
         if is_public_mode():
@@ -1281,6 +1320,8 @@ def create_app(
         request: Request,
         midi: UploadFile,
         editor: UploadFile | None = None,
+        # 自作の単語リスト(CSV)。付いていればリスト名より優先する
+        wordlist_csv: UploadFile | None = None,
         lyrics: str = Form(""),
         model: str = Form("MERROW"),
         synthesizer: str = Form("neutrino"),
@@ -1319,11 +1360,18 @@ def create_app(
                 raise HTTPException(
                     status_code=400, detail="editorのJSONが読めません"
                 ) from exc
+        # 自作の単語リスト(CSV)。ジョブを走らせる前にここで検証して弾く
+        custom: wordlist_csv_mod.WordlistCsv | None = None
+        if wordlist_csv is not None and wordlist_csv.filename:
+            try:
+                custom = wordlist_csv_mod.parse(await wordlist_csv.read())
+            except wordlist_csv_mod.WordlistCsvError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         # プレビューは元歌詞をそのまま歌わせるので替え歌の入力は不要
-        if preview <= 0 and editor_bytes is None and not wordlist.strip():
+        if preview <= 0 and editor_bytes is None and custom is None and not wordlist.strip():
             raise HTTPException(
                 status_code=422,
-                detail="editorの書き出しJSONか単語リスト名(wordlist)のどちらかが必要です",
+                detail="editorの書き出しJSONか単語リスト(名前かCSV)のどちらかが必要です",
             )
         layout = layout.strip()
         layout_json = layout_json.strip()
@@ -1374,11 +1422,38 @@ def create_app(
             "midi_filename": midi.filename,
             "song_title": song_title.strip(),
         }
+        if custom is not None:
+            # 表示名(履歴・サムネ・ダウンロード名)はアップロードしたファイル名から作る。
+            # 中身が変われば指紋も変わるので、来歴の突き合わせにも使える
+            name = custom_wordlist_name(
+                (wordlist_csv.filename if wordlist_csv else "") or ""
+            )
+            params["wordlist"] = name
+            params["wordlist_csv"] = f"{name}.csv"
+            params["wordlist_fingerprint"] = custom.fingerprint
+            params["wordlist_rows"] = custom.rows
+            # 自作リストは絞り込み(where)の対象になる列が無いので付けない
+            params["where"] = ""
         job = manager.create(
             midi_bytes, editor_bytes, lyrics, params,
             layout_json=layout_json, owner=owner,
+            wordlist_csv=custom.text if custom is not None else "",
         )
         return {"id": job.id}
+
+    @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
+    async def wordlist_check(wordlist_csv: UploadFile) -> dict[str, Any]:
+        """自作の単語リスト(CSV)を投入前に検査する。
+
+        列・行数・読みの書き方を見て、駄目なら400で理由を返す。通れば
+        「何語読めたか」をUIに返して、ジョブを投げる前に確認できるようにする
+        (/api/midi-check と同じ流儀)。ここではファイルを保存しない。
+        """
+        try:
+            parsed = wordlist_csv_mod.parse(await wordlist_csv.read())
+        except wordlist_csv_mod.WordlistCsvError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {**parsed.summary(), "name": custom_wordlist_name(wordlist_csv.filename or "")}
 
     @app.get("/api/jobs", dependencies=[Depends(_require_api_key)])
     def list_jobs(request: Request) -> list[dict[str, Any]]:
