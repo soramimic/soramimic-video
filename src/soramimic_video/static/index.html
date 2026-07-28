@@ -177,7 +177,27 @@
   }
   #history table { width: 100%; border-collapse: collapse; font-size: .85rem; }
   #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid var(--border); text-align: left; }
-  #editor-frame { width: 100%; height: 72vh; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+  /* ---- 替え歌エディタの全画面モーダル ---- */
+  /* 詳細設定の中にiframeを展開すると編集領域が狭く、周りのフォームに埋もれて
+     操作しづらい。開いたら画面いっぱい(モバイルでも全面)に出し、閉じる導線だけを
+     上部に固定する。position:fixed が親のスタッキング文脈に巻き込まれないよう、
+     このブロックは .wrap の外(bodyの直下)に置く。 */
+  .editor-modal {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; flex-direction: column; background: var(--bg);
+  }
+  .editor-modal-head {
+    flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem;
+    padding: .5rem .7rem; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .editor-modal-head h2 { font-size: .95rem; margin: 0; flex: 1 1 auto; }
+  /* 説明は行を分けて回り込ませる(狭い画面ではボタンが先に折り返す) */
+  .editor-modal-head .hint { flex: 1 0 100%; margin: 0; }
+  #editor-frame {
+    flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: var(--panel);
+  }
+  /* モーダルを開いているあいだは裏のページをスクロールさせない */
+  body.modal-open { overflow: hidden; }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + その場のサムネプレビュー ---- */
   /* 🎲ランダムはカードの右上に小さく置く(プルダウンのショートカットで主役ではない)。
@@ -476,21 +496,13 @@
     <label>替え歌の編集</label>
     <div id="editor-embed-controls" hidden>
       <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
-      <p class="hint">MIDIと単語リストから替え歌に変換し、その場のエディタで編集できます。
+      <p class="hint">MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
         編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
       <span id="open-editor-msg" class="error"></span>
     </div>
     <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
          「使われます」「別の入力から作られた編集なので使いません」を出す -->
     <p class="hint" id="editor-auto-status" hidden></p>
-    <div id="editor-frame-wrap" hidden style="margin-top:.8rem">
-      <div class="row" style="margin-bottom:.4rem">
-        <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
-        <button type="button" id="editor-close" class="btn-sm">閉じる</button>
-        <span class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます。</span>
-      </div>
-      <iframe id="editor-frame" title="soramimic editor"></iframe>
-    </div>
   </div>
 
   <details id="parody-advanced" class="sub-details">
@@ -615,6 +627,22 @@
 <footer id="public-footer" hidden style="margin-top:1.5rem; border-top:1px solid var(--border); padding-top:.6rem">
   <p class="hint" id="public-credit"></p>
 </footer>
+</div>
+
+<!-- 替え歌エディタ(同梱editor)の全画面モーダル。開くまではDOMにあるだけで空。
+     .wrap の外に置いてページ全体を覆う(詳細設定の中に展開すると編集領域が狭い)。
+     閉じる導線は上部に固定し、Escでも閉じる。閉じても編集は生きている
+     (sessionStorageに残り、生成時に自動で使われる: liveEditorEdit)ので、
+     「取り込んで閉じる」を押さなくても編集は失われない。 -->
+<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" aria-modal="true"
+  aria-labelledby="editor-modal-title">
+  <div class="editor-modal-head">
+    <h2 id="editor-modal-title">✏️ 替え歌エディタ</h2>
+    <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
+    <button type="button" id="editor-close" class="btn-sm">閉じる</button>
+    <p class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。</p>
+  </div>
+  <iframe id="editor-frame" title="soramimic editor"></iframe>
 </div>
 
 <script>
@@ -2814,17 +2842,38 @@ function importEditor() {
 function closeEditor() {
   $("editor-frame-wrap").hidden = true;
   $("editor-frame").src = "about:blank";
+  document.body.classList.remove("modal-open");
   watchEditorSession(false);
   updateEditorAutoStatus();   // 閉じても編集は生きている(その旨を出す)
+  // モーダルを開く前の場所へ戻す(押したボタンにフォーカスを返す)
+  if (!$("open-editor").disabled) $("open-editor").focus();
 }
 
 function showEditorFrame() {
   $("editor-frame").src = "/editor/editor.html";
   $("editor-frame-wrap").hidden = false;
-  $("editor-frame-wrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
+  // 開いた直後は親側にフォーカスを置く(この時点でEscが効く)
+  $("editor-close").focus();
   watchEditorSession(true);   // 編集の有無を拾って表示を更新する
   updateEditorAutoStatus();
 }
+
+// Escで閉じる。エディタ(iframe)にフォーカスが入っていると親のkeydownには
+// 飛んでこないので、同一オリジンの利点を使ってiframe側のdocumentにも同じ
+// ハンドラを付ける(付けられなければ親のEscだけになる)。
+function onEditorModalKeydown(ev) {
+  if (ev.key !== "Escape" || $("editor-frame-wrap").hidden) return;
+  ev.preventDefault();
+  closeEditor();
+}
+document.addEventListener("keydown", onEditorModalKeydown);
+$("editor-frame").addEventListener("load", () => {
+  try {
+    const doc = $("editor-frame").contentDocument;
+    if (doc) doc.addEventListener("keydown", onEditorModalKeydown);
+  } catch { /* 取れなければ親のEscだけで閉じる */ }
+});
 
 // 取り込み済み(または前回から復元した)替え歌JSONをシードにエディタを開き直す。
 // 取り込み時に保存したテキストはEDITOR_KEYの中身そのものなので、書き戻すだけで

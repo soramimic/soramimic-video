@@ -1239,6 +1239,58 @@ def test_index_html_lyrics_follows_the_song_and_is_recommended():
     assert "字幕に元歌詞の行が出ません" in advanced
 
 
+# ---- 替え歌エディタ: 画面全面のモーダルで開く ----
+
+
+def test_index_html_editor_opens_as_fullscreen_modal():
+    """エディタは詳細設定の中に展開せず、画面全面のモーダルで開く。"""
+    html = _index_html()
+    # モーダル本体は .wrap の外(bodyの直下)。position:fixed が親のスタッキング
+    # 文脈に巻き込まれないようにするため、詳細設定より後ろに置く
+    assert (
+        '<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" '
+        'aria-modal="true"' in html
+    )
+    assert html.index('id="editor-frame-wrap"') > html.index('id="public-footer"')
+    # 全面に広げる(モバイルでも同じ)。iframeが残りの高さを全部使う
+    assert ".editor-modal {\n    position: fixed; inset: 0; z-index: 50;" in html
+    assert "flex: 1 1 auto; width: 100%; min-height: 0; border: 0;" in html
+    # 旧構成(詳細設定の中に72vhのiframeをインライン展開)は残っていない
+    assert "height: 72vh" not in html
+    assert '$("editor-frame-wrap").scrollIntoView' not in html
+
+
+def test_index_html_editor_modal_close_controls_are_pinned_to_the_head():
+    """閉じる導線(取り込んで閉じる/閉じる)はモーダル上部に固定する。"""
+    html = _index_html()
+    head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
+    assert 'id="editor-import"' in head
+    assert 'id="editor-close"' in head
+    # ヘッダは縮まず、下のiframeだけがスクロール領域になる
+    assert ".editor-modal-head {\n    flex: 0 0 auto;" in html
+    # 閉じても編集は生きている(自動取り込み)ことをその場に書く
+    assert "編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。" in html
+
+
+def test_index_html_editor_modal_closes_with_escape():
+    """Escで閉じる。iframeにフォーカスがあるときのために子documentにも付ける。"""
+    html = _index_html()
+    assert "function onEditorModalKeydown(ev) {" in html
+    assert (
+        'if (ev.key !== "Escape" || $("editor-frame-wrap").hidden) return;' in html
+    )
+    assert 'document.addEventListener("keydown", onEditorModalKeydown);' in html
+    assert 'doc.addEventListener("keydown", onEditorModalKeydown);' in html
+
+
+def test_index_html_editor_modal_locks_background_scroll():
+    """モーダルを開いているあいだは裏のページをスクロールさせない。"""
+    html = _index_html()
+    assert "body.modal-open { overflow: hidden; }" in html
+    assert 'document.body.classList.add("modal-open");' in html
+    assert 'document.body.classList.remove("modal-open");' in html
+
+
 # ---- 替え歌エディタ: 取り込み操作なしで最新の編集を使う(来歴ガード付き) ----
 
 
