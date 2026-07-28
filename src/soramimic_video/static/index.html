@@ -94,6 +94,38 @@
   .hint { font-size: .8rem; color: var(--muted); margin: .25rem 0 0; }
   /* 状態表示用の空の .hint(サンプル状態・クレジットなど)が余白を作らないように */
   .hint:empty { margin: 0; }
+  /* ---- 補足説明を畳む ⓘ ボタン(setupInfoHints) ---- */
+  /* 詳細設定は項目ごとにグレーの説明文が常時出ていて、初見だと文字の壁になる。
+     「必要なときだけ読めばいい説明」はこのボタンの中に畳み、状態・警告など
+     出ていないと困るものだけを常時表示のまま残す。
+     ボタンはラベル・小見出し・summary の末尾に生やし(見出しの文脈で読める)、
+     ちょうどいい親が無いときだけ元の位置に単独で置く。 */
+  .info-btn {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    width: 1.5rem; height: 1.5rem; min-height: 0; padding: 0; margin-left: .1rem;
+    vertical-align: -.3rem;
+    border: 0; border-radius: 50%; background: transparent; color: var(--muted);
+    font-size: 1rem; line-height: 1;
+  }
+  /* 見た目は小さいままで、指で押せる大きさ(44px以上)の当たり判定を持たせる */
+  .info-btn::after { content: ""; position: absolute; inset: -.65rem; }
+  .info-btn:hover:not(:disabled) { border-color: transparent; }
+  .info-btn:hover, .info-btn[aria-expanded="true"] { color: var(--accent); background: var(--panel-2); }
+  .info-btn-standalone { margin: .2rem 0 0; }
+  /* 保存済みの替え歌があるときの選択(editor-resume)。押し間違えると編集が
+     消えるので、ボタンを並べて意味を書く小さなパネルにする */
+  .editor-resume {
+    margin-top: .5rem; padding: .6rem; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--panel-2);
+  }
+  .editor-resume-title { margin: 0; font-size: .9rem; font-weight: 700; }
+  .editor-resume .hint { margin-top: .2rem; }
+  .editor-resume-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+  /* 開いた説明は、どのボタンの中身なのかが分かるように一段へこませる */
+  .hint[data-info] {
+    margin: .3rem 0 .1rem; padding: .35rem .6rem;
+    background: var(--panel-2); border-left: 2px solid var(--border); border-radius: 6px;
+  }
   .slider-row { display: flex; align-items: center; gap: .5rem; }
   .slider-row span { font-size: .75rem; color: var(--muted); white-space: nowrap; }
   .slider-row input[type=range] { flex: 1; margin: 0; min-width: 0; }
@@ -378,7 +410,6 @@
   <!-- 曲が未セットのまま枠をタップされたときの案内(投入はしない) -->
   <p class="error" id="submit-msg" hidden></p>
   <p class="hint" id="public-limits" hidden></p>
-  <p class="hint" id="lucky-status">歌声や歌詞、レイアウトまで自分で決めるなら「⚙️ 詳細設定」から。</p>
 
   <!-- 進捗と結果の詳細。ジョブを投入するまでは出さない(初見の画面はビルダーカードだけ)。
        主役の進捗はサムネ枠の中(#builder-progress)に出るので、こちらはビルダーカードの
@@ -428,7 +459,7 @@
   <!-- ① 曲と歌詞 -->
   <section class="opt-group">
     <h3 class="opt-group-title">① 曲と歌詞</h3>
-    <p class="hint opt-group-lead">どの曲を歌わせるか。字幕に出す元の歌詞もここ。</p>
+    <p class="hint opt-group-lead" data-info>どの曲を歌わせるか。字幕に出す元の歌詞もここ。</p>
 
     <!-- 曲。詳細設定を開く人の目的は「自分の曲でやる」なので、ここではMIDIファイル
          選択を主役にして直に見せる。サンプル曲はビルダーカードのプルダウンで選べる
@@ -439,8 +470,11 @@
     <div class="field">
       <label for="midi">曲(XF MIDIファイル)</label>
       <input type="file" id="midi" accept=".mid,.midi">
-      <p class="hint">歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
+      <p class="hint" data-info>歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
       <p class="hint" id="midi-restore-hint" hidden></p>
+      <!-- 歌詞なしMIDIの拒否(checkMidi)。選んだ直後にサーバーで歌詞の有無を見て、
+           無ければファイル選択ごと取り消して理由をここに出す -->
+      <p class="error" id="midi-error" hidden></p>
       <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
       <details class="sub-details" id="sample-details">
         <summary>サンプルから選ぶ</summary>
@@ -456,14 +490,17 @@
     <div class="field">
       <label for="lyrics">元歌詞(推奨・字幕用)</label>
       <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
-      <p class="hint">MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
+      <p class="hint" data-info>MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
+      <!-- 元歌詞とMIDIの歌詞が食い違っているときの警告(checkMidi)。
+           生成はできるので止めない。常時表示の状態メッセージ扱い -->
+      <p class="hint" id="lyrics-midi-warn" hidden></p>
     </div>
   </section>
 
   <!-- ② 空耳のもと -->
   <section class="opt-group">
     <h3 class="opt-group-title">② 空耳のもと</h3>
-    <p class="hint opt-group-lead">歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタや変換パラメータに進んでください。</p>
+    <p class="hint opt-group-lead" data-info>歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタや変換パラメータに進んでください。</p>
 
     <div class="field">
       <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
@@ -474,11 +511,26 @@
 
     <div class="field">
       <label>替え歌の編集</label>
+      <!-- エディタへの導線はこのボタン1つだけ。保存済みの替え歌が無ければ暗黙に
+           変換してから開き、有れば下の #editor-resume で「続きから」か
+           「今のパラメータで作り直し」かを選んでもらう(openEditorFlow) -->
       <div id="editor-embed-controls" hidden>
-        <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
-        <p class="hint">MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
+        <button type="button" id="open-editor" class="btn-sm">✏️ 替え歌を編集</button>
+        <p class="hint" data-info>MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
           編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
         <span id="open-editor-msg" class="error"></span>
+        <!-- 保存済みの替え歌があるときだけ出す選択(破棄する側を押し間違えないよう、
+             ボタンを分けて意味を書く)。既定の推し(btn-primary)は来歴で切り替える -->
+        <div id="editor-resume" class="editor-resume" hidden
+          role="group" aria-labelledby="editor-resume-title">
+          <p class="editor-resume-title" id="editor-resume-title">保存済みの替え歌歌詞があります。</p>
+          <p class="hint" id="editor-resume-note"></p>
+          <div class="editor-resume-actions">
+            <button type="button" id="editor-resume-continue" class="btn-sm">続きから再開</button>
+            <button type="button" id="editor-resume-regen" class="btn-sm">現在のパラメータで再生成してから編集</button>
+            <button type="button" id="editor-resume-cancel" class="btn-sm">やめる</button>
+          </div>
+        </div>
       </div>
       <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
            「使われます」「別の入力から作られた編集なので使いません」を出す -->
@@ -489,10 +541,10 @@
 
     <details id="parody-advanced" class="sub-details">
       <summary>変換のしかたを細かく調整する(上級者向け)</summary>
-      <p class="hint">単語の選ばれ方を決める値です。既定のままでも作れます。</p>
+      <p class="hint" data-info>単語の選ばれ方を決める値です。既定のままでも作れます。</p>
       <label>絞り込み(where・任意)</label>
       <input type="text" id="where" placeholder="例: type=family or type=full">
-      <p class="hint">単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
+      <p class="hint" data-info>単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
       <!-- 「単語重複」は本家 soramimic の単語重複トグル(frontend/index.html: あり/なし、
            なしが既定)と文言・選択肢・既定をそろえたもの(external/soramimic 53dcff1)。 -->
       <label>単語重複</label>
@@ -500,7 +552,7 @@
         <option value="true">あり</option>
         <option value="false" selected>なし</option>
       </select>
-      <p class="hint">替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
+      <p class="hint" data-info>替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
       <!-- パラメータUIは本家 soramimic(external/soramimic 4443a7b frontend)の
            「プリセット + スライダー3本」構成に合わせたもの。プリセット定義と
            スライダーの範囲・既定値は app.js の PRESETS / createSliderItem 呼び出しと同一。
@@ -513,7 +565,7 @@
         <option value="長い単語">長い単語</option>
         <option value="">カスタム(下のスライダーで調整)</option>
       </select>
-      <p class="hint">本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
+      <p class="hint" data-info>本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
       <label>音の合わせ方</label>
       <div class="slider-row"><span>子音重視</span>
         <input type="range" id="p-sound" min="0.1" max="0.9" step="0.1" value="0.8"
@@ -529,14 +581,14 @@
         <input type="range" id="p-wordnum" min="0" max="6" step="1" value="2"
           aria-label="単語の長さ(細かめ〜長め)">
         <span>長め</span></div>
-      <p class="hint">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
+      <p class="hint" data-info data-info-standalone data-info-label="変換パラメータ">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
       <!-- ここから下は soramimic-video 独自(本家 soramimic には無い項目)。
            上のプリセット・スライダーは本家準拠なので、独自項目は混ぜず末尾に置く。
            送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
       <label>ノート長重視 α(soramimic-video独自)</label>
       <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
         aria-label="ノート長重視 α(0でオフ)">
-      <p class="hint">この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
+      <p class="hint" data-info>この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
     </details>
 
     <!-- 替え歌JSONの入出力はさらに出番が少ないので、パラメータとは別の折りたたみに分ける -->
@@ -544,7 +596,7 @@
       <summary>替え歌JSONを読み書きする(上級者向け)</summary>
       <label for="editor">外部で編集した替え歌JSONの読み込み</label>
       <input type="file" id="editor" accept=".json">
-      <p class="hint">soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
+      <p class="hint" data-info>soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
       <button type="button" id="download-editor" class="btn-sm" disabled>現在の替え歌JSONをダウンロード</button>
     </details>
   </section>
@@ -552,7 +604,7 @@
   <!-- ③ 歌声 -->
   <section class="opt-group">
     <h3 class="opt-group-title">③ 歌声</h3>
-    <p class="hint opt-group-lead">誰の声で、どの高さで歌うか。</p>
+    <p class="hint opt-group-lead" data-info>誰の声で、どの高さで歌うか。</p>
 
     <div class="field">
       <label for="synthesizer">歌声</label>
@@ -583,20 +635,20 @@
       <p class="hint" id="auto-octave-hint"></p>
       <label for="transpose">移調(半音)</label>
       <input type="text" id="transpose" value="0" inputmode="numeric">
-      <p class="hint">高すぎるときは -12(1オクターブ下)がおすすめ。</p>
+      <p class="hint" data-info>高すぎるときは -12(1オクターブ下)がおすすめ。</p>
     </div>
 
     <div class="field">
       <label>お試し合成</label>
       <button id="preview">声プレビュー(歌い出しから20秒)</button>
-      <p class="hint">替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
+      <p class="hint" data-info>替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
     </div>
   </section>
 
   <!-- ④ 見た目 -->
   <section class="opt-group">
     <h3 class="opt-group-title">④ 見た目</h3>
-    <p class="hint opt-group-lead">動画の画面の作り。画像・説明文・字幕の置き方。</p>
+    <p class="hint opt-group-lead" data-info>動画の画面の作り。画像・説明文・字幕の置き方。</p>
 
     <div class="field">
       <label for="layout-select">レイアウト(任意)</label>
@@ -605,7 +657,7 @@
       <select id="layout-select"></select>
       <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
       <input type="hidden" id="layout">
-      <p class="hint">画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
+      <p class="hint" data-info>画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
       <details id="le-details" class="sub-details">
         <summary>レイアウトを編集(ドラッグで配置)</summary>
         <div class="le-toolbar">
@@ -627,7 +679,7 @@
             <input type="checkbox" id="le-hold">
             単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
           </label>
-          <p class="hint" id="le-idle-hint" style="margin:.2rem 0 0">歌唱がない区間に出す固定フレーム。
+          <p class="hint" id="le-idle-hint" data-info data-info-standalone data-info-label="歌唱なし区間">歌唱がない区間に出す固定フレーム。
             単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
             idle要素を1つも置かなければ、その区間は隅のクレジットだけの背景色になります。</p>
         </div>
@@ -642,7 +694,7 @@
           <div id="le-guide-h" class="le-guide" hidden></div>
         </div>
         <div id="le-props" hidden></div>
-        <p class="hint">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
+        <p class="hint" data-info data-info-standalone data-info-label="レイアウト編集">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
           箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
           右下の角でリサイズ、クリックで選択して文言・サイズ・色・字幕の粒度を変更。
           選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
@@ -662,7 +714,7 @@
   <!-- ⑤ その他 -->
   <section class="opt-group">
     <h3 class="opt-group-title">⑤ その他</h3>
-    <p class="hint opt-group-lead">ふだんは触らない項目。</p>
+    <p class="hint opt-group-lead" data-info>ふだんは触らない項目。</p>
 
     <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig)。出るときは
          入力しないと何も動かないので、このグループは畳まずに置く。 -->
@@ -674,7 +726,7 @@
     <div class="field">
       <label>保存した入力</label>
       <button type="button" id="clear-form" class="btn-sm">保存した入力をクリア</button>
-      <p class="hint">この画面の入力(曲・歌詞・単語リスト・歌声・レイアウトなど)はブラウザに保存され、次に開いたときに復元されます。まっさらな状態から始めたいときに押してください(APIキーは消えません)。</p>
+      <p class="hint" data-info>この画面の入力(曲・歌詞・単語リスト・歌声・レイアウトなど)はブラウザに保存され、次に開いたときに復元されます。まっさらな状態から始めたいときに押してください(APIキーは消えません)。</p>
     </div>
   </section>
 </details>
@@ -708,6 +760,64 @@ const $ = (id) => document.getElementById(id);
 const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
 const headers = () => apiKey() ? { "X-API-Key": apiKey() } : {};
 const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) : url;
+
+// ---- 補足説明を ⓘ に畳む ----
+// 詳細設定は項目ごとにグレーの説明が常時並んでいて、初見だと文字の壁になる。
+// 「読まなくても操作できる説明」には data-info を付けておき、ここで既定は隠して
+// ⓘ ボタンからだけ開けるようにする。状態・警告・エラー(「〜をセットしました」
+// 「編集済みの替え歌を使用します」など、出ていないと困る動的メッセージ)には
+// data-info を付けないので、従来どおり常時表示のまま。
+//   data-info-standalone  ちょうどいい見出しが無いので、元の位置に単独で置く
+//   data-info-label       読み上げ・title に使う名前(既定は見出しの文字)
+const INFO_ANCHOR_TAGS = new Set(["LABEL", "H3", "LEGEND", "SUMMARY"]);
+
+// 説明を生やす相手(直前のラベル・小見出し・summary)を探す。
+// 同じ .field の中に無ければ一段外へ出て探し、グループの外までは行かない。
+function findInfoAnchor(body) {
+  for (let el = body; el && el.id !== "advanced"; el = el.parentElement) {
+    for (let p = el.previousElementSibling; p; p = p.previousElementSibling) {
+      if (INFO_ANCHOR_TAGS.has(p.tagName)) return p;
+    }
+    const par = el.parentElement;
+    if (par && par.tagName === "DETAILS") {
+      const s = par.querySelector(":scope > summary");
+      if (s) return s;
+    }
+    if (el.classList && el.classList.contains("opt-group")) return null;
+  }
+  return null;
+}
+
+function setupInfoHints() {
+  let seq = 0;
+  document.querySelectorAll("[data-info]").forEach((body) => {
+    if (!body.id) body.id = `info-body-${++seq}`;
+    body.hidden = true;
+    const anchor = body.hasAttribute("data-info-standalone") ? null : findInfoAnchor(body);
+    const name = body.getAttribute("data-info-label")
+      || (anchor ? anchor.textContent.replace(/\s+/g, " ").trim() : "")
+      || "補足";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = anchor ? "info-btn" : "info-btn info-btn-standalone";
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-controls", body.id);
+    btn.setAttribute("aria-label", `${name}の説明`);
+    btn.title = `${name}の説明`;
+    btn.innerHTML = '<span aria-hidden="true">ⓘ</span>';
+    btn.addEventListener("click", (ev) => {
+      // <label> や <summary> の中に置くので、チェック切り替え・開閉の巻き添えを止める
+      ev.preventDefault();
+      ev.stopPropagation();
+      const open = btn.getAttribute("aria-expanded") === "true";
+      btn.setAttribute("aria-expanded", open ? "false" : "true");
+      body.hidden = open;
+    });
+    if (anchor) anchor.appendChild(btn);
+    else body.parentNode.insertBefore(btn, body);
+  });
+}
+setupInfoHints();
 
 // 秒数を「30秒」「1分30秒」のように整形する(残り時間の目安の表示用)
 function fmtDuration(sec) {
@@ -1015,18 +1125,11 @@ function stagePlan(job) {
   return ["analyze", parody, "synthesize", "mix", "video"];
 }
 
-// 「いま何段階目か」の表示(例 " 2/5")。現在のステージが並びに無ければ空。
-function stageStepText(job) {
-  const plan = stagePlan(job);
-  const i = plan.indexOf(job && job.stage);
-  return i < 0 ? "" : ` ${i + 1}/${plan.length}`;
-}
-
 function renderStages(job) {
   const doneNames = new Set(job.stages.map((s) => s.name));
   const secs = Object.fromEntries(job.stages.map((s) => [s.name, s.seconds]));
-  // 走らないステージのチップは出さない。枠内の「2/5」と数が食い違わないようにする
-  // (使わない方の変換ステージ(editor / convert は排他)もこれで消える)
+  // 走らないステージのチップは出さない。枠内のバーの進み具合と数が食い違わない
+  // ようにする(使わない方の変換ステージ(editor / convert は排他)もこれで消える)
   const plan = stagePlan(job);
   document.querySelectorAll(".stages li").forEach((li) => {
     const name = li.dataset.stage;
@@ -1051,7 +1154,7 @@ function setJobStatus(text, builderText) {
 }
 
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
-// 分母は「このジョブで実際に走るステージ数」(枠内の 2/5 表示と同じ数)。
+// 分母は「このジョブで実際に走るステージ数」(stagePlan)。
 function renderBuilderBar(job) {
   const total = stagePlan(job).length || 6;
   const done = job && job.stages ? job.stages.length : 0;
@@ -1107,17 +1210,16 @@ async function poll(id, seq = pollSeq) {
   renderBuilderBar(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
   const label = STAGE_LABELS[job.stage] || job.stage || "…";
-  // 枠の中では「全体の何段階目か」も添える(あと何回待てばよいかが分かるように)
-  const step = stageStepText(job);
+  // 「何段階目か」の数字は出さない。どこまで進んだかはプログレスバーが見せている
   if (job.status === "running") {
     if (job.stage === "synthesize" && job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
-      setJobStatus(`歌唱合成${tail}`, `歌唱合成${step}${tail}`);
+      setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${step}${elapsed}`);
+      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
@@ -1284,8 +1386,9 @@ function showSubmitMsg(text) {
 }
 
 async function submitJob(previewSec) {
-  // 曲を選んだ直後に押されたときは、MIDIの取得が終わるのを待ってから見る
+  // 曲を選んだ直後に押されたときは、MIDIの取得と歌詞チェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
+  if (midiChecking) await midiChecking;
   const midi = $("midi").files[0];
   if (!midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
@@ -1440,6 +1543,101 @@ function trackSample(p) {
   return p;
 }
 $("sample-select").addEventListener("change", () => trackSample(applySample()));
+
+// ---- 選んだMIDIの検証(歌詞の有無・元歌詞との整合) ----
+// この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱と空耳変換の
+// 入力にしているので、歌詞の無いMIDIは何分も待たせた末に必ず失敗する。
+// 選ばれた直後に /api/midi-check へ送って確かめ、歌詞が無ければその場で
+// ファイル選択ごと取り消す(=生成にも編集にも進めない状態に戻す)。
+// 同じ応答で「元歌詞の行がMIDIの歌詞行に対応づいたか」も分かるので、
+// 食い違いは止めずに警告だけ出す(renderLyricsMidiWarning)。
+let midiCheckSeq = 0;       // 応答の追い越しを捨てるための世代番号
+let midiCheckTimer = null;
+let midiChecking = null;    // 検証中のPromise(投入・編集の前に待つ)
+let midiRejecting = false;  // 拒否のクリアで自分自身を呼び直さないための番人
+
+function scheduleMidiCheck() {
+  if (midiRejecting) return;
+  if (midiCheckTimer) clearTimeout(midiCheckTimer);
+  // サンプル選択はMIDIの注入と元歌詞の反映が別のイベントで来るので、少し待って束ねる
+  midiChecking = new Promise((resolve) => {
+    midiCheckTimer = setTimeout(() => { checkMidi().then(resolve, resolve); }, 250);
+  });
+}
+
+function clearMidiNotices() {
+  $("midi-error").textContent = "";
+  $("midi-error").hidden = true;
+  $("lyrics-midi-warn").textContent = "";
+  $("lyrics-midi-warn").hidden = true;
+}
+
+// 歌詞なしMIDIはその場で取り消す。理由と「どうすれば作れるか」を1行添える。
+function rejectMidi(detail) {
+  midiRejecting = true;
+  try {
+    $("midi").value = "";
+    $("midi").dispatchEvent(new Event("change", { bubbles: true }));
+  } finally {
+    midiRejecting = false;
+  }
+  $("midi-restore-hint").hidden = true;
+  $("sample-status").textContent = "";
+  const text = "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。"
+    + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
+    + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
+    + (detail ? `\n(${detail})` : "");
+  $("midi-error").textContent = text;
+  $("midi-error").hidden = false;
+  // 詳細設定を開いていない人(ビルダーカードの曲プルダウン)にも見えるように
+  showSubmitMsg(text);
+}
+
+// 元歌詞とMIDI歌詞の食い違いは、字幕の元歌詞を割り付けているのと同じ処理
+// (align_lines)をサーバーで試した結果 unmatched_lines で見る。
+// 数行の取りこぼしはこの割り付けでは普通に起きるので、MIDIの歌詞行の2割以上
+// (かつ2行以上)が対応づかないときだけ、はっきりした不整合として警告する。
+function renderLyricsMidiWarning(info) {
+  const el = $("lyrics-midi-warn");
+  const lines = info.lines || 0;
+  const lyr = info.lyrics_lines || 0;
+  const bad = info.unmatched_lines || 0;
+  if (!lines || !lyr || bad < Math.max(2, lines * 0.2)) {
+    el.textContent = "";
+    el.hidden = true;
+    return;
+  }
+  el.textContent = `⚠ 元歌詞とMIDIの歌詞が食い違っています`
+    + `(MIDIの歌詞${lines}行のうち${bad}行に、元歌詞${lyr}行のどれも対応しません)。`
+    + "歌う内容と替え歌変換に使われるのはMIDIの歌詞で、元歌詞は字幕の表示にだけ使われます。"
+    + "このままでも生成できますが、対応しない行では字幕の元歌詞がずれる・出ないことがあります。";
+  el.hidden = false;
+}
+
+async function checkMidi() {
+  const seq = ++midiCheckSeq;
+  const f = $("midi").files[0];
+  if (!f) { clearMidiNotices(); return; }
+  let body;
+  try {
+    const form = new FormData();
+    form.append("midi", f);
+    form.append("lyrics", $("lyrics").value);
+    const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
+    body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+  } catch {
+    // 検証そのものに失敗したときは黙って通す(生成側で従来どおりのエラーになる)
+    return;
+  }
+  if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
+  clearMidiNotices();
+  if (!body.has_lyrics) { rejectMidi(body.detail); return; }
+  renderLyricsMidiWarning(body);
+}
+
+$("midi").addEventListener("change", scheduleMidiCheck);
+$("lyrics").addEventListener("change", scheduleMidiCheck);
 
 // ---- ビルダーカード(曲 × 単語リスト → サムネプレビュー → 生成) ----
 // トップのカードで曲と単語リストを選ぶと、その組み合わせで実際に作られるサムネを
@@ -2861,7 +3059,91 @@ function watchEditorSession(on) {
   if (on) editorWatchTimer = setInterval(updateEditorAutoStatus, 1500);
 }
 
-async function openEditor() {
+// ---- エディタへの導線(「✏️ 替え歌を編集」1本) ----
+// 保存済みの替え歌が無ければ、押したらそのまま変換してエディタを開く(暗黙の変換)。
+// 有るときは黙って上書きも黙って再開もせず、#editor-resume で選んでもらう。
+//   (a) 続きから再開          … 保存済みをシードにエディタを開く
+//   (b) 現在のパラメータで再生成 … 保存済みを捨て、今の選択で変換し直してから開く
+// 来歴(provenance)が今の選択と食い違う保存済みは、そのままでは生成に使われない
+// (liveEditorEdit の stale)ので (b) を既定の推しにする。
+
+// 保存済みの替え歌の状態。無ければ null。
+//   kind "live" … エディタのセッション(sessionStorage)に編集が残っている
+//   kind "file" … 取り込み済み・前回から復元した替え歌JSON(#editor)
+//   stale       … 今の曲・単語リスト・変換パラメータと来歴が食い違う
+function savedParody() {
+  const live = liveEditorEdit();
+  if (live.state === "ready") return { kind: "live", stale: false };
+  if (live.state === "stale") return { kind: "live", stale: true, from: live.from };
+  if ($("editor").files[0]) return { kind: "file", stale: parodyMismatch() };
+  return null;
+}
+
+function hideEditorResume() {
+  $("editor-resume").hidden = true;
+}
+
+// 保存済みの編集を「今の選択のもの」として引き継ぐ。ユーザーが明示的に
+// 「続きから再開」を選んだときだけ呼ぶ(黙って引き継ぐと来歴ガードの意味がない)。
+// 内容の指紋(sig)はそのままなので「編集済み」の判定は保たれる。
+function adoptEditorSeedProvenance() {
+  const meta = parseJson(sessionStorage.getItem(EDITOR_SEED_KEY) || "null");
+  if (!meta) return;
+  meta.from = editorProvenance();
+  try { sessionStorage.setItem(EDITOR_SEED_KEY, JSON.stringify(meta)); } catch { /* 保存できなくても続く */ }
+}
+
+async function openEditorFlow() {
+  $("open-editor-msg").textContent = "";
+  const saved = savedParody();
+  if (!saved) { hideEditorResume(); await convertAndOpenEditor(); return; }
+  const note = $("editor-resume-note");
+  if (saved.stale) {
+    note.textContent = "ただしその替え歌は今と別の入力(曲・単語リスト・変換パラメータ)"
+      + "から作られたものです。このままでは動画生成にも使われないので、"
+      + "「現在のパラメータで再生成」がおすすめです"
+      + "(「続きから再開」を選ぶと、今の入力のものとして引き継ぎます)。";
+  } else {
+    note.textContent = "「続きから再開」はその替え歌をそのまま開きます。"
+      + "「現在のパラメータで再生成」は保存済みを破棄して、今の曲・単語リスト・"
+      + "変換パラメータで変換し直します(編集内容は戻せません)。";
+  }
+  $("editor-resume-continue").classList.toggle("btn-primary", !saved.stale);
+  $("editor-resume-regen").classList.toggle("btn-primary", saved.stale);
+  $("editor-resume").hidden = false;
+  $("editor-resume-continue").focus();
+}
+
+// (a) 続きから再開
+async function resumeEditor() {
+  hideEditorResume();
+  const saved = savedParody();
+  if (!saved) { await convertAndOpenEditor(); return; }
+  if (saved.kind === "live") {
+    // sessionStorage の編集はそのまま。来歴だけ今の選択に付け替える
+    if (saved.stale) adoptEditorSeedProvenance();
+    showEditorFrame();
+    updateEditorAutoStatus();
+    return;
+  }
+  await reEditParodyFile();
+}
+
+// (b) 現在のパラメータで再生成(保存済みは破棄する)
+async function regenerateEditor() {
+  hideEditorResume();
+  sessionStorage.removeItem(EDITOR_KEY);
+  sessionStorage.removeItem(EDITOR_SEED_KEY);
+  if ($("editor").files[0]) {
+    $("editor").value = "";
+    $("editor").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  updateEditorAutoStatus();
+  await convertAndOpenEditor();
+}
+
+async function convertAndOpenEditor() {
+  if (midiChecking) await midiChecking;
   const midi = $("midi").files[0];
   const wl = $("wordlist").value.trim();
   const msg = $("open-editor-msg");
@@ -2917,6 +3199,7 @@ function closeEditor() {
 }
 
 function showEditorFrame() {
+  hideEditorResume();   // 選択の役目は終わり(開いたら裏に残さない)
   $("editor-frame").src = "/editor/editor.html";
   $("editor-frame-wrap").hidden = false;
   document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
@@ -2945,8 +3228,7 @@ $("editor-frame").addEventListener("load", () => {
 // 取り込み済み(または前回から復元した)替え歌JSONをシードにエディタを開き直す。
 // 取り込み時に保存したテキストはEDITOR_KEYの中身そのものなので、書き戻すだけで
 // サーバー変換(/api/editor-session)なしに編集を再開できる。
-async function reEditParody(ev) {
-  ev.preventDefault();
+async function reEditParodyFile() {
   const f = $("editor").files[0];
   if (!f) return;
   const seed = await f.text();
@@ -2956,13 +3238,23 @@ async function reEditParody(ev) {
   showEditorFrame();
 }
 
-$("open-editor").addEventListener("click", openEditor);
+$("open-editor").addEventListener("click", openEditorFlow);
+$("editor-resume-continue").addEventListener("click", resumeEditor);
+$("editor-resume-regen").addEventListener("click", regenerateEditor);
+$("editor-resume-cancel").addEventListener("click", () => {
+  hideEditorResume();
+  $("open-editor").focus();
+});
 $("editor-import").addEventListener("click", importEditor);
 $("editor-close").addEventListener("click", closeEditor);
 // 曲・単語リスト・変換パラメータを変えると、編集内容の来歴が今の選択と合わなく
 // なることがある。そのときは表示を出し直す(生成時のガードと同じ判定)
+// 出したままの「保存済みの替え歌があります」も、前提が変わったら一度引っ込める
 ["midi", "wordlist", "where", "p-preset", "p-sound", "p-phrase", "p-wordnum", "p-notelen"]
-  .forEach((id) => $(id).addEventListener("change", updateEditorAutoStatus));
+  .forEach((id) => $(id).addEventListener("change", () => {
+    updateEditorAutoStatus();
+    hideEditorResume();
+  }));
 
 // ---- 単語リスト選択(同梱editorのconfを唯一の情報源に) ----
 // editorが使えるときは /editor/conf/setting.json の wordlist からプルダウンを組む。
@@ -3300,23 +3592,19 @@ function renderParodyStatus() {
     s.textContent = "";
     return;
   }
-  // エディタありなら基本「再編集」のみ: 外して自動変換に任せるのと変換し直して
-  // 取り込むのは同じ入力を使うので結果が同じ。取り消しは、それでしか外せない
-  // エディタ未ビルド構成と、外す動機が生まれる不一致時にだけ出す
-  const canEdit = !$("editor-embed-controls").hidden;
-  const reedit = '<a href="#" id="reedit-editor">再編集</a>';
+  // 編集を開き直す導線は「✏️ 替え歌を編集」ボタン1本に集約したので、ここには
+  // 出さない(押すと保存済みを見つけて「続きから再開」を出す)。
+  // 残すのは、そこからは戻せない「取り消して自動変換に戻す」だけ。
   const clear = '<a href="#" id="clear-editor">取り消して自動変換に戻す</a>';
   if (parodyMismatch()) {
-    const links = canEdit ? `${reedit} / ${clear}` : clear;
     s.innerHTML = `⚠ 単語リスト「${escapeHtml($("wordlist").value.trim())}」は使われません — `
-      + `編集済み替え歌(「${escapeHtml(editorWordlist.name)}」から作成)が優先されます(${links})`;
+      + `編集済み替え歌(「${escapeHtml(editorWordlist.name)}」から作成)が優先されます(${clear})`;
   } else {
     const head = parodyWasRestored
       ? "✅ 前回の編集済み替え歌を復元しました。このまま生成に使われます"
       : "✅ 編集済みの替え歌を使用します";
-    s.innerHTML = `${head}(${canEdit ? reedit : clear})`;
+    s.innerHTML = `${head}(${clear})`;
   }
-  if ($("reedit-editor")) $("reedit-editor").addEventListener("click", reEditParody);
   if ($("clear-editor")) {
     $("clear-editor").addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -3688,6 +3976,8 @@ async function doRestoreForm() {
       injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), false);
       $("midi-restore-hint").textContent = "前回のファイルを復元: " + m.name;
       $("midi-restore-hint").hidden = false;
+      // 復元したMIDIも(歌詞なしのまま持ち越さないよう)一度は検証する
+      scheduleMidiCheck();
       any = true;
     }
   } catch { /* 復元失敗は無視 */ }
