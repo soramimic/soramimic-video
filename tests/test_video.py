@@ -1205,32 +1205,59 @@ def test_idle_sections_edge_cases():
 
 
 def test_endroll_pages_splits_at_threshold():
-    from soramimic_video.video import ENDROLL_WORDS_PER_PAGE, endroll_pages
+    from soramimic_video.video import (
+        ENDROLL_MAX_PAGES,
+        ENDROLL_WORDS_PER_PAGE,
+        endroll_pages,
+    )
 
     per = ENDROLL_WORDS_PER_PAGE
     words = [f"w{i}" for i in range(per)]
     assert len(endroll_pages(words)) == 1
     assert len(endroll_pages(words + ["extra"])) == 2
-    # 2枚を超える語数でも枚数は増やさず、1枚あたりを詰める
-    many = [f"w{i}" for i in range(per * 5)]
+    # 上限を超える語数でも枚数は増やさず、1枚あたりを詰める
+    many = [f"w{i}" for i in range(per * (ENDROLL_MAX_PAGES + 3))]
     pages = endroll_pages(many)
-    assert len(pages) == 2
+    assert len(pages) == ENDROLL_MAX_PAGES
     assert sum(len(p) for p in pages) == len(many)
     assert endroll_pages([]) == []
+
+
+def test_endroll_pages_limited_by_outro_length():
+    from soramimic_video.video import (
+        ENDROLL_MIN_PAGE_SEC,
+        ENDROLL_WORDS_PER_PAGE,
+        endroll_pages,
+    )
+
+    words = [f"w{i}" for i in range(ENDROLL_WORDS_PER_PAGE * 4)]
+    # 短い後奏では枚数を減らして1枚を詰める(めくりが速すぎて読めないため)
+    assert len(endroll_pages(words, ENDROLL_MIN_PAGE_SEC * 2)) == 2
+    assert len(endroll_pages(words, ENDROLL_MIN_PAGE_SEC - 0.1)) == 1
+    # 尺が足りるなら語数どおりに割る
+    assert len(endroll_pages(words, ENDROLL_MIN_PAGE_SEC * 10)) == 4
 
 
 def test_used_words_dedupes_in_order(tmp_path: Path):
     from soramimic_video.video import used_words
 
     project = _project(tmp_path)
-    word = project.parody.lines[0].words[0]
-    project.parody.lines[0].words.append(word)  # 同じ単語の2回目
-    project.parody.lines[0].words.append(
+    words = project.parody.lines[0].words
+    words.append(words[0])  # 同じ単語の2回目
+    # 苗字だけを歌詞に当てた単語(surface=西川 / original=西川正治)。一覧には
+    # 略さない original を出す。同じ original に当たる別の surface も1回にまとめる
+    for surface in ("西川", "正治"):
+        words.append(
+            ParodyWord(surface=surface, kana="ニシカワ", original="西川正治",
+                       original_surface="ニシカワ", originalkana="ニシカワ",
+                       note_ids=[2], note_kana=["ム"])
+        )
+    words.append(
         ParodyWord(surface="謎", kana="ナゾ", original="", original_surface="ナゾ",
                    originalkana="ナゾ", note_ids=[2], note_kana=["ム"])
     )
     # original 列を出し、無い単語(手入力)は替え歌表記で代用する
-    assert used_words(project) == ["静", "謎"]
+    assert used_words(project) == ["静", "西川正治", "謎"]
 
 
 def test_image_credits_text_dedupes():
@@ -1257,7 +1284,8 @@ def test_section_frame_data_template_values(tmp_path: Path):
         _project(tmp_path), section="outro", duration=20.0,
         words=["静", "謎"], image_credits="A / CC BY", page=2, pages=2,
     )
-    assert end["used_words"] == "静、謎"
+    # 単語一覧は1語1行(段組みへの割り付けはレイアウト側の columns がやる)
+    assert end["used_words"] == "静\n謎"
     assert end["image_credits"] == "A / CC BY"
     assert end["page_label"] == "(2/2)"
     # 1枚のときはページ表示を出さない

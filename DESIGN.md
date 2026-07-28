@@ -203,11 +203,12 @@ f0とMIDIの音高差の中央値で移調も自動補正。メロディチャ�
   変えられる。subtitle 要素のないレイアウトでは既定(下部2段)になるので、
   その場合 image/text 要素は下部約25%を空けて配置する。
 - 歌唱がない区間は前奏(intro)・間奏(interlude)・後奏(outro)に分けて出し分ける
-  (video.idle_sections)。前奏はサムネ、間奏は「間奏(X秒)」、後奏は使った単語を
-  並べたエンドロール(画像クレジットもここに集約)。短い間奏(5秒未満)・短い後奏
-  (6秒未満)には出さず、従来どおり idle(なければ黒)に任せる。表示内容は
-  `section_defaults.json` の既定をレイアウトJSONの同名キーで上書きでき、
-  `{interlude_sec}` / `{used_words}` / `{image_credits}` などを参照できる
+  (video.idle_sections)。前奏はサムネ、間奏は「間奏(X秒)」、後奏は使った単語
+  (単語リストの original 列)を3カラム左詰めで並べたエンドロール。短い間奏
+  (5秒未満)・短い後奏(6秒未満)には出さず、従来どおり idle(なければ黒)に
+  任せる。画像の帰属表示は各単語フレームの右下に個別に焼いているので後奏では
+  集約しない。表示内容は `section_defaults.json` の既定をレイアウトJSONの
+  同名キーで上書きでき、`{interlude_sec}` / `{used_words}` などを参照できる
   (layout.py 冒頭のドキュメント参照)。
 - ffmpeg 一発(背景+overlay enable=between(t,a,b)+subtitles)で合成。
 - Web UIの「🎲 ランダム」の確認モーダルに出る単語リストの代表画像は、昆虫のように

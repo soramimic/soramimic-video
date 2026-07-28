@@ -74,8 +74,15 @@ SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
 INTERLUDE_MIN_SEC = 5.0
 # 後奏のエンドロールを出す最短の後奏。読み切れない長さでは出さない
 OUTRO_MIN_SEC = 6.0
-ENDROLL_WORDS_PER_PAGE = 30  # これを超えたら2枚に分ける
-ENDROLL_MAX_PAGES = 2  # 分けるのは最大2枚まで(それ以上は1枚あたりの語数を増やす)
+# 1枚に無理なく載る語数は「読める最小の文字サイズ」で決まる。既定のエンドロール
+# (section_defaults.json)は最大4カラムの段組みで、18行までなら本文が
+# フレーム高さの3%を切らない(1080pで約32px)
+ENDROLL_WORDS_PER_PAGE = 54
+ENDROLL_MAX_PAGES = 4  # 分けるのは最大4枚まで(それ以上は1枚あたりの語数を増やす)
+# 1枚あたりこれだけ映せないなら枚数を減らして1枚を詰める。エンドロールは
+# 読み切るものではなく眺めるものなので、めくりを遅くするより1枚の文字を
+# 大きく保つ方を優先する(これを下回ると今度はページが視界に入る前に消える)
+ENDROLL_MIN_PAGE_SEC = 2.5
 # build_image_cues 前の画像/クレジットのプリフェッチ並列数。
 # Commonsのサムネイル生成(Special:FilePath?width=)は並列4だと429が返ることを実測済み。
 # 2なら429なしで、リトライ待ちが入る4より速かった(20枚: 24.6秒 vs 31.5秒)
@@ -388,7 +395,8 @@ def idle_frame_data(project: Project, app_credit: str = "") -> dict:
 # ---- 歌唱なし区間(前奏・間奏・後奏) ----
 
 
-ENDROLL_WORD_SEP = "、"  # エンドロールで使用単語を並べる区切り
+# エンドロールの単語一覧は1語1行。レイアウト側の columns で段組みに割り付ける
+ENDROLL_WORD_SEP = "\n"
 
 
 @dataclass
@@ -469,17 +477,22 @@ def used_words(project: Project) -> list[str]:
 
 def endroll_pages(
     words: list[str],
+    duration: float = 0.0,
     per_page: int = ENDROLL_WORDS_PER_PAGE,
     max_pages: int = ENDROLL_MAX_PAGES,
 ) -> list[list[str]]:
     """使用単語をエンドロールのページに割り振る(1〜max_pages枚・語数は均等)。
 
     max_pages を超える語数は分割せず1枚あたりを増やす(文字は枠に合わせて縮む)。
-    後奏の尺は限られているので、めくる枚数を増やすより1枚を詰める方が読める。
+    後奏(duration秒)を等分して映すので、1枚あたり ENDROLL_MIN_PAGE_SEC を
+    切るような枚数には割らない。詰めて読みにくいのと、めくりが速すぎて読めない
+    のとでは後者の方が損なので、短い後奏では枚数を減らして1枚を詰める。
     """
     if not words:
         return []
     pages = min(max_pages, max(1, -(-len(words) // per_page)))
+    if duration > 0:
+        pages = min(pages, max(1, int(duration // ENDROLL_MIN_PAGE_SEC)))
     size = -(-len(words) // pages)
     return [words[i : i + size] for i in range(0, len(words), size)]
 
@@ -506,7 +519,10 @@ def section_frame_data(
     """区間フレームのテンプレートに渡す値(idle_frame_data に区間固有の列を足す)。
 
     - interlude_sec: その間奏の長さ(整数秒)。間奏以外では空文字
-    - used_words / image_credits: エンドロール用の使用単語とクレジット集約
+    - used_words: エンドロール用の使用単語(1語1行。段組みはレイアウト側の columns)
+    - image_credits: 画像クレジットの集約。既定のエンドロールでは使っていない
+      (各単語フレームの右下に個別のクレジットを焼いているため)が、そうした
+      焼き込みをしないレイアウト向けに残してある
     - page / pages / page_label: エンドロールが複数枚に分かれたときのページ表示
       (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
     """
@@ -554,7 +570,7 @@ def build_section_cues(
             # 後奏が短い曲・使用単語が取れない曲ではエンドロールを出さない
             if sec.duration < OUTRO_MIN_SEC or not words:
                 continue
-            pages = endroll_pages(words)
+            pages = endroll_pages(words, sec.duration)
             span = sec.duration / len(pages)
             for i, page_words in enumerate(pages):
                 data = section_frame_data(
