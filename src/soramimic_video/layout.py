@@ -122,6 +122,9 @@ logger = logging.getLogger(__name__)
 LAYOUTS_DIR = Path(__file__).resolve().parent / "layouts"
 # 単語リスト名(external/soramimic-wordlists のCSVのstem)→ 組み込みレイアウト名のマップ
 WORDLIST_LAYOUTS_PATH = Path(__file__).resolve().parent / "wordlist_layouts.json"
+# layouts/ にあるが動画フレームのレイアウトではないもの(スタイル別の入れ子構造なので
+# そのままでは Layout にならない)。UIのレイアウト選択にも load_layout にも出さない
+NON_FRAME_LAYOUTS = frozenset({"thumbnail"})
 # 歌唱なし区間の種別。前奏(1単語目より前)・間奏(単語と単語の間)・後奏(最終単語より後)
 IDLE_SECTIONS = ("intro", "interlude", "outro")
 # 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
@@ -314,7 +317,9 @@ class Layout:
 
 
 def builtin_layout_names() -> list[str]:
-    return sorted(p.stem for p in LAYOUTS_DIR.glob("*.json"))
+    return sorted(
+        p.stem for p in LAYOUTS_DIR.glob("*.json") if p.stem not in NON_FRAME_LAYOUTS
+    )
 
 
 def load_wordlist_layouts() -> dict[str, str]:
@@ -358,7 +363,8 @@ def load_layout(name_or_path: str | None) -> Layout:
         path = p
     else:
         path = LAYOUTS_DIR / f"{name_or_path}.json"
-        if not path.exists():
+        # フレームレイアウトでないJSON(サムネ定義)は組み込み名として受け付けない
+        if name_or_path in NON_FRAME_LAYOUTS or not path.exists():
             builtin = ", ".join(builtin_layout_names())
             raise FileNotFoundError(
                 f"レイアウトが見つかりません: {name_or_path} "
