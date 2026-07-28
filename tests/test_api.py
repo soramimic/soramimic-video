@@ -302,8 +302,26 @@ def test_index_html_builder_card_syncs_with_advanced():
     # 確認モーダルは廃止し、🎲ランダムはカードの選択を差し替えるだけになった
     assert "lucky-modal" not in html
     assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
-    # 進捗・結果は別セクション
-    assert '<section class="card" id="job-card" hidden>' in html
+    # 進捗・結果は別セクション(既定で畳んである詳細)
+    assert '<details class="card" id="job-card" hidden>' in html
+
+
+def test_index_html_job_card_is_collapsed_by_default():
+    """ジョブの詳細は既定で畳み、エラー・中断のときだけ自動で開く。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # 「⚙️ 詳細設定」「過去のジョブ」と同じ details.card の見た目にそろえる
+    assert '<details class="card" id="job-card" hidden>' in html
+    assert "<summary>生成の詳細(ステージ・ログ)</summary>" in html
+    # ログの入れ子の折りたたみは廃止(開けばそのままログまで見える)
+    assert "<details><summary>ログ</summary>" not in html
+    assert '<pre id="log"></pre>' in html
+    # 開閉は保存しない。投入のたびに閉じた状態から始める
+    assert '$("job-card").open = false;' in html
+    # 失敗・中断で終わったときだけ自動で開く
+    assert '$("job-card").open = true;' in html
+    assert html.count("openJobDetails();") == 5
 
 
 def test_index_html_builder_card_is_bare():
