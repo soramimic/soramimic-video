@@ -1432,6 +1432,11 @@ WORDLIST_LAYOUTS = json.loads(
 )
 
 
+# 画像そのものに名前などの文字が焼き込まれていて、レイアウト側では文字を
+# 重ねないカード(重ねると二重に出る)。pokemon は型色カード画像に名前・タイプ入り。
+TEXTLESS_CARD_LAYOUTS = {"pokemon_card"}
+
+
 def _wordlist_rows(name: str, limit: int = 20) -> list[dict]:
     path = WORDLISTS_DIR / f"{name}.csv"
     if not path.is_file():
@@ -1452,6 +1457,14 @@ def test_card_layout_renders_more_than_the_name(wordlist: str, layout_name: str)
     assert rows, f"{wordlist}.csv が空です"
     # レイアウトが参照する列がリストに存在する(1列も無ければ食い違い)
     assert layout_column_mismatch(layout, set(rows[0])) == []
+    if layout_name in TEXTLESS_CARD_LAYOUTS:
+        # 画像に文字が焼き込まれているカードは、テキストを重ねないのが正しい姿。
+        # 「名前だけ」判定の対象外にするかわりに、テキストが増えていないかを見る。
+        texts = [e for e in layout.raw.get("elements", []) if e.get("type") == "text"]
+        assert not texts, (
+            f"{layout_name} にテキスト要素が増えています。画像の文字と重複しないか確認を"
+        )
+        return
     best = max(
         len([t for t in layout.render_texts(word_frame_data(_word(row), row)) if t])
         for row in rows

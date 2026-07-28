@@ -1,13 +1,13 @@
 {
+  "_comment": [
+    "ポケモンの型色カード画像(pokemon-typecard)には名前とタイプが焼き込まれている。",
+    "レイアウト側で {original} や {type1}/{type2} を出すと画像の文字と二重になるので出さない。",
+    "字幕(替え歌・元歌詞)は画像には無いのでそのまま残す。",
+    "テキストがなくなったぶん、画像は空いた領域いっぱいに置く(アスペクト比は維持される)。"
+  ],
   "background": "black",
   "elements": [
-    {"type": "image", "box": [0.09, 0.05, 0.82, 0.48]},
-    {"type": "text", "text": "{original}", "box": [0.05, 0.56, 0.9, 0.09],
-     "size": 0.062, "color": "white", "stroke_width": 0.004},
-    {"type": "text", "text": "{type1}・{type2}", "box": [0.05, 0.66, 0.9, 0.05],
-     "size": 0.038, "color": "#d4d4d4", "require": "type2"},
-    {"type": "text", "text": "{type1}", "box": [0.05, 0.66, 0.9, 0.05],
-     "size": 0.038, "color": "#d4d4d4", "require": "type1", "require_empty": "type2"},
+    {"type": "image", "box": [0.05, 0.04, 0.9, 0.7]},
     {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.1],
      "size": 0.065, "color": "white", "bold": true, "ruby": true},
     {"type": "subtitle", "source": "original", "box": [0.02, 0.895, 0.96, 0.05],
