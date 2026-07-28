@@ -627,7 +627,12 @@ def _columns_placement(items, columns=3, width=960, height=540, size=0.06):
     """
     from PIL import ImageDraw
 
-    from soramimic_video.layout import _choose_columns, _layout_columns, resolve_font_path
+    from soramimic_video.layout import (
+        _choose_columns,
+        _column_geometry,
+        _layout_columns,
+        resolve_font_path,
+    )
 
     el = _columns_element(columns, size)
     font_path = resolve_font_path(None)
@@ -636,8 +641,8 @@ def _columns_placement(items, columns=3, width=960, height=540, size=0.06):
         draw, "\n".join(items), el, (0, 0, width, height), height, font_path, 0,
     )
     cols, _px = _choose_columns(draw, items, el, width, height, height, font_path)
-    gap = width * layout_mod._COLUMN_GAP_RATIO if cols > 1 else 0.0
-    return draw, placed, (width - gap * (cols - 1)) / cols, gap
+    col_w, gap = _column_geometry(width, cols)
+    return draw, placed, col_w, gap
 
 
 def test_text_columns_place_items_column_major():
@@ -653,31 +658,34 @@ def test_text_columns_place_items_column_major():
     assert ys[3] == ys[0] and ys[6] == ys[0]
 
 
-def _overflowing_item(width, height, size, columns, n_items, unit="ヴィルヘルム・"):
-    """その段組みで確実に列幅を超える語を作る。
+def _overflowing_item(
+    width, height, size, columns, n_items, factor=1.2, unit="ヴィルヘルム・"
+):
+    """その段組みで列幅の factor 倍を確実に超える語を作る。
 
     文字の実寸はフォントによって変わる(CIと手元で違う)ので、固定の長い名前を
     置くと環境によっては収まってしまい縮小が発動しない。実測しながら伸ばす。
+    factor を大きくすると「その段数では本文が下限を割る」ほど長い語になる。
     """
     from PIL import ImageDraw
 
-    from soramimic_video.layout import _column_base_px, _font, resolve_font_path
+    from soramimic_video.layout import _column_geometry, _font, resolve_font_path
 
-    el = _columns_element(columns, size)
-    font_path = resolve_font_path(None)
     draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
-    gap = width * layout_mod._COLUMN_GAP_RATIO
-    col_w = (width - gap * (columns - 1)) / columns
-    font = _font(font_path, _column_base_px(el, columns, n_items, height, height))
+    col_w, _gap = _column_geometry(width, columns)
+    # 高さから決まる上限(=そのレイアウトで取りうる最大の本文サイズ)で測る
+    rows = max(1, -(-n_items // columns))
+    px = max(9, min(int(size * height), int(height / (rows * 1.25))))
+    font = _font(resolve_font_path(None), px)
     text = unit
-    while draw.textlength(text, font=font) <= col_w * 1.2:
+    while draw.textlength(text, font=font) <= col_w * factor:
         text += unit
     return text
 
 
 def test_text_columns_shrink_only_overflowing_item():
     width, height, size, columns = 960, 540, 0.06, 3
-    short = ["新宿", "渋谷", "上野", "品川", "池袋"]
+    short = [f"新宿{i}" for i in range(11)]
     long_name = _overflowing_item(width, height, size, columns, len(short) + 1)
     items = [*short[:2], long_name, *short[2:]]
     draw, placed, col_w, gap = _columns_placement(
@@ -693,7 +701,7 @@ def test_text_columns_shrink_only_overflowing_item():
     from soramimic_video.layout import resolve_font_path
 
     if resolve_font_path(None) is not None:
-        assert by_text[long_name][1].size < by_text["新宿"][1].size
+        assert by_text[long_name][1].size < by_text["新宿0"][1].size
 
 
 def test_columns_element_parsed_and_rendered(tmp_path):
@@ -739,10 +747,48 @@ def test_columns_count_adapts_to_word_width():
     short_cols, short_px = _choose_cols(["新宿"] * 60, **kw)
     assert short_cols == columns
     # 外国人のフルネームが並ぶリストは段を減らして列幅を稼ぐ。語の実寸はフォントで
-    # 変わるので、上限の段数で確実にはみ出す長さを実測して作る
-    long_name = _overflowing_item(width, height, size, columns, 60)
+    # 変わるので、上限の段数では本文が下限を割るほど長い語を実測して作る
+    long_name = _overflowing_item(width, height, size, columns, 60, factor=4)
     long_cols, long_px = _choose_cols([long_name] * 60, **kw)
     assert 1 <= long_cols < short_cols
     # 段を減らすと行数が増えるので本文は小さくなる(そのぶん語がはみ出さない)
     assert long_px < short_px
     assert _choose_cols([], **kw)[0] == 1
+
+
+def _default_endroll_columns(items, width=1920, height=1080):
+    """既定のエンドロール(section_defaults.json の outro)で選ばれる段数と本文サイズ。"""
+    from PIL import ImageDraw
+
+    from soramimic_video.layout import (
+        _choose_columns,
+        _parse_elements,
+        load_section_defaults,
+        resolve_font_path,
+    )
+
+    raw = load_section_defaults()["outro"]
+    elements, _subs = _parse_elements(raw, "section_defaults.json")
+    el = next(e for e in elements if "{used_words}" in getattr(e, "template", ""))
+    _x, _y, bw, bh = el.box
+    draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+    return _choose_columns(
+        draw, items, el, int(bw * width), int(bh * height), height, resolve_font_path(None)
+    )
+
+
+def test_default_endroll_packs_short_words_to_upper_limit():
+    from soramimic_video.video import ENDROLL_WORDS_PER_PAGE
+
+    n = ENDROLL_WORDS_PER_PAGE
+    # 駅名のような短い語なら、1枚分(ENDROLL_WORDS_PER_PAGE)を上限の段数で詰められる
+    cols, px = _default_endroll_columns([f"新宿{i % 10}" for i in range(n)])
+    assert cols == 8
+    # 短い語では段数は高さで決まる(列幅で頭打ちにならない)ので、行がboxを埋める
+    rows = -(-n // cols)
+    assert px * 1.25 * rows > 0.9 * 0.74 * 1080
+    # 同じ枚数でも長いフルネームが並ぶと列幅が足りず、段数は減って本文も小さくなる
+    long_cols, long_px = _default_endroll_columns(
+        [f"ガスパール＝ギュスターヴ・コリオリ{i}" for i in range(n)]
+    )
+    assert long_cols < cols and long_px < px
