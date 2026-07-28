@@ -42,12 +42,12 @@ def test_info_hints_cover_the_static_explanations():
     ids = {a.get("id") for tag, a in _tags() if "data-info" in a}
     # 各グループの1行説明(opt-group-lead)はすべて ⓘ の中
     leads = [a for tag, a in _tags() if "opt-group-lead" in (a.get("class") or "")]
-    assert len(leads) == 5
+    assert len(leads) == 4
     assert all("data-info" in a for a in leads)
     # 動的メッセージ(状態・警告・エラー)は畳まない
     always_visible = {
-        "restore-notice",       # 前回の入力を復元しました
         "midi-restore-hint",    # 前回のファイルを復元: ...
+        "layout-file-msg",      # 読み込みました: xxx.json / 読めませんでした
         "midi-error",           # 歌詞なしMIDIの拒否
         "lyrics-midi-warn",     # 元歌詞とMIDI歌詞の食い違い
         "sample-status",        # ✓ ...をセットしました

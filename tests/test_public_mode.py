@@ -291,6 +291,41 @@ def test_index_html_turnstile_and_credit():
     assert 'id="public-footer"' in html and 'id="public-limits"' in html
 
 
+def test_public_mode_never_exposes_the_api_key_field(public_app, monkeypatch):
+    """公開モードではAPIキー欄を一切出さない(認証を要求しない構成だから)。"""
+    from pathlib import Path
+
+    monkeypatch.delenv(api_mod.API_KEY_ENV, raising=False)
+    conf = TestClient(public_app).get("/api/config").json()
+    # サーバーは「認証は要らない」と答える
+    assert conf["public"] is True
+    assert conf["auth_required"] is False
+    # フロントは auth_required のときだけ hidden を外す。それ以外の経路で
+    # #auth が出ることはない(HTMLでは hidden 付きで置かれている)
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert '<div class="field" id="auth" hidden>' in html
+    assert '$("auth").hidden = !conf.auth_required;' in html
+    assert html.count('$("auth").hidden') == 1
+    # 「保存した入力をクリア」を消したので「APIキーは消えません」の断り書きも要らない
+    assert "APIキーは消えません" not in html
+
+
+def test_api_key_field_is_shown_only_when_auth_is_required(tmp_path, monkeypatch):
+    """認証ありの構成でだけ auth_required=True になる(=APIキー欄が出る)。"""
+    monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
+    monkeypatch.delenv(api_mod.API_KEY_ENV, raising=False)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    assert client.get("/api/config").json()["auth_required"] is False
+
+    monkeypatch.setenv(api_mod.API_KEY_ENV, "secret")
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs2"))
+    assert client.get("/api/config").json() == {"auth_required": True}
+    conf = client.get("/api/config", headers={"X-API-Key": "secret"}).json()
+    assert conf["auth_required"] is True
+
+
 def test_private_config_has_no_public_keys(tmp_path, monkeypatch):
     monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))

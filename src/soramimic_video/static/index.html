@@ -205,7 +205,6 @@
   }
   .le-tabs { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .5rem; }
   .le-tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .le-idle-opts { font-size: .85rem; margin-top: .2rem; }
   .le-cue-nav { display: flex; gap: .5rem; margin-top: .5rem; align-items: center; }
   .le-cue-nav button:disabled { opacity: .4; }
   #le-cue-indicator { font-size: .85rem; font-variant-numeric: tabular-nums; }
@@ -237,6 +236,20 @@
   #editor-frame {
     flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: var(--panel);
   }
+  /* 替え歌JSONの読み書き。使う人が少ないのでフッタで小さく置く */
+  .editor-modal-foot {
+    flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem;
+    padding: .4rem .7rem; background: var(--panel); border-top: 1px solid var(--border);
+    font-size: .85rem;
+  }
+  .editor-modal-foot .hint { margin: 0; }
+  .editor-modal-foot label { margin: 0; }
+  /* 1行に収めたいので、既定の width:100% を解いて中身なりの幅にする */
+  .editor-modal-foot input[type="file"] {
+    width: auto; max-width: 100%; flex: 0 1 auto; padding: .3rem .4rem; font-size: .8rem;
+  }
+  /* 自動オクターブ調整ONで無効化した移調欄(disabled + 視覚的にミュート) */
+  #transpose-row.is-disabled { opacity: .5; }
   /* モーダルを開いているあいだは裏のページをスクロールさせない */
   body.modal-open { overflow: hidden; }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
@@ -446,15 +459,19 @@
 <details class="card" id="advanced">
   <summary>⚙️ 詳細設定(曲と歌詞・空耳のもと・歌声・見た目)</summary>
 
-  <!-- 中身は役割ごとに5つのグループに分け、よく使う順(曲 → 空耳のもと → 歌声 →
-       見た目 → その他)に並べる。フラットに並べると初見の人がどこから触ればいいか
+  <!-- 中身は役割ごとに4つのグループに分け、よく使う順(曲 → 空耳のもと → 歌声 →
+       見た目)に並べる。フラットに並べると初見の人がどこから触ればいいか
        分からないため、小見出し+1行の説明で区切る。
        DOMの移動だけで、ID・同期・復元・来歴ガードのロジックは触っていない。 -->
 
-  <!-- 前回の入力の復元は、この中の設定がどこから来たのかの説明。詳細設定をいじる人
-       だけに関係する情報なので、ビルダーカードの下ではなくここの先頭に置く。
-       復元が1つでもあったときだけ restoreForm が hidden を外す。 -->
-  <p class="hint" id="restore-notice" hidden>前回の入力を復元しました(最初からやり直すなら、いちばん下の「その他」にある「保存した入力をクリア」)。</p>
+  <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig が auth_required を見て
+       hidden を外す)。公開モードや認証なしの構成では最後まで hidden のまま。
+       出るときは入力しないと何も動かないので、グループより前・先頭に置く
+       (loadConfig はここへスクロールする)。 -->
+  <div class="field" id="auth" hidden>
+    <label for="api-key">APIキー</label>
+    <input type="password" id="api-key" placeholder="X-API-Key">
+  </div>
 
   <!-- ① 曲と歌詞 -->
   <section class="opt-group">
@@ -507,6 +524,12 @@
       <select id="wordlist-select" hidden></select>
       <input type="text" id="wordlist" placeholder="例: stations">
       <div id="wordlist-filters" class="wordlist-filters" hidden></div>
+      <!-- 絞り込み(where)はファセットのチェックボックスの出力そのものなので、
+           チェックを触ったときに何が入ったのかが見えるよう同じ視野に置く
+           (詳細調整の折りたたみの中に隠すと、対応が分からなくなる)。 -->
+      <label for="where">絞り込み(where・任意)</label>
+      <input type="text" id="where" placeholder="例: type=family or type=full">
+      <p class="hint" data-info>単語リストの行を絞り込む条件。上の単語リストやチェックボックスを選ぶと自動入力されます。</p>
     </div>
 
     <div class="field">
@@ -542,9 +565,6 @@
     <details id="parody-advanced" class="sub-details">
       <summary>変換のしかたを細かく調整する(上級者向け)</summary>
       <p class="hint" data-info>単語の選ばれ方を決める値です。既定のままでも作れます。</p>
-      <label>絞り込み(where・任意)</label>
-      <input type="text" id="where" placeholder="例: type=family or type=full">
-      <p class="hint" data-info>単語リストの行を絞り込む条件。上の単語リストを選ぶと自動入力されます。</p>
       <!-- 「単語重複」は本家 soramimic の単語重複トグル(frontend/index.html: あり/なし、
            なしが既定)と文言・選択肢・既定をそろえたもの(external/soramimic 53dcff1)。 -->
       <label>単語重複</label>
@@ -591,14 +611,6 @@
       <p class="hint" data-info>この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
     </details>
 
-    <!-- 替え歌JSONの入出力はさらに出番が少ないので、パラメータとは別の折りたたみに分ける -->
-    <details id="parody-io" class="sub-details">
-      <summary>替え歌JSONを読み書きする(上級者向け)</summary>
-      <label for="editor">外部で編集した替え歌JSONの読み込み</label>
-      <input type="file" id="editor" accept=".json">
-      <p class="hint" data-info>soramimicエディタなどで別途書き出したJSONを直接読み込みます(この場のeditor編集を使う場合は不要)。</p>
-      <button type="button" id="download-editor" class="btn-sm" disabled>現在の替え歌JSONをダウンロード</button>
-    </details>
   </section>
 
   <!-- ③ 歌声 -->
@@ -633,9 +645,14 @@
         音域に合わせて自動でオクターブ調整
       </label>
       <p class="hint" id="auto-octave-hint"></p>
-      <label for="transpose">移調(半音)</label>
-      <input type="text" id="transpose" value="0" inputmode="numeric">
-      <p class="hint" data-info>高すぎるときは -12(1オクターブ下)がおすすめ。</p>
+      <!-- 自動オクターブ調整ONのあいだは高さを自動に任せるので、手入力の移調欄は
+           グレーアウトして触れなくする。値は保持し、OFFにすると復帰する
+           (updateTransposeEnabled)。 -->
+      <div id="transpose-row">
+        <label for="transpose">移調(半音)</label>
+        <input type="text" id="transpose" value="0" inputmode="numeric">
+        <p class="hint" data-info>高すぎるときは -12(1オクターブ下)がおすすめ。上の「音域に合わせて自動でオクターブ調整」がONのあいだは自動で決まるので、この欄は使えません(OFFにすると入力できます)。</p>
+      </div>
     </div>
 
     <div class="field">
@@ -652,16 +669,24 @@
 
     <div class="field">
       <label for="layout-select">レイアウト(任意)</label>
-      <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
-           送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。 -->
+      <!-- iOS Safari は datalist 候補を出さないため select に変更。
+           送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。
+           サーバー上のパスを手入力する「その他」は、当てにできるのが運用者だけで
+           打ち間違いも分からないのでやめ、手元のJSONファイルを読む導線に置き換えた。 -->
       <select id="layout-select"></select>
-      <input type="text" id="layout-other" hidden placeholder="例: default(組み込み名かサーバー上のJSONパス)">
       <input type="hidden" id="layout">
       <p class="hint" data-info>画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
+      <!-- レイアウトJSONファイルの読み込み。読み込んだ中身はカスタムレイアウトとして
+           扱い(leDirty)、生成時に layout_json で送る。来歴(leLayoutFor)は既存の
+           ドラッグ編集と同じ扱いなので、レイアウト名を変えれば破棄される。 -->
+      <label for="layout-file">レイアウトを読み込む(ファイル)</label>
+      <input type="file" id="layout-file" accept=".json">
+      <p class="hint" id="layout-file-msg" hidden></p>
+      <p class="hint" data-info>手元のレイアウトJSONを読み込み、カスタムレイアウトとして使います(上のプルダウンの選択より優先)。読み込んだ内容は下の「レイアウトを編集」でそのまま調整できます。</p>
       <details id="le-details" class="sub-details">
         <summary>レイアウトを編集(ドラッグで配置)</summary>
         <div class="le-toolbar">
-          <button type="button" id="layout-load">レイアウトを読み込む</button>
+          <button type="button" id="layout-load">レイアウト名から読み込み直す</button>
           <button type="button" id="le-add-text">テキスト追加</button>
           <button type="button" id="le-add-subtitle">字幕追加</button>
           <button type="button" id="le-add-image">画像枠追加</button>
@@ -669,19 +694,12 @@
           <button type="button" id="le-export">エクスポート</button>
           <span id="le-msg"></span>
         </div>
+        <!-- 歌唱なし区間(idle)・hold はレイアウトJSONの機構としては残っているが、
+             GUIで触る人がほとんどおらず編集画面を複雑にしていたので、タブと調整欄は
+             置かない。設定したいときはレイアウトJSONの "idle" / "hold" を直接書く。 -->
         <div class="le-tabs">
           <button type="button" id="le-tab-elements" class="active">通常</button>
           <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
-          <button type="button" id="le-tab-idle">歌唱なし区間(前奏・間奏・後奏)</button>
-        </div>
-        <div class="le-idle-opts" id="le-idle-opts" hidden>
-          <label class="check" style="margin:.5rem 0 0">
-            <input type="checkbox" id="le-hold">
-            単語のフレームを次の歌唱まで保持する(hold: 間奏の隙間を直前の絵で埋める)
-          </label>
-          <p class="hint" id="le-idle-hint" data-info data-info-standalone data-info-label="歌唱なし区間">歌唱がない区間に出す固定フレーム。
-            単語データはないので {title}(曲=MIDIのファイル名)/ {wordlist}(単語リスト名)だけが使えます。
-            idle要素を1つも置かなければ、その区間は隅のクレジットだけの背景色になります。</p>
         </div>
         <div class="le-cue-nav" id="le-cue-nav" hidden>
           <button type="button" id="le-cue-prev">◀ 前</button>
@@ -702,8 +720,7 @@
           編集した内容はジョブ投入時にレイアウト名より優先で使われます。
           「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
           列({achievement}など)は空になるので{surface}/{original}だけで組みます
-          (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。
-          「歌唱なし区間」タブは前奏・間奏・後奏に出す固定フレームの配置です。</p>
+          (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。</p>
         <details><summary>JSON</summary>
           <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
         </details>
@@ -711,24 +728,6 @@
     </div>
   </section>
 
-  <!-- ⑤ その他 -->
-  <section class="opt-group">
-    <h3 class="opt-group-title">⑤ その他</h3>
-    <p class="hint opt-group-lead" data-info>ふだんは触らない項目。</p>
-
-    <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig)。出るときは
-         入力しないと何も動かないので、このグループは畳まずに置く。 -->
-    <div class="field" id="auth" hidden>
-      <label for="api-key">APIキー</label>
-      <input type="password" id="api-key" placeholder="X-API-Key">
-    </div>
-
-    <div class="field">
-      <label>保存した入力</label>
-      <button type="button" id="clear-form" class="btn-sm">保存した入力をクリア</button>
-      <p class="hint" data-info>この画面の入力(曲・歌詞・単語リスト・歌声・レイアウトなど)はブラウザに保存され、次に開いたときに復元されます。まっさらな状態から始めたいときに押してください(APIキーは消えません)。</p>
-    </div>
-  </section>
 </details>
 
 <details class="card" id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
@@ -753,6 +752,15 @@
     <p class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。</p>
   </div>
   <iframe id="editor-frame" title="soramimic editor"></iframe>
+  <!-- 替え歌JSONの読み書き。エディタと同じ「替え歌そのもの」を扱う操作なので、
+       詳細設定ではなくエディタの中に置く。出番が少ないのでフッタで控えめに。
+       #editor は生成時の参照・自動取り込みの正本のままで、DOMの位置だけ移した。 -->
+  <div class="editor-modal-foot" id="parody-io">
+    <label for="editor" class="hint">替え歌JSON:</label>
+    <input type="file" id="editor" accept=".json" aria-label="外部で編集した替え歌JSONの読み込み">
+    <button type="button" id="download-editor" class="btn-sm" disabled>ダウンロード</button>
+    <p class="hint" data-info data-info-standalone data-info-label="替え歌JSONの読み書き">soramimicエディタなどで別途書き出したJSONを直接読み込みます(このエディタでの編集を使う場合は不要)。「ダウンロード」は今使われている替え歌JSONの書き出しです。</p>
+  </div>
 </div>
 
 <script>
@@ -839,7 +847,7 @@ async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
-  // APIキー欄は詳細設定の中(「⑤ その他」)にあるので、キー待ちのときは折りたたみを
+  // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
   // 開いたうえで、そこまでスクロールして見えるようにする
   if (conf.auth_required && !apiKey()) {
     $("advanced").open = true;
@@ -1032,6 +1040,17 @@ function toggleSynthOpts() {
     : "NEUTRINOは音域外の音だと苦しそうな発声になります。"
       + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。";
 }
+
+// 自動オクターブ調整ONのあいだは高さの決定を自動に任せるので、移調欄を
+// グレーアウトする(disabled + 視覚的にミュート)。値はそのまま残るので、
+// OFFに戻せば前に入れていた半音数がまた使える。
+function updateTransposeEnabled() {
+  const auto = $("auto-octave").checked;
+  $("transpose").disabled = auto;
+  $("transpose-row").classList.toggle("is-disabled", auto);
+}
+$("auto-octave").addEventListener("change", updateTransposeEnabled);
+updateTransposeEnabled();
 
 async function loadHistory() {
   const res = await fetch("/api/jobs", { headers: headers() });
@@ -2201,7 +2220,7 @@ let leSelected = -1;
 let leDrag = null;
 let leColumns = [];    // 単語リストの列名({列名}挿入プルダウン用)
 let leSample = null;   // 単語リストの代表行(WYSIWYG表示のサンプルデータ)
-let leSide = "elements";  // 編集中の側: "elements"(通常) / "fallback"(未知語用) / "idle"(歌唱なし区間)
+let leSide = "elements";  // 編集中の側: "elements"(通常) / "fallback"(未知語用)
 // editor書き出しJSONが選択されているときのプレビュー(動画のキュー順)。
 // null なら従来どおり単語リストの代表行1件でプレビューする
 let leCue = null;      // 現在キューのデータ({data, use_fallback, parody_text, ...})
@@ -2218,8 +2237,6 @@ function leEls() {
 // 通常側: subtitle要素があればそれ、なければ既定字幕。
 // 未知語側: 通常側の字幕(なければ既定字幕)をプレビューだけ表示(ここでは編集しない)
 function leGhostSubs() {
-  // 歌唱なし区間は行タイミングの字幕が存在しないのでゴーストも出さない
-  if (leSide === "idle") return [];
   if (leSide === "fallback") {
     const ns = ((leLayout && leLayout.elements) || []).filter((e) => e.type === "subtitle");
     return ns.length ? ns : LE_DEFAULT_SUBS;
@@ -2272,8 +2289,7 @@ async function leFetchCue(index) {
 
 // 「◀ 前 / 次 ▶」とキュー番号表示の更新(editorファイルがあるときだけ出す)
 function leUpdateCueNav() {
-  // 歌唱なし区間タブは単語キューと無関係なのでナビを隠す
-  const active = !!$("editor").files[0] && leSide !== "idle";
+  const active = !!$("editor").files[0];
   $("le-cue-nav").hidden = !active;
   if (!active) return;
   $("le-cue-indicator").textContent =
@@ -2310,6 +2326,10 @@ function leClearLayout() {
   leDirty = false;
   leLayoutFor = "";
   $("layout-json").value = "";
+  // ファイルから読み込んだレイアウトも一緒に捨てる(選択が残ったままだと、
+  // 実際には使われないファイル名が画面に出続けて誤解を招く)
+  $("layout-file").value = "";
+  layoutFileMsg("");
 }
 
 // 替え歌単語フィールドのサンプル(未知語には行がないのでこれだけ埋まる)
@@ -2319,10 +2339,6 @@ const LE_WORD_FIELDS = {
 };
 
 function leSampleData() {
-  // 歌唱なし区間は単語データがなく、プロジェクトレベルの情報だけ使える
-  if (leSide === "idle") {
-    return { title: "曲のタイトル", wordlist: $("wordlist").value.trim() || "単語リスト名" };
-  }
   // editor JSONプレビュー中は、そのキューの実データ(行データ+替え歌フィールド)を使う。
   // 未知語(行なし)のキューは列参照が空のdataなので、そのまま渡せばfallback相当に見える
   if (leCue) return leCue.data;
@@ -2352,7 +2368,7 @@ function leContent(e) {
     // editor JSONプレビュー中はキューの画像、そうでなければ代表行の画像を出す。
     // 未知語(fallback)は行がないので画像もない → プレースホルダ表示
     let src = null;
-    if (leCue && leSide !== "idle") {
+    if (leCue) {
       // image_urlは同一オリジンのパス。認証ありのときはapi_keyを付ける(既にクエリ有り)
       if (leCue.image_url) {
         src = leCue.image_url + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
@@ -2537,8 +2553,7 @@ function leRenderProps() {
   panel.innerHTML = "";
   if (leSelected < 0) return;
   const e = leEls()[leSelected];
-  // 挿入できる列: 歌唱なし区間はプロジェクトレベルの情報だけ({列名}挿入・表示条件で共用)
-  const cols = leSide === "idle" ? ["title", "wordlist"] : leColumns;
+  const cols = leColumns;
   const commit = () => { leToJson(); leRender(); };
   const add = (labelText, input) => {
     const label = document.createElement("label");
@@ -2772,31 +2787,20 @@ $("le-delete").addEventListener("click", () => {
   leSelect(-1);
 });
 
-// 通常 / 未知語用(fallback) / 歌唱なし区間(idle)の編集切り替え
+// 通常 / 未知語用(fallback)の編集切り替え。
+// 歌唱なし区間(idle)と hold はJSON側の機構としては残っているが、GUIからは触らない
+// (leLayout.idle / leLayout.hold はここでは読み書きしないので、読み込んだ値がそのまま残る)
 function leSetSide(side) {
   leSide = side;
   $("le-tab-elements").classList.toggle("active", side === "elements");
   $("le-tab-fallback").classList.toggle("active", side === "fallback");
-  $("le-tab-idle").classList.toggle("active", side === "idle");
-  // 字幕は行タイミングなので通常側だけで足せる(未知語・歌唱なし区間では不可)
+  // 字幕は行タイミングなので通常側だけで足せる(未知語では不可)
   $("le-add-subtitle").disabled = side !== "elements";
-  // 歌唱なし区間には単語画像がないので画像枠は足せない
-  $("le-add-image").disabled = side === "idle";
-  $("le-idle-opts").hidden = side !== "idle";
-  if (side === "idle" && leLayout) $("le-hold").checked = leLayout.hold === "next";
   leUpdateCueNav();
   leSelect(-1);
 }
 $("le-tab-elements").addEventListener("click", () => leSetSide("elements"));
 $("le-tab-fallback").addEventListener("click", () => leSetSide("fallback"));
-$("le-tab-idle").addEventListener("click", () => leSetSide("idle"));
-
-// hold(直前フレームを次の歌唱まで保持)の切り替え。空/未指定=3秒で idle/黒に戻る
-$("le-hold").addEventListener("change", () => {
-  if (!leLayout) return;
-  if ($("le-hold").checked) leLayout.hold = "next"; else delete leLayout.hold;
-  leToJson();
-});
 
 // 編集中のレイアウトをJSONファイルとして保存(CLIの --layout にそのまま使える)
 $("le-export").addEventListener("click", () => {
@@ -2876,6 +2880,40 @@ async function leLoad() {
   return true;
 }
 $("layout-load").addEventListener("click", leLoad);
+
+// レイアウトJSONファイルの読み込み(旧「その他(手入力)」の置き換え)。
+// サーバー上のパス名を当てさせるのではなく、手元のJSONをそのまま持ち込ませる。
+// 読み込んだ中身は「ユーザーの編集」と同じ扱い(leDirty=true)にするので、
+// 生成時に layout_json として送られ、レイアウト名より優先される。
+// 来歴(leLayoutFor)もドラッグ編集と同じく現在のレイアウト名を記録するので、
+// 単語リストを変えて名前が入れ替われば leClearLayout で破棄される。
+const layoutFileMsg = (t) => {
+  $("layout-file-msg").textContent = t;
+  $("layout-file-msg").hidden = !t;
+};
+$("layout-file").addEventListener("change", async () => {
+  const f = $("layout-file").files[0];
+  if (!f) { layoutFileMsg(""); return; }
+  const reject = (t) => { layoutFileMsg(t); $("layout-file").value = ""; };
+  let parsed;
+  try {
+    parsed = JSON.parse(await f.text());
+  } catch (err) {
+    return reject("レイアウトJSONを読めませんでした: " + err.message);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return reject("レイアウトJSONの形式が違います(オブジェクトではありません)");
+  }
+  leLayout = parsed;
+  leSelected = -1;
+  leToJson();   // #layout-json へ書き戻し + leDirty=true + 保存
+  leMsg("");
+  layoutFileMsg(`読み込みました: ${f.name}(このファイルの内容で生成します)`);
+  $("le-details").open = true;
+  leSetSide("elements");
+  leFetchCue(leCueIndex);
+  leRender();
+});
 
 // レイアウト名を選んだら、その内容から編集をスタートする(エディタも開く)
 $("layout").addEventListener("change", async () => {
@@ -3745,13 +3783,15 @@ function saveForm() {
   } catch { /* QuotaExceededError等でUIを壊さない */ }
 }
 
-// ---- 選択肢select +「その他(手入力)」+ 隠しvalue の3点セット ----
+// ---- 選択肢select(+「その他(手入力)」)+ 隠しvalue の組 ----
 // iOS Safari が datalist 候補を出さない問題への対応(#model / #layout)。
 // 送信値・保存値の正本は隠し input#<base>(既存のフォーム送信・保存/復元と互換)。
+// 手入力欄(#<base>-other)を持つのは #model だけ。#layout は名前の手入力をやめ、
+// 「レイアウトを読み込む(ファイル)」でカスタムレイアウトを渡す形にした。
 const CHOICE_OTHER = "__other__";
 
 // select の選択肢を組み立てる。emptyLabel を渡すと先頭に空値(=既定)を置く。
-// 末尾は必ず「その他(手入力)…」。
+// 手入力欄がある base のときだけ末尾に「その他(手入力)…」を足す。
 function fillChoiceOptions(base, items, emptyLabel) {
   const sel = $(base + "-select");
   sel.textContent = "";
@@ -3763,35 +3803,44 @@ function fillChoiceOptions(base, items, emptyLabel) {
   };
   if (emptyLabel != null) add("", emptyLabel);
   for (const it of items) add(it, it);
-  add(CHOICE_OTHER, "その他(手入力)…");
+  if ($(base + "-other")) add(CHOICE_OTHER, "その他(手入力)…");
 }
 
 // select/手入力の状態を隠しvalueへ反映し、保存する(選択即反映)。
 function syncChoice(base) {
   const sel = $(base + "-select"), other = $(base + "-other"), hidden = $(base);
-  const isOther = sel.value === CHOICE_OTHER;
-  other.hidden = !isOther;
+  const isOther = other && sel.value === CHOICE_OTHER;
+  if (other) other.hidden = !isOther;
   hidden.value = isOther ? other.value.trim() : sel.value;
   if (base === "model") updatePublicCredit();  // クレジット表記のモデル名を追随させる
   if (!restoring) saveForm();
 }
 
-// 送信値(=保存文字列)をUIへ反映。選択肢になければ「その他」+手入力に復元。
+// 送信値(=保存文字列)をUIへ反映。手入力欄があり選択肢に無い値なら「その他」に落とす。
+// 手入力欄が無い(#layout)ときは、選択肢に無い値(手入力をやめる前の保存など)は
+// 画面と送信値が食い違うので捨て、先頭の既定に戻す。
 function setChoice(base, value) {
   const sel = $(base + "-select"), other = $(base + "-other"), hidden = $(base);
   value = value || "";
   const known = [...sel.options].some(
     (o) => o.value === value && o.value !== CHOICE_OTHER
   );
-  sel.value = known ? value : CHOICE_OTHER;
-  other.hidden = known;
-  other.value = known ? "" : value;
+  if (other) {
+    sel.value = known ? value : CHOICE_OTHER;
+    other.hidden = known;
+    other.value = known ? "" : value;
+  } else {
+    if (!known) value = sel.options.length ? sel.options[0].value : "";
+    sel.value = value;
+  }
   hidden.value = value;
 }
 
 for (const base of ["model", "layout"]) {
   $(base + "-select").addEventListener("change", () => syncChoice(base));
-  $(base + "-other").addEventListener("input", () => syncChoice(base));
+  if ($(base + "-other")) {
+    $(base + "-other").addEventListener("input", () => syncChoice(base));
+  }
 }
 // 組み込みレイアウト名を選んだら既存のエディタ読み込み挙動を維持する
 $("layout-select").addEventListener("change", () => {
@@ -3859,10 +3908,8 @@ async function restoreForm() {
 async function doRestoreForm() {
   let state = null;
   try { state = JSON.parse(localStorage.getItem(FORM_KEY) || "null"); } catch { /* 壊れた値は無視 */ }
-  let any = false;
 
   if (state) {
-    any = true;
     // 1. 単語リスト: 選択肢があれば name/where 一致のoptionを選ぶ
     const sel = $("wordlist-select");
     if (!sel.hidden && sel.options.length) {
@@ -3948,6 +3995,7 @@ async function doRestoreForm() {
     if (savedAutoOctave != null) {
       $("auto-octave").checked = !!savedAutoOctave;
     }
+    updateTransposeEnabled();  // 復元したチェック状態に移調欄のグレーアウトを合わせる
     // 4. layout名: 値だけ入れる(changeを発火するとleLoadがlayoutJsonを上書きするため)。
     // setChoice はchangeを発火しないのでlayoutJsonを上書きしない。
     if (state.layout) setChoice("layout", state.layout);
@@ -3978,7 +4026,6 @@ async function doRestoreForm() {
       $("midi-restore-hint").hidden = false;
       // 復元したMIDIも(歌詞なしのまま持ち越さないよう)一度は検証する
       scheduleMidiCheck();
-      any = true;
     }
   } catch { /* 復元失敗は無視 */ }
 
@@ -3989,20 +4036,9 @@ async function doRestoreForm() {
       parodyRestored = true;
       injectFile($("editor"), new File([ed.text], ed.name, { type: "application/json" }), true);
       parodyRestored = false;
-      any = true;
     }
   } catch { /* 復元失敗は無視 */ }
-
-  if (any) $("restore-notice").hidden = false;
 }
-
-// 保存した入力をクリア(apiKeyは消さない)
-$("clear-form").addEventListener("click", () => {
-  localStorage.removeItem(FORM_KEY);
-  localStorage.removeItem(MIDI_KEY);
-  localStorage.removeItem(EDITOR_FILE_KEY);
-  location.reload();
-});
 
 $("api-key").addEventListener("change", loadConfig);
 if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");
