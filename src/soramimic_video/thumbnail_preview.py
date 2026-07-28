@@ -37,7 +37,6 @@ from .thumbnail import (
     BACKGROUND_DIM,
     DEFAULT_STYLE,
     HEADLINE_MAX_WORDS,
-    HEADLINE_MIN_CHARS,
     build_thumbnail,
     thumbnail_layout_spec,
     wordlist_text_of,
@@ -88,7 +87,7 @@ def _layout_fingerprint() -> str:
         thumbnail_layout_spec(has_word=False, has_image=False),
     ]
     return json.dumps(
-        [DEFAULT_STYLE, BACKGROUND_DIM, HEADLINE_MAX_WORDS, HEADLINE_MIN_CHARS, specs],
+        [DEFAULT_STYLE, BACKGROUND_DIM, HEADLINE_MAX_WORDS, specs],
         ensure_ascii=False,
         sort_keys=True,
     )
