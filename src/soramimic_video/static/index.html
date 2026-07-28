@@ -117,6 +117,8 @@
     background: var(--panel-2); border: 1px solid var(--border);
     padding: .6rem; border-radius: 8px; overflow-x: auto; font-size: .75rem;
   }
+  /* ログはまだ1行も出ていないうちは空の箱を見せない */
+  #log:empty { display: none; }
   details { margin-top: .6rem; }
   summary { cursor: pointer; }
   details.card > summary { font-weight: 700; font-size: .95rem; color: var(--text); }
@@ -348,8 +350,15 @@
   <p class="hint" id="lucky-status">歌声や歌詞、レイアウトまで自分で決めるなら「⚙️ 詳細設定」から。</p>
 </section>
 
-<!-- 2. 進捗と結果。ジョブを投入するまでは出さない(初見の画面はビルダーカードだけ)。 -->
-<section class="card" id="job-card" hidden>
+<!-- 2. 進捗と結果の詳細。ジョブを投入するまでは出さない(初見の画面はビルダーカードだけ)。
+     主役の進捗はサムネ枠の中(#builder-progress)に出るので、こちらは既定で畳んでおく。
+     見た目・流儀は「⚙️ 詳細設定」「過去のジョブ」と同じ details.card。
+     開閉は保存せず、投入のたびに閉じた状態から始める(showProgress)。
+     ただしエラー・中断で終わったときだけは理由が畳まれて見えないと困るので自動で開く
+     (openJobDetails)。中断ボタンは生成中つねに枠の中(#builder-cancel)から押せるので、
+     この中の #cancel が畳まれていても操作は失われない。 -->
+<details class="card" id="job-card" hidden>
+  <summary>生成の詳細(ステージ・ログ)</summary>
   <div id="progress" hidden>
     <ul class="stages">
       <li data-stage="analyze">MIDI解析</li>
@@ -361,11 +370,11 @@
     </ul>
     <p id="status-line"></p>
     <button id="cancel" class="btn-danger btn-sm" hidden>中断</button>
-    <details><summary>ログ</summary><pre id="log"></pre></details>
+    <pre id="log"></pre>
   </div>
 
   <div id="result" hidden></div>
-</section>
+</details>
 
 <!-- 3. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
      曲・単語リストの欄もここに残し(送信値の正本)、上のビルダーカードと双方向に
@@ -925,6 +934,7 @@ function pollFailed(id, seq, detail) {
   if (pollFailures >= POLL_MAX_FAILURES) {
     stopPolling();
     setJobStatus("状態取得に失敗: " + detail, "状態取得に失敗");
+    openJobDetails();
     return;
   }
   // 3回続けて失敗したら、止まって見える理由を出す(復帰したら通常表示に戻る)
@@ -945,6 +955,7 @@ async function poll(id, seq = pollSeq) {
       setJobStatus("状態取得に失敗: " + res.status);
       setBuilderState("preview");
       showBuilderMsg(`進捗の取得に失敗しました(${res.status})`);
+      openJobDetails();
       finish();
       return;
     }
@@ -991,12 +1002,15 @@ async function poll(id, seq = pollSeq) {
   } else if (job.status === "canceled") {
     setJobStatus("中断しました");
     setBuilderState("preview");
+    openJobDetails();
     finish();
   } else {
     $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
-    // 枠は選び直せるプレビューに戻し、理由は枠の下に出す(詳細は #job-card に残る)
+    // 枠は選び直せるプレビューに戻し、要点は枠の下に出す。畳んである詳細
+    // (#job-card)にはステージとログが残るので、失敗したときだけ開いて見せる。
     setBuilderState("preview");
     showBuilderMsg(`生成に失敗しました: ${job.error || "不明なエラー"}`);
+    openJobDetails();
     finish();
   }
 }
@@ -1098,11 +1112,20 @@ function setBusy(busy) {
 }
 
 // 進捗・結果のカードは投入するまで出さない(空の枠を見せない)。
-// 主役の進捗はサムネ枠の中に出すので、こちらは詳細(ステージ・ログ)として残す。
+// 主役の進捗はサムネ枠の中に出すので、こちらは畳んだ詳細(ステージ・ログ)として残す。
+// 開閉は保存しないので、投入のたびに閉じた状態へ戻す(前のジョブのエラーで
+// 自動的に開いていた場合もここでリセットされる)。
 function showProgress() {
   $("job-card").hidden = false;
+  $("job-card").open = false;
   $("progress").hidden = false;
   setBuilderState("running");
+}
+
+// エラー・中断で終わったときは、理由が畳まれたまま見えない状態にしない。
+function openJobDetails() {
+  $("job-card").hidden = false;
+  $("job-card").open = true;
 }
 
 // 生成ボタン直下の案内(曲が未セットのときなど)。空文字で消す。
@@ -1171,6 +1194,7 @@ async function submitJob(previewSec) {
     $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
     setBuilderState("preview");
     showBuilderMsg("生成を開始できませんでした: " + err.message);
+    openJobDetails();
     setBusy(false);
   } finally {
     // Turnstileのトークンは1回きり。次の投入用に取り直す
