@@ -187,6 +187,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         audio=args.audio,
         image_cache=Path(args.image_cache) if args.image_cache else None,
         layout=args.layout,
+        synth_credit=args.synth_credit,
     )
     print(f"動画完成: {out}")
     return 0
@@ -395,6 +396,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--layout",
         help="フレームレイアウト。組み込み名(default/caption)またはJSONファイルパス"
         "(書き方は examples/layouts/ と layout.py 冒頭を参照)",
+    )
+    p.add_argument(
+        "--synth-credit",
+        default="",
+        help="歌声合成のクレジット表記(例 'VOICEVOX:四国めたん')。"
+        "指定するとフレーム左下の署名に「lyrics by Soramimic / ...」と併記する",
     )
     p.set_defaults(func=cmd_video)
 

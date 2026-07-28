@@ -297,6 +297,31 @@ def song_title_of(params: dict[str, Any]) -> str:
     return str(params.get("song_title") or params.get("midi_filename") or "")
 
 
+def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
+    """動画に焼き込む歌声合成のクレジット表記(不要なら空文字)。
+
+    VOICEVOXは規約で「VOICEVOX:キャラ名」の表記が必要なので必ず出す
+    (キャラ名はエンジンのスタイル一覧から引く。エンジンが落ちていて名前が
+    引けないときは「VOICEVOX」だけにする)。NEUTRINOは公式FAQで名称の記載が
+    任意なので焼き込まない(ライブラリ個別の規約はWeb UIの「公開時のクレジット
+    表記」で案内している)。
+    """
+    if str(params.get("synthesizer") or "neutrino") != "voicevox":
+        return ""
+    from .voicevox import list_singers
+
+    style_id = params.get("voicevox_style")
+    try:
+        styles = list_singers(str(config.get("voicevox_url") or ""), timeout=2.0)
+    except (RuntimeError, ValueError) as e:
+        logger.warning("VOICEVOXのキャラ名を取得できません(名前なしで表記します): %s", e)
+        styles = []
+    name = next(
+        (s["name"] for s in styles if str(s.get("style_id")) == str(style_id)), ""
+    )
+    return f"VOICEVOX:{name}" if name else "VOICEVOX"
+
+
 def _thumbnail_filename(job: Job) -> str:
     """サムネ画像のダウンロード名(動画と同じ命名で拡張子だけpng)。"""
     song, wordlist = _job_slug(job)
@@ -420,6 +445,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             layout=layout,
             granularity=parse_granularity_override(job.params.get("subtitle_granularity")),
             song_title=song_title_of(job.params),
+            synth_credit=synth_credit_of(job.params, config),
         )
 
 

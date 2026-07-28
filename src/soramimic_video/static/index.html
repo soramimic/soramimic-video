@@ -629,7 +629,8 @@ function updateVoicevoxCredit() {
   const o = sel.options[sel.selectedIndex];
   const name = o ? (o.getAttribute("data-name") || "") : "";
   $("voicevox-credit").textContent =
-    `生成音声の利用には『VOICEVOX:${name}』のクレジット表記が必要です。`;
+    `生成音声の利用には『VOICEVOX:${name}』のクレジット表記が必要です`
+    + `(動画の左下に自動で焼き込みます)。`;
   updatePublicCredit();
 }
 
