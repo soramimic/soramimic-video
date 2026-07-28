@@ -397,19 +397,33 @@
     <input type="password" id="api-key" placeholder="X-API-Key">
   </div>
 
+  <!-- 曲。詳細設定を開く人の目的は「自分の曲でやる」なので、ここではMIDIファイル
+       選択を主役にして直に見せる。サンプル曲はビルダーカードのプルダウンで選べる
+       ので、この中では「サンプルから選ぶ」の折りたたみに格下げする。
+       ただし送信・同期の正本は従来どおり #sample-select なので、DOMからは消さずに
+       折りたたみの中へ移すだけにする(ビルダーカードとの双方向同期・applySample・
+       前回入力の復元はそのまま動く)。 -->
   <div class="field">
-    <label for="sample-select">曲</label>
-    <!-- サンプルが取れない環境では loadSamples がこの div ごと隠す -->
-    <div id="sample-field">
-      <select id="sample-select" aria-label="サンプル曲"></select>
-      <p class="hint" id="sample-status"></p>
-    </div>
+    <label for="midi">曲(XF MIDIファイル)</label>
+    <input type="file" id="midi" accept=".mid,.midi">
+    <p class="hint">歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
     <p class="hint" id="midi-restore-hint" hidden></p>
-    <details class="sub-details" id="midi-details">
-      <summary>自分の曲を使う(XF MIDIファイル)</summary>
-      <input type="file" id="midi" accept=".mid,.midi">
-      <p class="hint">歌詞入りのXF形式MIDIファイル。サンプル曲を選んだときは不要です。</p>
+    <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
+    <details class="sub-details" id="sample-details">
+      <summary>サンプルから選ぶ</summary>
+      <div id="sample-field">
+        <select id="sample-select" aria-label="サンプル曲"></select>
+        <p class="hint" id="sample-status"></p>
+      </div>
     </details>
+  </div>
+
+  <!-- 元歌詞は曲とセットの情報(その曲の歌詞)なので、曲のすぐ下に置く。
+       字幕の元歌詞行はここ(かMIDIの歌詞)が出どころなので「推奨」扱いにする。 -->
+  <div class="field">
+    <label for="lyrics">元歌詞(推奨・字幕用)</label>
+    <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+    <p class="hint">MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
   </div>
 
   <div class="field">
@@ -442,12 +456,6 @@
   </div>
 
   <div class="field">
-    <label for="lyrics">元歌詞(任意・字幕用)</label>
-    <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
-    <p class="hint">MIDIに歌詞が入っていれば不要。字幕の元歌詞を差し替えたいときに使います。</p>
-  </div>
-
-  <div class="field">
     <label class="check">
       <input type="checkbox" id="auto-octave" checked>
       音域に合わせて自動でオクターブ調整
@@ -469,14 +477,17 @@
     <div id="editor-embed-controls" hidden>
       <button type="button" id="open-editor" class="btn-sm">✏️ editorで変換・編集</button>
       <p class="hint">MIDIと単語リストから替え歌に変換し、その場のエディタで編集できます。
-        「取り込んで閉じる」でこの替え歌が動画生成に使われます。</p>
+        編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
       <span id="open-editor-msg" class="error"></span>
     </div>
+    <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
+         「使われます」「別の入力から作られた編集なので使いません」を出す -->
+    <p class="hint" id="editor-auto-status" hidden></p>
     <div id="editor-frame-wrap" hidden style="margin-top:.8rem">
       <div class="row" style="margin-bottom:.4rem">
         <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
-        <button type="button" id="editor-close" class="btn-sm">閉じる(取り込まない)</button>
-        <span class="hint">編集はエディタ内で自動保存されます。</span>
+        <button type="button" id="editor-close" class="btn-sm">閉じる</button>
+        <span class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます。</span>
       </div>
       <iframe id="editor-frame" title="soramimic editor"></iframe>
     </div>
@@ -901,17 +912,39 @@ window.addEventListener("pageshow", resumePolling);   // bfcacheからの復帰
 window.addEventListener("focus", resumePolling);
 window.addEventListener("online", resumePolling);
 
+// このジョブで実際に走るステージの並び(api.py の run_pipeline と同じ順)。
+// 走らないステージは分母に入れない:
+//   - 替え歌の作り方で convert / import-editor のどちらか一方だけ(parody_source)
+//   - 声プレビュー(preview>0)は変換・ミックス・動画を作らない
+// 分からないときは全ステージを返す(表示が嘘にならない側に倒す)。
+function stagePlan(job) {
+  const p = (job && job.params) || {};
+  if (Number(p.preview || 0) > 0) return ["analyze", "synthesize"];
+  const parody = p.parody_source === "editor" ? "import-editor" : "convert";
+  return ["analyze", parody, "synthesize", "mix", "video"];
+}
+
+// 「いま何段階目か」の表示(例 " 2/5")。現在のステージが並びに無ければ空。
+function stageStepText(job) {
+  const plan = stagePlan(job);
+  const i = plan.indexOf(job && job.stage);
+  return i < 0 ? "" : ` ${i + 1}/${plan.length}`;
+}
+
 function renderStages(job) {
   const doneNames = new Set(job.stages.map((s) => s.name));
   const secs = Object.fromEntries(job.stages.map((s) => [s.name, s.seconds]));
+  // 走らないステージのチップは出さない。枠内の「2/5」と数が食い違わないようにする
+  // (使わない方の変換ステージ(editor / convert は排他)もこれで消える)
+  const plan = stagePlan(job);
   document.querySelectorAll(".stages li").forEach((li) => {
     const name = li.dataset.stage;
+    li.hidden = !plan.includes(name) && !doneNames.has(name);
     li.classList.toggle("done", doneNames.has(name));
     li.classList.toggle("now", job.stage === name);
     const base = li.textContent.replace(/ [\d.]+秒$/, "");
     li.textContent = doneNames.has(name) ? `${base} ${secs[name]}秒` : base;
   });
-  // 使わない方の変換ステージは薄いまま残る(editor / convert は排他)
 }
 
 // 進捗の文言は詳細(#status-line)とサムネ枠のオーバーレイ(#builder-status)の
@@ -927,8 +960,9 @@ function setJobStatus(text, builderText) {
 }
 
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
+// 分母は「このジョブで実際に走るステージ数」(枠内の 2/5 表示と同じ数)。
 function renderBuilderBar(job) {
-  const total = document.querySelectorAll(".stages li").length || 6;
+  const total = stagePlan(job).length || 6;
   const done = job && job.stages ? job.stages.length : 0;
   const pct = job && job.status === "done" ? 100
     : Math.min(95, Math.round((done + (job && job.stage ? 0.5 : 0)) / total * 100));
@@ -982,15 +1016,17 @@ async function poll(id, seq = pollSeq) {
   renderBuilderBar(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
   const label = STAGE_LABELS[job.stage] || job.stage || "…";
+  // 枠の中では「全体の何段階目か」も添える(あと何回待てばよいかが分かるように)
+  const step = stageStepText(job);
   if (job.status === "running") {
     if (job.stage === "synthesize" && job.stage_progress != null) {
-      let line = `歌唱合成 ${job.stage_progress}%`;
-      if (job.stage_eta_seconds != null) line += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
-      else if (job.stage_elapsed) line += ` (${Math.round(job.stage_elapsed)}秒経過)`;
-      setJobStatus(line);
+      let tail = ` ${job.stage_progress}%`;
+      if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
+      else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
+      setJobStatus(`歌唱合成${tail}`, `歌唱合成${step}${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
+      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${step}${elapsed}`);
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
@@ -1165,9 +1201,21 @@ async function submitJob(previewSec) {
     return;
   }
   showSubmitMsg("");
+  // 替え歌の出どころを決める。エディタで編集したまま「取り込んで閉じる」を
+  // 押していなくても、その編集がそのまま使われる(editorSourceForSubmit)。
+  // 来歴が今の選択と食い違う編集は使わず、自動変換に落として理由を出す。
+  const editorSrc = editorSourceForSubmit();
+  if (editorSrc.dropped) {
+    // 詳細設定を開いていない人にも見えるよう、生成の導線のすぐ下にも出す
+    showSubmitMsg("⚠ エディタで編集した内容は別の入力(曲・単語リストなど)から"
+      + "作られたものなので使いません。"
+      + (editorSrc.file ? "取り込み済みの替え歌JSONで生成します。"
+                        : "今の選択のまま自動変換で生成します。"));
+  }
   // editor.jsonがあると単語リスト指定は無視されるため、食い違ったまま
-  // 高コストな生成が走る前に最終確認を挟む
-  if ($("editor").files[0] && parodyMismatch()
+  // 高コストな生成が走る前に最終確認を挟む(自動取り込みぶんは来歴が
+  // 一致していることを確かめてあるので確認は要らない)
+  if (editorSrc.file && !editorSrc.live && parodyMismatch()
       && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
         + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
     setBusy(false);
@@ -1183,7 +1231,7 @@ async function submitJob(previewSec) {
   }
   const form = new FormData();
   form.append("midi", midi);
-  if ($("editor").files[0]) form.append("editor", $("editor").files[0]);
+  if (editorSrc.file) form.append("editor", editorSrc.file);
   form.append("lyrics", $("lyrics").value);
   form.append("model", $("model").value);
   form.append("synthesizer", $("synthesizer").value);
@@ -1248,11 +1296,10 @@ async function loadSamples() {
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
     syncBuilderOptions();  // カードの曲プルダウンへ写す
   } catch {
-    // サンプルが取れない環境ではサンプル選択(#sample-field)ごと隠し、
-    // 代わりに自分のMIDIを入れる折りたたみを開いておく。ビルダーカードも成立しない
-    // ので隠し、入力欄のある詳細設定を開いて迷子にならないようにする
-    $("sample-select").parentElement.hidden = true;
-    $("midi-details").open = true;
+    // サンプルが取れない環境ではサンプル選択の折りたたみ(#sample-details)ごと隠す。
+    // MIDIファイル選択は詳細設定の中に出たままなので、そちらを使ってもらう。
+    // ビルダーカードも成立しないので隠し、入力欄のある詳細設定を開いて迷子にしない
+    $("sample-details").hidden = true;
     $("lucky-card").hidden = true;
     $("advanced").open = true;
   }
@@ -2614,6 +2661,111 @@ $("layout-json").addEventListener("change", () => {
 // から /editor/editor.html を開くと editor がそれを読んで編集を開始する。
 const EDITOR_KEY = "soramimic-editor";
 
+// ---- 編集内容の自動取り込みと、その来歴(provenance)ガード ----
+// エディタは編集のたびに sessionStorage[EDITOR_KEY] を書き換える(起動しただけでは
+// 書かない)。生成時にそれを読み、「実際に編集されていて(dirty)、かつ今の選択と
+// 同じ入力から作られた編集」だけを自動で使う。「取り込んで閉じる」の押し忘れで
+// 編集が捨てられるのを防ぎつつ、レイアウト取り違え(#144)と同じ事故——別の曲・
+// 別の単語リスト向けの中身が黙って使われる——を替え歌側で起こさないため、
+// 食い違う編集は使わずに通常のconvert経路へ落とし、理由を画面に出す。
+// シード時の指紋と来歴は sessionStorage に置く(タブのリロードをまたいでも判定できる)。
+const EDITOR_SEED_KEY = "soramimic-video-editor-seed";
+
+// いま詳細設定で選ばれている入力の指紋。エディタのシードを書いた時点のものと
+// 突き合わせて、編集内容の来歴が今の選択と一致するかを見る。
+// 曲はファイル名+サイズ、単語リストはname+where、変換パラメータは送信文字列。
+function editorProvenance() {
+  const midi = $("midi").files[0];
+  return {
+    song: midi ? `${midi.name}:${midi.size}` : "",
+    wordlist: $("wordlist").value.trim(),
+    where: $("where").value.trim(),
+    params: buildConvertParams(),
+  };
+}
+
+const PROVENANCE_KEYS = ["song", "wordlist", "where", "params"];
+const sameProvenance = (a, b) =>
+  PROVENANCE_KEYS.every((k) => ((a || {})[k] || "") === ((b || {})[k] || ""));
+
+// 編集内容そのものの指紋。エディタが起動時に行う正規化(param の補完など)や
+// 履歴(history/future)の増減に振り回されないよう、編集で変わる部分だけを見る。
+function editorContentSig(data) {
+  if (!data || typeof data !== "object") return "";
+  return JSON.stringify([data.results, data.tokensList, data.unitsList]);
+}
+
+function parseJson(text) {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+// エディタへシードを書いたときに、その内容の指紋と来歴を控える。
+function markEditorSeed(text) {
+  const meta = { sig: editorContentSig(parseJson(text)), from: editorProvenance() };
+  try { sessionStorage.setItem(EDITOR_SEED_KEY, JSON.stringify(meta)); } catch { /* 保存できなくても生成は続く */ }
+  updateEditorAutoStatus();
+}
+
+// 生成に使える「エディタ側の編集」の状態。
+//   {state:"none"}          エディタを開いていない/開いただけ(編集していない)
+//   {state:"ready", text}   編集あり・来歴が今の選択と一致 → そのまま生成に使う
+//   {state:"stale", from}   編集あり・来歴が食い違う → 使わずconvertに落とす
+function liveEditorEdit() {
+  const raw = sessionStorage.getItem(EDITOR_KEY);
+  const meta = parseJson(sessionStorage.getItem(EDITOR_SEED_KEY) || "null");
+  if (!raw || !meta) return { state: "none" };
+  const data = parseJson(raw);
+  const sig = editorContentSig(data);
+  // シードのままなら「眺めただけ」。ユーザーが編集していないので送らない
+  if (!sig || sig === meta.sig) return { state: "none" };
+  const from = meta.from || {};
+  if (!sameProvenance(from, editorProvenance())) return { state: "stale", from, sig };
+  return { state: "ready", text: raw, from, sig };
+}
+
+// 生成に使う替え歌JSON(と、その出どころ)を決める。
+//   live: エディタの編集をそのまま使った(取り込み操作なし)
+//   dropped: 来歴違いの編集を捨てて自動変換に落とした(理由を表示する)
+function editorSourceForSubmit() {
+  const live = liveEditorEdit();
+  if (live.state === "ready") {
+    return {
+      file: new File([live.text], "editor.json", { type: "application/json" }),
+      live: true,
+    };
+  }
+  const f = $("editor").files[0] || null;
+  if (live.state !== "stale") return { file: f };
+  // 来歴違いの編集は使わない。取り込み済みのJSONがその編集そのものなら
+  //(「取り込んで閉じる」を押したあとに曲や単語リストを変えた場合)それも外す
+  const sameAsFile = !!f && !!editorFileSig && editorFileSig === live.sig;
+  return { file: sameAsFile ? null : f, dropped: live.from };
+}
+
+// 編集内容が生成でどう扱われるかを、エディタ欄の下に小さく出す。
+function updateEditorAutoStatus() {
+  const el = $("editor-auto-status");
+  const live = liveEditorEdit();
+  if (live.state === "ready") {
+    el.textContent = "✏️ エディタの編集内容がこのまま動画生成に使われます"
+      + "(「取り込んで閉じる」は押さなくてかまいません)。";
+  } else if (live.state === "stale") {
+    el.textContent = `⚠ エディタの編集内容は別の入力(曲「${live.from.song || "?"}」/`
+      + `単語リスト「${live.from.wordlist || "?"}」)から作られたものなので使いません。`
+      + "今の選択で自動変換して生成します(編集を使うなら、その入力に戻すか変換し直してください)。";
+  } else {
+    el.textContent = "";
+  }
+  el.hidden = !el.textContent;
+}
+
+// エディタ(iframe)の編集は親から検知できないので、開いているあいだだけ軽く監視する。
+let editorWatchTimer = null;
+function watchEditorSession(on) {
+  if (editorWatchTimer) { clearInterval(editorWatchTimer); editorWatchTimer = null; }
+  if (on) editorWatchTimer = setInterval(updateEditorAutoStatus, 1500);
+}
+
 async function openEditor() {
   const midi = $("midi").files[0];
   const wl = $("wordlist").value.trim();
@@ -2634,7 +2786,9 @@ async function openEditor() {
     const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
-    sessionStorage.setItem(EDITOR_KEY, JSON.stringify(body));
+    const seed = JSON.stringify(body);
+    sessionStorage.setItem(EDITOR_KEY, seed);
+    markEditorSeed(seed);   // この変換結果=編集前の状態。来歴もここで確定する
     showEditorFrame();
   } catch (err) {
     msg.textContent = "編集の準備に失敗しました: " + err.message;
@@ -2660,12 +2814,16 @@ function importEditor() {
 function closeEditor() {
   $("editor-frame-wrap").hidden = true;
   $("editor-frame").src = "about:blank";
+  watchEditorSession(false);
+  updateEditorAutoStatus();   // 閉じても編集は生きている(その旨を出す)
 }
 
 function showEditorFrame() {
   $("editor-frame").src = "/editor/editor.html";
   $("editor-frame-wrap").hidden = false;
   $("editor-frame-wrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  watchEditorSession(true);   // 編集の有無を拾って表示を更新する
+  updateEditorAutoStatus();
 }
 
 // 取り込み済み(または前回から復元した)替え歌JSONをシードにエディタを開き直す。
@@ -2675,13 +2833,20 @@ async function reEditParody(ev) {
   ev.preventDefault();
   const f = $("editor").files[0];
   if (!f) return;
-  sessionStorage.setItem(EDITOR_KEY, await f.text());
+  const seed = await f.text();
+  sessionStorage.setItem(EDITOR_KEY, seed);
+  // 書き戻した内容が「編集前」。ここからの変更だけを自動取り込みの対象にする
+  markEditorSeed(seed);
   showEditorFrame();
 }
 
 $("open-editor").addEventListener("click", openEditor);
 $("editor-import").addEventListener("click", importEditor);
 $("editor-close").addEventListener("click", closeEditor);
+// 曲・単語リスト・変換パラメータを変えると、編集内容の来歴が今の選択と合わなく
+// なることがある。そのときは表示を出し直す(生成時のガードと同じ判定)
+["midi", "wordlist", "where", "p-preset", "p-sound", "p-phrase", "p-wordnum", "p-notelen"]
+  .forEach((id) => $(id).addEventListener("change", updateEditorAutoStatus));
 
 // ---- 単語リスト選択(同梱editorのconfを唯一の情報源に) ----
 // editorが使えるときは /editor/conf/setting.json の wordlist からプルダウンを組む。
@@ -2992,6 +3157,9 @@ function restoreWordlistFilters(where) {
 let parodyRestored = false;
 let parodyWasRestored = false;  // 表示中のJSONが復元由来か(再描画用に保持)
 let editorWordlist = null;      // 表示中のJSONの生成元単語リスト {name, where} | null
+// 取り込み済みJSON(#editor)の編集内容の指紋。エディタの編集セッションと同じものか
+// を見分けて、来歴が食い違うときに「取り込み済みでも使わない」判定に使う。
+let editorFileSig = "";
 
 function escapeHtml(t) {
   const d = document.createElement("div");
@@ -3047,9 +3215,12 @@ async function updateParodyStatus() {
   $("download-editor").disabled = !f;
   parodyWasRestored = parodyRestored;  // await前に確定させる
   editorWordlist = null;
+  editorFileSig = "";
   if (f) {
     try {
-      const w = JSON.parse(await f.text()).wordlist;
+      const data = JSON.parse(await f.text());
+      editorFileSig = editorContentSig(data);
+      const w = data.wordlist;
       if (w && w.filepath) {
         editorWordlist = {
           name: String(w.filepath).replace(/.*\//, "").replace(/\.csv$/, ""),
@@ -3059,6 +3230,7 @@ async function updateParodyStatus() {
     } catch { /* 生成元が読めなければ不一致判定を諦める(警告なし) */ }
   }
   renderParodyStatus();
+  updateEditorAutoStatus();
 }
 $("editor").addEventListener("change", updateParodyStatus);
 // 単語リスト側の変更でも不一致警告を出し直す
