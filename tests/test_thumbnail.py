@@ -138,6 +138,19 @@ def test_layout_image_credit_hidden_when_empty():
     assert "山田太郎 (CC BY)" in texts_with
 
 
+def test_layout_signature_shows_synth_credit():
+    # 歌声合成のクレジットが要るジョブでは、署名に併記して動画本編と揃える
+    layout = thumbnail_layout(has_word=True, has_image=False)
+    data = thumbnail_data(
+        "夜に駆ける", "駅名", word="米原",
+        app_credit=f"{SIGNATURE} / VOICEVOX:四国めたん",
+    )
+    texts = [t for t in layout.render_texts(data) if t]
+    assert f"{SIGNATURE} / VOICEVOX:四国めたん" in texts
+    # サムネは署名を自前で配置するので、レイアウト側の自動追加は行われない
+    assert layout.app_credit is None
+
+
 def test_song_title_prefers_fallback_and_strips_extension(tmp_path: Path):
     project = _project(_wordlist_csv(tmp_path), midi_path="/tmp/jobs/abc/input.mid")
     assert song_title(project, "夜に駆ける.mid") == "夜に駆ける"

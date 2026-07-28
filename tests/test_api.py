@@ -703,3 +703,43 @@ def test_song_title_falls_back_to_midi_filename():
         {"song_title": "", "midi_filename": "ussewa.mid"}
     ) == "ussewa.mid"
     assert api_mod.song_title_of({}) == ""
+
+
+def test_synth_credit_of_voicevox_uses_character_name(monkeypatch):
+    # VOICEVOXは規約上キャラ名込みの表記が要るので、スタイルIDから名前を引く
+    from soramimic_video import voicevox as vv_mod
+
+    monkeypatch.setattr(
+        vv_mod, "list_singers",
+        lambda url, timeout=5.0: [
+            {"name": "四国めたん", "style_name": "ノーマル", "style_id": 3003, "type": "sing"},
+            {"name": "春日部つむぎ", "style_name": "ノーマル", "style_id": 3008, "type": "sing"},
+        ],
+    )
+    config = {"voicevox_url": "http://localhost:50021"}
+    assert api_mod.synth_credit_of(
+        {"synthesizer": "voicevox", "voicevox_style": 3008}, config
+    ) == "VOICEVOX:春日部つむぎ"
+    # 一覧に無いスタイルIDなら名前なしで表記する
+    assert api_mod.synth_credit_of(
+        {"synthesizer": "voicevox", "voicevox_style": 9999}, config
+    ) == "VOICEVOX"
+
+
+def test_synth_credit_of_voicevox_engine_down(monkeypatch):
+    # エンジンが落ちていても表記自体は落とさない(名前なしのVOICEVOX)
+    from soramimic_video import voicevox as vv_mod
+
+    def boom(url, timeout=5.0):
+        raise RuntimeError("engine down")
+
+    monkeypatch.setattr(vv_mod, "list_singers", boom)
+    assert api_mod.synth_credit_of(
+        {"synthesizer": "voicevox", "voicevox_style": 3003}, {"voicevox_url": "http://x"}
+    ) == "VOICEVOX"
+
+
+def test_synth_credit_of_neutrino_is_empty():
+    # NEUTRINOは公式FAQで名称の記載が任意なので焼き込まない
+    assert api_mod.synth_credit_of({"synthesizer": "neutrino", "model": "MERROW"}, {}) == ""
+    assert api_mod.synth_credit_of({}, {}) == ""

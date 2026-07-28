@@ -44,6 +44,13 @@
   限り、出典文言({image_credit})を画像の右下に自動で焼き込む。
   "credit": false で無効化できる。位置や見た目を変えたいときは text 要素で
   {image_credit} を自分で参照すれば自動追加はされない
+- アプリのクレジット表記: どのレイアウトでも {app_credit}(既定
+  「lyrics by Soramimic」。歌声合成のクレジットが必要なときは
+  「lyrics by Soramimic / VOICEVOX:キャラ名」のように連結される)を
+  フレーム左下に小さく自動で焼き込む。画像クレジット(画像の右下)や既定字幕
+  (〜画面高95%)と重ならない最下段に置く。"app_credit": false で無効化でき、
+  位置や見た目を変えたいときは text 要素で {app_credit} を自分で参照すれば
+  自動追加はされない(無効化する場合は動画の説明欄などで表記すること)
 
 歌唱がない区間(前奏・間奏・後奏)の表示は次の2つで指定できる(任意・opt-in):
 
@@ -96,6 +103,17 @@ _FONT_CANDIDATES = [
 ]
 
 _MIN_FONT_PX = 9
+
+# 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
+# 歌声合成側のクレジット表記が要るときは呼び出し側が
+# 「lyrics by Soramimic / VOICEVOX:キャラ名」のように連結して data に入れる
+APP_CREDIT = "lyrics by Soramimic"
+# 自動追加するアプリクレジットの位置(フレーム左下)と見た目。
+# 画像クレジット(画像の右下)・既定字幕(下端0.945)と重ならない最下段に、
+# 画像クレジット(0.025)より小さい文字で、白を少し透かして置く
+APP_CREDIT_BOX = (0.012, 0.945, 0.7, 0.045)
+APP_CREDIT_SIZE = 0.022
+APP_CREDIT_COLOR = "#ffffffb3"
 
 
 # 単語リストCSVで「値なし」を表す文字列(R由来のNA等)。値として描画せず空扱いにする。
@@ -214,6 +232,9 @@ class Layout:
     # 画像クレジット({image_credit})の自動焼き込み要素。credit_textが空の単語
     # (表記不要・情報なし)では描かれない。None = 自動追加なし
     credit: TextElement | None = None
+    # アプリクレジット({app_credit})の自動焼き込み要素。全レイアウト共通で
+    # フレーム左下に出す。None = 自動追加なし("app_credit": false か自前配置)
+    app_credit: TextElement | None = None
     background: str = "black"
     font: str | None = None
     raw: dict = field(default_factory=dict)  # フレームキャッシュのキー用に元JSONを保持
@@ -376,6 +397,45 @@ def _auto_credit_element(
     )
 
 
+def _auto_app_credit_element(
+    element_groups: list[list[ImageElement | TextElement]], raw: dict
+) -> TextElement | None:
+    """アプリクレジットの自動焼き込み要素(フレーム左下に小さく載せる)。
+
+    "app_credit": false のレイアウトと、text要素で {app_credit} を自分で
+    配置しているレイアウト(サムネなど)では追加しない。
+    """
+    if raw.get("app_credit") is False:
+        return None
+    for group in element_groups:
+        for el in group:
+            if isinstance(el, TextElement) and "{app_credit}" in el.template:
+                return None
+    return TextElement(
+        template="{app_credit}",
+        box=APP_CREDIT_BOX,
+        size=APP_CREDIT_SIZE,
+        color=APP_CREDIT_COLOR,
+        align="left",
+        valign="bottom",
+    )
+
+
+def resolve_app_credit(data: dict) -> str:
+    """{app_credit} に入れる文言。dataに指定があればそれ、無ければ既定の署名。
+
+    歌声合成のクレジット表記が要るジョブでは video.py が
+    「lyrics by Soramimic / VOICEVOX:キャラ名」を data に入れてくる。
+    """
+    text = str(data.get("app_credit") or "").strip()
+    return text or APP_CREDIT
+
+
+def _with_app_credit(data: dict) -> dict:
+    """描画用データに {app_credit} の実文言を埋めたコピー。"""
+    return {**data, "app_credit": resolve_app_credit(data)}
+
+
 def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
     """レイアウトJSON(パース済みdict)を検証してLayoutにする。originはエラー表示用。"""
     elements, subtitles = _parse_elements(raw.get("elements", []), origin)
@@ -391,6 +451,7 @@ def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
         idle=idle,
         hold_next=raw.get("hold") == "next",
         credit=_auto_credit_element(elements, fallback, raw),
+        app_credit=_auto_app_credit_element([elements, fallback, idle], raw),
         background=raw.get("background", "black"),
         font=raw.get("font"),
         raw=raw,
@@ -650,6 +711,7 @@ def render_frame(
     use_fallback: bool = False,
 ) -> Path | None:
     """レイアウトに従いフレームPNGを合成して返す(同内容なら既存を再利用)。"""
+    data = _with_app_credit(data)
     elements = list(layout.active_elements(use_fallback))
     texts = layout.render_texts(data, use_fallback)
     # 画像クレジットの自動焼き込み(文言が空の単語=表記不要では描かない)。
@@ -666,6 +728,10 @@ def render_frame(
                     credit_el = replace(credit_el, box=fitted)
             elements.append(credit_el)
             texts.append(credit_text)
+    # アプリのクレジット(全レイアウト共通・左下)
+    if layout.app_credit is not None:
+        elements.append(layout.app_credit)
+        texts.append(_element_texts([layout.app_credit], data)[0])
     raw_key = "fallback" if (use_fallback and layout.fallback) else "elements"
     return _render_to_cache(
         layout, image_path, data, width, height, out_dir,
@@ -688,8 +754,12 @@ def render_image(
     呼び出し側が決めたいとき(サムネ画像など)に使う。
     background を渡すと単色ではなくその画像を下地にする(サムネの全面画像)。
     """
+    data = _with_app_credit(data)
     elements = list(layout.active_elements(use_fallback))
     texts = layout.render_texts(data, use_fallback)
+    if layout.app_credit is not None:
+        elements.append(layout.app_credit)
+        texts.append(_element_texts([layout.app_credit], data)[0])
     return _render_canvas(
         layout, image_path, data, width, height, elements, texts, background
     )
@@ -700,15 +770,22 @@ def render_idle_frame(
 ) -> Path | None:
     """歌唱なし区間(前奏・間奏・後奏)に出す idle フレームPNG。
 
-    idle要素がなければ None(呼び出し側は黒画面のまま)。単語画像はないので
+    idle要素もアプリクレジットも無ければ None(呼び出し側は黒画面のまま)。
+    idle要素が無くてもクレジットが有効なら、クレジットだけを載せた背景色の
+    フレームを返す(間奏でだけ表記が消えないように)。単語画像はないので
     image要素を書いても描かれない(プロジェクトレベルの固定文言向け)。
     """
-    if not layout.idle:
+    if not layout.idle and layout.app_credit is None:
         return None
-    texts = _element_texts(layout.idle, data)
+    data = _with_app_credit(data)
+    elements = list(layout.idle)
+    texts = _element_texts(elements, data)
+    if layout.app_credit is not None:
+        elements.append(layout.app_credit)
+        texts.append(_element_texts([layout.app_credit], data)[0])
     return _render_to_cache(
         layout, None, data, width, height, out_dir,
-        layout.idle, texts, layout.raw.get("idle", []), tag="idle",
+        elements, texts, layout.raw.get("idle", []), tag="idle",
     )
 
 
