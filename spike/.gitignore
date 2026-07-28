@@ -1,0 +1,8 @@
+# 曲×単語リストごとの変換結果(再生成可能・数MB)はコミットしない。
+# 計測値と比較サマリだけ out/timings と out/compare-*.json に残す。
+out/py/
+out/py-csvfix/
+out/node-injected/
+out/node-injected-dev/
+out/node-kuromoji/
+out/node-kuromoji-dev/

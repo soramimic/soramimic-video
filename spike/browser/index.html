@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>soramimic engine browser PoC</title>
+<h1>browser PoC</h1>
+<pre id="log">idle</pre>
+<script src="/kuromoji.js"></script>
+<script type="module">
+// メインスレッドの応答性(=UIがブロックされないこと)の指標。
+// rAFの間隔を測り、最大フレームギャップとフレーム数を記録する。
+const frame = { count: 0, maxGap: 0, gaps: [] };
+let last = performance.now();
+function tick(now) {
+  const gap = now - last;
+  last = now;
+  frame.count++;
+  if (frame.count > 5) { // 起動直後の外れ値は無視
+    frame.gaps.push(gap);
+    if (gap > frame.maxGap) frame.maxGap = gap;
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function summarize(payload, started) {
+  const gaps = frame.gaps.slice().sort((a, b) => a - b);
+  const out = {
+    ...payload,
+    wall_ms: performance.now() - started,
+    main_thread: {
+      frames: frame.count,
+      max_gap_ms: frame.maxGap,
+      p50_gap_ms: gaps[Math.floor(gaps.length * 0.5)] ?? null,
+      p95_gap_ms: gaps[Math.floor(gaps.length * 0.95)] ?? null,
+    },
+  };
+  window.__result = out;
+  document.getElementById('log').textContent = JSON.stringify(out, null, 1);
+}
+
+window.__result = null;
+// where: "worker"(既定) | "main"
+// CDPのCPUスロットリングはレンダラのメインスレッドにしか効かないため、
+// スマホ級CPUの再現は where="main" で測る(同じコードを同じ手順で回す)。
+window.runPoC = async function (cfg) {
+  window.__result = null;
+  frame.count = 0; frame.maxGap = 0; frame.gaps = [];
+  const started = performance.now();
+  if (cfg.where_run === 'main') {
+    try {
+      const { run } = await import('/engine.js');
+      summarize({ ok: true, ...(await run(cfg)) }, started);
+    } catch (err) {
+      summarize({ ok: false, error: String((err && err.stack) || err) }, started);
+    }
+    return;
+  }
+  const w = new Worker('/worker.js');
+  w.onmessage = (e) => { summarize(e.data, started); w.terminate(); };
+  w.postMessage(cfg);
+};
+</script>

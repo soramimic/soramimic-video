@@ -1,0 +1,202 @@
+{
+ "wordlist": "pokemon",
+ "mode": "injected",
+ "where": null,
+ "songs": {
+  "akatombo": {
+   "wall_ms": 694.8916604742408,
+   "total_ms": 632,
+   "db_ms": 20,
+   "tokenize_ms": 1,
+   "generate_ms": 207,
+   "marks": {
+    "tokenizer_ready": 295,
+    "data_loaded": 349,
+    "app_ready": 403,
+    "db_ready": 424,
+    "tokenized": 425,
+    "generated": 632
+   }
+  },
+  "chatsumi": {
+   "wall_ms": 758.7415622547269,
+   "total_ms": 669,
+   "db_ms": 20,
+   "tokenize_ms": 1,
+   "generate_ms": 245,
+   "marks": {
+    "tokenizer_ready": 292,
+    "data_loaded": 348,
+    "app_ready": 403,
+    "db_ready": 423,
+    "tokenized": 424,
+    "generated": 669
+   }
+  },
+  "furusato": {
+   "wall_ms": 708.9612716808915,
+   "total_ms": 646,
+   "db_ms": 21,
+   "tokenize_ms": 1,
+   "generate_ms": 213,
+   "marks": {
+    "tokenizer_ready": 297,
+    "data_loaded": 355,
+    "app_ready": 410,
+    "db_ready": 432,
+    "tokenized": 433,
+    "generated": 646
+   }
+  },
+  "harugakita": {
+   "wall_ms": 701.7108574509621,
+   "total_ms": 634,
+   "db_ms": 22,
+   "tokenize_ms": 1,
+   "generate_ms": 197,
+   "marks": {
+    "tokenizer_ready": 295,
+    "data_loaded": 355,
+    "app_ready": 413,
+    "db_ready": 436,
+    "tokenized": 437,
+    "generated": 634
+   }
+  },
+  "katatsumuri": {
+   "wall_ms": 688.3378652855754,
+   "total_ms": 627,
+   "db_ms": 19,
+   "tokenize_ms": 1,
+   "generate_ms": 205,
+   "marks": {
+    "tokenizer_ready": 290,
+    "data_loaded": 348,
+    "app_ready": 401,
+    "db_ready": 421,
+    "tokenized": 422,
+    "generated": 627
+   }
+  },
+  "momiji": {
+   "wall_ms": 755.9095965698361,
+   "total_ms": 688,
+   "db_ms": 20,
+   "tokenize_ms": 0,
+   "generate_ms": 251,
+   "marks": {
+    "tokenizer_ready": 298,
+    "data_loaded": 357,
+    "app_ready": 416,
+    "db_ready": 437,
+    "tokenized": 437,
+    "generated": 688
+   }
+  },
+  "momotarou": {
+   "wall_ms": 697.2274836152792,
+   "total_ms": 638,
+   "db_ms": 22,
+   "tokenize_ms": 1,
+   "generate_ms": 206,
+   "marks": {
+    "tokenizer_ready": 293,
+    "data_loaded": 351,
+    "app_ready": 408,
+    "db_ready": 431,
+    "tokenized": 432,
+    "generated": 638
+   }
+  },
+  "nanatsunoko": {
+   "wall_ms": 759.7133908420801,
+   "total_ms": 697,
+   "db_ms": 21,
+   "tokenize_ms": 1,
+   "generate_ms": 272,
+   "marks": {
+    "tokenizer_ready": 285,
+    "data_loaded": 344,
+    "app_ready": 402,
+    "db_ready": 424,
+    "tokenized": 425,
+    "generated": 697
+   }
+  },
+  "oborodukiyo": {
+   "wall_ms": 756.5497569739819,
+   "total_ms": 691,
+   "db_ms": 21,
+   "tokenize_ms": 0,
+   "generate_ms": 255,
+   "marks": {
+    "tokenizer_ready": 296,
+    "data_loaded": 355,
+    "app_ready": 414,
+    "db_ready": 436,
+    "tokenized": 436,
+    "generated": 691
+   }
+  },
+  "shabondama": {
+   "wall_ms": 705.8561882004142,
+   "total_ms": 640,
+   "db_ms": 20,
+   "tokenize_ms": 1,
+   "generate_ms": 198,
+   "marks": {
+    "tokenizer_ready": 304,
+    "data_loaded": 363,
+    "app_ready": 420,
+    "db_ready": 441,
+    "tokenized": 442,
+    "generated": 640
+   }
+  },
+  "lemon": {
+   "wall_ms": 1209.5185071229935,
+   "total_ms": 1141,
+   "db_ms": 35,
+   "tokenize_ms": 1,
+   "generate_ms": 703,
+   "marks": {
+    "tokenizer_ready": 290,
+    "data_loaded": 345,
+    "app_ready": 401,
+    "db_ready": 437,
+    "tokenized": 438,
+    "generated": 1141
+   }
+  },
+  "ussewa": {
+   "wall_ms": 1520.1187068596482,
+   "total_ms": 1448,
+   "db_ms": 37,
+   "tokenize_ms": 2,
+   "generate_ms": 1013,
+   "marks": {
+    "tokenizer_ready": 282,
+    "data_loaded": 337,
+    "app_ready": 395,
+    "db_ready": 433,
+    "tokenized": 435,
+    "generated": 1448
+   }
+  },
+  "yorunikakeru": {
+   "wall_ms": 1432.9571956768632,
+   "total_ms": 1359,
+   "db_ms": 21,
+   "tokenize_ms": 2,
+   "generate_ms": 924,
+   "marks": {
+    "tokenizer_ready": 295,
+    "data_loaded": 354,
+    "app_ready": 411,
+    "db_ready": 433,
+    "tokenized": 435,
+    "generated": 1359
+   }
+  }
+ }
+}

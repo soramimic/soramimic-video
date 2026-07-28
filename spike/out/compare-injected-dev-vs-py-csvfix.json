@@ -1,0 +1,659 @@
+{
+ "rows": [
+  {
+   "wordlist": "nations",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "momiji",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 6,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "lemon",
+   "lines": 65,
+   "match": 65,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 86,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 89,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "momiji",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 6,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "lemon",
+   "lines": 65,
+   "match": 65,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 86,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 89,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "momiji",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 6,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "lemon",
+   "lines": 65,
+   "match": 65,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 86,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 89,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "momiji",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 6,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "lemon",
+   "lines": 65,
+   "match": 65,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 86,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 89,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "momiji",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 6,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "lemon",
+   "lines": 65,
+   "match": 65,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 86,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "pokemon",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 89,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  }
+ ],
+ "total": {
+  "match": 1380,
+  "lines": 1380
+ },
+ "examples": []
+}

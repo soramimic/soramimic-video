@@ -1,0 +1,202 @@
+{
+ "wordlist": "plant",
+ "mode": "injected",
+ "where": null,
+ "songs": {
+  "akatombo": {
+   "wall_ms": 1212.2858930379152,
+   "total_ms": 1138,
+   "db_ms": 116,
+   "tokenize_ms": 1,
+   "generate_ms": 599,
+   "marks": {
+    "tokenizer_ready": 305,
+    "data_loaded": 360,
+    "app_ready": 418,
+    "db_ready": 538,
+    "tokenized": 539,
+    "generated": 1138
+   }
+  },
+  "chatsumi": {
+   "wall_ms": 1166.6682790964842,
+   "total_ms": 1097,
+   "db_ms": 115,
+   "tokenize_ms": 1,
+   "generate_ms": 547,
+   "marks": {
+    "tokenizer_ready": 316,
+    "data_loaded": 372,
+    "app_ready": 429,
+    "db_ready": 549,
+    "tokenized": 550,
+    "generated": 1097
+   }
+  },
+  "furusato": {
+   "wall_ms": 1640.993562527001,
+   "total_ms": 1542,
+   "db_ms": 107,
+   "tokenize_ms": 1,
+   "generate_ms": 995,
+   "marks": {
+    "tokenizer_ready": 306,
+    "data_loaded": 365,
+    "app_ready": 433,
+    "db_ready": 546,
+    "tokenized": 547,
+    "generated": 1542
+   }
+  },
+  "harugakita": {
+   "wall_ms": 1857.8850449994206,
+   "total_ms": 1749,
+   "db_ms": 151,
+   "tokenize_ms": 2,
+   "generate_ms": 704,
+   "marks": {
+    "tokenizer_ready": 673,
+    "data_loaded": 784,
+    "app_ready": 885,
+    "db_ready": 1043,
+    "tokenized": 1045,
+    "generated": 1749
+   }
+  },
+  "katatsumuri": {
+   "wall_ms": 2061.2081568688154,
+   "total_ms": 1957,
+   "db_ms": 136,
+   "tokenize_ms": 1,
+   "generate_ms": 906,
+   "marks": {
+    "tokenizer_ready": 672,
+    "data_loaded": 778,
+    "app_ready": 907,
+    "db_ready": 1049,
+    "tokenized": 1050,
+    "generated": 1956
+   }
+  },
+  "momiji": {
+   "wall_ms": 2935.7871785759926,
+   "total_ms": 2813,
+   "db_ms": 132,
+   "tokenize_ms": 1,
+   "generate_ms": 1774,
+   "marks": {
+    "tokenizer_ready": 642,
+    "data_loaded": 751,
+    "app_ready": 898,
+    "db_ready": 1038,
+    "tokenized": 1039,
+    "generated": 2813
+   }
+  },
+  "momotarou": {
+   "wall_ms": 2100.996531546116,
+   "total_ms": 1998,
+   "db_ms": 180,
+   "tokenize_ms": 2,
+   "generate_ms": 929,
+   "marks": {
+    "tokenizer_ready": 657,
+    "data_loaded": 762,
+    "app_ready": 872,
+    "db_ready": 1067,
+    "tokenized": 1069,
+    "generated": 1998
+   }
+  },
+  "nanatsunoko": {
+   "wall_ms": 3375.0777756795287,
+   "total_ms": 3253,
+   "db_ms": 133,
+   "tokenize_ms": 2,
+   "generate_ms": 2236,
+   "marks": {
+    "tokenizer_ready": 629,
+    "data_loaded": 746,
+    "app_ready": 874,
+    "db_ready": 1015,
+    "tokenized": 1017,
+    "generated": 3253
+   }
+  },
+  "oborodukiyo": {
+   "wall_ms": 3157.4646225199103,
+   "total_ms": 3034,
+   "db_ms": 204,
+   "tokenize_ms": 1,
+   "generate_ms": 1943,
+   "marks": {
+    "tokenizer_ready": 725,
+    "data_loaded": 828,
+    "app_ready": 879,
+    "db_ready": 1090,
+    "tokenized": 1091,
+    "generated": 3034
+   }
+  },
+  "shabondama": {
+   "wall_ms": 1745.0307551771402,
+   "total_ms": 1643,
+   "db_ms": 165,
+   "tokenize_ms": 2,
+   "generate_ms": 513,
+   "marks": {
+    "tokenizer_ready": 802,
+    "data_loaded": 901,
+    "app_ready": 955,
+    "db_ready": 1128,
+    "tokenized": 1130,
+    "generated": 1643
+   }
+  },
+  "lemon": {
+   "wall_ms": 8130.318376235664,
+   "total_ms": 7966,
+   "db_ms": 153,
+   "tokenize_ms": 3,
+   "generate_ms": 6829,
+   "marks": {
+    "tokenizer_ready": 735,
+    "data_loaded": 844,
+    "app_ready": 975,
+    "db_ready": 1134,
+    "tokenized": 1137,
+    "generated": 7966
+   }
+  },
+  "ussewa": {
+   "wall_ms": 12765.587966889143,
+   "total_ms": 12597,
+   "db_ms": 204,
+   "tokenize_ms": 3,
+   "generate_ms": 11458,
+   "marks": {
+    "tokenizer_ready": 753,
+    "data_loaded": 863,
+    "app_ready": 924,
+    "db_ready": 1136,
+    "tokenized": 1139,
+    "generated": 12597
+   }
+  },
+  "yorunikakeru": {
+   "wall_ms": 10470.70293687284,
+   "total_ms": 10265,
+   "db_ms": 156,
+   "tokenize_ms": 6,
+   "generate_ms": 9409,
+   "marks": {
+    "tokenizer_ready": 465,
+    "data_loaded": 578,
+    "app_ready": 685,
+    "db_ready": 850,
+    "tokenized": 856,
+    "generated": 10265
+   }
+  }
+ }
+}

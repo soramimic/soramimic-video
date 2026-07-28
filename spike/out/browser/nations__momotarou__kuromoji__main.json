@@ -1,0 +1,300 @@
+{
+ "song": "momotarou",
+ "wordlist": "nations",
+ "mode": "kuromoji",
+ "where_run": "main",
+ "runs": [
+  {
+   "cpu_throttle": 1,
+   "ok": true,
+   "timings": {
+    "data_ms": 952,
+    "kuromoji_ms": 952.1000003814697,
+    "app_ms": 996.4000005722046,
+    "csv_fetch_ms": 2.8999996185302734,
+    "db_ms": 9.300000190734863,
+    "tokenize_ms": 1.6999998092651367,
+    "generate_ms": 150.60000038146973,
+    "total_ms": 164.5
+   },
+   "surfaces": [
+    [
+     "コモロ",
+     "ポーランド共和国"
+    ],
+    [
+     "コンゴ",
+     "チリ",
+     "グレナダ",
+     "フィンランド"
+    ],
+    [
+     "インド",
+     "ルワンダ",
+     "シリア",
+     "ジャマイカ"
+    ]
+   ],
+   "wall_ms": 1163,
+   "main_thread": {
+    "frames": 19,
+    "max_gap_ms": 83.40000000000009,
+    "p50_gap_ms": 16.700000000000045,
+    "p95_gap_ms": 83.40000000000009
+   },
+   "transfer": {
+    "/": {
+     "raw": 2063,
+     "sent": 1192,
+     "count": 1
+    },
+    "/kuromoji.js": {
+     "raw": 307967,
+     "sent": 67763,
+     "count": 1
+    },
+    "/engine.js": {
+     "raw": 3072,
+     "sent": 1386,
+     "count": 1
+    },
+    "/kuromoji/dict/*": {
+     "raw": 17791956,
+     "sent": 17791956,
+     "count": 12
+    },
+    "/lib/index.js": {
+     "raw": 1118,
+     "sent": 503,
+     "count": 1
+    },
+    "/lib/kuromojiTokenizer.js": {
+     "raw": 1507,
+     "sent": 690,
+     "count": 1
+    },
+    "/lib/character.js": {
+     "raw": 20943,
+     "sent": 6320,
+     "count": 1
+    },
+    "/lib/kanaToSyllable.js": {
+     "raw": 28948,
+     "sent": 8545,
+     "count": 1
+    },
+    "/lib/english.js": {
+     "raw": 3839,
+     "sent": 1618,
+     "count": 1
+    },
+    "/lib/textAnalyzer.js": {
+     "raw": 7628,
+     "sent": 2964,
+     "count": 1
+    },
+    "/lib/kanaSimilarity.js": {
+     "raw": 3677,
+     "sent": 1520,
+     "count": 1
+    },
+    "/lib/soramimic.js": {
+     "raw": 16764,
+     "sent": 6474,
+     "count": 1
+    },
+    "/lib/wordList.js": {
+     "raw": 10777,
+     "sent": 3416,
+     "count": 1
+    },
+    "/lib/utils.js": {
+     "raw": 3574,
+     "sent": 1721,
+     "count": 1
+    },
+    "/data/kanjiyomi.json": {
+     "raw": 91730,
+     "sent": 16564,
+     "count": 1
+    },
+    "/data/english-kana.json": {
+     "raw": 4113068,
+     "sent": 845466,
+     "count": 1
+    },
+    "/data/tree_roma2kana.json": {
+     "raw": 4975,
+     "sent": 789,
+     "count": 1
+    },
+    "/data/kana2phonon.json": {
+     "raw": 4836,
+     "sent": 1219,
+     "count": 1
+    },
+    "/data/simVowelsMonoTie.json": {
+     "raw": 638623,
+     "sent": 86026,
+     "count": 1
+    },
+    "/data/simConsonantsMonoTie.json": {
+     "raw": 471700,
+     "sent": 20579,
+     "count": 1
+    },
+    "/wordlists/nations.csv": {
+     "raw": 82281,
+     "sent": 8311,
+     "count": 1
+    }
+   }
+  },
+  {
+   "cpu_throttle": 4,
+   "ok": true,
+   "timings": {
+    "data_ms": 3409.6000003814697,
+    "kuromoji_ms": 3409.6000003814697,
+    "app_ms": 3550,
+    "csv_fetch_ms": 29.199999809265137,
+    "db_ms": 24.699999809265137,
+    "tokenize_ms": 6.300000190734863,
+    "generate_ms": 416.30000019073486,
+    "total_ms": 476.5
+   },
+   "surfaces": [
+    [
+     "コモロ",
+     "ポーランド共和国"
+    ],
+    [
+     "コンゴ",
+     "チリ",
+     "グレナダ",
+     "フィンランド"
+    ],
+    [
+     "インド",
+     "ルワンダ",
+     "シリア",
+     "ジャマイカ"
+    ]
+   ],
+   "wall_ms": 4030.7999992370605,
+   "main_thread": {
+    "frames": 35,
+    "max_gap_ms": 1099.9,
+    "p50_gap_ms": 16.700000000000045,
+    "p95_gap_ms": 383.29999999999995
+   },
+   "transfer": {
+    "/": {
+     "raw": 2063,
+     "sent": 1192,
+     "count": 1
+    },
+    "/kuromoji.js": {
+     "raw": 307967,
+     "sent": 67763,
+     "count": 1
+    },
+    "/engine.js": {
+     "raw": 3072,
+     "sent": 1386,
+     "count": 1
+    },
+    "/kuromoji/dict/*": {
+     "raw": 17791956,
+     "sent": 17791956,
+     "count": 12
+    },
+    "/lib/index.js": {
+     "raw": 1118,
+     "sent": 503,
+     "count": 1
+    },
+    "/lib/kuromojiTokenizer.js": {
+     "raw": 1507,
+     "sent": 690,
+     "count": 1
+    },
+    "/lib/character.js": {
+     "raw": 20943,
+     "sent": 6320,
+     "count": 1
+    },
+    "/lib/kanaToSyllable.js": {
+     "raw": 28948,
+     "sent": 8545,
+     "count": 1
+    },
+    "/lib/english.js": {
+     "raw": 3839,
+     "sent": 1618,
+     "count": 1
+    },
+    "/lib/textAnalyzer.js": {
+     "raw": 7628,
+     "sent": 2964,
+     "count": 1
+    },
+    "/lib/kanaSimilarity.js": {
+     "raw": 3677,
+     "sent": 1520,
+     "count": 1
+    },
+    "/lib/soramimic.js": {
+     "raw": 16764,
+     "sent": 6474,
+     "count": 1
+    },
+    "/lib/wordList.js": {
+     "raw": 10777,
+     "sent": 3416,
+     "count": 1
+    },
+    "/lib/utils.js": {
+     "raw": 3574,
+     "sent": 1721,
+     "count": 1
+    },
+    "/data/kanjiyomi.json": {
+     "raw": 91730,
+     "sent": 16564,
+     "count": 1
+    },
+    "/data/english-kana.json": {
+     "raw": 4113068,
+     "sent": 845466,
+     "count": 1
+    },
+    "/data/tree_roma2kana.json": {
+     "raw": 4975,
+     "sent": 789,
+     "count": 1
+    },
+    "/data/kana2phonon.json": {
+     "raw": 4836,
+     "sent": 1219,
+     "count": 1
+    },
+    "/data/simVowelsMonoTie.json": {
+     "raw": 638623,
+     "sent": 86026,
+     "count": 1
+    },
+    "/data/simConsonantsMonoTie.json": {
+     "raw": 471700,
+     "sent": 20579,
+     "count": 1
+    },
+    "/wordlists/nations.csv": {
+     "raw": 82281,
+     "sent": 8311,
+     "count": 1
+    }
+   }
+  }
+ ]
+}

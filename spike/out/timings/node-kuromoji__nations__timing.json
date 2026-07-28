@@ -1,0 +1,202 @@
+{
+ "wordlist": "nations",
+ "mode": "kuromoji",
+ "where": null,
+ "songs": {
+  "akatombo": {
+   "wall_ms": 654.8659764230251,
+   "total_ms": 592,
+   "db_ms": 11,
+   "tokenize_ms": 2,
+   "generate_ms": 210,
+   "marks": {
+    "tokenizer_ready": 263,
+    "data_loaded": 315,
+    "app_ready": 369,
+    "db_ready": 380,
+    "tokenized": 382,
+    "generated": 592
+   }
+  },
+  "chatsumi": {
+   "wall_ms": 635.7535496354103,
+   "total_ms": 577,
+   "db_ms": 24,
+   "tokenize_ms": 3,
+   "generate_ms": 180,
+   "marks": {
+    "tokenizer_ready": 263,
+    "data_loaded": 315,
+    "app_ready": 369,
+    "db_ready": 394,
+    "tokenized": 397,
+    "generated": 577
+   }
+  },
+  "furusato": {
+   "wall_ms": 653.0618723481894,
+   "total_ms": 589,
+   "db_ms": 11,
+   "tokenize_ms": 2,
+   "generate_ms": 203,
+   "marks": {
+    "tokenizer_ready": 265,
+    "data_loaded": 317,
+    "app_ready": 373,
+    "db_ready": 384,
+    "tokenized": 386,
+    "generated": 589
+   }
+  },
+  "harugakita": {
+   "wall_ms": 626.422006636858,
+   "total_ms": 568,
+   "db_ms": 12,
+   "tokenize_ms": 2,
+   "generate_ms": 168,
+   "marks": {
+    "tokenizer_ready": 280,
+    "data_loaded": 332,
+    "app_ready": 386,
+    "db_ready": 398,
+    "tokenized": 400,
+    "generated": 568
+   }
+  },
+  "katatsumuri": {
+   "wall_ms": 639.8445051163435,
+   "total_ms": 580,
+   "db_ms": 11,
+   "tokenize_ms": 2,
+   "generate_ms": 197,
+   "marks": {
+    "tokenizer_ready": 263,
+    "data_loaded": 315,
+    "app_ready": 369,
+    "db_ready": 381,
+    "tokenized": 383,
+    "generated": 580
+   }
+  },
+  "momiji": {
+   "wall_ms": 653.8698161020875,
+   "total_ms": 595,
+   "db_ms": 23,
+   "tokenize_ms": 3,
+   "generate_ms": 200,
+   "marks": {
+    "tokenizer_ready": 264,
+    "data_loaded": 315,
+    "app_ready": 369,
+    "db_ready": 392,
+    "tokenized": 395,
+    "generated": 595
+   }
+  },
+  "momotarou": {
+   "wall_ms": 639.4711500033736,
+   "total_ms": 575,
+   "db_ms": 11,
+   "tokenize_ms": 18,
+   "generate_ms": 175,
+   "marks": {
+    "tokenizer_ready": 264,
+    "data_loaded": 315,
+    "app_ready": 371,
+    "db_ready": 382,
+    "tokenized": 400,
+    "generated": 575
+   }
+  },
+  "nanatsunoko": {
+   "wall_ms": 677.2836809977889,
+   "total_ms": 615,
+   "db_ms": 13,
+   "tokenize_ms": 3,
+   "generate_ms": 212,
+   "marks": {
+    "tokenizer_ready": 281,
+    "data_loaded": 333,
+    "app_ready": 387,
+    "db_ready": 400,
+    "tokenized": 403,
+    "generated": 615
+   }
+  },
+  "oborodukiyo": {
+   "wall_ms": 670.9492523223162,
+   "total_ms": 607,
+   "db_ms": 26,
+   "tokenize_ms": 2,
+   "generate_ms": 204,
+   "marks": {
+    "tokenizer_ready": 269,
+    "data_loaded": 320,
+    "app_ready": 374,
+    "db_ready": 401,
+    "tokenized": 403,
+    "generated": 607
+   }
+  },
+  "shabondama": {
+   "wall_ms": 626.9152360036969,
+   "total_ms": 572,
+   "db_ms": 11,
+   "tokenize_ms": 2,
+   "generate_ms": 182,
+   "marks": {
+    "tokenizer_ready": 270,
+    "data_loaded": 323,
+    "app_ready": 377,
+    "db_ready": 388,
+    "tokenized": 390,
+    "generated": 572
+   }
+  },
+  "lemon": {
+   "wall_ms": 810.361610725522,
+   "total_ms": 751,
+   "db_ms": 11,
+   "tokenize_ms": 6,
+   "generate_ms": 349,
+   "marks": {
+    "tokenizer_ready": 280,
+    "data_loaded": 332,
+    "app_ready": 384,
+    "db_ready": 396,
+    "tokenized": 402,
+    "generated": 751
+   }
+  },
+  "ussewa": {
+   "wall_ms": 1125.7811589166522,
+   "total_ms": 1065,
+   "db_ms": 11,
+   "tokenize_ms": 24,
+   "generate_ms": 652,
+   "marks": {
+    "tokenizer_ready": 267,
+    "data_loaded": 320,
+    "app_ready": 378,
+    "db_ready": 389,
+    "tokenized": 413,
+    "generated": 1065
+   }
+  },
+  "yorunikakeru": {
+   "wall_ms": 955.9876834973693,
+   "total_ms": 893,
+   "db_ms": 25,
+   "tokenize_ms": 15,
+   "generate_ms": 481,
+   "marks": {
+    "tokenizer_ready": 264,
+    "data_loaded": 316,
+    "app_ready": 371,
+    "db_ready": 397,
+    "tokenized": 412,
+    "generated": 893
+   }
+  }
+ }
+}

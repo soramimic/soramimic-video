@@ -1,0 +1,272 @@
+## 1. 起動・単語リストDB構築(1回きりのコスト)
+
+wordlist    PY import  PY engine      PY db     NODE 起動+data+app   NODE db
+nations           13ms        89ms        18ms                 385ms       25ms
+plant             13ms        88ms       222ms                 393ms       94ms
+scientist         13ms       131ms       265ms                 410ms      102ms
+stations          13ms        91ms       309ms                 410ms      132ms
+
+## 2. 変換本体(DB構築済み・秒)
+
+wordlist   song           lines       PY  NODE(gen)  NODE(wall)  比(PY/NODEgen)
+nations    akatombo           2    0.51s      0.20s       0.67s           2.6x
+nations    chatsumi           4    0.45s      0.19s       0.64s           2.3x
+nations    furusato           4    0.46s      0.20s       0.65s           2.3x
+nations    harugakita         2    0.42s      0.17s       0.64s           2.4x
+nations    katatsumuri        3    0.41s      0.19s       0.64s           2.2x
+nations    momiji             4    0.53s      0.22s       0.66s           2.4x
+nations    momotarou          3    0.41s      0.19s       0.66s           2.1x
+nations    nanatsunoko        6    0.63s      0.22s       0.72s           2.9x
+nations    oborodukiyo        4    0.52s      0.21s       0.67s           2.5x
+nations    shabondama         4    0.37s      0.17s       0.63s           2.2x
+nations    lemon             65    0.95s      0.37s       0.82s           2.6x
+nations    ussewa            86    2.44s      0.66s       1.13s           3.7x
+nations    yorunikakeru      89    1.45s      0.47s       0.93s           3.1x
+plant      akatombo           2    1.86s      0.57s       1.14s           3.3x
+plant      chatsumi           4    1.83s      0.55s       1.14s           3.3x
+plant      furusato           4    1.87s      0.55s       1.10s           3.4x
+plant      harugakita         2    1.11s      0.37s       0.96s           3.0x
+plant      katatsumuri        3    1.41s      0.41s       0.96s           3.4x
+plant      momiji             4    2.96s      0.72s       1.28s           4.1x
+plant      momotarou          3    1.53s      0.40s       0.98s           3.8x
+plant      nanatsunoko        6    3.73s      0.94s       1.49s           4.0x
+plant      oborodukiyo        4    3.35s      0.77s       1.35s           4.3x
+plant      shabondama         4    0.73s      0.25s       0.79s           2.9x
+plant      lemon             65   11.81s      2.71s       3.31s           4.4x
+plant      ussewa            86   26.62s      5.67s       6.28s           4.7x
+plant      yorunikakeru      89   21.88s      4.88s       5.52s           4.5x
+scientist  akatombo           2    2.30s      0.60s       1.19s           3.8x
+scientist  chatsumi           4    2.15s      0.53s       1.13s           4.0x
+scientist  furusato           4    2.43s      0.53s       1.12s           4.6x
+scientist  harugakita         2    1.41s      0.38s       1.01s           3.7x
+scientist  katatsumuri        3    1.65s      0.46s       1.04s           3.6x
+scientist  momiji             4    3.53s      0.78s       1.37s           4.5x
+scientist  momotarou          3    1.92s      0.41s       1.02s           4.7x
+scientist  nanatsunoko        6    4.63s      1.04s       1.67s           4.5x
+scientist  oborodukiyo        4    3.66s      0.80s       1.39s           4.6x
+scientist  shabondama         4    0.77s      0.26s       0.87s           2.9x
+scientist  lemon             65   13.37s      2.94s       3.56s           4.6x
+scientist  ussewa            86   32.52s      6.63s       7.29s           4.9x
+scientist  yorunikakeru      89   26.83s      4.91s       5.58s           5.5x
+stations   akatombo           2    2.49s      0.66s       1.28s           3.8x
+stations   chatsumi           4    2.76s      0.70s       1.30s           3.9x
+stations   furusato           4    2.73s      0.67s       1.29s           4.1x
+stations   harugakita         2    1.66s      0.43s       1.02s           3.9x
+stations   katatsumuri        3    2.07s      0.56s       1.18s           3.7x
+stations   momiji             4    4.03s      0.97s       1.58s           4.2x
+stations   momotarou          3    2.27s      0.54s       1.15s           4.2x
+stations   nanatsunoko        6    5.28s      1.28s       1.90s           4.1x
+stations   oborodukiyo        4    4.51s      1.07s       1.69s           4.2x
+stations   shabondama         4    1.54s      0.35s       0.93s           4.4x
+stations   lemon             65   18.33s      4.30s       4.99s           4.3x
+stations   ussewa            86   39.76s      7.71s       8.42s           5.2x
+stations   yorunikakeru      89   34.86s      6.76s       7.47s           5.2x
+
+合計: PY 309.7s / NODE生成 68.5s / NODE実時間(都度起動) 98.2s  → 生成部で 4.5倍速
+
+## 3. ブラウザ(Web Worker + CPUスロットリング)
+
+### nations x momotarou (tokenizer=kuromoji)
+  CPU  data+kuromoji       db  tokenize  generate    total  maxFrameGap  p95FrameGap
+   1x           1.2s    0.01s     0.00s     0.16s    0.18s        16.8ms        16.8ms
+
+転送(1x実行時):
+  /kuromoji/dict/*             raw   16.97MB  sent   16.97MB  (12req)
+  /data/english-kana.json      raw    3.92MB  sent    0.81MB  (1req)
+  /data/simVowelsMonoTie.json  raw    0.61MB  sent    0.08MB  (1req)
+  /kuromoji.js                 raw    0.29MB  sent    0.06MB  (1req)
+  /data/simConsonantsMonoTie.json raw    0.45MB  sent    0.02MB  (1req)
+  /data/kanjiyomi.json         raw    0.09MB  sent    0.02MB  (1req)
+  /lib/kanaToSyllable.js       raw    0.03MB  sent    0.01MB  (1req)
+  /wordlists/nations.csv       raw    0.08MB  sent    0.01MB  (1req)
+  /lib/soramimic.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/character.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/wordList.js             raw    0.01MB  sent    0.00MB  (1req)
+  /lib/textAnalyzer.js         raw    0.01MB  sent    0.00MB  (1req)
+  /lib/utils.js                raw    0.00MB  sent    0.00MB  (1req)
+  /lib/english.js              raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kanaSimilarity.js       raw    0.00MB  sent    0.00MB  (1req)
+  /worker.js                   raw    0.00MB  sent    0.00MB  (1req)
+  /data/kana2phonon.json       raw    0.00MB  sent    0.00MB  (1req)
+  /                            raw    0.00MB  sent    0.00MB  (1req)
+  /data/tree_roma2kana.json    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kuromojiTokenizer.js    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/index.js                raw    0.00MB  sent    0.00MB  (1req)
+  TOTAL                        raw   22.52MB  sent   18.00MB
+
+### nations x momotarou (tokenizer=kuromoji)
+  CPU  data+kuromoji       db  tokenize  generate    total  maxFrameGap  p95FrameGap
+   1x           1.0s    0.01s     0.00s     0.15s    0.16s        83.4ms        83.4ms
+   4x           3.5s    0.02s     0.01s     0.42s    0.48s      1099.9ms       383.3ms
+
+転送(1x実行時):
+  /kuromoji/dict/*             raw   16.97MB  sent   16.97MB  (12req)
+  /data/english-kana.json      raw    3.92MB  sent    0.81MB  (1req)
+  /data/simVowelsMonoTie.json  raw    0.61MB  sent    0.08MB  (1req)
+  /kuromoji.js                 raw    0.29MB  sent    0.06MB  (1req)
+  /data/simConsonantsMonoTie.json raw    0.45MB  sent    0.02MB  (1req)
+  /data/kanjiyomi.json         raw    0.09MB  sent    0.02MB  (1req)
+  /lib/kanaToSyllable.js       raw    0.03MB  sent    0.01MB  (1req)
+  /wordlists/nations.csv       raw    0.08MB  sent    0.01MB  (1req)
+  /lib/soramimic.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/character.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/wordList.js             raw    0.01MB  sent    0.00MB  (1req)
+  /lib/textAnalyzer.js         raw    0.01MB  sent    0.00MB  (1req)
+  /lib/utils.js                raw    0.00MB  sent    0.00MB  (1req)
+  /lib/english.js              raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kanaSimilarity.js       raw    0.00MB  sent    0.00MB  (1req)
+  /engine.js                   raw    0.00MB  sent    0.00MB  (1req)
+  /data/kana2phonon.json       raw    0.00MB  sent    0.00MB  (1req)
+  /                            raw    0.00MB  sent    0.00MB  (1req)
+  /data/tree_roma2kana.json    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kuromojiTokenizer.js    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/index.js                raw    0.00MB  sent    0.00MB  (1req)
+  TOTAL                        raw   22.52MB  sent   18.00MB
+
+### stations x ussewa (tokenizer=injected)
+  CPU  data+kuromoji       db  tokenize  generate    total  maxFrameGap  p95FrameGap
+   4x           0.6s    0.32s     0.01s    22.73s   23.18s      2749.9ms       716.6ms
+   6x           0.8s    0.46s     0.01s    38.39s   39.02s      4533.2ms      1066.7ms
+
+転送(1x実行時):
+  /data/english-kana.json      raw    3.92MB  sent    0.81MB  (1req)
+  /wordlists/stations.csv      raw    2.53MB  sent    0.53MB  (1req)
+  /data/simVowelsMonoTie.json  raw    0.61MB  sent    0.08MB  (1req)
+  /kuromoji.js                 raw    0.29MB  sent    0.06MB  (1req)
+  /data/simConsonantsMonoTie.json raw    0.45MB  sent    0.02MB  (1req)
+  /data/kanjiyomi.json         raw    0.09MB  sent    0.02MB  (1req)
+  /lib/kanaToSyllable.js       raw    0.03MB  sent    0.01MB  (1req)
+  /lib/soramimic.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/character.js            raw    0.02MB  sent    0.01MB  (1req)
+  /out/mecab_tokens.json       raw    0.07MB  sent    0.00MB  (1req)
+  /lib/wordList.js             raw    0.01MB  sent    0.00MB  (1req)
+  /lib/textAnalyzer.js         raw    0.01MB  sent    0.00MB  (1req)
+  /lib/utils.js                raw    0.00MB  sent    0.00MB  (1req)
+  /engine.js                   raw    0.00MB  sent    0.00MB  (1req)
+  /lib/english.js              raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kanaSimilarity.js       raw    0.00MB  sent    0.00MB  (1req)
+  /data/kana2phonon.json       raw    0.00MB  sent    0.00MB  (1req)
+  /                            raw    0.00MB  sent    0.00MB  (1req)
+  /data/tree_roma2kana.json    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kuromojiTokenizer.js    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/index.js                raw    0.00MB  sent    0.00MB  (1req)
+  TOTAL                        raw    8.07MB  sent    1.56MB
+
+### stations x ussewa (tokenizer=injected)
+  CPU  data+kuromoji       db  tokenize  generate    total  maxFrameGap  p95FrameGap
+   1x           0.2s    0.09s     0.00s     6.15s    6.29s        16.8ms        16.8ms
+
+転送(1x実行時):
+  /data/english-kana.json      raw    3.92MB  sent    0.81MB  (1req)
+  /wordlists/stations.csv      raw    2.53MB  sent    0.53MB  (1req)
+  /kuromoji.js                 raw    0.59MB  sent    0.13MB  (2req)
+  /data/simVowelsMonoTie.json  raw    0.61MB  sent    0.08MB  (1req)
+  /data/simConsonantsMonoTie.json raw    0.45MB  sent    0.02MB  (1req)
+  /data/kanjiyomi.json         raw    0.09MB  sent    0.02MB  (1req)
+  /lib/kanaToSyllable.js       raw    0.03MB  sent    0.01MB  (1req)
+  /lib/soramimic.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/character.js            raw    0.02MB  sent    0.01MB  (1req)
+  /out/mecab_tokens.json       raw    0.07MB  sent    0.00MB  (1req)
+  /lib/wordList.js             raw    0.01MB  sent    0.00MB  (1req)
+  /lib/textAnalyzer.js         raw    0.01MB  sent    0.00MB  (1req)
+  /lib/utils.js                raw    0.00MB  sent    0.00MB  (1req)
+  /engine.js                   raw    0.00MB  sent    0.00MB  (1req)
+  /lib/english.js              raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kanaSimilarity.js       raw    0.00MB  sent    0.00MB  (1req)
+  /data/kana2phonon.json       raw    0.00MB  sent    0.00MB  (1req)
+  /                            raw    0.00MB  sent    0.00MB  (1req)
+  /data/tree_roma2kana.json    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kuromojiTokenizer.js    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/index.js                raw    0.00MB  sent    0.00MB  (1req)
+  /worker.js                   raw    0.00MB  sent    0.00MB  (1req)
+  TOTAL                        raw    8.37MB  sent    1.62MB
+
+### stations x ussewa (tokenizer=kuromoji)
+  CPU  data+kuromoji       db  tokenize  generate    total  maxFrameGap  p95FrameGap
+   1x           1.0s    0.08s     0.01s     6.95s    7.10s        16.8ms        16.7ms
+   4x           1.3s    0.09s     0.01s     7.21s    7.37s        16.8ms        16.7ms
+   6x           1.0s    0.09s     0.01s     6.98s    7.14s        16.8ms        16.8ms
+
+転送(1x実行時):
+  /kuromoji/dict/*             raw   16.97MB  sent   16.97MB  (12req)
+  /data/english-kana.json      raw    3.92MB  sent    0.81MB  (1req)
+  /wordlists/stations.csv      raw    2.53MB  sent    0.53MB  (1req)
+  /data/simVowelsMonoTie.json  raw    0.61MB  sent    0.08MB  (1req)
+  /kuromoji.js                 raw    0.29MB  sent    0.06MB  (1req)
+  /data/simConsonantsMonoTie.json raw    0.45MB  sent    0.02MB  (1req)
+  /data/kanjiyomi.json         raw    0.09MB  sent    0.02MB  (1req)
+  /lib/kanaToSyllable.js       raw    0.03MB  sent    0.01MB  (1req)
+  /lib/soramimic.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/character.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/wordList.js             raw    0.01MB  sent    0.00MB  (1req)
+  /lib/textAnalyzer.js         raw    0.01MB  sent    0.00MB  (1req)
+  /lib/utils.js                raw    0.00MB  sent    0.00MB  (1req)
+  /lib/english.js              raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kanaSimilarity.js       raw    0.00MB  sent    0.00MB  (1req)
+  /worker.js                   raw    0.00MB  sent    0.00MB  (1req)
+  /data/kana2phonon.json       raw    0.00MB  sent    0.00MB  (1req)
+  /                            raw    0.00MB  sent    0.00MB  (1req)
+  /data/tree_roma2kana.json    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kuromojiTokenizer.js    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/index.js                raw    0.00MB  sent    0.00MB  (1req)
+  TOTAL                        raw   24.97MB  sent   18.52MB
+
+### stations x ussewa (tokenizer=kuromoji)
+  CPU  data+kuromoji       db  tokenize  generate    total  maxFrameGap  p95FrameGap
+   1x           1.0s    0.08s     0.01s     6.33s    6.48s       699.9ms       183.3ms
+   4x           3.5s    0.27s     0.02s    25.98s   26.41s      3133.2ms       750.0ms
+   6x           5.2s    0.43s     0.03s    36.94s   37.57s      4283.2ms      1149.9ms
+
+転送(1x実行時):
+  /kuromoji/dict/*             raw   16.97MB  sent   16.97MB  (12req)
+  /data/english-kana.json      raw    3.92MB  sent    0.81MB  (1req)
+  /wordlists/stations.csv      raw    2.53MB  sent    0.53MB  (1req)
+  /data/simVowelsMonoTie.json  raw    0.61MB  sent    0.08MB  (1req)
+  /kuromoji.js                 raw    0.29MB  sent    0.06MB  (1req)
+  /data/simConsonantsMonoTie.json raw    0.45MB  sent    0.02MB  (1req)
+  /data/kanjiyomi.json         raw    0.09MB  sent    0.02MB  (1req)
+  /lib/kanaToSyllable.js       raw    0.03MB  sent    0.01MB  (1req)
+  /lib/soramimic.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/character.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/wordList.js             raw    0.01MB  sent    0.00MB  (1req)
+  /lib/textAnalyzer.js         raw    0.01MB  sent    0.00MB  (1req)
+  /lib/utils.js                raw    0.00MB  sent    0.00MB  (1req)
+  /lib/english.js              raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kanaSimilarity.js       raw    0.00MB  sent    0.00MB  (1req)
+  /engine.js                   raw    0.00MB  sent    0.00MB  (1req)
+  /data/kana2phonon.json       raw    0.00MB  sent    0.00MB  (1req)
+  /                            raw    0.00MB  sent    0.00MB  (1req)
+  /data/tree_roma2kana.json    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kuromojiTokenizer.js    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/index.js                raw    0.00MB  sent    0.00MB  (1req)
+  TOTAL                        raw   24.97MB  sent   18.52MB
+
+### stations x ussewa (tokenizer=kuromoji)
+  CPU  data+kuromoji       db  tokenize  generate    total  maxFrameGap  p95FrameGap
+   1x           1.0s    0.07s     0.01s     6.27s    6.39s        16.8ms        16.8ms
+
+転送(1x実行時):
+  /kuromoji/dict/*             raw   16.97MB  sent   16.97MB  (12req)
+  /data/english-kana.json      raw    3.92MB  sent    0.81MB  (1req)
+  /wordlists/stations.csv      raw    2.53MB  sent    0.53MB  (1req)
+  /kuromoji.js                 raw    0.59MB  sent    0.13MB  (2req)
+  /data/simVowelsMonoTie.json  raw    0.61MB  sent    0.08MB  (1req)
+  /data/simConsonantsMonoTie.json raw    0.45MB  sent    0.02MB  (1req)
+  /data/kanjiyomi.json         raw    0.09MB  sent    0.02MB  (1req)
+  /lib/kanaToSyllable.js       raw    0.03MB  sent    0.01MB  (1req)
+  /lib/soramimic.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/character.js            raw    0.02MB  sent    0.01MB  (1req)
+  /lib/wordList.js             raw    0.01MB  sent    0.00MB  (1req)
+  /lib/textAnalyzer.js         raw    0.01MB  sent    0.00MB  (1req)
+  /lib/utils.js                raw    0.00MB  sent    0.00MB  (1req)
+  /lib/english.js              raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kanaSimilarity.js       raw    0.00MB  sent    0.00MB  (1req)
+  /engine.js                   raw    0.00MB  sent    0.00MB  (1req)
+  /data/kana2phonon.json       raw    0.00MB  sent    0.00MB  (1req)
+  /                            raw    0.00MB  sent    0.00MB  (1req)
+  /data/tree_roma2kana.json    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/kuromojiTokenizer.js    raw    0.00MB  sent    0.00MB  (1req)
+  /lib/index.js                raw    0.00MB  sent    0.00MB  (1req)
+  /worker.js                   raw    0.00MB  sent    0.00MB  (1req)
+  TOTAL                        raw   25.26MB  sent   18.59MB
+

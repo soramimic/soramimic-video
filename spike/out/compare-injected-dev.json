@@ -1,0 +1,572 @@
+{
+ "rows": [
+  {
+   "wordlist": "nations",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "momiji",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 6,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "lemon",
+   "lines": 65,
+   "match": 64,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 34
+  },
+  {
+   "wordlist": "nations",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 86,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "nations",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 88,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 56
+  },
+  {
+   "wordlist": "plant",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 1,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 3,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "plant",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 1,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "plant",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "momiji",
+   "lines": 4,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "plant",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 1,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 2,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "plant",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 3,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "plant",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 2,
+   "first_divergence_line": 2
+  },
+  {
+   "wordlist": "plant",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "plant",
+   "song": "lemon",
+   "lines": 65,
+   "match": 44,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 21,
+   "first_divergence_line": 4
+  },
+  {
+   "wordlist": "plant",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 60,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 26,
+   "first_divergence_line": 8
+  },
+  {
+   "wordlist": "plant",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 57,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 32,
+   "first_divergence_line": 2
+  },
+  {
+   "wordlist": "scientist",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 2,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "scientist",
+   "song": "furusato",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 1,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 1
+  },
+  {
+   "wordlist": "scientist",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 1,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 2,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "scientist",
+   "song": "momiji",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "scientist",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 2
+  },
+  {
+   "wordlist": "scientist",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 2,
+   "first_divergence_line": 2
+  },
+  {
+   "wordlist": "scientist",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 2,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "scientist",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 3
+  },
+  {
+   "wordlist": "scientist",
+   "song": "lemon",
+   "lines": 65,
+   "match": 39,
+   "reading": 0,
+   "tie": 1,
+   "algorithm": 25,
+   "first_divergence_line": 7
+  },
+  {
+   "wordlist": "scientist",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 51,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 35,
+   "first_divergence_line": 0
+  },
+  {
+   "wordlist": "scientist",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 54,
+   "reading": 0,
+   "tie": 1,
+   "algorithm": 34,
+   "first_divergence_line": 7
+  },
+  {
+   "wordlist": "stations",
+   "song": "akatombo",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "chatsumi",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "furusato",
+   "lines": 4,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 1
+  },
+  {
+   "wordlist": "stations",
+   "song": "harugakita",
+   "lines": 2,
+   "match": 2,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "katatsumuri",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "momiji",
+   "lines": 4,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 3
+  },
+  {
+   "wordlist": "stations",
+   "song": "momotarou",
+   "lines": 3,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "nanatsunoko",
+   "lines": 6,
+   "match": 6,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "oborodukiyo",
+   "lines": 4,
+   "match": 3,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 1,
+   "first_divergence_line": 2
+  },
+  {
+   "wordlist": "stations",
+   "song": "shabondama",
+   "lines": 4,
+   "match": 4,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 0,
+   "first_divergence_line": null
+  },
+  {
+   "wordlist": "stations",
+   "song": "lemon",
+   "lines": 65,
+   "match": 63,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 2,
+   "first_divergence_line": 6
+  },
+  {
+   "wordlist": "stations",
+   "song": "ussewa",
+   "lines": 86,
+   "match": 80,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 6,
+   "first_divergence_line": 5
+  },
+  {
+   "wordlist": "stations",
+   "song": "yorunikakeru",
+   "lines": 89,
+   "match": 85,
+   "reading": 0,
+   "tie": 0,
+   "algorithm": 4,
+   "first_divergence_line": 34
+  }
+ ],
+ "total": {
+  "match": 889,
+  "lines": 1104,
+  "algorithm": 213,
+  "tie": 2
+ },
+ "examples": [
+  "[algorithm] nations/lemon L34: PY=['エチオピア', 'ミャンマー'](301.18) NODE=['西ドイツ', 'ミャンマー'](299.75)",
+  "[algorithm] nations/yorunikakeru L56: PY=['バヌアツ', '東ティモール'](387.99) NODE=['バヌアツ', '東ドイツ'](325.20)",
+  "[algorithm] plant/chatsumi L0: PY=['マツモ', 'チア', 'クルマギク', 'バイヤ'](205.79) NODE=['マツモ', 'ニカウ', 'クサギ', 'クルマシダ'](204.58)",
+  "[algorithm] plant/chatsumi L1: PY=['フォニオ', 'ヤナギモ', 'ハナガガシ', 'ネズ'](189.53) NODE=['ヨシノヤナギ', 'モワ', 'アカガシ', 'ネズ'](189.13)",
+  "[algorithm] plant/chatsumi L2: PY=['アケビ', 'ギンネム', 'ガマズミ', 'ハナニラ'](235.28) NODE=['アケビ', 'ギンネム', 'ガマズミ', 'パパイア'](235.16)",
+  "[algorithm] plant/harugakita L0: PY=['マルバシタン', 'ヤブタビラコ', 'オニシバ'](230.53) NODE=['マルバシタン', 'ヤブタビラコ', 'オニヒバ'](230.00)",
+  "[algorithm] plant/momiji L0: PY=['アキチョウジ', 'ヒメウズ', 'ヤマボウシ'](259.72) NODE=['アキチョウジ', 'ヒメウズ', 'アマモ', 'リーキ'](221.39)",
+  "[algorithm] plant/momotarou L0: PY=['モモ', 'パロサント', 'オオバアオサ'](160.44) NODE=['モモ', 'パロサント', 'モワ', 'ボタン'](132.62)",
+  "[algorithm] plant/momotarou L1: PY=['コト', 'イギス', 'ケヤキ', 'ニヤンゴン'](190.72) NODE=['オオモミジ', 'ツゲ', 'タチキランソウ'](189.37)",
+  "[algorithm] plant/nanatsunoko L0: PY=['カラバルマメ', 'ナス', 'ホナガクマヤナギ'](213.17) NODE=['カラバルマメ', 'ハスノハカズラ', 'ヤマイ'](198.71)",
+  "[algorithm] plant/nanatsunoko L1: PY=['タアサイ', 'ナガバクコ', 'オガルカヤ', 'ヨン'](206.85) NODE=['タアサイ', 'ナガバクコ', 'コヤブタバコ'](214.13)",
+  "[algorithm] plant/nanatsunoko L4: PY=['ハマボウフウ', 'エレミ', 'エゴマ'](232.98) NODE=['アマモ', 'リュウキュウベンケイ', 'エゴマ'](232.49)",
+  "[algorithm] plant/oborodukiyo L2: PY=['ハス', 'アケボノフウロ', 'ダオ', 'イケマ'](250.82) NODE=['ハズ', 'アケボノフウロ', 'ダオ', 'イケマ'](250.60)",
+  "[algorithm] plant/oborodukiyo L3: PY=['ユズ', 'イワタイゲキ', 'オニアザミ'](218.34) NODE=['フブキバナ', 'ヒデリコ', 'イワナシ'](216.04)",
+  "[algorithm] plant/lemon L4: PY=['ナツメ', 'チャボホトトギス'](207.44) NODE=['ナツメ', 'ダオ', 'オオモミジ'](170.02)",
+  "[algorithm] plant/lemon L6: PY=['ウル', 'ミサオノキ', 'エゾノコリンゴ', 'サラク'](233.17) NODE=['フクギ', 'タコノキ', 'エゾノコリンゴ', 'サラク'](232.99)",
+  "[algorithm] plant/lemon L14: PY=['キキョウソウ', 'トケイソウ'](124.11) NODE=['キンギョソウ', 'トケイソウ'](108.52)",
+  "[algorithm] plant/lemon L17: PY=['ハラン', 'エイジュ'](93.54) NODE=['アカテツ'](61.27)",
+  "[algorithm] plant/lemon L18: PY=['ダオ', 'シロガラシ', 'キアベ'](169.10) NODE=['チャノキ', 'ノアザミ', 'キアベ'](156.02)",
+  "[algorithm] plant/lemon L19: PY=['パチョリ', 'ノウルシ', 'キマメ'](142.14) NODE=['アオキ', 'ノウルシ', 'キマメ'](127.78)",
+  "[algorithm] plant/lemon L23: PY=['ニガキ', 'レモン', 'トチノキ'](111.94) NODE=['ニガキ', 'レモン', 'モチノキ'](111.45)",
+  "[algorithm] plant/lemon L24: PY=['タケアズキ', 'ナス', 'アゼナ'](184.73) NODE=['タケアズキ', 'ハズ', 'アゼナ'](184.61)",
+  "[algorithm] plant/lemon L26: PY=['イワオモダカ', 'タラバヤシ', 'オオイタビ'](273.89) NODE=['ニラ', 'ケゴンアカバナ', 'アカミノキ', 'カリン'](251.39)",
+  "[algorithm] plant/lemon L29: PY=['コロリマ', 'クロメ', 'レイシ'](174.18) NODE=['コロリマ', 'クロベ', 'レイシ'](173.18)",
+  "[algorithm] plant/lemon L31: PY=['ヌエゴケ', 'ヒレハリソウ', 'ヨポ'](200.05) NODE=['ヌエゴケ', 'ヒメハギ', 'ロコト'](183.85)",
+  "[algorithm] plant/lemon L32: PY=['ケナフ', 'アイ'](91.71) NODE=['レタス', 'アイ'](91.20)",
+  "[algorithm] plant/lemon L33: PY=['アフ', 'レンゲイワヤナギ', 'ノアザミ', 'マダケ'](192.88) NODE=['アフ', 'レンゲイワヤナギ', 'ノマアザミ', 'マダケ'](209.39)",
+  "[algorithm] plant/lemon L36: PY=['アカミノキ', 'ガガイモ', 'コハコベ'](184.21) NODE=['ナナミノキ', 'ガガイモ', 'コハコベ'](184.55)",
+  "[algorithm] plant/lemon L38: PY=['ヤマジオウ', 'タニソバ'](151.99) NODE=['ヤマジオウ', 'カピロナ'](136.95)",
+  "[algorithm] plant/lemon L44: PY=['オモト', 'アラメ', 'ヤブチョロギ'](184.15) NODE=['ソヨゴ', 'アラメ', 'ヤブチョロギ'](184.09)",
+  "[algorithm] plant/lemon L45: PY=['ミサキノハナ', 'タニワタリノキ', 'カリン'](289.57) NODE=['イワオモダカ', 'タラバヤシ', 'オオイタビ'](273.89)",
+  "[algorithm] plant/lemon L54: PY=['ハンノキ', 'コカ', 'タンキリマメ'](187.86) NODE=['サトイモ', 'カヴァ', 'ジリンマメ'](185.62)",
+  "[algorithm] plant/lemon L55: PY=['アオイボクロ', 'ジムカデ'](223.37) NODE=['アオイボクロ', 'ヒメナエ'](209.70)",
+  "[algorithm] plant/lemon L58: PY=['フデリンドウ', 'コシダ', 'ナベワリ'](201.47) NODE=['フレイジョ', 'コシダ', 'ナベワリ'](170.10)",
+  "[algorithm] plant/lemon L64: PY=['ニラ', 'エゴマ', 'ハナハマサジ', 'オウギヤシ'](278.82) NODE=['ビワ', 'エゴマ', 'ハナハマサジ', 'オウギヤシ'](278.86)",
+  "[algorithm] plant/ussewa L8: PY=['レモンサンショウ', 'イタチハギ'](168.31) NODE=['ヘゴ', 'アオキ', 'アギナシ'](140.20)",
+  "[algorithm] plant/ussewa L18: PY=['ブドウガメ', 'ヒエ'](155.15) NODE=['ツボクサ', 'センシンレン'](139.65)",
+  "[algorithm] plant/ussewa L20: PY=['ハナキリン', 'ジャショウ', 'デイゴ'](156.44) NODE=['ナガミキンカン', 'ホウレンソウ'](168.09)",
+  "[algorithm] plant/ussewa L21: PY=['ウル', 'ネズ'](79.09) NODE=['トゥーグ', 'ネズ'](77.34)",
+  "[algorithm] plant/ussewa L26: PY=['ササガヤ'](57.85) NODE=['アカバナ'](43.47)"
+ ]
+}

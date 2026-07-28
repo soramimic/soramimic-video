@@ -1,0 +1,69 @@
+{
+ "wordlist": "pokemon",
+ "where": null,
+ "params": {
+  "DUPLICATE": false,
+  "VOWEL_RATIO": 0.8,
+  "SAME_PHRASE_BREAK_REWARD": 0,
+  "MID_PHRASE_BREAK_PENALTY": 20,
+  "WORD_NUMBER_PENALTY": 20,
+  "VARIATION_COST": 16.0
+ },
+ "import_ms": 13.190225698053837,
+ "engine_init_ms": 91.66715666651726,
+ "db_build_ms": 45.37932388484478,
+ "songs": {
+  "akatombo": {
+   "convert_ms": 582.5489079579711,
+   "lines": 2
+  },
+  "chatsumi": {
+   "convert_ms": 577.5698153302073,
+   "lines": 4
+  },
+  "furusato": {
+   "convert_ms": 609.7650527954102,
+   "lines": 4
+  },
+  "harugakita": {
+   "convert_ms": 501.5480350703001,
+   "lines": 2
+  },
+  "katatsumuri": {
+   "convert_ms": 518.6531664803624,
+   "lines": 3
+  },
+  "momiji": {
+   "convert_ms": 712.6973997801542,
+   "lines": 4
+  },
+  "momotarou": {
+   "convert_ms": 549.039838835597,
+   "lines": 3
+  },
+  "nanatsunoko": {
+   "convert_ms": 819.2623164504766,
+   "lines": 6
+  },
+  "oborodukiyo": {
+   "convert_ms": 754.333009943366,
+   "lines": 4
+  },
+  "shabondama": {
+   "convert_ms": 504.87736985087395,
+   "lines": 4
+  },
+  "lemon": {
+   "convert_ms": 2608.49479585886,
+   "lines": 65
+  },
+  "ussewa": {
+   "convert_ms": 4751.971080899239,
+   "lines": 86
+  },
+  "yorunikakeru": {
+   "convert_ms": 4458.967692218721,
+   "lines": 89
+  }
+ }
+}

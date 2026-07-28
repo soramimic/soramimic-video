@@ -1,0 +1,22 @@
+{
+ "wordlist": "stations",
+ "mode": "injected",
+ "where": null,
+ "songs": {
+  "ussewa": {
+   "wall_ms": 7397.405446507037,
+   "total_ms": 7269,
+   "db_ms": 99,
+   "tokenize_ms": 2,
+   "generate_ms": 6780,
+   "marks": {
+    "tokenizer_ready": 273,
+    "data_loaded": 326,
+    "app_ready": 381,
+    "db_ready": 487,
+    "tokenized": 489,
+    "generated": 7269
+   }
+  }
+ }
+}

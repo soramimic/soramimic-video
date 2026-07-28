@@ -1,0 +1,202 @@
+{
+ "wordlist": "nations",
+ "mode": "injected",
+ "where": null,
+ "songs": {
+  "akatombo": {
+   "wall_ms": 669.216369278729,
+   "total_ms": 608,
+   "db_ms": 25,
+   "tokenize_ms": 0,
+   "generate_ms": 197,
+   "marks": {
+    "tokenizer_ready": 277,
+    "data_loaded": 330,
+    "app_ready": 385,
+    "db_ready": 411,
+    "tokenized": 411,
+    "generated": 608
+   }
+  },
+  "chatsumi": {
+   "wall_ms": 639.3519891425967,
+   "total_ms": 583,
+   "db_ms": 11,
+   "tokenize_ms": 1,
+   "generate_ms": 194,
+   "marks": {
+    "tokenizer_ready": 268,
+    "data_loaded": 320,
+    "app_ready": 377,
+    "db_ready": 388,
+    "tokenized": 389,
+    "generated": 583
+   }
+  },
+  "furusato": {
+   "wall_ms": 645.0777631253004,
+   "total_ms": 587,
+   "db_ms": 11,
+   "tokenize_ms": 1,
+   "generate_ms": 199,
+   "marks": {
+    "tokenizer_ready": 269,
+    "data_loaded": 322,
+    "app_ready": 375,
+    "db_ready": 387,
+    "tokenized": 388,
+    "generated": 587
+   }
+  },
+  "harugakita": {
+   "wall_ms": 635.2594047784805,
+   "total_ms": 577,
+   "db_ms": 24,
+   "tokenize_ms": 1,
+   "generate_ms": 172,
+   "marks": {
+    "tokenizer_ready": 273,
+    "data_loaded": 326,
+    "app_ready": 380,
+    "db_ready": 404,
+    "tokenized": 405,
+    "generated": 577
+   }
+  },
+  "katatsumuri": {
+   "wall_ms": 642.010236158967,
+   "total_ms": 577,
+   "db_ms": 11,
+   "tokenize_ms": 0,
+   "generate_ms": 189,
+   "marks": {
+    "tokenizer_ready": 269,
+    "data_loaded": 320,
+    "app_ready": 376,
+    "db_ready": 388,
+    "tokenized": 388,
+    "generated": 577
+   }
+  },
+  "momiji": {
+   "wall_ms": 661.0351167619228,
+   "total_ms": 603,
+   "db_ms": 10,
+   "tokenize_ms": 1,
+   "generate_ms": 218,
+   "marks": {
+    "tokenizer_ready": 267,
+    "data_loaded": 320,
+    "app_ready": 373,
+    "db_ready": 384,
+    "tokenized": 385,
+    "generated": 603
+   }
+  },
+  "momotarou": {
+   "wall_ms": 661.4704458042979,
+   "total_ms": 594,
+   "db_ms": 12,
+   "tokenize_ms": 0,
+   "generate_ms": 190,
+   "marks": {
+    "tokenizer_ready": 280,
+    "data_loaded": 335,
+    "app_ready": 392,
+    "db_ready": 404,
+    "tokenized": 404,
+    "generated": 594
+   }
+  },
+  "nanatsunoko": {
+   "wall_ms": 718.9866602420807,
+   "total_ms": 657,
+   "db_ms": 25,
+   "tokenize_ms": 1,
+   "generate_ms": 218,
+   "marks": {
+    "tokenizer_ready": 289,
+    "data_loaded": 356,
+    "app_ready": 413,
+    "db_ready": 438,
+    "tokenized": 439,
+    "generated": 657
+   }
+  },
+  "oborodukiyo": {
+   "wall_ms": 669.3106982856989,
+   "total_ms": 609,
+   "db_ms": 11,
+   "tokenize_ms": 1,
+   "generate_ms": 213,
+   "marks": {
+    "tokenizer_ready": 274,
+    "data_loaded": 326,
+    "app_ready": 384,
+    "db_ready": 395,
+    "tokenized": 396,
+    "generated": 609
+   }
+  },
+  "shabondama": {
+   "wall_ms": 626.2009628117085,
+   "total_ms": 568,
+   "db_ms": 11,
+   "tokenize_ms": 1,
+   "generate_ms": 168,
+   "marks": {
+    "tokenizer_ready": 284,
+    "data_loaded": 336,
+    "app_ready": 388,
+    "db_ready": 399,
+    "tokenized": 400,
+    "generated": 568
+   }
+  },
+  "lemon": {
+   "wall_ms": 818.5159042477608,
+   "total_ms": 759,
+   "db_ms": 11,
+   "tokenize_ms": 1,
+   "generate_ms": 372,
+   "marks": {
+    "tokenizer_ready": 268,
+    "data_loaded": 320,
+    "app_ready": 374,
+    "db_ready": 385,
+    "tokenized": 386,
+    "generated": 759
+   }
+  },
+  "ussewa": {
+   "wall_ms": 1127.3968080058694,
+   "total_ms": 1067,
+   "db_ms": 25,
+   "tokenize_ms": 2,
+   "generate_ms": 662,
+   "marks": {
+    "tokenizer_ready": 270,
+    "data_loaded": 323,
+    "app_ready": 377,
+    "db_ready": 403,
+    "tokenized": 405,
+    "generated": 1067
+   }
+  },
+  "yorunikakeru": {
+   "wall_ms": 926.6377855092287,
+   "total_ms": 867,
+   "db_ms": 11,
+   "tokenize_ms": 16,
+   "generate_ms": 471,
+   "marks": {
+    "tokenizer_ready": 263,
+    "data_loaded": 315,
+    "app_ready": 369,
+    "db_ready": 380,
+    "tokenized": 396,
+    "generated": 867
+   }
+  }
+ }
+}
