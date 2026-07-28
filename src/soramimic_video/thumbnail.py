@@ -41,7 +41,7 @@ from PIL import Image, ImageEnhance
 
 from . import runproc
 from .convert import _find_row, _load_wordlist_rows, resolve_wordlist
-from .editor_io import wordlist_display_name
+from .editor_io import wordlist_phrase_name
 from .layout import Layout, fitted_image_box, parse_layout, render_image
 from .project import Project
 from .soramimic_engine import run_convert
@@ -396,7 +396,7 @@ def wordlist_text_of(wordlist: str) -> str:
         stem = resolve_wordlist(wordlist).stem if wordlist else ""
     except FileNotFoundError:
         logger.warning("単語リストが見つかりません(表示名はそのまま使います): %s", wordlist)
-    return wordlist_display_name(stem) if stem else ""
+    return wordlist_phrase_name(stem) if stem else ""
 
 
 def build_thumbnail(
