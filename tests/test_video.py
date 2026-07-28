@@ -1172,3 +1172,212 @@ def test_prepend_thumbnail_cue_without_intro_overlap(tmp_path: Path):
     assert [(c.start, c.end) for c in out] == [(0.0, 9.0), (10.0, 12.0)]
     # end<=0(サムネを出さない)ならキューは変えない
     assert prepend_thumbnail_cue(cues, thumb, 0.0) == cues
+
+
+# ---- 歌唱なし区間(前奏・間奏・後奏) ----
+
+
+def _cue(start: float, end: float, name: str = "f.png") -> ImageCue:
+    return ImageCue(start=start, end=end, frame=Path(name))
+
+
+def test_idle_sections_classify_gaps():
+    from soramimic_video.video import idle_sections
+
+    cues = [_cue(2.0, 5.0), _cue(20.0, 25.0)]
+    sections = [(s.kind, s.start, s.end) for s in idle_sections(cues, 40.0)]
+    assert sections == [
+        ("intro", 0.0, 2.0),
+        ("interlude", 5.0, 20.0),
+        ("outro", 25.0, 40.0),
+    ]
+
+
+def test_idle_sections_edge_cases():
+    from soramimic_video.video import idle_sections
+
+    # 隙間なく歌い切る曲は区間なし
+    assert idle_sections([_cue(0.0, 30.0)], 30.0) == []
+    # 表示できる単語が1つも無い曲は全編を前奏とみなす
+    only = idle_sections([], 12.0)
+    assert [(s.kind, s.start, s.end) for s in only] == [("intro", 0.0, 12.0)]
+    assert idle_sections([], 0.0) == []
+
+
+def test_endroll_pages_splits_at_threshold():
+    from soramimic_video.video import ENDROLL_WORDS_PER_PAGE, endroll_pages
+
+    per = ENDROLL_WORDS_PER_PAGE
+    words = [f"w{i}" for i in range(per)]
+    assert len(endroll_pages(words)) == 1
+    assert len(endroll_pages(words + ["extra"])) == 2
+    # 2枚を超える語数でも枚数は増やさず、1枚あたりを詰める
+    many = [f"w{i}" for i in range(per * 5)]
+    pages = endroll_pages(many)
+    assert len(pages) == 2
+    assert sum(len(p) for p in pages) == len(many)
+    assert endroll_pages([]) == []
+
+
+def test_used_words_dedupes_in_order(tmp_path: Path):
+    from soramimic_video.video import used_words
+
+    project = _project(tmp_path)
+    word = project.parody.lines[0].words[0]
+    project.parody.lines[0].words.append(word)  # 同じ単語の2回目
+    project.parody.lines[0].words.append(
+        ParodyWord(surface="謎", kana="ナゾ", original="", original_surface="ナゾ",
+                   originalkana="ナゾ", note_ids=[2], note_kana=["ム"])
+    )
+    # original 列を出し、無い単語(手入力)は替え歌表記で代用する
+    assert used_words(project) == ["静", "謎"]
+
+
+def test_image_credits_text_dedupes():
+    from soramimic_video.video import image_credits_text
+
+    assert image_credits_text([]) == ""
+    got = image_credits_text(
+        [{"credit": "A / CC BY"}, {"credit": "A / CC BY"}, {"credit": "B"}, {"credit": ""}]
+    )
+    assert got == "A / CC BY / B"
+
+
+def test_section_frame_data_template_values(tmp_path: Path):
+    from soramimic_video.video import section_frame_data
+
+    inter = section_frame_data(_project(tmp_path), section="interlude", duration=12.4)
+    assert inter["interlude_sec"] == "12"
+    assert inter["wordlist"] == "test"
+    # 間奏以外では秒数を出さない(テンプレートに書いても空になる)
+    assert section_frame_data(_project(tmp_path), section="outro", duration=12.4)[
+        "interlude_sec"
+    ] == ""
+    end = section_frame_data(
+        _project(tmp_path), section="outro", duration=20.0,
+        words=["静", "謎"], image_credits="A / CC BY", page=2, pages=2,
+    )
+    assert end["used_words"] == "静、謎"
+    assert end["image_credits"] == "A / CC BY"
+    assert end["page_label"] == "(2/2)"
+    # 1枚のときはページ表示を出さない
+    assert section_frame_data(_project(tmp_path), section="outro")["page_label"] == ""
+
+
+def _section_layout(tmp_path: Path):
+    import json
+
+    from soramimic_video.layout import load_layout
+
+    p = tmp_path / "sec.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+        "interlude": [
+            {"type": "text", "text": "間奏({interlude_sec}秒)", "box": [0.1, 0.4, 0.8, 0.2]},
+        ],
+        "outro": [{"type": "text", "text": "{used_words}", "box": [0.1, 0.2, 0.8, 0.5]}],
+    }), encoding="utf-8")
+    return load_layout(str(p))
+
+
+def test_build_section_cues_respects_thresholds(tmp_path: Path):
+    from soramimic_video.video import INTERLUDE_MIN_SEC, OUTRO_MIN_SEC, build_section_cues
+
+    project = _project(tmp_path)
+    layout = _section_layout(tmp_path)
+    work = tmp_path / "video"
+    # 長い間奏 + 長い後奏 → どちらも出る
+    cues = [_cue(0.0, 5.0), _cue(5.0 + INTERLUDE_MIN_SEC + 1, 30.0)]
+    total = 30.0 + OUTRO_MIN_SEC + 1
+    got = build_section_cues(project, cues, total, layout, work, 320, 180)
+    assert len(got) == 2
+    assert got[0].start == 5.0 and got[0].end == 5.0 + INTERLUDE_MIN_SEC + 1
+    assert got[1].start == 30.0 and got[1].end == total
+    assert all(c.frame.exists() for c in got)
+
+    # 短い間奏・短い後奏は出さない(一瞬だけ出て消えるのを避ける)
+    short = [_cue(0.0, 5.0), _cue(5.0 + INTERLUDE_MIN_SEC - 0.5, 30.0)]
+    assert build_section_cues(
+        project, short, 30.0 + OUTRO_MIN_SEC - 0.5, layout, work, 320, 180
+    ) == []
+
+
+def test_build_section_cues_paginates_endroll(tmp_path: Path):
+    from soramimic_video.video import ENDROLL_WORDS_PER_PAGE, build_section_cues
+
+    project = _project(tmp_path)
+    base = project.parody.lines[0].words[0]
+    for i in range(ENDROLL_WORDS_PER_PAGE):
+        project.parody.lines[0].words.append(
+            ParodyWord(surface=f"語{i}", kana="ゴ", original=f"語{i}",
+                       original_surface="ゴ", originalkana="ゴ",
+                       note_ids=base.note_ids, note_kana=base.note_kana)
+        )
+    layout = _section_layout(tmp_path)
+    got = build_section_cues(project, [_cue(0.0, 10.0)], 30.0, layout, tmp_path / "v",
+                             320, 180)
+    assert len(got) == 2  # 2枚に分かれ、後奏を等分する
+    assert got[0].start == 10.0 and abs(got[0].end - 20.0) < 0.01
+    assert abs(got[1].start - 20.0) < 0.01 and got[1].end == 30.0
+    assert got[0].frame != got[1].frame
+
+
+def test_build_section_cues_skips_layouts_without_sections(tmp_path: Path):
+    import json
+
+    from soramimic_video.layout import load_layout
+    from soramimic_video.video import build_section_cues
+
+    p = tmp_path / "plain.json"
+    p.write_text(json.dumps({
+        "interlude": [], "outro": [],
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+    }), encoding="utf-8")
+    got = build_section_cues(
+        _project(tmp_path), [_cue(0.0, 5.0), _cue(20.0, 30.0)], 60.0,
+        load_layout(str(p)), tmp_path / "v", 320, 180,
+    )
+    assert got == []
+
+
+def test_sung_gap_sec_measures_from_notes(tmp_path: Path):
+    from soramimic_video.video import IdleSection, sung_gap_sec
+
+    project = _project(tmp_path)
+    # ノートは 0.5〜1.5s(480〜1200tick @120bpm)。余韻ぶん後ろから始まる区間でも
+    # 「歌が止まっている長さ」は最後のノート終端から測る
+    ends = [n.end_sec for n in project.notes]
+    last = max(ends)
+    assert sung_gap_sec(project, IdleSection("interlude", last + 3.0, last + 9.0)) == 6.0
+    # 前後どちらかに歌唱ノートが無ければ区間そのものの長さ
+    tail = IdleSection("outro", last + 1.0, last + 5.0)
+    assert sung_gap_sec(project, tail) == tail.duration
+
+
+def test_build_section_cues_reports_sung_gap(tmp_path: Path):
+    from soramimic_video.video import build_section_cues
+
+    project = _project(tmp_path)
+    layout = _section_layout(tmp_path)
+    last = max(n.end_sec for n in project.notes)
+    # 単語フレームが last+3 まで残り、次の歌唱が last+9 に始まる曲を模した配置
+    project.notes.append(
+        Note(id=len(project.notes), midi_note=60, start_tick=0, end_tick=0,
+             start_sec=last + 9.0, end_sec=last + 12.0, line=0,
+             surface="ラ", kana="ラ", raw="ラ")
+    )
+    cues = [_cue(0.0, last + 3.0), _cue(last + 9.0, last + 12.0)]
+    work = tmp_path / "v"
+    got = build_section_cues(project, cues, last + 12.0, layout, work, 320, 180)
+    assert len(got) == 1
+    assert got[0].start == last + 3.0 and got[0].end == last + 9.0  # 表示は6秒
+    # なのに「間奏(9秒)」と出る(区間の長さではなく歌の途切れを測っている)
+    from soramimic_video.layout import render_section_frame
+    from soramimic_video.video import section_frame_data
+
+    expected = render_section_frame(
+        layout,
+        section_frame_data(project, section="interlude", duration=9.0),
+        320, 180, work / "frames", "interlude",
+    )
+    assert got[0].frame == expected

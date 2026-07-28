@@ -39,6 +39,7 @@ thumbnail.png として置かれ、動画の前奏区間にも表示される(vi
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -58,7 +59,14 @@ from .convert import (
     resolve_wordlist,
 )
 from .editor_io import wordlist_phrase_name
-from .layout import APP_CREDIT, Layout, fitted_image_box, parse_layout, render_image
+from .layout import (
+    APP_CREDIT,
+    LAYOUTS_DIR,
+    Layout,
+    fitted_image_box,
+    parse_layout,
+    render_image,
+)
 from .project import Project
 from .soramimic_engine import run_convert
 
@@ -68,8 +76,8 @@ THUMBNAIL_FILENAME = "thumbnail.png"
 # 動画本編の左下に焼き込むものと同じ署名(layout.APP_CREDIT)。
 # サムネは署名を自前で配置する({app_credit})ので、レイアウト側の自動追加はされない
 SIGNATURE = APP_CREDIT
-# 単語画像を貼る枠(フレーム比率)。旧スタイル(STYLE_SIDE)専用
-IMAGE_BOX = (0.53, 0.08, 0.41, 0.55)
+# サムネのレイアウト定義(文言・枠・文字サイズ)。UIのレイアウト選択には出さない
+THUMBNAIL_LAYOUT_PATH = LAYOUTS_DIR / "thumbnail.json"
 
 # image_wait_sec の待ちで同時に落とす本数(見出しは高々2語なので少なくてよい)
 IMAGE_WAIT_WORKERS = 4
@@ -90,25 +98,8 @@ HEADLINE_MAX_WORDS = 4  # 見出しに並べる言い換え単語の上限(長�
 # 長い曲名×長いリスト名でも縮まずスマホの小ささでも読める
 CAPTION_ONE_LINE_CHARS = 20
 
-# 見出し・キャプションの文字サイズ(フレーム高さ比率)。画像を隠す単語リストや
-# 画像が取れなかったときは絵が無いので、文字そのものを大きくして
-# 「文字だけで目を引くサムネ」として成立させる(絵に負けない必要がないぶん
-# 大きくできる)。見出しは折り返さないので、長い単語では収まるまで縮む
-HEADLINE_SIZE = 0.19
-HEADLINE_SIZE_TEXT_ONLY = 0.24
-CAPTION_SIZE = 0.075
-CAPTION_SIZE_TEXT_ONLY = 0.095
-# 見出し・キャプションの枠。キャプションは2行になっても既定サイズのまま入る高さに
-# してある(中央寄せなので、1行のときの位置は枠の中心=従来と同じところに残る)。
-#
-# 画像ありのときは写真の主役部分を隠さないよう上下に離して置くが、画像が無いと
-# その間隔がそのまま「真ん中だけ空いた黒い帯」になって、文字が上下の端に
-# 貼り付いたように見える。画像なしでは見出しとキャプションをひと塊として
-# 画面の中央(隅の署名のぶんだけ上)に置く
-HEADLINE_BOX = (0.05, 0.10, 0.90, 0.38)
-HEADLINE_BOX_TEXT_ONLY = (0.04, 0.13, 0.92, 0.34)
-CAPTION_BOX = (0.05, 0.60, 0.90, 0.23)
-CAPTION_BOX_TEXT_ONLY = (0.04, 0.51, 0.92, 0.26)
+# 見出し・キャプションの文字サイズと枠は layouts/thumbnail.json にある
+# (枠の決め方の意図はそのファイルの _comment を参照)
 
 # ---- 文字の可読性デザイン(比較中の案を切り替えられるようにしてある) ----
 #
@@ -302,15 +293,57 @@ def design_fingerprint(design: str | TextDesign | None = None) -> dict:
     }
 
 
-# 隅の署名と「<曲名> を <リスト名> で歌ってみた」は3パターン共通
-_CAPTION_ELEMENT = {
-    "type": "text", "text": "{caption}", "box": [0.05, 0.70, 0.90, 0.15],
-    "size": 0.075, "color": "white", "wrap": True,
-}
-_SIGNATURE_ELEMENT = {
-    "type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
-    "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom",
-}
+def load_thumbnail_layouts() -> dict:
+    """サムネのレイアウト定義(layouts/thumbnail.json)を読む。
+
+    スタイル(fullbleed / side)→ 型(word_image / word_only / no_word)の2段の
+    dict。文言や枠を変えたいときはこのJSONを直接編集すればよく、コードは触らない。
+    """
+    global _thumbnail_layouts_cache
+    if _thumbnail_layouts_cache is None:
+        _thumbnail_layouts_cache = json.loads(
+            THUMBNAIL_LAYOUT_PATH.read_text(encoding="utf-8")
+        )
+    return _thumbnail_layouts_cache
+
+
+_thumbnail_layouts_cache: dict | None = None
+
+
+def thumbnail_image_box() -> tuple[float, float, float, float]:
+    """旧スタイル(STYLE_SIDE)で単語画像を貼る枠(thumbnail.json の image 要素)。"""
+    for el in load_thumbnail_layouts()[STYLE_SIDE]["word_image"]["elements"]:
+        if el.get("type") == "image":
+            x, y, w, h = el["box"]
+            return (x, y, w, h)
+    raise ValueError(f"side/word_image に image 要素がありません: {THUMBNAIL_LAYOUT_PATH}")
+
+
+def _spec_variant(has_word: bool, has_image: bool) -> str:
+    """thumbnail.json のどの型を使うか。"""
+    if not has_word:
+        return "no_word"
+    return "word_image" if has_image else "word_only"
+
+
+def _thumbnail_element(
+    raw: dict,
+    design: str | TextDesign | None,
+    credit_box: tuple[float, float, float, float] | None,
+) -> dict:
+    """thumbnail.json の1要素を layout.py が読める要素に直す。
+
+    "outline": true は採用中の可読性デザイン(outline_style)の色・縁取り・影を
+    当てる印、"credit_box": true は実際に貼られた画像の枠へ box を差し替える印で、
+    どちらもこのファイル専用のキーなので展開したうえで取り除く。
+    """
+    el = {k: v for k, v in raw.items() if k not in ("outline", "credit_box")}
+    if raw.get("credit_box") and credit_box is not None:
+        el["box"] = list(credit_box)
+    if raw.get("outline"):
+        size = float(el["size"])
+        el = {"type": "text", "size": size, **outline_style(size, design), **el}
+    return el
 
 
 def thumbnail_layout_spec(
@@ -321,6 +354,9 @@ def thumbnail_layout_spec(
     design: str | TextDesign | None = None,
 ) -> dict:
     """サムネのレイアウト定義(layout.py と同じ書式のdict)。
+
+    中身は layouts/thumbnail.json にあり、ここではスタイルと型を選んで
+    "outline"(可読性デザイン)と "credit_box"(実際の画像枠)を展開するだけ。
 
     STYLE_FULLBLEED(既定)では背景画像を呼び出し側が合成して渡すので、この
     定義に image 要素は出てこない(文字だけ)。文字は縁取りとぼかし影で
@@ -336,95 +372,16 @@ def thumbnail_layout_spec(
     (「】」だけが次の行に落ちるのを避けるため)。credit_box を渡すと
     クレジットの帯をその枠(=実際に貼られた画像の領域)の右下に置く(STYLE_SIDE)。
     """
-    if style == STYLE_FULLBLEED:
-        return _fullbleed_spec(has_word, has_image, design)
-    if not has_word:
-        return {
-            "background": "black",
-            "elements": [
-                {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
-                 "size": 0.11, "color": "white", "wrap": True},
-                _SIGNATURE_ELEMENT,
-            ],
-        }
-    if has_image:
-        return {
-            "background": "black",
-            "elements": [
-                {"type": "image", "box": list(IMAGE_BOX)},
-                {"type": "text", "text": "{headline}", "box": [0.04, 0.10, 0.45, 0.51],
-                 "size": 0.15, "color": "white", "stroke_width": 0.004},
-                # 画像クレジット(表記不要な画像では空文字になり描かれない)
-                {"type": "text", "text": "{image_credit}", "size": 0.024,
-                 "box": list(credit_box or IMAGE_BOX),
-                 "color": "#dddddd", "align": "right", "valign": "bottom",
-                 "background": "#00000080"},
-                _CAPTION_ELEMENT,
-                _SIGNATURE_ELEMENT,
-            ],
-        }
+    layouts = load_thumbnail_layouts()
+    styles = layouts.get(style)
+    if not isinstance(styles, dict):
+        logger.warning("知らないサムネスタイルです(既定を使います): %s", style)
+        styles = layouts[DEFAULT_STYLE]
+    spec = styles[_spec_variant(has_word, has_image)]
     return {
-        "background": "black",
+        **{k: v for k, v in spec.items() if k != "elements"},
         "elements": [
-            {"type": "text", "text": "{headline}", "box": [0.06, 0.12, 0.88, 0.45],
-             "size": 0.2, "color": "white", "stroke_width": 0.004},
-            _CAPTION_ELEMENT,
-            _SIGNATURE_ELEMENT,
-        ],
-    }
-
-
-def _outlined_text(size: float, design: TextDesign, **element: Any) -> dict:
-    """全面スタイルのtext要素(帯ではなく縁取り+影で読ませる)。"""
-    return {"type": "text", "size": size, **outline_style(size, design), **element}
-
-
-def _fullbleed_spec(
-    has_word: bool, has_image: bool, design: str | TextDesign | None = None
-) -> dict:
-    """全面スタイルの定義。背景(単色 or 合成済み画像)の上に文字だけを置く。
-
-    背景写真の明暗に関わらず読めるようにするのは文字ごとの縁取りとぼかし影
-    (outline_style)、および案によっては背景側のグラデーション(apply_scrim)で、
-    半透明の帯は敷かない。
-    画像が無いとき(has_image=False: 画像を隠すリスト・画像が取れなかったとき)は
-    文字が主役になるので、見出しもキャプションも一回り大きい枠・サイズにする。
-    """
-    d = resolve_design(design)
-    credit = _outlined_text(
-        # 画像クレジット(表記不要な画像では空文字になり描かれない)
-        0.024, d, text="{image_credit}", box=[0.03, 0.895, 0.50, 0.055],
-        align="left", valign="bottom",
-    )
-    signature = _outlined_text(
-        0.032, d, text="{app_credit}", box=[0.55, 0.895, 0.42, 0.055],
-        align="right", valign="bottom",
-    )
-    if not has_word:
-        return {
-            "background": "black",
-            "elements": [
-                _outlined_text(
-                    0.11, d, text="{caption}", box=[0.06, 0.28, 0.88, 0.34], wrap=True
-                ),
-                credit,
-                signature,
-            ],
-        }
-    # 絵が無いサムネ(画像を隠すリスト・画像が取れなかったとき)は文字が主役に
-    # なるので、見出しもキャプションも一回り大きくし、写真を避ける必要が無いぶん
-    # ひと塊にまとめて画面の中央に置く
-    headline_size = HEADLINE_SIZE if has_image else HEADLINE_SIZE_TEXT_ONLY
-    headline_box = list(HEADLINE_BOX if has_image else HEADLINE_BOX_TEXT_ONLY)
-    caption_size = CAPTION_SIZE if has_image else CAPTION_SIZE_TEXT_ONLY
-    caption_box = list(CAPTION_BOX if has_image else CAPTION_BOX_TEXT_ONLY)
-    return {
-        "background": "black",
-        "elements": [
-            _outlined_text(headline_size, d, text="{headline}", box=headline_box),
-            _outlined_text(caption_size, d, text="{caption}", box=caption_box, wrap=True),
-            credit,
-            signature,
+            _thumbnail_element(el, design, credit_box) for el in spec["elements"]
         ],
     }
 
@@ -710,7 +667,9 @@ def render_thumbnail(
         credit_box = None
         if image_path is not None and data["image_credit"]:
             # クレジットの帯は枠ではなく実際に貼られた画像の右下に載せる(動画と同じ)
-            credit_box = fitted_image_box(image_path, IMAGE_BOX, width, height)
+            credit_box = fitted_image_box(
+                image_path, thumbnail_image_box(), width, height
+            )
         layout = thumbnail_layout(has_word, image_path is not None, credit_box, style)
         canvas = render_image(layout, image_path, data, width, height)
     out_path.parent.mkdir(parents=True, exist_ok=True)

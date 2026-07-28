@@ -1,0 +1,108 @@
+{
+  "_comment": [
+    "サムネイル(thumbnail.png / 動画の前奏区間)のレイアウト定義。",
+    "要素の書き方は他の layouts/*.json と同じ(layout.py 冒頭のドキュメント参照)。",
+    "ここは動画本編のフレームレイアウトではないので、UIのレイアウト選択には出てこない。",
+    "",
+    "スタイル(fullbleed=既定の全面画像 / side=旧レイアウト)ごとに3つの型を持つ:",
+    "  word_image … 言い換え単語も画像もある(通常)",
+    "  word_only  … 言い換え単語だけ(画像を隠す単語リスト・画像が取れなかったとき)",
+    "  no_word    … 言い換え単語も無い(変換に失敗したときのフォールバック)",
+    "",
+    "参照できる列は headline / caption / image_credit / app_credit(thumbnail_data)。",
+    "要素の追加キー(このファイル専用):",
+    "  \"outline\": true … 文字の縁取り・影・色を採用中の可読性デザインから当てる",
+    "    (thumbnail.py の TEXT_DESIGN。色や縁の太さを直接書きたければ outline を",
+    "     外して color / strokes / shadow を自分で書く)",
+    "  \"credit_box\": true … 実際に貼られた画像の枠へ box を差し替える(side専用)",
+    "",
+    "枠と文字サイズの決め方(fullbleed):",
+    "  キャプションは2行になっても既定サイズのまま入る高さにしてある",
+    "  (中央寄せなので1行のときの位置は枠の中心に残る)。",
+    "  画像ありのときは写真の主役部分を隠さないよう見出しとキャプションを上下に",
+    "  離して置くが、画像が無い(word_only)とその間隔がそのまま「真ん中だけ空いた",
+    "  黒い帯」になって文字が上下の端に貼り付いて見えるので、ひと塊にまとめて",
+    "  画面の中央(隅の署名のぶんだけ上)へ寄せ、絵に負ける必要が無いぶん",
+    "  文字自体も一回り大きくして「文字だけで目を引くサムネ」にしている。",
+    "  見出しは折り返さないので、長い単語では枠に収まるまでフォントが縮む。",
+    "  可読性デザイン scrim のグラデーションは見出し 0.10〜0.48 /",
+    "  キャプション 0.60〜0.83 を覆う想定(thumbnail.py の DEFAULT_SCRIMS)なので、",
+    "  枠を大きく動かすときはそちらも合わせること。"
+  ],
+  "fullbleed": {
+    "word_image": {
+      "background": "black",
+      "elements": [
+        {"type": "text", "text": "{headline}", "box": [0.05, 0.10, 0.90, 0.38],
+         "size": 0.19, "outline": true},
+        {"type": "text", "text": "{caption}", "box": [0.05, 0.60, 0.90, 0.23],
+         "size": 0.075, "wrap": true, "outline": true},
+        {"type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
+         "size": 0.024, "align": "left", "valign": "bottom", "outline": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
+         "size": 0.032, "align": "right", "valign": "bottom", "outline": true}
+      ]
+    },
+    "word_only": {
+      "background": "black",
+      "elements": [
+        {"type": "text", "text": "{headline}", "box": [0.04, 0.13, 0.92, 0.34],
+         "size": 0.24, "outline": true},
+        {"type": "text", "text": "{caption}", "box": [0.04, 0.51, 0.92, 0.26],
+         "size": 0.095, "wrap": true, "outline": true},
+        {"type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
+         "size": 0.024, "align": "left", "valign": "bottom", "outline": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
+         "size": 0.032, "align": "right", "valign": "bottom", "outline": true}
+      ]
+    },
+    "no_word": {
+      "background": "black",
+      "elements": [
+        {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
+         "size": 0.11, "wrap": true, "outline": true},
+        {"type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
+         "size": 0.024, "align": "left", "valign": "bottom", "outline": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
+         "size": 0.032, "align": "right", "valign": "bottom", "outline": true}
+      ]
+    }
+  },
+  "side": {
+    "word_image": {
+      "background": "black",
+      "elements": [
+        {"type": "image", "box": [0.53, 0.08, 0.41, 0.55]},
+        {"type": "text", "text": "{headline}", "box": [0.04, 0.10, 0.45, 0.51],
+         "size": 0.15, "color": "white", "stroke_width": 0.004},
+        {"type": "text", "text": "{image_credit}", "box": [0.53, 0.08, 0.41, 0.55],
+         "size": 0.024, "color": "#dddddd", "align": "right", "valign": "bottom",
+         "background": "#00000080", "credit_box": true},
+        {"type": "text", "text": "{caption}", "box": [0.05, 0.70, 0.90, 0.15],
+         "size": 0.075, "color": "white", "wrap": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
+         "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom"}
+      ]
+    },
+    "word_only": {
+      "background": "black",
+      "elements": [
+        {"type": "text", "text": "{headline}", "box": [0.06, 0.12, 0.88, 0.45],
+         "size": 0.2, "color": "white", "stroke_width": 0.004},
+        {"type": "text", "text": "{caption}", "box": [0.05, 0.70, 0.90, 0.15],
+         "size": 0.075, "color": "white", "wrap": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
+         "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom"}
+      ]
+    },
+    "no_word": {
+      "background": "black",
+      "elements": [
+        {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
+         "size": 0.11, "color": "white", "wrap": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
+         "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom"}
+      ]
+    }
+  }
+}

@@ -14,6 +14,7 @@ from soramimic_video.layout import (
     parse_layout,
     render_frame,
     render_idle_frame,
+    render_section_frame,
     resolve_app_credit,
 )
 
@@ -545,3 +546,67 @@ def test_builtin_layouts_do_not_use_new_text_options():
         for el in load_layout(name).elements:
             if isinstance(el, layout_mod.TextElement):
                 assert el.strokes == () and el.shadow == 0.0, name
+
+
+def test_section_defaults_provide_interlude_and_outro():
+    # レイアウトが何も書かなくても section_defaults.json の既定が入る
+    from soramimic_video.layout import load_section_defaults
+
+    layout = load_layout("default")
+    assert layout.has_section("interlude")
+    assert layout.has_section("outro")
+    # 前奏はサムネが受け持つので既定なし
+    assert not layout.has_section("intro")
+    assert "interlude" in load_section_defaults()
+
+
+def test_layout_can_override_and_disable_sections(tmp_path):
+    p = tmp_path / "sec.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "image", "box": [0, 0, 1, 0.7]}],
+        "interlude": [
+            {"type": "text", "text": "〜{interlude_sec}秒〜", "box": [0.1, 0.4, 0.8, 0.2]},
+        ],
+        "outro": [],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert layout.has_section("interlude")
+    assert not layout.has_section("outro")  # 空配列で既定を打ち消せる
+    elements, raw, tag = layout.section_elements("interlude")
+    assert tag == "interlude" and raw[0]["text"] == "〜{interlude_sec}秒〜"
+    # 専用定義の無い区間は idle にフォールバックする
+    assert layout.section_elements("outro")[2] == "idle"
+
+
+def test_render_section_frame_uses_section_elements(tmp_path):
+    p = tmp_path / "sec.json"
+    p.write_text(json.dumps({
+        "idle": [{"type": "text", "text": "idle", "box": [0.1, 0.4, 0.8, 0.2]}],
+        "interlude": [
+            {"type": "text", "text": "間奏({interlude_sec}秒)", "box": [0.1, 0.4, 0.8, 0.2]},
+        ],
+        "outro": [],  # 既定のエンドロールを打ち消して idle へのフォールバックを見る
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    data = {"title": "t", "wordlist": "w", "interlude_sec": "12"}
+    inter = render_section_frame(layout, data, 320, 180, tmp_path / "f", "interlude")
+    idle = render_section_frame(layout, data, 320, 180, tmp_path / "f", "idle")
+    assert inter is not None and idle is not None and inter != idle
+    # 秒数が変われば別フレーム(テンプレート展開がキャッシュキーに効く)
+    other = render_section_frame(
+        layout, {**data, "interlude_sec": "20"}, 320, 180, tmp_path / "f", "interlude"
+    )
+    assert other != inter
+    # 専用定義の無い区間は idle と同じフレームになる
+    assert render_section_frame(layout, data, 320, 180, tmp_path / "f", "outro") == idle
+
+
+def test_section_app_credit_not_duplicated(tmp_path):
+    # 区間側が {app_credit} を自分で並べていても、単語フレームの署名は消えない
+    p = tmp_path / "sec.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+        "outro": [{"type": "text", "text": "{app_credit}", "box": [0.1, 0.8, 0.8, 0.1]}],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert layout.app_credit is not None

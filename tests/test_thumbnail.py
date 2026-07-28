@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from soramimic_video import thumbnail as thumb_mod
@@ -561,3 +562,68 @@ def test_generate_thumbnail_image_failure_falls_back(tmp_path: Path, monkeypatch
     project = _project(_wordlist_csv(tmp_path, image="https://x/y.jpg"))
     out = generate_thumbnail(project, tmp_path, width=320, height=180)
     assert out is not None and out.exists()
+
+
+def test_thumbnail_spec_comes_from_layout_json(tmp_path, monkeypatch):
+    # サムネのレイアウトは layouts/thumbnail.json が出どころ(コード内に組んでいない)
+    import json as _json
+
+    from soramimic_video import thumbnail as thumb_mod
+
+    assert thumb_mod.THUMBNAIL_LAYOUT_PATH.name == "thumbnail.json"
+    raw = _json.loads(thumb_mod.THUMBNAIL_LAYOUT_PATH.read_text(encoding="utf-8"))
+    for style in (thumb_mod.STYLE_FULLBLEED, thumb_mod.STYLE_SIDE):
+        assert set(raw[style]) == {"word_image", "word_only", "no_word"}
+
+    # JSONを差し替えれば出力も変わる(キャッシュ経由でも読み直せる)
+    other = tmp_path / "thumbnail.json"
+    other.write_text(_json.dumps({
+        "fullbleed": {
+            "word_image": {"background": "navy", "elements": [
+                {"type": "text", "text": "{headline}", "box": [0, 0, 1, 1], "size": 0.2},
+            ]},
+            "word_only": {"elements": []}, "no_word": {"elements": []},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(thumb_mod, "THUMBNAIL_LAYOUT_PATH", other)
+    monkeypatch.setattr(thumb_mod, "_thumbnail_layouts_cache", None)
+    spec = thumb_mod.thumbnail_layout_spec(True, True)
+    assert spec["background"] == "navy"
+    assert spec["elements"] == [
+        {"type": "text", "text": "{headline}", "box": [0, 0, 1, 1], "size": 0.2}
+    ]
+
+
+def test_thumbnail_outline_flag_expands_to_design():
+    # "outline": true は採用中の可読性デザインの色・縁取りに展開され、印は残らない
+    from soramimic_video import thumbnail as thumb_mod
+
+    headline = thumb_mod.thumbnail_layout_spec(True, True)["elements"][0]
+    assert "outline" not in headline
+    assert headline["strokes"] == thumb_mod.outline_style(headline["size"])["strokes"]
+
+
+def test_thumbnail_credit_box_replaces_image_box():
+    # side スタイルのクレジットだけ、実際に貼られた画像の枠へ差し替わる
+    from soramimic_video import thumbnail as thumb_mod
+
+    box = (0.6, 0.1, 0.3, 0.4)
+    spec = thumb_mod.thumbnail_layout_spec(
+        True, True, credit_box=box, style=thumb_mod.STYLE_SIDE
+    )
+    credit = next(e for e in spec["elements"] if e.get("text") == "{image_credit}")
+    assert credit["box"] == list(box)
+    assert "credit_box" not in credit
+    # 渡さなければ画像の枠のまま
+    default = thumb_mod.thumbnail_layout_spec(True, True, style=thumb_mod.STYLE_SIDE)
+    plain = next(e for e in default["elements"] if e.get("text") == "{image_credit}")
+    assert plain["box"] == list(thumb_mod.thumbnail_image_box())
+
+
+def test_thumbnail_json_is_not_a_selectable_frame_layout():
+    # thumbnail.json は動画フレームのレイアウトではないのでUIの選択肢に出さない
+    from soramimic_video.layout import builtin_layout_names, load_layout
+
+    assert "thumbnail" not in builtin_layout_names()
+    with pytest.raises(FileNotFoundError):
+        load_layout("thumbnail")
