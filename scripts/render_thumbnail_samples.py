@@ -1,10 +1,17 @@
 """サムネのデザインを実データで見比べるためのサンプル生成。
 
-実際の単語リストで曲名を空耳変換し、スタイル(全面 / 旧・右側)ごとにサムネPNGを
-書き出す。1語・2語、画像あり・なし、明るい画像・暗い画像が並ぶように選べる。
+実際の単語リストで曲名を空耳変換し、スタイル(全面 / 旧・右側)と文字の可読性
+デザイン(thumbnail.TEXT_DESIGNS)ごとにサムネPNGを書き出す。1語・2語、
+画像あり・なし、明るい画像・暗い画像が並ぶように選べる。
+
+条件の違う実画像で案を並べた1枚の比較シートが欲しいときは
+scripts/compare_thumbnail_designs.py のほうを使う。
 
 使い方:
     uv run python scripts/render_thumbnail_samples.py --out /tmp/thumbs
+    # 可読性デザインを見比べる
+    uv run python scripts/render_thumbnail_samples.py --out /tmp/thumbs \
+        --styles fullbleed --designs double_outline,scrim,soft_shadow,adaptive
     # 単語リストが submodule に無いworktreeでは置き場所を指定する
     uv run python scripts/render_thumbnail_samples.py --wordlists ../soramimic-wordlists
 
@@ -44,6 +51,10 @@ def main() -> None:
         "--styles", default=f"{thumb.STYLE_FULLBLEED},{thumb.STYLE_SIDE}",
         help="比較するスタイル(カンマ区切り)",
     )
+    p.add_argument(
+        "--designs", default=thumb.TEXT_DESIGN,
+        help=f"比較する文字の可読性デザイン(カンマ区切り)。{'/'.join(thumb.TEXT_DESIGNS)}",
+    )
     p.add_argument("--combo", action="append", help="曲名:単語リスト(複数可)")
     args = p.parse_args()
 
@@ -61,23 +72,26 @@ def main() -> None:
         [tuple(c.split(":", 1)) for c in args.combo] if args.combo else DEFAULT_COMBOS
     )
 
+    designs = [d.strip() for d in args.designs.split(",") if d.strip()]
     args.out.mkdir(parents=True, exist_ok=True)
     for style in [s.strip() for s in args.styles.split(",") if s.strip()]:
-        for title, wordlist in combos:
-            for with_image in (True, False):
-                tag = "img" if with_image else "noimg"
-                out = args.out / f"{style}_{wordlist}_{title}_{tag}.png"
-                path = thumb.build_thumbnail(
-                    out,
-                    title,
-                    wordlist,
-                    image_cache=image_cache if with_image else None,
-                    width=args.width,
-                    height=args.height,
-                    download_images=not args.no_download,
-                    style=style,
-                )
-                print(path or f"失敗: {out}")
+        for design in designs:
+            for title, wordlist in combos:
+                for with_image in (True, False):
+                    tag = "img" if with_image else "noimg"
+                    out = args.out / f"{style}_{design}_{wordlist}_{title}_{tag}.png"
+                    path = thumb.build_thumbnail(
+                        out,
+                        title,
+                        wordlist,
+                        image_cache=image_cache if with_image else None,
+                        width=args.width,
+                        height=args.height,
+                        download_images=not args.no_download,
+                        style=style,
+                        design=design,
+                    )
+                    print(path or f"失敗: {out}")
 
 
 if __name__ == "__main__":
