@@ -205,6 +205,32 @@ def test_require_hides_element_when_column_empty(tmp_path):
     assert layout.render_texts({"original": "X", "death": ""}) == ["X", ""]
 
 
+def test_scientist_card_field_fallback_for_all_missing_entries():
+    """生年・国籍・業績・説明が全欠損でも field 列があれば「分野: X」を出す。
+
+    scientist.csv の一部エントリ(例: 西川正治, id=248)は画像もbirth_year/country/
+    achievement/descriptionも全部NAで、従来は名前だけの黒背景カードになっていた。
+    field列だけは持っているので、それを最低限のフォールバックとして表示する。
+    """
+    layout = load_layout("scientist_card")
+    # 西川正治相当: field以外は全部欠損
+    nishikawa = {
+        "original": "西川正治", "surface": "西川", "field": "物理",
+        "birth_year": "NA", "nationality": "NA", "country": "NA",
+        "achievement": "NA", "description": "NA",
+    }
+    texts = layout.render_texts(nishikawa)
+    assert "分野: 物理" in texts
+    # 生年行(country由来)は出ない
+    assert not any("生まれ" in t for t in texts)
+
+    # birth_yearがある人では従来の生年行が出て、field行は出ない(重複回避)
+    with_birth_year = {**nishikawa, "birth_year": "1902", "country": "日本"}
+    texts2 = layout.render_texts(with_birth_year)
+    assert "分野: 物理" not in texts2
+    assert any("生まれ" in t for t in texts2)
+
+
 def test_render_frame_fallback(tmp_path):
     p = tmp_path / "fb.json"
     p.write_text(json.dumps({
