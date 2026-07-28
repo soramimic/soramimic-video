@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,9 @@ THUMBNAIL_FILENAME = "thumbnail.png"
 SIGNATURE = APP_CREDIT
 # 単語画像を貼る枠(フレーム比率)。旧スタイル(STYLE_SIDE)専用
 IMAGE_BOX = (0.53, 0.08, 0.41, 0.55)
+
+# image_wait_sec の待ちで同時に落とす本数(見出しは高々2語なので少なくてよい)
+IMAGE_WAIT_WORKERS = 4
 
 STYLE_FULLBLEED = "fullbleed"  # 画像を全面に敷き、その上に文字を載せる(既定)
 STYLE_SIDE = "side"  # 旧: 左に【単語】、右に画像
@@ -383,7 +388,7 @@ def _word_image(
     その場合、キャッシュに無かった (画像URL, 画像ページ) を missing に積む
     (呼び出し側が後で先読みできるように)。
     """
-    from .image_credit import fetch_image_credit
+    from .image_credit import commons_file_title, fetch_image_credit
     from .video import cached_image, download_image
 
     url = (row or {}).get("image") or ""
@@ -398,11 +403,56 @@ def _word_image(
     credit = str((row or {}).get("image_credit") or "").strip()
     if not credit:
         info = fetch_image_credit(url, page, cache, cached_only=not download)
-        if info is None and not download and missing is not None:
+        if (
+            info is None
+            and not download
+            and missing is not None
+            # Commons以外(ローカル・生成カード画像)はそもそも表記の取得先が無いので
+            # 「未取得」に数えない(いつまでも取得待ち扱いになってしまう)
+            and commons_file_title(url, page) is not None
+        ):
             # 画像はあるがクレジットが未取得。表記付きで出せるよう次回までに温める
             missing.append((url, page))
         credit = info["credit_text"] if info else ""
     return path, credit
+
+
+def wait_for_images(
+    rows: Sequence[dict[str, str] | None], cache: Path, budget_sec: float
+) -> None:
+    """使う単語画像を「合計 budget_sec 秒まで」待ってダウンロードする。
+
+    プレビュー(download_images=False)で、初見の1回目から絵入りを返すための
+    短い待ち。間に合わなかったスレッドは止めずに走らせたままにするので、
+    そのぶんはそのまま裏読みとしてキャッシュに入る。
+    """
+    from .video import cached_image, download_image
+
+    if budget_sec <= 0:
+        return
+    urls = [
+        url
+        for url in dict.fromkeys(str((row or {}).get("image") or "") for row in rows)
+        if url and cached_image(url, cache) is None
+    ]
+    if not urls:
+        return
+    started = time.monotonic()
+    ex = ThreadPoolExecutor(
+        max_workers=min(IMAGE_WAIT_WORKERS, len(urls)), thread_name_prefix="thumb-image"
+    )
+    try:
+        futures = [ex.submit(download_image, url, cache) for url in urls]
+        wait(futures, timeout=budget_sec)
+    finally:
+        # 期限切れのぶんは待たない(走り続けたスレッドの結果はキャッシュに残る)
+        ex.shutdown(wait=False)
+    logger.info(
+        "サムネ用の画像を%d件だけ待ちました(%.1f秒/上限%.1f秒)",
+        sum(1 for url in urls if cached_image(url, cache) is not None),
+        time.monotonic() - started,
+        budget_sec,
+    )
 
 
 def wordlist_text_of(wordlist: str) -> str:
@@ -428,6 +478,7 @@ def build_thumbnail(
     style: str = DEFAULT_STYLE,
     missing_images: list[tuple[str, str]] | None = None,
     app_credit: str = "",
+    image_wait_sec: float = 0.0,
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -437,6 +488,8 @@ def build_thumbnail(
     ときだけ None を返す(いずれも警告ログのみ)。中断要求(Cancelled)は伝播する。
     missing_images を渡すと、使いたかったのにキャッシュに無かった画像・クレジットの
     (URL, 画像ページ)が積まれる(download_images=False のときだけ起きる)。
+    image_wait_sec を渡すと、download_images=False でも「合計その秒数まで」は
+    画像のダウンロードを待つ(プレビューの1回目から絵を出すため)。
     """
     wordlist_text = wordlist_text_of(wordlist)
 
@@ -454,6 +507,9 @@ def build_thumbnail(
     image_credits: list[str] = []
     if found and image_cache is not None:
         try:
+            if not download_images and image_wait_sec > 0:
+                # 待てないなりに少しだけ待つ(初見の1回目から絵入りにするため)
+                wait_for_images([row for _word, row in found], image_cache, image_wait_sec)
             for _word, row in found:
                 path, credit = _word_image(
                     row, image_cache, download_images, missing_images

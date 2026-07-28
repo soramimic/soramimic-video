@@ -26,6 +26,12 @@ editor 連携の設定(`external/soramimic/conf/setting.json`)に使う。替え
 - fluidsynth + サウンドフォント — `mix` の伴奏レンダリングに必要
   (`brew install fluidsynth`)
 - ffmpeg — `mix` / `video` に必要
+- libcairo — 単語リストのSVG画像(ポケモンの型色カード・選手カード・YouTuberカード)を
+  PNGに焼くのに使う `cairosvg`(`uv sync --extra api` で入る)のシステム依存。
+  macOSは `brew install cairo`、Debian/Ubuntuは `apt install libcairo2`。
+  無い場合はSVGの単語画像だけが「画像なし」になる(警告ログのみでジョブは通る)。
+  SVGカードのフォント指定(Hiragino/Noto)を活かすには日本語フォント
+  (Noto Sans CJK JP など)もインストールしておくこと
 
 ## 使い方
 
