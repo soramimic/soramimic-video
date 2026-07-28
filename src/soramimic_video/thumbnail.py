@@ -207,8 +207,9 @@ TEXT_DESIGNS: dict[str, TextDesign] = {
     ),
 }
 
-# ★ 採用案が決まったらここだけ書き換える(比較中は現行のまま)
-TEXT_DESIGN = DESIGN_DOUBLE_OUTLINE
+# ★ 採用案: スクリム(案1)。背景の上下を境界線なしに暗くするだけで、写真を
+# ほぼそのまま見せつつ文字を読ませる。白黒反転の保険(adaptive)は付けない
+TEXT_DESIGN = DESIGN_SCRIM
 
 # 背景に敷いた画像の明るさ(1.0=そのまま)。案ごとに違うので既定案の値を公開する
 BACKGROUND_DIM = TEXT_DESIGNS[TEXT_DESIGN].background_dim
