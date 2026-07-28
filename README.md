@@ -147,3 +147,8 @@ uv run mypy src
   ライセンス表記に従うこと。クレジット表記が必要な画像(Wikimedia Commonsで
   作者表示が求められるもの)は出典文言を動画フレームに自動で焼き込む
   (レイアウトの `"credit": false` で無効化できるが、その場合は自分で表記すること)。
+- 動画フレームの左下には「lyrics by Soramimic」を小さく焼き込む。VOICEVOXで
+  歌わせたジョブは規約に合わせて「lyrics by Soramimic / VOICEVOX:キャラ名」になる。
+  レイアウトの `"app_credit": false` で無効化、text要素で `{app_credit}` を
+  自前配置すれば位置・見た目を変えられる(無効化した場合、VOICEVOXのクレジットは
+  動画の説明欄などで自分で表記すること)。
