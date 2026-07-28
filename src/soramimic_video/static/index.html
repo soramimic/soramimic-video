@@ -821,7 +821,7 @@ async function poll(id) {
           : "") +
         `</p>` +
         SHARE_X_HTML;
-    bindShareX();
+    bindShareX(job.video_url);
     finish();
   } else if (job.status === "canceled") {
     $("status-line").textContent = "中断しました";
@@ -832,20 +832,56 @@ async function poll(id) {
   }
 }
 
-// ---- 完成した動画をXでシェアする ----
-// Xの投稿画面は本文しか渡せない(動画の自動添付はできない)ので、
-// 動画は各自で保存して添付してもらう前提のヒントを添える。
+// ---- 完成した動画をシェアする ----
+// Web Share API(レベル2)が使える環境(iOS Safari・Android Chrome等)では動画
+// ファイルごとOSのシェアシートに渡せるので、Xアプリに動画添付済みで送れる。
+// 使えない環境(多くのPCブラウザ)はXの投稿画面を開く従来の動作に落とす。
+const SHARE_TEXT = "Soramimicで替え歌動画を作りました🎤 #soramimic";
 const SHARE_X_HTML =
-  `<p><button type="button" id="share-x" class="btn-x btn-sm">Xでシェア</button></p>` +
-  `<p class="hint">Xには動画を自動で添付できません。上の「ダウンロード」で動画を保存して投稿に添付してください。「サムネ画像」も投稿に使えます。</p>`;
+  `<p><button type="button" id="share-x" class="btn-x btn-sm">シェア</button></p>` +
+  `<p class="hint" id="share-x-hint"></p>`;
 
-function bindShareX() {
+// ファイル添付付きのシェアが使えるか(動画を1本渡せるか)は実ファイルで判定する
+function canShareFiles(file) {
+  return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
+}
+
+function openXIntent() {
+  const url = "https://twitter.com/intent/tweet?text="
+    + encodeURIComponent(SHARE_TEXT + "\n" + location.origin);
+  window.open(url, "_blank", "noopener");
+}
+
+function bindShareX(videoUrl) {
   const btn = $("share-x");
+  const hint = $("share-x-hint");
   if (!btn) return;
-  btn.addEventListener("click", () => {
-    const text = "Soramimicで替え歌動画を作りました🎤 #soramimic\n" + location.origin;
-    const url = "https://twitter.com/intent/tweet?text=" + encodeURIComponent(text);
-    window.open(url, "_blank", "noopener");
+  if (hint) {
+    hint.textContent = navigator.share
+      ? "動画を添付してシェアします(対応していない場合はXの投稿画面が開きます)。"
+      : "Xの投稿画面が開きます。動画は「ダウンロード」で保存して添付してください。";
+  }
+  btn.addEventListener("click", async () => {
+    if (!videoUrl || !navigator.share) return openXIntent();
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "準備中…";
+    try {
+      const res = await fetch(qs(videoUrl), { headers: headers() });
+      if (!res.ok) throw new Error("動画を取得できませんでした");
+      const blob = await res.blob();
+      const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
+      const file = new File([blob], name.endsWith(".mp4") ? name : "soramimic.mp4",
+        { type: blob.type || "video/mp4" });
+      if (!canShareFiles(file)) return openXIntent();
+      await navigator.share({ files: [file], text: SHARE_TEXT });
+    } catch (e) {
+      // ユーザーがシェアシートを閉じただけのときは何もしない
+      if (!(e && e.name === "AbortError")) openXIntent();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
   });
 }
 
