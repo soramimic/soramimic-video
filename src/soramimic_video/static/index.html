@@ -1037,7 +1037,11 @@ const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 // 選択肢そのものの名前だけを返す(「生物の植物」のようなグループ名連結はしない。
 // 単体で意味が通らない選択肢名は setting.json 側の表示名で解決する方針)
 function wordlistOptionLabel(opt) {
-  return opt.textContent;
+  // 「日常系」のように単体では意味が取れない選択肢があるので、グループがあれば
+  // 「架空 > 日常系」と併記する(「生物の植物」のような連結は読みにくいので区切る)
+  const og = opt.parentElement;
+  const group = og && og.tagName === "OPTGROUP" ? og.label : "";
+  return group ? `${group} > ${opt.textContent}` : opt.textContent;
 }
 
 // 単語リスト(ファイル名)に対応する #wordlist-select の option。無ければ null。

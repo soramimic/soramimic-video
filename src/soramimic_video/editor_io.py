@@ -26,6 +26,10 @@ EDITOR_FILENAME = "editor.json"
 EXPORT_FORMAT = "soramimic-editor/1"
 
 SETTING_JSON = REPO_ROOT / "external" / "soramimic" / "conf" / "setting.json"
+# 文中で使う単語リスト名(「<曲名> を <ここ> で歌ってみた」)。setting.json の text は
+# プルダウンの選択肢用に短く付けられており(「日常系」など)、単体では意味が
+# 取れないものがあるため、文章向けの言い方をこちらで持つ。
+WORDLIST_PHRASES_PATH = Path(__file__).resolve().parent / "wordlist_phrases.json"
 
 
 def save_raw(raw: dict, project_dir: Path) -> Path:
@@ -94,6 +98,21 @@ def wordlist_display_name(name: str) -> str:
     設定に無いリスト・設定を読めないときはリスト名(stem)をそのまま返す。
     """
     return str(_wordlist_entry(name, None).get("text") or name)
+
+
+def wordlist_phrase_name(name: str) -> str:
+    """文中で使う単語リスト名(「ふるさと を <ここ> で歌ってみた」)。
+
+    wordlist_phrases.json にあればそれを、無ければ表示名(setting.jsonのtext)を返す。
+    プルダウン用の短い名前(「日常系」)は単体だと意味が取れないので、
+    そういうリストだけ文章向けの言い方(「架空の日常系アニメキャラ名」)を持たせる。
+    """
+    try:
+        phrases = json.loads(WORDLIST_PHRASES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        phrases = {}
+    phrase = phrases.get(name) if isinstance(phrases, dict) else None
+    return str(phrase) if isinstance(phrase, str) and phrase else wordlist_display_name(name)
 
 
 def export_editor(project: Project, project_dir: Path) -> Path:
