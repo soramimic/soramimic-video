@@ -6,6 +6,10 @@
 載せられないため。「ももたろうさん」→「ももたろさん」は実際の歌い方)。
 楽譜のメリスマは「け」→「け・え」のように母音のモーラを足して表す。
 
+メロディ(ch0)のほかに伴奏(ch1)も書き込む。ミックス工程(mix.py)は
+メロディチャンネルのnoteだけを消してfluidsynthに渡すので、伴奏を別チャンネルに
+置かないとカラオケ音源が無音になる。伴奏は曲ごとの "chords" から機械的に作る。
+
 曲ごとの権利根拠(作詞・作曲者の没年とPDの理由)は docs/sample-rights.md。
 曲を足すときは同じ表にも1行足すこと。
 
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 from mido import Message, MetaMessage, MidiFile, MidiTrack
@@ -34,6 +39,31 @@ H, DH = 960, 1440  # 2分/付点2分
 
 BR = "/"  # 行区切りだけ入れる(休符は入れない。小節の途中で行が変わる曲用)
 
+MELODY_CHANNEL = 0
+ACC_CHANNEL = 1  # 伴奏。mix.py はメロディchのnoteだけ消すので別chに置く
+ACC_PROGRAM = 0  # Acoustic Grand Piano
+
+# コードの構成音(ルートからの半音)
+_QUALITIES = {"": (0, 4, 7), "m": (0, 3, 7), "7": (0, 4, 7, 10), "m7": (0, 3, 7, 10)}
+_ROOTS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+_CHORD_RE = re.compile(r"([A-G])([b#]?)(m7|m|7)?$")
+
+CHORD_LOW = 48  # ブロックコードのルートを置く帯域の下端(C3)。メロディ(C4〜E5)の下
+BASS_LOW = 36  # ベース音の帯域の下端(C2)
+# ベロシティは強め。mix.py の伴奏ゲインは ACCOMPANIMENT_GAIN_MAX(0.6)で頭打ちなので、
+# 伴奏wavが歌唱wavより十分大きく鳴っていないと、ミックス後に伴奏が埋もれてしまう
+# (FluidR3_GMで -19 LUFS 前後 / true peak -5dB 前後になる値)
+CHORD_VELOCITY = 100
+BASS_VELOCITY = 112
+ACC_GATE = 0.9  # 各打鍵の長さ(拍に対する比率)。少し切って刻みを聞こえやすくする
+
+# 拍子(分子)ごとの刻み。"bass"=ルート低音 / "fifth"=5度の低音 / "chord"=ブロックコード
+BEAT_PATTERNS = {
+    2: ("bass", "chord"),
+    3: ("bass", "chord", "chord"),  # ワルツ(ズン・チャッ・チャッ)
+    4: ("bass", "chord", "fifth", "chord"),
+}
+
 # 各曲の "title_kana": 曲名の読み(カタカナ)。サムネの見出しは曲名を空耳変換して
 # 作るが、読みをMeCabの推定に任せると「紅葉」が「コーヨー」になってしまう。
 # サンプル曲は読みが確定しているのでデータとして持たせ、推定を回避する
@@ -44,6 +74,11 @@ BR = "/"  # 行区切りだけ入れる(休符は入れない。小節の途中�
 #   int                              … その長さの休符(フレーズ頭の休符など)
 #   None                             … 行区切り。次の小節頭まで休符を入れる
 #   BR                               … 行区切りのみ(小節の途中で行が変わる曲)
+#
+# 各曲の "chords": 伴奏のコード進行。1要素=1小節で、先頭は前奏(無音の1小節)ぶん。
+# 小節内で変えたいときは tuple にする(小節を均等割りするので、要素数は拍子の
+# 分子を割り切れること: 4/4なら1・2・4個、3/4なら1・3個、2/4なら1・2個)。
+# 小節数は score から計算した値と一致していないと build() が落ちる(ずれ検知)。
 SONGS: dict[str, dict] = {
     "furusato": {
         "title": "ふるさと",
@@ -73,6 +108,14 @@ SONGS: dict[str, dict] = {
             ("ふ", C5, Q), ("る", C5, Q), ("さ", A4, Q),
             ("と", G4, 1440),
         ],
+        # ト長調。前奏1小節 + 16小節(4小節×4行)
+        "chords": [
+            "G",
+            "G", "D7", ("G", "G", "C"), "G",
+            "C", "G", "D7", "G",
+            "D7", "G", "C", "G",
+            "G", "Em", "D7", "G",
+        ],
         "lyrics": (
             "うさぎ追いし かの山\n小ぶな釣りし かの川\n夢は今も めぐりて\n忘れがたき ふるさと\n"
         ),
@@ -96,6 +139,12 @@ SONGS: dict[str, dict] = {
             ("い", AS4, E8), ("つ", G4, E8), ("の", DS4, E8), ("お", G4, E8),
             ("ひ", F4, E8), ("い", DS4, E8),
             ("か", DS4, 1440),
+        ],
+        # 変ホ長調。前奏1小節 + 8小節
+        "chords": [
+            "Eb",
+            "Eb", "Eb", "Ab", "Eb",
+            "Eb", "Cm", ("Eb", "Eb", "Bb7"), "Eb",
         ],
         "lyrics": "夕焼小焼の 赤とんぼ\n負われて見たのは いつの日か\n",
     },
@@ -122,6 +171,11 @@ SONGS: dict[str, dict] = {
             ("く", A4, E8), ("だ", A4, E8), ("さ", FS4, E8), ("い", E4, E8),
             ("な", D4, DQ),
         ],
+        # ニ長調。前奏1小節 + 6小節
+        "chords": [
+            "D",
+            "D", ("D", "A7"), "D", ("D", "A7"), "D", ("A7", "D"),
+        ],
         "lyrics": "桃太郎さん 桃太郎さん\nお腰につけた きびだんご\n一つわたしに くださいな\n",
     },
     "katatsumuri": {
@@ -147,6 +201,11 @@ SONGS: dict[str, dict] = {
             ("あ", D4, E8), ("た", FS4, E8), ("ま", FS4, DE), ("だ", E4, S16),
             ("せ", D4, Q),
         ],
+        # ニ長調。前奏1小節 + 6小節
+        "chords": [
+            "D",
+            "D", ("D", "A7"), "D", ("A7", "D"), "D", "D",
+        ],
         "lyrics": (
             "でんでんむしむし かたつむり\nお前のあたまは どこにある\nつの出せ槍出せ あたま出せ\n"
         ),
@@ -169,6 +228,12 @@ SONGS: dict[str, dict] = {
             ("の", G4, Q), ("に", E5, Q), ("も", D5, DQ), ("き", G4, E8),
             ("た", C5, DH),
         ],
+        # ハ長調。前奏1小節 + 8小節
+        "chords": [
+            "C",
+            "C", "C", ("Am", "C"), "G7",
+            "C", ("C", "F"), ("C", "G7"), "C",
+        ],
         "lyrics": "春が来た 春が来た どこに来た\n山に来た 里に来た 野にも来た\n",
     },
     "oborodukiyo": {
@@ -180,7 +245,7 @@ SONGS: dict[str, dict] = {
         # ニ長調(初出調)。8分2つの弱起で始まり、行は小節の途中で変わる(BR)。
         # 「け→け・え」などの2音は楽譜どおりのメリスマ
         "score": [
-            Q,  # 弱起(3拍子の3拍目から歌い出す)
+            H,  # 弱起(3拍子の3拍目から歌い出すので、小節頭から2拍ぶん空ける)
             ("な", FS4, E8), ("の", FS4, E8),
             ("は", D4, DQ), ("な", E4, E8), ("ば", FS4, E8), ("た", A4, E8),
             ("け", A4, E8), ("え", B4, E8), ("に", A4, Q), ("い", E4, Q),
@@ -204,6 +269,15 @@ SONGS: dict[str, dict] = {
             ("り", A4, E8), ("い", D5, E8), ("て", B4, Q), ("に", A4, Q),
             ("お", B4, DQ), ("い", FS4, E8), ("あ", E4, E8), ("わ", E4, E8),
             ("し", D4, H),
+        ],
+        # ニ長調。前奏1小節 + 弱起の小節 + 16小節(最後の小節は2拍で終わる)
+        "chords": [
+            "D",
+            "D",
+            "D", "A7", "D", "D",
+            "D", ("D", "D", "A7"), ("Bm", "Bm", "A7"), "D",
+            "D", "D", "D", "A7",
+            "D", "D", ("Bm", "Bm", "A7"), "D",
         ],
         "lyrics": (
             "菜の花畑に 入日薄れ\n見わたす山の端 霞ふかし\n"
@@ -241,6 +315,14 @@ SONGS: dict[str, dict] = {
             ("だ", A4, DQ), ("す", A4, E8), ("き", G4, Q), ("に", E4, Q),
             ("す", D4, Q), ("げ", G4, Q), ("の", A4, DQ), ("か", B4, E8),
             ("さ", G4, DH),
+        ],
+        # ト長調。前奏1小節 + 16小節(4小節×4行)
+        "chords": [
+            "G",
+            "G", "G", "G", ("G", "D7"),
+            "G", "G", "G", ("Em", "G"),
+            "G", "G", "G", ("G", "D7"),
+            "G", ("D7", "G"), ("G", "D7"), "G",
         ],
         "lyrics": (
             "夏も近づく 八十八夜\n野にも山にも 若葉が茂る\n"
@@ -288,6 +370,16 @@ SONGS: dict[str, dict] = {
             ("い", A4, Q), ("い", B4, E8), ("い", G4, E8), ("こ", E4, Q), ("だ", D4, Q),
             ("よ", G4, DH),
         ],
+        # ト長調。前奏1小節 + 24小節(4小節×6行)
+        "chords": [
+            "G",
+            "G", ("Em", "G"), ("Em", "D7"), "D7",
+            "G", "G", ("G", "D7"), "G",
+            "D7", ("D7", "D7", "G", "C"), ("G", "D7"), "Em",
+            "G", "G", ("C", "C", "G", "D7"), "D7",
+            "G", ("Em", "G"), ("Em", "D7"), "D7",
+            "G", "G", ("G", "D7"), "G",
+        ],
         "lyrics": (
             "烏 なぜ啼くの 烏は山に\n可愛七つの 子があるからよ\n"
             "可愛 可愛と 烏は啼くの\n可愛 可愛と 啼くんだよ\n"
@@ -298,30 +390,40 @@ SONGS: dict[str, dict] = {
         "title": "紅葉",
         "title_kana": "モミジ",
         "description": "唱歌・PD",
-        "tempo": 652_174,  # ♩=92
+        "tempo": 652_174,  # ♩=92(うたごえサークルおけらの譜面・mu-techのXF MIDIともに♩=92)
         "time": (4, 4),
-        # ヘ長調。「る→る・う」などの2音は楽譜どおりのメリスマ
+        # ヘ長調・4/4・全16小節。「る→る・う」などの2音は楽譜どおりのメリスマ。
+        # 各行の2小節目は「ひ(2分)に(4分)+4分休符」で1小節ちょうど。この休符を
+        # 落とすと以降が1拍前にずれて小節線と合わなくなる(リズムが変に聞こえる)
         "score": [
             ("あ", A4, Q), ("き", G4, E8), ("の", F4, E8), ("ゆ", G4, Q), ("う", A4, Q),
-            ("ひ", F4, H), ("に", C4, Q),
+            ("ひ", F4, H), ("に", C4, Q), Q,
             ("て", F4, Q), ("る", E4, E8), ("う", F4, E8), ("や", G4, Q), ("ま", C5, Q),
             ("も", A4, Q), ("み", G4, E8), ("い", F4, E8), ("じ", G4, Q),
             None,
             ("こ", A4, Q), ("い", G4, E8), ("も", F4, E8), ("う", G4, Q), ("す", A4, Q),
-            ("い", F4, H), ("も", C4, Q),
+            ("い", F4, H), ("も", C4, Q), Q,
             ("か", F4, Q), ("ず", E4, E8), ("う", F4, E8), ("あ", G4, Q), ("る", C5, Q),
             ("な", A4, Q), ("か", G4, Q), ("に", F4, Q),
             None,
             ("ま", C5, Q), ("つ", A4, E8), ("を", AS4, E8), ("い", C5, Q), ("ろ", D5, Q),
-            ("ど", C5, H), ("る", A4, Q),
+            ("ど", C5, H), ("る", A4, Q), Q,
             ("か", C5, Q), ("え", D5, E8), ("え", C5, E8), ("で", A4, Q),
             ("や", G4, E8), ("あ", F4, E8),
             ("つ", G4, Q), ("た", A4, Q), ("は", G4, Q),
             None,
             ("や", C5, Q), ("ま", D5, E8), ("の", C5, E8), ("ふ", A4, Q), ("も", G4, Q),
-            ("と", F4, H), ("の", C4, Q),
+            ("と", F4, H), ("の", C4, Q), Q,
             ("す", F4, Q), ("そ", E4, E8), ("お", F4, E8), ("も", A4, Q), ("よ", G4, Q),
             ("う", F4, DH),
+        ],
+        # ヘ長調。前奏1小節 + 16小節(4小節×4行)
+        "chords": [
+            "F",
+            "F", ("F", "C7"), "F", ("Dm", "C7"),
+            "F", ("F", "C7"), "F", ("Dm", "F"),
+            ("F", "Bb"), ("C7", "F"), "F", ("Dm", "C7"),
+            "F", ("F", "C7"), ("F", "F", "F", "C7"), "F",
         ],
         "lyrics": (
             "秋の夕日に 照る山紅葉\n濃いも薄いも 数ある中に\n"
@@ -348,9 +450,82 @@ SONGS: dict[str, dict] = {
             ("こ", B4, E8), ("わ", B4, E8), ("れ", A4, E8), ("て", D4, E8),
             ("き", FS4, E8), ("え", E4, E8), ("た", D4, E8),
         ],
+        # ニ長調。前奏1小節 + 8小節(2小節×4行)
+        "chords": [
+            "D",
+            "D", "D", "G", "A7",
+            "D", "A7", ("G", "D"), ("A7", "D"),
+        ],
         "lyrics": "しゃぼん玉飛んだ\n屋根まで飛んだ\n屋根まで飛んで\nこわれて消えた\n",
     },
 }
+
+
+def chord_pitches(symbol: str) -> tuple[int, list[int]]:
+    """コード名 → (ベース音, ブロックコードの構成音)。
+
+    ベースは BASS_LOW から1オクターブ、コードはルートを CHORD_LOW から
+    1オクターブの帯域に置く(メロディと帯域が重ならないようにするため)。
+    """
+    m = _CHORD_RE.fullmatch(symbol)
+    if m is None:
+        raise ValueError(f"未対応のコード名: {symbol}")
+    letter, accidental, quality = m.groups()
+    pc = (_ROOTS[letter] + {"": 0, "#": 1, "b": -1}[accidental]) % 12
+    root = CHORD_LOW + (pc - CHORD_LOW) % 12
+    bass = BASS_LOW + (pc - BASS_LOW) % 12
+    return bass, [root + i for i in _QUALITIES[quality or ""]]
+
+
+def accompaniment_events(song: dict, measures: int) -> list[tuple[int, int, int, int]]:
+    """コード進行から伴奏の (start, dur, note, velocity) を作る。
+
+    拍子の分子に応じた刻み(BEAT_PATTERNS)で、拍頭にベース音とブロックコードを
+    交互に置くだけの単純な伴奏。凝った動きはしない。
+    """
+    num, den = song["time"]
+    beat = TPB * 4 // den
+    pattern = BEAT_PATTERNS[num]
+    chords = song["chords"]
+    if len(chords) != measures:
+        raise ValueError(
+            f"{song['title']}: chords が {len(chords)} 小節ぶん(score は {measures} 小節)"
+        )
+    dur = int(beat * ACC_GATE)
+    events: list[tuple[int, int, int, int]] = []
+    for index, entry in enumerate(chords):
+        symbols = (entry,) if isinstance(entry, str) else tuple(entry)
+        if num % len(symbols):
+            raise ValueError(f"{song['title']}: {num}/{den} を {len(symbols)} 等分できません")
+        for b, role in enumerate(pattern):
+            bass, tones = chord_pitches(symbols[b * len(symbols) // num])
+            start = (index * num + b) * beat
+            if role == "chord":
+                events += [(start, dur, n, CHORD_VELOCITY) for n in tones]
+            else:
+                fifth = bass + 7
+                note = bass if role == "bass" else (fifth - 12 if fifth >= BASS_LOW + 12 else fifth)
+                events.append((start, dur, note, BASS_VELOCITY))
+    return events
+
+
+def _append_notes(track: MidiTrack, notes: list[tuple[int, int, int, int, int]]) -> None:
+    """(start, dur, note, velocity, channel) の列を絶対tick順にトラックへ書く。"""
+    events: list[tuple[int, int, Message]] = []
+    for start, dur, note, velocity, channel in notes:
+        events.append(
+            (start, 1, Message("note_on", channel=channel, note=note, velocity=velocity, time=0))
+        )
+        events.append(
+            (start + dur, 0, Message("note_off", channel=channel, note=note, velocity=64, time=0))
+        )
+    events.sort(key=lambda e: (e[0], e[1]))  # 同tickでは note_off を先に
+    prev = 0
+    for t, _, msg in events:
+        msg.time = t - prev
+        track.append(msg)
+        prev = t
+    track.append(MetaMessage("end_of_track", time=0))
 
 
 def _track_chunk_bytes(mid: MidiFile) -> bytes:
@@ -391,17 +566,17 @@ def build(song: dict) -> bytes:
     mid.tracks.append(track)
     track.append(MetaMessage("set_tempo", tempo=song["tempo"], time=0))
     track.append(MetaMessage("time_signature", numerator=num, denominator=den, time=0))
-    events: list[tuple[int, Message]] = []
-    for start, dur, note in notes:
-        events.append((start, Message("note_on", channel=0, note=note, velocity=100, time=0)))
-        events.append((start + dur, Message("note_off", channel=0, note=note, velocity=64, time=0)))
-    events.sort(key=lambda e: e[0])
-    prev = 0
-    for t, msg in events:
-        msg.time = t - prev
-        track.append(msg)
-        prev = t
-    track.append(MetaMessage("end_of_track", time=0))
+    _append_notes(track, [(s, d, n, 100, MELODY_CHANNEL) for s, d, n in notes])
+
+    # 伴奏は別トラック・別チャンネル(mix.py がメロディchのnoteだけ消すので残る)
+    measures = -(-tick // meas)  # メロディが収まる小節数(切り上げ)
+    acc_track = MidiTrack()
+    mid.tracks.append(acc_track)
+    acc_track.append(Message("program_change", channel=ACC_CHANNEL, program=ACC_PROGRAM, time=0))
+    _append_notes(
+        acc_track,
+        [(s, d, n, v, ACC_CHANNEL) for s, d, n, v in accompaniment_events(song, measures)],
+    )
 
     # XFIH + XFKM チャンク(tests/helpers.py と同じ合成方法)
     ih = MidiFile(ticks_per_beat=TPB, charset="cp932")
