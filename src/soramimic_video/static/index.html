@@ -1160,7 +1160,11 @@ async function poll(id, seq = pollSeq) {
 //  - 「Xでポスト」… 必ずXの投稿画面(web intent)を開くだけ。動画は手で添付。
 // 並び順は実際の手順どおり「保存 → ポスト」。先に保存しないと添付するものがないので、
 // 保存ボタンを左(先)に置く。
-const SHARE_TEXT = "Soramimicで替え歌動画を作りました🎤 #soramimic";
+// 文末はハッシュタグにしない。Xの投稿画面はカーソル直前がハッシュタグだと
+// 補完UIを開いてしまい、初見だと「なぜタグ選択?」と混乱するため、
+// 末尾にサイトURLを置いてタグを文中に沈める(リンクの同伴も兼ねる)。
+const SHARE_TEXT =
+  "Soramimicで替え歌動画を作りました🎤 #soramimic\n" + location.origin;
 // シェアシートに動画ファイルを渡せる環境かどうかでボタンの文言を変える
 const SAVE_LABEL = navigator.share ? "動画を保存・共有" : "動画を保存";
 const SHARE_HTML =
@@ -1180,7 +1184,7 @@ function canShareFiles(file) {
 
 function openXIntent() {
   const url = "https://twitter.com/intent/tweet?text="
-    + encodeURIComponent(SHARE_TEXT + "\n" + location.origin);
+    + encodeURIComponent(SHARE_TEXT);
   window.open(url, "_blank", "noopener");
 }
 
