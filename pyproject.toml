@@ -92,4 +92,4 @@ testpaths = ["tests"]
 
 [tool.uv.sources]
 soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi" }
-soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "7809077ecef9cfb4e0a7d1fc7d95351600f33e00" }
+soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "f6f800d8a569a6844d73f8f2d4b45b11c4169c95" }
