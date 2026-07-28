@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -183,53 +184,113 @@ def test_public_mode_rate_limit_is_per_session(
     assert get_preview(second, where="a=3").status_code == 200
 
 
-# ---- 画像の裏読み(待たずに諦めたぶんを次回に間に合わせる) ----
+# ---- 画像の待ち / 裏読み(1回目から絵入りを出す) ----
 
 
-def test_prefetch_downloads_and_invalidates_cached_png(tmp_path: Path):
+def test_prefetch_downloads_images(tmp_path: Path):
     # image列がローカルパスなら download_image はコピーで取り込む(ネットワーク不要)
     source = tmp_path / "word.png"
     Image.new("RGB", (8, 8), "red").save(source)
     cache_dir = tmp_path / "images"
-    stale = tmp_path / "preview.png"
-    stale.write_bytes(b"x")
-    assert preview_mod.prefetch_images([(str(source), "")], cache_dir, stale) == 1
+    assert preview_mod.prefetch_images([(str(source), "")], cache_dir) == 1
     assert list(cache_dir.glob("*.png"))  # 画像はキャッシュに入った
-    assert not stale.exists()  # 画像なしのプレビューは捨てられ、次回作り直される
+    # 2回目はもうキャッシュにあるので「新しく取れた」件数は0
+    assert preview_mod.prefetch_images([(str(source), "")], cache_dir) == 0
 
 
-def test_prefetch_keeps_png_when_nothing_downloaded(tmp_path: Path):
-    kept = tmp_path / "preview.png"
-    kept.write_bytes(b"x")
+def test_prefetch_returns_zero_when_nothing_downloaded(tmp_path: Path):
     assert preview_mod.prefetch_images(
-        [(str(tmp_path / "missing.png"), "")], tmp_path / "images", kept
+        [(str(tmp_path / "missing.png"), "")], tmp_path / "images"
     ) == 0
-    assert kept.exists()  # 取れないなら作り直させない(再生成ループを避ける)
 
 
-def test_preview_shows_image_on_second_open(
-    tmp_path: Path, monkeypatch, wordlist_dir, samples
-):
+@pytest.fixture
+def image_wordlist(tmp_path: Path, wordlist_dir: Path) -> Path:
+    """画像つきの単語リスト。画像の実体はローカルPNG(ネットワーク不要)。"""
     source = tmp_path / "word.png"
     Image.new("RGB", (8, 8), "red").save(source)
     (wordlist_dir / "mylist.csv").write_text(
         f"id,surface,original,image\n1,米原,米原駅,{source}\n", encoding="utf-8"
     )
+    return source
+
+
+def test_first_preview_waits_and_includes_image(
+    tmp_path: Path, monkeypatch, image_wordlist, samples
+):
+    """キャッシュが空でも、2秒の待ちで間に合う画像は1回目から入る。"""
+    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    res = get_preview(client)
+    assert res.status_code == 200
+    assert res.headers["x-preview-images"] == "ready"  # 待って間に合った
+    assert list((tmp_path / "jobs" / "image-cache").glob("*.png"))
+    cache_dir = preview_mod.preview_cache_dir(tmp_path / "jobs")
+    assert not list(cache_dir.glob(f"*{preview_mod.PENDING_SUFFIX}"))
+
+
+def test_slow_image_returns_pending_then_refreshes_to_ready(
+    tmp_path: Path, monkeypatch, image_wordlist, samples
+):
+    """間に合わない画像は pending で返し、裏で取り切って絵入りに作り直す。"""
+    import soramimic_video.video as video_mod
+
+    real_download = video_mod.download_image
+    slow = threading.Event()
+
+    def slow_download(url, cache_dir):
+        slow.wait(5.0)  # 1回目の待ち(0.2秒)には間に合わない
+        return real_download(url, cache_dir)
+
+    monkeypatch.setattr(video_mod, "download_image", slow_download)
+    monkeypatch.setattr(preview_mod, "IMAGE_WAIT_SECONDS", 0.2)
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
 
     first = get_preview(client)
     assert first.status_code == 200
+    assert first.headers["x-preview-images"] == "pending"  # 文字だけで返した
     cache_dir = preview_mod.preview_cache_dir(tmp_path / "jobs")
-    # 裏読みが終わるとキャッシュのPNGは消える(次に開くと絵入りで作り直される)
-    for _ in range(200):
-        if not list(cache_dir.glob("*.png")):
+    assert list(cache_dir.glob(f"*{preview_mod.PENDING_SUFFIX}"))
+
+    slow.set()  # 裏読みが完了できるようにする
+    for _ in range(300):
+        if not list(cache_dir.glob(f"*{preview_mod.PENDING_SUFFIX}")):
             break
         time.sleep(0.02)
-    assert not list(cache_dir.glob("*.png"))
+
+    # UIの取り直し相当。作り直し済みなのでキャッシュヒット(=レート制限を消費しない)
     second = get_preview(client)
-    assert second.headers["x-preview-cache"] == "miss"
+    assert second.headers["x-preview-cache"] == "hit"
+    assert second.headers["x-preview-images"] == "ready"
     assert second.content != first.content  # 画像が入って中身が変わる
+
+
+def test_auto_retry_does_not_consume_rate_limit(
+    tmp_path: Path, monkeypatch, image_wordlist, samples
+):
+    """pending のあとの自動取り直しは、レート制限が1回ぶんでも通る。"""
+    monkeypatch.setenv(preview_mod.RATE_LIMIT_ENV, "1")
+    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    assert get_preview(client).status_code == 200  # 生成(1回ぶん消費)
+    for _ in range(3):  # 取り直しはキャッシュヒットなので429にならない
+        again = get_preview(client)
+        assert again.status_code == 200
+        assert again.headers["x-preview-cache"] == "hit"
+
+
+def test_prune_cache_removes_orphan_pending_markers(tmp_path: Path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / f"abc{preview_mod.PENDING_SUFFIX}").write_text("", encoding="utf-8")
+    (cache / "def.png").write_bytes(b"x")
+    (cache / f"def{preview_mod.PENDING_SUFFIX}").write_text("", encoding="utf-8")
+    preview_mod.prune_cache(cache, max_entries=10, ttl_seconds=0)
+    assert not (cache / f"abc{preview_mod.PENDING_SUFFIX}").exists()  # PNGが無い目印は捨てる
+    assert (cache / f"def{preview_mod.PENDING_SUFFIX}").exists()  # PNGが残っていれば残す
 
 
 # ---- モーダル(index.html)側の約束事 ----
@@ -245,6 +306,19 @@ def test_index_html_modal_uses_preview_with_fallback():
     # 失敗・429・タイムアウトは代表画像(/api/wordlist-image)にフォールバックする
     assert ".catch(() => { if (seq === luckyImageSeq) luckyLoadImage(" in html
     assert "/api/wordlist-image?wordlist=" in html
+
+
+def test_index_html_retries_once_when_images_pending():
+    """絵なしで返ってきたら数秒後に1回だけ取り直し、ちらつかせずに差し替える。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "LUCKY_PREVIEW_RETRY_MS = 4000" in html
+    assert 'res.headers.get("X-Preview-Images") === "pending"' in html
+    assert "if (pending) luckyRetryPreview(url, seq);" in html
+    # 取り直しは世代番号(luckyImageSeq)で取り違えを防ぎ、1回だけで打ち切る
+    assert "if (seq !== luckyImageSeq) return;   // 引き直し・モーダルを閉じた" in html
+    assert html.count("luckyRetryPreview(") == 2  # 定義と呼び出しの1回だけ(再帰しない)
 
 
 def test_index_html_preview_respects_hidden_wordlists():

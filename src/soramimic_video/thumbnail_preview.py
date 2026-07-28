@@ -7,9 +7,12 @@ build_thumbnail をそのまま使う(コードは重複させない)ので、�
 
 **軽さが最優先**なので、本番のサムネ生成とは次の点だけ意図的に変えている:
 
-* 画像はキャッシュ済みのぶんだけ使う(download_images=False)。まだ落として
-  いない画像は待たずに諦め、【言い換え】+文字だけのサムネにする。そのぶんは
-  裏で先読みし、取れたらキャッシュを捨てて次に開くときは絵入りにする
+* 画像はキャッシュ済みのぶんだけ使う(download_images=False)。ただし初見の
+  1回目から絵入りを出したいので、足りないぶんは IMAGE_WAIT_SECONDS 秒だけ
+  待つ。それでも間に合わなければ【言い換え】+文字だけのサムネで返し、裏で
+  取り切ってから同じキャッシュキーのPNGを絵入りに作り直す(UIは
+  X-Preview-Images: pending を見て数秒後に1回だけ取り直し、静かに差し替える。
+  作り直し済みなのでその取り直しはキャッシュヒット=レート制限を消費しない)
 * 解像度はモーダル表示に足りる 640x360(本番は1280x720)
 
 画像を初期非表示にしている単語リスト(index.html の HIDDEN_PREVIEW_WORDLISTS。
@@ -59,6 +62,10 @@ CACHE_MAX_ENTRIES = 300  # 件数上限(超過ぶんは古い順に捨てる)
 # 待たされ続けるくらいなら諦めてもらう(UIは代表画像にフォールバックする)
 RENDER_TIMEOUT_SECONDS = 15.0
 MAX_PREFETCH_IMAGES = 4  # 1回のプレビューで裏読みする画像の上限(見出しの単語数ぶん)
+# 1回目のプレビューで画像のダウンロードを待つ上限(合計)。初見でも間に合えば
+# 絵入りで返せる。超えたら文字だけで返し、続きは裏読み+作り直しに回す
+IMAGE_WAIT_SECONDS = 2.0
+PENDING_SUFFIX = ".pending"  # 「まだ絵が入っていないPNG」の目印(APIのヘッダに出す)
 
 # 短期レート制限(セッションあたり)。ジョブではないので日次クォータは消費しないが、
 # 連打・スクレイピングで変換が走り続けないようにする。0 以下で無効。
@@ -179,14 +186,32 @@ class PreviewSpec:
         path = cache_dir / f"{self.key}.png"
         return path if path.exists() else None
 
-    def render(self, cache_dir: Path, image_cache: Path | None = None) -> Path | None:
+    def pending_marker(self, cache_dir: Path) -> Path:
+        """「このPNGにはまだ絵が入っていない」目印のパス。"""
+        return cache_dir / f"{self.key}{PENDING_SUFFIX}"
+
+    def images_pending(self, cache_dir: Path) -> bool:
+        """使いたかった画像が間に合っていない(裏で取得中)か。"""
+        return self.pending_marker(cache_dir).exists()
+
+    def render(
+        self,
+        cache_dir: Path,
+        image_cache: Path | None = None,
+        wait_sec: float | None = None,
+        refresh: bool = True,
+    ) -> Path | None:
         """プレビューPNGを生成してキャッシュに入れる(描画に失敗したら None)。
 
-        画像はキャッシュ済みのものだけを使い、ダウンロードは待たない。
-        with_images=False なら単語画像は一切貼らない(先読みもしない)。
+        画像は wait_sec 秒(既定 IMAGE_WAIT_SECONDS)だけ待ち、間に合わなかった
+        ぶんは諦めて文字だけで返す。
+        諦めたぶんは pending の目印を残し、refresh=True なら裏で取り切ってから
+        同じPNGを絵入りに作り直す(その作り直し自体は refresh=False で呼ぶ)。
+        with_images=False なら単語画像は一切貼らない(待ちも裏読みもしない)。
         """
         if not self.with_images:
             image_cache = None
+        wait_sec = IMAGE_WAIT_SECONDS if wait_sec is None else wait_sec
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"{self.key}.png"
         # 書きかけを他のリクエストに読ませないよう、一時ファイルに描いてから置換する
@@ -204,20 +229,25 @@ class PreviewSpec:
             height=self.height,
             download_images=False,
             missing_images=missing,
+            image_wait_sec=wait_sec if image_cache is not None else 0.0,
         )
         if out is None:
             tmp.unlink(missing_ok=True)
             return None
         os.replace(tmp, path)
         logger.info(
-            "サムネプレビューを生成しました: %s × %s (%.1f秒)",
-            self.title, self.wordlist, time.monotonic() - started,
+            "サムネプレビューを生成しました: %s × %s (%.1f秒, 画像未取得%d件)",
+            self.title, self.wordlist, time.monotonic() - started, len(missing),
         )
         prune_cache(cache_dir)
+        marker = self.pending_marker(cache_dir)
         if missing and image_cache is not None:
-            # 今回は画像なしで返したが、次に開くときは絵入りにできるよう裏で温める
-            # (取れたらこのPNGを捨てて作り直させる。取れなければ何もしない)
-            start_image_prefetch(missing, image_cache, path)
+            # 待っても間に合わなかったぶんは裏で取り切り、絵入りに作り直す
+            marker.write_text("", encoding="utf-8")
+            if refresh:
+                start_image_refresh(self, cache_dir, image_cache, missing)
+        else:
+            marker.unlink(missing_ok=True)
         return path
 
 
@@ -225,15 +255,12 @@ _prefetching: set[str] = set()
 _prefetch_lock = threading.Lock()
 
 
-def prefetch_images(
-    items: Sequence[tuple[str, str]], image_cache: Path, invalidate: Path
-) -> int:
-    """単語画像とクレジットをキャッシュに落とし、1つでも取れたら invalidate を捨てる。
+def prefetch_images(items: Sequence[tuple[str, str]], image_cache: Path) -> int:
+    """単語画像とクレジットをキャッシュに落とし、新しく取れた件数を返す。
 
-    プレビューは待てないので画像なしで返しているが、次に同じ組み合わせを開いた
-    ときには絵入り(+必要なクレジット表記付き)にしたい。取れなければ何もしない
-    (=画像なしのPNGが残るので、通信できない環境で再生成を繰り返すことはない)。
-    items は (画像URL, 画像ページURL) の列。
+    プレビューは長くは待てないので画像なしで返していることがある。ここで
+    取り切っておけば、同じ組み合わせを絵入り(+必要なクレジット表記付き)で
+    作り直せる。items は (画像URL, 画像ページURL) の列。
     """
     from .image_credit import fetch_image_credit
     from .video import cached_image, download_image
@@ -249,17 +276,47 @@ def prefetch_images(
                 got += 1
         except Exception:  # noqa: BLE001 - 先読みの失敗は無視してよい
             logger.warning("サムネプレビュー用の画像を先読みできません: %s", url)
-    if got:
-        invalidate.unlink(missing_ok=True)
-        logger.info("画像が揃ったのでサムネプレビューを作り直させます: %s", invalidate.name)
     return got
 
 
-def start_image_prefetch(
-    urls: Sequence[tuple[str, str]], image_cache: Path, invalidate: Path
+def refresh_with_images(
+    spec: PreviewSpec,
+    cache_dir: Path,
+    image_cache: Path,
+    missing: Sequence[tuple[str, str]],
+) -> bool:
+    """画像を取り切り、取れたらそのプレビューPNGを絵入りに作り直す(作り直したらTrue)。
+
+    UI側は「絵なし」で返ってきたプレビューを数秒後に取り直すので、ここで
+    先に作り直しておけばその取り直しはキャッシュヒットになり、レート制限も
+    変換もこれ以上消費しない。取れなければ何もしない(=絵なしのPNGが残るので、
+    通信できない環境で再生成を繰り返すことはない)。
+    """
+    if not prefetch_images(missing, image_cache):
+        return False
+    try:
+        with render_slot():
+            # 待ちも裏読みもなし(画像はもうキャッシュにある)
+            out = spec.render(cache_dir, image_cache, wait_sec=0.0, refresh=False)
+    except TimeoutError:
+        out = None
+    if out is None:
+        # 作り直せなかったぶんは捨てて、次に開いたときに作り直させる
+        (cache_dir / f"{spec.key}.png").unlink(missing_ok=True)
+        spec.pending_marker(cache_dir).unlink(missing_ok=True)
+        return False
+    logger.info("画像が揃ったのでサムネプレビューを作り直しました: %s", out.name)
+    return True
+
+
+def start_image_refresh(
+    spec: PreviewSpec,
+    cache_dir: Path,
+    image_cache: Path,
+    missing: Sequence[tuple[str, str]],
 ) -> threading.Thread | None:
-    """prefetch_images をdaemonスレッドで走らせる(同じPNGに対しては1本だけ)。"""
-    key = invalidate.name
+    """refresh_with_images をdaemonスレッドで走らせる(同じPNGに対しては1本だけ)。"""
+    key = spec.key
     with _prefetch_lock:
         if key in _prefetching:
             return None
@@ -267,7 +324,7 @@ def start_image_prefetch(
 
     def run() -> None:
         try:
-            prefetch_images(urls, image_cache, invalidate)
+            refresh_with_images(spec, cache_dir, image_cache, missing)
         finally:
             with _prefetch_lock:
                 _prefetching.discard(key)
@@ -304,6 +361,10 @@ def prune_cache(
             path.unlink()
         except OSError:  # pragma: no cover - 同時に消されただけなら無視してよい
             pass
+    # PNGが無くなった pending の目印は残さない(ヘッダの判定が狂うため)
+    for marker in cache_dir.glob(f"*{PENDING_SUFFIX}"):
+        if not marker.with_suffix(".png").exists():
+            marker.unlink(missing_ok=True)
     if removed:
         logger.info("サムネプレビューのキャッシュを%d件削除しました", len(removed))
     return removed
