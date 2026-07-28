@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -180,6 +181,113 @@ def test_public_mode_rate_limit_is_per_session(
     assert get_preview(first, where="a=2").status_code == 429
     # 別セッション(別cookie)は自分の枠で作れる
     assert get_preview(second, where="a=3").status_code == 200
+
+
+# ---- 画像の裏読み(待たずに諦めたぶんを次回に間に合わせる) ----
+
+
+def test_prefetch_downloads_and_invalidates_cached_png(tmp_path: Path):
+    # image列がローカルパスなら download_image はコピーで取り込む(ネットワーク不要)
+    source = tmp_path / "word.png"
+    Image.new("RGB", (8, 8), "red").save(source)
+    cache_dir = tmp_path / "images"
+    stale = tmp_path / "preview.png"
+    stale.write_bytes(b"x")
+    assert preview_mod.prefetch_images([(str(source), "")], cache_dir, stale) == 1
+    assert list(cache_dir.glob("*.png"))  # 画像はキャッシュに入った
+    assert not stale.exists()  # 画像なしのプレビューは捨てられ、次回作り直される
+
+
+def test_prefetch_keeps_png_when_nothing_downloaded(tmp_path: Path):
+    kept = tmp_path / "preview.png"
+    kept.write_bytes(b"x")
+    assert preview_mod.prefetch_images(
+        [(str(tmp_path / "missing.png"), "")], tmp_path / "images", kept
+    ) == 0
+    assert kept.exists()  # 取れないなら作り直させない(再生成ループを避ける)
+
+
+def test_preview_shows_image_on_second_open(
+    tmp_path: Path, monkeypatch, wordlist_dir, samples
+):
+    source = tmp_path / "word.png"
+    Image.new("RGB", (8, 8), "red").save(source)
+    (wordlist_dir / "mylist.csv").write_text(
+        f"id,surface,original,image\n1,米原,米原駅,{source}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    first = get_preview(client)
+    assert first.status_code == 200
+    cache_dir = preview_mod.preview_cache_dir(tmp_path / "jobs")
+    # 裏読みが終わるとキャッシュのPNGは消える(次に開くと絵入りで作り直される)
+    for _ in range(200):
+        if not list(cache_dir.glob("*.png")):
+            break
+        time.sleep(0.02)
+    assert not list(cache_dir.glob("*.png"))
+    second = get_preview(client)
+    assert second.headers["x-preview-cache"] == "miss"
+    assert second.content != first.content  # 画像が入って中身が変わる
+
+
+# ---- モーダル(index.html)側の約束事 ----
+
+
+def test_index_html_modal_uses_preview_with_fallback():
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "/api/thumbnail-preview?" in html  # モーダルはプレビューを取りに行く
+    assert "lucky-modal-loading" in html  # 生成待ちのローディング表示がある
+    assert "LUCKY_PREVIEW_TIMEOUT_MS = 8000" in html  # 8秒で打ち切る
+    # 失敗・429・タイムアウトは代表画像(/api/wordlist-image)にフォールバックする
+    assert ".catch(() => { if (seq === luckyImageSeq) luckyLoadImage(" in html
+    assert "/api/wordlist-image?wordlist=" in html
+
+
+def test_index_html_preview_respects_hidden_wordlists():
+    """画像を初期非表示にする単語リストでは、プレビューにも単語画像を入れない。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'params.images = "0";' in html  # 画像なしのサムネを頼む
+    # 代表画像へのフォールバックも隠す(force のときだけ読む)
+    assert "if (!name || luckyHiddenReason(name, force)) { hide(); return; }" in html
+
+
+# ---- 画像なしプレビュー(画像を初期非表示にする単語リスト向け) ----
+
+
+def test_images_off_renders_without_word_images(
+    tmp_path: Path, monkeypatch, wordlist_dir, samples
+):
+    source = tmp_path / "word.png"
+    Image.new("RGB", (8, 8), "red").save(source)
+    (wordlist_dir / "mylist.csv").write_text(
+        f"id,surface,original,image\n1,米原,米原駅,{source}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    # 画像を初期非表示にするリストでは裏読みもしない(画像キャッシュは空のまま)
+    off = get_preview(client, images="0")
+    assert off.status_code == 200
+    time.sleep(0.3)
+    image_cache = tmp_path / "jobs" / "image-cache"
+    assert not image_cache.exists() or not list(image_cache.glob("*"))
+
+    # 画像ありは同じ組み合わせでも別キャッシュになり、絵入りで中身が変わる
+    # (裏読みを待たずに済むよう、画像キャッシュは直接温めておく)
+    from soramimic_video.video import download_image
+
+    download_image(str(source), image_cache)
+    cache_dir = preview_mod.preview_cache_dir(tmp_path / "jobs")
+    on = get_preview(client)
+    assert on.headers["x-preview-cache"] == "miss"
+    assert on.content != off.content
+    assert len(list(cache_dir.glob("*.png"))) == 2
 
 
 # ---- キャッシュの刈り取り ----

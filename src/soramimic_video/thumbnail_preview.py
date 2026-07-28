@@ -106,6 +106,9 @@ class PreviewSpec:
     params: dict[str, Any] = field(default_factory=dict)
     width: int = PREVIEW_WIDTH
     height: int = PREVIEW_HEIGHT
+    # 単語画像を貼るか。Falseなら文字だけのサムネにする(昆虫など、画像を
+    # 初期非表示にしている単語リスト向け。index.html の HIDDEN_PREVIEW_WORDLISTS)
+    with_images: bool = True
 
     @classmethod
     def create(
@@ -116,6 +119,7 @@ class PreviewSpec:
         params: dict[str, Any] | None = None,
         width: int = PREVIEW_WIDTH,
         height: int = PREVIEW_HEIGHT,
+        with_images: bool = True,
     ) -> PreviewSpec:
         """where・変換パラメータの既定をジョブ本体と同じ経路で解決して組み立てる。
 
@@ -132,6 +136,7 @@ class PreviewSpec:
             params=coerced,
             width=width,
             height=height,
+            with_images=with_images,
         )
 
     @property
@@ -152,6 +157,7 @@ class PreviewSpec:
                 "where": self.where or "",
                 "params": {k: str(v) for k, v in self.params.items()},
                 "size": [self.width, self.height],
+                "with_images": self.with_images,
                 "layout": _layout_fingerprint(),
             },
             ensure_ascii=False,
@@ -168,7 +174,10 @@ class PreviewSpec:
         """プレビューPNGを生成してキャッシュに入れる(描画に失敗したら None)。
 
         画像はキャッシュ済みのものだけを使い、ダウンロードは待たない。
+        with_images=False なら単語画像は一切貼らない(先読みもしない)。
         """
+        if not self.with_images:
+            image_cache = None
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"{self.key}.png"
         # 書きかけを他のリクエストに読ませないよう、一時ファイルに描いてから置換する

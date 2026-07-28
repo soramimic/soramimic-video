@@ -977,12 +977,17 @@ def create_app(
         wordlist: str = "",
         where: str = "",
         convert_params: str = "",
+        images: bool = True,
     ) -> FileResponse:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
         サンプル曲の曲名をその単語リストで1フレーズだけ空耳変換し、実際の
         サムネと同じ描画で小さめのPNG(既定640x360)を返す。結果はディスクに
         キャッシュし、2回目以降は変換せずそのまま返す。
+
+        images=0 なら単語画像を貼らない文字だけのサムネにする。昆虫など画像を
+        初期非表示にしている単語リスト(index.html の HIDDEN_PREVIEW_WORDLISTS)
+        で、モーダルが「画像を表示する」を押されるまで使う。
 
         ジョブではないので日次クォータは消費しないが、連打で変換が走り続けない
         ようキャッシュミス時だけセッション単位のレート制限をかける(超過は429)。
@@ -1002,6 +1007,7 @@ def create_app(
                 wordlist,
                 where=where.strip() or None,
                 params=parse_convert_params(convert_params),
+                with_images=images,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1036,8 +1042,10 @@ def create_app(
             path,
             media_type="image/png",
             headers={
-                # 同じ組み合わせを開き直したときはブラウザ側で済ませる
-                "Cache-Control": "private, max-age=600",
+                # 毎回サーバーに聞く(キャッシュヒットなら数ミリ秒で304/即応答)。
+                # 画像の裏読みが間に合って作り直されたとき、ブラウザが古い
+                # 「絵なし」プレビューを握り続けないようにする
+                "Cache-Control": "private, no-cache",
                 "X-Preview-Cache": "hit" if cached else "miss",
             },
         )

@@ -210,6 +210,18 @@
   /* プレビュー画像を初期非表示にしている単語リストの説明+「見る」ボタン */
   .modal-figure.hidden-preview { padding: 1rem; }
   .modal-figure.hidden-preview .hint { margin: 0 0 .6rem; }
+  /* サムネ生成待ちのプレースホルダ。画像と同じ16:9で場所を先に取り、差し替えでガタつかせない */
+  .modal-figure-loading {
+    display: flex; align-items: center; justify-content: center; gap: .5rem;
+    aspect-ratio: 16 / 9; max-height: 40vh; font-size: .85rem; color: var(--muted);
+  }
+  .spinner {
+    width: 1.1rem; height: 1.1rem; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
   .modal-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .9rem; }
   .modal-actions button { flex: 1 1 auto; }
   .modal-actions .btn-primary { flex: 1 1 100%; }
@@ -500,8 +512,14 @@
       <dt>曲</dt><dd id="lucky-modal-song">-</dd>
       <dt>単語リスト</dt><dd id="lucky-modal-wordlist">-</dd>
     </dl>
+    <!-- 生成されるサムネのプレビュー。作成中はスピナー、失敗・タイムアウト・429では
+         単語リストの代表画像にフォールバックする(どちらも取れなければ枠ごと隠す) -->
     <div class="modal-figure" id="lucky-modal-figure" hidden>
-      <img id="lucky-modal-image" alt="単語リストの代表画像">
+      <img id="lucky-modal-image" alt="この組み合わせのサムネイル" hidden>
+      <div class="modal-figure-loading" id="lucky-modal-loading" hidden>
+        <span class="spinner" aria-hidden="true"></span>
+        <span>プレビューを作成中…</span>
+      </div>
     </div>
     <!-- プレビュー画像を初期非表示にする単語リスト(HIDDEN_PREVIEW_WORDLISTS)では、
          黙って出さずに理由を書き、見たい人だけがボタンで表示できるようにする -->
@@ -1069,20 +1087,28 @@ function luckyRandomCombo() {
 let luckyCurrent = null;   // 表示中の組み合わせ
 let luckyOpener = null;    // モーダルを開いたボタン(閉じたらフォーカスを戻す)
 let luckyImageSeq = 0;     // プレビュー画像の取得世代(引き直しの取り違え防止)
+let luckyPreviewUrl = "";  // 表示中のプレビュー画像(blob URL。差し替え時にrevoke)
+let luckyPreviewAbort = null;  // 進行中のプレビュー取得(引き直し・閉じるで中断)
+const LUCKY_PREVIEW_TIMEOUT_MS = 8000;  // これを過ぎたら代表画像にフォールバック
 
-// 単語リストの代表画像。取れなければ画像なしで成立させる(枠ごと隠す)。
-// HIDDEN_PREVIEW_WORDLISTS のリストは、隠している理由と「画像を表示する」ボタンを
-// 代わりに出し、押されたとき(force)だけ読み込む。
-function luckyLoadImage(name, force) {
+// 画像を初期非表示にする単語リストか。隠すなら理由の文言、出してよいなら空文字。
+// force(「画像を表示する」を押した)なら隠さない。
+function luckyHiddenReason(name, force) {
+  return (!force && HIDDEN_PREVIEW_WORDLISTS[name]) || "";
+}
+
+// 単語リストの代表画像(サムネプレビューが取れなかったときのフォールバック)。
+// どちらも取れなければ画像なしで成立させる(枠ごと隠す)。
+// HIDDEN_PREVIEW_WORDLISTS のリストは force が無いかぎり読み込まない。
+function luckyLoadImage(name, seq, force) {
   const fig = $("lucky-modal-figure"), img = $("lucky-modal-image");
-  const seq = ++luckyImageSeq;
-  fig.hidden = true;
-  img.removeAttribute("src");
-  const reason = HIDDEN_PREVIEW_WORDLISTS[name] || "";
-  const hidden = !!reason && !force;
-  $("lucky-modal-image-hidden").hidden = !hidden;
-  $("lucky-modal-image-hidden-note").textContent = reason;
-  if (!name || hidden) return;
+  // 代表画像が読めるまではローディング表示のまま(空の枠を見せない)
+  const hide = () => {
+    if (seq !== luckyImageSeq) return;
+    $("lucky-modal-loading").hidden = true;
+    fig.hidden = true;
+  };
+  if (!name || luckyHiddenReason(name, force)) { hide(); return; }
   const url = "/api/wordlist-image?wordlist=" + encodeURIComponent(name)
     + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
@@ -1090,10 +1116,58 @@ function luckyLoadImage(name, force) {
   probe.onload = () => {
     if (seq !== luckyImageSeq) return;
     img.src = url;
+    img.alt = "単語リストの代表画像";
+    img.hidden = false;
+    $("lucky-modal-loading").hidden = true;
     fig.hidden = false;
   };
-  probe.onerror = () => { /* 画像なしで成立させる */ };
+  probe.onerror = hide;
   probe.src = url;
+}
+
+// 実際に生成されるサムネのプレビュー。生成に数秒かかることがあるのでスピナーを
+// 出し、8秒で打ち切る。エラー・429・タイムアウトはすべて代表画像に落とす
+// (プレビューは飾りなので、待たずに「生成」を押せることを優先する)。
+// HIDDEN_PREVIEW_WORDLISTS のリストでは単語画像を含めない(images=0)サムネを
+// 頼み、隠している理由と「画像を表示する」ボタンを添える。押されたとき(force)
+// だけ画像入りで作り直す(引き直すとまた隠れる)。
+function luckyLoadPreview(combo, force) {
+  const seq = ++luckyImageSeq;
+  const fig = $("lucky-modal-figure"), img = $("lucky-modal-image");
+  if (luckyPreviewAbort) luckyPreviewAbort.abort();
+  luckyPreviewAbort = null;
+  img.hidden = true;
+  img.removeAttribute("src");
+  if (luckyPreviewUrl) { URL.revokeObjectURL(luckyPreviewUrl); luckyPreviewUrl = ""; }
+  const reason = luckyHiddenReason(combo.wordlistName, force);
+  $("lucky-modal-image-hidden").hidden = !reason;
+  $("lucky-modal-image-hidden-note").textContent = reason;
+  if (!combo.wordlistName || !combo.sampleId) {
+    luckyLoadImage(combo.wordlistName, seq, force);
+    return;
+  }
+  fig.hidden = false;
+  $("lucky-modal-loading").hidden = false;
+
+  const ctrl = new AbortController();
+  luckyPreviewAbort = ctrl;
+  const timer = setTimeout(() => ctrl.abort(), LUCKY_PREVIEW_TIMEOUT_MS);
+  const params = { sample: combo.sampleId, wordlist: combo.wordlistName };
+  if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
+  const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
+  fetch(url, { headers: headers(), signal: ctrl.signal })
+    .then((res) => { if (!res.ok) throw new Error(String(res.status)); return res.blob(); })
+    .then((blob) => {
+      if (seq !== luckyImageSeq) return;   // 引き直し済み: 古い結果は捨てる
+      luckyPreviewUrl = URL.createObjectURL(blob);
+      img.src = luckyPreviewUrl;
+      img.alt = "この組み合わせで作られるサムネイル(プレビュー)";
+      img.hidden = false;
+      $("lucky-modal-loading").hidden = true;
+      fig.hidden = false;
+    })
+    .catch(() => { if (seq === luckyImageSeq) luckyLoadImage(combo.wordlistName, seq, force); })
+    .finally(() => { clearTimeout(timer); if (luckyPreviewAbort === ctrl) luckyPreviewAbort = null; });
 }
 
 function luckyRenderModal() {
@@ -1106,7 +1180,7 @@ function luckyRenderModal() {
     ? "⏳ この組み合わせは単語リストが大きいため、空耳変換に数分かかります。" : "";
   $("lucky-modal-msg").hidden = true;
   $("lucky-modal-msg").textContent = "";
-  luckyLoadImage(c.wordlistName);
+  luckyLoadPreview(c);
 }
 
 function luckyOpenModal(combo, opener) {
@@ -1122,14 +1196,15 @@ function luckyOpenModal(combo, opener) {
   $("lucky-go").focus();
 }
 
-// 「画像を表示する」を押したときだけプレビューを読み込む(引き直すとまた隠れる)
+// 「画像を表示する」を押したときだけ単語画像入りで作り直す(引き直すとまた隠れる)
 $("lucky-show-image").addEventListener("click", () => {
-  if (luckyCurrent) luckyLoadImage(luckyCurrent.wordlistName, true);
+  if (luckyCurrent) luckyLoadPreview(luckyCurrent, true);
 });
 
 function luckyCloseModal() {
   $("lucky-modal").hidden = true;
   luckyImageSeq++;   // 未完了の画像読み込みを無効化する
+  if (luckyPreviewAbort) { luckyPreviewAbort.abort(); luckyPreviewAbort = null; }
   if (luckyOpener && document.contains(luckyOpener)) luckyOpener.focus();
   luckyOpener = null;
 }
