@@ -303,8 +303,8 @@ def test_index_html_builder_card_syncs_with_advanced():
     # 確認モーダルは廃止し、🎲ランダムはカードの選択を差し替えるだけになった
     assert "lucky-modal" not in html
     assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
-    # 進捗・結果は別セクション(既定で畳んである詳細)
-    assert '<details class="card" id="job-card" hidden>' in html
+    # 進捗・結果は畳んである詳細(ビルダーカードの中の控えめなテキストリンク)
+    assert '<details class="sub-details" id="job-card" hidden>' in html
 
 
 def test_index_html_job_card_is_collapsed_by_default():
@@ -312,8 +312,10 @@ def test_index_html_job_card_is_collapsed_by_default():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # 「⚙️ 詳細設定」「過去のジョブ」と同じ details.card の見た目にそろえる
-    assert '<details class="card" id="job-card" hidden>' in html
+    # 独立したカードにはしない(「⚙️ 詳細設定」「過去のジョブ」と同じ重さだと目立ちすぎる)。
+    # ビルダーカードの最下部に置く小さなテキストリンク(.sub-details)。
+    assert '<details class="card" id="job-card"' not in html
+    assert '<details class="sub-details" id="job-card" hidden>' in html
     assert "<summary>生成の詳細(ステージ・ログ)</summary>" in html
     # ログの入れ子の折りたたみは廃止(開けばそのままログまで見える)
     assert "<details><summary>ログ</summary>" not in html
@@ -323,6 +325,40 @@ def test_index_html_job_card_is_collapsed_by_default():
     # 失敗・中断で終わったときだけ自動で開く
     assert '$("job-card").open = true;' in html
     assert html.count("openJobDetails();") == 5
+
+
+def test_index_html_job_card_lives_in_the_builder_card():
+    """「生成の詳細」はビルダーカードの中(最下部)にあり、エラー時だけ目立たせる。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    builder = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
+    assert 'id="job-card"' in builder
+    # 最下部(サムネ枠・案内文のあと)
+    assert builder.index('id="job-card"') > builder.index('id="lucky-status"')
+    # 控えめな置き場のぶん、エラー・中断で開いたときだけ警告色にして見つけやすくする
+    assert '#job-card.attention > summary { color: var(--danger);' in html
+    assert '$("job-card").classList.add("attention");' in html
+    assert '$("job-card").classList.remove("attention");' in html
+
+
+def test_index_html_restore_notice_is_inside_advanced():
+    """「前回の入力を復元しました」は詳細設定の中(先頭)に置く。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    advanced = html.split('<details class="card" id="advanced">')[1]
+    notice = advanced.split('id="restore-notice"')[0]
+    # 詳細設定の中にあり、しかも中身(APIキー欄・曲の欄)より先頭
+    assert 'id="restore-notice"' in advanced
+    assert 'id="auth"' not in notice
+    assert 'id="sample-select"' not in notice
+    # ビルダーカードには残っていない
+    builder = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
+    assert "restore-notice" not in builder
+    # 復元が1つでもあったときだけ出す既存の条件は維持
+    assert 'if (any) $("restore-notice").hidden = false;' in html
+    assert 'id="clear-form"' in advanced
 
 
 def test_index_html_builder_card_is_bare():
@@ -1017,6 +1053,19 @@ def test_index_html_share_buttons_are_separated():
     assert "navigator.share({ files: [file], text: SHARE_TEXT })" in html
     # シェアシートが使えない環境は動画のダウンロードに落とす
     assert "if (!navigator.share) return downloadVideo(videoUrl);" in html
+
+
+def test_index_html_share_buttons_follow_the_actual_order():
+    """実際の手順どおり「保存」が先(左)、「Xでポスト」が後(右)。案内文も同じ順。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    share_html = html.split("const SHARE_HTML =")[1].split("// ファイル添付付き")[0]
+    assert share_html.index('id="share-save"') < share_html.index('id="share-x"')
+    # X風の黒いボタンのスタイルは維持
+    assert 'id="share-x" class="btn-x btn-sm"' in share_html
+    # 案内文は ①保存 → ②ポスト の順で読める
+    assert "①「${SAVE_LABEL}」で端末に保存 → ②「Xでポスト」で投稿画面を開いて添付" in share_html
 
 
 def test_index_html_no_server_host_line():
