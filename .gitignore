@@ -17,3 +17,6 @@ work/
 
 # 画像キャッシュ
 .image_cache/
+
+# サムネのデザイン比較用の出力(scripts/render_thumbnail_samples.py)
+thumbnail-samples/

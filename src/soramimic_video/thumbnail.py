@@ -3,14 +3,22 @@
 曲名をそのジョブと同じ単語リスト・パラメータで空耳変換し、言い換え単語を
 大きく載せた動画と同じアスペクト(既定1280x720)のPNGを作る。
 
+既定のスタイル(STYLE_FULLBLEED)は単語の画像を全面に敷き、その上に見出しと
+説明文を載せる。文字は必ず輪郭(stroke)+半透明の帯の上に置くので、背景画像が
+明るくても暗くても読める。
+
     ┌─────────────────────────────┐
-    │ 【ダイオージャ】     [単語の画像]  │
-    │                             │
-    │   lemon を 架空のアニメキャラ で歌ってみた │
-    │                lyrics by Soramimic │
+    │▓▓▓▓▓【ダイオージャ】▓▓▓▓▓▓▓▓▓▓│  ← 背景は単語の画像(1語なら1枚、
+    │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│     2語なら左右に2枚)
+    │▓▓▓ lemon を 架空のアニメキャラ で歌ってみた ▓│
+    │ 撮影者 (CC BY)      lyrics by Soramimic │
     └─────────────────────────────┘
 
-描画は layout.py のレイアウト機構(フォント解決・テキスト収め込み・画像配置)を
+言い換えは1語だけだと意味が取りにくいことがあるので、短い語のときは2語目まで
+使う(pick_headline_words)。画像も語ごとに1枚ずつ敷く。
+旧スタイル(STYLE_SIDE: 左に【単語】、右に小さく画像)も比較用に残してある。
+
+描画は layout.py のレイアウト機構(フォント解決・テキスト収め込み・帯・輪郭)を
 そのまま使うので、見た目のトーンは動画のカードレイアウトと揃う。
 変換に失敗した・曲名が無い・言い換え単語が取れないときは、言い換えなしの
 「<曲名> を <リスト名> で歌ってみた」だけのサムネにフォールバックする
@@ -18,14 +26,18 @@
 
 生成物は make_video から呼ばれてプロジェクト(ジョブ)ディレクトリ直下に
 thumbnail.png として置かれ、動画の前奏区間にも表示される(video.py 参照)。
+生成前のプレビュー(おまかせモーダル)も同じ描画を使う(thumbnail_preview.py)。
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageEnhance
 
 from . import runproc
 from .convert import _find_row, _load_wordlist_rows, resolve_wordlist
@@ -38,8 +50,19 @@ logger = logging.getLogger(__name__)
 
 THUMBNAIL_FILENAME = "thumbnail.png"
 SIGNATURE = "lyrics by Soramimic"
-# 単語画像を貼る枠(フレーム比率)。画像はこの中にアスペクト維持で収まる
+# 単語画像を貼る枠(フレーム比率)。旧スタイル(STYLE_SIDE)専用
 IMAGE_BOX = (0.53, 0.08, 0.41, 0.55)
+
+STYLE_FULLBLEED = "fullbleed"  # 画像を全面に敷き、その上に文字を載せる(既定)
+STYLE_SIDE = "side"  # 旧: 左に【単語】、右に画像
+DEFAULT_STYLE = STYLE_FULLBLEED
+
+# 見出しに使う言い換え単語の最大数と、「1語で済ませてよい」最小文字数。
+# 「モノカ」のような短い1語だけでは意味が取りにくいので、その場合は2語目を足す。
+HEADLINE_MAX_WORDS = 2
+HEADLINE_MIN_CHARS = 4
+# 背景に敷いた画像の明るさ(1.0=そのまま)。文字側の帯・輪郭と合わせて可読性を作る
+BACKGROUND_DIM = 0.62
 
 # 隅の署名と「<曲名> を <リスト名> で歌ってみた」は3パターン共通
 _CAPTION_ELEMENT = {
@@ -50,23 +73,48 @@ _SIGNATURE_ELEMENT = {
     "type": "text", "text": SIGNATURE, "box": [0.04, 0.89, 0.92, 0.05],
     "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom",
 }
+# 全面スタイルの下段。背景画像の明暗に関わらず読めるよう、半透明の帯を必ず敷く
+_FULLBLEED_CAPTION = {
+    "type": "text", "text": "{caption}", "box": [0.05, 0.63, 0.90, 0.17],
+    "size": 0.075, "color": "white", "wrap": True,
+    "stroke_width": 0.003, "background": "#000000b3",
+}
+_FULLBLEED_CREDIT = {
+    # 画像クレジット(表記不要な画像では空文字になり描かれない)
+    "type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
+    "size": 0.024, "color": "#e8e8e8", "align": "left", "valign": "bottom",
+    "background": "#000000a6",
+}
+_FULLBLEED_SIGNATURE = {
+    "type": "text", "text": SIGNATURE, "box": [0.55, 0.895, 0.42, 0.055],
+    "size": 0.032, "color": "#e8e8e8", "align": "right", "valign": "bottom",
+    "background": "#000000a6",
+}
 
 
 def thumbnail_layout_spec(
     has_word: bool,
     has_image: bool,
     credit_box: tuple[float, float, float, float] | None = None,
+    style: str = DEFAULT_STYLE,
 ) -> dict:
     """サムネのレイアウト定義(layout.py と同じ書式のdict)。
 
+    STYLE_FULLBLEED(既定)では背景画像を呼び出し側が合成して渡すので、この
+    定義に image 要素は出てこない(文字だけ)。文字は輪郭+半透明の帯を敷いて
+    背景の明暗に依存せず読めるようにする。
+
+    STYLE_SIDE(旧)は
     - 言い換え単語+画像: 左に【単語】、右に画像(クレジットは画像の右下)
     - 言い換え単語のみ: 中央に大きく【単語】
     - どちらも無い: 「<曲名> を <リスト名> で歌ってみた」だけ(フォールバック)
 
     見出し(【単語】)は折り返さず、長い単語ではフォントを縮めて1行に収める
     (「】」だけが次の行に落ちるのを避けるため)。credit_box を渡すと
-    クレジットの帯をその枠(=実際に貼られた画像の領域)の右下に置く。
+    クレジットの帯をその枠(=実際に貼られた画像の領域)の右下に置く(STYLE_SIDE)。
     """
+    if style == STYLE_FULLBLEED:
+        return _fullbleed_spec(has_word, has_image)
     if not has_word:
         return {
             "background": "black",
@@ -103,24 +151,62 @@ def thumbnail_layout_spec(
     }
 
 
+def _fullbleed_spec(has_word: bool, has_image: bool) -> dict:
+    """全面スタイルの定義。背景(単色 or 合成済み画像)の上に文字だけを置く。"""
+    if not has_word:
+        return {
+            "background": "black",
+            "elements": [
+                {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
+                 "size": 0.11, "color": "white", "wrap": True,
+                 "stroke_width": 0.004,
+                 **({"background": "#000000b3"} if has_image else {})},
+                _FULLBLEED_CREDIT,
+                _FULLBLEED_SIGNATURE,
+            ],
+        }
+    return {
+        "background": "black",
+        "elements": [
+            {"type": "text", "text": "{headline}", "box": [0.05, 0.10, 0.90, 0.38],
+             "size": 0.19, "color": "white", "stroke_width": 0.007,
+             **({"background": "#0000008c"} if has_image else {})},
+            _FULLBLEED_CAPTION if has_image else _CAPTION_ELEMENT,
+            _FULLBLEED_CREDIT,
+            _FULLBLEED_SIGNATURE,
+        ],
+    }
+
+
 def thumbnail_layout(
     has_word: bool,
     has_image: bool,
     credit_box: tuple[float, float, float, float] | None = None,
+    style: str = DEFAULT_STYLE,
 ) -> Layout:
     return parse_layout(
-        thumbnail_layout_spec(has_word, has_image, credit_box), "<thumbnail>"
+        thumbnail_layout_spec(has_word, has_image, credit_box, style), "<thumbnail>"
     )
 
 
 def thumbnail_data(
-    title: str, wordlist_text: str, word: str = "", image_credit: str = ""
+    title: str,
+    wordlist_text: str,
+    word: str | Sequence[str] = "",
+    image_credit: str | Sequence[str] = "",
 ) -> dict:
     """サムネのテンプレートに渡す値(headline / caption / image_credit)。
 
+    word は1語でも複数語でもよく、複数なら【】の中に空白区切りで並べる
+    (「【モノカ 加藤】」)。クレジットも複数渡せる(重複は畳んで「 / 」で連結)。
     曲名・単語リスト名のどちらかが取れないときは、その部分を省いた文にする
     (「 を  で歌ってみた」のような空欄が残らないように)。
     """
+    words = [word] if isinstance(word, str) else list(word)
+    headline = " ".join(w for w in words if w)
+    credits = [image_credit] if isinstance(image_credit, str) else list(image_credit)
+    # 同じ画像・同じ撮影者のときに同じ文言が2つ並ばないよう、順序を保って重複を消す
+    credit_text = " / ".join(dict.fromkeys(c for c in credits if c))
     if title and wordlist_text:
         caption = f"{title} を {wordlist_text} で歌ってみた"
     elif title:
@@ -130,10 +216,62 @@ def thumbnail_data(
     else:
         caption = ""
     return {
-        "headline": f"【{word}】" if word else "",
+        "headline": f"【{headline}】" if headline else "",
         "caption": caption,
-        "image_credit": image_credit,
+        "image_credit": credit_text,
     }
+
+
+def pick_headline_words(words: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """見出しに使う言い換え単語を選ぶ(1語、短ければ2語)。
+
+    先頭1語が短い(HEADLINE_MIN_CHARS 未満)と「モノカ」のように意味が取りにくい
+    ので、次の語があれば足して2語にする。長い語は1語で充分読めるので増やさない。
+    """
+    picked = [w for w in words[:HEADLINE_MAX_WORDS] if str(w.get("surface") or "")]
+    if not picked:
+        return []
+    if len(str(picked[0].get("surface") or "")) >= HEADLINE_MIN_CHARS:
+        return picked[:1]
+    return picked
+
+
+def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
+    """枠を埋めるように拡大して中央で切り出す(CSSの object-fit: cover)。"""
+    scale = max(width / img.width, height / img.height)
+    resized = img.resize(
+        (max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    left = (resized.width - width) // 2
+    top = (resized.height - height) // 2
+    return resized.crop((left, top, left + width, top + height))
+
+
+def compose_background(
+    image_paths: Sequence[Path], width: int, height: int, dim: float = BACKGROUND_DIM
+) -> Image.Image | None:
+    """単語画像を全面に敷いた背景を作る(2枚なら左右に等分)。1枚も読めなければ None。
+
+    文字を載せるので、そのままだと明るい写真で白文字が飛ぶ。全体を dim 倍に
+    落としたうえで、文字側にも輪郭と半透明の帯を敷いて可読性を担保する。
+    """
+    images: list[Image.Image] = []
+    for path in image_paths:
+        try:
+            with Image.open(path) as img:
+                images.append(img.convert("RGB"))
+        except Exception as e:  # noqa: BLE001 - 読めない画像は無いものとして続ける
+            logger.warning("サムネ背景に使えない画像です: %s (%s)", path, e)
+    if not images:
+        return None
+    canvas = Image.new("RGB", (width, height), "black")
+    slot_w = width // len(images)
+    for i, source in enumerate(images):
+        # 最後の枠は端数ぶんまで受け持つ(1pxの黒すじを残さない)
+        w = width - slot_w * i if i == len(images) - 1 else slot_w
+        canvas.paste(_cover(source, w, height), (slot_w * i, 0))
+    return ImageEnhance.Brightness(canvas).enhance(dim)
 
 
 def song_title(project: Project, fallback: str | None = None) -> str:
@@ -159,55 +297,79 @@ def title_paraphrase(
     wordlist: str,
     where: str | None,
     params: dict[str, Any] | None,
-) -> tuple[dict[str, Any], dict[str, str] | None] | None:
-    """曲名を1フレーズだけ空耳変換し、(先頭の単語, 単語リスト行)を返す。
+) -> list[tuple[dict[str, Any], dict[str, str] | None]]:
+    """曲名を1フレーズだけ空耳変換し、見出しに使う (単語, 単語リスト行) を返す。
 
     変換はジョブ本体(convert.py)と同じ経路・同じ単語リスト・同じパラメータで
     行うので、動画に出てくる単語と同じ雰囲気の言い換えになる。
-    変換できる単語が無ければ None。
+    採るのは先頭1語、それが短ければ2語(pick_headline_words)。
+    変換できる単語が無ければ空リスト。
     """
     csv_path = resolve_wordlist(wordlist)
     result = run_convert([title], csv_path, where, dict(params or {}))
     lines = result.get("lines") or []
     words = lines[0].get("words") if lines else []
-    if not words:
-        return None
-    word = words[0]
-    return word, _find_row(_load_wordlist_rows(csv_path), word)
+    picked = pick_headline_words(words or [])
+    if not picked:
+        return []
+    rows = _load_wordlist_rows(csv_path)
+    return [(w, _find_row(rows, w)) for w in picked]
 
 
 def render_thumbnail(
     out_path: Path,
     title: str,
     wordlist_text: str,
-    word: str = "",
-    image_path: Path | None = None,
-    image_credit: str = "",
+    words: str | Sequence[str] = "",
+    image_paths: Path | Sequence[Path] | None = None,
+    image_credits: str | Sequence[str] = "",
     width: int = 1280,
     height: int = 720,
+    style: str = DEFAULT_STYLE,
 ) -> Path:
-    """サムネPNGを描いて out_path に保存する。"""
-    credit_box = None
-    if image_path is not None and image_credit:
-        # クレジットの帯は枠ではなく実際に貼られた画像の右下に載せる(動画のフレームと同じ)
-        credit_box = fitted_image_box(image_path, IMAGE_BOX, width, height)
-    layout = thumbnail_layout(
-        has_word=bool(word), has_image=image_path is not None, credit_box=credit_box
-    )
-    data = thumbnail_data(title, wordlist_text, word, image_credit)
-    canvas = render_image(layout, image_path, data, width, height)
+    """サムネPNGを描いて out_path に保存する。
+
+    words / image_paths / image_credits は1件でも複数(言い換え2語)でもよい。
+    STYLE_FULLBLEED では画像を全面に敷いた背景を先に合成し、その上に文字を描く。
+    """
+    if isinstance(image_paths, Path):
+        images = [image_paths]
+    else:
+        images = list(image_paths or [])
+    data = thumbnail_data(title, wordlist_text, words, image_credits)
+    has_word = bool(data["headline"])
+
+    if style == STYLE_FULLBLEED:
+        background = compose_background(images, width, height)
+        layout = thumbnail_layout(has_word, background is not None, style=style)
+        canvas = render_image(
+            layout, None, data, width, height, background=background
+        )
+    else:
+        image_path = images[0] if images else None
+        credit_box = None
+        if image_path is not None and data["image_credit"]:
+            # クレジットの帯は枠ではなく実際に貼られた画像の右下に載せる(動画と同じ)
+            credit_box = fitted_image_box(image_path, IMAGE_BOX, width, height)
+        layout = thumbnail_layout(has_word, image_path is not None, credit_box, style)
+        canvas = render_image(layout, image_path, data, width, height)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path)
     return out_path
 
 
 def _word_image(
-    row: dict[str, str] | None, cache: Path, download: bool = True
+    row: dict[str, str] | None,
+    cache: Path,
+    download: bool = True,
+    missing: list[tuple[str, str]] | None = None,
 ) -> tuple[Path | None, str]:
     """単語リスト行の image 列から画像とクレジット文言を取る(取れなければ空)。
 
     download=False ならネットワークを使わず、キャッシュ済みの画像・クレジットだけを
     使う(待てないプレビュー生成向け。無ければ画像なしのサムネになる)。
+    その場合、キャッシュに無かった (画像URL, 画像ページ) を missing に積む
+    (呼び出し側が後で先読みできるように)。
     """
     from .image_credit import fetch_image_credit
     from .video import cached_image, download_image
@@ -215,14 +377,18 @@ def _word_image(
     url = (row or {}).get("image") or ""
     if not url:
         return None, ""
+    page = str((row or {}).get("image_page") or "")
     path = download_image(url, cache) if download else cached_image(url, cache)
     if path is None:
+        if missing is not None:
+            missing.append((url, page))
         return None, ""
     credit = str((row or {}).get("image_credit") or "").strip()
     if not credit:
-        info = fetch_image_credit(
-            url, (row or {}).get("image_page", ""), cache, cached_only=not download
-        )
+        info = fetch_image_credit(url, page, cache, cached_only=not download)
+        if info is None and not download and missing is not None:
+            # 画像はあるがクレジットが未取得。表記付きで出せるよう次回までに温める
+            missing.append((url, page))
         credit = info["credit_text"] if info else ""
     return path, credit
 
@@ -247,6 +413,8 @@ def build_thumbnail(
     width: int = 1280,
     height: int = 720,
     download_images: bool = True,
+    style: str = DEFAULT_STYLE,
+    missing_images: list[tuple[str, str]] | None = None,
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -254,27 +422,32 @@ def build_thumbnail(
     (thumbnail_preview.py)が共有する。変換・画像取得が失敗しても
     言い換えなし・画像なしのサムネにフォールバックし、描画自体に失敗した
     ときだけ None を返す(いずれも警告ログのみ)。中断要求(Cancelled)は伝播する。
+    missing_images を渡すと、使いたかったのにキャッシュに無かった画像・クレジットの
+    (URL, 画像ページ)が積まれる(download_images=False のときだけ起きる)。
     """
     wordlist_text = wordlist_text_of(wordlist)
 
-    word = ""
-    row: dict[str, str] | None = None
+    found: list[tuple[dict[str, Any], dict[str, str] | None]] = []
     if song and wordlist:
         try:
             found = title_paraphrase(song, wordlist, where, params)
-            if found is not None:
-                raw_word, row = found
-                word = str(raw_word.get("surface") or "")
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - サムネの失敗でジョブを落とさない
             logger.warning("曲名の空耳変換に失敗しました(言い換えなしのサムネにします): %s", e)
+    words = [str(word.get("surface") or "") for word, _row in found]
 
-    image_path: Path | None = None
-    image_credit = ""
-    if word and image_cache is not None:
+    image_paths: list[Path] = []
+    image_credits: list[str] = []
+    if found and image_cache is not None:
         try:
-            image_path, image_credit = _word_image(row, image_cache, download_images)
+            for _word, row in found:
+                path, credit = _word_image(
+                    row, image_cache, download_images, missing_images
+                )
+                if path is not None:
+                    image_paths.append(path)
+                    image_credits.append(credit)
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - 画像なしのサムネにフォールバック
@@ -285,11 +458,12 @@ def build_thumbnail(
             out_path,
             song,
             wordlist_text,
-            word=word,
-            image_path=image_path,
-            image_credit=image_credit,
+            words=words,
+            image_paths=image_paths,
+            image_credits=image_credits,
             width=width,
             height=height,
+            style=style,
         )
     except Exception as e:  # noqa: BLE001 - 描画失敗もジョブは落とさない
         logger.warning("サムネ画像を生成できませんでした: %s", e)

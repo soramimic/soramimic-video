@@ -8,7 +8,8 @@ build_thumbnail をそのまま使う(コードは重複させない)ので、�
 **軽さが最優先**なので、本番のサムネ生成とは次の点だけ意図的に変えている:
 
 * 画像はキャッシュ済みのぶんだけ使う(download_images=False)。まだ落として
-  いない画像は待たずに諦め、【言い換え】+文字だけのサムネにする
+  いない画像は待たずに諦め、【言い換え】+文字だけのサムネにする。そのぶんは
+  裏で先読みし、取れたらキャッシュを捨てて次に開くときは絵入りにする
 * 解像度はモーダル表示に足りる 640x360(本番は1280x720)
 
 生成結果は (曲名, 単語リストCSVの内容, where, 変換パラメータ, 解像度,
@@ -25,14 +26,22 @@ import os
 import threading
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .convert import resolve_convert_settings, resolve_wordlist
-from .thumbnail import build_thumbnail, thumbnail_layout_spec, wordlist_text_of
+from .thumbnail import (
+    BACKGROUND_DIM,
+    DEFAULT_STYLE,
+    HEADLINE_MAX_WORDS,
+    HEADLINE_MIN_CHARS,
+    build_thumbnail,
+    thumbnail_layout_spec,
+    wordlist_text_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +54,7 @@ CACHE_MAX_ENTRIES = 300  # 件数上限(超過ぶんは古い順に捨てる)
 # 生成は同時に1本だけ通す(変換はCPUを食うので連打で並列に走らせない)。
 # 待たされ続けるくらいなら諦めてもらう(UIは代表画像にフォールバックする)
 RENDER_TIMEOUT_SECONDS = 15.0
+MAX_PREFETCH_IMAGES = 4  # 1回のプレビューで裏読みする画像の上限(見出しは最大2語)
 
 # 短期レート制限(セッションあたり)。ジョブではないので日次クォータは消費しないが、
 # 連打・スクレイピングで変換が走り続けないようにする。0 以下で無効。
@@ -71,13 +81,17 @@ def preview_cache_dir(jobs_dir: Path) -> Path:
 
 
 def _layout_fingerprint() -> str:
-    """サムネのレイアウト定義の指紋。定義を変えたら自動でキャッシュが無効になる。"""
+    """サムネの見た目を決めるものの指紋。デザインを変えたらキャッシュが自動で無効になる。"""
     specs = [
         thumbnail_layout_spec(has_word=True, has_image=True),
         thumbnail_layout_spec(has_word=True, has_image=False),
         thumbnail_layout_spec(has_word=False, has_image=False),
     ]
-    return json.dumps(specs, ensure_ascii=False, sort_keys=True)
+    return json.dumps(
+        [DEFAULT_STYLE, BACKGROUND_DIM, HEADLINE_MAX_WORDS, HEADLINE_MIN_CHARS, specs],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -160,6 +174,7 @@ class PreviewSpec:
         # 書きかけを他のリクエストに読ませないよう、一時ファイルに描いてから置換する
         tmp = cache_dir / f".{self.key}.{os.getpid()}.tmp.png"
         started = time.monotonic()
+        missing: list[tuple[str, str]] = []
         out = build_thumbnail(
             tmp,
             self.title,
@@ -170,6 +185,7 @@ class PreviewSpec:
             width=self.width,
             height=self.height,
             download_images=False,
+            missing_images=missing,
         )
         if out is None:
             tmp.unlink(missing_ok=True)
@@ -180,7 +196,67 @@ class PreviewSpec:
             self.title, self.wordlist, time.monotonic() - started,
         )
         prune_cache(cache_dir)
+        if missing and image_cache is not None:
+            # 今回は画像なしで返したが、次に開くときは絵入りにできるよう裏で温める
+            # (取れたらこのPNGを捨てて作り直させる。取れなければ何もしない)
+            start_image_prefetch(missing, image_cache, path)
         return path
+
+
+_prefetching: set[str] = set()
+_prefetch_lock = threading.Lock()
+
+
+def prefetch_images(
+    items: Sequence[tuple[str, str]], image_cache: Path, invalidate: Path
+) -> int:
+    """単語画像とクレジットをキャッシュに落とし、1つでも取れたら invalidate を捨てる。
+
+    プレビューは待てないので画像なしで返しているが、次に同じ組み合わせを開いた
+    ときには絵入り(+必要なクレジット表記付き)にしたい。取れなければ何もしない
+    (=画像なしのPNGが残るので、通信できない環境で再生成を繰り返すことはない)。
+    items は (画像URL, 画像ページURL) の列。
+    """
+    from .image_credit import fetch_image_credit
+    from .video import cached_image, download_image
+
+    got = 0
+    for url, page in list(dict.fromkeys(items))[:MAX_PREFETCH_IMAGES]:
+        try:
+            had_image = cached_image(url, image_cache) is not None
+            if download_image(url, image_cache) is not None and not had_image:
+                got += 1
+            # 表記が要る画像(Commons)ではクレジットも温める。表記不要・対象外はNone
+            if fetch_image_credit(url, page, image_cache) is not None:
+                got += 1
+        except Exception:  # noqa: BLE001 - 先読みの失敗は無視してよい
+            logger.warning("サムネプレビュー用の画像を先読みできません: %s", url)
+    if got:
+        invalidate.unlink(missing_ok=True)
+        logger.info("画像が揃ったのでサムネプレビューを作り直させます: %s", invalidate.name)
+    return got
+
+
+def start_image_prefetch(
+    urls: Sequence[tuple[str, str]], image_cache: Path, invalidate: Path
+) -> threading.Thread | None:
+    """prefetch_images をdaemonスレッドで走らせる(同じPNGに対しては1本だけ)。"""
+    key = invalidate.name
+    with _prefetch_lock:
+        if key in _prefetching:
+            return None
+        _prefetching.add(key)
+
+    def run() -> None:
+        try:
+            prefetch_images(urls, image_cache, invalidate)
+        finally:
+            with _prefetch_lock:
+                _prefetching.discard(key)
+
+    thread = threading.Thread(target=run, name="thumbnail-preview-prefetch", daemon=True)
+    thread.start()
+    return thread
 
 
 def prune_cache(
