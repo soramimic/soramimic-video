@@ -978,14 +978,25 @@ def test_prewarm_skips_cached(tmp_path: Path, monkeypatch):
 
 
 def test_thumbnail_show_end_uses_intro(tmp_path: Path):
-    from soramimic_video.video import THUMBNAIL_MIN_SEC, thumbnail_show_end
+    from soramimic_video.video import SUB_PAD_SEC, thumbnail_show_end
 
     project = _two_word_project()  # 最初の歌唱ノートは0.5s(前奏が短い曲)
-    assert thumbnail_show_end(project) == THUMBNAIL_MIN_SEC  # 冒頭3秒は出す
+    assert thumbnail_show_end(project) == 0.0  # 一瞬しか出せないので出さない
 
-    project.notes[0].start_sec = 8.0  # 前奏8秒の曲はその終わり(歌い出し)まで
+    project.notes[0].start_sec = 8.0  # 前奏8秒の曲は字幕が出る直前まで
     project.notes[1].start_sec = 9.0
-    assert abs(thumbnail_show_end(project) - 8.0) < 0.01
+    assert abs(thumbnail_show_end(project) - (8.0 - SUB_PAD_SEC)) < 0.01
+
+
+def test_thumbnail_does_not_overlap_subtitles(tmp_path: Path):
+    """サムネの表示区間が最初の字幕の開始より前に終わること(重なり防止)。"""
+    from soramimic_video.video import SUB_PAD_SEC, thumbnail_show_end
+
+    project = _two_word_project()
+    project.notes[0].start_sec = 5.0
+    project.notes[1].start_sec = 6.0
+    first_subtitle_start = 5.0 - SUB_PAD_SEC
+    assert thumbnail_show_end(project) <= first_subtitle_start
 
 
 def test_prepend_thumbnail_cue_shifts_overlapping_cues(tmp_path: Path):
