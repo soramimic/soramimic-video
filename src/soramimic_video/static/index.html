@@ -177,10 +177,19 @@
   #editor-frame { width: 100%; height: 72vh; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + その場のサムネプレビュー ---- */
+  /* 🎲ランダムはカードの右上に小さく置く(プルダウンのショートカットで主役ではない) */
+  .builder-topbar { display: flex; justify-content: flex-end; margin-bottom: .3rem; }
+  #lucky {
+    padding: .2rem .5rem; min-height: 0; font-size: 1rem; line-height: 1.2;
+    border-radius: 999px;
+  }
   /* プルダウンは横並び(狭い画面では1列に折り返す) */
   .builder-selects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
   @media (max-width: 26rem) { .builder-selects { grid-template-columns: 1fr; } }
-  .builder-selects label { margin: 0 0 .2rem; }
+  /* ラベルとプルダウンは同じ行に置く(モバイル幅でも1行に収める) */
+  .builder-selects .field { display: flex; align-items: center; gap: .5rem; }
+  .builder-selects label { margin: 0; flex: 0 0 auto; white-space: nowrap; }
+  .builder-selects select { flex: 1 1 auto; min-width: 0; }
   /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
      2つ目だけ下にずれるので消す */
   .builder-selects .field + .field { margin-top: 0; }
@@ -188,7 +197,48 @@
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
   }
-  .builder-figure img { display: block; width: 100%; max-height: 40vh; object-fit: contain; }
+  .builder-figure img, .builder-figure video {
+    display: block; width: 100%; max-height: 40vh; object-fit: contain;
+  }
+  /* サムネ枠は「プレビュー / 進捗 / 動画」を同じ場所に重ねる。表示中のものだけが
+     グリッドの1セルに入るので、枠の大きさはそのときの中身が決める
+     (hidden の子は display:none なので場所を取らない) */
+  #builder-figure { display: grid; }
+  #builder-figure > * { grid-area: 1 / 1; }
+  /* 枠ぜんぶが「動画を生成」ボタン。押せることが分かるよう再生アイコンを重ねる */
+  .builder-play {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: .5rem; padding: 0; border: 0; border-radius: 0; min-height: 0; color: #fff;
+    background: linear-gradient(180deg, #0000 0%, #0000 40%, #0009 100%);
+    cursor: pointer; z-index: 1;
+  }
+  .builder-play:hover, .builder-play:focus-visible { background: #0006; }
+  .builder-play-icon {
+    display: flex; align-items: center; justify-content: center;
+    width: 3rem; height: 3rem; border-radius: 50%; font-size: 1.1rem;
+    background: #000a; border: 2px solid #fff; padding-left: .2rem;
+  }
+  /* サムネの絵柄に負けないよう、文字は暗い下地の上に置く */
+  .builder-play-label {
+    font-size: .85rem; background: #000a; padding: .15rem .6rem; border-radius: 999px;
+  }
+  /* 生成中の進捗。枠の中に重ねるので、押したあと視線を動かさずに済む */
+  .builder-progress {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: .5rem; padding: 1rem; min-height: 7rem; background: #000c; color: #fff;
+    z-index: 2;
+  }
+  .builder-progress p { margin: 0; font-size: .9rem; }
+  /* 暗い下地の上ではスピナーの既定色(枠の色)が沈むので明るくする */
+  .builder-progress .spinner { border-color: #fff5; border-top-color: #fff; }
+  .builder-bar {
+    width: min(18rem, 80%); height: 4px; border-radius: 999px; background: #fff3;
+    overflow: hidden;
+  }
+  .builder-bar span {
+    display: block; height: 100%; width: 0; background: var(--accent);
+    transition: width .3s ease;
+  }
   /* プレビュー画像を初期非表示にしている単語リストの説明+「見る」ボタン */
   .builder-figure.hidden-preview { padding: 1rem; }
   .builder-figure.hidden-preview .hint { margin: 0 0 .6rem; }
@@ -206,12 +256,6 @@
   @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
   /* 完成後の「Xでポスト」「動画を保存」を横並びに(狭い画面では折り返す) */
   .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-  /* 例示ボタンと🎲ランダムはプルダウンのショートカット。主役ではないので小さく */
-  .lucky-grid { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
-  .lucky-grid button {
-    flex: 1 1 auto; padding: .3rem .8rem; min-height: 0; font-size: .82rem;
-    line-height: 1.4; border-radius: 999px; white-space: normal; word-break: break-word;
-  }
 </style>
 </head>
 <body>
@@ -226,29 +270,53 @@
      組み合わせで実際に作られるサムネがその場に出る(/api/thumbnail-preview)。
      選択は詳細設定側の #sample-select / #wordlist-select と双方向に同期し、
      そのまま同じカードの「🎬 動画を生成」(#submit)で生成できる。
-     例示ボタンは JS の SUGGESTED_COMBOS から組み立てる(#lucky-combos に差し込む)。 -->
+     見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
-  <h2>まずはここから</h2>
-  <p class="hint" id="lucky-lead">曲と単語リストを選ぶと、できあがりのサムネが見られます。</p>
+  <!-- 🎲ランダムはプルダウンのショートカット。主役ではないので右上に小さく置く -->
+  <div class="builder-topbar">
+    <button type="button" id="lucky" class="btn-sm" title="ランダムに選ぶ"
+      aria-label="ランダムに選ぶ">🎲</button>
+  </div>
   <div class="builder-selects">
     <div class="field" id="builder-sample-field">
       <label for="builder-sample">曲</label>
       <select id="builder-sample" aria-label="曲(サンプル曲)"></select>
     </div>
     <div class="field" id="builder-wordlist-field">
-      <label for="builder-wordlist">単語リスト(何に空耳させるか)</label>
-      <select id="builder-wordlist" aria-label="単語リスト"></select>
+      <!-- 「(何に空耳させるか)」の補足は幅を食うので title に退避する -->
+      <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
+      <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
   </div>
-  <!-- 生成されるサムネのプレビュー。作成中はスピナー、失敗・タイムアウト・429では
-       単語リストの代表画像にフォールバックする(どちらも取れなければ枠ごと隠す) -->
+  <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
+       姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
+       だけが枠の大きさを決める。
+       - プレビュー: 生成されるサムネ。作成中はスピナー、失敗・タイムアウト・429では
+         単語リストの代表画像にフォールバックする(どちらも取れなければ枠ごと隠す)
+       - #builder-play: 枠ぜんぶがボタン。押すと「🎬 動画を生成」と同じ生成が走る
+       - #builder-progress: 生成中の進捗(中断もここから)
+       - #builder-video: 完成した動画。poster にサムネを敷くので絵が途切れない -->
   <div class="builder-figure" id="builder-figure" hidden>
     <img id="builder-image" alt="この組み合わせのサムネイル" hidden>
+    <video id="builder-video" controls playsinline hidden></video>
     <div class="builder-figure-loading" id="builder-loading" hidden>
       <span class="spinner" aria-hidden="true"></span>
       <span>プレビューを作成中…</span>
     </div>
+    <button type="button" class="builder-play" id="builder-play" hidden
+      aria-label="この組み合わせで動画を生成">
+      <span class="builder-play-icon" aria-hidden="true">▶</span>
+      <span class="builder-play-label">タップで動画を生成</span>
+    </button>
+    <div class="builder-progress" id="builder-progress" hidden>
+      <span class="spinner" aria-hidden="true"></span>
+      <p id="builder-status" aria-live="polite">送信中…</p>
+      <div class="builder-bar"><span id="builder-bar-fill"></span></div>
+      <button type="button" id="builder-cancel" class="btn-danger btn-sm">中断</button>
+    </div>
   </div>
+  <!-- 完成した動画のシェア導線。枠のすぐ下に出す(中身は SHARE_HTML) -->
+  <div id="builder-share" hidden></div>
   <!-- プレビュー画像を初期非表示にする単語リスト(HIDDEN_PREVIEW_WORDLISTS)では、
        黙って出さずに理由を書き、見たい人だけがボタンで表示できるようにする -->
   <div class="builder-figure hidden-preview" id="builder-image-hidden" hidden>
@@ -257,10 +325,6 @@
   </div>
   <p class="hint" id="builder-note" hidden></p>
   <p class="error" id="builder-msg" hidden></p>
-  <div class="lucky-grid" id="lucky-combos">
-    <!-- 例示ボタンは JS がこのボタンの前に挿入する -->
-    <button type="button" id="lucky">🎲 ランダム</button>
-  </div>
 
   <!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
        設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
@@ -773,43 +837,71 @@ function renderStages(job) {
   // 使わない方の変換ステージは薄いまま残る(editor / convert は排他)
 }
 
+// 進捗の文言は詳細(#status-line)とサムネ枠のオーバーレイ(#builder-status)の
+// 両方に出す。枠の中では英語のステージ名が唐突なので、日本語のラベルに直す。
+const STAGE_LABELS = {
+  analyze: "MIDI解析", convert: "空耳変換", "import-editor": "編集の取り込み",
+  synthesize: "歌唱合成", mix: "ミックス", video: "動画生成",
+};
+
+function setJobStatus(text, builderText) {
+  $("status-line").textContent = text;
+  $("builder-status").textContent = builderText || text;
+}
+
+// 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
+function renderBuilderBar(job) {
+  const total = document.querySelectorAll(".stages li").length || 6;
+  const done = job && job.stages ? job.stages.length : 0;
+  const pct = job && job.status === "done" ? 100
+    : Math.min(95, Math.round((done + (job && job.stage ? 0.5 : 0)) / total * 100));
+  $("builder-bar-fill").style.width = pct + "%";
+}
+
 async function poll(id) {
   const res = await fetch(`/api/jobs/${id}`, { headers: headers() });
-  if (!res.ok) { $("status-line").textContent = "状態取得に失敗: " + res.status; return; }
+  if (!res.ok) { setJobStatus("状態取得に失敗: " + res.status); return; }
   const job = await res.json();
   renderStages(job);
+  renderBuilderBar(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
+  const label = STAGE_LABELS[job.stage] || job.stage || "…";
   if (job.status === "running") {
     if (job.stage === "synthesize" && job.stage_progress != null) {
       let line = `歌唱合成 ${job.stage_progress}%`;
       if (job.stage_eta_seconds != null) line += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) line += ` (${Math.round(job.stage_elapsed)}秒経過)`;
-      $("status-line").textContent = line;
+      setJobStatus(line);
     } else {
-      $("status-line").textContent =
-        `実行中: ${job.stage || "…"}` + (job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "");
+      const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
+      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
     }
     setTimeout(() => poll(id), 2000);
   } else if (job.status === "queued") {
-    $("status-line").textContent = "順番待ち…";
+    setJobStatus("順番待ち…");
     setTimeout(() => poll(id), 2000);
   } else if (job.status === "done") {
-    $("status-line").textContent = `完成!(合計 ${Math.round(job.total_seconds)}秒)`;
-    $("result").hidden = false;
+    setJobStatus(`完成!(合計 ${Math.round(job.total_seconds)}秒)`);
+    // 動画はサムネ枠がそのままプレイヤーに変わる。詳細側にはサムネ画像のリンクだけ
+    // 残す(同じ動画を2か所に出さない)。声プレビューは音声なので従来どおりここで鳴らす。
     $("result").innerHTML = job.result_kind === "audio"
       ? `<audio controls autoplay style="width:100%" src="${qs(job.video_url)}"></audio>`
-      : `<video controls src="${qs(job.video_url)}"></video>` +
-        SHARE_HTML +
-        (job.thumbnail_url
+      : (job.thumbnail_url
           ? `<p><a href="${qs(job.thumbnail_url)}" target="_blank" rel="noopener">サムネ画像</a></p>`
           : "");
-    bindShare(job.video_url);
+    $("result").hidden = !$("result").innerHTML;
+    if (job.result_kind === "audio") setBuilderState("preview");
+    else showBuilderVideo(job);
     finish();
   } else if (job.status === "canceled") {
-    $("status-line").textContent = "中断しました";
+    setJobStatus("中断しました");
+    setBuilderState("preview");
     finish();
   } else {
     $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
+    // 枠は選び直せるプレビューに戻し、理由は枠の下に出す(詳細は #job-card に残る)
+    setBuilderState("preview");
+    showBuilderMsg(`生成に失敗しました: ${job.error || "不明なエラー"}`);
     finish();
   }
 }
@@ -898,16 +990,19 @@ function finish() {
 function setBusy(busy) {
   $("submit").disabled = busy;
   $("preview").disabled = busy;
-  // ビルダーカードのプルダウンとショートカット(例示 + 🎲ランダム)
+  // ビルダーカードのプルダウンとショートカット(🎲ランダム)
   $("builder-sample").disabled = busy;
   $("builder-wordlist").disabled = busy;
-  $("lucky-combos").querySelectorAll("button").forEach((b) => { b.disabled = busy; });
+  $("lucky").disabled = busy;
+  updateBuilderOverlay();   // 生成中は「タップで動画を生成」を出さない
 }
 
-// 進捗・結果のカードは投入するまで出さない(空の枠を見せない)
+// 進捗・結果のカードは投入するまで出さない(空の枠を見せない)。
+// 主役の進捗はサムネ枠の中に出すので、こちらは詳細(ステージ・ログ)として残す。
 function showProgress() {
   $("job-card").hidden = false;
   $("progress").hidden = false;
+  setBuilderState("running");
 }
 
 // 生成ボタン直下の案内(曲が未セットのときなど)。空文字で消す。
@@ -943,7 +1038,7 @@ async function submitJob(previewSec) {
   if (turnstileSiteKey) {
     setBusy(true);
     showProgress();
-    $("status-line").textContent = "確認中…";
+    setJobStatus("確認中…");
     await ensureTurnstileToken();
   }
   const form = new FormData();
@@ -966,7 +1061,7 @@ async function submitJob(previewSec) {
   setBusy(true);
   $("result").hidden = true;
   showProgress();
-  $("status-line").textContent = "送信中…";
+  setJobStatus("送信中…");
   try {
     const res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
     const body = await res.json();
@@ -974,6 +1069,8 @@ async function submitJob(previewSec) {
     watch(body.id);
   } catch (err) {
     $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
+    setBuilderState("preview");
+    showBuilderMsg("生成を開始できませんでした: " + err.message);
     setBusy(false);
   } finally {
     // Turnstileのトークンは1回きり。次の投入用に取り直す
@@ -1002,7 +1099,6 @@ async function loadSamples() {
     $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
     syncBuilderOptions();  // カードの曲プルダウンへ写す
-    renderLuckyCombos();   // 例示ボタンのラベルに曲名が入るのはここから
   } catch {
     // サンプルが取れない環境ではサンプル選択(#sample-field)ごと隠し、
     // 代わりに自分のMIDIを入れる折りたたみを開いておく。ビルダーカードも成立しない
@@ -1063,21 +1159,13 @@ $("sample-select").addEventListener("change", () => trackSample(applySample()));
 // フォーム保存)がそのまま動き、詳細設定側で変えたときもカードが追従する。
 // 生成はカード内の 🎬 ボタン(#submit)で、既存の submitJob をそのまま使う。
 
-// 例示ボタンの組み合わせ。増減・差し替えはこの配列を編集するだけでよい。
-// 先頭は初回表示の既定の組み合わせも兼ねる(前回の選択があればそちらが優先)。
+// 初回表示の既定の組み合わせ(前回の入力が残っていればそちらが優先)。
 //   sample:   /api/samples の id(static/sample/samples.json の id)。
-//             samples.json に無い id はボタンごと出さない。
+//             samples.json に無い id は無視する(曲は選ばれないまま)。
 //   wordlist: 単語リストのファイル名(external/soramimic-wordlists の <name>.csv)。
-//   song / list: ボタンに出すラベルの控え。曲名は samples.json、
-//             単語リスト名は editor conf(setting.json)の表示名が取れればそちらを優先し、
-//             取れないときだけここの文字列を使う。
-// 例示は実在系を中心に、架空系は1つまで。SORAMIMIC_WARMUP_WORDLISTS で
-// ここの辞書をウォームアップしておくと、例示コンボの変換が待ちなしになる。
-const SUGGESTED_COMBOS = [
-  { sample: "furusato", wordlist: "baseball", song: "ふるさと", list: "野球選手" },
-  { sample: "akatombo", wordlist: "stations", song: "赤とんぼ", list: "駅名" },
-  { sample: "momotarou", wordlist: "fictional_anime_character", song: "桃太郎", list: "架空のファンタジーキャラ" },
-];
+// SORAMIMIC_WARMUP_WORDLISTS でこの辞書をウォームアップしておくと、最初の
+// 空耳変換が待ちなしになる。
+const DEFAULT_COMBO = { sample: "furusato", wordlist: "baseball" };
 
 // 空耳変換に時間がかかる単語リスト。ランダム抽選の対象から外し、
 // それでも選ばれているときはカードに時間の注意を出す。
@@ -1094,17 +1182,6 @@ const HIDDEN_PREVIEW_WORDLISTS = {
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
-// #wordlist-select の option の表示名(optgroupがあれば「グループ/名前」)
-// 選択肢そのものの名前だけを返す(「生物の植物」のようなグループ名連結はしない。
-// 単体で意味が通らない選択肢名は setting.json 側の表示名で解決する方針)
-function wordlistOptionLabel(opt) {
-  // 「日常系」のように単体では意味が取れない選択肢があるので、グループがあれば
-  // 「架空 > 日常系」と併記する(「生物の植物」のような連結は読みにくいので区切る)
-  const og = opt.parentElement;
-  const group = og && og.tagName === "OPTGROUP" ? og.label : "";
-  return group ? `${group} > ${opt.textContent}` : opt.textContent;
-}
-
 // 単語リスト(ファイル名)に対応する #wordlist-select の option。無ければ null。
 // (editor conf が取れない構成ではセレクト自体が出ないので常に null になる)
 function wordlistOptionByName(name) {
@@ -1115,18 +1192,12 @@ function wordlistOptionByName(name) {
   return [...sel.options].find((o) => o.value === String(i)) || null;
 }
 
-// 選択肢から1つの「組み合わせ」を組む。戻り値は
-//   { sampleId, songLabel, wordlistName, listLabel, slow }
+// 選択肢から1つの「組み合わせ」を組む。戻り値は { sampleId, wordlistName, slow }。
 // wordlistName が空なら単語リストは触らない(現在の設定のまま生成する)。
-function luckyCombo(sampleId, wordlistName, fallback) {
-  const songOpt = [...$("sample-select").options].find((o) => o.value === sampleId);
-  const wlOpt = wordlistName ? wordlistOptionByName(wordlistName) : null;
+function luckyCombo(sampleId, wordlistName) {
   return {
     sampleId,
-    songLabel: songOpt ? songOpt.textContent : (fallback && fallback.song) || sampleId,
     wordlistName: wordlistName || "",
-    listLabel: wlOpt ? wordlistOptionLabel(wlOpt)
-      : (fallback && fallback.list) || wordlistName || "(現在の単語リスト)",
     slow: SLOW_WORDLISTS.includes(wordlistName),
   };
 }
@@ -1182,6 +1253,62 @@ function showBuilderMsg(text) {
   el.hidden = !text;
 }
 
+// ---- サムネ枠の状態 ----
+// 1つの枠が3つの姿を持つ。場所を動かさないので、押したあと視線を移さなくてよい。
+//   preview … 組み合わせのサムネ +「タップで動画を生成」
+//   running … 同じ枠に進捗と中断ボタンを重ねる
+//   done    … 同じ枠が動画プレイヤーになり、直下にシェアボタンが出る
+// preview へ戻すのは「選択を変えたとき」(loadThumbnailPreview)と
+// 「中断・失敗したとき」(poll)。
+let builderState = "preview";
+
+function setBuilderState(state) {
+  builderState = state;
+  $("builder-progress").hidden = state !== "running";
+  const video = $("builder-video");
+  if (state === "done") {
+    $("builder-figure").hidden = false;
+    $("builder-loading").hidden = true;
+    $("builder-image").hidden = true;   // poster に同じ絵が出るので二重に見せない
+    video.hidden = false;
+  } else {
+    // done から戻るときはサムネ画像を出し直す(直後に作り直す場合は上書きされる)
+    if ($("builder-image").getAttribute("src")) $("builder-image").hidden = false;
+    video.hidden = true;
+    video.pause();
+    video.removeAttribute("src");
+    video.removeAttribute("poster");
+    video.load();
+    $("builder-share").hidden = true;
+    $("builder-share").innerHTML = "";
+  }
+  if (state === "running") {
+    $("builder-figure").hidden = false;   // サムネが無い組み合わせでも進捗は枠に出す
+    renderBuilderBar(null);
+  }
+  updateBuilderOverlay();
+}
+
+// 「タップで動画を生成」を出してよいのは、プレビューの絵が見えていて、
+// いまジョブを投入できるときだけ。
+function updateBuilderOverlay() {
+  $("builder-play").hidden = !(builderState === "preview"
+    && !$("builder-figure").hidden && !$("builder-image").hidden && !$("submit").disabled);
+}
+
+// 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
+function showBuilderVideo(job) {
+  const video = $("builder-video");
+  video.src = qs(job.video_url);
+  if (job.thumbnail_url) video.poster = qs(job.thumbnail_url);
+  else if (previewUrl) video.poster = previewUrl;
+  // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
+  $("builder-share").innerHTML = SHARE_HTML;
+  $("builder-share").hidden = false;
+  bindShare(job.video_url);
+  setBuilderState("done");
+}
+
 // ---- サムネプレビュー ----
 
 let previewSeq = 0;            // 取得の世代(古い結果の取り違え防止)
@@ -1229,6 +1356,7 @@ function loadWordlistImage(name, seq) {
     if (seq !== previewSeq) return;
     $("builder-loading").hidden = true;
     fig.hidden = true;
+    updateBuilderOverlay();
   };
   if (!name || hiddenPreviewReason(name)) { hide(); return; }
   const url = "/api/wordlist-image?wordlist=" + encodeURIComponent(name)
@@ -1242,6 +1370,7 @@ function loadWordlistImage(name, seq) {
     img.hidden = false;
     $("builder-loading").hidden = true;
     fig.hidden = false;
+    updateBuilderOverlay();
   };
   probe.onerror = hide;
   probe.src = url;
@@ -1256,9 +1385,11 @@ function loadWordlistImage(name, seq) {
 function loadThumbnailPreview(combo) {
   const seq = ++previewSeq;
   const fig = $("builder-figure"), img = $("builder-image");
+  setBuilderState("preview");   // 完成した動画が出ていれば新しいプレビューに戻す
   if (previewAbort) previewAbort.abort();
   previewAbort = null;
   img.hidden = true;
+  updateBuilderOverlay();
   img.removeAttribute("src");
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = ""; }
   const reason = hiddenPreviewReason(combo.wordlistName);
@@ -1292,6 +1423,7 @@ function loadThumbnailPreview(combo) {
       img.hidden = false;
       $("builder-loading").hidden = true;
       fig.hidden = false;
+      updateBuilderOverlay();
       // 単語画像が間に合わなかったぶんは裏で取り切られる。少し待って1回だけ聞き直す
       if (pending) retryThumbnailPreview(url, seq);
     })
@@ -1371,7 +1503,7 @@ function selectWordlist(name) {
   }
 }
 
-// 組み合わせ(例示ボタン・🎲ランダム)をカードとフォームへ反映する。
+// 組み合わせ(🎲ランダム・初期表示の既定)をカードとフォームへ反映する。
 // 曲のMIDI取得まで待ち、成功したかを返す。
 async function applyCombo(c) {
   if (c.wordlistName) {
@@ -1384,7 +1516,7 @@ async function applyCombo(c) {
   return await trackSample(applySample());
 }
 
-// 例示ボタン・🎲ランダムの共通処理。失敗はカードの案内に出す。
+// 🎲ランダム・初期表示の共通処理。失敗はカードの案内に出す。
 async function pickCombo(c) {
   if (!c) {
     showBuilderMsg("サンプル曲を読み込めませんでした。「⚙️ 詳細設定」で曲を選んでください。");
@@ -1433,25 +1565,6 @@ $("builder-show-image").addEventListener("click", () => {
 // 🎲ランダム: カードの選択そのものをランダムな組み合わせに差し替える(生成はしない)
 $("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));
 
-// 例示ボタンを #lucky-combos の「🎲 ランダム」の前に並べる。
-// サンプル一覧・単語リスト一覧が揃うたびに呼ばれ、ラベルを最新の表示名で作り直す。
-function renderLuckyCombos() {
-  const box = $("lucky-combos");
-  box.querySelectorAll(".lucky-combo").forEach((b) => b.remove());
-  const known = new Set([...$("sample-select").options].map((o) => o.value));
-  for (const def of SUGGESTED_COMBOS) {
-    if (!known.has(def.sample)) continue;   // サンプルが無い環境では出さない
-    const c = luckyCombo(def.sample, def.wordlist, def);
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "lucky-combo";
-    btn.textContent = `${c.songLabel} × ${c.listLabel}`;
-    btn.disabled = $("lucky").disabled;
-    btn.addEventListener("click", () => pickCombo(luckyCombo(def.sample, def.wordlist, def)));
-    box.insertBefore(btn, $("lucky"));
-  }
-}
-
 // カードの初期選択を決めて最初のプレビューを出す。restoreForm より後に呼ばれるので、
 // 前回の入力があればそれが既定になる。曲はMIDIファイルとして保存されているので、
 // 復元されたファイル名からサンプルIDを引き当てて選択に戻す。
@@ -1462,15 +1575,15 @@ async function initBuilder() {
   if ($("lucky-card").hidden) return;   // サンプルが取れない環境ではカードごと出ない
   syncBuilderOptions();
   const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
-  const def = SUGGESTED_COMBOS[0] || {};
+  const def = DEFAULT_COMBO;
   // 1. 曲: 復元されたMIDIがサンプル曲なら、その選択に戻す(MIDIは取り直さない)
   const restoredId = (($("midi").files[0] || {}).name || "").replace(/\.[^.]+$/, "");
   if (!$("sample-select").value && known.has(restoredId)) {
     $("sample-select").value = restoredId;
   }
-  // 2. 単語リストが未設定なら例示の先頭を既定にする
+  // 2. 単語リストが未設定なら既定の組み合わせのものにする
   if (!currentWordlistName() && def.wordlist) selectWordlist(def.wordlist);
-  // 3. 曲がまだ無ければ例示の先頭をセットする(MIDIと元歌詞をここで取りに行く)
+  // 3. 曲がまだ無ければ既定の組み合わせをセットする(MIDIと元歌詞をここで取りに行く)
   if (!$("sample-select").value && known.has(def.sample)) {
     $("sample-select").value = def.sample;
     trackSample(applySample());
@@ -1481,22 +1594,28 @@ async function initBuilder() {
 }
 
 $("submit").addEventListener("click", () => submitJob(0));
+// サムネ枠そのものが生成ボタン(「🎬 動画を生成」と同じ動作)
+$("builder-play").addEventListener("click", () => submitJob(0));
 $("preview").addEventListener("click", () => submitJob(20));
 $("synthesizer").addEventListener("change", () => {
   synthesizerTouched = true;  // 以後 setupVoicevox が既定で上書きしない
   toggleSynthOpts();
 });
 $("voicevox-style").addEventListener("change", updateVoicevoxCredit);
-$("cancel").addEventListener("click", async () => {
+// 中断はサムネ枠の中(#builder-cancel)と詳細の進捗(#cancel)の両方から押せる
+async function cancelJob() {
   if (!currentJob) return;
-  $("cancel").disabled = true;
+  const btns = [$("cancel"), $("builder-cancel")];
+  btns.forEach((b) => { b.disabled = true; });
   try {
     await fetch(`/api/jobs/${currentJob}/cancel`, { method: "POST", headers: headers() });
   } finally {
-    $("cancel").disabled = false;
+    btns.forEach((b) => { b.disabled = false; });
   }
   // 状態遷移はpollが拾う
-});
+}
+$("cancel").addEventListener("click", cancelJob);
+$("builder-cancel").addEventListener("click", cancelJob);
 
 // ---- レイアウトエディタ(ドラッグで配置) ----
 
@@ -2371,7 +2490,6 @@ async function loadWordlistSelect(editorAvailable) {
   sel.hidden = false;
   applyWordlistSelection();
   syncBuilderOptions();  // カードの単語リストプルダウンへ写す
-  renderLuckyCombos();   // 例示ボタンのラベルを conf の表示名で作り直す
 }
 
 // #where を設定し、その change を発火する(不一致警告の再描画がこれを見ている)
