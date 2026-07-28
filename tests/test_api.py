@@ -248,11 +248,13 @@ def test_index_html_model_layout_use_select_not_datalist():
     # datalist 方式は撤去(iOS Safari で候補が出ないため)
     assert "<datalist" not in html
     assert 'list="model-list"' not in html and 'list="layout-list"' not in html
-    # 各コントロールの select・手入力・送信用hiddenが揃っている
+    # 各コントロールの select と送信用hiddenが揃っている
     for base in ("model", "layout"):
         assert f'<select id="{base}-select">' in html
-        assert f'<input type="text" id="{base}-other"' in html
         assert f'<input type="hidden" id="{base}"' in html
+    # 手入力欄を持つのは #model だけ(#layout はファイル読み込みに置き換えた)
+    assert '<input type="text" id="model-other"' in html
+    assert 'id="layout-other"' not in html
     # 「その他(手入力)」の選択肢が存在する
     assert 'その他(手入力)' in html
 
@@ -344,23 +346,21 @@ def test_index_html_job_card_lives_in_the_builder_card():
     assert '$("job-card").classList.remove("attention");' in html
 
 
-def test_index_html_restore_notice_is_inside_advanced():
-    """「前回の入力を復元しました」は詳細設定の中(先頭)に置く。"""
+def test_index_html_has_no_restore_notice_or_clear_button():
+    """前回の入力は黙って復元する。復元の告知も「保存した入力をクリア」も出さない。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    advanced = html.split('<details class="card" id="advanced">')[1]
-    notice = advanced.split('id="restore-notice"')[0]
-    # 詳細設定の中にあり、しかも中身(APIキー欄・曲の欄)より先頭
-    assert 'id="restore-notice"' in advanced
-    assert 'id="auth"' not in notice
-    assert 'id="sample-select"' not in notice
-    # ビルダーカードには残っていない
-    builder = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
-    assert "restore-notice" not in builder
-    # 復元が1つでもあったときだけ出す既存の条件は維持
-    assert 'if (any) $("restore-notice").hidden = false;' in html
-    assert 'id="clear-form"' in advanced
+    assert "restore-notice" not in html
+    assert "前回の入力を復元しました" not in html
+    assert "clear-form" not in html
+    assert "保存した入力をクリア" not in html
+    # 自動保存・復元そのものは続ける(保存キーと復元処理は残っている)
+    assert "function saveForm()" in html
+    assert "async function doRestoreForm()" in html
+    assert "localStorage.setItem(FORM_KEY" in html
+    # ファイル単位の「前回のファイルを復元」表示は残す(何が入っているかの手がかり)
+    assert 'id="midi-restore-hint"' in html
 
 
 def test_index_html_builder_card_is_bare():
@@ -1265,10 +1265,12 @@ def test_index_html_advanced_is_grouped_by_role():
         "② 空耳のもと",
         "③ 歌声",
         "④ 見た目",
-        "⑤ その他",
     ]
     # どのグループにも1行の説明を添える
-    assert _advanced_html().count('class="hint opt-group-lead"') == 5
+    assert _advanced_html().count('class="hint opt-group-lead"') == 4
+    # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
+    advanced = _advanced_html()
+    assert advanced.index('id="auth"') < advanced.index('<section class="opt-group">')
     # 区切りは見た目にも出す(小見出し + 罫線)
     html = _index_html()
     assert ".opt-group + .opt-group {" in html
@@ -1292,8 +1294,7 @@ def test_index_html_advanced_groups_hold_the_right_fields():
     assert 'id="preview"' in voice
     look = g["④ 見た目"]
     assert 'id="layout-select"' in look and 'id="le-details"' in look
-    other = g["⑤ その他"]
-    assert 'id="auth"' in other and 'id="clear-form"' in other
+    assert 'id="layout-file"' in look
 
 
 def test_index_html_convert_params_are_demoted_to_a_collapsible():
@@ -1301,18 +1302,87 @@ def test_index_html_convert_params_are_demoted_to_a_collapsible():
     parody = _opt_groups()["② 空耳のもと"]
     assert '<details id="parody-advanced" class="sub-details">' in parody
     assert "<summary>変換のしかたを細かく調整する(上級者向け)</summary>" in parody
-    assert 'id="where"' in parody and 'id="p-preset"' in parody
-    # 替え歌JSONの入出力はさらに出番が少ないので別の折りたたみに分ける
-    assert '<details id="parody-io" class="sub-details">' in parody
-    assert 'id="editor" accept=".json"' in parody
-    assert 'id="download-editor"' in parody
+    assert 'id="p-preset"' in parody
+    # 絞り込み(where)はチェックボックスの出力そのものなので折りたたまない
+    assert 'id="where"' in parody
+    assert parody.index('id="where"') < parody.index('id="parody-advanced"')
+    # 替え歌JSONの読み書きは詳細設定から撤去し、エディタのモーダルへ移した
+    assert 'id="parody-io"' not in parody
+    assert 'id="editor" accept=".json"' not in parody
+    assert 'id="download-editor"' not in parody
     # よく触る単語リストの選択は畳まない(折りたたみより前に置く)
     assert parody.index('id="wordlist-select"') < parody.index('id="parody-advanced"')
-    assert parody.index('id="parody-advanced"') < parody.index('id="parody-io"')
+
+
+def test_index_html_where_sits_with_the_wordlist_facets():
+    """絞り込み(where)は単語リスト選択・ファセットのチェックと同じ視野に置く。"""
+    parody = _opt_groups()["② 空耳のもと"]
+    field = parody.split('<div class="field">')[1]
+    # 単語リストのフィールドの中に、選択・ファセット・where が並んでいる
+    assert 'id="wordlist-select"' in field
+    assert field.index('id="wordlist-filters"') < field.index('id="where"')
+
+
+def test_index_html_parody_json_io_lives_in_the_editor_modal():
+    """替え歌JSONの読み書きはエディタの全画面モーダルのフッタに置く。"""
+    html = _index_html()
+    modal = html.split('<div class="editor-modal" id="editor-frame-wrap"')[1]
+    modal = modal.split("</div>\n\n<script>")[0]
+    assert 'id="parody-io"' in modal
+    assert 'id="editor" accept=".json"' in modal
+    assert 'id="download-editor"' in modal
+    # 生成時の #editor 参照・自動取り込みはそのまま(IDで引いているので位置は無関係)
+    assert 'const f = $("editor").files[0];' in html
+
+
+def test_index_html_transpose_is_greyed_out_under_auto_octave():
+    """自動オクターブ調整ONのあいだは移調欄をdisabled+ミュート表示にする。"""
+    html = _index_html()
+    assert "function updateTransposeEnabled()" in html
+    assert '$("transpose").disabled = auto;' in html
+    assert '$("transpose-row").classList.toggle("is-disabled", auto);' in html
+    assert '$("auto-octave").addEventListener("change", updateTransposeEnabled);' in html
+    # 復元後にも状態を合わせる(保存済みのチェック状態を反映する)
+    restore = html.split("async function doRestoreForm() {")[1]
+    assert "updateTransposeEnabled();" in restore
+    assert "#transpose-row.is-disabled { opacity: .5; }" in html
+    # 値は消さない(OFFに戻せば前の半音数がそのまま使える)
+    assert '$("transpose").value = ""' not in html
+
+
+def test_index_html_layout_other_is_replaced_by_a_file_input():
+    """レイアウトの「その他(手入力)」はやめ、JSONファイルの読み込みに置き換える。"""
+    html = _index_html()
+    assert 'id="layout-other"' not in html
+    assert 'id="layout-file" accept=".json"' in html
+    assert "レイアウトを読み込む(ファイル)" in html
+    # 手入力欄を持つ base(=model)だけ「その他」を選択肢に足す
+    assert 'if ($(base + "-other")) add(CHOICE_OTHER, "その他(手入力)…");' in html
+    # 読み込んだ内容はユーザーの編集扱い(leToJson が leDirty を立てる)なので
+    # 生成時に layout_json として送られる
+    layout_file = html.split('$("layout-file").addEventListener("change"')[1]
+    layout_file = layout_file.split("\n});")[0]
+    assert "leLayout = parsed;" in layout_file
+    assert "leToJson();" in layout_file
+    # 来歴ガード: レイアウト名が入れ替わったら読み込んだファイルごと捨てる
+    clear = html.split("function leClearLayout() {")[1].split("\n}")[0]
+    assert '$("layout-file").value = "";' in clear
+
+
+def test_index_html_layout_editor_has_no_idle_controls():
+    """歌唱なし区間(idle)のGUI調整は撤去する(JSONの機構自体は残す)。"""
+    html = _index_html()
+    for gone in ("le-tab-idle", "le-idle-opts", "le-idle-hint", "le-hold"):
+        assert gone not in html, gone
+    # 「歌唱なし区間」のタブ・見出しは画面に出さない(コード内の説明コメントは残す)
+    assert ">歌唱なし区間" not in html
+    # 残るタブは「通常」「未知語用」の2つ
+    assert 'id="le-tab-elements"' in html and 'id="le-tab-fallback"' in html
+    assert 'leSide === "idle"' not in html
 
 
 def test_index_html_api_key_is_reachable_when_auth_is_required():
-    """APIキー欄は「⑤ その他」の中。キー待ちのときはそこまでスクロールする。"""
+    """APIキー欄は詳細設定の先頭。キー待ちのときはそこまでスクロールする。"""
     html = _index_html()
     assert 'if (conf.auth_required && !apiKey()) {' in html
     assert '$("advanced").open = true;' in html
