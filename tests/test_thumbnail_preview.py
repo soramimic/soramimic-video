@@ -358,19 +358,31 @@ def test_prune_cache_removes_orphan_pending_markers(tmp_path: Path):
     assert (cache / f"def{preview_mod.PENDING_SUFFIX}").exists()  # PNGが残っていれば残す
 
 
-# ---- モーダル(index.html)側の約束事 ----
+# ---- ビルダーカード(index.html)側の約束事 ----
 
 
-def test_index_html_modal_uses_preview_with_fallback():
+def test_index_html_builder_uses_preview_with_fallback():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert "/api/thumbnail-preview?" in html  # モーダルはプレビューを取りに行く
-    assert "lucky-modal-loading" in html  # 生成待ちのローディング表示がある
-    assert "LUCKY_PREVIEW_TIMEOUT_MS = 8000" in html  # 8秒で打ち切る
+    assert "/api/thumbnail-preview?" in html  # カードはプレビューを取りに行く
+    assert "builder-loading" in html  # 生成待ちのローディング表示がある
+    assert "PREVIEW_TIMEOUT_MS = 8000" in html  # 8秒で打ち切る
     # 失敗・429・タイムアウトは代表画像(/api/wordlist-image)にフォールバックする
-    assert ".catch(() => { if (seq === luckyImageSeq) luckyLoadImage(" in html
+    assert ".catch(() => { if (seq === previewSeq) loadWordlistImage(" in html
     assert "/api/wordlist-image?wordlist=" in html
+
+
+def test_index_html_preview_is_debounced():
+    """プルダウンの連続変更・ボタン連打でプレビューAPIを叩きすぎない。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "PREVIEW_DEBOUNCE_MS = 400" in html
+    # 予約はタイマーを張り直す1か所だけ。同じ組み合わせなら取りに行かない
+    assert "clearTimeout(previewTimer);" in html
+    assert "previewTimer = setTimeout(renderBuilder, force ? 0 : PREVIEW_DEBOUNCE_MS);" in html
+    assert "if (key === previewKey) return;" in html
 
 
 def test_index_html_retries_once_when_images_pending():
@@ -378,12 +390,13 @@ def test_index_html_retries_once_when_images_pending():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert "LUCKY_PREVIEW_RETRY_MS = 4000" in html
+    assert "PREVIEW_RETRY_MS = 4000" in html
     assert 'res.headers.get("X-Preview-Images") === "pending"' in html
-    assert "if (pending) luckyRetryPreview(url, seq);" in html
-    # 取り直しは世代番号(luckyImageSeq)で取り違えを防ぎ、1回だけで打ち切る
-    assert "if (seq !== luckyImageSeq) return;   // 引き直し・モーダルを閉じた" in html
-    assert html.count("luckyRetryPreview(") == 2  # 定義と呼び出しの1回だけ(再帰しない)
+    assert "if (pending) retryThumbnailPreview(url, seq);" in html
+    # 取り直しは世代番号(previewSeq)で取り違えを防ぎ、1回だけで打ち切る
+    assert "if (seq !== previewSeq) return;   // 選び直された" in html
+    # 定義と呼び出しの1回だけ(再帰しない)
+    assert html.count("retryThumbnailPreview(") == 2
 
 
 def test_index_html_preview_respects_hidden_wordlists():
@@ -392,8 +405,8 @@ def test_index_html_preview_respects_hidden_wordlists():
         encoding="utf-8"
     )
     assert 'params.images = "0";' in html  # 画像なしのサムネを頼む
-    # 代表画像へのフォールバックも隠す(force のときだけ読む)
-    assert "if (!name || luckyHiddenReason(name, force)) { hide(); return; }" in html
+    # 代表画像へのフォールバックも隠す(「画像を表示する」を押すまで読まない)
+    assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in html
 
 
 # ---- 画像なしプレビュー(画像を初期非表示にする単語リスト向け) ----
