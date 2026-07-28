@@ -1479,6 +1479,58 @@ def create_app(
             headers={"Cache-Control": "no-transform"},
         )
 
+    @app.post("/api/midi-check", dependencies=[Depends(_require_api_key)])
+    async def midi_check(midi: UploadFile, lyrics: str = Form("")) -> dict[str, Any]:
+        """選ばれたMIDIに歌詞が入っているかを、生成に進む前にその場で調べる。
+
+        この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱・空耳変換の
+        入力にしているので、歌詞の無いMIDIは何分も待たせた末にジョブが落ちる。
+        UIがファイル選択の直後にこれを呼び、歌詞が無ければその場で断れるようにする。
+
+        lyrics(元歌詞テキスト)を一緒に渡すと、字幕と同じ割り付け(align_lines)を
+        試して「元歌詞が対応づかなかったXF行」の数も返す。UIはこれを使って
+        元歌詞とMIDIの食い違いを警告する(生成はブロックしない)。
+
+        解析できないMIDI(歌詞なし・XFKMなし・壊れている)はエラーではなく
+        has_lyrics=false の判定結果として返す。UIが理由をそのまま出せるように。
+        MIDIですらないファイルだけ400。
+        """
+        import tempfile
+
+        from .align import align_lines
+        from .xfparse import analyze_midi
+
+        midi_bytes = await midi.read()
+        if not midi_bytes.startswith(b"MThd"):
+            raise HTTPException(status_code=400, detail="MIDIファイルではありません")
+        lyric_lines = [ln.strip() for ln in lyrics.splitlines()]
+        lyric_lines = [ln for ln in lyric_lines if ln]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "input.mid"
+            path.write_bytes(midi_bytes)
+            try:
+                project = analyze_midi(path)
+            except Exception as exc:  # noqa: BLE001 - 歌詞なしMIDIは判定結果として返す
+                logger.info("MIDIの歌詞チェックで解析に失敗しました: %s", exc)
+                return {
+                    "has_lyrics": False,
+                    "lines": 0,
+                    "lyrics_lines": len(lyric_lines),
+                    "unmatched_lines": 0,
+                    "detail": str(exc),
+                }
+            if lyric_lines:
+                align_lines(project, lyric_lines)
+        unmatched = sum(1 for ln in project.lines if not ln.original_text)
+        return {
+            "has_lyrics": bool(project.lines),
+            "lines": len(project.lines),
+            "lyrics_lines": len(lyric_lines),
+            # 元歌詞を渡していないときは全行が「対応なし」になるので0で返す
+            "unmatched_lines": unmatched if lyric_lines else 0,
+            "detail": "",
+        }
+
     @app.post("/api/editor-session", dependencies=[Depends(_require_api_key)])
     async def editor_session(
         midi: UploadFile,

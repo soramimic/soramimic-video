@@ -47,6 +47,8 @@ def test_info_hints_cover_the_static_explanations():
     always_visible = {
         "restore-notice",       # 前回の入力を復元しました
         "midi-restore-hint",    # 前回のファイルを復元: ...
+        "midi-error",           # 歌詞なしMIDIの拒否
+        "lyrics-midi-warn",     # 元歌詞とMIDI歌詞の食い違い
         "sample-status",        # ✓ ...をセットしました
         "editor-auto-status",   # エディタの編集内容が使われます/使いません
         "parody-status",        # 編集済みの替え歌を使用します

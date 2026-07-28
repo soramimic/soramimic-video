@@ -464,6 +464,9 @@
       <input type="file" id="midi" accept=".mid,.midi">
       <p class="hint" data-info>歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
       <p class="hint" id="midi-restore-hint" hidden></p>
+      <!-- 歌詞なしMIDIの拒否(checkMidi)。選んだ直後にサーバーで歌詞の有無を見て、
+           無ければファイル選択ごと取り消して理由をここに出す -->
+      <p class="error" id="midi-error" hidden></p>
       <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
       <details class="sub-details" id="sample-details">
         <summary>サンプルから選ぶ</summary>
@@ -480,6 +483,9 @@
       <label for="lyrics">元歌詞(推奨・字幕用)</label>
       <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
       <p class="hint" data-info>MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
+      <!-- 元歌詞とMIDIの歌詞が食い違っているときの警告(checkMidi)。
+           生成はできるので止めない。常時表示の状態メッセージ扱い -->
+      <p class="hint" id="lyrics-midi-warn" hidden></p>
     </div>
   </section>
 
@@ -1365,8 +1371,9 @@ function showSubmitMsg(text) {
 }
 
 async function submitJob(previewSec) {
-  // 曲を選んだ直後に押されたときは、MIDIの取得が終わるのを待ってから見る
+  // 曲を選んだ直後に押されたときは、MIDIの取得と歌詞チェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
+  if (midiChecking) await midiChecking;
   const midi = $("midi").files[0];
   if (!midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
@@ -1521,6 +1528,101 @@ function trackSample(p) {
   return p;
 }
 $("sample-select").addEventListener("change", () => trackSample(applySample()));
+
+// ---- 選んだMIDIの検証(歌詞の有無・元歌詞との整合) ----
+// この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱と空耳変換の
+// 入力にしているので、歌詞の無いMIDIは何分も待たせた末に必ず失敗する。
+// 選ばれた直後に /api/midi-check へ送って確かめ、歌詞が無ければその場で
+// ファイル選択ごと取り消す(=生成にも編集にも進めない状態に戻す)。
+// 同じ応答で「元歌詞の行がMIDIの歌詞行に対応づいたか」も分かるので、
+// 食い違いは止めずに警告だけ出す(renderLyricsMidiWarning)。
+let midiCheckSeq = 0;       // 応答の追い越しを捨てるための世代番号
+let midiCheckTimer = null;
+let midiChecking = null;    // 検証中のPromise(投入・編集の前に待つ)
+let midiRejecting = false;  // 拒否のクリアで自分自身を呼び直さないための番人
+
+function scheduleMidiCheck() {
+  if (midiRejecting) return;
+  if (midiCheckTimer) clearTimeout(midiCheckTimer);
+  // サンプル選択はMIDIの注入と元歌詞の反映が別のイベントで来るので、少し待って束ねる
+  midiChecking = new Promise((resolve) => {
+    midiCheckTimer = setTimeout(() => { checkMidi().then(resolve, resolve); }, 250);
+  });
+}
+
+function clearMidiNotices() {
+  $("midi-error").textContent = "";
+  $("midi-error").hidden = true;
+  $("lyrics-midi-warn").textContent = "";
+  $("lyrics-midi-warn").hidden = true;
+}
+
+// 歌詞なしMIDIはその場で取り消す。理由と「どうすれば作れるか」を1行添える。
+function rejectMidi(detail) {
+  midiRejecting = true;
+  try {
+    $("midi").value = "";
+    $("midi").dispatchEvent(new Event("change", { bubbles: true }));
+  } finally {
+    midiRejecting = false;
+  }
+  $("midi-restore-hint").hidden = true;
+  $("sample-status").textContent = "";
+  const text = "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。"
+    + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
+    + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
+    + (detail ? `\n(${detail})` : "");
+  $("midi-error").textContent = text;
+  $("midi-error").hidden = false;
+  // 詳細設定を開いていない人(ビルダーカードの曲プルダウン)にも見えるように
+  showSubmitMsg(text);
+}
+
+// 元歌詞とMIDI歌詞の食い違いは、字幕の元歌詞を割り付けているのと同じ処理
+// (align_lines)をサーバーで試した結果 unmatched_lines で見る。
+// 数行の取りこぼしはこの割り付けでは普通に起きるので、MIDIの歌詞行の2割以上
+// (かつ2行以上)が対応づかないときだけ、はっきりした不整合として警告する。
+function renderLyricsMidiWarning(info) {
+  const el = $("lyrics-midi-warn");
+  const lines = info.lines || 0;
+  const lyr = info.lyrics_lines || 0;
+  const bad = info.unmatched_lines || 0;
+  if (!lines || !lyr || bad < Math.max(2, lines * 0.2)) {
+    el.textContent = "";
+    el.hidden = true;
+    return;
+  }
+  el.textContent = `⚠ 元歌詞とMIDIの歌詞が食い違っています`
+    + `(MIDIの歌詞${lines}行のうち${bad}行に、元歌詞${lyr}行のどれも対応しません)。`
+    + "歌う内容と替え歌変換に使われるのはMIDIの歌詞で、元歌詞は字幕の表示にだけ使われます。"
+    + "このままでも生成できますが、対応しない行では字幕の元歌詞がずれる・出ないことがあります。";
+  el.hidden = false;
+}
+
+async function checkMidi() {
+  const seq = ++midiCheckSeq;
+  const f = $("midi").files[0];
+  if (!f) { clearMidiNotices(); return; }
+  let body;
+  try {
+    const form = new FormData();
+    form.append("midi", f);
+    form.append("lyrics", $("lyrics").value);
+    const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
+    body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+  } catch {
+    // 検証そのものに失敗したときは黙って通す(生成側で従来どおりのエラーになる)
+    return;
+  }
+  if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
+  clearMidiNotices();
+  if (!body.has_lyrics) { rejectMidi(body.detail); return; }
+  renderLyricsMidiWarning(body);
+}
+
+$("midi").addEventListener("change", scheduleMidiCheck);
+$("lyrics").addEventListener("change", scheduleMidiCheck);
 
 // ---- ビルダーカード(曲 × 単語リスト → サムネプレビュー → 生成) ----
 // トップのカードで曲と単語リストを選ぶと、その組み合わせで実際に作られるサムネを
@@ -2943,6 +3045,7 @@ function watchEditorSession(on) {
 }
 
 async function openEditor() {
+  if (midiChecking) await midiChecking;
   const midi = $("midi").files[0];
   const wl = $("wordlist").value.trim();
   const msg = $("open-editor-msg");
@@ -3769,6 +3872,8 @@ async function doRestoreForm() {
       injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), false);
       $("midi-restore-hint").textContent = "前回のファイルを復元: " + m.name;
       $("midi-restore-hint").hidden = false;
+      // 復元したMIDIも(歌詞なしのまま持ち越さないよう)一度は検証する
+      scheduleMidiCheck();
       any = true;
     }
   } catch { /* 復元失敗は無視 */ }
