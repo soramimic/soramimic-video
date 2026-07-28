@@ -117,15 +117,34 @@ def test_layout_texts_fallback_without_word():
     assert texts == ["夜に駆ける を 駅名 で歌ってみた", SIGNATURE]
 
 
-def test_fullbleed_texts_have_band_or_stroke():
-    """背景画像の明暗に依存しないよう、全面スタイルの文字は帯か輪郭を必ず持つ。"""
-    layout = thumbnail_layout(has_word=True, has_image=True)
+def test_fullbleed_texts_are_outlined_without_band():
+    """全面スタイルの文字は二重の縁取り+影で読ませる(黒帯は敷かない)。"""
     from soramimic_video.layout import TextElement
 
-    texts = [e for e in layout.elements if isinstance(e, TextElement)]
-    assert texts, "文字要素が無い"
-    for el in texts:
-        assert el.background or el.stroke_width > 0, el.template
+    for has_word in (True, False):
+        for has_image in (True, False):
+            layout = thumbnail_layout(has_word=has_word, has_image=has_image)
+            texts = [e for e in layout.elements if isinstance(e, TextElement)]
+            assert texts, "文字要素が無い"
+            for el in texts:
+                assert el.background is None, el.template  # 帯は使わない
+                # 明るい背景で効く暗色と、暗い背景で効く明色の2重
+                assert len(el.strokes) >= 2, el.template
+                widths = [w for w, _ in el.strokes]
+                assert widths == sorted(widths, reverse=True)  # 太い順
+                assert el.shadow > 0, el.template
+
+
+def test_outline_scales_with_text_size():
+    """縁取りは文字サイズに比例する(小さい文字だけ縁が太くならない)。"""
+    big = thumb_mod.outline_style(0.19)
+    small = thumb_mod.outline_style(0.075)
+    assert big["strokes"][0]["width"] > small["strokes"][0]["width"]
+    assert big["shadow"] > small["shadow"]
+    # どんなに小さい文字でも輪郭が消えない下限がある
+    tiny = thumb_mod.outline_style(0.001)
+    assert tiny["strokes"][-1]["width"] >= thumb_mod.MIN_INNER_STROKE
+    assert tiny["shadow"] >= thumb_mod.MIN_SHADOW
 
 
 def test_layout_image_credit_hidden_when_empty():
@@ -220,6 +239,9 @@ def test_compose_background_dims_and_covers(tmp_path: Path):
     bg = compose_background([image], 320, 180)
     assert bg is not None and bg.size == (320, 180)
     assert bg.getpixel((160, 90))[0] < 250  # 明るさを落としている
+    # 可読性は縁取りで作るので、暗転は写真の中身が分かる程度に留める
+    assert bg.getpixel((160, 90))[0] > 180
+    assert compose_background([image], 320, 180, dim=0.5).getpixel((160, 90))[0] < 140
     assert compose_background([], 320, 180) is None
     assert compose_background([tmp_path / "missing.png"], 320, 180) is None
 

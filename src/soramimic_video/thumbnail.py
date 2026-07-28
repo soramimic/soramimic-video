@@ -4,8 +4,9 @@
 大きく載せた動画と同じアスペクト(既定1280x720)のPNGを作る。
 
 既定のスタイル(STYLE_FULLBLEED)は単語の画像を全面に敷き、その上に見出しと
-説明文を載せる。文字は必ず輪郭(stroke)+半透明の帯の上に置くので、背景画像が
-明るくても暗くても読める。
+説明文を載せる。文字は二重の縁取り(白い文字 → 黒い内側の環 → 白い外側の環)と
+文字の形にぼかした影で読ませるので、背景画像が明るくても暗くても読める
+(黒い帯は敷かない。写真が隠れるし見た目も重いため)。
 
     ┌─────────────────────────────┐
     │▓▓▓▓▓【ダイオージャ】▓▓▓▓▓▓▓▓▓▓│  ← 背景は単語の画像(1語なら1枚、
@@ -18,7 +19,7 @@
 使う(pick_headline_words)。画像も語ごとに1枚ずつ敷く。
 旧スタイル(STYLE_SIDE: 左に【単語】、右に小さく画像)も比較用に残してある。
 
-描画は layout.py のレイアウト機構(フォント解決・テキスト収め込み・帯・輪郭)を
+描画は layout.py のレイアウト機構(フォント解決・テキスト収め込み・縁取り・影)を
 そのまま使うので、見た目のトーンは動画のカードレイアウトと揃う。
 変換に失敗した・曲名が無い・言い換え単語が取れないときは、言い換えなしの
 「<曲名> を <リスト名> で歌ってみた」だけのサムネにフォールバックする
@@ -62,8 +63,39 @@ DEFAULT_STYLE = STYLE_FULLBLEED
 # 見出しに使う言い換え単語の最大数と、「1語で済ませてよい」最小文字数。
 # 「モノカ」のような短い1語だけでは意味が取りにくいので、その場合は2語目を足す。
 HEADLINE_MAX_WORDS = 4  # 見出しに並べる言い換え単語の上限(長い曲名の保険)
-# 背景に敷いた画像の明るさ(1.0=そのまま)。文字側の帯・輪郭と合わせて可読性を作る
-BACKGROUND_DIM = 0.62
+# 背景に敷いた画像の明るさ(1.0=そのまま)。可読性は文字側の縁取りで作るので、
+# 暗転は「白い写真で白文字が飛ばない」程度に留めて写真の中身を見せる
+BACKGROUND_DIM = 0.82
+
+# 文字の可読性の作り方(帯は敷かない)。いずれもフレーム高さ比率で、
+# 文字サイズに比例させる(小さい文字で縁取りだけ太くならないように)。
+#   白い文字 → 内側に黒い環 → 外側に白い環 の二重縁取り。明るい背景では
+#   黒い環が、暗い背景では外側の白い環が効くので、写真の明暗に依存しない。
+#   さらに文字の形にぼかした影を落として、細かい模様の写真でも輪郭が沈まないようにする
+INNER_STROKE_RATIO = 0.055  # 内側(暗色)の太さ / 文字サイズ
+OUTER_STROKE_RATIO = 0.085  # 外側(明色)の太さ / 文字サイズ。差が明色の環になる
+SHADOW_RATIO = 0.06  # ぼかし影の半径 / 文字サイズ
+MIN_INNER_STROKE = 0.0022  # 小さい文字でも輪郭が消えないための下限(フレーム比)
+MIN_OUTER_STROKE = 0.0042
+MIN_SHADOW = 0.003
+INNER_STROKE_COLOR = "#141414"
+OUTER_STROKE_COLOR = "#ffffff"
+SHADOW_COLOR = "#000000b3"
+
+
+def outline_style(size: float) -> dict:
+    """文字サイズに見合う二重縁取り+ぼかし影の指定(text要素にマージして使う)。"""
+    return {
+        "strokes": [
+            {"width": max(size * OUTER_STROKE_RATIO, MIN_OUTER_STROKE),
+             "color": OUTER_STROKE_COLOR},
+            {"width": max(size * INNER_STROKE_RATIO, MIN_INNER_STROKE),
+             "color": INNER_STROKE_COLOR},
+        ],
+        "shadow": max(size * SHADOW_RATIO, MIN_SHADOW),
+        "shadow_color": SHADOW_COLOR,
+    }
+
 
 # 隅の署名と「<曲名> を <リスト名> で歌ってみた」は3パターン共通
 _CAPTION_ELEMENT = {
@@ -73,23 +105,6 @@ _CAPTION_ELEMENT = {
 _SIGNATURE_ELEMENT = {
     "type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
     "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom",
-}
-# 全面スタイルの下段。背景画像の明暗に関わらず読めるよう、半透明の帯を必ず敷く
-_FULLBLEED_CAPTION = {
-    "type": "text", "text": "{caption}", "box": [0.05, 0.63, 0.90, 0.17],
-    "size": 0.075, "color": "white", "wrap": True,
-    "stroke_width": 0.003, "background": "#000000b3",
-}
-_FULLBLEED_CREDIT = {
-    # 画像クレジット(表記不要な画像では空文字になり描かれない)
-    "type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
-    "size": 0.024, "color": "#e8e8e8", "align": "left", "valign": "bottom",
-    "background": "#000000a6",
-}
-_FULLBLEED_SIGNATURE = {
-    "type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
-    "size": 0.032, "color": "#e8e8e8", "align": "right", "valign": "bottom",
-    "background": "#000000a6",
 }
 
 
@@ -102,8 +117,8 @@ def thumbnail_layout_spec(
     """サムネのレイアウト定義(layout.py と同じ書式のdict)。
 
     STYLE_FULLBLEED(既定)では背景画像を呼び出し側が合成して渡すので、この
-    定義に image 要素は出てこない(文字だけ)。文字は輪郭+半透明の帯を敷いて
-    背景の明暗に依存せず読めるようにする。
+    定義に image 要素は出てこない(文字だけ)。文字は二重の縁取りとぼかし影で
+    背景の明暗に依存せず読めるようにする(帯は敷かない)。
 
     STYLE_SIDE(旧)は
     - 言い換え単語+画像: 左に【単語】、右に画像(クレジットは画像の右下)
@@ -152,29 +167,46 @@ def thumbnail_layout_spec(
     }
 
 
+def _outlined_text(size: float, **element) -> dict:
+    """全面スタイルのtext要素(帯ではなく二重縁取り+影で読ませる)。"""
+    return {"type": "text", "size": size, "color": "white",
+            **outline_style(size), **element}
+
+
 def _fullbleed_spec(has_word: bool, has_image: bool) -> dict:
-    """全面スタイルの定義。背景(単色 or 合成済み画像)の上に文字だけを置く。"""
+    """全面スタイルの定義。背景(単色 or 合成済み画像)の上に文字だけを置く。
+
+    背景写真の明暗に関わらず読めるようにするのは文字ごとの二重縁取りと
+    ぼかし影(outline_style)で、半透明の帯は敷かない。
+    """
+    credit = _outlined_text(
+        # 画像クレジット(表記不要な画像では空文字になり描かれない)
+        0.024, text="{image_credit}", box=[0.03, 0.895, 0.50, 0.055],
+        align="left", valign="bottom",
+    )
+    signature = _outlined_text(
+        0.032, text="{app_credit}", box=[0.55, 0.895, 0.42, 0.055],
+        align="right", valign="bottom",
+    )
     if not has_word:
         return {
             "background": "black",
             "elements": [
-                {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
-                 "size": 0.11, "color": "white", "wrap": True,
-                 "stroke_width": 0.004,
-                 **({"background": "#000000b3"} if has_image else {})},
-                _FULLBLEED_CREDIT,
-                _FULLBLEED_SIGNATURE,
+                _outlined_text(
+                    0.11, text="{caption}", box=[0.06, 0.28, 0.88, 0.34], wrap=True
+                ),
+                credit,
+                signature,
             ],
         }
+    caption_box = [0.05, 0.63, 0.90, 0.17] if has_image else [0.05, 0.70, 0.90, 0.15]
     return {
         "background": "black",
         "elements": [
-            {"type": "text", "text": "{headline}", "box": [0.05, 0.10, 0.90, 0.38],
-             "size": 0.19, "color": "white", "stroke_width": 0.007,
-             **({"background": "#0000008c"} if has_image else {})},
-            _FULLBLEED_CAPTION if has_image else _CAPTION_ELEMENT,
-            _FULLBLEED_CREDIT,
-            _FULLBLEED_SIGNATURE,
+            _outlined_text(0.19, text="{headline}", box=[0.05, 0.10, 0.90, 0.38]),
+            _outlined_text(0.075, text="{caption}", box=caption_box, wrap=True),
+            credit,
+            signature,
         ],
     }
 
@@ -250,13 +282,15 @@ def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
 
 
 def compose_background(
-    image_paths: Sequence[Path], width: int, height: int, dim: float = BACKGROUND_DIM
+    image_paths: Sequence[Path], width: int, height: int, dim: float | None = None
 ) -> Image.Image | None:
     """単語画像を全面に敷いた背景を作る(2枚なら左右に等分)。1枚も読めなければ None。
 
     文字を載せるので、そのままだと明るい写真で白文字が飛ぶ。全体を dim 倍に
-    落としたうえで、文字側にも輪郭と半透明の帯を敷いて可読性を担保する。
+    落としたうえで、文字側の二重縁取りとぼかし影で可読性を担保する
+    (可読性の主役は縁取りなので、dim は写真が分かる程度の弱い暗転にする)。
     """
+    dim = BACKGROUND_DIM if dim is None else dim
     images: list[Image.Image] = []
     for path in image_paths:
         try:

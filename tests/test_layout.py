@@ -11,6 +11,7 @@ from soramimic_video.layout import (
     builtin_layout_names,
     load_layout,
     load_wordlist_layouts,
+    parse_layout,
     render_frame,
     render_idle_frame,
     resolve_app_credit,
@@ -427,3 +428,94 @@ def test_render_frame_wrap_long_text(tmp_path):
     data = {"achievement": "天然鉱石と光の拡散関係の初期論説" * 5}
     out = render_frame(layout, None, data, 320, 180, tmp_path / "f")
     assert out is not None and out.exists()
+
+
+# ---- 縁取り(strokes)とぼかし影(shadow) ----
+
+
+def _outlined_layout(**text):
+    """1つのtext要素だけを持つレイアウト(縁取りの検証用)。"""
+    return parse_layout({
+        "background": "#808080",
+        "app_credit": False,
+        "elements": [{"type": "text", "text": "I", "box": [0.0, 0.0, 1.0, 1.0],
+                      "size": 0.5, "color": "white", **text}],
+    })
+
+
+def _row_runs(img, y):
+    """1行ぶんの色を 明(w)/暗(k)/背景(b) に丸めて連続を畳んだ列。"""
+    runs = []
+    for x in range(img.width):
+        r, g, b = img.getpixel((x, y))
+        if r > 230 and g > 230 and b > 230:
+            label = "w"
+        elif r < 40 and g < 40 and b < 40:
+            label = "k"
+        elif (r, g, b) == (128, 128, 128):
+            label = "b"
+        else:
+            continue  # アンチエイリアスの中間色は無視する
+        if not runs or runs[-1] != label:
+            runs.append(label)
+    return runs
+
+
+def test_strokes_draw_concentric_rings():
+    """strokes は太い順に同心の環になる(白い文字→黒い環→白い環)。"""
+    layout = _outlined_layout(strokes=[
+        {"width": 0.04, "color": "black"}, {"width": 0.08, "color": "white"},
+    ])
+    img = layout_mod.render_image(layout, None, {}, 200, 120)
+    runs = _row_runs(img, 60)
+    assert runs[:4] == ["b", "w", "k", "w"], runs
+
+
+def test_strokes_are_sorted_widest_first():
+    layout = _outlined_layout(strokes=[[0.01, "white"], [0.03, "black"]])
+    el = layout.elements[0]
+    assert el.strokes == ((0.03, "black"), (0.01, "white"))
+
+
+def test_strokes_bad_format():
+    with pytest.raises(ValueError, match="strokes"):
+        _outlined_layout(strokes={"width": 0.01})
+    with pytest.raises(ValueError, match="strokes"):
+        _outlined_layout(strokes=["black"])
+
+
+def test_strokes_fit_inside_the_box():
+    """太い縁取りぶんは文字を小さくして収める(boxからはみ出さない)。"""
+    box = [0.2, 0.2, 0.6, 0.6]
+    layout = parse_layout({
+        "background": "#808080",
+        "app_credit": False,
+        "elements": [{"type": "text", "text": "IIIIIIII", "box": box, "size": 0.4,
+                      "color": "white",
+                      "strokes": [{"width": 0.08, "color": "black"}]}],
+    })
+    img = layout_mod.render_image(layout, None, {}, 200, 120)
+    ink = [(x, y) for y in range(img.height) for x in range(img.width)
+           if img.getpixel((x, y)) != (128, 128, 128)]
+    assert ink, "何も描かれていない"
+    assert min(x for x, _ in ink) >= int(box[0] * 200)
+    assert max(x for x, _ in ink) <= int((box[0] + box[2]) * 200)
+    assert min(y for _, y in ink) >= int(box[1] * 120)
+    assert max(y for _, y in ink) <= int((box[1] + box[3]) * 120)
+
+
+def test_shadow_darkens_only_around_the_text():
+    plain = layout_mod.render_image(_outlined_layout(), None, {}, 200, 120)
+    shaded = layout_mod.render_image(_outlined_layout(shadow=0.05), None, {}, 200, 120)
+    # 文字のすぐ横は暗くなる
+    assert shaded.getpixel((85, 60))[0] < plain.getpixel((85, 60))[0]
+    # 遠く離れた隅はそのまま(矩形の帯ではない)
+    assert shaded.getpixel((2, 2)) == plain.getpixel((2, 2))
+
+
+def test_builtin_layouts_do_not_use_new_text_options():
+    """既存レイアウトの見た目は変えない(縁取り・影は未使用のまま)。"""
+    for name in builtin_layout_names():
+        for el in load_layout(name).elements:
+            if isinstance(el, layout_mod.TextElement):
+                assert el.strokes == () and el.shadow == 0.0, name
