@@ -820,11 +820,62 @@ async function loadHistory() {
 
 let currentJob = null;
 
+// ---- 進捗ポーリング ----
+// iOSでアプリを切り替えるとタイマーが凍り、通信も切られる。復帰したときに
+// ポーリングが止まったままにならないよう、次の3点を守る。
+//   1. 一時的な失敗ではチェーンを殺さない(fetchの例外・5xx・429はリトライ)
+//   2. 画面が可視に戻ったら(visibilitychange / pageshow / online)即座に取り直す
+//   3. 二重にチェーンが走らないよう世代番号(pollSeq)で古い方を捨てる
+// 経過秒はクライアントで数えず、サーバーの stage_started_at 由来の
+// stage_elapsed をそのまま出す。だから復帰後の1回で正しい値に戻る。
+const POLL_INTERVAL_MS = 2000;
+const POLL_RETRY_MAX_MS = 15000;   // 失敗が続くときの最大間隔
+const POLL_MAX_FAILURES = 60;      // これだけ連続で失敗したら諦める
+// 取り直しても直らない(=ジョブが無い・権限が無い)ステータス
+const POLL_FATAL_STATUS = [401, 403, 404, 410];
+
+let pollTimer = null;
+let pollSeq = 0;
+let pollFailures = 0;
+let pollLastAt = 0;   // 復帰イベントが重なったときに連打しないための目安
+
+function stopPolling() {
+  pollSeq++;                       // 進行中のチェーンを無効化する
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+function schedulePoll(id, seq, delay) {
+  if (seq !== pollSeq) return;
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(() => { pollTimer = null; poll(id, seq); }, delay);
+}
+
+// 止まっていても生きていても、いまのジョブを今すぐ取り直すところから始め直す。
+function restartPolling(id) {
+  stopPolling();
+  pollFailures = 0;
+  poll(id, pollSeq);
+}
+
 function watch(id) {
   currentJob = id;
   $("cancel").hidden = false;
-  poll(id);
+  restartPolling(id);
 }
+
+// バックグラウンドから戻ってきた・回線が戻ったときの取り直し。
+function resumePolling() {
+  if (!currentJob) return;
+  if (document.visibilityState === "hidden") return;
+  if (Date.now() - pollLastAt < 500) return;   // 復帰イベントが重なった分は捨てる
+  restartPolling(currentJob);
+}
+
+document.addEventListener("visibilitychange", resumePolling);
+window.addEventListener("pageshow", resumePolling);   // bfcacheからの復帰
+window.addEventListener("focus", resumePolling);
+window.addEventListener("online", resumePolling);
 
 function renderStages(job) {
   const doneNames = new Set(job.stages.map((s) => s.name));
@@ -860,10 +911,47 @@ function renderBuilderBar(job) {
   $("builder-bar-fill").style.width = pct + "%";
 }
 
-async function poll(id) {
-  const res = await fetch(`/api/jobs/${id}`, { headers: headers() });
-  if (!res.ok) { setJobStatus("状態取得に失敗: " + res.status); return; }
-  const job = await res.json();
+// 通信の失敗は「まだ続けてよい失敗」として扱い、間隔を伸ばしながら取り直す。
+// ここでチェーンを止めてしまうと、バックグラウンドで1回失敗しただけで
+// 進捗表示が二度と戻らなくなる(iOSで起きていた症状)。
+function pollFailed(id, seq, detail) {
+  if (seq !== pollSeq) return;
+  pollFailures++;
+  if (pollFailures >= POLL_MAX_FAILURES) {
+    stopPolling();
+    setJobStatus("状態取得に失敗: " + detail, "状態取得に失敗");
+    return;
+  }
+  // 3回続けて失敗したら、止まって見える理由を出す(復帰したら通常表示に戻る)
+  if (pollFailures >= 3) setJobStatus("再接続しています…", "再接続しています…");
+  const wait = Math.min(POLL_INTERVAL_MS * pollFailures, POLL_RETRY_MAX_MS);
+  schedulePoll(id, seq, wait);
+}
+
+async function poll(id, seq = pollSeq) {
+  if (seq !== pollSeq || id !== currentJob) return;   // 古いチェーンは捨てる
+  pollLastAt = Date.now();
+  let job;
+  try {
+    const res = await fetch(`/api/jobs/${id}`, { headers: headers(), cache: "no-store" });
+    if (POLL_FATAL_STATUS.includes(res.status)) {
+      // 取り直しても直らない。busyのままにせず操作を返す
+      stopPolling();
+      setJobStatus("状態取得に失敗: " + res.status);
+      setBuilderState("preview");
+      showBuilderMsg(`進捗の取得に失敗しました(${res.status})`);
+      finish();
+      return;
+    }
+    if (!res.ok) { pollFailed(id, seq, String(res.status)); return; }
+    job = await res.json();
+  } catch (e) {
+    // 通信断・バックグラウンドでの凍結・JSONの途中切れ。どれも一時的とみなす
+    pollFailed(id, seq, (e && e.message) || "通信エラー");
+    return;
+  }
+  if (seq !== pollSeq) return;   // 待っている間に取り直しが走っていたら捨てる
+  pollFailures = 0;
   renderStages(job);
   renderBuilderBar(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
@@ -878,10 +966,10 @@ async function poll(id) {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
       setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
     }
-    setTimeout(() => poll(id), 2000);
+    schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
     setJobStatus("順番待ち…");
-    setTimeout(() => poll(id), 2000);
+    schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "done") {
     setJobStatus(`完成!(合計 ${Math.round(job.total_seconds)}秒)`);
     // 動画はサムネ枠がそのままプレイヤーに変わる。詳細側にはサムネ画像のリンクだけ
@@ -983,6 +1071,7 @@ function bindShare(videoUrl) {
 }
 
 function finish() {
+  stopPolling();
   $("cancel").hidden = true;
   currentJob = null;
   setBusy(false);
