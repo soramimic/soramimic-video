@@ -97,6 +97,25 @@ def test_layout_texts_with_word():
     assert SIGNATURE in texts
 
 
+def test_caption_breaks_at_the_meaningful_spot_when_long():
+    """長い曲名×長いリスト名は「<曲名> を」/「<リスト名> で歌ってみた」で折る。"""
+    data = thumbnail_data("残酷な天使のテーゼ", "架空の日常アニメキャラ", word="米原")
+    assert data["caption"] == "残酷な天使のテーゼ を\n架空の日常アニメキャラ で歌ってみた"
+    # どの行も1行に入る長さになっている(自動の折り返しでさらに縮まない)
+    assert all(len(line) <= thumb_mod.CAPTION_ONE_LINE_CHARS
+               for line in data["caption"].split("\n"))
+    # 1行で入る短さなら折らない(不要な2行組みで文字を小さくしない)
+    assert "\n" not in thumbnail_data("夜に駆ける", "駅名", word="米原")["caption"]
+
+
+def test_text_only_thumbnail_uses_bigger_type():
+    """絵が無いサムネは文字が主役なので、見出しもキャプションも大きくする。"""
+    with_image = thumb_mod.thumbnail_layout_spec(True, True)["elements"]
+    text_only = thumb_mod.thumbnail_layout_spec(True, False)["elements"]
+    for a, b in zip(with_image[:2], text_only[:2], strict=True):
+        assert b["size"] > a["size"]
+
+
 def test_headline_joins_two_words():
     data = thumbnail_data("夜に駆ける", "駅名", word=["モノカ", "加藤"])
     assert data["headline"] == "【モノカ 加藤】"

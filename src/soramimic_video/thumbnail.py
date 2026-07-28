@@ -82,6 +82,34 @@ DEFAULT_STYLE = STYLE_FULLBLEED
 # 「モノカ」のような短い1語だけでは意味が取りにくいので、その場合は2語目を足す。
 HEADLINE_MAX_WORDS = 4  # 見出しに並べる言い換え単語の上限(長い曲名の保険)
 
+# キャプション(「<曲名> を <リスト名> で歌ってみた」)を自分で2行に折る文字数。
+# 1行に入るのはフレーム幅の9割・既定サイズでおよそ20文字で、それを超えると
+# 自動の折り返し(文字単位)に任せることになり「架空の日常アニ / メキャラ」の
+# ように語の途中で切れるうえ、2行ぶんの高さを作るために文字も縮む。
+# 意味の切れ目(「<曲名> を」/「<リスト名> で歌ってみた」)で先に折っておけば、
+# 長い曲名×長いリスト名でも縮まずスマホの小ささでも読める
+CAPTION_ONE_LINE_CHARS = 20
+
+# 見出し・キャプションの文字サイズ(フレーム高さ比率)。画像を隠す単語リストや
+# 画像が取れなかったときは絵が無いので、文字そのものを大きくして
+# 「文字だけで目を引くサムネ」として成立させる(絵に負けない必要がないぶん
+# 大きくできる)。見出しは折り返さないので、長い単語では収まるまで縮む
+HEADLINE_SIZE = 0.19
+HEADLINE_SIZE_TEXT_ONLY = 0.24
+CAPTION_SIZE = 0.075
+CAPTION_SIZE_TEXT_ONLY = 0.095
+# 見出し・キャプションの枠。キャプションは2行になっても既定サイズのまま入る高さに
+# してある(中央寄せなので、1行のときの位置は枠の中心=従来と同じところに残る)。
+#
+# 画像ありのときは写真の主役部分を隠さないよう上下に離して置くが、画像が無いと
+# その間隔がそのまま「真ん中だけ空いた黒い帯」になって、文字が上下の端に
+# 貼り付いたように見える。画像なしでは見出しとキャプションをひと塊として
+# 画面の中央(隅の署名のぶんだけ上)に置く
+HEADLINE_BOX = (0.05, 0.10, 0.90, 0.38)
+HEADLINE_BOX_TEXT_ONLY = (0.04, 0.13, 0.92, 0.34)
+CAPTION_BOX = (0.05, 0.60, 0.90, 0.23)
+CAPTION_BOX_TEXT_ONLY = (0.04, 0.51, 0.92, 0.26)
+
 # ---- 文字の可読性デザイン(比較中の案を切り替えられるようにしてある) ----
 #
 # どの案も「べた塗りの矩形帯」は敷かない(写真が隠れるし見た目が重い)。
@@ -106,7 +134,7 @@ DARK_PERCENTILE = 0.25
 # smoothstep で 0 に落とす。両端とも傾きがゼロになるので帯のような境界線が出ない
 Scrim = tuple[str, float, float, float]
 # 見出しは上、キャプションとクレジットは下にあるので上下の両方から掛ける。
-# hold は文字が乗る範囲(見出し 0.10〜0.48 / キャプション 0.63〜0.80)を覆う長さにし、
+# hold は文字が乗る範囲(見出し 0.10〜0.48 / キャプション 0.60〜0.83)を覆う長さにし、
 # 上下の extent の合計をちょうど1.0にして中央で両者が0になるようにしてある
 DEFAULT_SCRIMS: tuple[Scrim, ...] = (
     ("top", 0.38, 0.56, 0.60),
@@ -359,6 +387,8 @@ def _fullbleed_spec(
     背景写真の明暗に関わらず読めるようにするのは文字ごとの縁取りとぼかし影
     (outline_style)、および案によっては背景側のグラデーション(apply_scrim)で、
     半透明の帯は敷かない。
+    画像が無いとき(has_image=False: 画像を隠すリスト・画像が取れなかったとき)は
+    文字が主役になるので、見出しもキャプションも一回り大きい枠・サイズにする。
     """
     d = resolve_design(design)
     credit = _outlined_text(
@@ -381,12 +411,18 @@ def _fullbleed_spec(
                 signature,
             ],
         }
-    caption_box = [0.05, 0.63, 0.90, 0.17] if has_image else [0.05, 0.70, 0.90, 0.15]
+    # 絵が無いサムネ(画像を隠すリスト・画像が取れなかったとき)は文字が主役に
+    # なるので、見出しもキャプションも一回り大きくし、写真を避ける必要が無いぶん
+    # ひと塊にまとめて画面の中央に置く
+    headline_size = HEADLINE_SIZE if has_image else HEADLINE_SIZE_TEXT_ONLY
+    headline_box = list(HEADLINE_BOX if has_image else HEADLINE_BOX_TEXT_ONLY)
+    caption_size = CAPTION_SIZE if has_image else CAPTION_SIZE_TEXT_ONLY
+    caption_box = list(CAPTION_BOX if has_image else CAPTION_BOX_TEXT_ONLY)
     return {
         "background": "black",
         "elements": [
-            _outlined_text(0.19, d, text="{headline}", box=[0.05, 0.10, 0.90, 0.38]),
-            _outlined_text(0.075, d, text="{caption}", box=caption_box, wrap=True),
+            _outlined_text(headline_size, d, text="{headline}", box=headline_box),
+            _outlined_text(caption_size, d, text="{caption}", box=caption_box, wrap=True),
             credit,
             signature,
         ],
@@ -419,6 +455,8 @@ def thumbnail_data(
     (「【モノカ 加藤】」)。クレジットも複数渡せる(重複は畳んで「 / 」で連結)。
     曲名・単語リスト名のどちらかが取れないときは、その部分を省いた文にする
     (「 を  で歌ってみた」のような空欄が残らないように)。
+    キャプションが1行に入らない長さ(CAPTION_ONE_LINE_CHARS超)のときは
+    「<曲名> を」/「<リスト名> で歌ってみた」の意味の切れ目で改行を入れる。
     """
     words = [word] if isinstance(word, str) else list(word)
     headline = " ".join(w for w in words if w)
@@ -427,6 +465,9 @@ def thumbnail_data(
     credit_text = " / ".join(dict.fromkeys(c for c in credits if c))
     if title and wordlist_text:
         caption = f"{title} を {wordlist_text} で歌ってみた"
+        if len(caption) > CAPTION_ONE_LINE_CHARS:
+            # 1行に入らない長さは、文字単位の自動折り返しに任せず意味の切れ目で折る
+            caption = f"{title} を\n{wordlist_text} で歌ってみた"
     elif title:
         caption = f"{title} を歌ってみた"
     elif wordlist_text:
