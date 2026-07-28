@@ -610,3 +610,139 @@ def test_section_app_credit_not_duplicated(tmp_path):
     }), encoding="utf-8")
     layout = load_layout(str(p))
     assert layout.app_credit is not None
+
+
+def _columns_element(columns=3, size=0.06):
+    from soramimic_video.layout import TextElement
+
+    return TextElement(
+        template="", box=(0.0, 0.0, 1.0, 1.0), size=size, align="left", columns=columns
+    )
+
+
+def _columns_placement(items, columns=3, width=960, height=540, size=0.06):
+    """段組みの割り付け結果 (draw, placed, 列幅, 列間) を返すテスト用ヘルパ。
+
+    列幅は「実際に選ばれた段数」から求める(段数は語の幅で自動的に減りうる)。
+    """
+    from PIL import ImageDraw
+
+    from soramimic_video.layout import _choose_columns, _layout_columns, resolve_font_path
+
+    el = _columns_element(columns, size)
+    font_path = resolve_font_path(None)
+    draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+    placed, _ = _layout_columns(
+        draw, "\n".join(items), el, (0, 0, width, height), height, font_path, 0,
+    )
+    cols, _px = _choose_columns(draw, items, el, width, height, height, font_path)
+    gap = width * layout_mod._COLUMN_GAP_RATIO if cols > 1 else 0.0
+    return draw, placed, (width - gap * (cols - 1)) / cols, gap
+
+
+def test_text_columns_place_items_column_major():
+    items = [f"語{i}" for i in range(9)]
+    _, placed, col_w, gap = _columns_placement(items)
+    assert [t for _, _, t, _ in placed] == items
+    xs = [x for x, _, _, _ in placed]
+    ys = [y for _, y, _, _ in placed]
+    # 3列×3行。列優先(上から下へ埋めて次の列)で、各列は左詰め
+    assert xs[0] == xs[1] == xs[2] == 0
+    assert xs[3] == xs[4] == xs[5] == pytest.approx(col_w + gap)
+    assert ys[0] < ys[1] < ys[2]
+    assert ys[3] == ys[0] and ys[6] == ys[0]
+
+
+def _overflowing_item(width, height, size, columns, n_items, unit="ヴィルヘルム・"):
+    """その段組みで確実に列幅を超える語を作る。
+
+    文字の実寸はフォントによって変わる(CIと手元で違う)ので、固定の長い名前を
+    置くと環境によっては収まってしまい縮小が発動しない。実測しながら伸ばす。
+    """
+    from PIL import ImageDraw
+
+    from soramimic_video.layout import _column_base_px, _font, resolve_font_path
+
+    el = _columns_element(columns, size)
+    font_path = resolve_font_path(None)
+    draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+    gap = width * layout_mod._COLUMN_GAP_RATIO
+    col_w = (width - gap * (columns - 1)) / columns
+    font = _font(font_path, _column_base_px(el, columns, n_items, height, height))
+    text = unit
+    while draw.textlength(text, font=font) <= col_w * 1.2:
+        text += unit
+    return text
+
+
+def test_text_columns_shrink_only_overflowing_item():
+    width, height, size, columns = 960, 540, 0.06, 3
+    short = ["新宿", "渋谷", "上野", "品川", "池袋"]
+    long_name = _overflowing_item(width, height, size, columns, len(short) + 1)
+    items = [*short[:2], long_name, *short[2:]]
+    draw, placed, col_w, gap = _columns_placement(
+        items, columns=columns, width=width, height=height, size=size
+    )
+    by_text = {t: (x, f) for x, _, t, f in placed}
+    # 長い語も自分の列の幅からはみ出さない(隣の列に食い込まない)
+    for x, _, text, font in placed:
+        col_start = round(x / (col_w + gap)) * (col_w + gap)
+        assert x + draw.textlength(text, font=font) <= col_start + col_w + 1
+    # はみ出したのはこの1語だけなので、他の語のサイズは巻き添えで縮まない。
+    # 日本語フォントが無い環境の既定フォントはサイズ指定を持たないので比較しない
+    from soramimic_video.layout import resolve_font_path
+
+    if resolve_font_path(None) is not None:
+        assert by_text[long_name][1].size < by_text["新宿"][1].size
+
+
+def test_columns_element_parsed_and_rendered(tmp_path):
+    p = tmp_path / "cols.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+        "outro": [
+            {"type": "text", "text": "{used_words}", "box": [0.06, 0.2, 0.88, 0.6],
+             "columns": 3, "align": "left"},
+        ],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert layout.section_elements("outro")[0][0].columns == 3
+    data = {"used_words": "\n".join(f"語{i}" for i in range(12))}
+    frame = render_section_frame(layout, data, 320, 180, tmp_path / "f", "outro")
+    assert frame is not None and frame.exists()
+
+
+def test_default_outro_has_no_image_credits():
+    from soramimic_video.layout import load_section_defaults
+
+    defaults = load_section_defaults()
+    # 帰属表示は各単語フレームの右下に個別に焼くので、後奏では集約しない
+    assert not any("{image_credits}" in e.get("text", "") for e in defaults["outro"])
+    # 間奏は「♪」と「間奏(X秒)」だけ(「〜で歌ってみた」は出さない)
+    assert not any("{wordlist}" in e.get("text", "") for e in defaults["interlude"])
+
+
+def _choose_cols(items, columns=4, width=1920, height=800, size=0.05):
+    from PIL import ImageDraw
+
+    from soramimic_video.layout import _choose_columns, resolve_font_path
+
+    el = _columns_element(columns, size)
+    draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+    return _choose_columns(draw, items, el, width, height, height, resolve_font_path(None))
+
+
+def test_columns_count_adapts_to_word_width():
+    width, height, size, columns = 1920, 800, 0.05, 4
+    kw = {"columns": columns, "width": width, "height": height, "size": size}
+    # 駅名のような短い語だけなら上限いっぱいまで段を増やして本文を大きくする
+    short_cols, short_px = _choose_cols(["新宿"] * 60, **kw)
+    assert short_cols == columns
+    # 外国人のフルネームが並ぶリストは段を減らして列幅を稼ぐ。語の実寸はフォントで
+    # 変わるので、上限の段数で確実にはみ出す長さを実測して作る
+    long_name = _overflowing_item(width, height, size, columns, 60)
+    long_cols, long_px = _choose_cols([long_name] * 60, **kw)
+    assert 1 <= long_cols < short_cols
+    # 段を減らすと行数が増えるので本文は小さくなる(そのぶん語がはみ出さない)
+    assert long_px < short_px
+    assert _choose_cols([], **kw)[0] == 1
