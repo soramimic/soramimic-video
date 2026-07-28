@@ -25,6 +25,8 @@ uv run soramimic-video serve --host 0.0.0.0
 | `SORAMIMIC_JOB_TTL_HOURS` | 0(無効) | 完了・失敗・中断から何時間でジョブのディレクトリと履歴を消すか。正の値で1時間ごとに掃除する |
 | `SORAMIMIC_SAMPLES_DIR` | 未設定 | 同梱サンプル曲(`static/sample`)の差し替え先ディレクトリ。`samples.json` と `<id>.mid` / `<id>_lyrics.txt` を置く |
 | `SORAMIMIC_WARMUP_WORDLISTS` | 未設定 | カンマ区切りの単語リスト名。起動時にバックグラウンドで前処理(parse_tidy)を済ませ、キャッシュに載せておく |
+| `SORAMIMIC_PREVIEW_RATE_LIMIT` | 10 | サムネプレビュー(`/api/thumbnail-preview`)をセッションごとに何回まで作るか。`0` 以下で無効 |
+| `SORAMIMIC_PREVIEW_RATE_WINDOW` | 60 | 上のレート制限の窓(秒) |
 | `TURNSTILE_SITE_KEY` | 未設定 | Cloudflare Turnstileのサイトキー。秘密鍵と両方揃うとフロントにウィジェットが出る |
 | `TURNSTILE_SECRET_KEY` | 未設定 | 同・秘密鍵。設定するとジョブ投入時にトークンを検証し、失敗は403 |
 
@@ -55,6 +57,25 @@ SORAMIMIC_WARMUP_WORDLISTS=pokemon,nations,sekitsui uv run soramimic-video serve
 
 各上限は `SORAMIMIC_PUBLIC` が有効なときだけ効く(`0` 以下を指定すると個別に無効化)。
 上限に触れた投稿には日本語の理由文がそのままフォームに表示される。
+
+## サムネプレビュー(おまかせモーダル)
+
+おまかせの確認モーダルは `/api/thumbnail-preview` を呼び、その組み合わせで実際に
+作られるサムネの近似(640x360)を表示する。曲名を1フレーズだけ空耳変換するので
+辞書キャッシュが温まっていれば1秒前後、キャッシュヒットなら数ミリ秒で返る。
+
+- **ジョブではないので日次クォータ(`SORAMIMIC_DAILY_QUOTA`)は消費しない**。
+  代わりにセッション単位の短期レート制限(既定: 60秒で10回)をかける。超過は429で、
+  UIは単語リストの代表画像にフォールバックする(モーダルの機能は落ちない)
+- 生成結果は `<jobs-dir>/thumbnail-preview-cache/` にPNGでキャッシュする
+  (キーは曲名・単語リストCSVの内容・where・変換パラメータ・解像度・レイアウト定義)。
+  TTL7日・最大300件で刈る。**キャッシュヒットはレート制限を消費しない**
+- 単語画像はダウンロードを待たず、キャッシュ済みのぶんだけ使う。足りないぶんは
+  裏で先読みし、取れたらそのPNGを捨てて次に開くときは絵入りにする
+- 生成は同時に1本(連打で変換を並列に走らせない)。混み合っていれば429
+- 画像を初期非表示にする単語リスト(`HIDDEN_PREVIEW_WORDLISTS`。昆虫など)では
+  モーダルが `images=0` で頼み、サムネにも単語画像を入れない(先読みもしない)。
+  「画像を表示する」を押されたときだけ画像入りで作り直す
 
 ## セッション分離
 

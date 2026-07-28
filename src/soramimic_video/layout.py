@@ -568,8 +568,13 @@ def _render_canvas(
     height: int,
     elements: list[ImageElement | TextElement],
     texts: list[str],
+    background: Image.Image | None = None,
 ) -> Image.Image:
-    canvas = Image.new("RGB", (width, height), layout.background)
+    if background is not None:
+        # 呼び出し側が用意した下地(サムネの全面画像など)にそのまま描き足す
+        canvas = background.convert("RGB").resize((width, height))
+    else:
+        canvas = Image.new("RGB", (width, height), layout.background)
     font_path = resolve_font_path(layout.font)
     values = _SafeDict(
         # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
@@ -675,15 +680,19 @@ def render_image(
     width: int,
     height: int,
     use_fallback: bool = False,
+    background: Image.Image | None = None,
 ) -> Image.Image:
     """レイアウトに従って1枚のPillow画像を合成して返す(ファイルには書かない)。
 
     render_frame と違いフレームキャッシュを使わないので、保存先とファイル名を
     呼び出し側が決めたいとき(サムネ画像など)に使う。
+    background を渡すと単色ではなくその画像を下地にする(サムネの全面画像)。
     """
     elements = list(layout.active_elements(use_fallback))
     texts = layout.render_texts(data, use_fallback)
-    return _render_canvas(layout, image_path, data, width, height, elements, texts)
+    return _render_canvas(
+        layout, image_path, data, width, height, elements, texts, background
+    )
 
 
 def render_idle_frame(

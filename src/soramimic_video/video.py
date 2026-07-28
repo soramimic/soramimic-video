@@ -124,11 +124,24 @@ def _resolve_total_sec(sung_end_sec: float, audio_duration_sec: float | None) ->
 # ---- 画像 ----
 
 
-def download_image(url: str, cache_dir: Path) -> Path | None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
+def cached_image(url: str, cache_dir: Path) -> Path | None:
+    """すでにキャッシュにある画像のパス(無ければ None)。取得は一切しない。
+
+    ダウンロードを待てない用途(サムネのプレビュー生成など)向け。
+    キーは download_image と同じ URL のsha1先頭16桁。
+    """
     name = hashlib.sha1(url.encode()).hexdigest()[:16]
     for p in cache_dir.glob(f"{name}.*"):
         return p
+    return None
+
+
+def download_image(url: str, cache_dir: Path) -> Path | None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    hit = cached_image(url, cache_dir)
+    if hit is not None:
+        return hit
     # ローカルパス / file:// はコピーで取り込む(生成・ローカル単語リストの画像用)
     local = url[7:] if url.startswith("file://") else url
     if "://" not in local:

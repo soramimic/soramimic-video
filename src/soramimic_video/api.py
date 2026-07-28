@@ -53,6 +53,7 @@ from .layout import (
     parse_layout,
 )
 from .soramimic_engine import start_warmup_thread
+from .thumbnail_preview import RateLimiter, preview_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -722,10 +723,12 @@ def create_app(
     voicevox_url: str = "http://127.0.0.1:50021",
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
-    config = {
+    config: dict[str, Any] = {
         # 単語画像はジョブをまたいで共有する(初回ジョブの動画ステージが
         # 画像ダウンロードで数分かかるため。2回目以降はほぼゼロになる)
         "image_cache": jobs_dir.resolve() / "image-cache",
+        # 生成前に出す仮サムネ(/api/thumbnail-preview)のPNGキャッシュ
+        "preview_cache": preview_cache_dir(jobs_dir),
         "soundfont": resolve_soundfont(soundfont),
         "font": font or default_font(),
         "threads": threads,
@@ -735,6 +738,8 @@ def create_app(
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
     }
     manager = JobManager(jobs_dir, config)
+    # サムネプレビューの短期レート制限(セッション単位)。ジョブの日次クォータとは別枠
+    preview_limiter = RateLimiter()
     # よく使う単語リストの前処理(parse_tidy)は大きいリストだと数分かかる。
     # 指定があればバックグラウンドで先に構築しておき、初回変換も速くする
     start_warmup_thread()
@@ -946,6 +951,104 @@ def create_app(
         if path is None:
             raise HTTPException(status_code=404, detail="画像を取得できません")
         return FileResponse(path)
+
+    def _sample_title(sample_id: str) -> str:
+        """サンプル曲の曲名(samples.json の title)。未知のIDは404。"""
+        manifest = json.loads(
+            (samples_dir() / "samples.json").read_text(encoding="utf-8")
+        )
+        for entry in manifest:
+            if entry.get("id") == sample_id:
+                return str(entry.get("title") or sample_id)
+        raise HTTPException(status_code=404, detail="そのサンプルはありません")
+
+    def _preview_rate_key(request: Request) -> str:
+        """レート制限の単位。公開モードは匿名セッション、無ければ接続元IP。"""
+        session = getattr(request.state, "session", None)
+        if session:
+            return f"session:{session}"
+        client = request.client.host if request.client else "-"
+        return f"ip:{client}"
+
+    @app.get("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
+    def thumbnail_preview(
+        request: Request,
+        sample: str = "",
+        wordlist: str = "",
+        where: str = "",
+        convert_params: str = "",
+        images: bool = True,
+    ) -> FileResponse:
+        """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
+
+        サンプル曲の曲名をその単語リストで1フレーズだけ空耳変換し、実際の
+        サムネと同じ描画で小さめのPNG(既定640x360)を返す。結果はディスクに
+        キャッシュし、2回目以降は変換せずそのまま返す。
+
+        images=0 なら単語画像を貼らない文字だけのサムネにする。昆虫など画像を
+        初期非表示にしている単語リスト(index.html の HIDDEN_PREVIEW_WORDLISTS)
+        で、モーダルが「画像を表示する」を押されるまで使う。
+
+        ジョブではないので日次クォータは消費しないが、連打で変換が走り続けない
+        ようキャッシュミス時だけセッション単位のレート制限をかける(超過は429)。
+        UI側は429・エラー・タイムアウトのいずれでも単語リストの代表画像に
+        フォールバックするので、ここで失敗してもモーダルの機能は壊れない。
+        """
+        from .convert import parse_convert_params
+        from .thumbnail_preview import PreviewSpec, render_slot
+
+        title = _sample_title(sample)
+        wordlist = wordlist.strip()
+        if not wordlist:
+            raise HTTPException(status_code=400, detail="単語リスト名(wordlist)が必要です")
+        try:
+            spec = PreviewSpec.create(
+                title,
+                wordlist,
+                where=where.strip() or None,
+                params=parse_convert_params(convert_params),
+                with_images=images,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        cache_dir = config["preview_cache"]
+        hit = spec.cached(cache_dir)
+        if hit is not None:
+            return _preview_response(hit, cached=True)
+        if not preview_limiter.allow(_preview_rate_key(request)):
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューの作成が続いています。少し待ってからお試しください。",
+            )
+        try:
+            with render_slot():
+                # 待っている間に他のリクエストが作っているかもしれない
+                hit = spec.cached(cache_dir)
+                if hit is not None:
+                    return _preview_response(hit, cached=True)
+                path = spec.render(cache_dir, image_cache=config["image_cache"])
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューの作成が混み合っています。少し待ってからお試しください。",
+            ) from exc
+        if path is None:
+            raise HTTPException(status_code=500, detail="プレビューを作成できませんでした")
+        return _preview_response(path, cached=False)
+
+    def _preview_response(path: Path, cached: bool) -> FileResponse:
+        return FileResponse(
+            path,
+            media_type="image/png",
+            headers={
+                # 毎回サーバーに聞く(キャッシュヒットなら数ミリ秒で304/即応答)。
+                # 画像の裏読みが間に合って作り直されたとき、ブラウザが古い
+                # 「絵なし」プレビューを握り続けないようにする
+                "Cache-Control": "private, no-cache",
+                "X-Preview-Cache": "hit" if cached else "miss",
+            },
+        )
 
     @app.post("/api/editor-preview", dependencies=[Depends(_require_api_key)])
     async def editor_preview(

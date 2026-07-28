@@ -271,8 +271,9 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
     assert '<div class="modal-figure hidden-preview" id="lucky-modal-image-hidden" hidden>' in html
     assert '<p class="hint" id="lucky-modal-image-hidden-note"></p>' in html
     assert '<button type="button" id="lucky-show-image">画像を表示する</button>' in html
-    # 表示ボタンを押したときだけ読み込む(force)
-    assert 'luckyLoadImage(luckyCurrent.wordlistName, true)' in html
+    # 表示ボタンを押したときだけ画像入りで読み込む(force)。プレビューは
+    # サムネ(/api/thumbnail-preview)になったので、そちらを画像ありで作り直す
+    assert 'luckyLoadPreview(luckyCurrent, true)' in html
 
 
 def test_config_has_voicevox_key(client):
