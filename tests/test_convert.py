@@ -895,7 +895,7 @@ def _weights_spy(monkeypatch) -> dict:
     real = convert_mod.run_convert
     seen: dict = {}
 
-    def spy(phrases, csv_path, where, params, weights_per_line=None):
+    def spy(phrases, csv_path, where, params, weights_per_line=None, cache_db=True):
         seen["params"] = params
         seen["weights_per_line"] = weights_per_line
         if callable(weights_per_line):
@@ -905,8 +905,14 @@ def _weights_spy(monkeypatch) -> dict:
                 seen["weights"] = weights_per_line(units_per_line)
                 return seen["weights"]
 
-            return real(phrases, csv_path, where, params, weights_per_line=wrapped)
-        return real(phrases, csv_path, where, params, weights_per_line=weights_per_line)
+            return real(
+                phrases, csv_path, where, params,
+                weights_per_line=wrapped, cache_db=cache_db,
+            )
+        return real(
+            phrases, csv_path, where, params,
+            weights_per_line=weights_per_line, cache_db=cache_db,
+        )
 
     monkeypatch.setattr(convert_mod, "run_convert", spy)
     return seen

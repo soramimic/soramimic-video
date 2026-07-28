@@ -179,15 +179,27 @@ def _lookup_db_locked(key: _DbCacheKey) -> Any | None:
 
 
 def _get_db(
-    app: Any, app_key: str, wordlist_csv: Path, where: str, max_units: int | None = None
+    app: Any,
+    app_key: str,
+    wordlist_csv: Path,
+    where: str,
+    max_units: int | None = None,
+    cache: bool = True,
 ) -> Any:
     """parse_tidy の結果をキャッシュ付きで返す。
 
     max_units: DBに載せる発音バリエーションのユニット数の上限(None なら無制限)。
         変換対象の歌詞が引きうる最大ユニット数(_max_variation_units)を渡すと、
         結果を変えずに前処理(読み推定 → バリエーション展開)を大きく削れる。
+    cache: False にすると共有キャッシュを一切触らない(読みも書きもしない)。
+        アップロードされた自作リストのように「そのジョブでしか使わない」CSV は
+        キャッシュに載せても当たらないうえ、他のリストを押し出してしまうため。
     """
     path = Path(wordlist_csv).resolve()
+    if not cache:
+        return app.word_list.parse_tidy(
+            path.read_text(encoding="utf-8"), where, max_units=max_units
+        )
     key = db_cache_key(app_key, path, where, max_units)
 
     with _db_cache_lock:
@@ -341,6 +353,7 @@ def run_convert(
     where: str | None,
     params: dict[str, Any],
     weights_per_line: list[list[float]] | UnitWeightsFunc | None = None,
+    cache_db: bool = True,
 ) -> dict:
     """bridge/convert.mjs と同じ入出力の変換。
 
@@ -360,6 +373,9 @@ def run_convert(
     単語DBは、この歌詞が引きうる最大ユニット数(_max_variation_units)を上限に
     作る。上限を超えるバリエーションは照合されようがないので、出力は上限無しの
     場合と完全に同一で、前処理だけが軽くなる。
+
+    cache_db=False にすると単語DBの共有キャッシュを使わない(使い回しの効かない
+    アップロード済み自作リスト用)。出力は変わらない。
     """
     params = params or {}
     app_key = _app_key(params.get("VOWEL_RATIO"))
@@ -375,7 +391,12 @@ def run_convert(
 
     # DBは歌詞が引きうる範囲だけ作る(結果は上限無しと完全に同一)
     db = _get_db(
-        app, app_key, Path(wordlist_csv), where or "", _max_variation_units(units_per_line)
+        app,
+        app_key,
+        Path(wordlist_csv),
+        where or "",
+        _max_variation_units(units_per_line),
+        cache=cache_db,
     )
 
     weights: list[list[float]] | None

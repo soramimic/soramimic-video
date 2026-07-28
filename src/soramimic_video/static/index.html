@@ -524,12 +524,26 @@
       <select id="wordlist-select" hidden></select>
       <input type="text" id="wordlist" placeholder="例: stations">
       <div id="wordlist-filters" class="wordlist-filters" hidden></div>
+      <!-- 自作の単語リスト(CSV)。プルダウンで「自作リストを使う(CSV)」を選んだ
+           ときだけ出す。ファイルを選んだ時点で /api/wordlist-check に投げ、列や
+           読みを検査して駄目ならその場で取り消す(生成を走らせてから落とさない)。
+           選択中は単語リスト名の代わりにファイル名(と読めた語数)を出す。 -->
+      <div id="custom-wordlist" hidden>
+        <label for="wordlist-csv">自作の単語リスト(CSVファイル)</label>
+        <input type="file" id="wordlist-csv" accept=".csv,.txt,text/csv,text/plain">
+        <p class="hint" data-info>1行に1語ずつ「表記,読み」で書いたテキスト(.csv/.txt)です。読みはカタカナかひらがな。読みを省くと表記から自動で推定します。1行目に <code>surface,pronunciation</code> と列名を書いた表形式のCSVも使えます。自作リストでは単語画像は付きません(文字だけの動画になります)。</p>
+        <p class="hint" id="wordlist-csv-status" hidden></p>
+        <p class="error" id="wordlist-csv-error" hidden></p>
+      </div>
       <!-- 絞り込み(where)はファセットのチェックボックスの出力そのものなので、
            チェックを触ったときに何が入ったのかが見えるよう同じ視野に置く
            (詳細調整の折りたたみの中に隠すと、対応が分からなくなる)。 -->
-      <label for="where">絞り込み(where・任意)</label>
-      <input type="text" id="where" placeholder="例: type=family or type=full">
-      <p class="hint" data-info>単語リストの行を絞り込む条件。上の単語リストやチェックボックスを選ぶと自動入力されます。</p>
+      <!-- 自作リスト(CSV)では効かないので、選択中はこの組ごと隠す -->
+      <div id="where-field">
+        <label for="where">絞り込み(where・任意)</label>
+        <input type="text" id="where" placeholder="例: type=family or type=full">
+        <p class="hint" data-info>単語リストの行を絞り込む条件。上の単語リストやチェックボックスを選ぶと自動入力されます。</p>
+      </div>
     </div>
 
     <div class="field">
@@ -1408,6 +1422,7 @@ async function submitJob(previewSec) {
   // 曲を選んだ直後に押されたときは、MIDIの取得と歌詞チェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
   if (midiChecking) await midiChecking;
+  if (wordlistChecking) await wordlistChecking;   // 自作リストの検査が終わるまで待つ
   const midi = $("midi").files[0];
   if (!midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
@@ -1415,6 +1430,14 @@ async function submitJob(previewSec) {
     showSubmitMsg("曲がまだセットされていません。"
       + "上の「曲」から選び直すか、「⚙️ 詳細設定」で曲"
       + "(サンプル曲か、自分のXF MIDIファイル)を選んでください。");
+    return;
+  }
+  // 自作リストを選んだままCSVが無い(選んでいない・検査に落ちた)状態では投げない
+  if (isCustomWordlist() && !customWordlist && previewSec <= 0) {
+    setBusy(false);
+    $("advanced").open = true;
+    showSubmitMsg("自作の単語リスト(CSVファイル)がまだ選ばれていません。"
+      + "「⚙️ 詳細設定」の「自作の単語リスト」からファイルを選んでください。");
     return;
   }
   showSubmitMsg("");
@@ -1458,6 +1481,10 @@ async function submitJob(previewSec) {
   form.append("preview", String(previewSec));
   form.append("song_title", songTitleOf(midi));
   form.append("wordlist", $("wordlist").value);
+  // 自作リストはリスト名ではなくCSVそのものを送る(サーバー側で名前より優先される)
+  if (customWordlist && isCustomWordlist()) {
+    form.append("wordlist_csv", customWordlist.file);
+  }
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
@@ -1687,6 +1714,72 @@ const HIDDEN_PREVIEW_WORDLISTS = {
   insect: "昆虫の画像が苦手な方への配慮で、プレビューを隠しています。",
 };
 
+// ---- 自作の単語リスト(CSVアップロード) ----
+// 単語リストのプルダウンの最後にある「自作リストを使う(CSV)」。選ぶとファイル
+// 選択欄が出て、選んだ時点で /api/wordlist-check に検査させる(投入してから
+// 落とさない)。通ったファイルは投入時に multipart の wordlist_csv として送り、
+// サーバーがジョブディレクトリに保存して変換に使う。
+// 選択中はリスト名(#wordlist)を空にするので、レイアウトはサーバー既定になり、
+// 🎲ランダムの抽選対象からも外れ、サムネのプレビューも作らない。
+const CUSTOM_WORDLIST = "__custom__";
+
+// 検査を通った自作リスト { file, name, rows, fingerprint }。未選択なら null。
+let customWordlist = null;
+// 検査中のPromise(投入がこれを待つ。未検査のまま送らないため)
+let wordlistChecking = null;
+
+const isCustomWordlist = () =>
+  !$("wordlist-select").hidden && $("wordlist-select").value === CUSTOM_WORDLIST;
+
+// 自作リストを選んだ直後にファイル選択を開く(まだ選んでいないときだけ)
+function openCustomWordlistPicker() {
+  if (isCustomWordlist() && !customWordlist) $("wordlist-csv").click();
+}
+
+function showCustomWordlistMsg(status, error) {
+  $("wordlist-csv-status").textContent = status || "";
+  $("wordlist-csv-status").hidden = !status;
+  $("wordlist-csv-error").textContent = error || "";
+  $("wordlist-csv-error").hidden = !error;
+}
+
+// 選ばれたCSVをサーバーに検査させる。駄目ならファイル選択ごと取り消して理由を出す。
+async function checkCustomWordlist() {
+  const f = $("wordlist-csv").files[0];
+  customWordlist = null;
+  if (!f) { showCustomWordlistMsg("", ""); schedulePreview(); return; }
+  showCustomWordlistMsg("確認中…", "");
+  const form = new FormData();
+  form.append("wordlist_csv", f);
+  wordlistChecking = (async () => {
+    try {
+      const res = await fetch("/api/wordlist-check",
+        { method: "POST", body: form, headers: headers() });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || res.status);
+      customWordlist = {
+        file: f, name: body.name, rows: body.rows, fingerprint: body.fingerprint,
+      };
+      const notes = [];
+      if (body.auto_reading_rows) {
+        notes.push(`うち${body.auto_reading_rows}語は読みを自動推定します`);
+      }
+      if ((body.dropped_columns || []).length) notes.push("画像の列は使いません");
+      showCustomWordlistMsg(
+        `✓ 「${f.name}」から${body.rows}語を読み込みました`
+        + (notes.length ? `(${notes.join("・")})` : ""), "");
+    } catch (err) {
+      $("wordlist-csv").value = "";   // 通らなかったファイルは選択ごと取り消す
+      showCustomWordlistMsg("", "この単語リストは使えません: " + err.message);
+    }
+  })();
+  await wordlistChecking;
+  wordlistChecking = null;
+  saveForm();
+  schedulePreview();
+}
+$("wordlist-csv").addEventListener("change", checkCustomWordlist);
+
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 // 単語リスト(ファイル名)に対応する #wordlist-select の option。無ければ null。
@@ -1715,8 +1808,9 @@ function luckyRandomCombo() {
   const samples = [...$("sample-select").options].filter((o) => o.value);
   if (!samples.length) return null;
   const sel = $("wordlist-select");
+  // 自作リスト(CSV)はファイルが要るのでランダムでは選ばない
   const all = sel.hidden ? []
-    : [...sel.options].filter((o) => o.value && o.value !== "__other__");
+    : [...sel.options].filter((o) => o.value && o.value !== CUSTOM_WORDLIST);
   const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
   const fast = all.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
   const pool = fast.length ? fast : all;
@@ -1869,12 +1963,15 @@ function hiddenPreviewReason(name) {
   return (!previewShowImages && HIDDEN_PREVIEW_WORDLISTS[name]) || "";
 }
 
-// いま正本のフォームが指している単語リスト名(セレクト優先、無ければ手入力欄)
+// いま正本のフォームが指している単語リスト名(セレクト優先、無ければ手入力欄)。
+// 自作リスト(CSV)は名前を持たないので空文字になる(プレビュー・レイアウト
+// 自動切替は「未指定」として扱われ、サーバー既定に落ちる)。
 function currentWordlistName() {
   const sel = $("wordlist-select");
   if (!sel.hidden) {
     const opt = sel.selectedOptions[0];
-    if (opt && opt.value && opt.value !== "__other__") {
+    if (opt && opt.value === CUSTOM_WORDLIST) return "";
+    if (opt && opt.value) {
       return (wordlistGroups[Number(opt.value)] || {}).name || "";
     }
   }
@@ -2045,9 +2142,15 @@ function retryThumbnailPreview(url, seq) {
 // いまの選択でカードの表示(時間の注意 + プレビュー)を作り直す。
 function renderBuilder() {
   const c = currentCombo();
-  $("builder-note").hidden = !c.slow;
-  $("builder-note").textContent = c.slow
-    ? "⏳ この組み合わせは単語リストが大きいため、空耳変換に数分かかります。" : "";
+  // 自作リストはサーバーに置いていないのでサムネのプレビューが作れない。
+  // 黙って空枠にせず、その旨だけ静かに出して生成には進めるようにする
+  const custom = isCustomWordlist();
+  const note = custom
+    ? "自作リストはプレビューに対応していません。そのまま生成できます。"
+    : (c.slow
+      ? "⏳ この組み合わせは単語リストが大きいため、空耳変換に数分かかります。" : "");
+  $("builder-note").hidden = !note;
+  $("builder-note").textContent = note;
   loadThumbnailPreview(c);
 }
 
@@ -2058,7 +2161,9 @@ function schedulePreview(force) {
   if (!builderLive || $("lucky-card").hidden) return;
   showBuilderMsg("");
   const c = currentCombo();
-  const combo = `${c.sampleId}\n${c.wordlistName}`;
+  // 自作リストは名前が空なので、指紋(中身が変われば変わる)まで込みで区別する
+  const custom = isCustomWordlist() ? `\ncustom:${(customWordlist || {}).fingerprint || ""}` : "";
+  const combo = `${c.sampleId}\n${c.wordlistName}${custom}`;
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -2135,9 +2240,12 @@ $("builder-wordlist").addEventListener("change", () => {
   const sel = $("wordlist-select");
   sel.value = v;
   sel.dispatchEvent(new Event("change", { bubbles: true }));
-  // 「その他(名前を入力)」は詳細設定の手入力欄に切り替わるので、そちらを開いて見せる
-  if (v === "__other__") $("advanced").open = true;
-  else clearEditorFile();
+  // 「自作リストを使う(CSV)」はファイル選択が詳細設定側にあるので、そちらを
+  // 開いて見せたうえでファイル選択を出す(押した本人の操作なので開いてよい)
+  if (v === CUSTOM_WORDLIST) {
+    $("advanced").open = true;
+    openCustomWordlistPicker();
+  } else clearEditorFile();
   schedulePreview();
 });
 
@@ -2173,7 +2281,10 @@ async function initBuilder() {
     $("sample-select").value = restoredId;
   }
   // 2. 単語リストが未設定なら既定の組み合わせのものにする
-  if (!currentWordlistName() && def.wordlist) selectWordlist(def.wordlist);
+  //    (自作リストを選んでいるときは名前が空でも「未設定」ではない)
+  if (!currentWordlistName() && !isCustomWordlist() && def.wordlist) {
+    selectWordlist(def.wordlist);
+  }
   // 3. 曲がまだ無ければ既定の組み合わせをセットする(MIDIと元歌詞をここで取りに行く)
   if (!$("sample-select").value && known.has(def.sample)) {
     $("sample-select").value = def.sample;
@@ -3005,17 +3116,22 @@ const EDITOR_SEED_KEY = "soramimic-video-editor-seed";
 // いま詳細設定で選ばれている入力の指紋。エディタのシードを書いた時点のものと
 // 突き合わせて、編集内容の来歴が今の選択と一致するかを見る。
 // 曲はファイル名+サイズ、単語リストはname+where、変換パラメータは送信文字列。
+// 自作リストは名前を持たないので、ファイル名+中身の指紋を別のキーで見る
+// (同じファイル名でも中身を書き換えたら別のリスト扱いになる)。
 function editorProvenance() {
   const midi = $("midi").files[0];
+  const custom = isCustomWordlist() && customWordlist
+    ? `${customWordlist.name}:${customWordlist.fingerprint}` : "";
   return {
     song: midi ? `${midi.name}:${midi.size}` : "",
     wordlist: $("wordlist").value.trim(),
+    customWordlist: custom,
     where: $("where").value.trim(),
     params: buildConvertParams(),
   };
 }
 
-const PROVENANCE_KEYS = ["song", "wordlist", "where", "params"];
+const PROVENANCE_KEYS = ["song", "wordlist", "customWordlist", "where", "params"];
 const sameProvenance = (a, b) =>
   PROVENANCE_KEYS.every((k) => ((a || {})[k] || "") === ((b || {})[k] || ""));
 
@@ -3187,6 +3303,12 @@ async function convertAndOpenEditor() {
   const msg = $("open-editor-msg");
   msg.textContent = "";
   if (!midi) { msg.textContent = "MIDIファイルを選んでください"; return; }
+  // 同梱エディタはサーバーにあるリストを名前で引くので、自作リストは渡せない
+  if (isCustomWordlist()) {
+    msg.textContent = "自作リストは替え歌エディタに対応していません"
+      + "(そのまま動画を生成してください)";
+    return;
+  }
   if (!wl) { msg.textContent = "単語リストを入力してください"; return; }
   const form = new FormData();
   form.append("midi", midi);
@@ -3375,14 +3497,12 @@ async function loadWordlistSelect(editorAvailable) {
       sel.appendChild(o);
     }
   });
-  // サーバーはconfにないリストも名前で解決できるので、手入力の逃げ道を用意する。
-  // 公開モードでは案内していないリスト名を入れる欄になるだけなので出さない。
-  if (!publicMode) {
-    const other = document.createElement("option");
-    other.value = "__other__";
-    other.textContent = "その他(名前を入力)";
-    sel.appendChild(other);
-  }
+  // 自作の単語リスト(CSVアップロード)。用意したリストの中に無いものに空耳
+  // させたい人の逃げ道はこれ1つ(リスト名の手入力は廃止した)。
+  const custom = document.createElement("option");
+  custom.value = CUSTOM_WORDLIST;
+  custom.textContent = "自作リストを使う(CSV)";
+  sel.appendChild(custom);
   sel.hidden = false;
   applyWordlistSelection();
   syncBuilderOptions();  // カードの単語リストプルダウンへ写す
@@ -3543,15 +3663,27 @@ function updateWhereFromFilters() {
 }
 
 // 選択内容を canonical な #wordlist / #where に反映する。
-// 「その他」ならテキスト欄を出して手入力に切り替える。
+// 「自作リストを使う(CSV)」ならファイル選択欄を出し、リスト名は空にする
+// (自作リストはリスト名ではなくCSVそのものを投入時に送る)。
+// 選択肢が1つも無い構成では従来どおりリスト名のテキスト欄に落ちる。
 function applyWordlistSelection() {
   const sel = $("wordlist-select");
   const filters = $("wordlist-filters");
   const opt = sel.selectedOptions[0];
-  if (!opt || opt.value === "__other__") {
+  const custom = !!opt && opt.value === CUSTOM_WORDLIST;
+  $("custom-wordlist").hidden = !custom;
+  $("where-field").hidden = custom;   // 自作リストに絞り込みは効かない
+  if (!opt || custom) {
     filters.hidden = true; filters.innerHTML = "";
-    $("wordlist").hidden = false;
-    if (opt && opt.value === "__other__") $("wordlist").focus();
+    if (custom) {
+      // 名前でも絞り込みでもなくCSVで指定するので、どちらも空にして送らない
+      $("wordlist").hidden = true;
+      $("wordlist").value = "";
+      setWhere("");
+      $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+      $("wordlist").hidden = false;
+    }
     return;
   }
   const g = wordlistGroups[Number(opt.value)];
@@ -3561,7 +3693,12 @@ function applyWordlistSelection() {
   // 列取得・キュープレビュー等(#wordlistのchangeを見ている)を更新する
   $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
 }
-$("wordlist-select").addEventListener("change", applyWordlistSelection);
+$("wordlist-select").addEventListener("change", (ev) => {
+  applyWordlistSelection();
+  // 自作リストは選んだ直後にファイル選択を開く(選択即実行)。復元・カード側からの
+  // 同期のような合成イベントでは開かない(勝手にダイアログが出ないように)
+  if (ev.isTrusted) openCustomWordlistPicker();
+});
 
 // 復元された #where に合わせて facet のチェック状態を戻す。filters が隠れている
 // (facets の無いグループ)なら復元値をそのまま #where に入れる。facetモードでは
@@ -3935,9 +4072,11 @@ async function doRestoreForm() {
         applyWordlistSelection();  // #wordlist/#where設定 + チェックボックス + change
         restoreWordlistFilters(state.where || "");  // 復元whereに合わせてチェック
       } else {
-        // 公開モードには「その他」が無いので選択なし(selectedIndex=-1)になるが、
-        // applyWordlistSelection は同じくテキスト欄を出す経路に落ちる
-        sel.value = "__other__";
+        // 保存されていた名前が今の選択肢に無い(confが変わった・自作リストを
+        // 選んだままリロードした)。選択なし(selectedIndex=-1)にすると
+        // applyWordlistSelection がリスト名のテキスト欄を出す経路に落ちる
+        // ——自作リストのCSVは保存できないので、ここには戻せない
+        sel.selectedIndex = -1;
         applyWordlistSelection();  // チェックボックスを隠しテキスト欄を出す
         $("wordlist").value = state.wordlist || "";
         $("where").value = state.where || "";
