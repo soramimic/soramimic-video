@@ -618,7 +618,12 @@ def parse_layout(raw: dict, origin: str = "<layout>") -> Layout:
 
 # ---- フォント ----
 
-_font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+# Pillowのフォント型(TrueType or 既定のビットマップフォント)
+_Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
+# 描画位置の確定した1行: (x, y, 文字列, フォント)。カラム組みでは語ごとに
+# フォントサイズが変わりうるので、行ごとにフォントを持たせる
+_Placed = tuple[float, float, str, _Font]
+_font_cache: dict[tuple[str, int], _Font] = {}
 _warned_no_font = False
 
 
@@ -632,7 +637,7 @@ def resolve_font_path(layout_font: str | None) -> Path | None:
     return None
 
 
-def _font(path: Path | None, px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _font(path: Path | None, px: int) -> _Font:
     global _warned_no_font
     key = (str(path), px)
     f = _font_cache.get(key)
@@ -746,13 +751,19 @@ def _stroke_layers(el: TextElement, frame_h: int) -> list[tuple[int, str]]:
     return layers
 
 
+def _font_px(font: _Font, fallback: float) -> float:
+    """フォントの実サイズ(px)。日本語フォントが見つからないときに使う既定の
+    ビットマップフォント(ImageFont.ImageFont)は size を持たないので fallback。"""
+    return float(getattr(font, "size", fallback))
+
+
 def _fit_line(
     draw: ImageDraw.ImageDraw,
     text: str,
     font_path: Path | None,
     base_px: int,
     max_w: float,
-):
+) -> _Font:
     """1行が max_w に収まるフォント(収まるなら base_px のまま)。
 
     カラム組みで、幅からはみ出す語だけを縮めるために使う。全体を base_px から
@@ -818,7 +829,7 @@ def _layout_columns(
     frame_h: int,
     font_path: Path | None,
     pad: int,
-):
+) -> tuple[list[_Placed], float]:
     """改行区切りの各行を段に割り付ける(列優先=上から下へ、次の列へ)。
 
     エンドロールの単語一覧のように「短い語がたくさん」並ぶときは、流し込みの
@@ -846,7 +857,7 @@ def _layout_columns(
         ty = y + h - total_h
     else:
         ty = y + (h - total_h) / 2
-    placed: list[tuple[float, float, str, object]] = []
+    placed: list[_Placed] = []
     for i, item in enumerate(items):
         col, row = divmod(i, rows)
         font = _fit_line(draw, item, font_path, base_px, col_w)
@@ -859,7 +870,7 @@ def _layout_columns(
         else:
             lx = cx
         # 縮んだ語も行の帯の中で縦中央に置き、ベースラインの乱れを目立たせない
-        ly = ty + row * line_h + (line_h - getattr(font, "size", base_px) * 1.25) / 2
+        ly = ty + row * line_h + (line_h - _font_px(font, base_px) * 1.25) / 2
         placed.append((lx, ly, item, font))
     return placed, line_h
 
@@ -874,7 +885,7 @@ def _draw_text(
     strokes = _stroke_layers(el, canvas.height)
     # 縁取り・影は文字の外側に広がるので、そのぶん内側にグリフを収める
     pad = max([px for px, _ in strokes] + [int(el.shadow * canvas.height)] + [0])
-    placed: list[tuple[float, float, str, object]] = []
+    placed: list[_Placed] = []
     if el.columns > 1:
         placed, line_h = _layout_columns(
             draw, text, el, (x, y, w, h), canvas.height, font_path, pad
@@ -909,7 +920,7 @@ def _draw_text(
         left = min(lx for lx, _, _, _ in placed)
         right = max(lx + draw.textlength(t, font=f) for lx, _, t, f in placed)
         top = min(ly for _, ly, _, _ in placed)
-        bottom = max(ly + getattr(f, "size", line_h) * 1.25 for _, ly, _, f in placed)
+        bottom = max(ly + _font_px(f, line_h) * 1.25 for _, ly, _, f in placed)
         draw.rectangle(
             (left - bpad, top - bpad, right + bpad, bottom + bpad), fill=el.background
         )
