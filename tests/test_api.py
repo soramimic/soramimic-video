@@ -255,6 +255,26 @@ def test_index_html_model_layout_use_select_not_datalist():
     assert 'その他(手入力)' in html
 
 
+def test_index_html_hides_preview_for_sensitive_wordlists():
+    """🎲ランダムの確認モーダルで、昆虫などのプレビュー画像を初期非表示にする。
+
+    黙って出さないのではなく「隠している理由」と「画像を表示する」ボタンを出す。
+    対象はこのプレビューだけで、動画・サムネの画像は従来どおり。
+    """
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # 対象リストは1か所の定数で複数指定できる(将来クモ等を足せるように)
+    assert "const HIDDEN_PREVIEW_WORDLISTS = {" in html
+    assert "insect:" in html
+    # 隠していることが分かる説明と、その場で表示できるボタンがある
+    assert '<div class="modal-figure hidden-preview" id="lucky-modal-image-hidden" hidden>' in html
+    assert '<p class="hint" id="lucky-modal-image-hidden-note"></p>' in html
+    assert '<button type="button" id="lucky-show-image">画像を表示する</button>' in html
+    # 表示ボタンを押したときだけ読み込む(force)
+    assert 'luckyLoadImage(luckyCurrent.wordlistName, true)' in html
+
+
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone
@@ -454,24 +474,6 @@ def test_config_has_wordlist_layouts(client):
     assert wl["scientist"] == "scientist_card"
     # 値はすべて組み込みレイアウト名(UIがそのまま#layoutに入れるため)
     assert set(wl.values()) <= set(conf["layouts"])
-
-
-def test_config_has_wordlist_image_optout(client):
-    """画像を既定で隠す単語リストの設定がUIに配られること。"""
-    conf = client.get("/api/config").json()
-    optout = conf["wordlist_image_optout"]
-    assert optout["insect"]["layout"] == "noimage_card"
-    assert optout["insect"]["reason"]
-    # 画像なしの既定レイアウトも組み込みとして配られている(UIがそのまま#layoutに入れる)
-    assert "noimage_card" in conf["layouts"]
-
-
-def test_show_images_defaults_off_and_can_be_enabled(client):
-    """画像表示は既定オフ(=隠す)で、明示指定でのみオンになる。"""
-    body = wait_done(client, submit(client, wordlist="stations"))
-    assert body["params"]["show_images"] is False
-    body = wait_done(client, submit(client, wordlist="stations", show_images="true"))
-    assert body["params"]["show_images"] is True
 
 
 def test_get_builtin_layout(client):

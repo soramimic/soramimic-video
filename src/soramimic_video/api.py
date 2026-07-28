@@ -49,7 +49,6 @@ from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
     load_layout,
-    load_wordlist_image_optout,
     load_wordlist_layouts,
     parse_layout,
 )
@@ -420,8 +419,6 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             layout=layout,
             granularity=parse_granularity_override(job.params.get("subtitle_granularity")),
             song_title=song_title_of(job.params),
-            # 画像を既定で隠す単語リスト(昆虫など)で、利用者が明示的に画像を出す選択をしたか
-            show_images=bool(job.params.get("show_images")),
         )
 
 
@@ -836,9 +833,6 @@ def create_app(
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_layouts.json)
             "wordlist_layouts": load_wordlist_layouts(),
-            # 単語画像を既定で隠す単語リスト(wordlist_image_optout.json)。
-            # UIはこのリストのときだけ「画像を表示する」チェックを出す
-            "wordlist_image_optout": load_wordlist_image_optout(),
             "editor": editor_available,
         }
         # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
@@ -1083,9 +1077,6 @@ def create_app(
         layout: str = Form(""),
         layout_json: str = Form(""),
         subtitle_granularity: str = Form(""),
-        # 画像を既定で隠す単語リスト(昆虫など。wordlist_image_optout.json)で、
-        # 利用者が自分で「画像を表示する」を選んだときだけ true が来る
-        show_images: bool = Form(False),
         # Cloudflare Turnstile(TURNSTILE_SECRET_KEY 設定時のみ検証する)
         turnstile_token: str = Form(""),
     ) -> dict[str, Any]:
@@ -1156,7 +1147,6 @@ def create_app(
             "convert_params": convert_params.strip(),
             "layout": layout,
             "subtitle_granularity": subtitle_granularity.strip(),
-            "show_images": bool(show_images),
             "parody_source": "editor" if editor_bytes else "convert",
             "midi_filename": midi.filename,
             "song_title": song_title.strip(),

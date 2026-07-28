@@ -39,12 +39,10 @@ from .layout import (
     Layout,
     SubtitleElement,
     _font,
-    images_hidden_by_default,
     load_layout,
     render_frame,
     render_idle_frame,
     resolve_font_path,
-    without_images,
 )
 from .mix import MIX_DIR
 from .project import ParodyWord, Project
@@ -313,11 +311,6 @@ def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
             use_fallback = not row
             # レイアウトのテンプレートには行の全列+替え歌単語のフィールドを渡す
             data = word_frame_data(w, row)
-            if layout.hide_images:
-                # 画像を隠す単語リスト(wordlist_image_optout.json)では画像列自体を
-                # 落とし、「画像の無い単語」と同じ経路で描く。build_image_cues の
-                # ダウンロードとクレジット収集もこれで走らなくなる
-                data.pop("image", None)
             # 画像列が空の既知語も文字フレーム(fallback)で出す
             use_fallback = effective_fallback(
                 layout, data, use_fallback, has_image=bool(data.get("image"))
@@ -902,16 +895,8 @@ def make_video(
     layout: str | None = None,
     granularity: dict[str, str] | None = None,
     song_title: str | None = None,
-    show_images: bool = False,
 ) -> Path:
     layout_obj = load_layout(layout)
-    # 画像を既定で隠す単語リスト(昆虫など)では、明示的に有効化(show_images)
-    # されない限り単語画像を出さない。レイアウトから image 要素を外すので、
-    # ユーザーが画像ありのレイアウトを選んでいても動画・サムネとも画像なしになる
-    wordlist = project.parody.wordlist if project.parody else ""
-    if not show_images and images_hidden_by_default(wordlist):
-        logger.info("この単語リストでは単語画像を表示しません: %s", wordlist)
-        layout_obj = without_images(layout_obj)
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 
@@ -940,8 +925,7 @@ def make_video(
     # 曲名の空耳変換つきサムネ(thumbnail.png)。前奏区間に出すほか、SNS投稿用に
     # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)
     thumbnail = generate_thumbnail(
-        project, project_dir, width, height, image_cache, song_title,
-        show_images=show_images,
+        project, project_dir, width, height, image_cache, song_title
     )
     if thumbnail is not None:
         cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))

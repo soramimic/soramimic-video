@@ -45,10 +45,6 @@
   "credit": false で無効化できる。位置や見た目を変えたいときは text 要素で
   {image_credit} を自分で参照すれば自動追加はされない
 
-昆虫のように「写真は見たくない」人がいる単語リストは wordlist_image_optout.json に
-登録すると、明示的に有効化(APIの show_images / CLIの --show-images)しない限り
-image要素を外したレイアウト(without_images)で描かれる。DESIGN.md も参照。
-
 歌唱がない区間(前奏・間奏・後奏)の表示は次の2つで指定できる(任意・opt-in):
 
     {
@@ -86,8 +82,6 @@ logger = logging.getLogger(__name__)
 LAYOUTS_DIR = Path(__file__).resolve().parent / "layouts"
 # 単語リスト名(external/soramimic-wordlists のCSVのstem)→ 組み込みレイアウト名のマップ
 WORDLIST_LAYOUTS_PATH = Path(__file__).resolve().parent / "wordlist_layouts.json"
-# 画像を既定で隠す単語リストの設定(昆虫など、写真を見たくない人がいるリスト)
-WORDLIST_IMAGE_OPTOUT_PATH = Path(__file__).resolve().parent / "wordlist_image_optout.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
 
 # 日本語が描けるフォントの探索先(上から順に使う。macOS / Linux(Colab))
@@ -220,9 +214,6 @@ class Layout:
     # 画像クレジット({image_credit})の自動焼き込み要素。credit_textが空の単語
     # (表記不要・情報なし)では描かれない。None = 自動追加なし
     credit: TextElement | None = None
-    # 単語画像を出さないレイアウト(without_images で作る)。video.py はこの印を見て
-    # 画像列そのものを無かったことにする(ダウンロードもクレジット収集もしない)
-    hide_images: bool = False
     background: str = "black"
     font: str | None = None
     raw: dict = field(default_factory=dict)  # フレームキャッシュのキー用に元JSONを保持
@@ -270,87 +261,6 @@ def load_wordlist_layouts() -> dict[str, str]:
             continue
         out[str(wordlist)] = layout
     return out
-
-
-def load_wordlist_image_optout() -> dict[str, dict[str, str]]:
-    """画像を既定で隠す単語リストの設定(wordlist_image_optout.json)を読む。
-
-    昆虫のように「写真は見たくない」人がいるリスト向けの opt-in 化の設定。
-    書式は wordlist_layouts.json と同じく単語リスト名をキーにしたオブジェクト:
-
-        {"insect": {"reason": "昆虫が苦手な人がいるため", "layout": "noimage_card"}}
-
-    - reason: なぜ隠すか(UIのヒントに出す)
-    - layout: 画像を隠しているときにUIが当てる既定レイアウト名(任意)。
-      組み込みレイアウトに無い名前は警告して捨てる
-
-    ここに載っている単語リストでは、明示的に有効化(APIの show_images、CLIの
-    --show-images)しない限りサムネにも動画にも単語画像を出さない。
-    ファイルが無ければ空(=従来どおり全リストで画像を出す)。
-    """
-    if not WORDLIST_IMAGE_OPTOUT_PATH.exists():
-        return {}
-    try:
-        raw = json.loads(WORDLIST_IMAGE_OPTOUT_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        logger.warning("画像を隠す単語リストの設定を読めません: %s (%s)",
-                       WORDLIST_IMAGE_OPTOUT_PATH, e)
-        return {}
-    if not isinstance(raw, dict):
-        logger.warning(
-            "画像を隠す単語リストの設定はオブジェクトで書いてください: %s",
-            WORDLIST_IMAGE_OPTOUT_PATH,
-        )
-        return {}
-    builtin = set(builtin_layout_names())
-    out: dict[str, dict[str, str]] = {}
-    for wordlist, conf in raw.items():
-        if not isinstance(conf, dict):
-            logger.warning(
-                "設定はオブジェクトで書いてください: %s (%s)",
-                wordlist, WORDLIST_IMAGE_OPTOUT_PATH,
-            )
-            continue
-        entry: dict[str, str] = {"reason": str(conf.get("reason") or "")}
-        layout = conf.get("layout")
-        if layout is not None:
-            if isinstance(layout, str) and layout in builtin:
-                entry["layout"] = layout
-            else:
-                logger.warning(
-                    "組み込みレイアウトに無いので無視します: %s -> %s (%s)",
-                    wordlist, layout, WORDLIST_IMAGE_OPTOUT_PATH,
-                )
-        out[str(wordlist)] = entry
-    return out
-
-
-def images_hidden_by_default(wordlist: str | None) -> bool:
-    """この単語リストでは単語画像を既定で隠すか(wordlist_image_optout.json)。
-
-    wordlist は名前("insect")でもCSVのパスでもよい(stemで判定する)。
-    """
-    name = Path(str(wordlist or "")).stem
-    return bool(name) and name in load_wordlist_image_optout()
-
-
-def without_images(layout: Layout) -> Layout:
-    """単語画像を出さないレイアウトに変換する(image要素とクレジットを外す)。
-
-    画像を既定で隠す単語リスト向け。要素は生JSON(Layout.raw)の段階で落として
-    parse_layout し直すので、画像クレジットの自動焼き込みもフレームキャッシュの
-    キーも画像なしのものになる。image要素しかないレイアウト(default等)では
-    要素が空になるが、その場合も単語は fallback の文字フレームで描かれる
-    (video.collect_word_frames が画像列を無いものとして扱うため)。
-    """
-    raw = dict(layout.raw)
-    for key in ("elements", "fallback", "idle"):
-        items = raw.get(key)
-        if isinstance(items, list):
-            raw[key] = [
-                e for e in items if not (isinstance(e, dict) and e.get("type") == "image")
-            ]
-    return replace(parse_layout(raw, "<hide-images>"), hide_images=True)
 
 
 def load_layout(name_or_path: str | None) -> Layout:

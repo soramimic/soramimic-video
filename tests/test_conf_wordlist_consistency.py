@@ -19,11 +19,6 @@ ROOT = Path(__file__).resolve().parent.parent
 CONF = ROOT / "external" / "soramimic" / "conf" / "setting.json"
 WORDLISTS = ROOT / "external" / "soramimic-wordlists"
 
-# まだ submodule に入っていない(並行して作成中の)単語リスト。
-# 先にレイアウトや画像の設定だけ入れておきたいときに使う逃げ道で、
-# CSVがsubmoduleに入ったらこの集合から消すこと。
-PENDING_WORDLISTS = {"insect"}
-
 # facet値の where 述語で使う演算子(長いものを先に並べて分割で誤解釈しない)
 _WHERE_OPS = re.compile(r"!~=|~=|!=|=")
 
@@ -87,22 +82,7 @@ def test_wordlist_layouts_point_to_existing_wordlists():
     if not stems:
         pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
     for name in load_wordlist_layouts():
-        if name in PENDING_WORDLISTS:
-            continue
         assert name in stems, f"wordlist_layouts.jsonの {name} が単語リストにありません"
-
-
-def test_wordlist_image_optout_points_to_existing_wordlists():
-    """画像を隠す単語リスト(wordlist_image_optout.json)のキーがCSVとして実在すること。"""
-    from soramimic_video.layout import load_wordlist_image_optout
-
-    stems = {p.stem for p in WORDLISTS.glob("*.csv")}
-    if not stems:
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
-    for name in load_wordlist_image_optout():
-        if name in PENDING_WORDLISTS:
-            continue
-        assert name in stems, f"wordlist_image_optout.jsonの {name} が単語リストにありません"
 
 
 def test_conf_wordlists_exist_and_facet_columns_match():

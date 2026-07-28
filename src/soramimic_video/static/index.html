@@ -207,6 +207,9 @@
     border-radius: 8px; overflow: hidden; text-align: center;
   }
   .modal-figure img { display: block; width: 100%; max-height: 40vh; object-fit: contain; }
+  /* プレビュー画像を初期非表示にしている単語リストの説明+「見る」ボタン */
+  .modal-figure.hidden-preview { padding: 1rem; }
+  .modal-figure.hidden-preview .hint { margin: 0 0 .6rem; }
   .modal-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .9rem; }
   .modal-actions button { flex: 1 1 auto; }
   .modal-actions .btn-primary { flex: 1 1 100%; }
@@ -296,15 +299,6 @@
     <select id="wordlist-select" hidden></select>
     <input type="text" id="wordlist" placeholder="例: stations">
     <div id="wordlist-filters" class="wordlist-filters" hidden></div>
-    <!-- 画像を既定で隠す単語リスト(昆虫など。/api/config の wordlist_image_optout)を
-         選んだときだけ出す。既定はOFF(画像なし)で、見たい人だけONにする -->
-    <div id="show-images-field" hidden>
-      <label class="check">
-        <input type="checkbox" id="show-images">
-        画像を表示する
-      </label>
-      <p class="hint" id="show-images-hint"></p>
-    </div>
     <p id="parody-status" class="hint"></p>
   </div>
 
@@ -509,6 +503,12 @@
     <div class="modal-figure" id="lucky-modal-figure" hidden>
       <img id="lucky-modal-image" alt="単語リストの代表画像">
     </div>
+    <!-- プレビュー画像を初期非表示にする単語リスト(HIDDEN_PREVIEW_WORDLISTS)では、
+         黙って出さずに理由を書き、見たい人だけがボタンで表示できるようにする -->
+    <div class="modal-figure hidden-preview" id="lucky-modal-image-hidden" hidden>
+      <p class="hint" id="lucky-modal-image-hidden-note"></p>
+      <button type="button" id="lucky-show-image">画像を表示する</button>
+    </div>
     <p class="hint" id="lucky-modal-note" hidden></p>
     <p class="error" id="lucky-modal-msg" hidden></p>
     <div class="modal-actions">
@@ -538,9 +538,6 @@ let resumed = false;
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
 // 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
 let wordlistLayouts = {};
-// 単語画像を既定で隠す単語リスト(/api/config の wordlist_image_optout)。
-// {リスト名: {reason, layout}}。昆虫のように写真を見たくない人がいるリスト用。
-let wordlistImageOptout = {};
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
@@ -562,14 +559,12 @@ async function loadConfig() {
   fillChoiceOptions("layout", conf.layouts || [], "サーバー既定");
   setChoice("layout", $("layout").value || "");
   wordlistLayouts = conf.wordlist_layouts || {};
-  wordlistImageOptout = conf.wordlist_image_optout || {};
   $("editor-embed-controls").hidden = !conf.editor;
   setupPublicMode(conf);
   setupTurnstile(conf.turnstile_site_key || "");
   await loadWordlistSelect(conf.editor);
   updateParodyStatus();
   await restoreForm();  // wordlist選択肢が揃った後に前回の入力を復元(初回のみ)
-  updateImageOptout();  // 復元した単語リストが画像を隠す対象かもしれない
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
   const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
@@ -900,8 +895,6 @@ async function submitJob(previewSec) {
   form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
   form.append("layout_json", $("layout-json").value);
-  // 画像を既定で隠す単語リストで、利用者が自分で「画像を表示する」を選んだときだけ true
-  form.append("show_images", showImagesEnabled() ? "true" : "false");
   if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
   setBusy(true);
   $("result").hidden = true;
@@ -1012,6 +1005,14 @@ const SUGGESTED_COMBOS = [
 // (sekitsuiは不正データ3行が原因で数分かかる。上流のデータ修正が入ったら外してよい)
 const SLOW_WORDLISTS = ["sekitsui"];
 
+// 🎲ランダムの確認モーダルで、代表画像のプレビューを初期非表示にする単語リスト。
+// 「自分では選んでいないのに苦手な画像に出会う」のを防ぐのが目的なので、対象は
+// このプレビューだけ(動画・サムネや、自分で単語リストを選んだときの表示は変えない)。
+// 値は隠している理由の文言。別のリストを足すときは1行追加する。
+const HIDDEN_PREVIEW_WORDLISTS = {
+  insect: "昆虫の画像が苦手な方への配慮で、プレビューを隠しています。",
+};
+
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 // #wordlist-select の option の表示名(optgroupがあれば「グループ/名前」)
@@ -1070,12 +1071,18 @@ let luckyOpener = null;    // モーダルを開いたボタン(閉じたらフ�
 let luckyImageSeq = 0;     // プレビュー画像の取得世代(引き直しの取り違え防止)
 
 // 単語リストの代表画像。取れなければ画像なしで成立させる(枠ごと隠す)。
-function luckyLoadImage(name) {
+// HIDDEN_PREVIEW_WORDLISTS のリストは、隠している理由と「画像を表示する」ボタンを
+// 代わりに出し、押されたとき(force)だけ読み込む。
+function luckyLoadImage(name, force) {
   const fig = $("lucky-modal-figure"), img = $("lucky-modal-image");
   const seq = ++luckyImageSeq;
   fig.hidden = true;
   img.removeAttribute("src");
-  if (!name) return;
+  const reason = HIDDEN_PREVIEW_WORDLISTS[name] || "";
+  const hidden = !!reason && !force;
+  $("lucky-modal-image-hidden").hidden = !hidden;
+  $("lucky-modal-image-hidden-note").textContent = reason;
+  if (!name || hidden) return;
   const url = "/api/wordlist-image?wordlist=" + encodeURIComponent(name)
     + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
@@ -1114,6 +1121,11 @@ function luckyOpenModal(combo, opener) {
   $("lucky-modal").hidden = false;
   $("lucky-go").focus();
 }
+
+// 「画像を表示する」を押したときだけプレビューを読み込む(引き直すとまた隠れる)
+$("lucky-show-image").addEventListener("click", () => {
+  if (luckyCurrent) luckyLoadImage(luckyCurrent.wordlistName, true);
+});
 
 function luckyCloseModal() {
   $("lucky-modal").hidden = true;
@@ -1890,24 +1902,6 @@ $("le-details").addEventListener("toggle", async () => {
 // 直前に自動でセットしたレイアウト名。これと現在値が同じなら「まだ自動のまま」と見なす
 let lastAutoLayout = "";
 
-// 利用者が「画像を表示する」を選んでいるか(対象外の単語リストでは常にOFF)。
-function showImagesEnabled() {
-  return $("show-images").checked;
-}
-
-// 画像を既定で隠す単語リストを選んでいて、かつ利用者が表示を選んでいないか。
-function imagesHidden() {
-  return !!wordlistImageOptout[$("wordlist").value.trim()] && !showImagesEnabled();
-}
-
-// 「画像を表示する」チェックの出し分け(対象の単語リストのときだけ出す)。
-function updateImageOptout() {
-  const conf = wordlistImageOptout[$("wordlist").value.trim()];
-  $("show-images-field").hidden = !conf;
-  $("show-images-hint").textContent = conf ? (conf.reason || "") : "";
-  if (!conf) $("show-images").checked = false;  // 対象外のリストでは既定に戻す
-}
-
 // 単語リストに対応する既定レイアウト(wordlistLayouts)を#layoutに当てる。
 // ユーザーが自分で選んだレイアウトは上書きしない。自動と見なすのは
 // 「現在値が空(=サーバー既定)」か「直前に自動でセットした値のまま」のときだけ。
@@ -1916,10 +1910,7 @@ function applyWordlistLayout() {
   if (restoring) return;
   const cur = $("layout").value.trim();
   if (cur && cur !== lastAutoLayout) return;
-  const optout = wordlistImageOptout[$("wordlist").value.trim()];
-  // 画像を隠しているあいだは画像なしのレイアウトを既定にする(動画も画像なしになる)
-  const next = (imagesHidden() && optout && optout.layout)
-    || wordlistLayouts[$("wordlist").value.trim()] || "";
+  const next = wordlistLayouts[$("wordlist").value.trim()] || "";
   if (next === cur) return;
   setChoice("layout", next);
   lastAutoLayout = next;
@@ -1929,16 +1920,9 @@ function applyWordlistLayout() {
 }
 
 $("wordlist").addEventListener("change", () => {
-  updateImageOptout();
   applyWordlistLayout();
   leFetchColumns();
   leFetchCue(leCueIndex);  // editor JSONのwordlist解決がフォーム欄に依存する場合に更新
-});
-
-// 画像の表示可否を切り替えたら既定レイアウトも画像あり/なしで入れ替える
-$("show-images").addEventListener("change", () => {
-  applyWordlistLayout();
-  saveForm();
 });
 
 // editor書き出しJSONを選び直したら先頭キューからプレビューし直す
@@ -2514,7 +2498,6 @@ function saveForm() {
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
       autoOctave: $("auto-octave").checked,
-      showImages: $("show-images").checked,
     }));
   } catch { /* QuotaExceededError等でUIを壊さない */ }
 }
@@ -2722,7 +2705,6 @@ async function doRestoreForm() {
     if (savedAutoOctave != null) {
       $("auto-octave").checked = !!savedAutoOctave;
     }
-    if (state.showImages != null) $("show-images").checked = !!state.showImages;
     // 4. layout名: 値だけ入れる(changeを発火するとleLoadがlayoutJsonを上書きするため)。
     // setChoice はchangeを発火しないのでlayoutJsonを上書きしない。
     if (state.layout) setChoice("layout", state.layout);
