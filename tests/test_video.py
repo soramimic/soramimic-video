@@ -805,6 +805,127 @@ def test_download_image_missing_local(tmp_path: Path):
     assert download_image(str(tmp_path / "nope.jpg"), tmp_path / "cache") is None
 
 
+# ---- SVGのラスタライズ(生成カード画像はSVG配布でPillowが開けない) ----
+
+# ポケモン/選手/YouTuberカードと同じ書き方(viewBoxつき・日本語のtext)の最小SVG
+SVG_FIXTURE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" width="320" height="200">'
+    '<rect x="0" y="0" width="320" height="200" fill="#4fbe5c"/>'
+    '<text x="20" y="120" font-family="\'Hiragino Sans\',\'Noto Sans JP\',sans-serif"'
+    ' font-size="40" fill="#111">フシギダネ</text>'
+    "</svg>"
+).encode()
+# XML宣言が前置されるSVG(先頭が `<svg` ではない)
+SVG_FIXTURE_XML_DECL = b'<?xml version="1.0" encoding="UTF-8"?>\n' + SVG_FIXTURE
+
+
+def test_looks_like_svg_detects_data_not_content_type():
+    from soramimic_video.video import looks_like_svg
+
+    # GitHubのReleaseは .svg を application/octet-stream で返すのでデータで判定する
+    assert looks_like_svg(SVG_FIXTURE)
+    assert looks_like_svg(SVG_FIXTURE_XML_DECL)
+    assert looks_like_svg(b"  \n" + SVG_FIXTURE)  # 先頭の空白は無視
+    assert not looks_like_svg(_png_bytes())
+    assert not looks_like_svg(b"\xff\xd8\xff\xe0jpeg")
+    assert not looks_like_svg(b'<?xml version="1.0"?><rss><item/></rss>')  # SVGでないXML
+
+
+def test_svg_to_png_keeps_viewbox_ratio():
+    pytest.importorskip("cairosvg")
+    from PIL import Image
+
+    from soramimic_video.video import svg_to_png
+
+    png = svg_to_png(SVG_FIXTURE, width=640)
+    assert png is not None and png.startswith(b"\x89PNG")
+    import io
+
+    with Image.open(io.BytesIO(png)) as img:
+        assert img.size == (640, 400)  # viewBox 320x200 の比を保つ
+
+
+def test_svg_to_png_returns_none_for_broken_svg():
+    pytest.importorskip("cairosvg")
+    from soramimic_video.video import svg_to_png
+
+    assert svg_to_png(b"<svg><unclosed>") is None
+
+
+def test_download_image_rasterizes_svg(tmp_path: Path):
+    pytest.importorskip("cairosvg")
+    from PIL import Image
+
+    src = tmp_path / "card.svg"
+    src.write_bytes(SVG_FIXTURE_XML_DECL)
+    cache = tmp_path / "cache"
+    got = download_image(str(src), cache)
+    assert got is not None and got.suffix == ".png"
+    with Image.open(got) as img:  # Pillowで開ける = フレーム合成に使える
+        assert img.width == 1280
+    # 2回目はキャッシュ済みのPNGをそのまま返す(変換し直さない)
+    assert download_image(str(src), cache) == got
+    assert list(cache.glob("*")) == [got]
+
+
+def test_cached_image_converts_legacy_svg_cache(tmp_path: Path):
+    """SVGのまま残っている既存キャッシュは、読み込み時にPNGへ移行する。"""
+    pytest.importorskip("cairosvg")
+    from PIL import Image
+
+    from soramimic_video.video import cached_image
+
+    url = "https://example.com/card.svg"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    legacy = cache / f"{name}.img"  # 旧バージョンはSVGを .img で置いていた
+    legacy.write_bytes(SVG_FIXTURE)
+
+    got = cached_image(url, cache)
+    assert got is not None and got.name == f"{name}.png"
+    with Image.open(got) as img:
+        assert img.width == 1280
+    assert not legacy.exists()  # 開けないファイルは残さない
+    assert cached_image(url, cache) == got
+
+
+def test_svg_stays_cached_when_conversion_fails(tmp_path: Path, monkeypatch):
+    """変換できなくても再ダウンロードは繰り返さない(SVGはキャッシュに残す)。"""
+    import soramimic_video.video as video_mod
+
+    monkeypatch.setattr(video_mod, "svg_to_png", lambda data, width=1280: None)
+    src = tmp_path / "card.svg"
+    src.write_bytes(SVG_FIXTURE)
+    cache = tmp_path / "cache"
+    assert download_image(str(src), cache) is None
+    kept = list(cache.glob("*"))
+    assert [p.suffix for p in kept] == [".svg"]
+    assert download_image(str(src), cache) is None
+    assert list(cache.glob("*")) == kept
+
+    # cairosvgが使えるようになれば、次の読み込みでPNGに移行する
+    pytest.importorskip("cairosvg")
+    monkeypatch.undo()
+    got = download_image(str(src), cache)
+    assert got is not None and got.suffix == ".png"
+
+
+def test_image_cues_render_svg_word_image(tmp_path: Path, monkeypatch):
+    """SVGの単語画像でもフレームが作られる(従来は画像なしに落ちていた)。"""
+    pytest.importorskip("cairosvg")
+    card = tmp_path / "card.svg"
+    card.write_bytes(SVG_FIXTURE)
+    project = _project(tmp_path)
+    project.parody.lines[0].words[0].wordlist_row = {"image": str(card), "image_page": ""}
+    cues, _credits = build_image_cues(project, tmp_path / "work", 640, 360)
+    assert len(cues) == 1
+    from PIL import Image
+
+    with Image.open(cues[0].frame) as frame:
+        assert frame.size == (640, 360)
+
+
 # ---- 後奏で動画が切れるバグの回帰テスト ----
 # song.wav(伴奏はMIDI全体をfluidsynthでレンダリングするため後奏込みで長い)が
 # 最後の歌唱ノート+3秒より長い場合、動画の総尺は音声の実長に合わせる必要がある。

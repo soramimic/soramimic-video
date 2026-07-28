@@ -16,6 +16,9 @@
 その文言を優先)。あわせて image_page からクレジット一覧(credits.md)も生成
 するので、公開時はライセンス表記に従うこと。
 
+単語リストによっては画像がSVG(生成カード画像)なので、PillowがSVGを開けない
+ぶんはダウンロード時にPNGへラスタライズしてキャッシュする(svg_to_png)。
+
 フレームの左下には「lyrics by Soramimic」(歌声合成のクレジット表記が要るときは
 「lyrics by Soramimic / VOICEVOX:キャラ名」)を小さく焼き込む。単語フレーム・
 fallback・idle・サムネで共通で、レイアウトの "app_credit": false で外せる
@@ -29,6 +32,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,24 +134,101 @@ def _resolve_total_sec(sung_end_sec: float, audio_duration_sec: float | None) ->
 # ---- 画像 ----
 
 
+SVG_RASTER_WIDTH = 1280  # SVGをPNGに焼くときの幅(高さは元のviewBox比で決まる)
+
+
+def looks_like_svg(data: bytes) -> bool:
+    """バイト列がSVG(またはSVGを含むXML)かどうか。
+
+    content-type では判定できない(GitHubのReleaseは .svg を
+    application/octet-stream で返す)ので、データの先頭で見る。XML宣言や
+    コメント・DOCTYPEが前置されることがあるので、先頭のいくらかに `<svg` が
+    現れるかまで見る。
+    """
+    head = data[:1024].lstrip()
+    if head.startswith(b"<svg"):
+        return True
+    return head.startswith((b"<?xml", b"<!--", b"<!DOCTYPE")) and b"<svg" in data[:4096]
+
+
+def svg_to_png(data: bytes, width: int = SVG_RASTER_WIDTH) -> bytes | None:
+    """SVGのバイト列をPNGに焼く(失敗したら警告してNone)。
+
+    Pillowは自前でSVGを開けないので、フレーム合成の前にここでラスタライズする。
+    幅だけ指定すれば cairosvg が元のviewBox比を保って高さを決める。
+    cairosvg(とlibcairo)が入っていない環境ではNoneを返し、呼び出し側は
+    「画像なし」として続行する(ジョブは落とさない)。
+    """
+    try:
+        import cairosvg  # 重いので使うときだけ読む(api extra。要libcairo)
+    except Exception as e:  # noqa: BLE001 - importエラーの種類は問わず画像なしに落とす
+        logger.warning("SVGを変換できません(cairosvgが使えません): %s", e)
+        return None
+    try:
+        return cairosvg.svg2png(bytestring=data, output_width=width)
+    except Exception as e:  # noqa: BLE001 - 壊れたSVGでジョブを落とさない
+        logger.warning("SVGをPNGに変換できませんでした: %s", e)
+        return None
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """同じURLを並列に落としても壊れたファイルを読ませないよう置換で書く。"""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _rasterized(path: Path) -> Path | None:
+    """キャッシュ済みファイルがSVGならPNGに焼き直して差し替える(そうでなければそのまま)。
+
+    以前のバージョンはSVGをそのまま(拡張子 .img で)キャッシュしていたので、
+    既存キャッシュが残っている環境でも読み込み時にここでPNGへ移行する。
+    変換できないときはNone(=画像なし)。SVGはキャッシュに残すので、
+    毎回ダウンロードし直すことはなく、cairosvgを入れれば次から絵が出る。
+    """
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        logger.warning("キャッシュ画像を読めません: %s (%s)", path, e)
+        return None
+    if not looks_like_svg(data):
+        return path
+    png = svg_to_png(data)
+    if png is None:
+        return None
+    out = path.with_suffix(".png")
+    _write_atomic(out, png)
+    if out != path:
+        path.unlink(missing_ok=True)
+    return out
+
+
+def _cached_raw(url: str, cache_dir: Path) -> Path | None:
+    """キャッシュにあるファイル(SVGのままかもしれない)のパス。"""
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    for p in sorted(cache_dir.glob(f"{name}.*")):
+        return p
+    return None
+
+
 def cached_image(url: str, cache_dir: Path) -> Path | None:
-    """すでにキャッシュにある画像のパス(無ければ None)。取得は一切しない。
+    """すでにキャッシュにある画像のパス(無ければ None)。ダウンロードは一切しない。
 
     ダウンロードを待てない用途(サムネのプレビュー生成など)向け。
     キーは download_image と同じ URL のsha1先頭16桁。
+    キャッシュがSVGだったときだけ、その場でPNGへ焼き直して返す(通信はしない)。
     """
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
-    for p in cache_dir.glob(f"{name}.*"):
-        return p
-    return None
+    raw = _cached_raw(url, cache_dir)
+    return _rasterized(raw) if raw is not None else None
 
 
 def download_image(url: str, cache_dir: Path) -> Path | None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     name = hashlib.sha1(url.encode()).hexdigest()[:16]
-    hit = cached_image(url, cache_dir)
-    if hit is not None:
-        return hit
+    # 変換に失敗するSVGでも「キャッシュにはある」ので落とし直さない(_rasterizedがNone)
+    raw = _cached_raw(url, cache_dir)
+    if raw is not None:
+        return _rasterized(raw)
     # ローカルパス / file:// はコピーで取り込む(生成・ローカル単語リストの画像用)
     local = url[7:] if url.startswith("file://") else url
     if "://" not in local:
@@ -156,9 +237,7 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
             logger.warning("画像が見つかりません: %s", url)
             return None
         ext = src.suffix.lstrip(".").lower() or "img"
-        path = cache_dir / f"{name}.{ext}"
-        path.write_bytes(src.read_bytes())
-        return path
+        return _store_image(cache_dir / f"{name}.{ext}", src.read_bytes())
     fetch_url = url
     if "Special:FilePath" in url and "?" not in url:
         fetch_url = url + "?width=1200"  # フル解像度は不要なのでサムネイルをもらう
@@ -168,11 +247,26 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
         logger.warning("画像の取得に失敗: %s (%s)", url, e)
         return None
     ext = url.rsplit(".", 1)[-1].lower()
-    if ext not in ("jpg", "jpeg", "png", "gif", "webp"):
+    if ext not in ("jpg", "jpeg", "png", "gif", "webp", "svg"):
         ext = "img"
-    path = cache_dir / f"{name}.{ext}"
-    path.write_bytes(resp.content)
-    return path
+    return _store_image(cache_dir / f"{name}.{ext}", resp.content)
+
+
+def _store_image(path: Path, data: bytes) -> Path | None:
+    """取得したデータをキャッシュに置く。SVGはPNGに焼いてから置く。
+
+    変換できなかったSVGは元のまま置いておく(次回もダウンロードし直さない)。
+    """
+    if not looks_like_svg(data):
+        _write_atomic(path, data)
+        return path
+    png = svg_to_png(data)
+    if png is None:
+        _write_atomic(path.with_suffix(".svg"), data)
+        return None
+    out = path.with_suffix(".png")
+    _write_atomic(out, png)
+    return out
 
 
 def image_cache_dir(work: Path, image_cache: Path | None = None) -> Path:
