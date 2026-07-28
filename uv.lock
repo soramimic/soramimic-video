@@ -2505,6 +2505,7 @@ name = "soramimic-video"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cairosvg" },
     { name = "jaconv" },
     { name = "jphrase" },
     { name = "mido" },
@@ -2517,7 +2518,6 @@ dependencies = [
 
 [package.optional-dependencies]
 api = [
-    { name = "cairosvg" },
     { name = "fastapi" },
     { name = "python-multipart" },
     { name = "uvicorn" },
@@ -2550,7 +2550,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cairosvg", marker = "extra == 'api'", specifier = ">=2.7" },
+    { name = "cairosvg", specifier = ">=2.7" },
     { name = "demucs", marker = "extra == 'audio'", specifier = ">=4.0" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110" },
     { name = "faster-whisper", marker = "extra == 'audio'", specifier = ">=1.0" },

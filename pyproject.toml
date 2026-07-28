@@ -15,6 +15,10 @@ dependencies = [
     "soramimic[mecab]>=0.2.0",
     # フレームレイアウト(layout.py)の描画。load_default(size)に10.1が要る
     "pillow>=10.1",
+    # 単語リストのカード画像(ポケモン/選手/YouTuber)はSVG配布。Pillowは開けないので
+    # ダウンロード時にPNGへラスタライズする(要システムのlibcairo。READMEを参照)。
+    # 動画生成はCLI(soramimic-video video)でも通る本体機能なのでcoreに置く
+    "cairosvg>=2.7",
     "soramimic-yomi",
     "jphrase>=0.0.3",
 ]
@@ -25,9 +29,6 @@ api = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "python-multipart>=0.0.9",
-    # 単語リストのカード画像(ポケモン/選手/YouTuber)はSVG配布。Pillowは開けないので
-    # ダウンロード時にPNGへラスタライズする(要システムのlibcairo。READMEを参照)
-    "cairosvg>=2.7",
 ]
 # analyze-audio(歌唱音源入力)用の重い依存。uv sync --extra audio で入れる
 audio = [
