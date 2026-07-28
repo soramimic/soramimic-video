@@ -73,6 +73,9 @@ SORAMIMIC_WARMUP_WORDLISTS=pokemon,nations,sekitsui uv run soramimic-video serve
 - 単語画像はダウンロードを待たず、キャッシュ済みのぶんだけ使う。足りないぶんは
   裏で先読みし、取れたらそのPNGを捨てて次に開くときは絵入りにする
 - 生成は同時に1本(連打で変換を並列に走らせない)。混み合っていれば429
+- 画像を初期非表示にする単語リスト(`HIDDEN_PREVIEW_WORDLISTS`。昆虫など)では
+  モーダルが `images=0` で頼み、サムネにも単語画像を入れない(先読みもしない)。
+  「画像を表示する」を押されたときだけ画像入りで作り直す
 
 ## セッション分離
 
