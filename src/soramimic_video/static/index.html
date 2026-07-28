@@ -204,6 +204,8 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+  /* 完成後の「Xでポスト」「動画を保存」を横並びに(狭い画面では折り返す) */
+  .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
   /* 例示ボタンと🎲ランダムはプルダウンのショートカット。主役ではないので小さく */
   .lucky-grid { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
   .lucky-grid button {
@@ -542,10 +544,10 @@ async function loadConfig() {
   $("auth").hidden = !conf.auth_required;
   // APIキー欄は詳細設定の中にあるので、キー待ちのときは折りたたみを開いて見えるようにする
   if (conf.auth_required && !apiKey()) { $("advanced").open = true; return; }
-  // 接続先や合成エンジンの設定状況は運用者向けの情報なので、公開モードでは出さない
-  $("server-info").hidden = !!conf.public;
-  $("server-info").textContent =
-    `サーバー: ${location.host}` + (conf.neutrino ? "" : " ⚠ NEUTRINO_ROOT未設定");
+  // 接続先はページのURLと同じなので出さない(アドレスバーと重複するだけ)。
+  // 合成エンジンの設定漏れだけは運用者向けの警告として残す(公開モードでは出さない)。
+  $("server-info").hidden = !!conf.public || !!conf.neutrino;
+  $("server-info").textContent = conf.neutrino ? "" : "⚠ NEUTRINO_ROOT未設定";
   fillChoiceOptions("model", conf.models || []);
   let model0 = $("model").value || "MERROW";
   if (conf.models && conf.models.length && !conf.models.includes(model0)) {
@@ -797,13 +799,11 @@ async function poll(id) {
     $("result").innerHTML = job.result_kind === "audio"
       ? `<audio controls autoplay style="width:100%" src="${qs(job.video_url)}"></audio>`
       : `<video controls src="${qs(job.video_url)}"></video>` +
-        `<p><a href="${qs(job.video_url)}" download>ダウンロード</a>` +
+        SHARE_HTML +
         (job.thumbnail_url
-          ? ` / <a href="${qs(job.thumbnail_url)}" target="_blank" rel="noopener">サムネ画像</a>`
-          : "") +
-        `</p>` +
-        SHARE_X_HTML;
-    bindShareX(job.video_url);
+          ? `<p><a href="${qs(job.thumbnail_url)}" target="_blank" rel="noopener">サムネ画像</a></p>`
+          : "");
+    bindShare(job.video_url);
     finish();
   } else if (job.status === "canceled") {
     $("status-line").textContent = "中断しました";
@@ -815,13 +815,22 @@ async function poll(id) {
 }
 
 // ---- 完成した動画をシェアする ----
-// Web Share API(レベル2)が使える環境(iOS Safari・Android Chrome等)では動画
-// ファイルごとOSのシェアシートに渡せるので、Xアプリに動画添付済みで送れる。
-// 使えない環境(多くのPCブラウザ)はXの投稿画面を開く従来の動作に落とす。
+// 導線は2本に分ける。Xのシェア拡張はOSのシェアシート経由だと動画が添付された
+// かどうか分かりにくい(iOSで特に)ので、
+//  - 「Xでポスト」… 必ずXの投稿画面(web intent)を開くだけ。動画は手で添付。
+//  - 「動画を保存」… Web Share API(レベル2)が使える環境ではOSのシェアシート
+//    (ビデオを保存・LINE等)、使えない環境(多くのPCブラウザ)はそのまま保存。
 const SHARE_TEXT = "Soramimicで替え歌動画を作りました🎤 #soramimic";
-const SHARE_X_HTML =
-  `<p><button type="button" id="share-x" class="btn-x btn-sm">シェア</button></p>` +
-  `<p class="hint" id="share-x-hint"></p>`;
+// シェアシートに動画ファイルを渡せる環境かどうかでボタンの文言を変える
+const SAVE_LABEL = navigator.share ? "動画を保存・共有" : "動画を保存";
+const SHARE_HTML =
+  `<p class="share-row">` +
+  `<button type="button" id="share-x" class="btn-x btn-sm">Xでポスト</button>` +
+  `<button type="button" id="share-save" class="btn-sm">${SAVE_LABEL}</button>` +
+  `</p>` +
+  `<p class="hint" id="share-hint">` +
+  `動画はポストに自動では付きません。「${SAVE_LABEL}」で保存してから、Xの投稿画面で添付してください。` +
+  `</p>`;
 
 // ファイル添付付きのシェアが使えるか(動画を1本渡せるか)は実ファイルで判定する
 function canShareFiles(file) {
@@ -834,35 +843,47 @@ function openXIntent() {
   window.open(url, "_blank", "noopener");
 }
 
-function bindShareX(videoUrl) {
-  const btn = $("share-x");
-  const hint = $("share-x-hint");
-  if (!btn) return;
-  if (hint) {
-    hint.textContent = navigator.share
-      ? "動画を添付してシェアします(対応していない場合はXの投稿画面が開きます)。"
-      : "Xの投稿画面が開きます。動画は「ダウンロード」で保存して添付してください。";
-  }
-  btn.addEventListener("click", async () => {
-    if (!videoUrl || !navigator.share) return openXIntent();
-    btn.disabled = true;
-    const label = btn.textContent;
-    btn.textContent = "準備中…";
+function videoFileName(videoUrl) {
+  const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
+  return name.endsWith(".mp4") ? name : "soramimic.mp4";
+}
+
+// シェアシートが使えない環境向けのフォールバック。動画URLはそのまま開けるので、
+// blobを作らずリンクのdownload属性に任せる。
+function downloadVideo(videoUrl) {
+  const a = document.createElement("a");
+  a.href = qs(videoUrl);
+  a.download = videoFileName(videoUrl);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function bindShare(videoUrl) {
+  const xBtn = $("share-x");
+  const saveBtn = $("share-save");
+  if (xBtn) xBtn.addEventListener("click", () => openXIntent());
+  if (!saveBtn) return;
+  saveBtn.addEventListener("click", async () => {
+    if (!videoUrl) return;
+    if (!navigator.share) return downloadVideo(videoUrl);
+    saveBtn.disabled = true;
+    const label = saveBtn.textContent;
+    saveBtn.textContent = "準備中…";
     try {
       const res = await fetch(qs(videoUrl), { headers: headers() });
       if (!res.ok) throw new Error("動画を取得できませんでした");
       const blob = await res.blob();
-      const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
-      const file = new File([blob], name.endsWith(".mp4") ? name : "soramimic.mp4",
+      const file = new File([blob], videoFileName(videoUrl),
         { type: blob.type || "video/mp4" });
-      if (!canShareFiles(file)) return openXIntent();
+      if (!canShareFiles(file)) return downloadVideo(videoUrl);
       await navigator.share({ files: [file], text: SHARE_TEXT });
     } catch (e) {
       // ユーザーがシェアシートを閉じただけのときは何もしない
-      if (!(e && e.name === "AbortError")) openXIntent();
+      if (!(e && e.name === "AbortError")) downloadVideo(videoUrl);
     } finally {
-      btn.disabled = false;
-      btn.textContent = label;
+      saveBtn.disabled = false;
+      saveBtn.textContent = label;
     }
   });
 }
