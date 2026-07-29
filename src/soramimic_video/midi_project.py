@@ -17,6 +17,7 @@ from .kana import split_moras
 from .melody_align import MelodyNote, load_midi_notes, monophony_ratio, skyline
 from .project import Project
 from .reading import text_to_kana
+from .ruby import strip_ruby
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +88,17 @@ def build_from_melody_midi(
     line_groups = _group_lines(melody, gap_sec, max_line_notes)
     # 元歌詞は行(フレーズ)単位に割り当てる。字幕には表層(漢字仮名交じり)を出し、
     # その読み(カナ)を1音符1モーラでフレーズの音符に配る(足りなければ循環)。
+    # ベース歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。読みの生成には
+    # 記法つきの行を、字幕・表示には素テキストを使う。
     lyric_lines = [ln for ln in (lyrics or "").splitlines() if ln.strip()]
 
     mora_notes: list[MoraNote] = []
     line_texts: list[str] = []
     for li, group in enumerate(line_groups):
         if lyric_lines:
-            surface = lyric_lines[li % len(lyric_lines)]
-            reading = split_moras(text_to_kana(surface)) or ["ラ"]
+            raw = lyric_lines[li % len(lyric_lines)]
+            surface = strip_ruby(raw)
+            reading = split_moras(text_to_kana(raw)) or ["ラ"]
         else:
             surface = ""  # 歌詞なしはラで充填、字幕も出さない
             reading = ["ラ"]

@@ -22,6 +22,7 @@ import jaconv
 
 from .kana import normalize_long_vowels
 from .project import Project
+from .ruby import strip_ruby
 
 # これ未満の類似度なら「対応なし」とする
 MATCH_THRESHOLD = 0.35
@@ -74,13 +75,16 @@ def align_texts(xf_lines: list[str], lyric_lines: list[str]) -> list[int | None]
     """各XF行に対応する元歌詞行のindex(対応なしはNone)を返す。
 
     対応は単調: 使われる元歌詞行のindexは非減少(同じ行の継続は可)。
+
+    元歌詞行はルビ記法(``｜表層《よみ》``)を含んでいてよい。表記の比較には
+    素テキストを、読みの比較には注釈の読みを反映した読みを使う。
     """
     n, m = len(xf_lines), len(lyric_lines)
     if n == 0 or m == 0:
         return [None] * n
 
     xf_norm = [_normalize(t) for t in xf_lines]
-    lyr_norm = [_normalize(t) for t in lyric_lines]
+    lyr_norm = [_normalize(strip_ruby(t)) for t in lyric_lines]
     # 元歌詞行の読み(発音形)との比較も取り、表記比較と高い方を採用する
     xf_pron = [_pron_normalize(t) for t in xf_lines]
     lyr_pron = [r and _pron_normalize(r) for r in _readings(lyric_lines)]
@@ -133,13 +137,17 @@ def align_texts(xf_lines: list[str], lyric_lines: list[str]) -> list[int | None]
 
 
 def align_lines(project: Project, lyric_lines: list[str]) -> None:
-    """project.lines の original_text を埋める(破壊的)。"""
+    """project.lines の original_text を埋める(破壊的)。
+
+    元歌詞にルビ記法が含まれていても、original_text には素テキストだけを入れる
+    (字幕・フレーズ切り出しに ``｜``/``《》`` が漏れない)。読みは注釈を尊重する。
+    """
     lyrics = [ln.strip() for ln in lyric_lines]
     lyrics = [ln for ln in lyrics if ln]
     xf_texts = [ln.xf_surface or ln.xf_kana for ln in project.lines]
     assignments = align_texts(xf_texts, lyrics)
     for line, a in zip(project.lines, assignments, strict=True):
-        line.original_text = lyrics[a] if a is not None else None
+        line.original_text = strip_ruby(lyrics[a]) if a is not None else None
 
 
 # ---- 字幕の表示粒度(granularity) ----
@@ -341,7 +349,11 @@ def split_lyric_to_phrases(
 
     reader は読みトークナイザ((表層, カタカナ読み)の列)。既定は MeCab+unidic。
     テストでは決定的なトークン列を注入できる。
+
+    lyric_line は素テキスト(align_lines が strip_ruby 済み)を想定するが、
+    記法つきで渡されても切り出し結果に記法が漏れないよう入口で素にする。
     """
+    lyric_line = strip_ruby(lyric_line)
     n = len(xf_texts)
     if n == 0:
         return []
