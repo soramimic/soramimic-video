@@ -614,6 +614,11 @@ def chord_pitches(symbol: str) -> tuple[int, list[int]]:
 
     ベースは BASS_LOW から1オクターブ、コードはルートを CHORD_LOW から
     1オクターブの帯域に置く(メロディと帯域が重ならないようにするため)。
+
+    第7音だけは、素直に積むとコード帯域の上へ大きくはみ出してメロディの上に
+    飛び出すこと(G7 なら G3-B3-D4-F4 で最高音が F4)があるので、はみ出す場合は
+    1オクターブ下げてルートの下に置く。第7音は次の和音へ半音で下降解決する音
+    なので、下に置いたほうが声部進行としても素直になる(G7→C なら F3→E3)。
     """
     m = _CHORD_RE.fullmatch(symbol)
     if m is None:
@@ -622,7 +627,10 @@ def chord_pitches(symbol: str) -> tuple[int, list[int]]:
     pc = (_ROOTS[letter] + {"": 0, "#": 1, "b": -1}[accidental]) % 12
     root = CHORD_LOW + (pc - CHORD_LOW) % 12
     bass = BASS_LOW + (pc - BASS_LOW) % 12
-    return bass, [root + i for i in _QUALITIES[quality or ""]]
+    tones = [root + i for i in _QUALITIES[quality or ""]]
+    if len(tones) == 4 and tones[3] >= CHORD_LOW + 12:
+        tones[3] -= 12
+    return bass, sorted(tones)
 
 
 def accompaniment_events(song: dict, measures: int) -> list[tuple[int, int, int, int]]:
@@ -646,14 +654,23 @@ def accompaniment_events(song: dict, measures: int) -> list[tuple[int, int, int,
         if num % len(symbols):
             raise ValueError(f"{song['title']}: {num}/{den} を {len(symbols)} 等分できません")
         for b, role in enumerate(pattern):
-            bass, tones = chord_pitches(symbols[b * len(symbols) // num])
+            symbol = symbols[b * len(symbols) // num]
+            bass, tones = chord_pitches(symbol)
             start = (index * num + b) * beat
             if role == "chord":
                 events += [(start, dur, n, CHORD_VELOCITY) for n in tones]
+                continue
+            # 5度のベースは「同じ和音が続いている間の刻み」。その拍で和音が
+            # 変わるならルートを鳴らす(変えないと、たとえば4/4の3拍目から
+            # 主和音に解決する終止で最後までベースが5度のままになり、
+            # ドミナントからバスが動かない第2転回の終止になってしまう)
+            if role == "fifth" and symbol == symbols[0]:
+                note = bass + 7
+                if note >= BASS_LOW + 12:
+                    note -= 12
             else:
-                fifth = bass + 7
-                note = bass if role == "bass" else (fifth - 12 if fifth >= BASS_LOW + 12 else fifth)
-                events.append((start, dur, note, BASS_VELOCITY))
+                note = bass
+            events.append((start, dur, note, BASS_VELOCITY))
     return events
 
 
