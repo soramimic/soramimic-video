@@ -86,6 +86,31 @@ def test_rejects_unknown_synthesizer(client):
     assert res.status_code == 422
 
 
+def test_rejects_neutrino_without_neutrino_root(client, monkeypatch):
+    # NEUTRINO_ROOT未設定のサーバー(公開インスタンスなど)では合成が必ず落ちるので、
+    # ジョブを走らせる前に422で断る
+    monkeypatch.delenv("NEUTRINO_ROOT", raising=False)
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    res = client.post(
+        "/api/jobs",
+        files=files,
+        data={"wordlist": "stations", "synthesizer": "neutrino"},
+    )
+    assert res.status_code == 422
+    assert "NEUTRINO" in res.json()["detail"]
+    # VOICEVOX指定なら通る(こちらは別プロセスのエンジンを使うので設定に依存しない)
+    assert wait_done(client, submit(client, wordlist="stations",
+                                    synthesizer="voicevox"))["status"] == "done"
+
+
+def test_synthesizer_defaults_to_voicevox(client, monkeypatch):
+    # 省略時はNEUTRINO_ROOT未設定のサーバーでも通る値(voicevox)になる
+    monkeypatch.delenv("NEUTRINO_ROOT", raising=False)
+    body = wait_done(client, submit(client, wordlist="stations"))
+    assert body["status"] == "done"
+    assert body["params"]["synthesizer"] == "voicevox"
+
+
 def test_accepts_voicevox_params(client):
     job_id = submit(
         client, wordlist="stations", synthesizer="voicevox", voicevox_style="3001"
@@ -257,6 +282,21 @@ def test_index_html_model_layout_use_select_not_datalist():
     assert 'id="layout-other"' not in html
     # 「その他(手入力)」の選択肢が存在する
     assert 'その他(手入力)' in html
+
+
+def test_index_html_gates_neutrino_by_config():
+    """NEUTRINO未設定のサーバーではNEUTRINOを選ばせない(選ぶとジョブが必ず失敗する)。"""
+    html = _index_html()
+    # /api/config の neutrino で選択肢を無効化する
+    assert 'id="synth-neutrino-opt"' in html
+    assert "setupNeutrino(conf.neutrino)" in html
+    assert 'opt.disabled = !ok;' in html
+    # 選択がneutrinoになる経路(既定値・VOICEVOX未起動フォールバック・状態復元)は
+    # すべて「NEUTRINOが使えるとき」に限る
+    assert '$("synthesizer").value === "voicevox" && neutrinoAvailable()' in html
+    assert 'state.synthesizer === "neutrino" && neutrinoAvailable()' in html
+    # 両方使えないときは案内を出す(空の選択肢のまま黙らせない)
+    assert 'id="synth-unavailable"' in html
 
 
 def test_index_html_custom_wordlist_replaces_the_name_input():
