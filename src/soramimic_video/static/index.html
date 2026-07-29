@@ -636,7 +636,7 @@
       <label for="synthesizer">歌声</label>
       <div class="row">
         <select id="synthesizer" aria-label="合成エンジン">
-          <option value="neutrino">NEUTRINO</option>
+          <option value="neutrino" id="synth-neutrino-opt">NEUTRINO</option>
           <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
         </select>
         <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
@@ -651,6 +651,7 @@
         </span>
       </div>
       <p class="hint" id="voicevox-credit"></p>
+      <p class="hint" id="synth-unavailable" hidden>このサーバーでは歌声合成エンジンが使えません(サーバー側の設定が必要です)。</p>
     </div>
 
     <div class="field">
@@ -878,6 +879,7 @@ async function loadConfig() {
     model0 = conf.models[0];
   }
   setChoice("model", model0);
+  setupNeutrino(conf.neutrino);  // VOICEVOXより先(未設定ならVOICEVOX側へ倒すため)
   setupVoicevox(conf.voicevox);
   fillChoiceOptions("layout", conf.layouts || [], "サーバー既定");
   setChoice("layout", $("layout").value || "");
@@ -905,6 +907,21 @@ async function loadConfig() {
 // ユーザーが自分でエンジンを選んだか(復元も含む)。既定の上書きを避けるため。
 let synthesizerTouched = false;
 
+// NEUTRINO_ROOT未設定のサーバー(公開インスタンスなど)では選ばせない。
+// 選ぶとジョブが必ず失敗するので、選択肢を無効化してVOICEVOX側へ倒す。
+function setupNeutrino(ok) {
+  const opt = $("synth-neutrino-opt");
+  opt.disabled = !ok;
+  opt.textContent = ok ? "NEUTRINO" : "NEUTRINO(サーバー未設定)";
+  if (!ok && $("synthesizer").value === "neutrino") {
+    $("synthesizer").value = "voicevox";
+  }
+}
+
+function neutrinoAvailable() {
+  return !$("synth-neutrino-opt").disabled;
+}
+
 // VOICEVOXの歌声一覧をセレクトに流し込み、エンジン未起動なら選択肢を無効化する。
 function setupVoicevox(vv) {
   const opt = $("synth-voicevox-opt");
@@ -912,7 +929,10 @@ function setupVoicevox(vv) {
   if (!vv || !vv.styles || !vv.styles.length) {
     opt.disabled = true;
     opt.textContent = "VOICEVOX(エンジン未起動)";
-    if ($("synthesizer").value === "voicevox") $("synthesizer").value = "neutrino";
+    // NEUTRINOが使えるときだけそちらへ戻す(両方使えないなら選択は変えない)
+    if ($("synthesizer").value === "voicevox" && neutrinoAvailable()) {
+      $("synthesizer").value = "neutrino";
+    }
     toggleSynthOpts();
     return;
   }
@@ -1044,6 +1064,9 @@ function toggleSynthOpts() {
   const isVv = $("synthesizer").value === "voicevox";
   $("neutrino-opts").hidden = isVv;
   $("voicevox-opts").hidden = !isVv;
+  // どちらのエンジンも使えないサーバーでは、投入前に理由が分かるよう案内を出す
+  $("synth-unavailable").hidden =
+    neutrinoAvailable() || !$("synth-voicevox-opt").disabled;
   // クレジット表記はVOICEVOXを選んでいるときだけ(歌声セレクトの外に置いてあるので明示的に)
   $("voicevox-credit").hidden = !isVv;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
@@ -4113,12 +4136,12 @@ async function doRestoreForm() {
     }
     if (state.transpose != null) $("transpose").value = state.transpose;
     if (state.model) setChoice("model", state.model);
-    // 3. 合成エンジン: voicevoxが無効なら復元しない。復元した値は
+    // 3. 合成エンジン: そのエンジンが使えないサーバーなら復元しない。復元した値は
     //    setupVoicevox の既定(voicevox)に上書きされないよう touched 扱いにする
     if (state.synthesizer === "voicevox" && !$("synth-voicevox-opt").disabled) {
       $("synthesizer").value = "voicevox";
       synthesizerTouched = true;
-    } else if (state.synthesizer === "neutrino") {
+    } else if (state.synthesizer === "neutrino" && neutrinoAvailable()) {
       $("synthesizer").value = "neutrino";
       synthesizerTouched = true;
     }

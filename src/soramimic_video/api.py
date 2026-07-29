@@ -1392,6 +1392,13 @@ def create_app(
             raise HTTPException(
                 status_code=422, detail="synthesizerは neutrino か voicevox です"
             )
+        # NEUTRINO未設定のサーバー(公開インスタンスなど)は合成の途中で必ず落ちる。
+        # 走らせてから失敗させず、受付時に理由を返す(UI側も選択肢を無効化している)
+        if synthesizer == "neutrino" and not os.environ.get("NEUTRINO_ROOT"):
+            raise HTTPException(
+                status_code=422,
+                detail="このサーバーではNEUTRINOを使えません(synthesizerは voicevox です)",
+            )
         # 新名 auto_octave を優先し、無ければ旧名、どちらも無ければ既定True(自動調整ON)
         if auto_octave is None:
             auto_octave = (
