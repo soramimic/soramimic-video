@@ -135,3 +135,20 @@ def test_info_toggle_sets_aria_state():
     for needle in ('setAttribute("aria-expanded"', 'setAttribute("aria-controls"',
                    'setAttribute("aria-label"'):
         assert needle in script
+
+
+def test_info_hint_opens_as_floating_popover():
+    """説明はその場に展開せず、ⓘ の近くに重ねるフロート表示にする。
+
+    その場に開くと周りのフォームが押し下がるので、position:fixed +
+    JS の座標計算(placeInfoPop)にしている。閉じる導線は ⓘ 再タップ・
+    外側タップ・Esc の3つ。
+    """
+    text = INDEX.read_text(encoding="utf-8")
+    rule = text[text.index(".hint[data-info] {"):]
+    rule = rule[: rule.index("}")]
+    assert "position: fixed" in rule
+    assert "max-width: min(" in rule           # スマホで画面幅を超えない
+    for needle in ("function placeInfoPop", "function openInfoPop", "function closeInfoPop",
+                   'ev.key !== "Escape"'):
+        assert needle in text
