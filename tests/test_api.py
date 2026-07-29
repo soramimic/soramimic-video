@@ -103,6 +103,14 @@ def test_rejects_neutrino_without_neutrino_root(client, monkeypatch):
                                     synthesizer="voicevox"))["status"] == "done"
 
 
+def test_synthesizer_defaults_to_voicevox(client, monkeypatch):
+    # 省略時はNEUTRINO_ROOT未設定のサーバーでも通る値(voicevox)になる
+    monkeypatch.delenv("NEUTRINO_ROOT", raising=False)
+    body = wait_done(client, submit(client, wordlist="stations"))
+    assert body["status"] == "done"
+    assert body["params"]["synthesizer"] == "voicevox"
+
+
 def test_accepts_voicevox_params(client):
     job_id = submit(
         client, wordlist="stations", synthesizer="voicevox", voicevox_style="3001"

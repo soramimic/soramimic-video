@@ -377,6 +377,8 @@ def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
     任意なので焼き込まない(ライブラリ個別の規約はWeb UIの「公開時のクレジット
     表記」で案内している)。
     """
+    # 既定値のvoicevoxではなくneutrinoで補うのは、synthesizerを記録していない
+    # 古いジョブがNEUTRINO時代のものだから(過去ジョブの表記を変えないため据え置く)
     if str(params.get("synthesizer") or "neutrino") != "voicevox":
         return ""
     from .voicevox import list_singers
@@ -575,6 +577,7 @@ def _run_synthesize(job: Job, config: dict[str, Any], project: Any, synthesize) 
     job.stage_estimated_total に入れる(to_dict がこれらから %/残り秒を出す)。
     成功後は今回の実績を throughput ストアに記録して次回の見積りに使う。
     """
+    # 未記録の古いジョブはNEUTRINO時代のものなので neutrino 扱い(見積りの互換のため据え置く)
     synthesizer = job.params.get("synthesizer", "neutrino")
     is_voicevox = synthesizer == "voicevox"
     # VOICEVOXは速く進捗内訳も出ないので、NEUTRINO用の所要見積り・実績記録は行わない
@@ -1324,7 +1327,9 @@ def create_app(
         wordlist_csv: UploadFile | None = None,
         lyrics: str = Form(""),
         model: str = Form("MERROW"),
-        synthesizer: str = Form("neutrino"),
+        # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
+        # 未設定のサーバーだと下の422ゲートで弾かれてしまうため既定にしない)
+        synthesizer: str = Form("voicevox"),
         voicevox_style: int = Form(3003),
         auto_octave: bool | None = Form(None),
         # 旧名。auto_octave に統合したが後方互換で受け続ける(deprecated)。
