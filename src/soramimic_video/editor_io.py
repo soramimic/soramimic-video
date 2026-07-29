@@ -205,13 +205,16 @@ def build_editor_preview(
     phrases = payload.get("phrases") or []
     # 元歌詞が与えられていれば実動画(align_lines)と同様に行対応づけし、
     # 字幕の元歌詞をカナ(phrases)ではなく元歌詞の行で出す
+    # 元歌詞のルビ記法(｜表層《よみ》)は align_lines と同じく、突き合わせには
+    # 記法つきの行(読みに注釈が効く)を、表示には素テキストを使う
     aligned: list[str | None] = [None] * len(phrases)
     lyric_lines = [ln.strip() for ln in lyrics.splitlines() if ln.strip()]
     if lyric_lines and phrases:
         from .align import align_texts
+        from .ruby import strip_ruby
 
         assignments = align_texts([str(p) for p in phrases], lyric_lines)
-        aligned = [lyric_lines[a] if a is not None else None for a in assignments]
+        aligned = [strip_ruby(lyric_lines[a]) if a is not None else None for a in assignments]
 
     # 粒度に応じて、各行に出す元歌詞/替え歌テキストを video と同じ手順で解決する。
     # プレビューは時間軸を持たないので区間はダミー(表示テキストのみ使う)。

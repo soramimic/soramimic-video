@@ -20,6 +20,7 @@ from pathlib import Path
 from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
 from .kana import split_moras
 from .project import Project
+from .ruby import strip_ruby
 from .transcribe import DEFAULT_WHISPER_MODEL
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,9 @@ def analyze_audio(
             raise RuntimeError("Whisperが歌詞を認識できませんでした")
         logger.info("Whisper認識結果を元歌詞として使用: %d行", len(line_texts))
 
-    # 3. カナ化 + forced alignment。読み候補が割れた行は音響スコアで判定する
+    # 3. カナ化 + forced alignment。読み候補が割れた行は音響スコアで判定する。
+    # 元歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。カナ化には記法つきの
+    # 行を渡し、字幕・表示に使うテキスト(line_texts)は素テキストに直しておく。
     line_variants = [
         [split_moras(kana) for kana in reading_candidates(text)] or [[]]
         for text in line_texts
@@ -77,6 +80,7 @@ def analyze_audio(
     for text, variants in zip(line_texts, line_variants, strict=True):
         if not variants[0]:
             logger.warning("カナ読みが得られない行をスキップ: %r", text)
+    line_texts = [strip_ruby(text) for text in line_texts]
     aligned, chosen = align_moras_with_variants(vocals, line_variants, device=device)
     n_ambiguous = sum(1 for v in line_variants if len(v) > 1)
     if n_ambiguous:
