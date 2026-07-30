@@ -78,6 +78,11 @@ extend-exclude = ["external", "notebooks"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPIのパラメータ宣言は引数の既定値に書くのが作法。Form/Depends等は ruff が
+# 既に見逃しているが File は入っていないので、同じ扱いにする(B008)
+extend-immutable-calls = ["fastapi.File"]
+
 [tool.ruff.lint.per-file-ignores]
 # ASSヘッダのFormat/Style行は仕様上1行でなければならない
 "src/soramimic_video/video.py" = ["E501"]
