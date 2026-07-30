@@ -608,6 +608,51 @@ def test_preview_returns_audio(tmp_path, monkeypatch):
     assert video.headers["content-type"] == "audio/wav"
 
 
+def test_preview_mode_is_validated_and_stored(tmp_path, monkeypatch):
+    seen: dict = {}
+
+    def fake_pipeline(job, config):
+        seen[job.id] = job.params["preview_mode"]
+        out = job.dir / "neutrino" / "vocal.wav"
+        out.parent.mkdir(parents=True)
+        out.write_bytes(b"RIFF-fake")
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    for sent, stored in [("high", "high"), ("low", "low"), ("head", "head"), ("x", "")]:
+        res = client.post(
+            "/api/jobs", files=files, data={"preview": "20", "preview_mode": sent}
+        )
+        assert res.status_code == 200
+        wait_done(client, res.json()["id"])
+        assert seen[res.json()["id"]] == stored
+
+
+def test_preview_uses_the_whole_song_for_auto_octave(tmp_path):
+    """切り出したぶんだけで音域を決めると本番と違うキーになるので全曲を渡す。"""
+    captured: dict = {}
+
+    def fake_synthesize(project, project_dir, **kw):
+        captured["octave_keys"] = kw["octave_keys"]
+        captured["notes"] = [n.midi_note for n in project.notes]
+        out = project_dir / "neutrino" / "vocal.wav"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"RIFF-fake")
+        return out
+
+    project = _range_project()
+    job = api_mod.Job(id="j", dir=tmp_path, params={"model": "MERROW"})
+    api_mod._run_synthesize(
+        job, {}, project, fake_synthesize, octave_keys=[60, 74, 50]
+    )
+    assert captured["octave_keys"] == [60, 74, 50]
+    # 本番(プレビューでない)経路は渡さない = synthesize側でprojectから求める
+    api_mod._run_synthesize(job, {}, project, fake_synthesize)
+    assert captured["octave_keys"] is None
+
+
 def test_truncate_project():
     from types import SimpleNamespace
 
@@ -632,6 +677,50 @@ def test_truncate_project():
     api_mod._truncate_project(project, 2.0, start=2.0)
     assert [n.id for n in project.notes] == [2, 3]
     assert [ln.note_ids for ln in project.lines] == [[2, 3]]
+
+
+def _range_project():
+    """3行の小さなproject。行1が最高音、行2が最低音を含む。"""
+    from types import SimpleNamespace
+
+    keys = [60, 62, 74, 70, 50, 55]
+    notes = [
+        SimpleNamespace(id=i, midi_note=k, start_sec=float(i), end_sec=i + 0.9, kana="ア")
+        for i, k in enumerate(keys)
+    ]
+    lines = [
+        SimpleNamespace(id=0, note_ids=[0, 1]),
+        SimpleNamespace(id=1, note_ids=[2, 3]),
+        SimpleNamespace(id=2, note_ids=[4, 5]),
+    ]
+    return SimpleNamespace(
+        notes=notes,
+        lines=lines,
+        line_time_range=lambda ln: (notes[ln.note_ids[0]].start_sec,
+                                    notes[ln.note_ids[-1]].end_sec),
+    )
+
+
+def test_extreme_line_picks_the_highest_and_lowest_phrase():
+    project = _range_project()
+    assert api_mod._extreme_line(project, "high").id == 1
+    assert api_mod._extreme_line(project, "low").id == 2
+    # 音符のある行が無ければNone(head相当にフォールバックする)
+    from types import SimpleNamespace
+
+    assert api_mod._extreme_line(SimpleNamespace(lines=[]), "high") is None
+
+
+def test_preview_window_covers_the_whole_phrase():
+    project = _range_project()
+    # high: 行1(2.0〜3.9秒)。窓は行末の音符が残り、次の行は入らない長さ
+    start, seconds = api_mod._preview_window(project, "high", 20.0)
+    assert start == 2.0
+    api_mod._truncate_project(project, seconds, start=start)
+    assert [n.id for n in project.notes] == [2, 3]
+
+    # モード無し(head)は従来どおり歌い出しからpreview秒
+    assert api_mod._preview_window(_range_project(), "", 20.0) == (0.0, 20.0)
 
 
 def test_first_lyric_start():

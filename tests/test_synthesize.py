@@ -90,6 +90,17 @@ def test_neutrino_auto_octave_falls_back_to_generic_range(tmp_path: Path, monkey
     assert captured["transpose"] == -12
 
 
+def test_neutrino_auto_octave_uses_given_keys(tmp_path: Path, monkeypatch):
+    """プレビューは切り出した音符でなく渡された音域(曲全体)でキーを決める。"""
+    project = _project(tmp_path)  # 音符 60〜64。単体では汎用音域50〜74に収まる
+    captured = _capture_neutrino(monkeypatch)
+    synthesize(
+        project, tmp_path, synthesizer="neutrino", transpose=0, auto_octave=True,
+        octave_keys=[80, 82, 84],
+    )
+    assert captured["transpose"] == -12
+
+
 def test_build_lyric_map_defaults_to_original(tmp_path: Path):
     project = _project(tmp_path)
     assert build_lyric_map(project) == {0: "シ", 1: "ズ", 2: "ム"}
