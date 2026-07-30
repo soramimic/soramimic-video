@@ -39,13 +39,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
+from . import wordlist_zip as wordlist_zip_mod
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -86,6 +87,8 @@ THROUGHPUT_FILENAME = "synthesize-throughput.json"
 # アップロードされた自作単語リストを置くジョブ内サブディレクトリ。
 # ファイル名(<表示名>.csv)は editor 連携・サムネのリスト名表示に効くので残す。
 WORDLIST_DIRNAME = "wordlist"
+# zipで来た自作リストの画像を置く場所(<ジョブ>/wordlist/images/img_xxx.png)
+WORDLIST_IMAGES_DIRNAME = "images"
 DEFAULT_SOUNDFONTS = ("/usr/share/sounds/sf2/FluidR3_GM.sf2",)
 
 
@@ -315,6 +318,29 @@ def custom_wordlist_name(filename: str) -> str:
     return _clean_name(stem).replace(".", "_") or "custom"
 
 
+async def _read_wordlist_images(files: list[UploadFile]) -> dict[str, bytes]:
+    """multipartで来た単語画像を {ファイル名: 中身} にする(貼り付けテキスト用)。
+
+    1枚あたりは上限+1バイトだけ読む(上限超えは wordlist_zip 側がzipのときと同じ
+    理由で断る)。合計も読みながら見て、zip1つぶんの上限を超えたらそこで止める。
+    """
+    per_file = wordlist_zip_mod.max_image_bytes()
+    total_limit = wordlist_zip_mod.max_zip_bytes()
+    out: dict[str, bytes] = {}
+    total = 0
+    for f in files:
+        if not f.filename:
+            continue  # ファイルを選ばなかった入力は空のパートで来る
+        data = await f.read(per_file + 1)
+        total += len(data)
+        if total > total_limit:
+            raise wordlist_csv_mod.WordlistCsvError(
+                f"入力が大きすぎます(上限は合計{total_limit / 1024 / 1024:.1f}MBです)。"
+            )
+        out[f.filename] = data
+    return out
+
+
 def custom_wordlist_path(job: Job) -> Path | None:
     """このジョブが自作リストを持っていればそのCSVパス(無ければ None)。"""
     name = str(job.params.get("wordlist_csv") or "")
@@ -322,6 +348,36 @@ def custom_wordlist_path(job: Job) -> Path | None:
         return None
     path = job.dir / WORDLIST_DIRNAME / name
     return path if path.exists() else None
+
+
+def _store_wordlist_images(wl_dir: Path, text: str, images: dict[str, bytes]) -> str:
+    """zip同梱の画像をジョブ内に書き出し、CSVの image 列を実体のパスに書き換える。
+
+    動画生成側(video.download_image)は「``://`` を含まない値」をローカルパスとして
+    キャッシュに取り込むので、ここで絶対パスにしておけば描画側は素通しで画像が出る。
+    保存名は wordlist_zip が付けた ``img_<sha1>.png`` だけを通す(外から来た名前で
+    ジョブディレクトリの外に書かないため)。
+    """
+    # jobs_dir が相対パス(cli既定の work/api-jobs 等)でも、CSVに書くパスは絶対にする
+    # (描画はcwd依存で動くが、ログや将来のcwd変更で壊れないように)
+    img_dir = (wl_dir / WORDLIST_IMAGES_DIRNAME).resolve()
+    img_dir.mkdir(parents=True, exist_ok=True)
+    safe = {n for n in images if re.fullmatch(r"img_[0-9a-f]{16}\.(png|jpg)", n)}
+    for name in sorted(safe):
+        (img_dir / name).write_bytes(images[name])
+    # 正規化済みテキストはクオート無しの ",".join なので、csvモジュールではなく
+    # エンジンと同じ split(",") で読み直す(値に「"」が残っていても崩れないように)
+    lines = text.splitlines()
+    if not lines or "image" not in lines[0].split(","):
+        return text
+    i = lines[0].split(",").index("image")
+    out = [lines[0]]
+    for line in lines[1:]:
+        cells = line.split(",")
+        if i < len(cells) and cells[i] in safe:
+            cells[i] = str(img_dir / cells[i])
+        out.append(",".join(cells))
+    return "\n".join(out)
 
 
 def _job_slug(job: Job) -> tuple[str, str]:
@@ -723,6 +779,7 @@ class JobManager:
         layout_json: str = "",
         owner: str | None = None,
         wordlist_csv: str = "",
+        wordlist_images: dict[str, bytes] | None = None,
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
@@ -733,6 +790,8 @@ class JobManager:
         if wordlist_csv:
             wl_dir = job_dir / WORDLIST_DIRNAME
             wl_dir.mkdir(exist_ok=True)
+            if wordlist_images:
+                wordlist_csv = _store_wordlist_images(wl_dir, wordlist_csv, wordlist_images)
             (wl_dir / str(params["wordlist_csv"])).write_text(
                 wordlist_csv, encoding="utf-8"
             )
@@ -1052,9 +1111,12 @@ def create_app(
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_layouts.json)
             "wordlist_layouts": load_wordlist_layouts(),
             "editor": editor_available,
-            # 自作の単語リスト(CSVアップロード)の受け入れ上限
+            # 自作の単語リスト(CSV/zipアップロード)の受け入れ上限
             "max_wordlist_bytes": wordlist_csv_mod.max_bytes(),
             "max_wordlist_rows": wordlist_csv_mod.max_rows(),
+            "max_wordlist_zip_bytes": wordlist_zip_mod.max_zip_bytes(),
+            "max_wordlist_image_bytes": wordlist_zip_mod.max_image_bytes(),
+            "max_wordlist_images": wordlist_zip_mod.max_images(),
         }
         # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
         if is_public_mode():
@@ -1395,6 +1457,11 @@ def create_app(
         editor: UploadFile | None = None,
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
         wordlist_csv: UploadFile | None = None,
+        # 画面に貼り付けた単語リスト(zipを作らずに画像を付ける経路)。
+        # wordlist_csv が付いていないときだけ見る。画像は名前で行に結びつく
+        wordlist_text: str = Form(""),
+        wordlist_images: list[UploadFile] = File(default_factory=list),
+        wordlist_name: str = Form(""),
         lyrics: str = Form(""),
         model: str = Form("MERROW"),
         # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
@@ -1438,13 +1505,20 @@ def create_app(
                 raise HTTPException(
                     status_code=400, detail="editorのJSONが読めません"
                 ) from exc
-        # 自作の単語リスト(CSV)。ジョブを走らせる前にここで検証して弾く
-        custom: wordlist_csv_mod.WordlistCsv | None = None
-        if wordlist_csv is not None and wordlist_csv.filename:
-            try:
-                custom = wordlist_csv_mod.parse(await wordlist_csv.read())
-            except wordlist_csv_mod.WordlistCsvError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # 自作の単語リスト(CSV/画像入りzip、または貼り付けテキスト+画像)。
+        # ジョブを走らせる前にここで検証して弾く
+        custom: wordlist_zip_mod.WordlistZip | None = None
+        has_wordlist_file = wordlist_csv is not None and bool(wordlist_csv.filename)
+        try:
+            if has_wordlist_file and wordlist_csv is not None:
+                custom = wordlist_zip_mod.parse_upload(await wordlist_csv.read())
+            elif wordlist_text.strip():
+                custom = wordlist_zip_mod.parse_parts(
+                    wordlist_text.encode("utf-8"),
+                    await _read_wordlist_images(wordlist_images),
+                )
+        except wordlist_csv_mod.WordlistCsvError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         # プレビューは元歌詞をそのまま歌わせるので替え歌の入力は不要
         if preview <= 0 and editor_bytes is None and custom is None and not wordlist.strip():
             raise HTTPException(
@@ -1511,37 +1585,72 @@ def create_app(
             "song_title": song_title.strip(),
         }
         if custom is not None:
-            # 表示名(履歴・サムネ・ダウンロード名)はアップロードしたファイル名から作る。
+            # 表示名(履歴・サムネ・ダウンロード名)はアップロードしたファイル名から作る
+            # (貼り付けテキストならフォームのリスト名。どちらも空なら "custom")。
             # 中身が変われば指紋も変わるので、来歴の突き合わせにも使える
             name = custom_wordlist_name(
-                (wordlist_csv.filename if wordlist_csv else "") or ""
+                (wordlist_csv.filename if has_wordlist_file and wordlist_csv else "")
+                or f"{wordlist_name.strip()}.csv"
             )
             params["wordlist"] = name
             params["wordlist_csv"] = f"{name}.csv"
-            params["wordlist_fingerprint"] = custom.fingerprint
-            params["wordlist_rows"] = custom.rows
+            params["wordlist_fingerprint"] = custom.csv.fingerprint
+            params["wordlist_rows"] = custom.csv.rows
+            if custom.image_count:
+                params["wordlist_images"] = custom.image_count
             # 自作リストは絞り込み(where)の対象になる列が無いので付けない
             params["where"] = ""
         job = manager.create(
             midi_bytes, editor_bytes, lyrics, params,
             layout_json=layout_json, owner=owner,
-            wordlist_csv=custom.text if custom is not None else "",
+            wordlist_csv=custom.csv.text if custom is not None else "",
+            wordlist_images=custom.images if custom is not None else None,
         )
         return {"id": job.id}
 
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
-    async def wordlist_check(wordlist_csv: UploadFile) -> dict[str, Any]:
-        """自作の単語リスト(CSV)を投入前に検査する。
+    async def wordlist_check(
+        wordlist_csv: UploadFile | None = None,
+        wordlist_text: str = Form(""),
+        wordlist_images: list[UploadFile] = File(default_factory=list),
+        wordlist_name: str = Form(""),
+    ) -> dict[str, Any]:
+        """自作の単語リストを投入前に検査する。
 
-        列・行数・読みの書き方を見て、駄目なら400で理由を返す。通れば
-        「何語読めたか」をUIに返して、ジョブを投げる前に確認できるようにする
-        (/api/midi-check と同じ流儀)。ここではファイルを保存しない。
+        入力は2通り。アップロードした1ファイル(CSV、または画像入りzip)か、
+        画面に貼り付けたテキスト+別々に選んだ画像(wordlist_text/wordlist_images)。
+        どちらか一方だけを受け取る(両方あると、どちらを使ったか画面と食い違う)。
+
+        列・行数・読みの書き方、画像があればその中身まで見て、駄目なら400で理由を返す。
+        通れば「何語読めたか(と画像が何枚付いたか)」をUIに返して、ジョブを投げる前に
+        確認できるようにする(/api/midi-check と同じ流儀)。ここではファイルを保存しない。
         """
+        has_file = wordlist_csv is not None and bool(wordlist_csv.filename)
+        has_text = bool(wordlist_text.strip())
+        if has_file and has_text:
+            raise HTTPException(
+                status_code=400,
+                detail="単語リストはファイルか書いた内容のどちらか一方にしてください。",
+            )
+        if not has_file and not has_text:
+            raise HTTPException(
+                status_code=400,
+                detail="単語リストがありません。ファイルを選ぶか、単語を書いてください。",
+            )
         try:
-            parsed = wordlist_csv_mod.parse(await wordlist_csv.read())
+            if has_file and wordlist_csv is not None:
+                parsed = wordlist_zip_mod.parse_upload(await wordlist_csv.read())
+                name = custom_wordlist_name(wordlist_csv.filename or "")
+            else:
+                parsed = wordlist_zip_mod.parse_parts(
+                    wordlist_text.encode("utf-8"),
+                    await _read_wordlist_images(wordlist_images),
+                )
+                # リスト名は任意。空なら custom_wordlist_name の既定("custom")に落ちる
+                name = custom_wordlist_name(f"{wordlist_name.strip()}.csv")
         except wordlist_csv_mod.WordlistCsvError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {**parsed.summary(), "name": custom_wordlist_name(wordlist_csv.filename or "")}
+        return {**parsed.summary(), "name": name}
 
     @app.get("/api/jobs", dependencies=[Depends(_require_api_key)])
     def list_jobs(request: Request) -> list[dict[str, Any]]:

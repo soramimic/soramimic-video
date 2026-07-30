@@ -280,6 +280,28 @@
   .editor-modal-foot input[type="file"] {
     width: auto; max-width: 100%; flex: 0 1 auto; padding: .3rem .4rem; font-size: .8rem;
   }
+  /* ---- 自作の単語リストの全画面モーダル ---- */
+  /* 単語を書く欄・ファイル・画像と入力が多く、詳細設定の中に置くと周りに埋もれる。
+     枠組み(.editor-modal 一式)は替え歌エディタと共用し、中身だけここで足す。 */
+  .modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: .8rem .7rem; }
+  /* 狭い画面(375px)でも読める幅に収め、広い画面では中央に置く */
+  .modal-body-inner { max-width: 40rem; margin: 0 auto; }
+  #wordlist-text { min-height: 12rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  /* 選んだ画像の一覧。1件ずつ × で外せるピルにする */
+  .file-chips { display: flex; flex-wrap: wrap; gap: .3rem; margin: .4rem 0 0; padding: 0; list-style: none; }
+  .file-chips li {
+    display: inline-flex; align-items: center; gap: .2rem; max-width: 100%;
+    padding: .1rem .2rem .1rem .5rem; font-size: .8rem;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--panel-2);
+  }
+  .file-chips .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-chips button {
+    padding: 0 .35rem; min-height: 0; line-height: 1.4;
+    border: 0; background: none; color: var(--muted);
+  }
+  /* 詳細設定側に残す要約(中身の編集はモーダルで行う) */
+  .custom-wordlist-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+  #custom-wordlist-summary { font-size: .85rem; }
   /* 自動オクターブ調整ONで無効化した移調欄(disabled + 視覚的にミュート) */
   #transpose-row.is-disabled { opacity: .5; }
   /* モーダルを開いているあいだは裏のページをスクロールさせない */
@@ -556,16 +578,17 @@
       <select id="wordlist-select" hidden></select>
       <input type="text" id="wordlist" placeholder="例: stations">
       <div id="wordlist-filters" class="wordlist-filters" hidden></div>
-      <!-- 自作の単語リスト(CSV)。プルダウンで「自作リストを使う(CSV)」を選んだ
-           ときだけ出す。ファイルを選んだ時点で /api/wordlist-check に投げ、列や
-           読みを検査して駄目ならその場で取り消す(生成を走らせてから落とさない)。
-           選択中は単語リスト名の代わりにファイル名(と読めた語数)を出す。 -->
+      <!-- 自作の単語リスト。プルダウンで「自作リストを使う」を選んだときだけ出す。
+           中身の編集は専用モーダル(#wordlist-modal-wrap)で行い、ここには今の
+           内容の要約と開き直す導線だけを置く。書き換えるたびに
+           /api/wordlist-check に投げて検査するので、通った内容だけが生成に使われる。 -->
       <div id="custom-wordlist" hidden>
-        <label for="wordlist-csv">自作の単語リスト(CSVファイル)</label>
-        <input type="file" id="wordlist-csv" accept=".csv,.txt,text/csv,text/plain">
-        <p class="hint" data-info>1行に1語ずつ「表記,読み」で書いたテキスト(.csv/.txt)です。読みはカタカナかひらがな。読みを省くと表記から自動で推定します。1行目に <code>surface,pronunciation</code> と列名を書いた表形式のCSVも使えます。自作リストでは単語画像は付きません(文字だけの動画になります)。</p>
-        <p class="hint" id="wordlist-csv-status" hidden></p>
-        <p class="error" id="wordlist-csv-error" hidden></p>
+        <label>自作の単語リスト</label>
+        <div class="custom-wordlist-row">
+          <span id="custom-wordlist-summary">未設定</span>
+          <button type="button" id="edit-wordlist" class="btn-sm">編集</button>
+        </div>
+        <p class="error" id="custom-wordlist-error" hidden></p>
       </div>
       <!-- 絞り込み(where)はファセットのチェックボックスの出力そのものなので、
            チェックを触ったときに何が入ったのかが見えるよう同じ視野に置く
@@ -831,6 +854,56 @@
     <input type="file" id="editor" accept=".json" aria-label="外部で編集した替え歌JSONの読み込み">
     <button type="button" id="download-editor" class="btn-sm" disabled>ダウンロード</button>
     <p class="hint" data-info data-info-standalone data-info-label="替え歌JSONの読み書き">soramimicエディタなどで別途書き出したJSONを直接読み込みます(このエディタでの編集を使う場合は不要)。「ダウンロード」は今使われている替え歌JSONの書き出しです。</p>
+  </div>
+</div>
+
+<!-- 自作の単語リストのモーダル。単語をその場で書けるようにし、画像は別々に選ばせる
+     (zipを作らなくても単語画像を出せる)。書き換えるたびに /api/wordlist-check で
+     検査し、通った内容だけを生成に使う。ファイルから読み込んだ .csv/.txt は
+     テキスト欄に流し込み、以後はテキスト欄が正本。画像入りzipだけは中身を
+     ほどかずそのまま送る。枠組みのCSSは替え歌エディタのモーダルと共用。
+     説明は ⓘ に畳まない(data-info のフロートはモーダルより下に出るため)。 -->
+<div class="editor-modal" id="wordlist-modal-wrap" hidden role="dialog" aria-modal="true"
+  aria-labelledby="wordlist-modal-title">
+  <div class="editor-modal-head">
+    <h2 id="wordlist-modal-title">📝 自作の単語リスト</h2>
+    <button type="button" id="wordlist-modal-close" class="btn-sm">閉じる</button>
+    <p class="hint">書いた内容はその場で検査され、通っていればそのまま生成に使われます(Escでも閉じます)。</p>
+  </div>
+  <div class="modal-body">
+    <div class="modal-body-inner">
+      <div class="field">
+        <label for="wordlist-name">リスト名(任意)</label>
+        <input type="text" id="wordlist-name" placeholder="custom">
+        <p class="hint">サムネイルや履歴・ダウンロード名に出る名前です。</p>
+      </div>
+      <div class="field">
+        <label for="wordlist-text">単語(1行に1語)</label>
+        <p class="hint">かんたん形式は「表記,読み」。読みはカタカナかひらがなで、省くと表記から自動で推定します(<code>#</code> 以降は行コメント)。1行目に <code>surface,pronunciation</code> と列名を書いたCSVも使えます。単語画像を出すときは <code>image</code> 列に下で選んだ画像のファイル名を書きます。</p>
+        <textarea id="wordlist-text" placeholder="ねこ,ネコ&#10;田中太郎,タナカタロウ"></textarea>
+      </div>
+      <div class="field">
+        <label for="wordlist-file">ファイルから読み込む</label>
+        <input type="file" id="wordlist-file" accept=".csv,.txt,.zip,text/csv,text/plain,application/zip">
+        <p class="hint">.csv / .txt を選ぶと中身が上の欄に入ります(文字化けするときはUTF-8で保存し直すか、zipにまとめてください)。CSVと画像をまとめたzipを選んだときは、そのzipをそのまま使います。</p>
+        <div id="wordlist-zip-note" class="custom-wordlist-row" hidden>
+          <span id="wordlist-zip-name"></span>
+          <button type="button" id="wordlist-zip-clear" class="btn-sm">zipをやめて自分で書く</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="wordlist-images">単語画像(任意・PNG / JPEG / WebP)</label>
+        <input type="file" id="wordlist-images" multiple accept="image/png,image/jpeg,image/webp">
+        <p class="hint">表記(<code>original</code> 列があればその値)と同じファイル名の画像が自動で紐づきます。</p>
+        <ul id="wordlist-image-list" class="file-chips"></ul>
+      </div>
+      <p class="hint" id="wordlist-status" hidden></p>
+      <p class="error" id="wordlist-error" hidden></p>
+    </div>
+  </div>
+  <div class="editor-modal-foot">
+    <button type="button" id="wordlist-apply" class="btn-primary btn-sm">この内容を使う</button>
+    <p class="hint">検査が通っていれば閉じるだけでも使われます。</p>
   </div>
 </div>
 
@@ -1584,12 +1657,12 @@ async function submitJob(previewSec, previewMode) {
       + "(サンプル曲か、自分のXF MIDIファイル)を選んでください。");
     return;
   }
-  // 自作リストを選んだままCSVが無い(選んでいない・検査に落ちた)状態では投げない
+  // 自作リストを選んだまま中身が無い(書いていない・検査に落ちた)状態では投げない
   if (isCustomWordlist() && !customWordlist && previewSec <= 0) {
     setBusy(false);
     $("advanced").open = true;
-    showSubmitMsg("自作の単語リスト(CSVファイル)がまだ選ばれていません。"
-      + "「⚙️ 詳細設定」の「自作の単語リスト」からファイルを選んでください。");
+    showSubmitMsg("自作の単語リストの中身がまだ決まっていません。"
+      + "「⚙️ 詳細設定」の「自作の単語リスト」の「編集」から単語を書いてください。");
     return;
   }
   showSubmitMsg("");
@@ -1634,10 +1707,8 @@ async function submitJob(previewSec, previewMode) {
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(midi));
   form.append("wordlist", $("wordlist").value);
-  // 自作リストはリスト名ではなくCSVそのものを送る(サーバー側で名前より優先される)
-  if (customWordlist && isCustomWordlist()) {
-    form.append("wordlist_csv", customWordlist.file);
-  }
+  // 自作リストはリスト名ではなく中身そのものを送る(サーバー側で名前より優先される)
+  if (customWordlist && isCustomWordlist()) appendCustomWordlist(form);
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
@@ -1939,71 +2010,259 @@ const HIDDEN_PREVIEW_WORDLISTS = {
   insect: "昆虫の画像が苦手な方への配慮で、プレビューを隠しています。",
 };
 
-// ---- 自作の単語リスト(CSVアップロード) ----
-// 単語リストのプルダウンの最後にある「自作リストを使う(CSV)」。選ぶとファイル
-// 選択欄が出て、選んだ時点で /api/wordlist-check に検査させる(投入してから
-// 落とさない)。通ったファイルは投入時に multipart の wordlist_csv として送り、
-// サーバーがジョブディレクトリに保存して変換に使う。
+// ---- 自作の単語リスト ----
+// 単語リストのプルダウンの最後にある「自作リストを使う」。選ぶと専用のモーダル
+// (#wordlist-modal-wrap)が開き、そこで単語をその場で書く(またはCSV/zipを
+// 読み込む)。書き換えるたびに /api/wordlist-check に検査させる(投入してから
+// 落とさない)。通った内容は投入時に multipart で送り、サーバーがジョブ
+// ディレクトリに保存して変換に使う。送り方は中身の持ち方で2通り:
+//   zip  : wordlist_csv にzipファイルそのもの(中身はサーバーがほどく)
+//   text : wordlist_text(書いた内容)+ wordlist_name + wordlist_images(画像を1枚ずつ)
 // 選択中はリスト名(#wordlist)を空にするので、レイアウトはサーバー既定になり、
 // 🎲ランダムの抽選対象からも外れ、サムネのプレビューも作らない。
 const CUSTOM_WORDLIST = "__custom__";
 
-// 検査を通った自作リスト { file, name, rows, fingerprint }。未選択なら null。
+// 検査を通った自作リスト。未設定なら null。
+// { mode: "text"|"zip", file, text, images, name, rows, imageCount, fingerprint }
 let customWordlist = null;
 // 検査中のPromise(投入がこれを待つ。未検査のまま送らないため)
 let wordlistChecking = null;
+let wordlistCheckTimer = null;
+let wordlistCheckSeq = 0;        // 応答の追い越しを捨てるための世代番号
+let wordlistZipFile = null;      // 画像入りzipを選んでいるあいだはそれが正本
+let wordlistImages = [];         // 選ばれた画像(input.filesは書き換えられないので配列で持つ)
+let wordlistModalOpener = null;  // 開く前にフォーカスがあった要素(閉じたら戻す)
+let wordlistRestoredImages = 0;  // 前回の入力にあったが復元できなかった画像の枚数
 
 const isCustomWordlist = () =>
   !$("wordlist-select").hidden && $("wordlist-select").value === CUSTOM_WORDLIST;
 
-// 自作リストを選んだ直後にファイル選択を開く(まだ選んでいないときだけ)
-function openCustomWordlistPicker() {
-  if (isCustomWordlist() && !customWordlist) $("wordlist-csv").click();
+// 詳細設定側に残す1行の要約(中身の編集はモーダルで行う)
+function renderCustomWordlistSummary() {
+  const wl = customWordlist;
+  $("custom-wordlist-summary").textContent = wl
+    ? `${wl.name}: ${wl.rows}語` + (wl.imageCount ? `・画像${wl.imageCount}枚` : "")
+    : "未設定";
 }
 
+// 状態とエラーはモーダルに出す。エラーだけはモーダルを閉じていても見えるよう、
+// 詳細設定側の要約の下にも同じ文を出す。
 function showCustomWordlistMsg(status, error) {
-  $("wordlist-csv-status").textContent = status || "";
-  $("wordlist-csv-status").hidden = !status;
-  $("wordlist-csv-error").textContent = error || "";
-  $("wordlist-csv-error").hidden = !error;
+  $("wordlist-status").textContent = status || "";
+  $("wordlist-status").hidden = !status;
+  $("wordlist-error").textContent = error || "";
+  $("wordlist-error").hidden = !error;
+  $("custom-wordlist-error").textContent = error || "";
+  $("custom-wordlist-error").hidden = !error;
+  renderCustomWordlistSummary();
 }
 
-// 選ばれたCSVをサーバーに検査させる。駄目ならファイル選択ごと取り消して理由を出す。
+// 選ばれた画像の一覧を描き直す(×で1枚ずつ外せる)
+function renderWordlistImages() {
+  const list = $("wordlist-image-list");
+  list.textContent = "";
+  wordlistImages.forEach((f, i) => {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "chip-name";
+    name.textContent = f.name;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "×";
+    del.setAttribute("aria-label", `${f.name} を外す`);
+    del.addEventListener("click", () => {
+      wordlistImages.splice(i, 1);
+      renderWordlistImages();
+      scheduleWordlistCheck();
+    });
+    li.append(name, del);
+    list.appendChild(li);
+  });
+}
+
+// 同じ名前の画像が2つあると、どちらを行に当てるか決まらない(サーバーも断る)。
+// 選び足したときは名前で重複を落として、その場で分かるようにする。
+function addWordlistImages(files) {
+  for (const f of files) {
+    if (!wordlistImages.some((x) => x.name === f.name)) wordlistImages.push(f);
+  }
+  if (wordlistImages.length) wordlistRestoredImages = 0;
+  renderWordlistImages();
+}
+
+// zipを選んだらそのzipをそのまま送る(中身はサーバーがほどく)。書いた内容や
+// 別に選んだ画像はzipの中身と食い違うので、そのあいだは触れないようにする。
+function setWordlistZip(file) {
+  wordlistZipFile = file || null;
+  const zip = !!wordlistZipFile;
+  $("wordlist-text").disabled = zip;
+  $("wordlist-images").disabled = zip;
+  $("wordlist-zip-note").hidden = !zip;
+  $("wordlist-zip-name").textContent = zip
+    ? `zip「${wordlistZipFile.name}」の内容をそのまま使います。` : "";
+}
+
+// 「ファイルから読み込む」。.csv/.txt は中身を書く欄へ流し込み(以後はその欄が正本
+// なのでファイル選択自体は空に戻す)、zipはほどかずそのまま使う。
+async function loadWordlistFile() {
+  const f = $("wordlist-file").files[0];
+  if (!f) return;
+  $("wordlist-file").value = "";
+  if (/\.zip$/i.test(f.name)) {
+    setWordlistZip(f);
+    scheduleWordlistCheck();
+    return;
+  }
+  try {
+    // UTF-8として読む。Shift_JISのファイルは化けるので、その旨は欄の説明に書いてある
+    const text = await f.text();
+    setWordlistZip(null);
+    $("wordlist-text").value = text;
+    if (!$("wordlist-name").value.trim()) {
+      $("wordlist-name").value = f.name.replace(/\.[^.]*$/, "");
+    }
+  } catch {
+    showCustomWordlistMsg("", "ファイルを読み込めませんでした。");
+    return;
+  }
+  scheduleWordlistCheck();
+}
+
+// 書くたびに投げないよう、少し待ってから1回だけ検査に出す(scheduleMidiCheckと同じ流儀)。
+// wordlistChecking は投入時の待ち合わせに使うので、予約した時点で差し替える。
+function scheduleWordlistCheck() {
+  if (wordlistCheckTimer) clearTimeout(wordlistCheckTimer);
+  wordlistChecking = new Promise((resolve) => {
+    wordlistCheckTimer = setTimeout(() => { checkCustomWordlist().then(resolve, resolve); }, 250);
+  });
+}
+
+// 今の中身をサーバーに検査させる。通らなければ理由を出して未設定に戻す
+// (入力そのものは消さない——直せば次の検査で通るため)。
 async function checkCustomWordlist() {
-  const f = $("wordlist-csv").files[0];
-  customWordlist = null;
-  if (!f) { showCustomWordlistMsg("", ""); schedulePreview(); return; }
+  const seq = ++wordlistCheckSeq;
+  const zip = wordlistZipFile;
+  const text = $("wordlist-text").value;
+  const name = $("wordlist-name").value.trim();
+  const images = wordlistImages.slice();
+  if (!zip && !text.trim()) {
+    // 何も書かれていない=未設定。まだ書いていないだけなのでエラーは出さない
+    customWordlist = null;
+    showCustomWordlistMsg("", "");
+    saveForm();
+    schedulePreview();
+    return;
+  }
   showCustomWordlistMsg("確認中…", "");
   const form = new FormData();
-  form.append("wordlist_csv", f);
-  wordlistChecking = (async () => {
-    try {
-      const res = await fetch("/api/wordlist-check",
-        { method: "POST", body: form, headers: headers() });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.detail || res.status);
-      customWordlist = {
-        file: f, name: body.name, rows: body.rows, fingerprint: body.fingerprint,
-      };
-      const notes = [];
-      if (body.auto_reading_rows) {
-        notes.push(`うち${body.auto_reading_rows}語は読みを自動推定します`);
-      }
-      if ((body.dropped_columns || []).length) notes.push("画像の列は使いません");
-      showCustomWordlistMsg(
-        `✓ 「${f.name}」から${body.rows}語を読み込みました`
-        + (notes.length ? `(${notes.join("・")})` : ""), "");
-    } catch (err) {
-      $("wordlist-csv").value = "";   // 通らなかったファイルは選択ごと取り消す
-      showCustomWordlistMsg("", "この単語リストは使えません: " + err.message);
+  if (zip) {
+    form.append("wordlist_csv", zip);
+  } else {
+    form.append("wordlist_text", text);
+    form.append("wordlist_name", name);
+    for (const f of images) form.append("wordlist_images", f);
+  }
+  try {
+    const res = await fetch("/api/wordlist-check",
+      { method: "POST", body: form, headers: headers() });
+    const body = await res.json();
+    if (seq !== wordlistCheckSeq) return;   // 追い越された応答は捨てる
+    if (!res.ok) throw new Error(body.detail || res.status);
+    customWordlist = {
+      mode: zip ? "zip" : "text",
+      file: zip, text, images,
+      name: body.name, rows: body.rows,
+      imageCount: body.images || 0, fingerprint: body.fingerprint,
+    };
+    const notes = [];
+    if (body.auto_reading_rows) {
+      notes.push(`うち${body.auto_reading_rows}語は読みを自動推定します`);
     }
-  })();
-  await wordlistChecking;
-  wordlistChecking = null;
+    // 画像が付いているなら image 列は使えているので、落とした列の注意は出さない
+    if (!body.images && (body.dropped_columns || []).length) {
+      notes.push("画像の列は使いません");
+    }
+    // 前回の入力から戻したときは画像だけ復元できない(localStorageに入れていない)
+    if (wordlistRestoredImages && !images.length) {
+      notes.push(`前回の画像${wordlistRestoredImages}枚は選び直してください`);
+    }
+    showCustomWordlistMsg(
+      `✓ 「${body.name}」から${body.rows}語`
+      + (body.images ? `(画像${body.images}枚)` : "")
+      + "を読み込みました" + (notes.length ? `(${notes.join("・")})` : ""), "");
+  } catch (err) {
+    if (seq !== wordlistCheckSeq) return;
+    customWordlist = null;
+    showCustomWordlistMsg("", "この単語リストは使えません: " + err.message);
+  }
   saveForm();
   schedulePreview();
 }
-$("wordlist-csv").addEventListener("change", checkCustomWordlist);
+
+// 自作リストを multipart に載せる(/api/wordlist-check に送ったのと同じ形)。
+function appendCustomWordlist(form) {
+  const wl = customWordlist;
+  if (!wl) return;
+  if (wl.mode === "zip") { form.append("wordlist_csv", wl.file); return; }
+  form.append("wordlist_text", wl.text);
+  form.append("wordlist_name", wl.name);
+  for (const f of wl.images) form.append("wordlist_images", f);
+}
+
+function openWordlistModal(trigger) {
+  wordlistModalOpener = trigger || null;
+  $("wordlist-modal-wrap").hidden = false;
+  document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
+  $("wordlist-modal-close").focus();           // 開いた直後からEscと同じ導線が押せる
+  // 前回の入力を戻しただけで未検査のことがある(復元直後)。開いた時点で一度見る
+  if (!customWordlist && ($("wordlist-text").value.trim() || wordlistZipFile)) {
+    scheduleWordlistCheck();
+  }
+}
+
+// 閉じても入力は捨てず、巻き戻しもしない。検査は書くたびに走っているので、
+// 「最後に検査を通った内容」がそのまま生成に使われる(取り消しは持たない)。
+function closeWordlistModal() {
+  $("wordlist-modal-wrap").hidden = true;
+  document.body.classList.remove("modal-open");
+  const back = wordlistModalOpener;
+  wordlistModalOpener = null;
+  // モーダルを開く前の場所へ戻す(押したボタンにフォーカスを返す)
+  if (back && back.isConnected && !back.disabled) back.focus();
+}
+
+// 自作リストを選んだ直後にモーダルを開く(まだ中身が決まっていないときだけ)
+function openCustomWordlistIfEmpty(trigger) {
+  if (isCustomWordlist() && !customWordlist) openWordlistModal(trigger);
+}
+
+$("wordlist-text").addEventListener("input", scheduleWordlistCheck);
+$("wordlist-name").addEventListener("input", scheduleWordlistCheck);
+$("wordlist-file").addEventListener("change", loadWordlistFile);
+$("wordlist-images").addEventListener("change", () => {
+  addWordlistImages($("wordlist-images").files);
+  $("wordlist-images").value = "";   // 外した画像を選び直せるよう入力は空に戻す
+  scheduleWordlistCheck();
+});
+$("wordlist-zip-clear").addEventListener("click", () => {
+  setWordlistZip(null);
+  scheduleWordlistCheck();
+});
+$("wordlist-modal-close").addEventListener("click", closeWordlistModal);
+$("wordlist-apply").addEventListener("click", async () => {
+  if (wordlistChecking) await wordlistChecking;   // 検査中なら結果を見てから閉じる
+  // 直せば通る入力(エラーを出している)のときだけ開いたままにする
+  if ($("wordlist-error").hidden) closeWordlistModal();
+});
+$("edit-wordlist").addEventListener("click", () => openWordlistModal($("edit-wordlist")));
+
+// Escで閉じる。替え歌エディタのモーダルと body.modal-open を共有しているので、
+// 互いのEscに反応しないよう自分の枠が開いているときだけ働く。
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || $("wordlist-modal-wrap").hidden) return;
+  ev.preventDefault();
+  closeWordlistModal();
+});
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -2465,11 +2724,11 @@ $("builder-wordlist").addEventListener("change", () => {
   const sel = $("wordlist-select");
   sel.value = v;
   sel.dispatchEvent(new Event("change", { bubbles: true }));
-  // 「自作リストを使う(CSV)」はファイル選択が詳細設定側にあるので、そちらを
-  // 開いて見せたうえでファイル選択を出す(押した本人の操作なので開いてよい)
+  // 「自作リストを使う」は編集の導線が詳細設定側にあるので、そちらを開いて
+  // 見せたうえでモーダルを出す(押した本人の操作なので開いてよい)
   if (v === CUSTOM_WORDLIST) {
     $("advanced").open = true;
-    openCustomWordlistPicker();
+    openCustomWordlistIfEmpty($("builder-wordlist"));
   } else clearEditorFile();
   schedulePreview();
 });
@@ -4005,11 +4264,11 @@ async function loadWordlistSelect(editorAvailable) {
       sel.appendChild(o);
     }
   });
-  // 自作の単語リスト(CSVアップロード)。用意したリストの中に無いものに空耳
-  // させたい人の逃げ道はこれ1つ(リスト名の手入力は廃止した)。
+  // 自作の単語リスト。用意したリストの中に無いものに空耳させたい人の逃げ道は
+  // これ1つ(リスト名の手入力は廃止した)。
   const custom = document.createElement("option");
   custom.value = CUSTOM_WORDLIST;
-  custom.textContent = "自作リストを使う(CSV)";
+  custom.textContent = "自作リストを使う";
   sel.appendChild(custom);
   sel.hidden = false;
   applyWordlistSelection();
@@ -4171,8 +4430,8 @@ function updateWhereFromFilters() {
 }
 
 // 選択内容を canonical な #wordlist / #where に反映する。
-// 「自作リストを使う(CSV)」ならファイル選択欄を出し、リスト名は空にする
-// (自作リストはリスト名ではなくCSVそのものを投入時に送る)。
+// 「自作リストを使う」なら自作リストの要約を出し、リスト名は空にする
+// (自作リストはリスト名ではなく中身そのものを投入時に送る)。
 // 選択肢が1つも無い構成では従来どおりリスト名のテキスト欄に落ちる。
 function applyWordlistSelection() {
   const sel = $("wordlist-select");
@@ -4203,9 +4462,9 @@ function applyWordlistSelection() {
 }
 $("wordlist-select").addEventListener("change", (ev) => {
   applyWordlistSelection();
-  // 自作リストは選んだ直後にファイル選択を開く(選択即実行)。復元・カード側からの
-  // 同期のような合成イベントでは開かない(勝手にダイアログが出ないように)
-  if (ev.isTrusted) openCustomWordlistPicker();
+  // 自作リストは選んだ直後にモーダルを開く(選択即実行)。復元・カード側からの
+  // 同期のような合成イベントでは開かない(勝手に画面が覆われないように)
+  if (ev.isTrusted) openCustomWordlistIfEmpty($("wordlist-select"));
 });
 
 // 復元された #where に合わせて facet のチェック状態を戻す。filters が隠れている
@@ -4403,6 +4662,12 @@ function saveForm() {
     localStorage.setItem(FORM_KEY, JSON.stringify({
       lyrics: $("lyrics").value,
       wordlist: $("wordlist").value,
+      // 自作リストは書いた内容とリスト名だけ持ち回る。画像とzipはlocalStorageの
+      // 容量に収まらないので保存せず、枚数だけ控えて選び直しを促す
+      wordlistCustom: isCustomWordlist(),
+      wordlistText: $("wordlist-text").value,
+      wordlistName: $("wordlist-name").value,
+      wordlistImages: (customWordlist || {}).imageCount || 0,
       where: $("where").value,
       duplicate: $("duplicate").value,
       preset: $("p-preset").value,
@@ -4594,6 +4859,23 @@ async function doRestoreForm() {
       $("wordlist").value = state.wordlist || "";
       $("where").value = state.where || "";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    // 1b. 自作リスト: 前回書いた内容とリスト名を戻す。前回それを選んでいたときだけ
+    //     選択も自作リストへ戻し(選択中は state.wordlist が空なので、上の名前一致
+    //     では戻らない)、そのまま検査に出す。画像は保存していないので、前回付いて
+    //     いたときだけ「選び直してください」を検査結果に添える。
+    if (state.wordlistText) {
+      $("wordlist-text").value = state.wordlistText;
+      $("wordlist-name").value = state.wordlistName || "";
+      wordlistRestoredImages = state.wordlistImages || 0;
+      const hasCustomOpt =
+        !sel.hidden && [...sel.options].some((o) => o.value === CUSTOM_WORDLIST);
+      if (state.wordlistCustom && hasCustomOpt) {
+        sel.value = CUSTOM_WORDLIST;
+        applyWordlistSelection();
+        scheduleWordlistCheck();
+      }
+      // 選んでいなかったときは検査しない(モーダルを開いた時点で見る)
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
