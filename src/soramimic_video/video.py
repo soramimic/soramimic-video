@@ -61,6 +61,7 @@ from .mix import MIX_DIR
 from .project import ParodyWord, Project
 from .synthesize import NEUTRINO_DIR
 from .thumbnail import generate_thumbnail
+from .xfparse import tick_to_sec
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +81,11 @@ OUTRO_MIN_SEC = 6.0
 # 切らずに入る。語が長いリストでは段数が自動で減り、そのぶん文字は小さくなる
 ENDROLL_WORDS_PER_PAGE = 120
 ENDROLL_MAX_PAGES = 4  # 分けるのは最大4枚まで(それ以上は1枚あたりの語数を増やす)
-# 1枚あたりこれだけ映せないなら枚数を減らして1枚を詰める。エンドロールは
-# 読み切るものではなく眺めるものなので、めくりを遅くするより1枚の文字を
-# 大きく保つ方を優先する(これを下回ると今度はページが視界に入る前に消える)
-ENDROLL_MIN_PAGE_SEC = 2.5
+# 単語ページ1枚の目安表示時間。エンドロールは読み切るものではなく眺めるものなので、
+# 後奏の長さで等分する(長い後奏だと1枚が延々と居座る)のはやめ、後奏の長さに
+# よらず1枚およそこの秒数でめくる。実際のめくりは拍の切れ目にスナップするので
+# 曲のテンポぶん前後し、余った時間は最後のクレジットページが吸収する
+ENDROLL_PAGE_SEC = 3.0
 # build_image_cues 前の画像/クレジットのプリフェッチ並列数。
 # Commonsのサムネイル生成(Special:FilePath?width=)は並列4だと429が返ることを実測済み。
 # 2なら429なしで、リトライ待ちが入る4より速かった(20枚: 24.6秒 vs 31.5秒)
@@ -485,17 +487,55 @@ def endroll_pages(
     """使用単語をエンドロールのページに割り振る(1〜max_pages枚・語数は均等)。
 
     max_pages を超える語数は分割せず1枚あたりを増やす(文字は枠に合わせて縮む)。
-    後奏(duration秒)を等分して映すので、1枚あたり ENDROLL_MIN_PAGE_SEC を
-    切るような枚数には割らない。詰めて読みにくいのと、めくりが速すぎて読めない
-    のとでは後者の方が損なので、短い後奏では枚数を減らして1枚を詰める。
+    duration は「単語ページに使える時間」(後奏からクレジットページのぶんを引いた
+    残り)で、1枚 ENDROLL_PAGE_SEC ずつ映すので、そこに収まらない枚数には割らない。
+    詰めて読みにくいのと、めくりが速すぎて読めないのとでは後者の方が損なので、
+    短い後奏では枚数を減らして1枚を詰める。
     """
     if not words:
         return []
     pages = min(max_pages, max(1, -(-len(words) // per_page)))
     if duration > 0:
-        pages = min(pages, max(1, int(duration // ENDROLL_MIN_PAGE_SEC)))
+        pages = min(pages, max(1, int(duration // ENDROLL_PAGE_SEC)))
     size = -(-len(words) // pages)
     return [words[i : i + size] for i in range(0, len(words), size)]
+
+
+def beat_times(project: Project, until: float) -> list[float]:
+    """曲の拍(4分音符)の時刻(秒)を0から until まで並べる。
+
+    エンドロールのめくりを拍の切れ目に合わせるために使う。テンポ情報が無い
+    プロジェクト(tempo_map が空・ticks_per_beat 不正)では空リストを返し、
+    呼び出し側はスナップせず目安の秒数どおりにめくる。
+    """
+    tempo_map = project.song.tempo_map
+    ticks_per_beat = project.song.ticks_per_beat
+    if not tempo_map or ticks_per_beat <= 0 or until <= 0:
+        return []
+    out: list[float] = []
+    tick = 0
+    while True:
+        sec = tick_to_sec(tick, tempo_map, ticks_per_beat)
+        if sec > until:
+            break
+        # 異常なテンポ値(0など)で時刻が進まないときは無限ループにしない
+        if out and sec <= out[-1]:
+            break
+        out.append(sec)
+        tick += ticks_per_beat
+    return out
+
+
+def snap_to_beat(beats: list[float], target: float, lo: float, hi: float) -> float:
+    """target に最も近い拍の時刻を返す(候補は lo〜hi の拍だけ)。
+
+    範囲内に拍が無ければ(テンポ情報が無い・区間が短すぎる)target のまま返す。
+    lo/hi を狭く取ることで、拍に合わせたぶんのずれが目安から離れすぎない。
+    """
+    candidates = [b for b in beats if lo < b < hi]
+    if not candidates:
+        return target
+    return min(candidates, key=lambda b: abs(b - target))
 
 
 def image_credits_text(credits: list[dict]) -> str:
@@ -516,6 +556,7 @@ def section_frame_data(
     image_credits: str = "",
     page: int = 1,
     pages: int = 1,
+    synth_credit: str = "",
 ) -> dict:
     """区間フレームのテンプレートに渡す値(idle_frame_data に区間固有の列を足す)。
 
@@ -526,6 +567,9 @@ def section_frame_data(
       焼き込みをしないレイアウト向けに残してある
     - page / pages / page_label: エンドロールが複数枚に分かれたときのページ表示
       (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
+    - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
+      クレジットページで使う。表記が要らない合成では空文字なので、require で
+      その行ごと出さない
     """
     data = idle_frame_data(project, app_credit)
     data.update(
@@ -536,6 +580,7 @@ def section_frame_data(
             "page": str(page),
             "pages": str(pages),
             "page_label": f"({page}/{pages})" if pages > 1 else "",
+            "synth_credit": synth_credit,
         }
     )
     return data
@@ -551,12 +596,16 @@ def build_section_cues(
     height: int,
     app_credit: str = "",
     credits: list[dict] | None = None,
+    synth_credit: str = "",
 ) -> list[ImageCue]:
     """前奏・間奏・後奏の専用フレームをキューにする(専用定義が無い区間は空)。
 
     返したキューを既存のキューに混ぜて write_slideshow に渡すと、残った隙間だけが
     従来の idle(なければ黒)で埋まる。短い間奏(INTERLUDE_MIN_SEC 未満)や短い
     後奏(OUTRO_MIN_SEC 未満)には出さない。
+
+    後奏は「使った単語」を1枚 ENDROLL_PAGE_SEC ずつ拍の切れ目でめくり、最後に
+    クレジットページ("credits" 区間)で残りを埋める。
     """
     out: list[ImageCue] = []
     frames_dir = work / "frames"
@@ -571,24 +620,50 @@ def build_section_cues(
             # 後奏が短い曲・使用単語が取れない曲ではエンドロールを出さない
             if sec.duration < OUTRO_MIN_SEC or not words:
                 continue
-            pages = endroll_pages(words, sec.duration)
-            span = sec.duration / len(pages)
+            show_credits = layout.has_section("credits")
+            # クレジットページに最低1枚ぶんを残し、残りを単語ページに割り振る
+            word_sec = sec.duration - (ENDROLL_PAGE_SEC if show_credits else 0.0)
+            pages = endroll_pages(words, word_sec)
+            beats = beat_times(project, sec.end)
+            t = sec.start
             for i, page_words in enumerate(pages):
                 data = section_frame_data(
                     project, app_credit, "outro", sec.duration,
                     page_words, credit_text, i + 1, len(pages),
+                    synth_credit=synth_credit,
                 )
                 frame = render_section_frame(
                     layout, data, width, height, frames_dir, "outro"
                 )
+                # 目安は ENDROLL_PAGE_SEC 後。その前後半分の範囲に拍があれば
+                # そこでめくる(伴奏の切れ目と揃うと機械的に見えない)
+                end = min(
+                    sec.end,
+                    snap_to_beat(
+                        beats,
+                        t + ENDROLL_PAGE_SEC,
+                        t + ENDROLL_PAGE_SEC / 2,
+                        min(sec.end, t + ENDROLL_PAGE_SEC * 1.5),
+                    ),
+                )
+                if i == len(pages) - 1 and not show_credits:
+                    # クレジットを出さないレイアウトでは最後の1枚で後奏を覆う
+                    # (黒画面の尻尾を作らない)
+                    end = sec.end
                 if frame is not None:
-                    out.append(
-                        ImageCue(
-                            start=sec.start + span * i,
-                            end=sec.start + span * (i + 1),
-                            frame=frame,
-                        )
-                    )
+                    out.append(ImageCue(start=t, end=end, frame=frame))
+                t = end
+            if show_credits and t < sec.end:
+                data = section_frame_data(
+                    project, app_credit, "credits", sec.duration,
+                    image_credits=credit_text, synth_credit=synth_credit,
+                )
+                frame = render_section_frame(
+                    layout, data, width, height, frames_dir, "credits"
+                )
+                if frame is not None:
+                    # 単語ページの余りを全部吸収して後奏の終わりまで出す
+                    out.append(ImageCue(start=t, end=sec.end, frame=frame))
             continue
         # 間奏の「X秒」は区間の長さではなく歌が止まっている長さ(直前の余韻を含む)
         shown = sung_gap_sec(project, sec) if sec.kind == "interlude" else sec.duration
@@ -1363,7 +1438,8 @@ def make_video(
         cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
     # 間奏の「間奏(X秒)」・後奏のエンドロールを、歌唱フレームの隙間に差し込む
     section_cues = build_section_cues(
-        project, cues, total_sec, layout_obj, work, width, height, credit_text, credits
+        project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
+        synth_credit=synth_credit,
     )
     if section_cues:
         logger.info("間奏・後奏のフレーム: %d件", len(section_cues))

@@ -95,7 +95,9 @@
 
 さらに、歌唱なし区間は前奏・間奏・後奏の3種に分けて出し分けられる。
 "intro" / "interlude" / "outro" を書くとその区間だけ別の要素で描き、
-書かなければ従来どおり "idle" が受け持つ(どちらも無ければ黒画面):
+書かなければ従来どおり "idle" が受け持つ(どちらも無ければ黒画面)。
+"credits" は後奏の最後(単語ページをめくり終わったあと)に1枚出すクレジット
+ページで、後奏の余った時間を全部受け持つ:
 
     {
       "interlude": [
@@ -115,6 +117,12 @@
     - image_credits: 使用画像のクレジットをまとめた文言。既定のエンドロールでは
       使っていない(各単語フレームの右下に個別のクレジットを焼いているため)
     - page / pages: 後奏が複数枚に分かれたときのページ番号と総ページ数
+    - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
+      クレジットページで使う。表記が要らない合成では空なので、その行の要素には
+      "require": "synth_credit" を付けて丸ごと出さないようにする
+- 後奏の単語ページは1枚 video.ENDROLL_PAGE_SEC を目安に拍の切れ目でめくり、
+  余った時間は "credits" のページが受け持つ("credits": [] で無効化すると
+  最後の単語ページが後奏の終わりまで伸びる)
 - 短い間奏(video.INTERLUDE_MIN_SEC 未満)や短い後奏(video.OUTRO_MIN_SEC 未満)
   では専用の表示を出さず idle(なければ黒)に戻る。一瞬だけ出て消えるのを避けるため
 - 既定の文言は section_defaults.json(パッケージ直下)に置いてある。レイアウトJSON側に
@@ -140,8 +148,9 @@ WORDLIST_LAYOUTS_PATH = Path(__file__).resolve().parent / "wordlist_layouts.json
 # layouts/ にあるが動画フレームのレイアウトではないもの(スタイル別の入れ子構造なので
 # そのままでは Layout にならない)。UIのレイアウト選択にも load_layout にも出さない
 NON_FRAME_LAYOUTS = frozenset({"thumbnail"})
-# 歌唱なし区間の種別。前奏(1単語目より前)・間奏(単語と単語の間)・後奏(最終単語より後)
-IDLE_SECTIONS = ("intro", "interlude", "outro")
+# 歌唱なし区間の種別。前奏(1単語目より前)・間奏(単語と単語の間)・後奏(最終単語より後)、
+# credits=後奏の最後に出すクレジットページ
+IDLE_SECTIONS = ("intro", "interlude", "outro", "credits")
 # 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
 SECTION_DEFAULTS_PATH = Path(__file__).resolve().parent / "section_defaults.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"

@@ -1235,17 +1235,17 @@ def test_endroll_pages_splits_at_threshold():
 
 def test_endroll_pages_limited_by_outro_length():
     from soramimic_video.video import (
-        ENDROLL_MIN_PAGE_SEC,
+        ENDROLL_PAGE_SEC,
         ENDROLL_WORDS_PER_PAGE,
         endroll_pages,
     )
 
     words = [f"w{i}" for i in range(ENDROLL_WORDS_PER_PAGE * 4)]
-    # 短い後奏では枚数を減らして1枚を詰める(めくりが速すぎて読めないため)
-    assert len(endroll_pages(words, ENDROLL_MIN_PAGE_SEC * 2)) == 2
-    assert len(endroll_pages(words, ENDROLL_MIN_PAGE_SEC - 0.1)) == 1
+    # 単語ページに使える時間が短ければ枚数を減らして1枚を詰める
+    assert len(endroll_pages(words, ENDROLL_PAGE_SEC * 2)) == 2
+    assert len(endroll_pages(words, ENDROLL_PAGE_SEC - 0.1)) == 1
     # 尺が足りるなら語数どおりに割る
-    assert len(endroll_pages(words, ENDROLL_MIN_PAGE_SEC * 10)) == 4
+    assert len(endroll_pages(words, ENDROLL_PAGE_SEC * 10)) == 4
 
 
 def test_used_words_dedupes_in_order(tmp_path: Path):
@@ -1314,6 +1314,8 @@ def _section_layout(tmp_path: Path):
             {"type": "text", "text": "間奏({interlude_sec}秒)", "box": [0.1, 0.4, 0.8, 0.2]},
         ],
         "outro": [{"type": "text", "text": "{used_words}", "box": [0.1, 0.2, 0.8, 0.5]}],
+        # クレジットページは既定レイアウト側のテストで見るのでここでは無効化する
+        "credits": [],
     }), encoding="utf-8")
     return load_layout(str(p))
 
@@ -1340,24 +1342,115 @@ def test_build_section_cues_respects_thresholds(tmp_path: Path):
     ) == []
 
 
-def test_build_section_cues_paginates_endroll(tmp_path: Path):
-    from soramimic_video.video import ENDROLL_WORDS_PER_PAGE, build_section_cues
+def _endroll_project(tmp_path: Path, extra_words: int = 120):
+    """エンドロール用に単語を増やしたプロジェクト(120bpm=拍0.5秒)。"""
+    from soramimic_video.video import ENDROLL_WORDS_PER_PAGE
 
+    assert extra_words >= ENDROLL_WORDS_PER_PAGE  # 2枚に割れる語数を渡す前提
     project = _project(tmp_path)
+    project.song.tempo_map = [[0, 500000]]
+    project.song.ticks_per_beat = 480
     base = project.parody.lines[0].words[0]
-    for i in range(ENDROLL_WORDS_PER_PAGE):
+    for i in range(extra_words):
         project.parody.lines[0].words.append(
             ParodyWord(surface=f"語{i}", kana="ゴ", original=f"語{i}",
                        original_surface="ゴ", originalkana="ゴ",
                        note_ids=base.note_ids, note_kana=base.note_kana)
         )
-    layout = _section_layout(tmp_path)
+    return project
+
+
+def test_build_section_cues_paginates_endroll(tmp_path: Path):
+    from soramimic_video.video import ENDROLL_WORDS_PER_PAGE, build_section_cues
+
+    project = _endroll_project(tmp_path, ENDROLL_WORDS_PER_PAGE)
+    layout = _section_layout(tmp_path)  # クレジットページなし
     got = build_section_cues(project, [_cue(0.0, 10.0)], 30.0, layout, tmp_path / "v",
                              320, 180)
-    assert len(got) == 2  # 2枚に分かれ、後奏を等分する
-    assert got[0].start == 10.0 and abs(got[0].end - 20.0) < 0.01
-    assert abs(got[1].start - 20.0) < 0.01 and got[1].end == 30.0
+    assert len(got) == 2  # 2枚に分かれる
+    # 1枚目は約3秒(拍に乗って13.0秒)でめくり、クレジットが無いので最後の1枚が
+    # 後奏の終わりまで伸びる(黒画面の尻尾を作らない)
+    assert got[0].start == 10.0 and abs(got[0].end - 13.0) < 0.01
+    assert abs(got[1].start - 13.0) < 0.01 and got[1].end == 30.0
     assert got[0].frame != got[1].frame
+
+
+def test_build_section_cues_snaps_pages_to_beats(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+    from soramimic_video.video import ENDROLL_PAGE_SEC, build_section_cues
+
+    # 後奏 10.2〜30.2秒(20秒)。拍(0.5秒刻み)に乗っていない位置から始める
+    project = _endroll_project(tmp_path)
+    got = build_section_cues(project, [_cue(0.0, 10.2)], 30.2, load_layout("default"),
+                             tmp_path / "v", 320, 180)
+    words, credits_cue = got[:-1], got[-1]
+    assert len(words) == 2
+    for cue in words:
+        # ページの終わりは拍の時刻(0.5秒の倍数)に乗る
+        assert abs(cue.end * 2 - round(cue.end * 2)) < 0.001
+        # 目安の3秒から大きくは離れない
+        assert ENDROLL_PAGE_SEC - 0.5 <= cue.end - cue.start <= ENDROLL_PAGE_SEC + 0.5
+    assert credits_cue.end == 30.2
+
+
+def test_build_section_cues_appends_credits_page(tmp_path: Path):
+    from soramimic_video.layout import load_layout, render_section_frame
+    from soramimic_video.video import build_section_cues, section_frame_data
+
+    project = _endroll_project(tmp_path)
+    layout = load_layout("default")
+    work = tmp_path / "v"
+    got = build_section_cues(project, [_cue(0.0, 10.0)], 30.0, layout, work, 320, 180,
+                             synth_credit="VOICEVOX:四国めたん")
+    # 最後のキューはクレジットページ。単語ページの直後から後奏の終わりまでを埋める
+    assert got[-1].start == got[-2].end and got[-1].end == 30.0
+    expected = render_section_frame(
+        layout,
+        section_frame_data(project, section="credits", duration=20.0,
+                           synth_credit="VOICEVOX:四国めたん"),
+        320, 180, work / "frames", "credits",
+    )
+    assert got[-1].frame == expected
+
+
+def test_build_section_cues_without_credits_extends_last_page(tmp_path: Path):
+    import json
+
+    from soramimic_video.layout import load_layout
+    from soramimic_video.video import build_section_cues
+
+    p = tmp_path / "nocredits.json"
+    p.write_text(json.dumps({
+        "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
+        "credits": [],  # 既定のクレジットページを打ち消す
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    assert not layout.has_section("credits")
+    project = _endroll_project(tmp_path)
+    got = build_section_cues(project, [_cue(0.0, 10.0)], 30.0, layout, tmp_path / "v",
+                             320, 180)
+    # 単語ページだけ(クレジットは出ない)で、最後の1枚が後奏の終わりまで伸びる
+    assert len(got) == 2
+    assert got[-1].end == 30.0
+    assert all(a.end == b.start for a, b in zip(got, got[1:], strict=False))
+
+
+def test_credits_page_omits_empty_synth_credit(tmp_path: Path):
+    from soramimic_video.layout import _element_texts, load_layout
+    from soramimic_video.video import section_frame_data
+
+    elements, _raw, tag = load_layout("default").section_elements("credits")
+    assert tag == "credits"
+    project = _project(tmp_path)
+    shown = _element_texts(
+        elements,
+        section_frame_data(project, section="credits", synth_credit="VOICEVOX:四国めたん"),
+    )
+    assert any("VOICEVOX:四国めたん" in t for t in shown)
+    # 表記が要らない合成では「歌声合成」の行ごと出さない(require)
+    hidden = _element_texts(elements, section_frame_data(project, section="credits"))
+    assert not any("Vocal Synthesis" in t for t in hidden)
+    assert any("Soramimic" in t for t in hidden)
 
 
 def test_build_section_cues_skips_layouts_without_sections(tmp_path: Path):

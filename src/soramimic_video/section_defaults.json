@@ -6,6 +6,7 @@
     "レイアウトJSON側に同名のキーを書くとそのレイアウトではそちらが使われ、",
     "空配列を書けばその区間の専用表示を無効化できる(従来の idle に戻る)。",
     "intro は既定なし(前奏にはサムネイルを出すため)。",
+    "credits は後奏の最後に1枚出すクレジットページ(単語ページの残り時間を全部使う)。",
     "画像の帰属表示は各単語フレームの右下に個別に焼き込んでいるので、",
     "後奏でまとめて出す({image_credits})ことはしない。"
   ],
@@ -21,5 +22,15 @@
     {"type": "text", "text": "{used_words}", "box": [0.08, 0.17, 0.84, 0.74],
      "size": 0.05, "color": "white", "align": "left", "valign": "middle",
      "columns": 8}
+  ],
+  "credits": [
+    {"type": "text", "text": "Credits", "box": [0.1, 0.2, 0.8, 0.07],
+     "size": 0.042, "color": "#a8a8a8", "align": "center"},
+    {"type": "text", "text": "Parody Lyrics & Video　Soramimic", "box": [0.1, 0.42, 0.8, 0.1],
+     "size": 0.06, "color": "white", "align": "center"},
+    {"type": "text", "text": "Vocal Synthesis　{synth_credit}", "box": [0.1, 0.56, 0.8, 0.08],
+     "size": 0.05, "color": "white", "align": "center", "require": "synth_credit"},
+    {"type": "text", "text": "soramimic.com / video.soramimic.com", "box": [0.1, 0.74, 0.8, 0.05],
+     "size": 0.035, "color": "#a8a8a8", "align": "center"}
   ]
 }
