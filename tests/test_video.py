@@ -998,6 +998,34 @@ def test_resolve_total_sec_falls_back_when_audio_duration_unknown():
 
     # ffprobe失敗(None)のケース: 従来の計算にフォールバックする
     assert _resolve_total_sec(10.0, None) == 10.0
+
+
+def test_extend_for_endroll_extends_when_no_outro():
+    from soramimic_video.video import extend_for_endroll
+
+    # 後奏0秒・語10個(1ページ+クレジット): 歌唱終端+6.0秒まで延ばす
+    assert extend_for_endroll(20.0, 20.0, [f"語{i}" for i in range(10)]) == 26.0
+
+
+def test_extend_for_endroll_keeps_total_when_outro_is_enough():
+    from soramimic_video.video import extend_for_endroll
+
+    # 既に OUTRO_MIN_SEC 以上の後奏がある曲は何も変えない
+    assert extend_for_endroll(26.0, 20.0, ["語"]) == 26.0
+
+
+def test_extend_for_endroll_keeps_total_without_words():
+    from soramimic_video.video import extend_for_endroll
+
+    # エンドロールに出す単語が無ければ延ばさない(黒画面が伸びるだけになる)
+    assert extend_for_endroll(20.0, 20.0, []) == 20.0
+
+
+def test_extend_for_endroll_counts_pages_by_word_count():
+    from soramimic_video.video import extend_for_endroll
+
+    # 語121個は2ページ + クレジットで9.0秒必要
+    assert extend_for_endroll(20.0, 20.0, [f"語{i}" for i in range(121)]) == 29.0
 # ---- リトライ / プリフェッチ / prewarm ----
 
 
