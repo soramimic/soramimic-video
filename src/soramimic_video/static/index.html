@@ -203,10 +203,18 @@
   .le-guide { position: absolute; background: #f43f5e; z-index: 3; pointer-events: none; }
   #le-guide-v { width: 1px; top: 0; bottom: 0; }
   #le-guide-h { height: 1px; left: 0; right: 0; }
-  .le-handle {
-    position: absolute; right: 0; bottom: 0; width: 12px; height: 12px;
-    background: #38bdf8; cursor: nwse-resize;
-  }
+  /* リサイズハンドル。掴んだ位置(data-dir)の対角/対辺を固定して伸縮する。
+     選択中の箱は8方向すべて、それ以外は従来どおり右下だけ出す
+     (全部の箱に8個出すと小さい箱がハンドルで埋まって掴めなくなる) */
+  .le-handle { position: absolute; width: 12px; height: 12px; background: #38bdf8; }
+  .le-handle[data-dir="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+  .le-handle[data-dir="ne"] { right: 0; top: 0; cursor: nesw-resize; }
+  .le-handle[data-dir="sw"] { left: 0; bottom: 0; cursor: nesw-resize; }
+  .le-handle[data-dir="se"] { right: 0; bottom: 0; cursor: nwse-resize; }
+  .le-handle[data-dir="n"] { left: 50%; top: 0; transform: translateX(-50%); cursor: ns-resize; }
+  .le-handle[data-dir="s"] { left: 50%; bottom: 0; transform: translateX(-50%); cursor: ns-resize; }
+  .le-handle[data-dir="w"] { left: 0; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+  .le-handle[data-dir="e"] { right: 0; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
   .le-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; align-items: center; }
   .le-toolbar button, .le-cue-nav button, .le-tabs button {
     font-size: .8rem; padding: .3rem .8rem; min-height: 0;
@@ -714,6 +722,9 @@
           <button type="button" id="le-add-subtitle">字幕追加</button>
           <button type="button" id="le-add-image">画像枠追加</button>
           <button type="button" id="le-delete" disabled>選択を削除</button>
+          <!-- 1つ戻す/やり直す(Ctrl+Z / Ctrl+Shift+Z・Ctrl+Y)。スタックが空なら無効 -->
+          <button type="button" id="le-undo" disabled>元に戻す</button>
+          <button type="button" id="le-redo" disabled>やり直す</button>
           <button type="button" id="le-export">エクスポート</button>
           <span id="le-msg"></span>
         </div>
@@ -734,11 +745,20 @@
           <div id="le-guide-v" class="le-guide" hidden></div>
           <div id="le-guide-h" class="le-guide" hidden></div>
         </div>
+        <!-- 重なり順(elements配列の並び=描画順。後ろの要素が上に来る)の調整。
+             プロパティ編集欄と同じく、選択しているときだけ出す -->
+        <div class="le-toolbar" id="le-zorder" hidden>
+          <button type="button" id="le-front" disabled>最前面へ</button>
+          <button type="button" id="le-back" disabled>最背面へ</button>
+        </div>
         <div id="le-props" hidden></div>
         <p class="hint" data-info data-info-standalone data-info-label="レイアウト編集">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
           箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
           右下の角でリサイズ、クリックで選択して文言・サイズ・色・字幕の粒度を変更。
+          選択中は四隅と各辺のハンドルでもリサイズでき(掴んだ側だけが動きます)、
+          「最前面へ」「最背面へ」で重なり順を変えられます。
           選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
+          直前の編集はCtrl+Z(Macは⌘Z)か「元に戻す」で1つ戻せます。
           本番と同じく、枠に収まらない文字は自動で縮小されます。
           編集した内容はジョブ投入時にレイアウト名より優先で使われます。
           「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
@@ -2588,6 +2608,96 @@ function leUpdateCueNav() {
 const leMsg = (t) => { $("le-msg").textContent = t; };
 const leClamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+// ---- レイアウト編集のUndo/Redo ----
+// スナップショット方式(レイアウト全体のdeep copy)。差分を持つより単純で、
+// 要素の追加・削除・並べ替えといった構造変化もそのまま戻せる。
+// ドラッグ中(pointermove)は積まず、確定(pointerup)で1回だけ積む。
+const LE_UNDO_MAX = 50;
+const LE_MIN_BOX = 0.02;   // ボックスの最小幅・高さ(リサイズの下限)
+let leUndoStack = [];
+let leRedoStack = [];
+// 直前に積んだ操作の種類と時刻(カーソルキー連打などを1つにまとめるため)
+let leUndoLast = { tag: "", at: 0 };
+
+// 今の編集状態(レイアウト・編集中の側・選択)を1件ぶん写し取る
+function leUndoCapture() {
+  return {
+    layout: leLayout ? JSON.parse(JSON.stringify(leLayout)) : null,
+    side: leSide,
+    selected: leSelected,
+  };
+}
+
+function leUpdateUndoButtons() {
+  $("le-undo").disabled = leUndoStack.length === 0;
+  $("le-redo").disabled = leRedoStack.length === 0;
+}
+
+// 変更前の状態を積む。snap を省略すると「今」を積むので、レイアウトを書き換える
+// 直前に呼ぶこと。tag を付けると、同じtagの連続操作(800ms以内)は1件にまとめる。
+function leUndoPush(snap, tag) {
+  const now = Date.now();
+  leRedoStack = [];   // 新しい編集をしたらやり直し先は消える
+  if (tag && leUndoLast.tag === tag && now - leUndoLast.at < 800) {
+    leUndoLast.at = now;
+    leUpdateUndoButtons();
+    return;
+  }
+  leUndoStack.push(snap || leUndoCapture());
+  if (leUndoStack.length > LE_UNDO_MAX) leUndoStack.shift();
+  leUndoLast = { tag: tag || "", at: now };
+  leUpdateUndoButtons();
+}
+
+// レイアウトを丸ごと入れ替えたとき(読み込み・破棄)は履歴も捨てる。
+// 別のレイアウトの途中状態に戻れてしまうと事故になる
+function leUndoReset() {
+  leUndoStack = [];
+  leRedoStack = [];
+  leUndoLast = { tag: "", at: 0 };
+  leUpdateUndoButtons();
+}
+
+// スナップショットを画面に反映する(プレビュー・タブ・プロパティ欄をまとめて同期)
+function leUndoApply(snap) {
+  leLayout = snap.layout ? JSON.parse(JSON.stringify(snap.layout)) : null;
+  leToJson();
+  leSetSide(snap.side);   // タブ表示・「字幕追加」の可否も戻す(選択はいったん外れる)
+  // 要素が減っていれば選択は外す
+  const n = leEls().length;
+  leSelect(snap.selected >= 0 && snap.selected < n ? snap.selected : -1);
+}
+
+function leUndo() {
+  if (!leUndoStack.length) return;
+  const snap = leUndoStack.pop();
+  leRedoStack.push(leUndoCapture());
+  leUndoLast = { tag: "", at: 0 };   // 戻したあとの操作はまとめない
+  leUndoApply(snap);
+  leUpdateUndoButtons();
+}
+
+function leRedo() {
+  if (!leRedoStack.length) return;
+  const snap = leRedoStack.pop();
+  leUndoStack.push(leUndoCapture());
+  leUndoLast = { tag: "", at: 0 };
+  leUndoApply(snap);
+  leUpdateUndoButtons();
+}
+
+// テキスト・数値入力を1文字ごとに積まないための仕掛け。
+// フォーカスした時点の状態を覚えておき、最初の入力のときだけ積む
+// (フォーカスを外して入り直せば別の操作として積まれる)
+function leUndoOnInput(inp) {
+  let before = null;
+  inp.addEventListener("focus", () => { before = leUndoCapture(); });
+  inp.addEventListener("input", () => {
+    if (before) { leUndoPush(before); before = null; }
+  });
+  return inp;
+}
+
 function leLabel(e) {
   if (e.type === "image") return "画像";
   if (e.type === "subtitle") return "字幕: " + (e.source === "parody" ? "替え歌" : "元歌詞");
@@ -2611,6 +2721,7 @@ function leClearLayout() {
   leLayout = null;
   leSelected = -1;
   leDirty = false;
+  leUndoReset();   // 別のレイアウトの途中状態に戻れると事故になるので履歴も捨てる
   leLayoutFor = "";
   $("layout-json").value = "";
   // ファイルから読み込んだレイアウトも一緒に捨てる(選択が残ったままだと、
@@ -2811,9 +2922,15 @@ function leRender() {
     div.append(leContent(e), badge);
     if (i >= 0) {
       div.dataset.index = i;
-      const handle = document.createElement("div");
-      handle.className = "le-handle";
-      div.appendChild(handle);
+      // 選択中は8方向、未選択は従来どおり右下だけ(小さい箱がハンドルで埋まらないよう)
+      const dirs = i === leSelected
+        ? ["nw", "n", "ne", "e", "se", "s", "sw", "w"] : ["se"];
+      for (const dir of dirs) {
+        const handle = document.createElement("div");
+        handle.className = "le-handle";
+        handle.dataset.dir = dir;
+        div.appendChild(handle);
+      }
     } else {
       // ゴースト(既定字幕)は掴んだ瞬間に実要素化してドラッグできるようにする
       div.dataset.ghost = JSON.stringify(e);
@@ -2830,9 +2947,34 @@ function leRender() {
 function leSelect(i) {
   leSelected = i;
   $("le-delete").disabled = i < 0;
+  leUpdateOrderButtons();
   leRender();
   leRenderProps();
 }
+
+// 重なり順ボタンの出し入れ。すでに最前面/最背面のときはそれぞれ無効にする
+function leUpdateOrderButtons() {
+  const n = leEls().length;
+  $("le-zorder").hidden = leSelected < 0;
+  $("le-front").disabled = leSelected < 0 || leSelected >= n - 1;
+  $("le-back").disabled = leSelected <= 0;
+}
+
+// 選択要素を elements 配列の to 番目へ移す(配列順=描画順なので、末尾が最前面)
+function leMoveElement(to) {
+  const els = leEls();
+  if (leSelected < 0 || to < 0 || to >= els.length || to === leSelected) return;
+  leUndoPush();
+  const [el] = els.splice(leSelected, 1);
+  els.splice(to, 0, el);
+  leToJson();
+  leSelect(to);   // プレビュー・プロパティ欄・ボタンの有効無効をまとめて更新
+}
+
+$("le-front").addEventListener("click", () => leMoveElement(leEls().length - 1));
+$("le-back").addEventListener("click", () => leMoveElement(0));
+$("le-undo").addEventListener("click", leUndo);
+$("le-redo").addEventListener("click", leRedo);
 
 function leRenderProps() {
   const panel = $("le-props");
@@ -2851,7 +2993,7 @@ function leRenderProps() {
     const inp = document.createElement("input");
     inp.type = "text"; inp.value = e[key] ?? def; inp.size = size || 8;
     inp.addEventListener("input", () => { e[key] = inp.value; commit(); });
-    return inp;
+    return leUndoOnInput(inp);
   };
   const numInput = (key, def) => {
     const inp = document.createElement("input");
@@ -2862,19 +3004,19 @@ function leRenderProps() {
       if (key === "size") leGrowToFit(e);  // サイズを上げたら枠も一緒に広げる
       commit();
     });
-    return inp;
+    return leUndoOnInput(inp);
   };
   const select = (key, options, def) => {
     const sel = document.createElement("select");
     sel.innerHTML = options
       .map((o) => `<option${o === (e[key] ?? def) ? " selected" : ""}>${o}</option>`).join("");
-    sel.addEventListener("change", () => { e[key] = sel.value; commit(); });
+    sel.addEventListener("change", () => { leUndoPush(); e[key] = sel.value; commit(); });
     return sel;
   };
   const checkbox = (key) => {
     const inp = document.createElement("input");
     inp.type = "checkbox"; inp.checked = !!e[key];
-    inp.addEventListener("change", () => { e[key] = inp.checked; commit(); });
+    inp.addEventListener("change", () => { leUndoPush(); e[key] = inp.checked; commit(); });
     return inp;
   };
   // 表示条件: 選んだ列が空の単語ではこの要素を隠す(require)
@@ -2884,6 +3026,7 @@ function leRenderProps() {
       cols.map((c) => `<option value="${c}"${c === e.require ? " selected" : ""}>${c}</option>`)
         .join("");
     sel.addEventListener("change", () => {
+      leUndoPush();
       if (sel.value) e.require = sel.value; else delete e.require;
       commit();
     });
@@ -2898,6 +3041,7 @@ function leRenderProps() {
       cols.map((c) => `<option value="${c}">${c}</option>`).join("");
     colSel.addEventListener("change", () => {
       if (!colSel.value) return;
+      leUndoPush();
       e.text = (e.text || "") + `{${colSel.value}}`;
       textInp.value = e.text;
       colSel.value = "";
@@ -2926,6 +3070,7 @@ function leRenderProps() {
         `<option value="${v}"${v === (e.granularity ?? "") ? " selected" : ""}>${t}</option>`)
       .join("");
     granSel.addEventListener("change", () => {
+      leUndoPush();
       if (granSel.value) e.granularity = granSel.value; else delete e.granularity;
       commit();
     });
@@ -2938,7 +3083,7 @@ function leRenderProps() {
     rubySize.addEventListener("input", () => {
       e.ruby_size = Number(rubySize.value) || 0.5; commit();
     });
-    add("ルビサイズ(本文比)", rubySize);
+    add("ルビサイズ(本文比)", leUndoOnInput(rubySize));
     if (e.ruby) {
       const note = document.createElement("p");
       note.textContent = "※ プレビューにはルビは表示されません(動画には各単語の上に振られます)";
@@ -2951,6 +3096,8 @@ function leRenderProps() {
 $("le-canvas").addEventListener("pointerdown", (ev) => {
   const box = ev.target.closest(".le-box");
   if (!box) { leSelect(-1); return; }
+  // ゴーストの実要素化(下)より前の状態。実要素化したときだけ積む
+  const beforeGhost = leUndoCapture();
   let i;
   if (box.dataset.index === undefined) {
     // 未知語側の字幕ゴーストは通常側と共通なので、ここでは編集させない
@@ -2959,18 +3106,23 @@ $("le-canvas").addEventListener("pointerdown", (ev) => {
     // (片方だけ要素化すると、もう片方の既定字幕が動画から消えてしまうため)
     const ghosts = [...$("le-canvas").querySelectorAll(".le-box.ghost")];
     i = leEls().length + ghosts.indexOf(box);
+    leUndoPush(beforeGhost);   // 実要素化それ自体が編集なので、ここまでを1手にする
     leEls().push(...ghosts.map((g) => JSON.parse(g.dataset.ghost)));
     leToJson();
   } else {
     i = Number(box.dataset.index);
   }
   leSelect(i);
+  // 掴んだ直後(選択済み・まだ動かしていない)の状態。動かさずに離したら積まない
+  const before = leUndoCapture();
+  const handle = ev.target.classList.contains("le-handle") ? ev.target : null;
   leDrag = {
-    i, resize: ev.target.classList.contains("le-handle"),
+    i, resize: !!handle, dir: handle ? (handle.dataset.dir || "se") : "",
     startX: ev.clientX, startY: ev.clientY,
     box: [...leEls()[i].box],
     rect: $("le-canvas").getBoundingClientRect(),
     div: $("le-canvas").querySelector(`.le-box[data-index="${i}"]`),
+    before, moved: false,
   };
   ev.preventDefault();
   $("le-canvas").setPointerCapture(ev.pointerId);
@@ -3013,20 +3165,42 @@ function leGuides(gx, gy) {
 
 $("le-canvas").addEventListener("pointermove", (ev) => {
   if (!leDrag) return;
-  const { i, resize, startX, startY, box, rect, div } = leDrag;
+  const { i, resize, dir, startX, startY, box, rect, div } = leDrag;
   const dx = (ev.clientX - startX) / rect.width;
   const dy = (ev.clientY - startY) / rect.height;
   const e = leEls()[i];
   const thX = 8 / rect.width, thY = 8 / rect.height;  // 8px以内で吸着
   const { xs, ys } = leSnapTargets(i);
   let guideX = null, guideY = null;
+  if (dx || dy) leDrag.moved = true;   // 動かさずに離しただけならUndoに積まない
   if (resize) {
-    let w = leClamp(box[2] + dx, 0.02, 1 - e.box[0]);
-    let h = leClamp(box[3] + dy, 0.02, 1 - e.box[1]);
-    const sx = leSnapAxis([[e.box[0] + w, 0]], xs, thX);
-    if (sx && sx.v - e.box[0] >= 0.02) { w = sx.v - e.box[0]; guideX = sx.v; }
-    const sy = leSnapAxis([[e.box[1] + h, 0]], ys, thY);
-    if (sy && sy.v - e.box[1] >= 0.02) { h = sy.v - e.box[1]; guideY = sy.v; }
+    // 掴んだ側だけを動かし、反対側(隅なら対角)は固定する。
+    // dir に e/w が入っていなければ横幅は変えない(上下辺のハンドル)。縦も同様
+    const [bx, by, bw, bh] = box;   // 掴んだ時点のボックス
+    const min = LE_MIN_BOX;
+    let x = bx, y = by, w = bw, h = bh;
+    if (dir.includes("e")) {
+      w = leClamp(bw + dx, min, 1 - bx);
+      const sx = leSnapAxis([[bx + w, 0]], xs, thX);
+      if (sx && sx.v - bx >= min && sx.v <= 1) { w = sx.v - bx; guideX = sx.v; }
+    } else if (dir.includes("w")) {
+      x = leClamp(bx + dx, 0, bx + bw - min);
+      const sx = leSnapAxis([[x, 0]], xs, thX);
+      if (sx && sx.v >= 0 && bx + bw - sx.v >= min) { x = sx.v; guideX = sx.v; }
+      w = bx + bw - x;
+    }
+    if (dir.includes("s")) {
+      h = leClamp(bh + dy, min, 1 - by);
+      const sy = leSnapAxis([[by + h, 0]], ys, thY);
+      if (sy && sy.v - by >= min && sy.v <= 1) { h = sy.v - by; guideY = sy.v; }
+    } else if (dir.includes("n")) {
+      y = leClamp(by + dy, 0, by + bh - min);
+      const sy = leSnapAxis([[y, 0]], ys, thY);
+      if (sy && sy.v >= 0 && by + bh - sy.v >= min) { y = sy.v; guideY = sy.v; }
+      h = by + bh - y;
+    }
+    e.box[0] = x;
+    e.box[1] = y;
     e.box[2] = w;
     e.box[3] = h;
   } else {
@@ -3048,10 +3222,18 @@ $("le-canvas").addEventListener("pointermove", (ev) => {
 
 ["pointerup", "pointercancel"].forEach((t) =>
   $("le-canvas").addEventListener(t, () => {
-    if (leDrag) { leDrag = null; leGuides(null, null); leToJson(); leRender(); }
+    if (leDrag) {
+      // 移動・リサイズはここで1回だけUndoに積む(mousemoveごとには積まない)
+      if (leDrag.moved) leUndoPush(leDrag.before);
+      leDrag = null;
+      leGuides(null, null);
+      leToJson();
+      leRender();
+    }
   }));
 
 function leAdd(el) {
+  leUndoPush();
   if (!leLayout) leLayout = { background: "black", elements: [] };
   if (!leLayout[leSide]) leLayout[leSide] = [];
   leLayout[leSide].push(el);
@@ -3069,6 +3251,7 @@ $("le-add-image").addEventListener("click", () => leAdd(
 
 $("le-delete").addEventListener("click", () => {
   if (leSelected < 0) return;
+  leUndoPush();
   leEls().splice(leSelected, 1);
   leToJson();
   leSelect(-1);
@@ -3103,6 +3286,23 @@ $("le-export").addEventListener("click", () => {
   URL.revokeObjectURL(a.href);
 });
 
+// Ctrl+Z / ⌘Z で1つ戻す(Ctrl+Shift+Z・Ctrl+Y でやり直す)。
+// テキスト入力欄にフォーカスがあるときは入力欄自身のUndo(ブラウザ既定)に任せる
+document.addEventListener("keydown", (ev) => {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+  if (!$("le-details").open) return;
+  const t = ev.target;
+  if (t && ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
+  const key = ev.key.toLowerCase();
+  if (key === "z") {
+    ev.preventDefault();
+    if (ev.shiftKey) leRedo(); else leUndo();
+  } else if (key === "y") {
+    ev.preventDefault();
+    leRedo();
+  }
+});
+
 // 選択中のボックスをカーソルキーで移動(Shiftで大きく)、Deleteで削除
 document.addEventListener("keydown", (ev) => {
   if (!$("le-details").open || !leLayout || leSelected < 0) return;
@@ -3111,6 +3311,7 @@ document.addEventListener("keydown", (ev) => {
   const e = leEls()[leSelected];
   if (ev.key === "Delete" || ev.key === "Backspace") {  // Macのdelete=Backspace
     ev.preventDefault();
+    leUndoPush();
     leEls().splice(leSelected, 1);
     leToJson();
     leSelect(-1);
@@ -3123,6 +3324,7 @@ document.addEventListener("keydown", (ev) => {
   }[ev.key];
   if (!move) return;
   ev.preventDefault();
+  leUndoPush(undefined, "arrow");   // 連打は1手にまとめる
   e.box[0] = leClamp(e.box[0] + move[0], 0, 1 - e.box[2]);
   e.box[1] = leClamp(e.box[1] + move[1], 0, 1 - e.box[3]);
   e.box = e.box.map((v) => Math.round(v * 10000) / 10000);
@@ -3160,6 +3362,7 @@ async function leLoad() {
   }
   leMsg("");
   leToJson();
+  leUndoReset();     // 読み込みでレイアウトが入れ替わったので履歴はここから
   leDirty = false;   // 読み込んだだけなので「ユーザーの編集」ではない
   leLayoutFor = $("layout").value.trim();
   saveForm();        // leToJson が dirty のまま保存しているので上書きし直す
@@ -3194,6 +3397,7 @@ $("layout-file").addEventListener("change", async () => {
   leLayout = parsed;
   leSelected = -1;
   leToJson();   // #layout-json へ書き戻し + leDirty=true + 保存
+  leUndoReset();   // ファイルで丸ごと入れ替えたので履歴は捨てる
   leMsg("");
   layoutFileMsg(`読み込みました: ${f.name}(このファイルの内容で生成します)`);
   $("le-details").open = true;
@@ -3263,7 +3467,9 @@ $("le-cue-next").addEventListener("click", () => {
 
 $("layout-json").addEventListener("change", () => {
   try {
-    leLayout = $("layout-json").value.trim() ? JSON.parse($("layout-json").value) : null;
+    const parsed = $("layout-json").value.trim() ? JSON.parse($("layout-json").value) : null;
+    leUndoPush();   // 手入力前の状態に戻せるようにする(パースできたときだけ)
+    leLayout = parsed;
     // テキストエリアの手入力もユーザーの編集(生成時にlayout_jsonとして送る)
     leDirty = !!leLayout;
     leLayoutFor = $("layout").value.trim();
