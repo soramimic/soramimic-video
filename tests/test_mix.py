@@ -58,6 +58,76 @@ def test_make_accompaniment_midi_removes_melody(tmp_path: Path):
     assert total_acc == total_src
 
 
+def _midi_with_backing(path: Path, backing: list[tuple[int, int, int]]) -> Path:
+    """メロディ(ch0)+伴奏イベントを持つXF MIDIを作る。backing=[(ch, note, tick長)]。"""
+    midi_path = build_xf_midi(
+        path, notes=[(0, 480, 60)], lyric_events=[(0, "あ")]
+    )
+    mid = mido.MidiFile(str(midi_path), clip=True)
+    data = midi_path.read_bytes()
+    xf_start = data.index(b"XFIH")
+    track = mid.tracks[0]
+    eot = track.pop()
+    for ch, note, length in backing:
+        track.append(mido.Message("note_on", channel=ch, note=note, velocity=80, time=0))
+        track.append(
+            mido.Message("note_off", channel=ch, note=note, velocity=64, time=length)
+        )
+    track.append(eot)
+    import io
+
+    buf = io.BytesIO()
+    mid.save(file=buf)
+    midi_path.write_bytes(buf.getvalue() + data[xf_start:])
+    return midi_path
+
+
+def _accompaniment_notes(project, tmp_path: Path, name: str) -> list:
+    out = make_accompaniment_midi(project, tmp_path / name)
+    acc = mido.MidiFile(str(out), clip=True)
+    return [m for t in acc.tracks for m in t if m.type in ("note_on", "note_off")]
+
+
+def test_make_accompaniment_midi_transposes_by_key_shift(tmp_path: Path):
+    """自動キー変更ぶんだけ伴奏を移調する(ドラムch9は移調しない)。"""
+    midi_path = _midi_with_backing(
+        tmp_path / "song.mid", [(1, 40, 480), (9, 36, 480), (2, 55, 480)]
+    )
+    project = analyze_midi(midi_path)
+    project.song.key_shift = -5
+
+    notes = _accompaniment_notes(project, tmp_path, "acc.mid")
+    by_channel = {(m.channel, m.note) for m in notes}
+    assert (1, 35) in by_channel  # 40 - 5
+    assert (2, 50) in by_channel  # 55 - 5
+    assert (9, 36) in by_channel  # ドラムは打楽器の種類なので不変
+
+
+def test_make_accompaniment_midi_no_transpose_by_default(tmp_path: Path):
+    """key_shift=0(オクターブだけで収まる従来の曲)では伴奏は原調のまま。"""
+    midi_path = _midi_with_backing(tmp_path / "song.mid", [(1, 40, 480)])
+    project = analyze_midi(midi_path)
+    assert project.song.key_shift == 0
+
+    notes = _accompaniment_notes(project, tmp_path, "acc.mid")
+    assert {(m.channel, m.note) for m in notes} == {(1, 40)}
+
+
+def test_make_accompaniment_midi_clamps_transposed_notes(tmp_path: Path):
+    """移調で0〜127を外れる音はクランプする(mido の値域エラーを避ける)。"""
+    midi_path = _midi_with_backing(
+        tmp_path / "song.mid", [(1, 125, 480), (2, 2, 480)]
+    )
+    project = analyze_midi(midi_path)
+    project.song.key_shift = 6
+    high = {m.note for m in _accompaniment_notes(project, tmp_path, "up.mid")}
+    assert high == {127, 8}
+
+    project.song.key_shift = -6
+    low = {m.note for m in _accompaniment_notes(project, tmp_path, "down.mid")}
+    assert low == {119, 0}
+
+
 def test_resolve_accompaniment_uses_separated_wav(tmp_path: Path):
     """音源プロジェクトでは分離済み伴奏wavをそのまま使う(fluidsynth不要)。"""
     acc = tmp_path / "no_vocals.wav"

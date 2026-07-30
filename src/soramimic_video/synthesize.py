@@ -12,7 +12,7 @@ from .neutrino import model_pitch_range, run_neutrino
 from .octave import (
     NEUTRINO_SAFE_KEY_MAX,
     NEUTRINO_SAFE_KEY_MIN,
-    auto_octave_shift,
+    resolve_auto_shift,
 )
 from .project import Project
 
@@ -77,12 +77,18 @@ def synthesize(
     synthesizer で使うバックエンドを選ぶ("neutrino" 既定 / "voicevox")。
     auto_octave(既定ON)はエンジンの安全音域に収まるよう曲全体をオクターブ単位で
     自動移調する(VOICEVOX/NEUTRINO共通。移調はユーザー指定transposeに加算)。
+    オクターブ調整だけでは収まらない広音域の曲では、曲全体のキー変更(半音)も
+    併用する。キー変更ぶんは project.song.key_shift に記録され、mixが伴奏MIDIに
+    同じだけ適用する(octave.resolve_auto_shift 参照)。
     octave_keys を渡すと、その音高リストを auto_octave の判定に使う(既定は
     project の全音符)。曲の一部だけを切り出して合成するプレビューで、本番と
     同じキーで歌わせるために曲全体の音高を渡す用途。
     """
     if octave_keys is None:
         octave_keys = [n.midi_note for n in project.notes]
+    if not auto_octave:
+        # 自動調整OFFなら歌は原調(ユーザーtransposeのみ)。伴奏も原調に戻す
+        project.song.key_shift = 0
     if synthesizer == "voicevox":
         from .voicevox import run_voicevox
 
@@ -118,13 +124,9 @@ def synthesize(
                 "NEUTRINOモデル%sの推奨音域が取得できず汎用音域 MIDI %d〜%d を使います",
                 model, key_min, key_max,
             )
-        shift = auto_octave_shift(octave_keys, transpose, key_min, key_max)
-        if shift:
-            logger.info(
-                "NEUTRINOの音域(MIDI %d〜%d)に合わせて%+dオクターブ調整します",
-                key_min, key_max, shift // 12,
-            )
-            transpose += shift
+        transpose += resolve_auto_shift(
+            project, octave_keys, transpose, key_min, key_max, "NEUTRINO"
+        )
 
     work_dir = project_dir / NEUTRINO_DIR
     work_dir.mkdir(parents=True, exist_ok=True)

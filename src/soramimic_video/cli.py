@@ -160,6 +160,10 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         # (どちらも「無効化」なので、いずれか指定されていればOFF)。
         auto_octave=not (args.no_auto_octave or args.no_voicevox_auto_octave),
     )
+    # 自動調整が決めたキー変更(song.key_shift)を残す。次のmixが伴奏を同じだけ移調する
+    project.save(Path(args.project))
+    if project.song.key_shift:
+        print(f"曲全体を{project.song.key_shift:+d}半音キー変更しました(伴奏も同じだけ移調されます)")
     if wav:
         print(f"歌唱音源: {wav}")
     return 0

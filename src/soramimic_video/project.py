@@ -25,6 +25,10 @@ class SongInfo:
     tempo_map: list[list[int]] = field(default_factory=list)  # [tick, us/beat]
     # [tick, 分子, 分母]
     time_signatures: list[list[int]] = field(default_factory=lambda: [[0, 4, 4]])
+    # 自動音域調整(octave.py)が決めた曲全体のキー変更(半音)。synthesizeが書き、
+    # mixが伴奏MIDIに同じだけ適用して歌と調を合わせる(カラオケのキー変更)。
+    # オクターブ調整だけで安全音域に収まる曲では0(=従来どおり伴奏は原調)。
+    key_shift: int = 0
     # analyze-audio(歌唱音源入力)のとき設定される
     audio_path: str | None = None  # 入力音源
     vocals_path: str | None = None  # demucs分離後のボーカル

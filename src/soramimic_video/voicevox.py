@@ -26,7 +26,7 @@ import requests
 
 from . import runproc
 from .kana import SMALL_TO_LARGE, split_moras, vowel_of
-from .octave import VOICEVOX_SAFE_KEY_MAX, VOICEVOX_SAFE_KEY_MIN
+from .octave import VOICEVOX_SAFE_KEY_MAX, VOICEVOX_SAFE_KEY_MIN, resolve_auto_shift
 from .octave import auto_octave_shift as _octave_shift
 from .project import Project
 
@@ -543,6 +543,8 @@ def run_voicevox(
     → frame_synthesis(style_id) → vocal_path に書き出す。
     auto_octave(既定ON)は、安全音域(SAFE_KEY_MIN..MAX)に収まる音符が最大に
     なるようオクターブ単位で自動移調する(範囲外はピッチが大きく崩れるため)。
+    オクターブだけで収まらない広音域の曲は曲全体のキー変更も併用し、そのぶんを
+    project.song.key_shift に記録する(mixが伴奏MIDIに同じだけ適用する)。
     octave_keys を渡すと、その音高リストを自動移調の判定に使う(既定は project の
     全音符。プレビューで曲の一部だけを合成するとき、本番と同じキーにするため)。
     chunk_sec>0 のときはスコアを休符境界で分割し、チャンクごとに順次合成して結合する
@@ -558,13 +560,11 @@ def run_voicevox(
             octave_keys if octave_keys is not None
             else [n.midi_note for n in project.notes]
         )
-        shift = auto_octave_shift(keys, transpose)
-        if shift:
-            logger.info(
-                "VOICEVOXの音域(MIDI %d〜%d)に合わせて%+dオクターブ調整します",
-                SAFE_KEY_MIN, SAFE_KEY_MAX, shift // 12,
-            )
-            transpose += shift
+        transpose += resolve_auto_shift(
+            project, keys, transpose, SAFE_KEY_MIN, SAFE_KEY_MAX, "VOICEVOX"
+        )
+    else:
+        project.song.key_shift = 0  # 歌が原調なら伴奏も原調
     score = build_score(project, transpose=transpose)
 
     # 先生(クエリ用スタイル)を決める。選んだスタイルがsing型なら自身、
