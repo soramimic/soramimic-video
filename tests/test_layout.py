@@ -555,6 +555,8 @@ def test_section_defaults_provide_interlude_and_outro():
     layout = load_layout("default")
     assert layout.has_section("interlude")
     assert layout.has_section("outro")
+    # 後奏の最後に出すクレジットページも既定で入る
+    assert layout.has_section("credits")
     # 前奏はサムネが受け持つので既定なし
     assert not layout.has_section("intro")
     assert "interlude" in load_section_defaults()
