@@ -185,8 +185,13 @@
   #le-canvas img { position: absolute; inset: 0; width: 100%; height: 100%; }
   /* 枠線はoutlineで描く(borderだと内側を食って文字の収まり判定が本番とずれる) */
   .le-box { position: absolute; outline: 1px dashed #38bdf8aa; cursor: move; }
-  .le-box.selected { outline: 2px solid #f59e0b; z-index: 2; }
-  .le-box.subtitle { outline-color: #a78bfaaa; }
+  /* 選択しても箱そのものは前面に浮かせない(z-indexを持たせない)。持たせると全面画像を
+     選んだだけでテキストが画像の裏に回り、重なり順の嘘になる。選択枠とハンドルは
+     キャンバス直下のオーバーレイ(#le-selection)に出す */
+  .le-box.selected { outline: 2px solid #f59e0b; }
+  /* 字幕は動画ではASSで常に最前面に焼かれる(layout.SubtitleElement)。プレビューでも
+     配列順に負けないよう、必ず上に重ねる */
+  .le-box.subtitle { outline-color: #a78bfaaa; z-index: 3; }
   .le-badge {
     position: absolute; left: 0; top: 0; font-size: 9px; line-height: 1.4;
     background: #0009; color: #fff; padding: 0 3px; z-index: 1; pointer-events: none;
@@ -198,13 +203,21 @@
     text-shadow: 0 0 3px #000, 0 0 3px #000;
   }
   .le-ph { display: flex; align-items: center; justify-content: center; color: #888; }
-  .le-box.ghost { outline: 1px dotted #777; }
+  .le-box.ghost { outline: 1px dotted #777; z-index: 4; }
   .le-box.ghost .le-badge { background: #0006; color: #aaa; }
-  .le-guide { position: absolute; background: #f43f5e; z-index: 3; pointer-events: none; }
+  /* ガイド線は選択枠(z-index 5)より上に出す */
+  .le-guide { position: absolute; background: #f43f5e; z-index: 6; pointer-events: none; }
   #le-guide-v { width: 1px; top: 0; bottom: 0; }
   #le-guide-h { height: 1px; left: 0; right: 0; }
+  /* 選択中の箱に重ねる枠+リサイズハンドル。箱の子ではなくキャンバス直下に置くので、
+     ほかの要素(字幕・ゴースト)の下にある箱を選んでも枠とハンドルは必ず見える。
+     枠の内側はクリックを素通しして、箱そのもののドラッグ移動を邪魔しない */
+  #le-selection {
+    position: absolute; outline: 2px solid #f59e0b; z-index: 5; pointer-events: none;
+  }
+  #le-selection .le-handle { pointer-events: auto; }
   /* リサイズハンドル。掴んだ位置(data-dir)の対角/対辺を固定して伸縮する。
-     選択中の箱は8方向すべて、それ以外は従来どおり右下だけ出す
+     選択中の箱は8方向すべて(オーバーレイ側)、それ以外は従来どおり右下だけ出す
      (全部の箱に8個出すと小さい箱がハンドルで埋まって掴めなくなる) */
   .le-handle { position: absolute; width: 12px; height: 12px; background: #38bdf8; }
   .le-handle[data-dir="nw"] { left: 0; top: 0; cursor: nwse-resize; }
@@ -231,6 +244,9 @@
   #le-props input, #le-props select {
     width: auto; font-size: .85rem; padding: .2rem .3rem; min-height: 0;
   }
+  /* 色ピッカー(背景帯・縁取り)は見本の四角なので、押しやすい大きさに固定する */
+  #le-props input[type="color"] { width: 3rem; height: 1.8rem; padding: 0 .1rem; }
+  #le-props input:disabled { opacity: .4; }
   #history table { width: 100%; border-collapse: collapse; font-size: .85rem; }
   #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid var(--border); text-align: left; }
   /* ---- 替え歌エディタの全画面モーダル ---- */
@@ -744,19 +760,27 @@
         <div id="le-canvas">
           <div id="le-guide-v" class="le-guide" hidden></div>
           <div id="le-guide-h" class="le-guide" hidden></div>
-        </div>
-        <!-- 重なり順(elements配列の並び=描画順。後ろの要素が上に来る)の調整。
-             プロパティ編集欄と同じく、選択しているときだけ出す -->
-        <div class="le-toolbar" id="le-zorder" hidden>
-          <button type="button" id="le-front" disabled>最前面へ</button>
-          <button type="button" id="le-back" disabled>最背面へ</button>
+          <!-- 選択中の箱に重ねる枠とリサイズハンドル(どの要素ぶんかは data-index)。
+               箱そのものを前面に浮かせると重なり順の嘘になるので、枠だけを前に出す -->
+          <div id="le-selection" hidden>
+            <div class="le-handle" data-dir="nw"></div>
+            <div class="le-handle" data-dir="n"></div>
+            <div class="le-handle" data-dir="ne"></div>
+            <div class="le-handle" data-dir="e"></div>
+            <div class="le-handle" data-dir="se"></div>
+            <div class="le-handle" data-dir="s"></div>
+            <div class="le-handle" data-dir="sw"></div>
+            <div class="le-handle" data-dir="w"></div>
+          </div>
         </div>
         <div id="le-props" hidden></div>
         <p class="hint" data-info data-info-standalone data-info-label="レイアウト編集">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
           箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
           右下の角でリサイズ、クリックで選択して文言・サイズ・色・字幕の粒度を変更。
-          選択中は四隅と各辺のハンドルでもリサイズでき(掴んだ側だけが動きます)、
-          「最前面へ」「最背面へ」で重なり順を変えられます。
+          テキストは背景帯(半透明)と縁取りも付けられます(画像の上でも読みやすくなります)。
+          選択中は四隅と各辺のハンドルでもリサイズでき(掴んだ側だけが動きます)。
+          重なりは画像が常にいちばん背面、その上にテキスト、字幕は動画では必ず最前面に出ます
+          (追加した要素はこの順になる位置に入ります)。
           選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
           直前の編集はCtrl+Z(Macは⌘Z)か「元に戻す」で1つ戻せます。
           本番と同じく、枠に収まらない文字は自動で縮小されます。
@@ -2698,6 +2722,26 @@ function leUndoOnInput(inp) {
   return inp;
 }
 
+// "#rgb" / "#rgba" / "#rrggbb" / "#rrggbbaa" を {hex, alpha(0〜100%)} に分解する。
+// 色名(black など)や式は解釈できないので null を返す。その場合GUIは「未設定」として
+// 扱い、値そのものは触らずに残す(手書きのレイアウトを壊さないため)
+function leParseHex(v) {
+  if (typeof v !== "string") return null;
+  const m = /^#([0-9a-f]+)$/i.exec(v.trim());
+  if (!m) return null;
+  let s = m[1];
+  if (s.length === 3 || s.length === 4) s = [...s].map((c) => c + c).join("");
+  if (s.length !== 6 && s.length !== 8) return null;
+  const a = s.length === 8 ? parseInt(s.slice(6), 16) : 255;
+  return { hex: "#" + s.slice(0, 6).toLowerCase(), alpha: Math.round((a / 255) * 100) };
+}
+
+// "#rrggbb" と不透明度(0〜100%)から "#rrggbbaa" を作る(100%なら6桁のまま)
+function leHexWithAlpha(hex, alpha) {
+  const a = Math.round((leClamp(Number(alpha) || 0, 0, 100) * 255) / 100);
+  return a >= 255 ? hex : hex + a.toString(16).padStart(2, "0");
+}
+
 function leLabel(e) {
   if (e.type === "image") return "画像";
   if (e.type === "subtitle") return "字幕: " + (e.source === "parody" ? "替え歌" : "元歌詞");
@@ -2836,6 +2880,15 @@ function leContent(e) {
     whiteSpace: wrap ? "normal" : "nowrap",
     textAlign: align,
   });
+  // 縁取り(text要素のみGUIで設定できる)の近似表示。Pillowは字の外側に太さぶん描くが
+  // -webkit-text-stroke は字の中心から左右に半分ずつ描くので、幅を倍にして
+  // paint-order で塗りを縁の上に置き、外側の見え幅を本番に近づける
+  if (e.type === "text" && e.stroke_width) {
+    Object.assign(div.style, {
+      WebkitTextStroke: `${2 * e.stroke_width * H}px ${e.stroke_color || "black"}`,
+      paintOrder: "stroke fill",
+    });
+  }
   return div;
 }
 
@@ -2905,10 +2958,22 @@ const LE_DEFAULT_SUBS = [
     size: 0.042, color: "#b8b8b8" },
 ];
 
+// 選択枠+ハンドルのオーバーレイを、選択中の箱と同じ位置・サイズに合わせる。
+// box が null なら隠す(ドラッグ中も箱と一緒に呼んで追従させる)
+function leSelectionOverlay(box, index) {
+  const sel = $("le-selection");
+  if (!box) { sel.hidden = true; delete sel.dataset.index; return; }
+  sel.hidden = false;
+  sel.dataset.index = index;   // どの要素のハンドルかはここから引く
+  leApplyBoxStyle(sel, box);
+}
+
 function leRender() {
   const canvas = $("le-canvas");
   canvas.querySelectorAll(".le-box").forEach((b) => b.remove());
   canvas.style.background = (leLayout && leLayout.background) || "#000";
+  const cur = leLayout && leSelected >= 0 ? leEls()[leSelected] : null;
+  leSelectionOverlay(cur ? cur.box : null, leSelected);
   if (!leLayout) return;
   const mount = (e, i) => {
     const div = document.createElement("div");
@@ -2922,13 +2987,12 @@ function leRender() {
     div.append(leContent(e), badge);
     if (i >= 0) {
       div.dataset.index = i;
-      // 選択中は8方向、未選択は従来どおり右下だけ(小さい箱がハンドルで埋まらないよう)
-      const dirs = i === leSelected
-        ? ["nw", "n", "ne", "e", "se", "s", "sw", "w"] : ["se"];
-      for (const dir of dirs) {
+      // 選択中の箱のハンドル(8方向)はオーバーレイ側に出すので、ここでは付けない。
+      // 未選択は従来どおり右下だけを箱の子として持つ
+      if (i !== leSelected) {
         const handle = document.createElement("div");
         handle.className = "le-handle";
-        handle.dataset.dir = dir;
+        handle.dataset.dir = "se";
         div.appendChild(handle);
       }
     } else {
@@ -2939,7 +3003,11 @@ function leRender() {
     leFitText(div);
   };
   const elements = leEls();
-  elements.forEach(mount);
+  // 動画では字幕はASSで焼くので、配列のどこにあっても画像・テキストより上に出る。
+  // プレビューも同じ順(字幕以外→字幕)で描く。配列順どおりに描くと「プレビューでは
+  // 画像が字幕の上、動画では字幕が上」という嘘のプレビューになってしまう
+  elements.forEach((e, i) => { if (e.type !== "subtitle") mount(e, i); });
+  elements.forEach((e, i) => { if (e.type === "subtitle") mount(e, i); });
   // 字幕ゴースト(既定字幕 or 通常側の字幕)を薄く表示。動かすには「字幕追加」
   leGhostSubs().forEach((e) => mount(e, -1));
 }
@@ -2947,32 +3015,10 @@ function leRender() {
 function leSelect(i) {
   leSelected = i;
   $("le-delete").disabled = i < 0;
-  leUpdateOrderButtons();
   leRender();
   leRenderProps();
 }
 
-// 重なり順ボタンの出し入れ。すでに最前面/最背面のときはそれぞれ無効にする
-function leUpdateOrderButtons() {
-  const n = leEls().length;
-  $("le-zorder").hidden = leSelected < 0;
-  $("le-front").disabled = leSelected < 0 || leSelected >= n - 1;
-  $("le-back").disabled = leSelected <= 0;
-}
-
-// 選択要素を elements 配列の to 番目へ移す(配列順=描画順なので、末尾が最前面)
-function leMoveElement(to) {
-  const els = leEls();
-  if (leSelected < 0 || to < 0 || to >= els.length || to === leSelected) return;
-  leUndoPush();
-  const [el] = els.splice(leSelected, 1);
-  els.splice(to, 0, el);
-  leToJson();
-  leSelect(to);   // プレビュー・プロパティ欄・ボタンの有効無効をまとめて更新
-}
-
-$("le-front").addEventListener("click", () => leMoveElement(leEls().length - 1));
-$("le-back").addEventListener("click", () => leMoveElement(0));
 $("le-undo").addEventListener("click", leUndo);
 $("le-redo").addEventListener("click", leRedo);
 
@@ -3053,6 +3099,44 @@ function leRenderProps() {
     add("揃え", select("align", ["left", "center", "right"], "center"));
     add("縦揃え", select("valign", ["top", "middle", "bottom"], "middle"));
     add("折返し", checkbox("wrap"));
+    // 背景帯(文字の後ろの半透明の帯): 色と不透明度から #rrggbbaa を作って background に入れる。
+    // チェックを外したらキーごと削除。色名など hex 以外が入っていたら未設定表示のまま残す
+    const bg = leParseHex(e.background);
+    const bgOn = document.createElement("input");
+    bgOn.type = "checkbox"; bgOn.checked = !!bg;
+    const bgColor = document.createElement("input");
+    bgColor.type = "color"; bgColor.value = bg ? bg.hex : "#000000";
+    const bgAlpha = document.createElement("input");
+    bgAlpha.type = "number"; bgAlpha.min = "0"; bgAlpha.max = "100"; bgAlpha.step = "5";
+    bgAlpha.value = bg ? bg.alpha : 50; bgAlpha.style.width = "4.5rem";
+    const bgApply = () => {
+      if (bgOn.checked) e.background = leHexWithAlpha(bgColor.value, bgAlpha.value);
+      else delete e.background;
+      bgColor.disabled = bgAlpha.disabled = !bgOn.checked;
+      commit();
+    };
+    bgColor.disabled = bgAlpha.disabled = !bgOn.checked;
+    bgOn.addEventListener("change", () => { leUndoPush(); bgApply(); });
+    bgColor.addEventListener("input", bgApply);
+    bgAlpha.addEventListener("input", bgApply);
+    add("背景帯", bgOn);
+    add("背景色", leUndoOnInput(bgColor));
+    add("背景の不透明度(%)", leUndoOnInput(bgAlpha));
+    // 縁取り: 太さは size と同じフレーム高さ比率。0 なら stroke_width を消す(縁取りなし)
+    const strokeW = document.createElement("input");
+    strokeW.type = "number"; strokeW.step = "0.002"; strokeW.min = "0"; strokeW.max = "0.05";
+    strokeW.value = e.stroke_width ?? 0; strokeW.style.width = "5rem";
+    strokeW.addEventListener("input", () => {
+      const v = Number(strokeW.value) || 0;
+      if (v > 0) e.stroke_width = v; else delete e.stroke_width;
+      commit();
+    });
+    add("縁取りの太さ", leUndoOnInput(strokeW));
+    const strokeC = document.createElement("input");
+    strokeC.type = "color";
+    strokeC.value = (leParseHex(e.stroke_color) || { hex: "#000000" }).hex;
+    strokeC.addEventListener("input", () => { e.stroke_color = strokeC.value; commit(); });
+    add("縁取りの色", leUndoOnInput(strokeC));
     add("表示条件(空の列なら隠す)", requireField());
   } else if (e.type === "image") {
     add("表示条件(空の列なら隠す)", requireField());
@@ -3094,12 +3178,19 @@ function leRenderProps() {
 }
 
 $("le-canvas").addEventListener("pointerdown", (ev) => {
+  const handle = ev.target.classList.contains("le-handle") ? ev.target : null;
   const box = ev.target.closest(".le-box");
-  if (!box) { leSelect(-1); return; }
+  // オーバーレイ(#le-selection)のハンドルは箱の子ではないので、data-index から
+  // 選択中の要素を引いてリサイズする
+  const overlayHandle = handle && !box;
+  if (!box && !overlayHandle) { leSelect(-1); return; }
   // ゴーストの実要素化(下)より前の状態。実要素化したときだけ積む
   const beforeGhost = leUndoCapture();
   let i;
-  if (box.dataset.index === undefined) {
+  if (overlayHandle) {
+    i = Number($("le-selection").dataset.index);
+    if (!Number.isInteger(i) || i < 0 || !leEls()[i]) return;
+  } else if (box.dataset.index === undefined) {
     // 未知語側の字幕ゴーストは通常側と共通なので、ここでは編集させない
     if (leSide === "fallback") { leSelect(-1); return; }
     // 既定字幕のゴースト: まとめて実要素化してから掴んだ方を選択する
@@ -3115,7 +3206,6 @@ $("le-canvas").addEventListener("pointerdown", (ev) => {
   leSelect(i);
   // 掴んだ直後(選択済み・まだ動かしていない)の状態。動かさずに離したら積まない
   const before = leUndoCapture();
-  const handle = ev.target.classList.contains("le-handle") ? ev.target : null;
   leDrag = {
     i, resize: !!handle, dir: handle ? (handle.dataset.dir || "se") : "",
     startX: ev.clientX, startY: ev.clientY,
@@ -3217,6 +3307,7 @@ $("le-canvas").addEventListener("pointermove", (ev) => {
   e.box = e.box.map((v) => Math.round(v * 10000) / 10000);
   // ドラッグ中は中身ごとボックスのstyleだけ動かす(全再描画しない)
   leApplyBoxStyle(div, e.box);
+  leSelectionOverlay(e.box, i);   // 選択枠・ハンドルも一緒に追従させる
   leGuides(guideX, guideY);
 });
 
@@ -3232,13 +3323,33 @@ $("le-canvas").addEventListener("pointermove", (ev) => {
     }
   }));
 
+// 追加した要素の差し込み位置。配列順=描画順(後ろほど手前)なので、
+// 画像は常に最背面・テキストはその上・字幕は最前面(ASSなので実際は常に最前面)に
+// なるよう、追加のたびに位置を揃える。手書きJSONで別の順に並べる自由は残る
+function leInsertIndex(els, type) {
+  if (type === "image") {
+    // 先頭の画像群の直後(= 画像以外のどれよりも背面)
+    let at = 0;
+    while (at < els.length && els[at].type === "image") at++;
+    return at;
+  }
+  if (type === "text") {
+    // 最初の字幕の手前(字幕がなければ末尾)。画像より前に来る
+    const sub = els.findIndex((e) => e.type === "subtitle");
+    return sub < 0 ? els.length : sub;
+  }
+  return els.length;   // 字幕は末尾のまま
+}
+
 function leAdd(el) {
   leUndoPush();
   if (!leLayout) leLayout = { background: "black", elements: [] };
   if (!leLayout[leSide]) leLayout[leSide] = [];
-  leLayout[leSide].push(el);
+  const els = leLayout[leSide];
+  const at = leInsertIndex(els, el.type);
+  els.splice(at, 0, el);
   leToJson();
-  leSelect(leLayout[leSide].length - 1);
+  leSelect(at);
 }
 
 $("le-add-text").addEventListener("click", () => leAdd(
