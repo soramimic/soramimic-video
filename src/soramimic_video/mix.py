@@ -2,6 +2,8 @@
 
 伴奏はメロディチャンネルのnoteイベントを除いたMIDIをfluidsynthでレンダリングする。
 vocal.wav は曲頭(tick 0)からレンダリングされているので、そのまま重ねられる。
+synthesizeが曲全体のキー変更(project.song.key_shift)を決めていた場合は、
+伴奏も同じだけ移調して歌と調を合わせる(カラオケのキー変更。octave.py参照)。
 """
 
 from __future__ import annotations
@@ -31,10 +33,20 @@ ACCOMPANIMENT_GAIN_MIN = 0.15
 # loudnorm が返す無音相当のラウドネス(これ以下は測定失敗とみなす)
 SILENCE_LUFS = -70.0
 
+# GM のリズムチャンネル。noteが音高ではなく打楽器の種類なので移調してはいけない
+DRUM_CHANNEL = 9
+
 
 def make_accompaniment_midi(project: Project, out_path: Path) -> Path:
+    """元MIDIからメロディchのnoteを抜いた伴奏MIDIを書き出す。
+
+    project.song.key_shift が非0なら、ドラム(ch9)以外のnoteを同じだけ移調する
+    (歌の自動キー変更に伴奏を合わせる)。移調後の音高は0〜127にクランプする。
+    """
     src = mido.MidiFile(project.song.midi_path, clip=True)
     melody = project.song.melody_channel
+    key_shift = project.song.key_shift
+    transposed = 0
     for track in src.tracks:
         removed: list = []
         tick_carry = 0
@@ -42,17 +54,25 @@ def make_accompaniment_midi(project: Project, out_path: Path) -> Path:
         for msg in track:
             time = msg.time + tick_carry
             tick_carry = 0
-            if (
-                msg.type in ("note_on", "note_off")
-                and getattr(msg, "channel", None) == melody
-            ):
+            is_note = msg.type in ("note_on", "note_off")
+            channel = getattr(msg, "channel", None)
+            if is_note and channel == melody:
                 tick_carry = time  # イベントを消してデルタ時間は次に繰り越す
                 removed.append(msg)
                 continue
-            new_msgs.append(msg.copy(time=time))
+            new = msg.copy(time=time)
+            if key_shift and is_note and channel != DRUM_CHANNEL:
+                new.note = max(0, min(127, new.note + key_shift))
+                transposed += 1
+            new_msgs.append(new)
         track[:] = new_msgs
         if removed:
             logger.debug("%d noteイベントをメロディch=%sから除去", len(removed), melody)
+    if key_shift:
+        logger.info(
+            "歌のキー変更に合わせて伴奏を%+d半音移調しました(%dイベント。ドラムch%dは除く)",
+            key_shift, transposed, DRUM_CHANNEL,
+        )
     src.save(str(out_path))
     return out_path
 
@@ -87,6 +107,13 @@ def resolve_accompaniment(
         acc = Path(acc_path)
         if not acc.exists():
             raise RuntimeError(f"分離済み伴奏がありません({acc})")
+        if project.song.key_shift:
+            # 自動調整は伴奏wavを持つプロジェクトでキー変更を選ばない
+            # (octave.resolve_auto_shift)。ここに来たらそのガードの漏れ
+            logger.warning(
+                "伴奏wavは移調できないため、歌のキー変更%+d半音とずれます",
+                project.song.key_shift,
+            )
         return acc
     acc_mid = make_accompaniment_midi(project, work / "accompaniment.mid")
     return render_midi(acc_mid, work / "accompaniment.wav", soundfont)

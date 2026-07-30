@@ -546,6 +546,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             project.save(d)
 
     _run_synthesize(job, config, project, synthesize)
+    # 自動調整が決めたキー変更(song.key_shift)を project.json に残す。
+    # 続く mix はこの値だけ伴奏を移調して歌と調を合わせる
+    project.save(d)
     with _stage(job, "mix"):
         mix(project, d, soundfont=config.get("soundfont"))
     with _stage(job, "video"):

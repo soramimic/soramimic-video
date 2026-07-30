@@ -27,6 +27,18 @@ def _high_project(tmp_path: Path):
     return analyze_midi(midi)
 
 
+def _wide_project(tmp_path: Path):
+    """音域が広くどのオクターブにも収まらない曲(61〜83。女々しくて相当)。"""
+    pitches = list(range(61, 84))
+    return analyze_midi(
+        build_xf_midi(
+            tmp_path / "wide.mid",
+            notes=[(240 * i, 240, p) for i, p in enumerate(pitches)],
+            lyric_events=[(240 * i, "ラ") for i in range(len(pitches))],
+        )
+    )
+
+
 def _capture_neutrino(monkeypatch):
     """NEUTRINOバイナリを実行せず、build_musicxmlに渡ったtransposeを捕捉する。"""
     captured: dict[str, int] = {}
@@ -99,6 +111,34 @@ def test_neutrino_auto_octave_uses_given_keys(tmp_path: Path, monkeypatch):
         octave_keys=[80, 82, 84],
     )
     assert captured["transpose"] == -12
+
+
+def test_neutrino_key_shift_is_recorded_on_project(tmp_path: Path, monkeypatch):
+    """オクターブで収まらない曲はキー変更が入り、伴奏用に project へ記録される。"""
+    project = _wide_project(tmp_path)  # 61〜83
+    captured = _capture_neutrino(monkeypatch)
+    synthesize(project, tmp_path, synthesizer="neutrino", transpose=0, auto_octave=True)
+    # NEUTRINO汎用音域50〜74には -11半音(+1半音 & -1オクターブ)で全音符が収まる
+    assert captured["transpose"] == -11
+    assert project.song.key_shift == 1
+
+
+def test_neutrino_key_shift_zero_for_octave_only_song(tmp_path: Path, monkeypatch):
+    """オクターブだけで収まる曲はキー変更なし(既存曲の挙動は不変)。"""
+    project = _high_project(tmp_path)
+    _capture_neutrino(monkeypatch)
+    synthesize(project, tmp_path, synthesizer="neutrino", transpose=0, auto_octave=True)
+    assert project.song.key_shift == 0
+
+
+def test_auto_octave_off_resets_key_shift(tmp_path: Path, monkeypatch):
+    """自動調整OFFなら歌は原調なので、伴奏のキー変更も解除する。"""
+    project = _wide_project(tmp_path)
+    project.song.key_shift = -5  # 前回実行の残り
+    captured = _capture_neutrino(monkeypatch)
+    synthesize(project, tmp_path, synthesizer="neutrino", transpose=0, auto_octave=False)
+    assert captured["transpose"] == 0
+    assert project.song.key_shift == 0
 
 
 def test_build_lyric_map_defaults_to_original(tmp_path: Path):

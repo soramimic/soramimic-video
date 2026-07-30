@@ -42,6 +42,8 @@ XF MIDI ──┐
     "time_offset": 0,
     "language": "JP",
     "tempo_map": [[0, 500000], ...],  // [tick, us/beat]。音源入力では固定BPM1本
+    "key_shift": 0,           // 自動音域調整が決めた曲全体のキー変更(半音)。
+                              // synthesizeが書き、mixが伴奏を同じだけ移調する
     // 以下は analyze-audio(歌唱音源入力)のときのみ
     "audio_path": "song.wav",
     "vocals_path": "separation/vocals.wav",
@@ -178,11 +180,18 @@ f0とMIDIの音高差の中央値で移調も自動補正。メロディチャ�
   https://studio-neutrino.com/ から取得)。
   `bin/musicXMLtoLabel → bin/NEUTRINO → bin/NSF` の順に呼ぶ。
   `--dry-run` でコマンド列の確認のみも可能。
+- 自動音域調整(octave.py)はエンジンの安全音域に収まるよう曲全体を移調する。
+  まずオクターブ単位で探し、それだけでは収まらない広音域の曲に限って
+  半音単位のキー変更(カラオケのキー変更)を併用する。キー変更ぶんは
+  `song.key_shift` に記録し、mix が伴奏を同じだけ移調して調を合わせる。
+  伴奏が wav のプロジェクト(音源分離・伴奏プリレンダ)は後から移調できない
+  ため、従来どおりオクターブ調整のみ。
 
 ### 5. mix(伴奏+歌唱)
 
 - 元 MIDI からメロディチャンネルの note イベントを除いた伴奏 MIDI を作り、
   fluidsynth(要 `brew install fluidsynth` + サウンドフォント)で wav 化。
+  `song.key_shift` が非0ならドラム(ch9)以外の note を同じだけ移調する。
   音源プロジェクト(`song.accompaniment_path` あり)は demucs 分離済みの
   伴奏 wav をそのまま使う(fluidsynth 不要)。
 - vocal.wav は曲頭からレンダリングされているので、ffmpeg の amix で重ねるだけ。
