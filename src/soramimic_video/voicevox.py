@@ -535,6 +535,7 @@ def run_voicevox(
     auto_octave: bool = True,
     progress_cb: Callable[[float], None] | None = None,
     chunk_sec: float = DEFAULT_CHUNK_SEC,
+    octave_keys: list[int] | None = None,
 ) -> Path:
     """VOICEVOXでvocal.wavを合成して返す。
 
@@ -542,6 +543,8 @@ def run_voicevox(
     → frame_synthesis(style_id) → vocal_path に書き出す。
     auto_octave(既定ON)は、安全音域(SAFE_KEY_MIN..MAX)に収まる音符が最大に
     なるようオクターブ単位で自動移調する(範囲外はピッチが大きく崩れるため)。
+    octave_keys を渡すと、その音高リストを自動移調の判定に使う(既定は project の
+    全音符。プレビューで曲の一部だけを合成するとき、本番と同じキーにするため)。
     chunk_sec>0 のときはスコアを休符境界で分割し、チャンクごとに順次合成して結合する
     (エンジンのピークメモリを抑えてOOMを避ける)。0以下で分割無効(従来どおり1リクエスト)。
     合成中にエンジンが接続断(クラッシュ)した場合は、GET /version の復帰を待って同じ
@@ -551,7 +554,11 @@ def run_voicevox(
 
     base = engine_url.rstrip("/")
     if auto_octave:
-        shift = auto_octave_shift([n.midi_note for n in project.notes], transpose)
+        keys = (
+            octave_keys if octave_keys is not None
+            else [n.midi_note for n in project.notes]
+        )
+        shift = auto_octave_shift(keys, transpose)
         if shift:
             logger.info(
                 "VOICEVOXの音域(MIDI %d〜%d)に合わせて%+dオクターブ調整します",

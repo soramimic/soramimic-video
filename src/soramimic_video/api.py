@@ -453,6 +453,39 @@ def _truncate_project(project: Any, seconds: float, start: float = 0.0) -> None:
     project.lines = lines
 
 
+PREVIEW_MODES = ("", "head", "high", "low")
+
+
+def _extreme_line(project: Any, mode: str) -> Any | None:
+    """曲の最高音(high)/最低音(low)を含む行を返す。同値なら最初の行。"""
+    lines = [ln for ln in project.lines if ln.note_ids]
+    if not lines:
+        return None
+    if mode == "high":
+        return max(
+            lines, key=lambda ln: max(project.notes[i].midi_note for i in ln.note_ids)
+        )
+    return min(
+        lines, key=lambda ln: min(project.notes[i].midi_note for i in ln.note_ids)
+    )
+
+
+def _preview_window(project: Any, mode: str, seconds: float) -> tuple[float, float]:
+    """プレビューで切り出す時間窓 (開始秒, 長さ秒)。
+
+    既定(head)は歌い出しから seconds 秒。high/low は最高音/最低音を含む行
+    (フレーズ)1つぶんで、seconds は上限としてだけ効く。
+    """
+    line = _extreme_line(project, mode) if mode in ("high", "low") else None
+    if line is None:
+        return _first_lyric_start(project), seconds
+    start = project.line_time_range(line)[0]
+    # _truncate_project は音符の開始秒で切るので、行末の音符が確実に残り、
+    # 次の行の音符は入らないよう「行末の音符の開始 + 微小マージン」で切る
+    last_start = project.notes[line.note_ids[-1]].start_sec
+    return start, min(seconds, last_start - start + 1e-3)
+
+
 def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     """analyze〜videoを順に実行して完成動画のパスを返す(ワーカースレッドから呼ぶ)。"""
     from .align import align_lines
@@ -472,16 +505,24 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
     preview_sec = float(job.params.get("preview") or 0)
     if preview_sec > 0:
-        # プレビュー: 空耳変換(convert/import-editor)は行わず、歌い出しから
-        # preview 秒ぶんを元歌詞(XFカナ)のまま合成して返す。モデル・移調の
-        # 当たり確認が目的なので、ミックス・動画は作らない
-        lyric_start = _first_lyric_start(project)
-        _truncate_project(project, preview_sec, start=lyric_start)
-        wav = _run_synthesize(job, config, project, synthesize)
+        # プレビュー: 空耳変換(convert/import-editor)は行わず、曲の一部を
+        # 元歌詞(XFカナ)のまま合成して返す。モデル・移調の当たり確認が目的
+        # なので、ミックス・動画は作らない。どこを切り出すかは preview_mode
+        # (歌い出し / 最高音のフレーズ / 最低音のフレーズ)で決まる
+        mode = str(job.params.get("preview_mode") or "")
+        # 自動オクターブ調整を切り出し後の音域で決めると本番と違うキーで歌って
+        # しまう(例: lowモードは曲の最高音が消えて下げ判定が変わる)。
+        # 切り出す前の全音符の音高を合成側に渡してキーを本番に揃える
+        octave_keys = [n.midi_note for n in project.notes]
+        start, seconds = _preview_window(project, mode, preview_sec)
+        _truncate_project(project, seconds, start=start)
+        wav = _run_synthesize(
+            job, config, project, synthesize, octave_keys=octave_keys
+        )
         assert wav is not None
         # 合成WAVは楽譜の絶対時刻を保つため前奏ぶんの無音が頭に付く。
-        # 歌い出しの少し手前まで切り落として即再生できるようにする
-        return _trim_wav_head(wav, max(0.0, lyric_start - 0.5))
+        # 切り出した位置の少し手前まで切り落として即再生できるようにする
+        return _trim_wav_head(wav, max(0.0, start - 0.5))
 
     if (d / "editor.json").exists():
         with _stage(job, "import-editor"):
@@ -570,7 +611,13 @@ def _stage(job: Job, name: str):
     logger.info("[job %s] ステージ完了: %s (%.1f秒)", job.id, name, seconds)
 
 
-def _run_synthesize(job: Job, config: dict[str, Any], project: Any, synthesize) -> Any:
+def _run_synthesize(
+    job: Job,
+    config: dict[str, Any],
+    project: Any,
+    synthesize,
+    octave_keys: list[int] | None = None,
+) -> Any:
     """synthesizeステージを実行し、進捗率と残り時間の目安を job に反映する。
 
     NEUTRINOの進捗出力を job.stage_progress に、過去実績からの所要見積りを
@@ -606,6 +653,9 @@ def _run_synthesize(job: Job, config: dict[str, Any], project: Any, synthesize) 
             auto_octave=job.params.get(
                 "auto_octave", job.params.get("voicevox_auto_octave", True)
             ),
+            # プレビューは曲の一部だけを渡すので、自動オクターブ調整の判定には
+            # 切り出す前の全音符の音高を使う(本番とキーをそろえる)
+            octave_keys=octave_keys,
         )
         if store is not None and job.stage_started_at is not None:
             synth_estimate.record_run(
@@ -1354,6 +1404,9 @@ def create_app(
         voicevox_auto_octave: bool | None = Form(None),
         transpose: int = Form(0),
         preview: float = Form(0),
+        # プレビューで切り出す場所。head(既定=歌い出し) / high(最高音を含む
+        # フレーズ) / low(最低音を含むフレーズ)。不正値は head 扱い
+        preview_mode: str = Form(""),
         # サムネ・表示用の曲名。WebUIはサンプル曲なら samples.json の title、
         # 自分のMIDIならファイル名(拡張子なし)を送る。未指定なら midi_filename を使う
         song_title: str = Form(""),
@@ -1442,6 +1495,9 @@ def create_app(
             "auto_octave": auto_octave,
             "transpose": transpose,
             "preview": max(0.0, min(preview, 60.0)),
+            "preview_mode": (
+                preview_mode.strip() if preview_mode.strip() in PREVIEW_MODES else ""
+            ),
             "wordlist": wordlist,
             "where": where.strip(),
             "convert_params": convert_params.strip(),

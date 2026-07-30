@@ -703,9 +703,13 @@
     </div>
 
     <div class="field">
-      <label>お試し合成</label>
-      <button id="preview">声プレビュー(歌い出しから20秒)</button>
-      <p class="hint" data-info>替え歌変換をせず、歌い出しから20秒ぶんを元歌詞のまま合成します。モデルや移調の当たりをつけるのに。</p>
+      <label>お試し合成(声プレビュー)</label>
+      <div class="row">
+        <button type="button" id="preview" class="btn-sm">歌い出しから20秒</button>
+        <button type="button" id="preview-high" class="btn-sm">最高音を含むフレーズ</button>
+        <button type="button" id="preview-low" class="btn-sm">最低音を含むフレーズ</button>
+      </div>
+      <p class="hint" data-info>替え歌変換をせず、曲の一部を元歌詞のまま合成します。モデルや移調の当たりをつけるのに。最高音・最低音のフレーズは、選んだ声が曲の音域の端を歌えるかの確認に(本番と同じ高さで歌います)。</p>
     </div>
   </section>
 
@@ -1521,6 +1525,8 @@ function finish() {
 function setBusy(busy) {
   submitBusy = busy;
   $("preview").disabled = busy;
+  $("preview-high").disabled = busy;
+  $("preview-low").disabled = busy;
   // ビルダーカードのプルダウンとショートカット(🎲ランダム)
   $("builder-sample").disabled = busy;
   $("builder-wordlist").disabled = busy;
@@ -1556,7 +1562,9 @@ function showSubmitMsg(text) {
   el.hidden = !text;
 }
 
-async function submitJob(previewSec) {
+// previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
+// 本番生成は previewSec=0 で呼ばれ、モードは使われない。
+async function submitJob(previewSec, previewMode) {
   // 曲を選んだ直後に押されたときは、MIDIの取得と歌詞チェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
   if (midiChecking) await midiChecking;
@@ -1623,6 +1631,7 @@ async function submitJob(previewSec) {
   form.append("auto_octave", $("auto-octave").checked ? "true" : "false");
   form.append("transpose", $("transpose").value.trim() || "0");
   form.append("preview", String(previewSec));
+  form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(midi));
   form.append("wordlist", $("wordlist").value);
   // 自作リストはリスト名ではなくCSVそのものを送る(サーバー側で名前より優先される)
@@ -2517,7 +2526,9 @@ async function initBuilder() {
 
 // サムネ枠そのものが唯一の生成ボタン(カード下の青い生成ボタンは廃止した)
 $("builder-play").addEventListener("click", () => submitJob(0));
-$("preview").addEventListener("click", () => submitJob(20));
+$("preview").addEventListener("click", () => submitJob(20, "head"));
+$("preview-high").addEventListener("click", () => submitJob(20, "high"));
+$("preview-low").addEventListener("click", () => submitJob(20, "low"));
 $("synthesizer").addEventListener("change", () => {
   synthesizerTouched = true;  // 以後 setupVoicevox が既定で上書きしない
   toggleSynthOpts();
