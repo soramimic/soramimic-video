@@ -468,7 +468,9 @@ def _parse_elements(
                     box=box,
                     require=e.get("require"),
                     require_empty=e.get("require_empty"),
-                    require_prefix=_parse_prefix_map(e.get("require_prefix"), "require_prefix", origin),
+                    require_prefix=_parse_prefix_map(
+                        e.get("require_prefix"), "require_prefix", origin
+                    ),
                     require_not_prefix=_parse_prefix_map(
                         e.get("require_not_prefix"), "require_not_prefix", origin
                     ),
@@ -518,7 +520,9 @@ def _parse_elements(
                     background=e.get("background"),
                     require=e.get("require"),
                     require_empty=e.get("require_empty"),
-                    require_prefix=_parse_prefix_map(e.get("require_prefix"), "require_prefix", origin),
+                    require_prefix=_parse_prefix_map(
+                        e.get("require_prefix"), "require_prefix", origin
+                    ),
                     require_not_prefix=_parse_prefix_map(
                         e.get("require_not_prefix"), "require_not_prefix", origin
                     ),
