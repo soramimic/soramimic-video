@@ -13,7 +13,7 @@ work/
 *.mp4
 !tests/fixtures/*.mid
 !examples/*.mid
-!src/soramimic_video/static/sample/*.mid
+# 同梱サンプル曲の可否は src/soramimic_video/static/sample/.gitignore で決める(PD曲のみ許可)
 
 # 画像キャッシュ
 .image_cache/
