@@ -792,3 +792,40 @@ def test_default_endroll_packs_short_words_to_upper_limit():
         [f"ガスパール＝ギュスターヴ・コリオリ{i}" for i in range(n)]
     )
     assert long_cols < cols and long_px < px
+
+
+def test_require_prefix_switches_elements_by_image_source(tmp_path):
+    """require_prefix / require_not_prefix で画像の出典による出し分けができる。
+
+    gimukyoiku_card の「Commons実写の行だけ写真レイアウト、生成イメージの行は
+    文字だけ」のための条件。列が空の単語は require_prefix 不一致・
+    require_not_prefix 一致として扱う。
+    """
+    p = tmp_path / "prefix.json"
+    p.write_text(json.dumps({
+        "elements": [
+            {"type": "text", "text": "写真:{original}", "box": [0.1, 0.1, 0.8, 0.1],
+             "require_prefix": {"image": "http://commons"}},
+            {"type": "text", "text": "文字:{original}", "box": [0.1, 0.3, 0.8, 0.1],
+             "require_not_prefix": {"image": "http://commons"}},
+        ],
+    }), encoding="utf-8")
+    layout = load_layout(str(p))
+    commons = {"original": "X", "image": "http://commons.wikimedia.org/wiki/Special:FilePath/x.jpg"}
+    generated = {"original": "X", "image": "https://github.com/soramimic/soramimic-wordlists/releases/download/gimukyoiku-image-v1/gk_x.jpg"}
+    empty = {"original": "X"}
+    assert layout.render_texts(commons) == ["写真:X", ""]
+    assert layout.render_texts(generated) == ["", "文字:X"]
+    assert layout.render_texts(empty) == ["", "文字:X"]
+
+
+def test_require_prefix_rejects_non_dict(tmp_path):
+    p = tmp_path / "bad.json"
+    p.write_text(json.dumps({
+        "elements": [
+            {"type": "text", "text": "x", "box": [0.1, 0.1, 0.8, 0.1],
+             "require_prefix": "image"},
+        ],
+    }), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_layout(str(p))
