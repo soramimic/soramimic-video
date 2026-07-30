@@ -90,6 +90,45 @@ def test_editor_resume_panel_is_hidden_by_default():
     assert panel.get("aria-labelledby") == "editor-resume-title"
 
 
+def _script() -> str:
+    """<script> 以降(=画面のふるまい)だけを返す。"""
+    text = INDEX.read_text(encoding="utf-8")
+    return text[text.index("<script>") :]
+
+
+def _function_body(script: str, head: str) -> str:
+    """head で始まる関数の中身(次の行頭 } まで)を返す。"""
+    body = script[script.index(head) :]
+    return body[: body.index("\n}\n")]
+
+
+def test_submit_takes_the_midi_from_the_current_song_choice():
+    """投入は「いま選ばれている曲」のMIDIで行う(古い・別の曲のMIDIで生成しない)。"""
+    script = _script()
+    submit = _function_body(script, "async function submitJob(")
+    # 曲の突き合わせ・取り直しは FormData を組み立てるより前に済ませる
+    assert (submit.index("ensureSelectedSampleMidi()")
+            < submit.index('form.append("midi"'))
+    guard = _function_body(script, "async function ensureSelectedSampleMidi(")
+    # 来歴(midiSampleId)が選択と揃わなければ投入させない
+    assert 'midiSampleId === $("sample-select").value' in guard
+    assert "return false;" in guard
+    # 曲名も同じ来歴から決める(MIDIは別の曲・曲名は選んだ曲、を作らない)
+    assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
+
+
+def test_restored_sample_midi_is_refetched_at_startup():
+    """復元したMIDIがサンプル曲なら、保存時点の中身を使わず取り直す。"""
+    init = _function_body(_script(), "async function initBuilder()")
+    assert "applySample({ midiOnly: true })" in init
+
+
+def test_sample_midi_fetch_bypasses_the_browser_cache():
+    """同梱サンプルは作り直されるので、キャッシュ済みの古い版を使わない。"""
+    apply_sample = _function_body(_script(), "async function applySample(")
+    assert 'cache: "no-store"' in apply_sample
+
+
 def test_info_toggle_sets_aria_state():
     """ⓘ ボタンは aria-expanded / aria-controls を持つ(setupInfoHints)。"""
     script = INDEX.read_text(encoding="utf-8")

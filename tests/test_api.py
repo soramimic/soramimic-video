@@ -1281,10 +1281,9 @@ def test_index_html_sample_select_stays_the_source_of_truth():
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in html
     # カード → 詳細設定 → applySample の経路はそのまま
     assert '$("sample-select").value = $("builder-sample").value;' in html
-    assert (
-        '$("sample-select").addEventListener("change", () => trackSample(applySample()));'
-        in html
-    )
+    # 選び直しは applySample で反映する(取得の失敗はカードに出す)
+    assert '$("sample-select").addEventListener("change", () => {' in html
+    assert "trackSample(applySample()).then((ok) => {" in html
     assert (
         '$("sample-select").addEventListener("change", '
         "() => { syncBuilderValues(); schedulePreview(); });" in html

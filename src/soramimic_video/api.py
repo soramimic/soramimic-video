@@ -948,22 +948,39 @@ def create_app(
     def list_samples() -> list[dict[str, Any]]:
         return load_samples()
 
-    @app.get("/api/sample/{sample_id}/midi")
-    def sample_midi(sample_id: str) -> FileResponse:
+    # サンプル曲は作り直されることがある(同じURLで中身が変わる)。ブラウザが
+    # 古い版を使い回して「更新前の曲」で生成してしまわないよう、毎回問い合わせさせる。
+    SAMPLE_CACHE_HEADERS = {"Cache-Control": "no-cache"}
+
+    def _sample_file(sample_id: str, name: str) -> Path:
+        """サンプルの付随ファイル。IDが無い・ファイルが欠けていれば404にする。"""
         if sample_id not in _sample_ids():
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
+        path = samples_dir() / name
+        if not path.is_file():
+            # samples.json に載っているのに実ファイルが無い(置き忘れ)。500ではなく
+            # 404で返し、UIが「その曲は取れなかった」と扱えるようにする
+            logger.warning("サンプルのファイルがありません: %s", path)
+            raise HTTPException(
+                status_code=404, detail=f"そのサンプルのファイルがありません: {name}"
+            )
+        return path
+
+    @app.get("/api/sample/{sample_id}/midi")
+    def sample_midi(sample_id: str) -> FileResponse:
         return FileResponse(
-            samples_dir() / f"{sample_id}.mid",
+            _sample_file(sample_id, f"{sample_id}.mid"),
             media_type="audio/midi",
             filename=f"{sample_id}.mid",
+            headers=SAMPLE_CACHE_HEADERS,
         )
 
     @app.get("/api/sample/{sample_id}/lyrics")
     def sample_lyrics(sample_id: str) -> FileResponse:
-        if sample_id not in _sample_ids():
-            raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return FileResponse(
-            samples_dir() / f"{sample_id}_lyrics.txt", media_type="text/plain"
+            _sample_file(sample_id, f"{sample_id}_lyrics.txt"),
+            media_type="text/plain",
+            headers=SAMPLE_CACHE_HEADERS,
         )
 
     @app.get("/api/config")

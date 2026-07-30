@@ -258,6 +258,31 @@ def test_samples_dir_override(tmp_path, monkeypatch):
     assert client.get("/api/sample/mysong/lyrics").text == "あいうえお"
     # 差し替え先に無いIDは404(同梱サンプルも見に行かない)
     assert client.get("/api/sample/akatombo/midi").status_code == 404
+    # サンプル曲は作り直されることがあるので、ブラウザに使い回させない
+    assert client.get("/api/sample/mysong/midi").headers["cache-control"] == "no-cache"
+    assert client.get("/api/sample/mysong/lyrics").headers["cache-control"] == "no-cache"
+
+
+def test_sample_with_missing_file_is_404(tmp_path, monkeypatch):
+    """samples.json に載っているのに実ファイルが無い曲は404(500にしない)。
+
+    UIは404を「その曲は取れなかった」として扱い、前に選んでいた曲のMIDIで
+    黙って生成しないようになっている。
+    """
+    sample_dir = tmp_path / "samples"
+    sample_dir.mkdir()
+    (sample_dir / "samples.json").write_text(
+        json.dumps([{"id": "nolyrics", "title": "歌詞ファイル置き忘れ"}]),
+        encoding="utf-8",
+    )
+    (sample_dir / "nolyrics.mid").write_bytes(FAKE_MIDI)   # 元歌詞だけ置き忘れた
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(sample_dir))
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    assert client.get("/api/sample/nolyrics/midi").status_code == 200
+    res = client.get("/api/sample/nolyrics/lyrics")
+    assert res.status_code == 404
+    assert "nolyrics_lyrics.txt" in res.json()["detail"]
 
 
 def test_default_samples_dir(tmp_path, monkeypatch):
