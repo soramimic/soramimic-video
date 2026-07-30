@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import difflib
+import itertools
 import logging
 import math
 import re
@@ -828,6 +829,64 @@ def _distribute_moras(
     return e_opt, dp[n_units][n_pron][0]
 
 
+# 圧縮長音の展開候補を数える上限(1単語あたり)。単語は数要素しかないので
+# 実際にはまず届かないが、展開スロットが多い長い単語でDPが増えないよう蓋をする
+_EXPAND_CANDIDATE_LIMIT = 64
+
+
+def _expansion_candidates(
+    pronunciation: list[str],
+    comp_per_elem: list[list[str]] | None,
+    budget: int,
+    limit: int = _EXPAND_CANDIDATE_LIMIT,
+) -> list[tuple[list[str], list[list[str]]]]:
+    """圧縮で「ー」に潰れた単語モーラを独立要素へ戻した発音要素列の候補を返す。
+
+    変換エンジンは単語の1音節を ``[頭] + ー``(撥音・長音・母音字を長音へ圧縮)に
+    することがあり(セイショウナゴン → セー/ショー/ナ/ゴ/ン)、そのぶん要素数が
+    音符数より少なくなって余り音符が継続「ー」になる。ここでは
+    _compressed_moras_per_element が求めた圧縮モーラを ``[頭] + モーラ`` の
+    2要素へ戻す組み合わせを列挙し、余り音符へ実音を載せられるようにする。
+
+    - 展開対象は圧縮由来の「ー」だけ。単語自身の長音(genuine)は頭側に残すので、
+      単語kanaに無いモーラを捏造しない
+    - budget(=音符数-要素数)を超える候補は作らない(溢れさせない)
+    - 返る順は「追加要素が多い候補が先、同数なら前方の要素を展開する候補が先」
+
+    各候補は (発音要素列, 要素ごとの残り圧縮モーラ) の対で、展開した要素の
+    圧縮モーラは空になる(同じモーラを二重に復元しない)。
+    """
+    if not comp_per_elem or budget <= 0:
+        return []
+    slots = [j for j, comp in enumerate(comp_per_elem) if comp]
+    if not slots:
+        return []
+    out: list[tuple[list[str], list[list[str]]]] = []
+    for r in range(len(slots), 0, -1):
+        for combo in itertools.combinations(slots, r):
+            if sum(len(comp_per_elem[j]) for j in combo) > budget:
+                continue
+            prons: list[str] = []
+            comps: list[list[str]] = []
+            for j, p in enumerate(pronunciation):
+                if j not in combo:
+                    prons.append(p)
+                    comps.append(comp_per_elem[j])
+                    continue
+                comp = comp_per_elem[j]
+                head = p.rstrip("ー")
+                genuine = (len(p) - len(head)) - len(comp)  # 単語自身の長音ぶんのー
+                prons.append(head + "ー" * genuine)
+                comps.append([])
+                for mora in comp:
+                    prons.append(mora)
+                    comps.append([])
+            out.append((prons, comps))
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def _map_word_to_notes(
     unit_lens: list[int],
     note_lens: list[int],
@@ -849,7 +908,10 @@ def _map_word_to_notes(
 
     notes_kana(行の音符ごとの元kana、note_lens と並行)を渡すと、ユニット内で
     要素をどの音符に載せるか(=どの音符を継続ーにするか)を母音一致優先のDPで
-    決める。ユニット境界はハード制約で、音符集合(ids)は変わらない。
+    決める。ユニット境界はハード制約で、音符集合(ids)は変わらない。さらに、
+    それでも余り音符(継続ー)が残るときは、圧縮で「ー」に潰れた単語モーラを
+    独立要素へ戻す候補(_expansion_candidates)を試し、埋まる音符が増えるものを
+    採用する(同数なら割り付けスコアが良い方)。
     """
     unit_cum = [0]
     for length in unit_lens:
@@ -899,83 +961,121 @@ def _map_word_to_notes(
         note_drop: list[bool] | None = _dropout_flags(id_kanas)  # type: ignore[arg-type]
     else:
         id_kanas = elem_drop = note_drop = None
-
-    # 替え歌側の促音ッ+直前モーラの閉音節ペア(不可分・隣接音符ハード制約)
-    paired = _paired_sokuon(heads) if notes_kana is not None else None
+    id_durs = [notes_dur[i] for i in ids] if notes_dur is not None else None
+    id_bheads = [notes_bunsetsu[i] for i in ids] if notes_bunsetsu is not None else None
 
     # 溢れ(要素数>音符数)は、要素列を音符数個の連続区間に分割するDPで
     # 音符ごとの歌唱カナを直接決める(従来は末尾音符へ丸ごと寄せていた)。
     # 全音符が実音を持つのでユニット内の空き音符への圧縮復元は不要。
     if id_kanas is not None and len(pronunciation) > len(ids):
         assert elem_drop is not None and note_drop is not None
-        id_durs = [notes_dur[i] for i in ids] if notes_dur is not None else None
-        id_bheads = (
-            [notes_bunsetsu[i] for i in ids] if notes_bunsetsu is not None else None
-        )
         alloc = _overflow_alloc(
             pronunciation, heads, elem_drop, note_drop, id_kanas, id_durs, id_bheads
         )
         if alloc is not None:
             return ids, alloc
 
-    # 要素→音節(ユニット)の個数配分。既定は従来の位置ベース。notes_kana があり溢れ
-    # (要素数>音符数)でなければ、音節内配置スコア総和を最大化する外側DPで最適化する
-    # (音節対応は維持、促音ッの閉音節ペアは分断しない、同点は現行配分)。
     n_units = len(units)
-    e = _positional_distribution(len(pronunciation), unit_note_ks)
-    if id_kanas is not None and n_units and len(pronunciation) <= len(ids):
-        id_bheads = (
-            [notes_bunsetsu[i] for i in ids] if notes_bunsetsu is not None else None
-        )
-        e_opt, opt_score = _distribute_moras(
-            heads, id_kanas, elem_drop, note_drop,  # type: ignore[arg-type]
-            unit_note_ks, len(pronunciation), paired, id_bheads,
-        )
-        pos_score = _distribution_score(
-            e, heads, id_kanas, elem_drop, note_drop, unit_note_ks, paired, id_bheads
-        )
-        # e_opt が制約を満たし、かつ現行配分より良い(または現行が制約違反)なら採用
-        if e_opt is not None and (pos_score is None or opt_score > pos_score):
-            e = e_opt
 
-    base = 0
-    for ui in range(n_units):
-        eu = e[ui]
-        ks = unit_note_ks[ui]
-        # 音節内(内側)で eu 要素を ks 音符へ載せる位置を決める(母音一致優先DPまたは
-        # 左詰め)。ユニット境界(ks)はハード制約。語頭要素は先頭音符に固定。促音ッの
-        # 閉音節ペアは直前モーラと隣接音符へ固定する。
-        adj_local = (
-            [paired[base + j] for j in range(eu)] if paired is not None else None
-        )
-        pos = _inner_positions(
-            heads, id_kanas, elem_drop, note_drop, ks, base, eu,
-            force_first=(base == 0 and eu > 0), adj=adj_local,
-        )
-        if pos is None:  # 制約充足不能(フォールバック): 従来の左詰め
-            pos = [min(j, len(ks) - 1) for j in range(eu)] if ks else []
-        for j in range(eu):
-            p = pronunciation[base + j]
-            if not ks:
-                continue
-            k = ks[pos[j]]
-            is_last = j == eu - 1
-            comp = comp_per_elem[base + j] if (is_last and comp_per_elem) else []
-            if comp:
-                trailing = [
-                    kk
-                    for kk in ks[pos[j] + 1 :]
-                    if kana_per_note[kk] == "" and owners[kk] == 1
-                ]
-                r = min(len(comp), len(trailing))
-                head = p.rstrip("ー")
-                genuine = (len(p) - len(head)) - len(comp)  # 単語自身の長音ぶんのー
-                kana_per_note[k] += head + "ー" * (genuine + (len(comp) - r))
-                for x in range(r):
-                    kana_per_note[trailing[x]] = comp[x]
+    def alloc_with(
+        prons: list[str], comps: list[list[str]] | None
+    ) -> tuple[list[str], int | None]:
+        """発音要素列 prons を音符へ載せた (音符ごとの歌唱カナ, 割り付けスコア)。
+
+        スコアは採用した個数配分の内側配置スコア合計(母音一致優先)で、
+        同じ音符集合に対する別の要素列(圧縮長音の展開候補)同士を比べるのに使う。
+        制約を満たす配分が定義できない(notes_kana 無し・溢れ)ときは None。
+        """
+        kana_out = [""] * len(ids)
+        hd = [p.rstrip("ー") for p in prons]
+        e_drop = _dropout_flags(hd) if id_kanas is not None else None
+        # 替え歌側の促音ッ+直前モーラの閉音節ペア(不可分・隣接音符ハード制約)
+        pr = _paired_sokuon(hd) if id_kanas is not None else None
+
+        # 要素→音節(ユニット)の個数配分。既定は従来の位置ベース。notes_kana があり
+        # 溢れ(要素数>音符数)でなければ、音節内配置スコア総和を最大化する外側DPで
+        # 最適化する(音節対応は維持、促音ッの閉音節ペアは分断しない、同点は現行配分)。
+        e = _positional_distribution(len(prons), unit_note_ks)
+        score: int | None = None
+        if id_kanas is not None and n_units and len(prons) <= len(ids):
+            e_opt, opt_score = _distribute_moras(
+                hd, id_kanas, e_drop, note_drop,  # type: ignore[arg-type]
+                unit_note_ks, len(prons), pr, id_bheads,
+            )
+            pos_score = _distribution_score(
+                e, hd, id_kanas, e_drop, note_drop, unit_note_ks, pr, id_bheads
+            )
+            # e_opt が制約を満たし、かつ現行配分より良い(または現行が制約違反)なら採用
+            if e_opt is not None and (pos_score is None or opt_score > pos_score):
+                e = e_opt
+                score = opt_score
             else:
-                kana_per_note[k] += p
-        base += eu
+                score = pos_score
+
+        base = 0
+        for ui in range(n_units):
+            eu = e[ui]
+            ks = unit_note_ks[ui]
+            # 音節内(内側)で eu 要素を ks 音符へ載せる位置を決める(母音一致優先DPまたは
+            # 左詰め)。ユニット境界(ks)はハード制約。語頭要素は先頭音符に固定。促音ッの
+            # 閉音節ペアは直前モーラと隣接音符へ固定する。
+            adj_local = [pr[base + j] for j in range(eu)] if pr is not None else None
+            pos = _inner_positions(
+                hd, id_kanas, e_drop, note_drop, ks, base, eu,
+                force_first=(base == 0 and eu > 0), adj=adj_local,
+            )
+            if pos is None:  # 制約充足不能(フォールバック): 従来の左詰め
+                pos = [min(j, len(ks) - 1) for j in range(eu)] if ks else []
+            for j in range(eu):
+                p = prons[base + j]
+                if not ks:
+                    continue
+                k = ks[pos[j]]
+                is_last = j == eu - 1
+                comp = comps[base + j] if (is_last and comps) else []
+                if comp:
+                    trailing = [
+                        kk
+                        for kk in ks[pos[j] + 1 :]
+                        if kana_out[kk] == "" and owners[kk] == 1
+                    ]
+                    r = min(len(comp), len(trailing))
+                    head = p.rstrip("ー")
+                    genuine = (len(p) - len(head)) - len(comp)  # 単語自身の長音ぶんのー
+                    kana_out[k] += head + "ー" * (genuine + (len(comp) - r))
+                    for x in range(r):
+                        kana_out[trailing[x]] = comp[x]
+                else:
+                    kana_out[k] += p
+            base += eu
+        return kana_out, score
+
+    kana_per_note, _score = alloc_with(pronunciation, comp_per_elem)
+
+    # 余り音符(実音が載らず継続ーになる音符)が残るなら、圧縮で「ー」に潰れた
+    # 単語モーラを元に戻して埋め直せないか試す(_expansion_candidates)。
+    # ユニット内の空き音符への復元だけでは、圧縮された要素と余り音符が別ユニットに
+    # なるケース(セイショウナゴン: セー ショー ナ ゴ ン + 余り1音符)を埋められず、
+    # 残った「ー」が撥音ンの後に来るとNEUTRINO側のガードで「ア」に化けてしまう。
+    if id_kanas is not None and "" in kana_per_note:
+        best_fill = kana_per_note.count("")
+        best_score: int | None = None  # ベースラインはスコア比較の対象外
+        for prons, comps in _expansion_candidates(
+            pronunciation, comp_per_elem, len(ids) - len(pronunciation)
+        ):
+            cand_kana, cand_score = alloc_with(prons, comps)
+            if cand_score is None:  # 制約を満たす配分が無い候補は捨てる
+                continue
+            cand_fill = cand_kana.count("")
+            if cand_fill > best_fill:  # 埋まる音符が減るなら意味が無い
+                continue
+            # 埋まる音符数を最優先、同数なら割り付けスコア(母音一致優先)で選ぶ
+            if cand_fill == best_fill and (
+                best_score is None or cand_score <= best_score
+            ):
+                continue
+            kana_per_note, best_fill, best_score = cand_kana, cand_fill, cand_score
+
     return ids, kana_per_note
 
 
