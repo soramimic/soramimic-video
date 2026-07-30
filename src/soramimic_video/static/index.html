@@ -121,10 +121,18 @@
   .editor-resume-title { margin: 0; font-size: .9rem; font-weight: 700; }
   .editor-resume .hint { margin-top: .2rem; }
   .editor-resume-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
-  /* 開いた説明は、どのボタンの中身なのかが分かるように一段へこませる */
+  /* 開いた説明はその場に展開せず、ⓘ の近くに重ねて出す(フロート/ポップオーバー)。
+     その場に開くと周りのフォームが押し下がって、読み終わったあと元の場所を見失う。
+     位置は placeInfoPop が ⓘ の座標から計算し、ビューポート内へ収める(fixed なので
+     周囲のレイアウトは動かない)。幅は読みやすい上限だけ決めて中身に合わせる。
+     エディタの全画面モーダル(z-index:50)より下に置き、モーダルには重ねない。 */
   .hint[data-info] {
-    margin: .3rem 0 .1rem; padding: .35rem .6rem;
-    background: var(--panel-2); border-left: 2px solid var(--border); border-radius: 6px;
+    position: fixed; left: 0; top: 0; z-index: 40; margin: 0;
+    width: max-content; max-width: min(90vw, 34rem);
+    max-height: min(60vh, 26rem); overflow-y: auto; overscroll-behavior: contain;
+    padding: .5rem .7rem; color: var(--text);
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 .4rem 1.2rem #0000004d;
   }
   .slider-row { display: flex; align-items: center; gap: .5rem; }
   .slider-row span { font-size: .75rem; color: var(--muted); white-space: nowrap; }
@@ -787,7 +795,9 @@ const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) 
 // ---- 補足説明を ⓘ に畳む ----
 // 詳細設定は項目ごとにグレーの説明が常時並んでいて、初見だと文字の壁になる。
 // 「読まなくても操作できる説明」には data-info を付けておき、ここで既定は隠して
-// ⓘ ボタンからだけ開けるようにする。状態・警告・エラー(「〜をセットしました」
+// ⓘ ボタンからだけ開けるようにする。開くときはその場に展開せず、ⓘ の近くに重ねる
+// フロート表示(openInfoPop)にして、読んだあと元の場所を見失わないようにする。
+// 状態・警告・エラー(「〜をセットしました」
 // 「編集済みの替え歌を使用します」など、出ていないと困る動的メッセージ)には
 // data-info を付けないので、従来どおり常時表示のまま。
 //   data-info-standalone  ちょうどいい見出しが無いので、元の位置に単独で置く
@@ -811,6 +821,64 @@ function findInfoAnchor(body) {
   return null;
 }
 
+// 開いている説明はいつも1つだけ(2つ重なると読みづらいし、閉じ方も分からなくなる)
+let openInfo = null;   // { btn, body }
+
+// 説明を ⓘ の真下(入らなければ真上)に置き、左右も画面からはみ出さないよう寄せる。
+// スマホの細い画面では ⓘ の中央合わせだと端で切れるので、最後に必ずクランプする。
+function placeInfoPop(btn, body) {
+  const gap = 6, edge = 8;
+  const r = btn.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const w = body.offsetWidth, h = body.offsetHeight;
+  const left = Math.max(edge, Math.min(r.left + r.width / 2 - w / 2, vw - w - edge));
+  let top = r.bottom + gap;
+  if (top + h > vh - edge) {
+    // 下に入らないときは上へ。上にも入らなければ画面内に収まる位置まで戻す
+    top = r.top - gap - h >= edge ? r.top - gap - h : Math.max(edge, vh - h - edge);
+  }
+  body.style.left = `${Math.round(left)}px`;
+  body.style.top = `${Math.round(top)}px`;
+}
+
+function closeInfoPop() {
+  if (!openInfo) return;
+  const { btn, body } = openInfo;
+  openInfo = null;
+  body.hidden = true;
+  body.style.left = body.style.top = "";
+  btn.setAttribute("aria-expanded", "false");
+}
+
+function openInfoPop(btn, body) {
+  closeInfoPop();
+  body.hidden = false;   // 位置の計算には実寸が要るので、先に出してから置く
+  btn.setAttribute("aria-expanded", "true");
+  openInfo = { btn, body };
+  placeInfoPop(btn, body);
+}
+
+// 外側タップで閉じる。ⓘ 自身の click は stopPropagation でここまで来ないので、
+// 開いた直後に閉じてしまうことはない
+document.addEventListener("click", (ev) => {
+  if (openInfo && !openInfo.body.contains(ev.target)) closeInfoPop();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !openInfo) return;
+  const btn = openInfo.btn;
+  closeInfoPop();
+  btn.focus();
+});
+// fixed なのでスクロール・回転に追従させる。ⓘ が画面から出たらそのまま閉じる
+const reflowInfoPop = () => {
+  if (!openInfo) return;
+  const r = openInfo.btn.getBoundingClientRect();
+  if (r.bottom < 0 || r.top > window.innerHeight) closeInfoPop();
+  else placeInfoPop(openInfo.btn, openInfo.body);
+};
+window.addEventListener("scroll", reflowInfoPop, { passive: true, capture: true });
+window.addEventListener("resize", reflowInfoPop);
+
 function setupInfoHints() {
   let seq = 0;
   document.querySelectorAll("[data-info]").forEach((body) => {
@@ -832,12 +900,15 @@ function setupInfoHints() {
       // <label> や <summary> の中に置くので、チェック切り替え・開閉の巻き添えを止める
       ev.preventDefault();
       ev.stopPropagation();
-      const open = btn.getAttribute("aria-expanded") === "true";
-      btn.setAttribute("aria-expanded", open ? "false" : "true");
-      body.hidden = open;
+      if (openInfo && openInfo.btn === btn) closeInfoPop();
+      else openInfoPop(btn, body);
     });
     if (anchor) anchor.appendChild(btn);
     else body.parentNode.insertBefore(btn, body);
+    // 説明の本体は body 直下へ移す。ⓘ だけが見える場所(ラベル)に残り、本体は
+    // hidden の親(#editor-embed-controls など)や details の中に置かれることが
+    // あって、そのままでは開いても描画されない。重ね順も他に巻き込まれなくなる。
+    document.body.appendChild(body);
   });
 }
 setupInfoHints();
