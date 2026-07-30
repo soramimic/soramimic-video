@@ -55,6 +55,11 @@
   require_empty: "列名" はその列が埋まっている単語で要素を出さない。両者を
   組み合わせると「type2があれば『くさ・どく』、無ければ『くさ』」のように
   同じ位置で出し分けられる。CSVの NA/N/A/nan/none/null は空として扱う
+- require_prefix: {"列名": "プレフィックス"} を指定すると、その列の値が
+  プレフィックスで始まる単語だけ要素を出す(空の列は不一致扱い)。逆に
+  require_not_prefix は「列が空、またはプレフィックスで始まらない」単語だけ出す。
+  「imageがCommons実写(http://commons〜)の行だけ写真レイアウト、生成イメージの
+  行は文字レイアウト」のような出典による出し分けに使う。複数列を書くと and 条件
 - 画像のクレジット表記: image要素のあるレイアウトでは、クレジット表記が必要な
   画像(Wikimedia CommonsでAttributionRequiredのもの。image_credit.py参照)に
   限り、出典文言({image_credit})を画像の右下に自動で焼き込む。
@@ -213,6 +218,10 @@ class TextElement:
     background: str | None = None  # テキスト背後の帯。"#00000080" のようにα付き可
     require: str | None = None  # この列が空の単語ではこの要素を出さない
     require_empty: str | None = None  # この列が埋まっている単語ではこの要素を出さない
+    # 列の値がプレフィックスで始まる単語だけ出す({"image": "http://commons"} 等)
+    require_prefix: dict[str, str] | None = None
+    # 列が空、またはプレフィックスで始まらない単語だけ出す(上の逆)
+    require_not_prefix: dict[str, str] | None = None
 
 
 @dataclass
@@ -220,6 +229,10 @@ class ImageElement:
     box: tuple[float, float, float, float]
     require: str | None = None  # この列が空の単語ではこの要素を出さない
     require_empty: str | None = None  # この列が埋まっている単語ではこの要素を出さない
+    # 列の値がプレフィックスで始まる単語だけ出す({"image": "http://commons"} 等)
+    require_prefix: dict[str, str] | None = None
+    # 列が空、またはプレフィックスで始まらない単語だけ出す(上の逆)
+    require_not_prefix: dict[str, str] | None = None
 
 
 @dataclass
@@ -261,7 +274,17 @@ def _require_met(el: ImageElement | TextElement, values: dict) -> bool:
     """
     if el.require and is_missing(values.get(el.require)):
         return False
-    return not (el.require_empty and not is_missing(values.get(el.require_empty)))
+    if el.require_empty and not is_missing(values.get(el.require_empty)):
+        return False
+    for col, prefix in (el.require_prefix or {}).items():
+        v = values.get(col)
+        if is_missing(v) or not str(v).startswith(prefix):
+            return False
+    for col, prefix in (el.require_not_prefix or {}).items():
+        v = values.get(col)
+        if not is_missing(v) and str(v).startswith(prefix):
+            return False
+    return True
 
 
 def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> list[str]:
@@ -417,6 +440,17 @@ def _parse_strokes(raw: object, origin: str) -> tuple[tuple[float, str], ...]:
     return tuple(sorted(out, key=lambda s: -s[0]))
 
 
+def _parse_prefix_map(raw: object, key: str, origin: str) -> dict[str, str] | None:
+    """require_prefix / require_not_prefix の {列名: プレフィックス} を検証する。"""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in raw.items()
+    ):
+        raise ValueError(f"{key} は {{列名: プレフィックス}} の辞書です: {raw!r} ({origin})")
+    return raw or None
+
+
 def _parse_elements(
     raw_elements: list, origin: str
 ) -> tuple[list[ImageElement | TextElement], list[SubtitleElement]]:
@@ -434,6 +468,12 @@ def _parse_elements(
                     box=box,
                     require=e.get("require"),
                     require_empty=e.get("require_empty"),
+                    require_prefix=_parse_prefix_map(
+                        e.get("require_prefix"), "require_prefix", origin
+                    ),
+                    require_not_prefix=_parse_prefix_map(
+                        e.get("require_not_prefix"), "require_not_prefix", origin
+                    ),
                 )
             )
         elif kind == "subtitle":
@@ -480,6 +520,12 @@ def _parse_elements(
                     background=e.get("background"),
                     require=e.get("require"),
                     require_empty=e.get("require_empty"),
+                    require_prefix=_parse_prefix_map(
+                        e.get("require_prefix"), "require_prefix", origin
+                    ),
+                    require_not_prefix=_parse_prefix_map(
+                        e.get("require_not_prefix"), "require_not_prefix", origin
+                    ),
                 )
             )
         else:
