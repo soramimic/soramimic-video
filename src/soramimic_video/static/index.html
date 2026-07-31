@@ -125,9 +125,11 @@
      その場に開くと周りのフォームが押し下がって、読み終わったあと元の場所を見失う。
      位置は placeInfoPop が ⓘ の座標から計算し、ビューポート内へ収める(fixed なので
      周囲のレイアウトは動かない)。幅は読みやすい上限だけ決めて中身に合わせる。
-     エディタの全画面モーダル(z-index:50)より下に置き、モーダルには重ねない。 */
+     全画面モーダル(z-index:50)の中の ⓘ からも開くので、重ね順はモーダルより上。
+     モーダルを開く操作はクリックなので、裏に開きっぱなしの説明は
+     document のクリックハンドラ(closeInfoPop)が先に閉じてくれる。 */
   .hint[data-info] {
-    position: fixed; left: 0; top: 0; z-index: 40; margin: 0;
+    position: fixed; left: 0; top: 0; z-index: 60; margin: 0;
     width: max-content; max-width: min(90vw, 34rem);
     max-height: min(60vh, 26rem); overflow-y: auto; overscroll-behavior: contain;
     padding: .5rem .7rem; color: var(--text);
@@ -229,6 +231,17 @@
   .le-handle[data-dir="w"] { left: 0; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
   .le-handle[data-dir="e"] { right: 0; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
   .le-toolbar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; align-items: center; }
+  /* ファイル選択のラベルは1行に並べたいので、既定の縦マージンを外す */
+  .le-toolbar label { margin: 0; }
+  /* ファイル読み込みのボタン(実体は label for=layout-file)。ツールバーの
+     button と同じ見た目に寄せる */
+  .le-toolbar .le-file-btn {
+    display: inline-block; cursor: pointer; font-weight: 400;
+    font-size: .8rem; padding: .3rem .8rem;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text);
+  }
+  .le-toolbar .le-file-btn:hover { border-color: var(--accent); }
   .le-toolbar button, .le-cue-nav button, .le-tabs button {
     font-size: .8rem; padding: .3rem .8rem; min-height: 0;
   }
@@ -244,6 +257,9 @@
   #le-props input, #le-props select {
     width: auto; font-size: .85rem; padding: .2rem .3rem; min-height: 0;
   }
+  /* いま使われるベースレイアウト名のフォーム側表示(バッジではなくただの文字)。
+     編集で差分があるときの●はモーダル内の表示と同じ意味 */
+  .le-status { font-size: .8rem; color: var(--muted); }
   /* 色ピッカー(背景帯・縁取り)は見本の四角なので、押しやすい大きさに固定する */
   #le-props input[type="color"] { width: 3rem; height: 1.8rem; padding: 0 .1rem; }
   #le-props input:disabled { opacity: .4; }
@@ -284,6 +300,61 @@
   #transpose-row.is-disabled { opacity: .5; }
   /* モーダルを開いているあいだは裏のページをスクロールさせない */
   body.modal-open { overflow: hidden; }
+  /* 短時間だけ出て勝手に消える控えめな通知。画面下中央、クリックは素通し */
+  .toast {
+    position: fixed; left: 50%; bottom: 1.2rem; transform: translateX(-50%);
+    z-index: 70; pointer-events: none; max-width: 90vw;
+    padding: .5rem .9rem; border-radius: 999px;
+    background: #0f172ae6; color: #fff; font-size: .85rem;
+    opacity: 0; transition: opacity .25s;
+  }
+  .toast.show { opacity: 1; }
+  /* ---- レイアウトエディタの全画面モーダル ---- */
+  /* 替え歌エディタと同じ理由。詳細設定の中に展開すると .wrap(720px)に縛られて
+     キャンバスが 690×388px しか取れず、細かい配置が詰められない。外枠は
+     .editor-modal を共用し、中身だけここで組む(ヘッダ→ツールバー→本体)。 */
+  .le-modal-body {
+    flex: 1 1 auto; min-height: 0; overflow: auto; padding: .4rem .7rem 1rem;
+  }
+  /* 既定(狭い画面)はキャンバスの下にプロパティ・説明・JSONを積む従来どおりの縦並び。
+     横に余裕がある画面だけ、キャンバスを主面積にして残りを右の細い列へ寄せる。
+     切り替えは1か所(56rem)で揃える: 列が細いのにプロパティが横並びのまま、という
+     中途半端な幅を作らないため */
+  .le-main { display: flex; flex-wrap: wrap; gap: .8rem; align-items: flex-start; }
+  .le-stage { flex: 1 1 22rem; min-width: 0; }
+  .le-side { flex: 1 1 100%; min-width: 0; }
+  @media (min-width: 56rem) {
+    .le-side { flex: 0 1 280px; }
+    /* 280pxの列で横並びのままだと各入力が潰れるので、1列に縦積みする */
+    #le-props { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+    #le-props > label { width: 100%; }
+    #le-props input[type="text"], #le-props select { width: 100%; }
+    /* 縦積みにした設定欄はキャンバスより背が高くなる。全体を流すとキャンバスが
+       画面外へ逃げてしまうので、右の列だけが中でスクロールするようにする。
+       (align-self:stretch では折り返し行の高さに合わせるだけで頭打ちにならないので、
+        高さの上限は max-height で与える) */
+    .le-modal-body { display: flex; flex-direction: column; }
+    .le-main { flex: 1 1 auto; min-height: 0; }
+    .le-side { max-height: 100%; overflow-y: auto; }
+  }
+  /* キャンバスは16:9のまま縦がビューポートに収まる幅で止める(引き算しているのは
+     ヘッダ・ツールバー・タブ・キュー送りのぶん)。余った横幅には中央寄せで置く。
+     dvh を解さないブラウザ向けに vh の指定を残す(後勝ちで上書きされる) */
+  #le-modal #le-canvas {
+    max-width: calc((100vh - 15rem) * 16 / 9);
+    max-width: calc((100dvh - 15rem) * 16 / 9);
+    margin-left: auto; margin-right: auto;
+  }
+  /* ツールバーに置くベース選択。既定の width:100% だと1行を占領してしまう */
+  .le-toolbar select {
+    width: auto; max-width: 100%; flex: 0 1 auto; padding: .3rem .4rem; font-size: .8rem;
+    min-height: 0;
+  }
+  /* ベースから変更があることの印(コードエディタの未保存ドットと同じ役割)。
+     ボタンではないので押せそうに見せない(色だけで主張する) */
+  .le-modified { color: var(--accent); font-size: .7rem; line-height: 1; }
+  /* 読み込み結果のメッセージは他のボタンと同じ行に並ばせず、次の行に出す */
+  #layout-file-msg { flex: 1 0 100%; }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + その場のサムネプレビュー ---- */
   /* 🎲ランダムはカードの右上に小さく置く(プルダウンのショートカットで主役ではない)。
@@ -713,89 +784,29 @@
     </div>
   </section>
 
-  <!-- ④ 見た目 -->
+  <!-- ④ レイアウト -->
   <section class="opt-group">
-    <h3 class="opt-group-title">④ 見た目</h3>
-    <p class="hint opt-group-lead" data-info>動画の画面の作り。画像・説明文・字幕の置き方。</p>
+    <!-- 中身がレイアウトだけになったので、見出し「見た目」+ラベル「レイアウト」の
+         二段構えをやめて見出しに統合(ⓘも1つに) -->
+    <h3 class="opt-group-title">④ レイアウト</h3>
+    <p class="hint opt-group-lead" data-info>動画の画面の作り(画像・説明文・字幕の配置)。単語リストに合わせて自動で決まります。細かく変えたいときは「レイアウトを調整」から(全画面で開きます)。プリセットの選び直しや、自作レイアウト(JSONファイル)の読み込みも編集画面の中にあります。</p>
 
     <div class="field">
-      <label for="layout-select">レイアウト(任意)</label>
-      <!-- iOS Safari は datalist 候補を出さないため select に変更。
-           送信値の正本は隠し input#layout。空値=サーバー既定、組み込み名は /api/config の layouts。
-           サーバー上のパスを手入力する「その他」は、当てにできるのが運用者だけで
-           打ち間違いも分からないのでやめ、手元のJSONファイルを読む導線に置き換えた。 -->
-      <select id="layout-select"></select>
+      <!-- 送信値・保存値の正本は隠し input#layout(空値=サーバー既定、組み込み名は
+           /api/config の layouts)。単語リスト連動(applyWordlistLayout)もこれを見る。
+           プリセットのプルダウン(#layout-select)と編集は全画面モーダル(#le-modal)へ
+           寄せた: レイアウトは単語リストに合わせて自動で決まるものなので、ふだん選ぶ
+           必要はなく、フォームにプルダウンがあること自体がノイズになる。細かく変えたい
+           人は編集画面を開いて初めてプリセットの存在を知れば足りる。
+           #le-status はいま使われるベース(プリセット名 / 📄ファイル)の文字表示で、
+           編集で差分があれば●を添える(モーダル内の表示と同じ)。カスタム編集は
+           localStorageに残るので、後日「単語リストを変えたのにレイアウトが変わらない」
+           となったとき、フォーム側に名前が見えないと原因にたどり着けない。 -->
       <input type="hidden" id="layout">
-      <p class="hint" data-info>画像と列情報(説明文など)・歌詞字幕の配置。空欄はサーバー既定。単語リストを選ぶと自動で切り替わります。</p>
-      <!-- レイアウトJSONファイルの読み込み。読み込んだ中身はカスタムレイアウトとして
-           扱い(leDirty)、生成時に layout_json で送る。来歴(leLayoutFor)は既存の
-           ドラッグ編集と同じ扱いなので、レイアウト名を変えれば破棄される。 -->
-      <label for="layout-file">レイアウトを読み込む(ファイル)</label>
-      <input type="file" id="layout-file" accept=".json">
-      <p class="hint" id="layout-file-msg" hidden></p>
-      <p class="hint" data-info>手元のレイアウトJSONを読み込み、カスタムレイアウトとして使います(上のプルダウンの選択より優先)。読み込んだ内容は下の「レイアウトを編集」でそのまま調整できます。</p>
-      <details id="le-details" class="sub-details">
-        <summary>レイアウトを編集(ドラッグで配置)</summary>
-        <div class="le-toolbar">
-          <button type="button" id="layout-load">レイアウト名から読み込み直す</button>
-          <button type="button" id="le-add-text">テキスト追加</button>
-          <button type="button" id="le-add-subtitle">字幕追加</button>
-          <button type="button" id="le-add-image">画像枠追加</button>
-          <button type="button" id="le-delete" disabled>選択を削除</button>
-          <!-- 1つ戻す/やり直す(Ctrl+Z / Ctrl+Shift+Z・Ctrl+Y)。スタックが空なら無効 -->
-          <button type="button" id="le-undo" disabled>元に戻す</button>
-          <button type="button" id="le-redo" disabled>やり直す</button>
-          <button type="button" id="le-export">エクスポート</button>
-          <span id="le-msg"></span>
-        </div>
-        <!-- 歌唱なし区間(idle)・hold はレイアウトJSONの機構としては残っているが、
-             GUIで触る人がほとんどおらず編集画面を複雑にしていたので、タブと調整欄は
-             置かない。設定したいときはレイアウトJSONの "idle" / "hold" を直接書く。 -->
-        <div class="le-tabs">
-          <button type="button" id="le-tab-elements" class="active">通常</button>
-          <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
-        </div>
-        <div class="le-cue-nav" id="le-cue-nav" hidden>
-          <button type="button" id="le-cue-prev">◀ 前</button>
-          <span id="le-cue-indicator">- / -枚目</span>
-          <button type="button" id="le-cue-next">次 ▶</button>
-          <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
-        </div>
-        <div id="le-canvas">
-          <div id="le-guide-v" class="le-guide" hidden></div>
-          <div id="le-guide-h" class="le-guide" hidden></div>
-          <!-- 選択中の箱に重ねる枠とリサイズハンドル(どの要素ぶんかは data-index)。
-               箱そのものを前面に浮かせると重なり順の嘘になるので、枠だけを前に出す -->
-          <div id="le-selection" hidden>
-            <div class="le-handle" data-dir="nw"></div>
-            <div class="le-handle" data-dir="n"></div>
-            <div class="le-handle" data-dir="ne"></div>
-            <div class="le-handle" data-dir="e"></div>
-            <div class="le-handle" data-dir="se"></div>
-            <div class="le-handle" data-dir="s"></div>
-            <div class="le-handle" data-dir="sw"></div>
-            <div class="le-handle" data-dir="w"></div>
-          </div>
-        </div>
-        <div id="le-props" hidden></div>
-        <p class="hint" data-info data-info-standalone data-info-label="レイアウト編集">単語リスト欄のリストの実データ(画像・列の値)がそのまま表示され、
-          箱をドラッグすると中身ごと動きます。中央や他の要素に近づくとガイド線が出て吸着。
-          右下の角でリサイズ、クリックで選択して文言・サイズ・色・字幕の粒度を変更。
-          テキストは背景帯(半透明)と縁取りも付けられます(画像の上でも読みやすくなります)。
-          選択中は四隅と各辺のハンドルでもリサイズでき(掴んだ側だけが動きます)。
-          重なりは画像が常にいちばん背面、その上にテキスト、字幕は動画では必ず最前面に出ます
-          (追加した要素はこの順になる位置に入ります)。
-          選択中はカーソルキーで移動(Shiftで大きく)、Deleteで削除。
-          直前の編集はCtrl+Z(Macは⌘Z)か「元に戻す」で1つ戻せます。
-          本番と同じく、枠に収まらない文字は自動で縮小されます。
-          編集した内容はジョブ投入時にレイアウト名より優先で使われます。
-          「未知語用」タブは単語リストに行がない単語(手入力など)の配置で、
-          列({achievement}など)は空になるので{surface}/{original}だけで組みます
-          (字幕は通常側と共通)。要素ごとの「表示条件」列を空にした単語ではその要素を隠せます。</p>
-        <details><summary>JSON</summary>
-          <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
-        </details>
-      </details>
+      <div class="row">
+        <button type="button" id="le-open" class="btn-sm">🖼️ レイアウトを調整…</button>
+        <span id="le-status" class="le-status"></span>
+      </div>
     </div>
   </section>
 
@@ -831,6 +842,101 @@
     <input type="file" id="editor" accept=".json" aria-label="外部で編集した替え歌JSONの読み込み">
     <button type="button" id="download-editor" class="btn-sm" disabled>ダウンロード</button>
     <p class="hint" data-info data-info-standalone data-info-label="替え歌JSONの読み書き">soramimicエディタなどで別途書き出したJSONを直接読み込みます(このエディタでの編集を使う場合は不要)。「ダウンロード」は今使われている替え歌JSONの書き出しです。</p>
+  </div>
+</div>
+
+<!-- レイアウトエディタの全画面モーダル。替え歌エディタ(#editor-frame-wrap)と
+     同じ理由で .wrap の外に置く: 詳細設定の中に展開すると .wrap(720px)に
+     縛られてキャンバスが 690×388px 程度しか取れず、細かい配置を詰められない。
+     閉じる導線は上部に固定し、Escでも閉じる。閉じても編集中のレイアウトと
+     Undo履歴は生きていて、生成時にレイアウト名より優先で使われる(leDirty)。 -->
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<div class="editor-modal" id="le-modal" hidden role="dialog" aria-modal="true"
+  aria-labelledby="le-modal-title">
+  <div class="editor-modal-head">
+    <h2 id="le-modal-title">🖼️ レイアウトエディタ</h2>
+    <button type="button" id="le-close" class="btn-sm">閉じる</button>
+  </div>
+  <div class="le-modal-body">
+    <!-- 読み込み(プリセット / 手元のファイル)と編集操作のツールバー。
+         ファイルから読み込んだ中身は自作レイアウトとして扱い(leDirty)、
+         生成時に layout_json で送る。来歴(leLayoutFor)はドラッグ編集と同じ
+         扱いなので、レイアウト名を変えれば破棄される。 -->
+    <div class="le-toolbar">
+      <!-- ベースレイアウトの選択。iOS Safari は datalist 候補を出さないため select。
+           選択肢は (指定なし)=サーバーの既定 / 組み込みレイアウト名 / 読み込んだファイル(📄)。
+           送信値の正本はフォーム側の隠し input#layout で、ここは表示と選択だけ。
+           ファイル系の値は名前ではないので #layout には書かない(leIsPresetValue)。
+           選んだ瞬間に読み込んでキャンバスに映す(結果を見ながら選べるので、
+           押し直す「読み込み」ボタンは無い)。
+           編集はベースの上のオーバーレイという扱いで、ベースの内容から差が出たら
+           #le-modified(●)を出し、#le-revert(↺)でベースへ戻せる。 -->
+      <label for="layout-select" class="hint" title="ベースレイアウト">ベース:</label>
+      <select id="layout-select"></select>
+      <span id="le-modified" class="le-modified" hidden
+        title="ベースから変更あり(生成にはこの編集内容が使われます)">●</span>
+      <button type="button" id="le-revert" hidden
+        title="編集を破棄してベースの内容に戻す">↺</button>
+      <button type="button" id="le-add-text">テキスト追加</button>
+      <button type="button" id="le-add-subtitle">字幕追加</button>
+      <button type="button" id="le-add-image">画像枠追加</button>
+      <button type="button" id="le-delete" disabled>選択を削除</button>
+      <!-- 1つ戻す/やり直す(Ctrl+Z / Ctrl+Shift+Z・Ctrl+Y)。スタックが空なら無効 -->
+      <button type="button" id="le-undo" disabled>元に戻す</button>
+      <button type="button" id="le-redo" disabled>やり直す</button>
+      <!-- ファイル読み込みはプルダウンの項目にせず、「エクスポート」と対になる
+           独立ボタンにする(selectに「読み込む…」のようなアクション項目を混ぜると、
+           眺めているだけのつもりでピッカーが開く驚きがある)。見た目はボタンだが
+           実体は label で、for= のブラウザ標準挙動でピッカーが開くため、
+           スクリプトの .click() を iOS Safari に拒まれる心配がない(input は隠す)。 -->
+      <label for="layout-file" class="le-file-btn" role="button"
+        title="自作レイアウト(JSONファイル)を読み込む">インポート</label>
+      <input type="file" id="layout-file" accept=".json" hidden>
+      <button type="button" id="le-export">エクスポート</button>
+      <span id="le-msg"></span>
+      <p class="hint" id="layout-file-msg" hidden></p>
+    </div>
+    <!-- 広い画面ではキャンバスを主面積に、右の細い列に選択中の設定・説明・JSONを畳む -->
+    <div class="le-main">
+      <div class="le-stage">
+        <!-- 歌唱なし区間(idle)・hold はレイアウトJSONの機構としては残っているが、
+             GUIで触る人がほとんどおらず編集画面を複雑にしていたので、タブと調整欄は
+             置かない。設定したいときはレイアウトJSONの "idle" / "hold" を直接書く。 -->
+        <div class="le-tabs">
+          <button type="button" id="le-tab-elements" class="active">通常</button>
+          <button type="button" id="le-tab-fallback">未知語用(単語リストにない単語)</button>
+        </div>
+        <div class="le-cue-nav" id="le-cue-nav" hidden>
+          <button type="button" id="le-cue-prev">◀ 前</button>
+          <span id="le-cue-indicator">- / -枚目</span>
+          <button type="button" id="le-cue-next">次 ▶</button>
+          <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
+        </div>
+        <div id="le-canvas">
+          <div id="le-guide-v" class="le-guide" hidden></div>
+          <div id="le-guide-h" class="le-guide" hidden></div>
+          <!-- 選択中の箱に重ねる枠とリサイズハンドル(どの要素ぶんかは data-index)。
+               箱そのものを前面に浮かせると重なり順の嘘になるので、枠だけを前に出す -->
+          <div id="le-selection" hidden>
+            <div class="le-handle" data-dir="nw"></div>
+            <div class="le-handle" data-dir="n"></div>
+            <div class="le-handle" data-dir="ne"></div>
+            <div class="le-handle" data-dir="e"></div>
+            <div class="le-handle" data-dir="se"></div>
+            <div class="le-handle" data-dir="s"></div>
+            <div class="le-handle" data-dir="sw"></div>
+            <div class="le-handle" data-dir="w"></div>
+          </div>
+        </div>
+      </div>
+      <div class="le-side">
+        <div id="le-props" hidden></div>
+        <details><summary>JSON</summary>
+          <textarea id="layout-json" style="height:12rem; font-family:monospace; font-size:.85rem"></textarea>
+        </details>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -913,6 +1019,9 @@ document.addEventListener("click", (ev) => {
 });
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape" || !openInfo) return;
+  // 「このEscは説明を閉じるのに使った」印。全画面モーダル側のEscはこれを見て見送る
+  // (1回のEscで説明とモーダルが両方消えると行き過ぎになる)
+  ev.preventDefault();
   const btn = openInfo.btn;
   closeInfoPop();
   btn.focus();
@@ -1000,7 +1109,9 @@ async function loadConfig() {
   setChoice("model", model0);
   setupNeutrino(conf.neutrino);  // VOICEVOXより先(未設定ならVOICEVOX側へ倒すため)
   setupVoicevox(conf.voicevox);
-  fillChoiceOptions("layout", conf.layouts || [], "サーバー既定");
+  // 空値の表示は「(指定なし)」: 英語のプリセットIDの並びに説明文っぽい日本語が
+  // 混ざると浮くので、特別な選択肢の定石の括弧書きにする(意味はⓘで説明)
+  fillChoiceOptions("layout", conf.layouts || [], "(指定なし)");
   setChoice("layout", $("layout").value || "");
   wordlistLayouts = conf.wordlist_layouts || {};
   $("editor-embed-controls").hidden = !conf.editor;
@@ -1009,6 +1120,7 @@ async function loadConfig() {
   await loadWordlistSelect(conf.editor);
   updateParodyStatus();
   await restoreForm();  // wordlist選択肢が揃った後に前回の入力を復元(初回のみ)
+  leUpdateStatus();     // 復元した編集の有無をフォーム側の表示に反映
   // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
   await initBuilder();
   const jobs = await loadHistory();
@@ -2569,6 +2681,112 @@ let leCue = null;      // 現在キューのデータ({data, use_fallback, parod
 let leCueIndex = 0;    // 現在のキュー番号(0始まり)
 let leCueTotal = 0;    // キュー総数
 
+// 編集画面(全画面モーダル)が開いているか。キーボード操作(Ctrl+Z・カーソルキー・
+// Delete)は編集画面を見ているときだけ効かせたいので、その判定に使う
+const leModalOpen = () => !$("le-modal").hidden;
+
+// ---- ベースレイアウトと、その上の編集(オーバーレイ) ----
+// プルダウンは「今どのレイアウトを土台にしているか」を表す。編集はその上に乗る
+// オーバーレイという扱いにして、土台から差が出たら ● を出す(コードエディタの
+// 未保存ドットと同じ考え方)。こうすると「プリセット」と「カスタム編集」を別々の
+// 選択肢として並べずに済み、狭い画面のツールバーが1行分軽くなる。
+// プルダウンの値: ""(サーバー既定)/ 組み込み名 / "file:<ファイル名>"
+// ベースの識別子(leBaseKey)は "preset:<名前>" / "file:<ファイル名>"。
+// ベースの素性(leBaseKey)とクリーンな内容(leBaseline)は saveForm で保存するので、
+// リロード後も「どのベースの編集か」ごと復元できる(専用の「復元」項目は置かない)
+const LE_FILE_PREFIX = "file:";   // 読み込み済みファイルの項目
+
+let leBaseKey = "preset:";   // 今のベース
+let leBaseline = null;       // ベース読み込み直後の内容(JSON文字列)。●判定の基準
+// このセッションで読み込んだレイアウトJSONファイル(ファイル名 → 中身)。
+// 他のベースへ切り替えても項目として残し、選び直せば戻れるようにする
+const leFiles = new Map();
+// ベースを切り替えるときに退避した編集({baseKey, layout, baseline})。1スロット、
+// メモリ内だけ(ページを離れたら消える)。leToJson・leClearLayout で破棄する
+let leStash = null;
+
+// プルダウンの値がプリセット名(=隠し#layoutに書いてよい値)か
+const leIsPresetValue = (v) => !v.startsWith(LE_FILE_PREFIX);
+// プルダウンの値 ↔ ベース識別子
+const leBaseKeyOf = (v) => leIsPresetValue(v) ? "preset:" + v : v;
+const leBaseValueOf = (key) => key.startsWith("preset:") ? key.slice(7) : key;
+
+// ベースの内容から変わっているか(= ● を出すか)。
+// ベースが分からない(旧形式の保存からの復元)ときは、確かめようがないので変更ありとみなす
+function leModified() {
+  if (!leLayout) return false;
+  if (leBaseline === null) return true;
+  return JSON.stringify(leLayout) !== leBaseline;
+}
+
+// 今の編集を退避用に写し取る。ベースのままなら取っておく意味がないので null
+function leCaptureCustom() {
+  if (!leLayout || !leModified()) return null;
+  return {
+    baseKey: leBaseKey,
+    layout: JSON.parse(JSON.stringify(leLayout)),
+    baseline: leBaseline,
+  };
+}
+
+// 退避しておいた編集に戻す(同じベースを選び直したとき)。
+// 「Aを編集 → Bを見に行く → Aに戻ったら編集が生きている」ための復元
+function leRestoreStash() {
+  if (!leStash) return;
+  leLayout = JSON.parse(JSON.stringify(leStash.layout));
+  leBaseKey = leStash.baseKey;
+  leBaseline = leStash.baseline;
+  leSelected = -1;
+  leUndoReset();   // 退避をまたいで戻れると事故のもとなので履歴はここから
+  leMsg("");
+  // 来歴(leLayoutFor)は leToJson が「今のレイアウト名」で付け直す。退避元の
+  // 名前のまま戻すと #layout と食い違い、リロード時の来歴ガードで捨てられてしまう
+  leToJson();      // #layout-json へ書き戻し + leDirty=true + 保存(退避も破棄)
+  leSetSide("elements");   // 中で leSelect(-1) → leRender まで走る
+  leUpdateStatus();
+}
+
+// 読み込んだファイルをプルダウンの項目にする(トリガー項目の手前に差し込む)
+function leAddFileOption(name) {
+  const sel = $("layout-select");
+  const value = LE_FILE_PREFIX + name;
+  if ([...sel.options].some((o) => o.value === value)) return;
+  const opt = document.createElement("option");
+  opt.value = value;
+  opt.textContent = "📄 " + name;
+  sel.appendChild(opt);   // ファイルの項目は組み込み名のあと(末尾)にまとめる
+}
+
+// プルダウンの選択状態と ● / ↺ を今の編集状態に揃える。
+// 選択肢の組み立て自体は fillChoiceOptions(組み込み名)と leAddFileOption が持つ
+function leSyncBaseSelect() {
+  const sel = $("layout-select");
+  // まだ何も読み込んでいない(復元直後など)なら、レイアウト名がそのままベース。
+  // 編集が無いので取り違えようがなく、#layout と表示がずれるのを防げる
+  if (!leLayout) {
+    leBaseKey = "preset:" + $("layout").value.trim();
+  }
+  sel.value = leBaseValueOf(leBaseKey);
+  // 値が選択肢に無いとき(setChoice と同じ)は先頭=既定に落とす
+  if (sel.selectedIndex < 0 && sel.options.length) sel.selectedIndex = 0;
+  const modified = leModified();
+  $("le-modified").hidden = !modified;
+  $("le-revert").hidden = !modified;   // 戻す先が同じ内容ならボタンの意味がない
+}
+
+// カスタムレイアウト(ファイル読み込み・手編集)が効いていることのバッジ。
+// leDirty のときだけ出す。この状態はレイアウト名と実際に使われるレイアウトが
+// 食い違っているので、編集画面を閉じたあともフォーム側から見えないと
+// 「選んだはずのレイアウトにならない」と混乱する。
+// ベース選択と ● も同じ状態から決まるので、ここで一緒に揃える
+function leUpdateStatus() {
+  leSyncBaseSelect();
+  // フォーム側にはいま使われるベースの名前を文字で出す(モーダルを開かなくても
+  // 何が効いているか分かる)。編集で差分があれば●を添える
+  const opt = $("layout-select").selectedOptions[0];
+  $("le-status").textContent = (opt ? opt.textContent : "") + (leModified() ? " ●" : "");
+}
+
 // 編集中の側の要素配列(なければ作らずに空を返す)
 function leEls() {
   if (!leLayout) return [];
@@ -2764,6 +2982,10 @@ function leLabel(e) {
 function leToJson() {
   $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
   leDirty = true;
+  // 新しい編集が入ったので、ベース切り替え用に取っておいた退避は捨てる
+  // (取っておくカスタムは、いま編集しているこれ1つだけにする)
+  leStash = null;
+  leUpdateStatus();
   leLayoutFor = $("layout").value.trim();
   saveForm();  // ドラッグ編集はchangeを発火しないのでここで保存する
   releaseBuilderDone();   // 同じ理由で、完成した動画も自分でプレビューに戻す
@@ -2776,6 +2998,12 @@ function leClearLayout() {
   leLayout = null;
   leSelected = -1;
   leDirty = false;
+  // 別のレイアウト向けの編集に退避から戻れると事故になるので、退避も一緒に捨てる
+  leStash = null;
+  // ベースは「今のレイアウト名」に戻す(この直後の leLoad が成功すれば上書きされる)
+  leBaseKey = "preset:" + $("layout").value.trim();
+  leBaseline = null;
+  leUpdateStatus();
   leUndoReset();   // 別のレイアウトの途中状態に戻れると事故になるので履歴も捨てる
   leLayoutFor = "";
   $("layout-json").value = "";
@@ -3412,7 +3640,7 @@ $("le-export").addEventListener("click", () => {
 // テキスト入力欄にフォーカスがあるときは入力欄自身のUndo(ブラウザ既定)に任せる
 document.addEventListener("keydown", (ev) => {
   if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
-  if (!$("le-details").open) return;
+  if (!leModalOpen()) return;
   const t = ev.target;
   if (t && ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
   const key = ev.key.toLowerCase();
@@ -3427,7 +3655,7 @@ document.addEventListener("keydown", (ev) => {
 
 // 選択中のボックスをカーソルキーで移動(Shiftで大きく)、Deleteで削除
 document.addEventListener("keydown", (ev) => {
-  if (!$("le-details").open || !leLayout || leSelected < 0) return;
+  if (!leModalOpen() || !leLayout || leSelected < 0) return;
   const t = ev.target;
   if (t && ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
   const e = leEls()[leSelected];
@@ -3472,7 +3700,7 @@ async function leLoad() {
   } catch (err) {
     // サーバー再起動中などの通信エラー。ここで握りつぶすと古いJSONが焼き付く
     return fail(`レイアウト「${name}」を読み込めませんでした(${err.message})。`
-      + "編集中のレイアウトは破棄しました。「読み込み」で再試行してください");
+      + "編集中のレイアウトは破棄しました。プリセットを選び直して再試行してください");
   }
   if (!res.ok) {
     return fail("組み込みレイアウトだけ読み込めます: " + name);
@@ -3483,15 +3711,18 @@ async function leLoad() {
     return fail(`レイアウト「${name}」の内容を読めませんでした(${err.message})`);
   }
   leMsg("");
+  // 読み込んだ内容がこれ以降の「ベース」(●の判定基準)になる
+  leBaseKey = "preset:" + $("layout").value.trim();
+  leBaseline = JSON.stringify(leLayout);
   leToJson();
   leUndoReset();     // 読み込みでレイアウトが入れ替わったので履歴はここから
   leDirty = false;   // 読み込んだだけなので「ユーザーの編集」ではない
   leLayoutFor = $("layout").value.trim();
   saveForm();        // leToJson が dirty のまま保存しているので上書きし直す
+  leUpdateStatus();  // フォーム側のベース表示(名前と●)を更新
   leSetSide("elements");
   return true;
 }
-$("layout-load").addEventListener("click", leLoad);
 
 // レイアウトJSONファイルの読み込み(旧「その他(手入力)」の置き換え)。
 // サーバー上のパス名を当てさせるのではなく、手元のJSONをそのまま持ち込ませる。
@@ -3516,34 +3747,113 @@ $("layout-file").addEventListener("change", async () => {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return reject("レイアウトJSONの形式が違います(オブジェクトではありません)");
   }
-  leLayout = parsed;
-  leSelected = -1;
-  leToJson();   // #layout-json へ書き戻し + leDirty=true + 保存
-  leUndoReset();   // ファイルで丸ごと入れ替えたので履歴は捨てる
-  leMsg("");
-  layoutFileMsg(`読み込みました: ${f.name}(このファイルの内容で生成します)`);
-  $("le-details").open = true;
-  leSetSide("elements");
+  // このセッションのあいだは項目として残す(他のベースを見てから戻ってこられる)
+  leFiles.set(f.name, parsed);
+  leAddFileOption(f.name);
+  // 同じファイルを選び直しても change が飛ぶよう、入力自体は空に戻しておく
+  $("layout-file").value = "";
+  // 読み込み前の編集はベース切り替えと同じく退避する(leLoadBase 内の leToJson で
+  // 消えるので、読み込みが終わってから入れ直す)
+  const stash = leCaptureCustom() || leStash;
+  if (leLoadBase(LE_FILE_PREFIX + f.name)) leStash = stash;
+  leUpdateStatus();
   leFetchCue(leCueIndex);
   leRender();
 });
 
-// レイアウト名を選んだら、その内容から編集をスタートする(エディタも開く)
-$("layout").addEventListener("change", async () => {
-  if (await leLoad()) {
-    $("le-details").open = true;
-    leRender();
+// ベース(プリセット名 / 読み込み済みファイル)を読み込み直す。編集は破棄される。
+// プリセットは非同期(fetch)、ファイルはメモリからなので同期で返り値が違う点に注意
+function leLoadBase(key) {
+  if (!key.startsWith(LE_FILE_PREFIX)) return leLoad();   // Promise<boolean>
+  const name = key.slice(LE_FILE_PREFIX.length);
+  const src = leFiles.get(name);
+  if (!src) { leMsg("読み込んだファイルが見つかりません: " + name); return false; }
+  leLayout = JSON.parse(JSON.stringify(src));
+  leSelected = -1;
+  leBaseKey = key;
+  leBaseline = JSON.stringify(leLayout);
+  leUndoReset();   // ファイルで丸ごと入れ替えたので履歴は捨てる
+  leMsg("");
+  layoutFileMsg("");   // 成功はプルダウンの選択状態で分かるので文章は出さない
+  // ファイルの中身はレイアウト名では再現できないので、常に layout_json として送る
+  leToJson();      // #layout-json へ書き戻し + leDirty=true + 保存
+  leSetSide("elements");
+  return true;
+}
+
+// ↺ 編集を破棄して、今のベースの内容に戻す。Undoで戻れる必要はない(戻したい
+// ときはベースを選び直せばよい)ので、退避も一緒に捨てて素の状態にする
+$("le-revert").addEventListener("click", async () => {
+  leStash = null;
+  if (await leLoadBase(leBaseKey)) {
+    leUpdateStatus();
+    if (leModalOpen()) leRender();
   }
 });
 
-$("le-details").addEventListener("toggle", async () => {
-  if ($("le-details").open) {
-    leFetchColumns();
-    // 開いたとき空なら現在のレイアウト名(なければdefault)から編集を始める
-    if (!leLayout) await leLoad();
-    leFetchCue(leCueIndex);  // editorファイルがあればキュープレビューを取得
-  }
+// 隠し #layout が変わったとき(単語リスト連動 applyWordlistLayout からの発火)、
+// その内容を編集の下地として取り込む。プルダウンでの選択は #layout-select 側の
+// ハンドラが受け持つ(退避や即反映が要るのはユーザー操作のときだけ)。
+// 編集画面は開かない: 単語リストを選んだだけで全画面モーダルが開くと操作を奪う。
+// 開いている最中の切り替えなら、その場で描き直す。
+$("layout").addEventListener("change", async () => {
+  if (await leLoad() && leModalOpen()) leRender();
+});
+
+// ---- レイアウトエディタ(全画面モーダル)の開閉 ----
+// 閉じても leLayout・Undo履歴・#layout-json は残す(替え歌エディタと同じで、
+// 「閉じる=編集をやめる」ではない)。開いてから描くのは、隠れているあいだは
+// キャンバスの実寸が0で、本番同様の文字の自動縮小(leFitText)が効かないため。
+// モーダルを開いた時点のレイアウト状態。閉じるときに比較して、開いている間に
+// 実際に何か変えたときだけトーストを出す(眺めて閉じただけなら黙る)
+let leOpenState = "";
+
+async function openLayoutEditor() {
+  $("le-modal").hidden = false;
+  document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
+  $("le-close").focus();   // 開いた直後は親側にフォーカス(この時点でEscが効く)
+  leFetchColumns();
+  // 空なら現在のレイアウト名(なければdefault)から編集を始める
+  if (!leLayout) await leLoad();
+  leFetchCue(leCueIndex);  // editorファイルがあればキュープレビューを取得
   leRender();
+  // 初回の自動読み込みが済んだあとの状態を「開いたときの状態」とする
+  leOpenState = JSON.stringify([$("layout").value, $("layout-json").value]);
+}
+
+// 短時間だけ出る控えめな通知。連続で呼ばれたら文言を差し替えて時間を延ばす
+let toastTimer = 0;
+function showToast(text) {
+  const t = $("toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function closeLayoutEditor() {
+  $("le-modal").hidden = true;
+  document.body.classList.remove("modal-open");
+  leUpdateStatus();   // 閉じても編集は生きている(その旨をフォーム側の表示で出す)
+  // 開いている間に何か変えて閉じたときだけ一言。モーダル→フォームへの場面転換で
+  // 「ちゃんとセットされた」を伝える(眺めて閉じただけなら何も出さない。
+  // Undoで開いたときの状態まで戻して閉じた場合も同じ扱いになる)
+  if (leOpenState !== JSON.stringify([$("layout").value, $("layout-json").value])) {
+    showToast(leDirty ? "調整したレイアウトをセットしました"
+                      : "レイアウトを切り替えました");
+  }
+  $("le-open").focus();   // モーダルを開く前の場所へフォーカスを返す
+}
+$("le-open").addEventListener("click", openLayoutEditor);
+$("le-close").addEventListener("click", closeLayoutEditor);
+
+// Escで閉じる。ⓘ の説明が開いていたときは、先に登録してある説明側のハンドラが
+// そのEscを使って preventDefault するので、ここでは何もしない(説明を閉じただけの
+// つもりで編集画面まで閉じてしまわないように)
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || ev.defaultPrevented || !leModalOpen()) return;
+  ev.preventDefault();
+  closeLayoutEditor();
 });
 
 // 直前に自動でセットしたレイアウト名。これと現在値が同じなら「まだ自動のまま」と見なす
@@ -3594,6 +3904,7 @@ $("layout-json").addEventListener("change", () => {
     leLayout = parsed;
     // テキストエリアの手入力もユーザーの編集(生成時にlayout_jsonとして送る)
     leDirty = !!leLayout;
+    leUpdateStatus();
     leLayoutFor = $("layout").value.trim();
     leMsg("");
     leSetSide("elements");
@@ -4420,6 +4731,10 @@ function saveForm() {
       // 食い違うJSON(読み込み失敗で古いまま残ったもの)を引き継がないようにする
       layoutJsonFor: leLayoutFor,
       layoutDirty: leDirty,
+      // ベースの素性(プリセット名/ファイル名)とクリーンな内容。リロード後も
+      // 「〈ベース名〉の編集(●)」として表示し、↺や📄項目も再構成できるようにする
+      layoutBaseKey: leBaseKey,
+      layoutBaseline: leBaseline,
       model: $("model").value,
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
@@ -4432,7 +4747,7 @@ function saveForm() {
 // iOS Safari が datalist 候補を出さない問題への対応(#model / #layout)。
 // 送信値・保存値の正本は隠し input#<base>(既存のフォーム送信・保存/復元と互換)。
 // 手入力欄(#<base>-other)を持つのは #model だけ。#layout は名前の手入力をやめ、
-// 「レイアウトを読み込む(ファイル)」でカスタムレイアウトを渡す形にした。
+// 編集画面(#le-modal)の「自作レイアウトを読み込む(JSON)」で渡す形にした。
 const CHOICE_OTHER = "__other__";
 
 // select の選択肢を組み立てる。emptyLabel を渡すと先頭に空値(=既定)を置く。
@@ -4456,7 +4771,9 @@ function syncChoice(base) {
   const sel = $(base + "-select"), other = $(base + "-other"), hidden = $(base);
   const isOther = other && sel.value === CHOICE_OTHER;
   if (other) other.hidden = !isOther;
-  hidden.value = isOther ? other.value.trim() : sel.value;
+  // ファイル系の値(📄・読み込みトリガー・復元)はレイアウト名ではないので
+  // 送信値には書かない。#layout は直前に選ばれた名前(空=サーバー既定)を保ち続ける
+  if (leIsPresetValue(sel.value)) hidden.value = isOther ? other.value.trim() : sel.value;
   if (base === "model") updatePublicCredit();  // クレジット表記のモデル名を追随させる
   if (!restoring) saveForm();
 }
@@ -4487,11 +4804,23 @@ for (const base of ["model", "layout"]) {
     $(base + "-other").addEventListener("input", () => syncChoice(base));
   }
 }
-// 組み込みレイアウト名を選んだら既存のエディタ読み込み挙動を維持する
-$("layout-select").addEventListener("change", () => {
-  const v = $("layout-select").value;
-  if (v && v !== CHOICE_OTHER) {
-    $("layout").dispatchEvent(new Event("change", { bubbles: true }));
+// プリセットを選んだとき。select の change はユーザー操作でしか飛ばない
+// (復元・単語リスト連動は setChoice で値を入れるだけなのでここは通らない)ので、
+// 「選んだら即読み込んでキャンバスに映す」「編集中のカスタムを退避する」という
+// ユーザー操作向けの処理はここにまとめてよい
+$("layout-select").addEventListener("change", async () => {
+  const key = leBaseKeyOf($("layout-select").value);
+  // 同じベースに戻ってきたら、まっさらな内容ではなく退避しておいた編集を戻す
+  if (leStash && leStash.baseKey === key) { leRestoreStash(); return; }
+  // 編集中なら黙って捨てず、戻ってこられるよう退避しておく。編集していなければ
+  // 既存の退避を持ち越す: A編集→B→C…と見比べても、leLoadBase 内の leToJson に
+  // 消されずAへ戻れるようにするため
+  const stash = leCaptureCustom() || leStash;
+  // 隠し #layout はプリセットのときだけ syncChoice が更新済み。その名前で読み直す
+  if (await leLoadBase(key)) {
+    leStash = stash;   // leLoadBase の中の leToJson で消えるので、読み込み後に入れ直す
+    leUpdateStatus();
+    if (leModalOpen()) leRender();
   }
 });
 
@@ -4659,6 +4988,31 @@ async function doRestoreForm() {
       $("layout-json").dispatchEvent(new Event("change", { bubbles: true }));
       // 手編集でないJSON(レイアウト名から読み込んだだけ)は送信対象に戻さない
       leDirty = !!state.layoutDirty;
+      // ベースの素性とクリーンな内容も保存してあるので、そのまま復元する。
+      // ファイルのベースは内容(baseline)から読み込み済み一覧と📄項目を作り直し、
+      // ↺(ベースに戻す)や選び直しも効くようにする
+      leBaseKey = state.layoutBaseKey || "preset:" + (state.layout || "");
+      if (state.layoutBaseKey) {
+        leBaseline = state.layoutBaseline ?? null;
+      } else {
+        // 旧形式の保存(素性なし): レイアウト名をベースとみなす。編集済みなら
+        // 内容は分からない(=●)、名前から読んだだけなら中身そのものがベース
+        leBaseline = (leDirty || !leLayout) ? null : JSON.stringify(leLayout);
+      }
+      if (leBaseKey.startsWith(LE_FILE_PREFIX)) {
+        let src = null;
+        try { src = leBaseline ? JSON.parse(leBaseline) : null; } catch {}
+        if (src) {
+          const name = leBaseKey.slice(LE_FILE_PREFIX.length);
+          leFiles.set(name, src);
+          leAddFileOption(name);
+        } else {
+          // ファイルの中身まで復元できない壊れた保存は、レイアウト名に落とす
+          leBaseKey = "preset:" + (state.layout || "");
+          leBaseline = null;
+        }
+      }
+      leUpdateStatus();
       leLayoutFor = state.layoutJsonFor;
     }
   }
