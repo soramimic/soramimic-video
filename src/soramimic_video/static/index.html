@@ -20,6 +20,7 @@
     --link: #2563eb;
     --danger: #dc2626;
     --ok: #16a34a;
+    --ok-soft: #16a34a1f;   /* --ok の淡いかぶせ(明るい面でも暗い面でも成立する塗り) */
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -52,6 +53,9 @@
   legend { font-size: .85rem; font-weight: 700; color: var(--muted); padding: 0 .3rem; }
   .card > h2 { font-size: .95rem; margin: 0 0 .7rem; }
   .field + .field { margin-top: .6rem; }
+  /* 折りたたみ(「曲」)の次に来る欄も、欄どうしと同じだけ離す。
+     .field の先頭ラベルは margin-top:0 なので、これが無いと詰まって見える */
+  .sub-details + .field { margin-top: .6rem; }
   label { display: block; margin: .5rem 0 .2rem; font-weight: 600; font-size: .85rem; color: var(--muted); }
   .field > label:first-child { margin-top: 0; }
   input[type=text], input[type=password], input[type=number], textarea, select {
@@ -125,9 +129,12 @@
      その場に開くと周りのフォームが押し下がって、読み終わったあと元の場所を見失う。
      位置は placeInfoPop が ⓘ の座標から計算し、ビューポート内へ収める(fixed なので
      周囲のレイアウトは動かない)。幅は読みやすい上限だけ決めて中身に合わせる。
-     エディタの全画面モーダル(z-index:50)より下に置き、モーダルには重ねない。 */
+     モーダル(エディタ:50 / 自分のMIDI:60)の中にも ⓘ があるので、重ね順は
+     その上(70)。以前はモーダルより下に置いていたが、それだとモーダル内の ⓘ を
+     押しても説明が背面に隠れて出てこない。開いたまま取り残される心配は、
+     モーダルを開くときに closeInfoPop する側で潰してある。 */
   .hint[data-info] {
-    position: fixed; left: 0; top: 0; z-index: 40; margin: 0;
+    position: fixed; left: 0; top: 0; z-index: 70; margin: 0;
     width: max-content; max-width: min(90vw, 34rem);
     max-height: min(60vh, 26rem); overflow-y: auto; overscroll-behavior: contain;
     padding: .5rem .7rem; color: var(--text);
@@ -284,6 +291,79 @@
   #transpose-row.is-disabled { opacity: .5; }
   /* モーダルを開いているあいだは裏のページをスクロールさせない */
   body.modal-open { overflow: hidden; }
+  /* ---- 小さいモーダル(自分のMIDI・自作の単語リスト) ---- */
+  /* 「ファイルを入れる → 検証結果を見る → その場で直す」を1枚で終わらせる窓。
+     替え歌エディタ(z-index:50)より上に重ねる。中身が小さいので全画面にはせず、
+     暗幕付きの小さなカードにする。body.modal-open はエディタと共有していて
+     閉じるときに取り合いになる(先に閉じたほうが外してしまう)ので、こちらでは
+     触らない。小さいモーダルなので裏がスクロールしても実害はない。
+     2つのモーダルは同時には開かないので、重ね順は同じでよい。 */
+  .mini-modal {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+    padding: 1rem; background: rgba(0, 0, 0, .4);
+  }
+  .mini-modal-card {
+    width: 100%; max-width: 30rem; max-height: 100%; overflow: auto;
+    padding: 1rem; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+  .mini-modal-card h2 { font-size: .95rem; margin: 0; }
+  .mini-modal-foot { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .8rem; }
+  /* 投下先。ファイル選択欄(input[type=file])と同じ見た目に寄せて、
+     「ここに入れる/押す」ものだと分かるようにする */
+  .drop-zone {
+    margin-top: .7rem; padding: 1.3rem .8rem; text-align: center; cursor: pointer;
+    border: 1px dashed var(--border); border-radius: 8px; background: var(--panel-2);
+  }
+  .drop-zone strong { font-size: .9rem; }
+  .drop-zone .hint { display: block; }
+  /* ファイルが入っている状態。小さな ✓ の一行だけでは気づかれないので、投下先
+     そのものを塗り替える(破線→実線・成功色)。差し替えの導線は残す */
+  .drop-zone.is-loaded {
+    border-style: solid; border-color: var(--ok); background: var(--ok-soft);
+  }
+  .drop-zone.is-loaded strong { color: var(--ok); overflow-wrap: anywhere; }
+  /* 差し替えのドラッグ中も反応が分かるよう、.is-loaded より後に置いて上書きさせる */
+  .drop-zone.dragover { border-color: var(--accent); background: var(--panel); }
+  #midi-modal-pick, #wordlist-modal-pick { margin-top: .4rem; }
+  /* button ではなく label for="…" をボタン風に見せる(JSなしでピッカーが開く)。
+     見た目は button + .btn-sm と同じに揃える */
+  .btn-like {
+    display: inline-block; font: inherit; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text);
+  }
+  .btn-like:hover { border-color: var(--accent); }
+  /* ---- 動かすパネル(詳細設定 ⇔ モーダル) ---- */
+  /* 投下先・状態・中身の編集をひとまとめにした塊。実体は1つだけ作り、モーダルを
+     開くときにスロットへ移して閉じるときに定位置へ戻す(写しを2つ持たない)。
+     どちらの場所でも同じ見え方になるよう、位置に依存する余白はここで打ち消す。 */
+  .panel { margin: 0; }
+  .panel > label:first-child { margin-top: 0; }
+  /* 定位置(詳細設定)では出さないもの: 元歌詞の写しは、すぐ下に本物の #lyrics が
+     並んでいて二重になる。モーダルへ移したときだけ出す */
+  .panel-inline .panel-modal-only { display: none; }
+  /* パネルの中の小欄。.field を入れ子にすると「② 空耳のもと の最初の .field」を
+     見ているテストの前提(単語リスト欄が where まで1つづき)を崩すので別名にする */
+  .panel-subfield { margin-top: .6rem; }
+  /* 実体のファイル入力は出さない(投下先と「ファイルを選ぶ」がその役)。
+     display:none でも label for / .click() からピッカーは開く */
+  #midi, #wordlist-csv { display: none; }
+  .mini-modal-status, #midi-error,
+  #wordlist-csv-status, #wordlist-csv-error { margin-top: .5rem; margin-bottom: 0; }
+  /* 検証を通ったときだけ成功色にする(「確認中…」は控えめなグレーのまま) */
+  .mini-modal-status.is-ok, #wordlist-csv-status.is-ok { color: var(--ok); }
+  /* カードを縦に伸ばしすぎない(既定の6remだとフッタが画面外に出やすい) */
+  #midi-modal-lyrics { height: 5rem; }
+  /* 単語リストは1行1語なので等幅のほうが崩れに気づきやすい。行数はそこそこ要る */
+  #wordlist-modal-text {
+    height: 10rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .8rem; white-space: pre; overflow-wrap: normal; overflow-x: auto;
+  }
+  /* 「MIDIの歌詞で置き換えますか?」の2択。欄のすぐ下に小さく添える */
+  #midi-lyrics-prompt { margin-top: .5rem; }
+  #midi-lyrics-prompt .mini-modal-foot { margin-top: .3rem; }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + その場のサムネプレビュー ---- */
   /* 🎲ランダムはカードの右上に小さく置く(プルダウンのショートカットで主役ではない)。
@@ -510,29 +590,67 @@
     <h3 class="opt-group-title">① 曲と歌詞</h3>
     <p class="hint opt-group-lead" data-info>どの曲を歌わせるか。字幕に出す元の歌詞もここ。</p>
 
-    <!-- 曲。詳細設定を開く人の目的は「自分の曲でやる」なので、ここではMIDIファイル
-         選択を主役にして直に見せる。サンプル曲はビルダーカードのプルダウンで選べる
-         ので、この中では「サンプルから選ぶ」の折りたたみに格下げする。
-         ただし送信・同期の正本は従来どおり #sample-select なので、DOMからは消さずに
-         折りたたみの中へ移すだけにする(ビルダーカードとの双方向同期・applySample・
-         前回入力の復元はそのまま動く)。 -->
-    <div class="field">
-      <label for="midi">曲(XF MIDIファイル)</label>
-      <input type="file" id="midi" accept=".mid,.midi">
-      <p class="hint" data-info>歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
-      <p class="hint" id="midi-restore-hint" hidden></p>
-      <!-- 歌詞なしMIDIの拒否(checkMidi)。選んだ直後にサーバーで歌詞の有無を見て、
-           無ければファイル選択ごと取り消して理由をここに出す -->
-      <p class="error" id="midi-error" hidden></p>
-      <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
-      <details class="sub-details" id="sample-details">
-        <summary>サンプルから選ぶ</summary>
-        <div id="sample-field">
-          <select id="sample-select" aria-label="サンプル曲"></select>
-          <p class="hint" id="sample-status"></p>
+    <!-- 曲。自分のMIDIを使う導線はビルダーカードの曲プルダウン →「自分のMIDIを使う…」
+         のモーダルへ移した(ドロップ・検証結果・元歌詞までそこで完結する)ので、
+         詳細設定では同じものを二重に見せず、まとめて折りたたみの中へ畳む。
+         畳むのは見た目だけで、送信・同期の正本は従来どおり #midi と #sample-select。
+         DOMの位置が変わるだけなので、カードとの双方向同期・applySample・前回入力の
+         復元・来歴ガードはそのまま動く。
+         中身は「自分のファイル → 曲の選択」の順。プルダウンにはサンプル曲だけでなく
+         「自分のMIDIを使う…」も入るので、見出しはカードと同じ「曲」にしてある。
+         サンプルが取れない環境では loadSamples が #sample-field だけを隠して
+         この折りたたみを開く(ファイル選択が曲を指定する唯一の入口として残る)。 -->
+    <details class="sub-details" id="sample-details">
+      <summary>曲</summary>
+      <!-- パネルの定位置。モーダルを開くあいだだけ #midi-panel が抜けて空になる -->
+      <div id="midi-panel-home">
+        <div class="field panel panel-inline" id="midi-panel">
+          <label for="midi">曲(XF MIDIファイル)</label>
+          <p class="hint" data-info data-info-label="XF MIDIファイル">歌詞入りのXF形式MIDI(.mid)が必要です。カラオケ用のXF MIDIを使うか、Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。歌詞の入っていないMIDIは選んだ時点で取り消します。下のプルダウンやビルダーカードの「曲」でサンプル曲を選んだときは、そのMIDIがここに入ります。</p>
+          <!-- 実体のファイル入力。投下先と「ファイルを選ぶ」がその役をするので
+               見た目は出さない(CSSで display:none。label for / .click() は効く) -->
+          <input type="file" id="midi" accept=".mid,.midi">
+          <!-- 中の文字は状態で入れ替える(未選択 / ファイルあり: updateMidiDropZone)。
+               role/tabindex は据え置きなので、どちらの状態でも押して選べる -->
+          <div class="drop-zone" id="midi-drop" role="button" tabindex="0">
+            <strong id="midi-drop-title">ここにXF MIDIファイルをドロップ</strong>
+            <span class="hint" id="midi-drop-sub">またはクリックしてファイルを選ぶ</span>
+          </div>
+          <!-- label for="midi" なのでJSを介さずブラウザ標準の挙動でピッカーが開く
+               (iOS Safariで .click() が効かない類の問題を踏まない)。キーボードからは
+               ドロップ欄(role=button)で開けるので、この label は tabindex を持たない -->
+          <label for="midi" id="midi-modal-pick" class="btn-sm btn-like">ファイルを選ぶ</label>
+          <!-- 検証(/api/midi-check)の途中経過と結果 -->
+          <p class="hint mini-modal-status" id="midi-modal-status" hidden></p>
+          <p class="hint" id="midi-restore-hint" hidden></p>
+          <!-- 歌詞なしMIDIの拒否(checkMidi)。選んだ直後にサーバーで歌詞の有無を見て、
+               無ければファイル選択ごと取り消して理由をここに出す。詳細設定を畳んでいると
+               見えないので、rejectMidi は同じ文言をカード(#submit-msg)にも出す -->
+          <p class="error" id="midi-error" hidden></p>
+          <!-- 元歌詞の写し。詳細設定にいるあいだは真下に本物の #lyrics があるので
+               出さない(panel-inline のCSSで隠す)。モーダルへ移したときだけ出る -->
+          <div class="field panel-modal-only" id="midi-lyrics-field">
+            <label for="midi-modal-lyrics">元歌詞(推奨)</label>
+            <textarea id="midi-modal-lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
+            <p class="hint" data-info>字幕に出す元の歌詞です。歌う内容と替え歌はMIDIの歌詞から作られるので必須ではありませんが、空のままだと字幕に元歌詞の行が出ません。MIDIの歌詞をここに入れておくので、字幕に出したい形(漢字・句読点など)に直しておくのがおすすめです。</p>
+            <p class="hint" id="midi-modal-note" hidden></p>
+            <!-- すでに入っている元歌詞はMIDIの歌詞で勝手に上書きしない。置き換えるかは
+                 その場の2択で聞く(確認ダイアログは挟まない) -->
+            <div id="midi-lyrics-prompt" hidden>
+              <p class="hint" id="midi-lyrics-prompt-text">元歌詞が入っています。MIDIの歌詞で置き換えますか?</p>
+              <div class="mini-modal-foot">
+                <button type="button" id="midi-lyrics-replace" class="btn-sm">MIDIの歌詞にする</button>
+                <button type="button" id="midi-lyrics-keep" class="btn-sm">そのまま</button>
+              </div>
+            </div>
+          </div>
         </div>
-      </details>
-    </div>
+      </div>
+      <div class="field" id="sample-field">
+        <select id="sample-select" aria-label="サンプル曲"></select>
+        <p class="hint" id="sample-status"></p>
+      </div>
+    </details>
 
     <!-- 元歌詞は曲とセットの情報(その曲の歌詞)なので、曲のすぐ下に置く。
          字幕の元歌詞行はここ(かMIDIの歌詞)が出どころなので「推奨」扱いにする。 -->
@@ -552,7 +670,9 @@
     <p class="hint opt-group-lead" data-info>歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタや変換パラメータに進んでください。</p>
 
     <div class="field">
-      <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
+      <!-- 見出し語はビルダーカードの「単語リスト」と揃える。「(何に空耳させるか)」の
+           補足はカード側と同じく title に退避する(欄の幅を食わないように) -->
+      <label for="wordlist-select" title="何に空耳させるか">単語リスト</label>
       <select id="wordlist-select" hidden></select>
       <input type="text" id="wordlist" placeholder="例: stations">
       <div id="wordlist-filters" class="wordlist-filters" hidden></div>
@@ -561,11 +681,32 @@
            読みを検査して駄目ならその場で取り消す(生成を走らせてから落とさない)。
            選択中は単語リスト名の代わりにファイル名(と読めた語数)を出す。 -->
       <div id="custom-wordlist" hidden>
-        <label for="wordlist-csv">自作の単語リスト(CSVファイル)</label>
-        <input type="file" id="wordlist-csv" accept=".csv,.txt,text/csv,text/plain">
-        <p class="hint" data-info>1行に1語ずつ「表記,読み」で書いたテキスト(.csv/.txt)です。読みはカタカナかひらがな。読みを省くと表記から自動で推定します。1行目に <code>surface,pronunciation</code> と列名を書いた表形式のCSVも使えます。自作リストでは単語画像は付きません(文字だけの動画になります)。</p>
-        <p class="hint" id="wordlist-csv-status" hidden></p>
-        <p class="error" id="wordlist-csv-error" hidden></p>
+        <!-- パネルの定位置。モーダルを開くあいだだけ #wordlist-panel が抜ける -->
+        <div id="wordlist-panel-home">
+          <div class="field panel panel-inline" id="wordlist-panel">
+            <label for="wordlist-csv">自作の単語リスト(CSVファイル)</label>
+            <p class="hint" data-info data-info-label="自作の単語リスト">1行に1語ずつ「表記,読み」で書いたテキスト(.csv/.txt)です。読みはカタカナかひらがな。読みを省くと表記から自動で推定します。1行目に <code>surface,pronunciation</code> と列名を書いた表形式のCSVも使えます。文字コードはUTF-8かShift_JIS、大きさは2MB・1万語まで。画像の列があっても使わないので、自作リストでは単語画像は付きません(文字だけの動画になります)。</p>
+            <!-- 実体のファイル入力(送信の正本)。見た目はCSSで隠す -->
+            <input type="file" id="wordlist-csv" accept=".csv,.txt,text/csv,text/plain">
+            <!-- 中の文字は状態で入れ替える(未選択 / ファイルあり: updateWordlistDropZone) -->
+            <div class="drop-zone" id="wordlist-drop" role="button" tabindex="0">
+              <strong id="wordlist-drop-title">ここに単語リストCSVをドロップ</strong>
+              <span class="hint" id="wordlist-drop-sub">またはクリックしてファイルを選ぶ</span>
+            </div>
+            <!-- label for="wordlist-csv" なのでJSを介さずピッカーが開く(MIDI側と同じ) -->
+            <label for="wordlist-csv" id="wordlist-modal-pick" class="btn-sm btn-like">ファイルを選ぶ</label>
+            <!-- 検査(/api/wordlist-check)の途中経過と結果。表示はこの1組だけ -->
+            <p class="hint" id="wordlist-csv-status" hidden></p>
+            <p class="error" id="wordlist-csv-error" hidden></p>
+            <!-- 中身の編集。打ち終わったところで #wordlist-csv に作り直して流すので、
+                 検査も投入も「ファイルを選んだとき」とまったく同じ経路を通る -->
+            <div class="panel-subfield">
+              <label for="wordlist-modal-text">リストの中身</label>
+              <textarea id="wordlist-modal-text" spellcheck="false" placeholder="例:&#10;#表記,読み&#10;東京,トウキョウ&#10;品川,シナガワ&#10;新橋"></textarea>
+              <p class="hint" data-info>ここで直すとそのまま検査し直します(ファイルを選び直さなくてもかまいません)。直した内容は生成にそのまま使われますが、元のファイルは書き換えません。</p>
+            </div>
+          </div>
+        </div>
       </div>
       <!-- 絞り込み(where)はファセットのチェックボックスの出力そのものなので、
            チェックを触ったときに何が入ったのかが見えるよう同じ視野に置く
@@ -834,6 +975,33 @@
   </div>
 </div>
 
+<!-- 「自分のMIDIを使う…」/「自作リストを使う(CSV)」で開く小さいモーダル。
+     中身(#midi-panel / #wordlist-panel)は詳細設定に1つだけ作ってあり、開くときに
+     ここへ移して閉じるときに元へ戻す。写しを2つ置いて同期させると必ずどこかで
+     食い違うので、実体をひとつにして動かす。ここに固定で残るのは見出しと「完了」だけ。
+     position:fixed が親のスタッキング文脈に巻き込まれないよう .wrap の外に置く。 -->
+<div class="mini-modal" id="midi-modal" hidden role="dialog" aria-modal="true"
+  aria-labelledby="midi-modal-title">
+  <div class="mini-modal-card">
+    <h2><span id="midi-modal-title">♪ 自分のMIDIファイルを使う</span></h2>
+    <div id="midi-panel-slot"></div>
+    <div class="mini-modal-foot">
+      <button type="button" id="midi-modal-done" class="btn-primary btn-sm">完了</button>
+    </div>
+  </div>
+</div>
+
+<div class="mini-modal" id="wordlist-modal" hidden role="dialog" aria-modal="true"
+  aria-labelledby="wordlist-modal-title">
+  <div class="mini-modal-card">
+    <h2><span id="wordlist-modal-title">📄 自作の単語リストを使う</span></h2>
+    <div id="wordlist-panel-slot"></div>
+    <div class="mini-modal-foot">
+      <button type="button" id="wordlist-modal-done" class="btn-primary btn-sm">完了</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
@@ -850,7 +1018,9 @@ const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) 
 // data-info を付けないので、従来どおり常時表示のまま。
 //   data-info-standalone  ちょうどいい見出しが無いので、元の位置に単独で置く
 //   data-info-label       読み上げ・title に使う名前(既定は見出しの文字)
-const INFO_ANCHOR_TAGS = new Set(["LABEL", "H3", "LEGEND", "SUMMARY"]);
+// H2 はモーダルの見出し(替え歌エディタ・自分のMIDI)。見出しの文脈で読めるので
+// ここに生やす。ページ本体の見出しは H3 なので、既存の配置は変わらない。
+const INFO_ANCHOR_TAGS = new Set(["LABEL", "H2", "H3", "LEGEND", "SUMMARY"]);
 
 // 説明を生やす相手(直前のラベル・小見出し・summary)を探す。
 // 同じ .field の中に無ければ一段外へ出て探し、グループの外までは行かない。
@@ -911,8 +1081,11 @@ function openInfoPop(btn, body) {
 document.addEventListener("click", (ev) => {
   if (openInfo && !openInfo.body.contains(ev.target)) closeInfoPop();
 });
+// Escは開いている説明だけを閉じる。モーダルの中の ⓘ でも同じ挙動になるよう、
+// ここで打ち消しておき、後から登録されるモーダル側のEscは defaultPrevented で降りる
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape" || !openInfo) return;
+  ev.preventDefault();
   const btn = openInfo.btn;
   closeInfoPop();
   btn.focus();
@@ -1584,12 +1757,13 @@ async function submitJob(previewSec, previewMode) {
       + "(サンプル曲か、自分のXF MIDIファイル)を選んでください。");
     return;
   }
-  // 自作リストを選んだままCSVが無い(選んでいない・検査に落ちた)状態では投げない
+  // 自作リストを選んだまま使えるCSVが無い(選んでいない・検査に落ちた)状態では
+  // 投げない。直す場所はモーダルなので、詳細設定を開く代わりにそれを開く
   if (isCustomWordlist() && !customWordlist && previewSec <= 0) {
     setBusy(false);
-    $("advanced").open = true;
-    showSubmitMsg("自作の単語リスト(CSVファイル)がまだ選ばれていません。"
-      + "「⚙️ 詳細設定」の「自作の単語リスト」からファイルを選んでください。");
+    showSubmitMsg("使える自作の単語リストがまだありません。"
+      + "開いた画面でCSVを選ぶか、中身を直してください。");
+    openWordlistModal();
     return;
   }
   showSubmitMsg("");
@@ -1685,6 +1859,11 @@ function songTitleOf(file) {
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
 let sampleDescriptions = {};
 
+// 曲プルダウンの最後にある「自分のMIDIを使う…」。サンプルIDではなく「操作」なので、
+// 選ばれても曲の選択には残さず(直前の選択へ戻す)アップロードのモーダルだけを開く。
+// 単語リスト側の CUSTOM_WORDLIST と同じ立て付け(抽選対象からも外す)。
+const UPLOAD_MIDI = "__upload__";
+
 async function loadSamples() {
   try {
     const res = await fetch("/api/samples");
@@ -1692,14 +1871,24 @@ async function loadSamples() {
     const samples = await res.json();
     sampleDescriptions = {};
     samples.forEach((s) => { if (s.description) sampleDescriptions[s.id] = s.description; });
-    $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
-      samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
-    syncBuilderOptions();  // カードの曲プルダウンへ写す
+    // 並びは「いまの状態 / サンプル曲(optgroup) / 操作」。先頭の value="" は
+    // 「未選択」と「自分のMIDI使用中」の兼用、末尾はアップロードを開く操作で、
+    // どちらも曲名ではないのでサンプルのグループの外に置く(見出しは
+    // updateOwnMidiOption が状態に合わせて書き換える)
+    $("sample-select").innerHTML = '<option value="">曲を選ぶ…</option>' +
+      '<optgroup label="サンプル曲">' +
+      samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("") +
+      "</optgroup>" +
+      `<option value="${UPLOAD_MIDI}">自分のMIDIを使う…</option>`;
+    syncBuilderOptions();  // カードの曲プルダウンへ写す(見出しの更新もこの中)
   } catch {
-    // サンプルが取れない環境ではサンプル選択の折りたたみ(#sample-details)ごと隠す。
-    // MIDIファイル選択は詳細設定の中に出たままなので、そちらを使ってもらう。
+    // サンプルが取れない環境。中身の作れない曲プルダウン(#sample-field)だけを隠し、
+    // 折りたたみ自体は開いたままにする。同じ折りたたみの中のMIDIファイル選択が曲を
+    // 指定する唯一の入口になる(「自分のMIDIを使う…」もそのプルダウンの中なので、
+    // 畳んだまま隠すと曲を選ぶ手段が無くなる)。
     // ビルダーカードも成立しないので隠し、入力欄のある詳細設定を開いて迷子にしない
-    $("sample-details").hidden = true;
+    $("sample-field").hidden = true;
+    $("sample-details").open = true;
     $("lucky-card").hidden = true;
     $("advanced").open = true;
   }
@@ -1716,7 +1905,21 @@ let midiFromSample = false;
 // 自分で選んだファイル・復元・拒否によるクリアでは来歴が失われる(=サンプル曲の
 // MIDIではない、または保存時点の古い中身)。scheduleMidiCheck より先に登録する。
 $("midi").addEventListener("change", () => {
-  if (!midiFromSample) midiSampleId = "";
+  if (midiFromSample) return;   // applySample の注入は来歴つき(触らない)
+  midiSampleId = "";
+  if ($("midi").files[0]) {
+    // 自分で選んだMIDIはどのサンプル曲でもないので、曲の選択からも切り離す。
+    // 残したままにすると投入直前の ensureSelectedSampleMidi が「選ばれている曲の
+    // MIDIではない」と判断してサンプルを取り直し、選んだファイルを黙って
+    // 上書きしてしまう(自分のMIDIが無かったことになる事故)
+    $("sample-select").value = "";
+  }
+  // 曲プルダウンの見出し(「自分のMIDI(ファイル名)」/「曲を選ぶ…」)とカード側の
+  // 写しを合わせる。rejectMidi のクリア(ファイル無し)もここを通る。
+  // アップロードのモーダルはここでは閉じない(開いていれば検証結果まで見せたいので、
+  // 表示は後から登録した refreshMidiPanel が受け持つ)
+  syncBuilderValues();
+  schedulePreview();   // builderLive が立つまでは中で何もしない
 });
 
 // 選択中のサンプル曲をフォームに反映する(MIDI・元歌詞)。
@@ -1725,7 +1928,9 @@ $("midi").addEventListener("change", () => {
 // 手で直した元歌詞をリロードのたびに巻き戻さないため)。
 async function applySample(opts = {}) {
   const sid = $("sample-select").value;
-  if (!sid) return false;
+  // UPLOAD_MIDI は曲ではなく操作。選択に残らないはずだが、万一残っても
+  // /api/sample/__upload__/midi を叩きにいかないよう念のため止める
+  if (!sid || sid === UPLOAD_MIDI) return false;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
     const [midiRes, lyricsRes] = await Promise.all([
@@ -1772,11 +1977,25 @@ function trackSample(p) {
   samplePending = p.catch(() => false);   // 失敗は呼び出し側が拾う
   return p;
 }
+// 「自分のMIDIを使う…」を選んだときの戻し先(直前に選ばれていた曲)。
+// プルダウンを直接いじる経路(applyCombo・initBuilder)は change を発火しないので、
+// syncBuilderValues 側でも拾って取りこぼさないようにしてある。
+let lastSampleSid = "";
+
 // 取得に失敗すると前の曲のMIDIがそのまま残る。#sample-status は詳細設定の中に
 // あって畳まれていることが多いので、ビルダーカードにも理由を出す(黙って
 // 別の曲で生成されるのを防ぐのは ensureSelectedSampleMidi)。
 $("sample-select").addEventListener("change", () => {
   const sid = $("sample-select").value;
+  // 「自分のMIDIを使う…」は曲ではなく操作なので、選択は直前の曲へ戻して
+  // モーダルだけを開く(閉じれば何も変わらない)。カード側のプルダウンから来た
+  // ときも正本を経由するのでここで捕まる。後段の同期ハンドラが写し戻す。
+  if (sid === UPLOAD_MIDI) {
+    $("sample-select").value = lastSampleSid;
+    openMidiUploadModal();
+    return;
+  }
+  lastSampleSid = sid;
   trackSample(applySample()).then((ok) => {
     if (ok || !sid || sid !== $("sample-select").value) return;
     showBuilderMsg(`⚠ 「${sampleTitleOf(sid)}」の曲データを取得できませんでした。`
@@ -1790,6 +2009,244 @@ function sampleTitleOf(sid) {
   return (opt && opt.textContent) || sid;
 }
 
+// ---- 自分のMIDIを使う(曲プルダウンからのアップロード) ----
+// 「自分の曲でやる」導線は詳細設定の奥のファイル選択欄だけだったので、曲の
+// プルダウンから直接たどれるようにした。ファイル選択の実体は #midi のままで、
+// ここはその入口を前に出すだけ。ドロップも「ファイルを選ぶ」も最後は #midi に
+// 流すので、来歴のリセット(上の change)・歌詞なしMIDIの拒否(checkMidi)・
+// localStorage保存といった既存の経路がそのまま効く。
+// ファイルが入っても閉じない。歌詞なしMIDIの取り消しは非同期に決まるうえ、
+// 元歌詞は自分のMIDIでは自動で入らないので、「選ぶ → 検証結果 → 元歌詞 → 完了」
+// までをこのモーダルの中で終わらせる。
+
+// いま #midi に入っている「自分の」MIDI。サンプル曲から入れたもの(来歴つき、
+// または曲が選ばれている状態)は自分のMIDIではないので null になる。
+const ownMidiFile = () =>
+  (!midiSampleId && !$("sample-select").value && $("midi").files[0]) || null;
+
+// 曲プルダウンの value="" は「未選択」と「自分のMIDI使用中」の兼用。どちらなのかは
+// #midi の中身と来歴で決まるので、見出しの文字だけをここで書き換える。
+// 末尾の操作(UPLOAD_MIDI)も同じ状態で言い方を変える。使用中に「自分のMIDIを使う…」が
+// 並んでいると、状態の行と同じことを言っているように見えるため。
+// (選択肢の作り直しではないので syncBuilderOptions は呼ばない=呼び合いにならない)
+function updateOwnMidiOption() {
+  const f = ownMidiFile();
+  const state = f ? `自分のMIDI(${f.name})` : "曲を選ぶ…";
+  const action = f ? "別のMIDIファイルに差し替える…" : "自分のMIDIを使う…";
+  // optgroup があっても options はすべての option を平らに並べて返す
+  [$("sample-select"), $("builder-sample")].forEach((sel) => {
+    const cur = [...sel.options].find((o) => !o.value);
+    if (cur) cur.textContent = state;   // ファイル名は textContent なのでそのまま出せる
+    const act = [...sel.options].find((o) => o.value === UPLOAD_MIDI);
+    if (act) act.textContent = action;
+  });
+}
+
+// エラーの出しどころはパネルの中の1か所だけ(#midi-error)。パネルごと動くので、
+// 詳細設定にいてもモーダルにいても同じ場所に出る(写して回る必要がない)。
+function showMidiError(text) {
+  $("midi-error").textContent = text || "";
+  $("midi-error").hidden = !text;
+}
+
+function showMidiModalStatus(text, ok) {
+  $("midi-modal-status").textContent = text || "";
+  $("midi-modal-status").hidden = !text;
+  $("midi-modal-status").classList.toggle("is-ok", !!ok);
+}
+
+// 投下先そのものに「入っているファイル」を出す。✓ の一行だけだと変化に気づかれない
+// ので、枠の色と中の文字ごと入れ替える(押して差し替えられることは残す)。
+function updateMidiDropZone() {
+  const f = ownMidiFile();
+  $("midi-drop").classList.toggle("is-loaded", !!f);
+  $("midi-drop-title").textContent = f ? `♪ ${f.name}` : "ここにXF MIDIファイルをドロップ";
+  $("midi-drop-sub").textContent = f
+    ? "ドロップ / クリックで差し替え" : "またはクリックしてファイルを選ぶ";
+}
+
+// 選ばれているファイルと、その検証(/api/midi-check)の途中経過をパネルに出す。
+// パネルは詳細設定にいるあいだも見えているので、モーダルの開閉に関わらず描く。
+// 検証は非同期なので、待っているあいだに別のファイルを入れられても最後の1件だけが
+// 残るよう世代番号で古い描画を捨てる(checkMidi の midiCheckSeq と同じ考え方)。
+let midiModalStatusSeq = 0;
+async function refreshMidiPanel() {
+  const seq = ++midiModalStatusSeq;
+  updateMidiDropZone();   // 枠の見た目はファイルの有無だけで決まる(検証を待たない)
+  const f = ownMidiFile();
+  // ファイルが無い(まだ選んでいない・rejectMidi が取り消した直後)。
+  // 取り消しの理由は rejectMidi があとから #midi-error に書くので消さない
+  if (!f) { showMidiModalStatus(""); resetMidiLyricsHelp(); return; }
+  showMidiError("");
+  resetMidiLyricsHelp();   // 前のファイルについての案内・2択は持ち越さない
+  showMidiModalStatus(`${f.name} を検証中…`);
+  if (midiChecking) await midiChecking;
+  if (seq !== midiModalStatusSeq) return;   // 別のファイルに追い越された
+  const now = ownMidiFile();
+  if (!now) return;   // 検証で取り消された(理由は #midi-error に出ている)
+  showMidiModalStatus(`✓ ${now.name}(歌詞入りMIDIを確認しました)`, true);
+  // 元歌詞の下敷きはモーダルの中でだけ入れる。定位置では写しを隠しているので、
+  // 見えないところで #lyrics が書き換わることになってしまう
+  if (!$("midi-modal").hidden) prefillLyricsFromMidi(now);
+}
+
+// 通ったXF MIDIの歌詞を元歌詞欄の下敷きにする。自分のMIDIを持ち込む人は元歌詞の
+// テキストを別に用意していないことが多く、空のままだと字幕に元歌詞の行が出ない。
+//   空          → 黙って入れる(消えるものが無いので確認は要らない)
+//   同じ内容    → 何もしない
+//   違う内容あり→ 勝手に消さず、その場の2択で聞く
+// 入れると #lyrics の change が飛んで検証がもう一度走るが、そのときは
+// 「空でない・MIDIと同じ」になっているのでここには戻ってこない(繰り返さない)。
+let midiLyricsCandidate = "";   // 2択で「MIDIの歌詞にする」を押されたときに入れる本文
+
+function resetMidiLyricsHelp() {
+  midiLyricsCandidate = "";
+  $("midi-lyrics-prompt").hidden = true;
+  showMidiModalNote("");
+}
+
+function showMidiModalNote(text) {
+  $("midi-modal-note").textContent = text || "";
+  $("midi-modal-note").hidden = !text;
+}
+
+// モーダルの元歌詞欄と正本(#lyrics)をまとめて書き換える。change まで出すので
+// フォーム保存と歌詞↔MIDIの突き合わせは通常の経路で走る。
+function setMidiModalLyrics(text) {
+  $("midi-modal-lyrics").value = text;
+  midiModalLyricsDirty = true;
+  flushMidiModalLyrics();
+  showMidiModalNote("MIDIの歌詞から元歌詞を入れました。字幕に出したい形に整えてください。");
+}
+
+function prefillLyricsFromMidi(file) {
+  // 検証が通らなかった(通信失敗など)ファイルの下敷きに、前のファイルの結果を
+  // 使ってしまわないよう File の同一性で突き合わせる
+  if (!lastMidiCheck || lastMidiCheck.file !== file) return;
+  const lines = lastMidiCheck.lines.join("\n");
+  if (!lines.trim()) return;
+  const cur = $("midi-modal-lyrics").value;
+  if (!cur.trim()) { setMidiModalLyrics(lines); return; }
+  if (cur === lines) return;
+  midiLyricsCandidate = lines;
+  $("midi-lyrics-prompt").hidden = false;
+}
+
+$("midi-lyrics-replace").addEventListener("click", () => {
+  const lines = midiLyricsCandidate;
+  resetMidiLyricsHelp();
+  if (lines) setMidiModalLyrics(lines);
+});
+$("midi-lyrics-keep").addEventListener("click", resetMidiLyricsHelp);
+
+// モーダルの元歌詞は #lyrics(正本)の写し。開くたびに読み直し、打った内容は
+// その場で正本の value へ書き戻す。change(離脱時)だけ正本の change を発火して、
+// フォーム保存と歌詞↔MIDIの突き合わせ(scheduleMidiCheck)を回す。
+// 1打鍵ごとに /api/midi-check を投げないための分け方。
+let midiModalLyricsDirty = false;
+
+function flushMidiModalLyrics() {
+  if (!midiModalLyricsDirty) return;
+  midiModalLyricsDirty = false;
+  $("lyrics").value = $("midi-modal-lyrics").value;
+  $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+$("midi-modal-lyrics").addEventListener("input", () => {
+  midiModalLyricsDirty = true;
+  $("lyrics").value = $("midi-modal-lyrics").value;   // 値だけ先に反映(changeは離脱時)
+});
+$("midi-modal-lyrics").addEventListener("change", flushMidiModalLyrics);
+
+// パネルの引っ越し。中身は1つしか作らないので、モーダルを開くときはスロットへ、
+// 閉じるときは定位置(#…-panel-home)へ移す。DOMノードを動かしてもイベント
+// リスナーは付いたままなので、配線し直す必要はない。
+// .panel-inline は「定位置にいる」印(元歌詞の写しなど、そこでは出さないものを
+// CSSで隠すのに使う)。
+function movePanel(panelId, targetId, inline) {
+  const panel = $(panelId);
+  $(targetId).appendChild(panel);
+  panel.classList.toggle("panel-inline", inline);
+}
+
+function openMidiUploadModal() {
+  // 説明(ⓘ)はモーダルより手前に出るので、開きっぱなしを持ち込まない。
+  // ここはプルダウンの change から呼ばれる(キーボード選択では click が無く、
+  // 外側タップで閉じる経路に乗らない)ので、明示的に閉じておく
+  closeInfoPop();
+  movePanel("midi-panel", "midi-panel-slot", false);
+  // 写しは移してから正本を読み直す(定位置では隠していて中身が古いことがある)
+  $("midi-modal-lyrics").value = $("lyrics").value;
+  midiModalLyricsDirty = false;
+  $("midi-modal").hidden = false;
+  refreshMidiPanel();
+  $("midi-drop").focus();     // 最初にやることは「ファイルを入れる」
+}
+
+function closeMidiUploadModal() {
+  if ($("midi-modal").hidden) return;
+  flushMidiModalLyrics();   // 打った直後に閉じられても取りこぼさない
+  resetMidiLyricsHelp();    // 開き直したときに前回の2択を持ち越さない
+  $("midi-modal").hidden = true;
+  $("midi-drop").classList.remove("dragover");
+  movePanel("midi-panel", "midi-panel-home", true);
+  // 開いた元はプルダウンの change なので「押したボタン」が無い。見えているほうの
+  // 曲プルダウンへフォーカスを返す(詳細設定が畳まれていれば当たらないだけ)
+  ($("lucky-card").hidden ? $("sample-select") : $("builder-sample")).focus();
+}
+
+// ファイル選択は本物の #midi に開かせる(利用者の操作の中で呼ぶので開ける)。
+// 「ファイルを選ぶ」は label for="midi" なのでブラウザが直接開く(JSを挟むと
+// label の標準挙動と二重にピッカーを開こうとしてしまうため、listener は付けない)
+const pickOwnMidi = () => $("midi").click();
+$("midi-drop").addEventListener("click", pickOwnMidi);
+$("midi-drop").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  ev.preventDefault();   // divをボタンに見せている以上、キーボードでも押せるようにする
+  pickOwnMidi();
+});
+// ファイルも元歌詞も選んだ時点で本体へ反映済み(ここで確定するものは無い)ので、
+// 「完了」は閉じるだけ。Esc・暗幕クリックと同じ扱い
+$("midi-modal-done").addEventListener("click", closeMidiUploadModal);
+// 暗幕(カードの外)を押したら閉じる
+$("midi-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("midi-modal")) closeMidiUploadModal();
+});
+// Escで閉じる。替え歌エディタのモーダルとは同時に開かないので、互いのハンドラは
+// 「自分が開いているときだけ拾う」だけで干渉しない。
+// ⓘ の説明を開いているときは、そちらが先に Esc を使うのでモーダルは閉じない
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || ev.defaultPrevented || $("midi-modal").hidden) return;
+  ev.preventDefault();
+  closeMidiUploadModal();
+});
+
+// ドラッグ&ドロップ。拡張子だけはここで弾いて(サーバーに投げても無駄なので)、
+// 通ったものは #midi に流す。以降は自分でファイルを選んだときと同じ経路で、
+// checkMidi が歌詞の有無を見て、その結果がモーダルの状態表示に出る。
+["dragenter", "dragover"].forEach((type) => {
+  $("midi-drop").addEventListener(type, (ev) => {
+    ev.preventDefault();   // 既定のままだとブラウザがファイルを開いてしまう
+    $("midi-drop").classList.add("dragover");
+  });
+});
+$("midi-drop").addEventListener("dragleave", () => {
+  $("midi-drop").classList.remove("dragover");
+});
+$("midi-drop").addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  $("midi-drop").classList.remove("dragover");
+  const f = ((ev.dataTransfer && ev.dataTransfer.files) || [])[0];
+  if (!f) return;
+  if (!/\.(mid|midi)$/i.test(f.name)) {
+    // 取り違えはその場で言う(モーダルは開けたままにして選び直してもらう)
+    showMidiError("MIDIファイル(.mid / .midi)を入れてください。");
+    return;
+  }
+  showMidiError("");
+  injectFile($("midi"), f, true);
+});
+
 // 投入直前に「#midi の中身がいま選ばれている曲のものである」ことを確かめる。
 // 食い違い(取得に失敗して前の曲が残った・localStorageから復元した古い中身)は
 // ここで取り直し、それでも揃わなければ false を返して投入を止める。
@@ -1798,7 +2255,10 @@ function sampleTitleOf(sid) {
 // onFail: 失敗の理由をどこに出すか(既定は生成の導線とカードの両方)。
 async function ensureSelectedSampleMidi(onFail) {
   const sid = $("sample-select").value;
-  if (!sid) return true;                 // 自分のMIDIを使う人はそのまま
+  // 曲が未選択(=自分のMIDIを使っている)ならそのまま通す。自分でMIDIを選んだ
+  // 時点で選択は必ず外れる(#midi の change)ので、ここでサンプルを取り直して
+  // 自分のファイルを上書きしてしまうことはない
+  if (!sid) return true;
   const matched = () => midiSampleId === $("sample-select").value && !!$("midi").files[0];
   if (matched()) return true;
   const ok = await trackSample(applySample()).catch(() => false);
@@ -1826,6 +2286,10 @@ let midiCheckSeq = 0;       // 応答の追い越しを捨てるための世代�
 let midiCheckTimer = null;
 let midiChecking = null;    // 検証中のPromise(投入・編集の前に待つ)
 let midiRejecting = false;  // 拒否のクリアで自分自身を呼び直さないための番人
+// 最後に通った検証の結果 { file, lines }。lines は midi_lines(XF歌詞の行テキスト)。
+// 自分のMIDIのモーダルが元歌詞の下敷きに使う。どのファイルの結果かを File の同一性で
+// 持っておき、検証に失敗したまま別のファイルへ持ち越さないようにする。
+let lastMidiCheck = null;
 
 function scheduleMidiCheck() {
   if (midiRejecting) return;
@@ -1844,7 +2308,9 @@ function clearMidiNotices() {
 }
 
 // 歌詞なしMIDIはその場で取り消す。理由と「どうすれば作れるか」を1行添える。
-function rejectMidi(detail) {
+// notMidi: MIDIですらないファイル(400)。「歌詞が入っていない」では嘘になるので
+// 最初の一文だけ差し替える(直し方の案内は同じ)。
+function rejectMidi(detail, notMidi) {
   midiRejecting = true;
   try {
     $("midi").value = "";
@@ -1854,12 +2320,15 @@ function rejectMidi(detail) {
   }
   $("midi-restore-hint").hidden = true;
   $("sample-status").textContent = "";
-  const text = "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。"
+  const text = (notMidi
+    ? "⚠ このファイルはMIDIとして読めないので使えません(取り消しました)。"
+    : "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。")
     + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
     + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
     + (detail ? `\n(${detail})` : "");
-  $("midi-error").textContent = text;
-  $("midi-error").hidden = false;
+  // #midi-error はパネルの中にあり、パネルは詳細設定にいてもモーダルにいても
+  // 見えている。上のクリア(change)で状態表示は空になっているので、理由はこの順で書く
+  showMidiError(text);
   // 詳細設定を開いていない人(ビルダーカードの曲プルダウン)にも見えるように
   showSubmitMsg(text);
 }
@@ -1890,25 +2359,37 @@ async function checkMidi() {
   const f = $("midi").files[0];
   if (!f) { clearMidiNotices(); return; }
   let body;
+  let notMidi = false;   // サーバーが「MIDIですらない」と判定した(400 + detail)
   try {
     const form = new FormData();
     form.append("midi", f);
     form.append("lyrics", $("lyrics").value);
     const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
     body = await res.json();
-    if (!res.ok) throw new Error(body.detail || res.status);
+    if (!res.ok) {
+      // 拡張子だけMIDIのファイル(MThdで始まらない)はここで400になる。黙って
+      // 通すと何分も待たせた末に生成が落ちるので、歌詞なしと同じくその場で取り消す。
+      // それ以外のエラー応答(401・500など)は中身を判定できないので通す
+      notMidi = res.status === 400 && !!body.detail;
+      if (!notMidi) return;
+    }
   } catch {
-    // 検証そのものに失敗したときは黙って通す(生成側で従来どおりのエラーになる)
+    // 通信そのものに失敗した・応答がJSONでないときは黙って通す
+    // (生成側で従来どおりのエラーになる)
     return;
   }
   if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
   clearMidiNotices();
-  if (!body.has_lyrics) { rejectMidi(body.detail); return; }
+  if (notMidi || !body.has_lyrics) { rejectMidi(body.detail, notMidi); return; }
+  lastMidiCheck = { file: f, lines: body.midi_lines || [] };
   renderLyricsMidiWarning(body);
 }
 
 $("midi").addEventListener("change", scheduleMidiCheck);
 $("lyrics").addEventListener("change", scheduleMidiCheck);
+// モーダルの状態表示は「検証中…」を出すために midiChecking を見る。上の
+// scheduleMidiCheck より後に登録しないと、1つ前の検証を待ってしまう
+$("midi").addEventListener("change", refreshMidiPanel);
 
 // ---- ビルダーカード(曲 × 単語リスト → サムネプレビュー → 生成) ----
 // トップのカードで曲と単語リストを選ぶと、その組み合わせで実際に作られるサムネを
@@ -1956,14 +2437,27 @@ let wordlistChecking = null;
 const isCustomWordlist = () =>
   !$("wordlist-select").hidden && $("wordlist-select").value === CUSTOM_WORDLIST;
 
-// 自作リストを選んだ直後にファイル選択を開く(まだ選んでいないときだけ)
-function openCustomWordlistPicker() {
-  if (isCustomWordlist() && !customWordlist) $("wordlist-csv").click();
+// プルダウンの「自作リストを使う(CSV)」の表示。検査を通っていればその名前と語数を
+// 出して、いま何が入っているのかを選択肢のまま読めるようにする(曲側の
+// updateOwnMidiOption と同じ立て付け)。選択肢の作り直しではないので
+// syncBuilderOptions は呼ばない=呼び合いにならない。
+function updateCustomWordlistOption() {
+  const label = customWordlist
+    ? `自作リスト(${customWordlist.name}・${customWordlist.rows}語)`
+    : "自作リストを使う(CSV)";
+  [$("wordlist-select"), $("builder-wordlist")].forEach((sel) => {
+    const opt = [...sel.options].find((o) => o.value === CUSTOM_WORDLIST);
+    if (opt) opt.textContent = label;
+  });
 }
 
+// 検査の状態はこの1組(パネルの中)だけ。パネルごと動くので、詳細設定にいても
+// モーダルにいても同じ場所に出る(写して回る必要がない)。
 function showCustomWordlistMsg(status, error) {
   $("wordlist-csv-status").textContent = status || "";
   $("wordlist-csv-status").hidden = !status;
+  // 通ったときだけ成功色(「確認中…」やエラー直後は控えめなグレーのまま)
+  $("wordlist-csv-status").classList.toggle("is-ok", !!customWordlist);
   $("wordlist-csv-error").textContent = error || "";
   $("wordlist-csv-error").hidden = !error;
 }
@@ -1972,7 +2466,12 @@ function showCustomWordlistMsg(status, error) {
 async function checkCustomWordlist() {
   const f = $("wordlist-csv").files[0];
   customWordlist = null;
-  if (!f) { showCustomWordlistMsg("", ""); schedulePreview(); return; }
+  if (!f) {
+    showCustomWordlistMsg("", "");
+    updateCustomWordlistOption();   // 選択肢の文言も「まだ選んでいない」へ戻す
+    schedulePreview();
+    return;
+  }
   showCustomWordlistMsg("確認中…", "");
   const form = new FormData();
   form.append("wordlist_csv", f);
@@ -1995,15 +2494,162 @@ async function checkCustomWordlist() {
         + (notes.length ? `(${notes.join("・")})` : ""), "");
     } catch (err) {
       $("wordlist-csv").value = "";   // 通らなかったファイルは選択ごと取り消す
+      // 上のクリアは change を出さないので、保存済みのCSVはここで自分で消す
+      // (次のリロードで直っていないリストが戻ってこないように)
+      try { localStorage.removeItem(WORDLIST_CSV_KEY); } catch { /* 無視 */ }
       showCustomWordlistMsg("", "この単語リストは使えません: " + err.message);
     }
   })();
   await wordlistChecking;
   wordlistChecking = null;
+  updateCustomWordlistOption();   // 通ったら名前と語数、落ちたら元の文言へ
   saveForm();
   schedulePreview();
 }
 $("wordlist-csv").addEventListener("change", checkCustomWordlist);
+
+// ---- 自作リストのモーダル(選ぶ・結果を見る・その場で直す) ----
+// 単語リストは短いテキストなので、検査に落ちたときに「外で直して選び直す」より
+// 「出た理由を見ながらその場で直す」ほうが早い。ファイル選択の実体は
+// #wordlist-csv のままで、直した中身も同じ入力にFileとして流し込むので、検査も
+// 投入(multipartのwordlist_csv)も従来とまったく同じ経路を通る。
+
+const WORDLIST_EDIT_DEBOUNCE_MS = 600;   // 打ち終わったと見なすまでの待ち
+
+// いまモーダルで扱っている中身と名前。検査に落ちると #wordlist-csv は空にされる
+// (checkCustomWordlist)が、直して出し直せるようにテキストはこちらで持ち続ける。
+let wordlistCsvText = "";
+let wordlistCsvName = "";
+let wordlistEditTimer = null;
+// テキスト欄から作ったFileを注入しているあいだだけ true。その change で
+// テキスト欄を読み直すと、打っている最中の内容を自分で上書きしてしまう
+let wordlistFromEditor = false;
+
+// CSVをテキストとして読む。サーバーはUTF-8とcp932の両方を受けるので、UTF-8で
+// 読んで置換文字(U+FFFD)が混じったときだけShift_JISで読み直す
+// (BOM付きUTF-8は TextDecoder が落としてくれる)。
+async function readCsvText(file) {
+  const buf = await file.arrayBuffer();
+  const utf8 = new TextDecoder("utf-8").decode(buf);
+  if (!utf8.includes("�")) return utf8;
+  try { return new TextDecoder("shift_jis").decode(buf); } catch { return utf8; }
+}
+
+// 投下先には「いま直しているリスト」を出す。検査に落ちて #wordlist-csv が空に
+// なっていても、直している最中は名前を消さない(何を直しているのか見失うため)。
+function updateWordlistDropZone() {
+  const name = wordlistCsvName;
+  $("wordlist-drop").classList.toggle("is-loaded", !!name);
+  $("wordlist-drop-title").textContent = name
+    ? `📄 ${name}` : "ここに単語リストCSVをドロップ";
+  $("wordlist-drop-sub").textContent = name
+    ? "ドロップ / クリックで差し替え" : "またはクリックしてファイルを選ぶ";
+}
+
+// #wordlist-csv が変わるたびにパネルの表示(投下先とテキスト欄)を作り直す。
+// 検査の結果は checkCustomWordlist が #wordlist-csv-status / -error に直接書き、
+// その2行はパネルの中にあるので、ここで写す必要はない。
+// テキストの読み込みは非同期なので、待っているあいだに別のファイルを入れられても
+// 最後の1件だけが残るよう世代番号で古い描画を捨てる。
+let wordlistModalSeq = 0;
+async function refreshWordlistPanel() {
+  const seq = ++wordlistModalSeq;
+  const f = $("wordlist-csv").files[0];
+  // 外から入ったファイル(選択・ドロップ・復元)だけテキスト欄へ読み込む。
+  // 自分の編集から作ったFileで読み直すと、打っている内容を自分で潰してしまう
+  if (f && !wordlistFromEditor) {
+    wordlistCsvName = f.name;
+    const text = await readCsvText(f);
+    if (seq !== wordlistModalSeq) return;   // 別のファイルに追い越された
+    wordlistCsvText = text;
+    $("wordlist-modal-text").value = text;
+  }
+  updateWordlistDropZone();
+}
+$("wordlist-csv").addEventListener("change", refreshWordlistPanel);
+
+// テキスト欄の中身を #wordlist-csv(正本)へ流す。中身が変わっていなければ
+// 何もしないので、検査の投げ直しも起きない(打つたびにサーバーへ行かせない)。
+function commitWordlistText() {
+  clearTimeout(wordlistEditTimer);
+  const text = $("wordlist-modal-text").value;
+  if (text === wordlistCsvText) return;
+  wordlistCsvText = text;
+  if (!wordlistCsvName) wordlistCsvName = "custom.csv";
+  wordlistFromEditor = true;
+  try {
+    injectFile($("wordlist-csv"),
+      new File([text], wordlistCsvName, { type: "text/csv" }), true);
+  } finally {
+    wordlistFromEditor = false;   // change は同期に流れ切っているのでここで戻せる
+  }
+}
+$("wordlist-modal-text").addEventListener("input", () => {
+  clearTimeout(wordlistEditTimer);
+  wordlistEditTimer = setTimeout(commitWordlistText, WORDLIST_EDIT_DEBOUNCE_MS);
+});
+
+function openWordlistModal() {
+  closeInfoPop();   // 説明(ⓘ)はモーダルより手前に出るので持ち込まない
+  movePanel("wordlist-panel", "wordlist-panel-slot", false);
+  $("wordlist-modal").hidden = false;
+  refreshWordlistPanel();
+  $("wordlist-drop").focus();
+}
+
+function closeWordlistModal() {
+  if ($("wordlist-modal").hidden) return;
+  commitWordlistText();   // 打った直後に閉じられても取りこぼさない
+  $("wordlist-modal").hidden = true;
+  $("wordlist-drop").classList.remove("dragover");
+  movePanel("wordlist-panel", "wordlist-panel-home", true);
+  // 開いた元はプルダウンの change なので「押したボタン」が無い。見えているほうの
+  // 単語リストプルダウンへフォーカスを返す
+  ($("lucky-card").hidden ? $("wordlist-select") : $("builder-wordlist")).focus();
+}
+
+// キーボードからも投下先を押せるようにする(label と違い div なので自前で拾う)
+$("wordlist-drop").addEventListener("click", () => $("wordlist-csv").click());
+$("wordlist-drop").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  ev.preventDefault();
+  $("wordlist-csv").click();
+});
+// 選んだ時点で本体に反映済みなので「完了」は閉じるだけ
+$("wordlist-modal-done").addEventListener("click", closeWordlistModal);
+$("wordlist-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("wordlist-modal")) closeWordlistModal();
+});
+// ⓘ の説明を開いているときは、そちらが先に Esc を使うのでモーダルは閉じない
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || ev.defaultPrevented || $("wordlist-modal").hidden) return;
+  ev.preventDefault();
+  closeWordlistModal();
+});
+
+// ドラッグ&ドロップ。拡張子だけはここで弾き(サーバーに投げても無駄なので)、
+// 通ったものは #wordlist-csv に流す。以降は自分で選んだときと同じ経路。
+["dragenter", "dragover"].forEach((type) => {
+  $("wordlist-drop").addEventListener(type, (ev) => {
+    ev.preventDefault();   // 既定のままだとブラウザがファイルを開いてしまう
+    $("wordlist-drop").classList.add("dragover");
+  });
+});
+$("wordlist-drop").addEventListener("dragleave", () => {
+  $("wordlist-drop").classList.remove("dragover");
+});
+$("wordlist-drop").addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  $("wordlist-drop").classList.remove("dragover");
+  const f = ((ev.dataTransfer && ev.dataTransfer.files) || [])[0];
+  if (!f) return;
+  if (!/\.(csv|txt)$/i.test(f.name)) {
+    showCustomWordlistMsg("", "単語リストのテキスト(.csv / .txt)を入れてください。");
+    return;
+  }
+  showCustomWordlistMsg("", "");
+  injectFile($("wordlist-csv"), f, true);
+});
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -2030,7 +2676,9 @@ function luckyCombo(sampleId, wordlistName) {
 // ランダム抽選。曲はサンプル全体から、単語リストは重い辞書を除いた中から選ぶ。
 // 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
 function luckyRandomCombo() {
-  const samples = [...$("sample-select").options].filter((o) => o.value);
+  // 「自分のMIDIを使う…」はファイルが要るのでランダムでは選ばない
+  const samples = [...$("sample-select").options]
+    .filter((o) => o.value && o.value !== UPLOAD_MIDI);
   if (!samples.length) return null;
   const sel = $("wordlist-select");
   // 自作リスト(CSV)はファイルが要るのでランダムでは選ばない
@@ -2067,9 +2715,18 @@ function syncBuilderOptions() {
 
 // 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
 function syncBuilderValues() {
-  $("builder-sample").value = $("sample-select").value;
+  const sid = $("sample-select").value;
+  $("builder-sample").value = sid;
   const wl = $("wordlist-select");
   $("builder-wordlist").value = wl.hidden ? "" : wl.value;
+  // 曲の選択が動く経路(change・applyCombo・initBuilder・自分のMIDIの投入)は
+  // すべてここを通るので、value="" の見出しの更新と「戻し先」の記録もここでやる。
+  // change ハンドラだけに任せると、プルダウンを直接いじる経路を取りこぼす。
+  updateOwnMidiOption();
+  // 自作リストの見出しも同じ理由でここ。選択肢を作り直す syncBuilderOptions は
+  // innerHTML を丸写しするので、写したあとに書き直さないと元の文言に戻ってしまう
+  updateCustomWordlistOption();
+  if (sid !== UPLOAD_MIDI) lastSampleSid = sid;
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -2465,11 +3122,11 @@ $("builder-wordlist").addEventListener("change", () => {
   const sel = $("wordlist-select");
   sel.value = v;
   sel.dispatchEvent(new Event("change", { bubbles: true }));
-  // 「自作リストを使う(CSV)」はファイル選択が詳細設定側にあるので、そちらを
-  // 開いて見せたうえでファイル選択を出す(押した本人の操作なので開いてよい)
+  // 「自作リストを使う(CSV)」はモーダルで完結する(ファイル選択も中身の編集も
+  // その中)。上の change は合成イベントで正本側のハンドラが開かないので、
+  // 押した本人の操作であるここで開く。詳細設定を開いて見せる必要はもう無い
   if (v === CUSTOM_WORDLIST) {
-    $("advanced").open = true;
-    openCustomWordlistPicker();
+    openWordlistModal();
   } else clearEditorFile();
   schedulePreview();
 });
@@ -2498,7 +3155,9 @@ async function initBuilder() {
   await samplesReady;         // 曲のプルダウンが揃うのを待つ
   if ($("lucky-card").hidden) return;   // サンプルが取れない環境ではカードごと出ない
   syncBuilderOptions();
-  const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
+  // 「自分のMIDIを使う…」はサンプルIDではないので、曲の同定には使わせない
+  const known = new Set([...$("sample-select").options]
+    .filter((o) => o.value && o.value !== UPLOAD_MIDI).map((o) => o.value));
   const def = DEFAULT_COMBO;
   // 1. 曲: 復元されたMIDIがサンプル曲なら、その選択に戻し、MIDIは取り直す。
   //    復元したMIDI(localStorageのdataURL)は保存した時点の中身なので、同梱
@@ -2514,8 +3173,12 @@ async function initBuilder() {
   if (!currentWordlistName() && !isCustomWordlist() && def.wordlist) {
     selectWordlist(def.wordlist);
   }
-  // 3. 曲がまだ無ければ既定の組み合わせをセットする(MIDIと元歌詞をここで取りに行く)
-  if (!$("sample-select").value && known.has(def.sample)) {
+  // 3. 曲がまだ無ければ既定の組み合わせをセットする(MIDIと元歌詞をここで取りに行く)。
+  //    ただし復元されたMIDIがサンプルのどれでもない=自分のMIDIなら、既定曲で
+  //    上書きしない(リロードのたびに自分のファイルが消える事故になる)。曲の
+  //    プルダウンは未選択のまま「自分のMIDI(ファイル名)」を出す(syncBuilderValues)
+  const ownMidi = !!$("midi").files[0] && !known.has(restoredId);
+  if (!$("sample-select").value && !ownMidi && known.has(def.sample)) {
     $("sample-select").value = def.sample;
     trackSample(applySample());
   }
@@ -3867,6 +4530,7 @@ function closeEditor() {
 }
 
 function showEditorFrame() {
+  closeInfoPop();       // 説明(ⓘ)はモーダルより手前に出るので持ち込まない
   hideEditorResume();   // 選択の役目は終わり(開いたら裏に残さない)
   $("editor-frame").src = "/editor/editor.html";
   $("editor-frame-wrap").hidden = false;
@@ -3881,7 +4545,8 @@ function showEditorFrame() {
 // 飛んでこないので、同一オリジンの利点を使ってiframe側のdocumentにも同じ
 // ハンドラを付ける(付けられなければ親のEscだけになる)。
 function onEditorModalKeydown(ev) {
-  if (ev.key !== "Escape" || $("editor-frame-wrap").hidden) return;
+  // ⓘ の説明が開いているときはそちらが Esc を使う(閉じるのは説明だけ)
+  if (ev.key !== "Escape" || ev.defaultPrevented || $("editor-frame-wrap").hidden) return;
   ev.preventDefault();
   closeEditor();
 }
@@ -4180,6 +4845,9 @@ function applyWordlistSelection() {
   const opt = sel.selectedOptions[0];
   const custom = !!opt && opt.value === CUSTOM_WORDLIST;
   $("custom-wordlist").hidden = !custom;
+  // 自作リストのパネルはここで見えるようになる。復元でCSVを注入した経路は change を
+  // 出さないので、テキスト欄と投下先はこの機会に読み込んでおく
+  if (custom) refreshWordlistPanel();
   $("where-field").hidden = custom;   // 自作リストに絞り込みは効かない
   if (!opt || custom) {
     filters.hidden = true; filters.innerHTML = "";
@@ -4203,9 +4871,10 @@ function applyWordlistSelection() {
 }
 $("wordlist-select").addEventListener("change", (ev) => {
   applyWordlistSelection();
-  // 自作リストは選んだ直後にファイル選択を開く(選択即実行)。復元・カード側からの
-  // 同期のような合成イベントでは開かない(勝手にダイアログが出ないように)
-  if (ev.isTrusted) openCustomWordlistPicker();
+  // 自作リストは選んだ直後にモーダルを開く(選択即実行)。すでにファイルがあっても
+  // 開く——選び直したのは「中身を見たい/差し替えたい」ときなので。
+  // 復元・カード側からの同期のような合成イベントでは開かない(勝手に窓が出ないように)
+  if (ev.isTrusted && isCustomWordlist()) openWordlistModal();
 });
 
 // 復元された #where に合わせて facet のチェック状態を戻す。filters が隠れている
@@ -4340,6 +5009,8 @@ $("download-editor").addEventListener("click", async () => {
 // テキスト・選択系は formState にまとめ、ファイルは midiFile / editorFile に別保存する。
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
+// 自作リストのCSV。中身はテキストなので dataURL 化せずそのまま持つ
+const WORDLIST_CSV_KEY = "wordlistCsv";
 
 // 変換パラメータのスライダー(本家 external/soramimic 4443a7b frontend/src/app.js の
 // createSliderItem 3本と同一の範囲・既定値)。
@@ -4518,6 +5189,19 @@ $("midi").addEventListener("change", async () => {
   } catch { /* 保存失敗は無視 */ }
 });
 
+// 自作リストのCSVもテキストのまま保存(未選択なら消す)。読み込むときに
+// 文字コードを揃えている(readCsvText)ので、保存されるのは常にUTF-8のテキスト。
+// 検査に落ちて入力が空にされる経路は change を出さないため、そちらは
+// checkCustomWordlist 側で消している
+$("wordlist-csv").addEventListener("change", async () => {
+  const f = $("wordlist-csv").files[0];
+  try {
+    if (!f) { localStorage.removeItem(WORDLIST_CSV_KEY); return; }
+    localStorage.setItem(WORDLIST_CSV_KEY,
+      JSON.stringify({ name: f.name, text: await readCsvText(f) }));
+  } catch { /* 保存失敗は無視 */ }
+});
+
 // editor JSONはテキストのまま保存(「取り消し」でvalue=""なら消す)
 $("editor").addEventListener("change", async () => {
   const f = $("editor").files[0];
@@ -4554,6 +5238,19 @@ async function doRestoreForm() {
   let state = null;
   try { state = JSON.parse(localStorage.getItem(FORM_KEY) || "null"); } catch { /* 壊れた値は無視 */ }
 
+  // 0. 自作リストのCSV: 単語リストの復元より先に注入しておく(下の 1. が
+  //    「保存されたリスト名が空 + CSVあり」を見て自作リストの選択へ戻す)。
+  //    changeは出さない——検査は選択を戻したあとに1回だけ走らせる
+  let restoredCsv = null;
+  try {
+    const saved = JSON.parse(localStorage.getItem(WORDLIST_CSV_KEY) || "null");
+    if (saved && saved.text != null) {
+      restoredCsv = saved;
+      injectFile($("wordlist-csv"),
+        new File([saved.text], saved.name || "custom.csv", { type: "text/csv" }), false);
+    }
+  } catch { /* 復元失敗は無視 */ }
+
   if (state) {
     // 1. 単語リスト: 選択肢があれば name/where 一致のoptionを選ぶ
     const sel = $("wordlist-select");
@@ -4579,11 +5276,20 @@ async function doRestoreForm() {
         sel.value = String(gi);
         applyWordlistSelection();  // #wordlist/#where設定 + チェックボックス + change
         restoreWordlistFilters(state.where || "");  // 復元whereに合わせてチェック
+      } else if (restoredCsv && [...sel.options].some((o) => o.value === CUSTOM_WORDLIST)) {
+        // 自作リストを選んだままのリロード。リスト名は空で保存されている(名前では
+        // なくCSVそのもので指定するため)ので name 一致では戻せないが、CSVは
+        // 保存してあるので選択ごと戻せる。合成の change なので isTrusted の番人に
+        // 引っかかり、モーダルは勝手に開かない。
+        // 検査は投げっぱなしにする(復元を待たせない)。wordlistChecking は同期に
+        // 立つので、投入前の待ち合わせ(submitJob)には間に合う
+        sel.value = CUSTOM_WORDLIST;
+        applyWordlistSelection();
+        checkCustomWordlist();   // customWordlist(語数・指紋)とプルダウンの表示を戻す
       } else {
-        // 保存されていた名前が今の選択肢に無い(confが変わった・自作リストを
-        // 選んだままリロードした)。選択なし(selectedIndex=-1)にすると
-        // applyWordlistSelection がリスト名のテキスト欄を出す経路に落ちる
-        // ——自作リストのCSVは保存できないので、ここには戻せない
+        // 保存されていた名前が今の選択肢に無い(confが変わった)。選択なし
+        // (selectedIndex=-1)にすると applyWordlistSelection がリスト名の
+        // テキスト欄を出す経路に落ちる
         sel.selectedIndex = -1;
         applyWordlistSelection();  // チェックボックスを隠しテキスト欄を出す
         $("wordlist").value = state.wordlist || "";
@@ -4673,6 +5379,9 @@ async function doRestoreForm() {
       $("midi-restore-hint").hidden = false;
       // 復元したMIDIも(歌詞なしのまま持ち越さないよう)一度は検証する
       scheduleMidiCheck();
+      // 注入では change を出していないので、パネルの投下先はここで描き直す
+      // (このあと initBuilder がサンプル曲に引き当てたら、その注入の change で消える)
+      refreshMidiPanel();
     }
   } catch { /* 復元失敗は無視 */ }
 

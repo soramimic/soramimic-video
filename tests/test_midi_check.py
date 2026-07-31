@@ -71,6 +71,7 @@ def test_rejects_midi_without_lyrics(client, tmp_path):
     body = res.json()
     assert body["has_lyrics"] is False
     assert body["lines"] == 0
+    assert body["midi_lines"] == []
     assert body["detail"]
 
 
@@ -78,6 +79,18 @@ def test_rejects_non_midi(client):
     res = _post(client, b"not a midi at all")
     assert res.status_code == 400
     assert "MIDI" in res.json()["detail"]
+
+
+def test_returns_midi_lines_for_prefill(client, tmp_path):
+    """XF歌詞の行テキスト(UIが元歌詞欄の下敷きに使う)を行順に返す。"""
+    path = build_xf_midi(
+        tmp_path / "plain.mid",
+        notes=[(0, 240, 60), (240, 240, 62), (960, 240, 64), (1200, 240, 65)],
+        lyric_events=[(0, "は"), (240, "る"), (960, "/な"), (1200, "つ")],
+    )
+    res = _post(client, path.read_bytes())
+    assert res.status_code == 200, res.text
+    assert res.json()["midi_lines"] == ["はる", "なつ"]
 
 
 def test_matching_lyrics_have_no_unmatched_lines(client, tmp_path):

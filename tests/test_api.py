@@ -1350,18 +1350,25 @@ def _advanced_html() -> str:
 
 
 def test_index_html_advanced_song_field_leads_with_midi_upload():
-    """詳細設定の「曲」はMIDIファイル選択が主役で、サンプル選択は従属UI。"""
+    """詳細設定の「曲」は丸ごと「曲」の折りたたみの中。
+
+    自分のMIDIの主導線はビルダーカードの曲プルダウン →「自分のMIDIを使う…」の
+    モーダルに移したので、詳細設定側は同じものを二重に見せず畳む。
+    畳んでも正本は #midi と #sample-select のままで、順序は「自分のファイル →
+    曲の選択」。
+    """
     advanced = _advanced_html()
-    # MIDIファイル入力は折りたたみの外(直に見える)
+    assert '<details class="sub-details" id="sample-details">' in advanced
+    # 見出し語はビルダーカードのラベル(「曲」)と揃える
+    assert "<summary>曲</summary>" in advanced
+    # MIDIファイル入力は折りたたみの中(サンプル選択より前)
     assert '<label for="midi">曲(XF MIDIファイル)</label>' in advanced
     assert '<input type="file" id="midi" accept=".mid,.midi">' in advanced
+    assert advanced.index('id="sample-details"') < advanced.index('id="midi"')
+    assert advanced.index('id="midi"') < advanced.index('id="sample-select"')
     # 旧構成(サンプルが主役・MIDIが折りたたみ)は残っていない
     assert 'id="midi-details"' not in advanced
     assert "自分の曲を使う(XF MIDIファイル)" not in advanced
-    # サンプル選択は「サンプルから選ぶ」の折りたたみへ格下げし、MIDIより後に置く
-    assert '<details class="sub-details" id="sample-details">' in advanced
-    assert "<summary>サンプルから選ぶ</summary>" in advanced
-    assert advanced.index('id="midi"') < advanced.index('id="sample-select"')
 
 
 def test_index_html_sample_select_stays_the_source_of_truth():
@@ -1377,8 +1384,11 @@ def test_index_html_sample_select_stays_the_source_of_truth():
         '$("sample-select").addEventListener("change", '
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
-    # サンプルが取れない環境では折りたたみごと隠す(消えた #midi-details は参照しない)
-    assert '$("sample-details").hidden = true;' in html
+    # サンプルが取れない環境で隠すのはプルダウンだけ。同じ折りたたみの中にある
+    # MIDIファイル選択が曲を指定する唯一の入口になるので、折りたたみは開けておく
+    assert '$("sample-field").hidden = true;' in html
+    assert '$("sample-details").open = true;' in html
+    assert '$("sample-details").hidden' not in html
     assert '$("midi-details")' not in html
 
 
@@ -1582,8 +1592,10 @@ def test_index_html_editor_modal_closes_with_escape():
     """Escで閉じる。iframeにフォーカスがあるときのために子documentにも付ける。"""
     html = _index_html()
     assert "function onEditorModalKeydown(ev) {" in html
+    # ⓘ の説明が開いているときは、そちらが先にEscを使う(defaultPreventedで降りる)
     assert (
-        'if (ev.key !== "Escape" || $("editor-frame-wrap").hidden) return;' in html
+        'if (ev.key !== "Escape" || ev.defaultPrevented'
+        ' || $("editor-frame-wrap").hidden) return;' in html
     )
     assert 'document.addEventListener("keydown", onEditorModalKeydown);' in html
     assert 'doc.addEventListener("keydown", onEditorModalKeydown);' in html
