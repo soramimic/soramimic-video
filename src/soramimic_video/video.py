@@ -151,6 +151,21 @@ def _resolve_total_sec(sung_end_sec: float, audio_duration_sec: float | None) ->
     return max(sung_end_sec, audio_duration_sec)
 
 
+def extend_for_endroll(total_sec: float, sung_end_sec: float, words: list[str]) -> float:
+    """後奏が足りない曲の総尺を、エンドロールが入るぶんだけ延ばす。
+
+    後奏が短い(あるいは無い)曲でも「使った単語」一覧とクレジットは見せたいので、
+    足りないときは動画の末尾に時間を足してエンドロール枠を作る(足した区間は
+    音声が無いので、最終合成で無音をパディングする)。
+    既に OUTRO_MIN_SEC 以上の後奏がある曲・使用単語が無い曲は何も変えない。
+    """
+    if not words or total_sec - sung_end_sec >= OUTRO_MIN_SEC:
+        return total_sec
+    pages = min(ENDROLL_MAX_PAGES, -(-len(words) // ENDROLL_WORDS_PER_PAGE))
+    needed = (pages + 1) * ENDROLL_PAGE_SEC  # +1 は最後のクレジットページぶん
+    return sung_end_sec + needed
+
+
 # ---- 画像 ----
 
 
@@ -1411,6 +1426,14 @@ def make_video(
 
     sung_end_sec = max(n.end_sec for n in project.notes) + 3.0
     total_sec = _resolve_total_sec(sung_end_sec, _audio_duration_sec(audio_path))
+    # 後奏が短い曲は末尾に時間を足してエンドロール枠を作る(足したぶんは無音)
+    extended_sec = extend_for_endroll(total_sec, sung_end_sec, used_words(project))
+    if extended_sec > total_sec:
+        logger.info(
+            "後奏が短いため動画を%.1f秒延長してエンドロールを出します",
+            extended_sec - total_sec,
+        )
+        total_sec = extended_sec
 
     cues, credits = build_image_cues(
         project, work, width, height, image_cache, layout_obj, credit_text
@@ -1464,14 +1487,18 @@ def make_video(
     ass_arg = str(ass_path.resolve()).replace("\\", "\\\\").replace(":", "\\:").replace(
         "'", "\\'"
     )
+    # 総尺は常に total_sec に揃える。音声が短い(エンドロール用に映像を延ばした)
+    # ときは apad で無音を足し、音声が長いときは -t で切る(-shortest だと映像側が
+    # 音声に合わせて切られ、足したエンドロールが消えてしまう)
     _run(
         [_ffmpeg(), "-y",
          "-i", str(slideshow),
          "-i", str(audio_path),
          "-vf", f"subtitles='{ass_arg}'",
+         "-af", "apad",
          "-c:v", "libx264", "-preset", "fast",
          "-c:a", "aac", "-b:a", "192k",
-         "-shortest",
+         "-t", f"{total_sec:.3f}",
          str(out)],
         "動画の最終合成",
     )

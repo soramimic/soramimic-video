@@ -124,7 +124,9 @@
   余った時間は "credits" のページが受け持つ("credits": [] で無効化すると
   最後の単語ページが後奏の終わりまで伸びる)
 - 短い間奏(video.INTERLUDE_MIN_SEC 未満)や短い後奏(video.OUTRO_MIN_SEC 未満)
-  では専用の表示を出さず idle(なければ黒)に戻る。一瞬だけ出て消えるのを避けるため
+  では専用の表示を出さず idle(なければ黒)に戻る。一瞬だけ出て消えるのを避けるため。
+  ただし後奏はエンドロールに足りないぶんを動画末尾の無音区間として足す
+  (video.extend_for_endroll)ので、後奏が無い曲でも単語一覧とクレジットは出る
 - 既定の文言は section_defaults.json(パッケージ直下)に置いてある。レイアウトJSON側に
   同名のキーを書けばそのレイアウトの指定が優先される("interlude": [] で無効化できる)
 """
@@ -460,6 +462,14 @@ def _parse_prefix_map(raw: object, key: str, origin: str) -> dict[str, str] | No
     return raw or None
 
 
+def _color_or(e: dict, key: str, default: str) -> str:
+    """色指定を取り出す。空文字・空白はレイアウトエディタ等の欠損とみなし既定色に落とす。"""
+    v = e.get(key)
+    if isinstance(v, str) and not v.strip():
+        return default
+    return v if v is not None else default
+
+
 def _parse_elements(
     raw_elements: list, origin: str
 ) -> tuple[list[ImageElement | TextElement], list[SubtitleElement]]:
@@ -501,7 +511,7 @@ def _parse_elements(
                     source=source,
                     box=box,
                     size=float(e.get("size", 0.05)),
-                    color=e.get("color", "white"),
+                    color=_color_or(e, "color", "white"),
                     align=e.get("align", "center"),
                     valign=e.get("valign", "bottom"),
                     bold=bool(e.get("bold", False)),
@@ -516,17 +526,17 @@ def _parse_elements(
                     template=e.get("text", ""),
                     box=box,
                     size=float(e.get("size", 0.06)),
-                    color=e.get("color", "white"),
+                    color=_color_or(e, "color", "white"),
                     align=e.get("align", "center"),
                     valign=e.get("valign", "middle"),
                     wrap=bool(e.get("wrap", False)),
                     columns=max(1, int(e.get("columns", 1))),
                     stroke_width=float(e.get("stroke_width", 0)),
-                    stroke_color=e.get("stroke_color", "black"),
+                    stroke_color=_color_or(e, "stroke_color", "black"),
                     strokes=_parse_strokes(e.get("strokes"), origin),
                     shadow=float(e.get("shadow", 0)),
-                    shadow_color=e.get("shadow_color", "#000000cc"),
-                    background=e.get("background"),
+                    shadow_color=_color_or(e, "shadow_color", "#000000cc"),
+                    background=e.get("background") or None,
                     require=e.get("require"),
                     require_empty=e.get("require_empty"),
                     require_prefix=_parse_prefix_map(

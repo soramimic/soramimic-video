@@ -61,3 +61,34 @@ def test_normalize_small_vowels_after_long_vowel():
 def test_normalize_small_vowels_length_preserved():
     for s in ["ウッセェワ", "ファンタジィ", "ハァハァ", "トウキョウ"]:
         assert len(normalize_small_vowels(s)) == len(s)
+
+
+def test_open_long_vowel_runs_opens_second_and_later():
+    # 連続長音の2個目以降を直前モーラの母音に開く(1個目は残す)
+    from soramimic_video.kana import open_long_vowel_runs
+
+    assert open_long_vowel_runs("キミノシグナルモウイチドーー") == "キミノシグナルモウイチドーオ"
+    assert open_long_vowel_runs("メメシクテツライヨーーー") == "メメシクテツライヨーオオ"
+    assert open_long_vowel_runs("キミトイタイカラーーーーー") == "キミトイタイカラーアアアア"
+
+
+def test_open_long_vowel_runs_keeps_single():
+    from soramimic_video.kana import open_long_vowel_runs
+
+    assert open_long_vowel_runs("ボクハモウイラナイー") == "ボクハモウイラナイー"
+    assert open_long_vowel_runs("ラーメン") == "ラーメン"
+    assert open_long_vowel_runs("ココロヲクミーカワスー") == "ココロヲクミーカワスー"
+
+
+def test_open_long_vowel_runs_unknown_vowel_kept():
+    from soramimic_video.kana import open_long_vowel_runs
+
+    assert open_long_vowel_runs("ンーー") == "ンーー"  # 母音不明は触らない
+    assert open_long_vowel_runs("ーー") == "ーー"  # 行頭も触らない
+
+
+def test_open_long_vowel_runs_length_preserved():
+    from soramimic_video.kana import open_long_vowel_runs
+
+    for s in ("ドーー", "ヨーーー", "ンーー", "キャーー", "ドーウー"):
+        assert len(open_long_vowel_runs(s)) == len(s)

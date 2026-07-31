@@ -86,6 +86,29 @@ def normalize_small_vowels(kana: str) -> str:
     return "".join(out)
 
 
+def open_long_vowel_runs(kana: str) -> str:
+    """連続する長音の2個目以降を直前モーラの母音に開く(ドーー→ドーオ、ヨーーー→ヨーオオ)。
+
+    変換エンジンのトークナイズは「ドー」を1ユニットに畳むが、続く2個目以降の
+    「ー」は単独ユニットになり、「ー」だけの発音に一致する単語が無いため
+    その行の変換結果が丸ごと空になる(同母音の小書きと同型の問題)。エンジンに
+    渡す前に母音へ開いておくと通常のユニットとして扱われ、発音をほぼ変えずに
+    変換できる。直前の母音が特定できない連続長音(ンーー等)はそのまま残す。
+    1文字→1文字の置換なので文字列長・モーラ位置は変わらない。
+    """
+    out: list[str] = []
+    prev = ""
+    for ch in kana:
+        if ch == "ー" and prev == "ー":
+            vowel = vowel_of("".join(out))
+            if vowel is not None:
+                ch = vowel
+        else:
+            prev = ch  # 連続長音の途中(母音に開いた位置)でも元の並びで連続を判定する
+        out.append(ch)
+    return "".join(out)
+
+
 def normalize_long_vowels(kana: str) -> str:
     """長音の表記ゆれを「ー」に正規化する(ヨウ→ヨー、ケイ→ケー、オオ→オー)。
 

@@ -300,28 +300,36 @@ def test_index_html_gates_neutrino_by_config():
 
 
 def test_index_html_custom_wordlist_replaces_the_name_input():
-    """単語リストのプルダウンは「その他(名前を入力)」を廃止し、CSVアップロードにした。"""
+    """単語リストのプルダウンは「その他(名前を入力)」を廃止し、自作リストにした。"""
     html = _index_html()
     # 廃止: リスト名の手入力を促す選択肢はもう出さない
     assert "その他(名前を入力)" not in html
     assert 'other.value = "__other__";' not in html
-    # 追加: 自作リスト(CSV)の選択肢とファイル選択欄
+    # 追加: 自作リストの選択肢と、詳細設定に残す要約+編集の導線
     assert 'const CUSTOM_WORDLIST = "__custom__";' in html
     assert "custom.value = CUSTOM_WORDLIST;" in html
-    assert 'custom.textContent = "自作リストを使う(CSV)";' in html
+    assert 'custom.textContent = "自作リストを使う";' in html
     assert '<div id="custom-wordlist" hidden>' in html
-    assert '<input type="file" id="wordlist-csv"' in html
-    # ファイルを選んだ時点でサーバーに検査させ、結果/エラーをその場に出す
+    assert '<span id="custom-wordlist-summary">未設定</span>' in html
+    assert '<button type="button" id="edit-wordlist"' in html
+    # 中身の編集は専用モーダル(替え歌エディタと同じ .editor-modal の枠組み)
+    assert '<div class="editor-modal" id="wordlist-modal-wrap" hidden' in html
+    assert '<textarea id="wordlist-text"' in html
+    assert '<input type="file" id="wordlist-file"' in html
+    assert '<input type="file" id="wordlist-images" multiple' in html
+    # 書き換えるたびにサーバーに検査させ、結果/エラーをその場に出す
     assert '"/api/wordlist-check"' in html
-    assert '<p class="hint" id="wordlist-csv-status" hidden></p>' in html
-    assert '<p class="error" id="wordlist-csv-error" hidden></p>' in html
-    assert '$("wordlist-csv").addEventListener("change", checkCustomWordlist);' in html
+    assert '<p class="hint" id="wordlist-status" hidden></p>' in html
+    assert '<p class="error" id="wordlist-error" hidden></p>' in html
+    assert '$("wordlist-text").addEventListener("input", scheduleWordlistCheck);' in html
     # 絞り込み(where)は自作リストに効かないので選択中は隠す
     assert '<div id="where-field">' in html
     assert '$("where-field").hidden = custom;' in html
-    # 投入時はリスト名ではなくCSVそのものを送る
-    assert 'form.append("wordlist_csv", customWordlist.file);' in html
-    # 🎲ランダムは自作リストを選ばない(ファイルが要るため)
+    # 投入時はリスト名ではなく中身そのものを送る(zipはファイル、書いた内容はテキスト+画像)
+    assert 'form.append("wordlist_csv", wl.file); return; }' in html
+    assert 'form.append("wordlist_text", wl.text);' in html
+    assert 'form.append("wordlist_images", f);' in html
+    # 🎲ランダムは自作リストを選ばない(中身の入力が要るため)
     assert '[...sel.options].filter((o) => o.value && o.value !== CUSTOM_WORDLIST)' in html
     # 自作リストはサムネのプレビューを作らない(理由を静かに出して生成には進める)
     assert "自作リストはプレビューに対応していません。" in html
