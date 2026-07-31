@@ -3311,6 +3311,16 @@ function leRenderProps() {
     inp.addEventListener("input", () => { e[key] = inp.value; commit(); });
     return leUndoOnInput(inp);
   };
+  // 色欄: 空欄は「未指定」としてキーごと消す(空文字を保存するとサーバー側の色解釈で失敗する)
+  const colorInput = (key, def) => {
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = e[key] ?? def; inp.size = 8;
+    inp.addEventListener("input", () => {
+      if (inp.value.trim()) e[key] = inp.value; else delete e[key];
+      commit();
+    });
+    return leUndoOnInput(inp);
+  };
   const numInput = (key, def) => {
     const inp = document.createElement("input");
     inp.type = "number"; inp.step = "0.005"; inp.min = "0.01"; inp.max = "0.4";
@@ -3365,7 +3375,7 @@ function leRenderProps() {
     });
     add("列", colSel);
     add("サイズ", numInput("size", 0.06));
-    add("色", textInput("color", "white"));
+    add("色", colorInput("color", "white"));
     add("揃え", select("align", ["left", "center", "right"], "center"));
     add("縦揃え", select("valign", ["top", "middle", "bottom"], "middle"));
     add("折返し", checkbox("wrap"));
@@ -3413,7 +3423,7 @@ function leRenderProps() {
   } else if (e.type === "subtitle") {
     add("種類", select("source", ["parody", "original"], "parody"));
     add("サイズ", numInput("size", 0.05));
-    add("色", textInput("color", "white"));
+    add("色", colorInput("color", "white"));
     add("揃え", select("align", ["left", "center", "right"], "center"));
     add("縦揃え", select("valign", ["top", "middle", "bottom"], "bottom"));
     add("太字", checkbox("bold"));
