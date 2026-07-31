@@ -41,7 +41,7 @@ from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import runproc, synth_estimate
@@ -380,6 +380,49 @@ def _store_wordlist_images(wl_dir: Path, text: str, images: dict[str, bytes]) ->
     return "\n".join(out)
 
 
+def store_editor_session_wordlist(
+    sessions_dir: Path, custom: wordlist_zip_mod.WordlistZip
+) -> str:
+    """自作リストをeditorセッションとして置き、そのセッションID(sid)を返す。
+
+    置き場は <jobs_dir>/editor-sessions/<sid>/wordlist.csv。sid は正規化済み
+    CSVの内容ハッシュ(fingerprint)なので、同じリストで何度エディタを開いても
+    同じディレクトリを指す(=決定的。書き直しても中身は同一になる)。
+    画像はジョブと同じ流儀で <sid>/images/ に置き、CSVの image 列を実体の
+    絶対パスに差し替える(動画生成側の download_image がローカルパスとして拾う)。
+    """
+    from .editor_io import SESSION_WORDLIST_FILENAME
+
+    sid = custom.csv.fingerprint
+    session_dir = Path(sessions_dir) / sid
+    session_dir.mkdir(parents=True, exist_ok=True)
+    text = custom.csv.text
+    if custom.images:
+        text = _store_wordlist_images(session_dir, text, custom.images)
+    (session_dir / SESSION_WORDLIST_FILENAME).write_text(text, encoding="utf-8")
+    return sid
+
+
+def _csv_without_image_column(text: str) -> str:
+    """CSVから image 列を落とす(ブラウザへ返す用)。
+
+    セッションのCSVの image 列にはサーバー上の絶対パスが入っている。editor は
+    id/surface/original/pronunciation しか使わないので、パスは返さない。
+    正規化済みCSVはクオート無しなので、_store_wordlist_images と同じく
+    素の split(",") で扱う。末尾に改行は付けない(editorのパーサが落ちるため)。
+    """
+    lines = text.split("\n")
+    header = lines[0].split(",") if lines else []
+    if "image" not in header:
+        return text
+    i = header.index("image")
+
+    def drop(cells: list[str]) -> str:
+        return ",".join(cells[:i] + cells[i + 1 :]) if i < len(cells) else ",".join(cells)
+
+    return "\n".join(drop(line.split(",")) for line in lines)
+
+
 def _job_slug(job: Job) -> tuple[str, str]:
     """ダウンロード名に使う (曲名, 単語リスト名)。"""
     # Path.stem だと曲名中の「/」でパス扱いになるので拡張子だけ正規表現で落とす
@@ -582,7 +625,12 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
     if (d / "editor.json").exists():
         with _stage(job, "import-editor"):
-            import_editor(project, d, d / "editor.json")
+            # 自作リストで作った替え歌は、単語リスト行(=単語画像)を
+            # editorセッションのCSVから引く
+            import_editor(
+                project, d, d / "editor.json",
+                sessions_dir=config.get("editor_sessions"),
+            )
             project.save(d)
     else:
         from .convert import convert_project, parse_convert_params
@@ -978,12 +1026,16 @@ def create_app(
     voicevox_url: str = "http://127.0.0.1:50021",
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
+    from .editor_io import editor_sessions_dir
+
     config: dict[str, Any] = {
         # 単語画像はジョブをまたいで共有する(初回ジョブの動画ステージが
         # 画像ダウンロードで数分かかるため。2回目以降はほぼゼロになる)
         "image_cache": jobs_dir.resolve() / "image-cache",
         # 生成前に出す仮サムネ(/api/thumbnail-preview)のPNGキャッシュ
         "preview_cache": preview_cache_dir(jobs_dir),
+        # 自作リストで替え歌エディタを開いたときの単語リスト置き場(ジョブ横断)
+        "editor_sessions": editor_sessions_dir(jobs_dir),
         "soundfont": resolve_soundfont(soundfont),
         "font": font or default_font(),
         "threads": threads,
@@ -1379,6 +1431,7 @@ def create_app(
             result = build_editor_preview(
                 payload, wordlist.strip() or None, layout_obj, lyrics,
                 parse_granularity_override(subtitle_granularity),
+                sessions_dir=config["editor_sessions"],
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1560,11 +1613,31 @@ def create_app(
         # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
         # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
         if isinstance(editor_payload, dict):
-            from .editor_io import _resolve_preview_wordlist
+            from .editor_io import (
+                CUSTOM_WORDLIST_TEXT,
+                _resolve_preview_wordlist,
+                custom_wordlist_sid,
+                session_wordlist_path,
+            )
 
-            resolved = _resolve_preview_wordlist(editor_payload, wordlist or None)
-            if resolved:
-                wordlist = Path(resolved).stem if resolved.endswith(".csv") else resolved
+            sid = custom_wordlist_sid(editor_payload)
+            if sid:
+                # 自作リストで作った替え歌。単語リスト行(=単語画像)は
+                # editorセッションのCSVから引くので、無ければ受け付けない
+                if session_wordlist_path(config["editor_sessions"], sid) is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="自作リストの単語データが見つかりません。"
+                        "替え歌エディタを開き直してから生成してください。",
+                    )
+                # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
+                wordlist = CUSTOM_WORDLIST_TEXT
+            else:
+                resolved = _resolve_preview_wordlist(editor_payload, wordlist or None)
+                if resolved:
+                    wordlist = (
+                        Path(resolved).stem if resolved.endswith(".csv") else resolved
+                    )
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
@@ -1809,31 +1882,72 @@ def create_app(
         lyrics: str = Form(""),
         wordlist: str = Form(""),
         where: str = Form(""),
+        convert_params: str = Form(""),
+        # 自作の単語リスト。/api/jobs と同じ2通りの入口(zip/CSV1ファイル、または
+        # 貼り付けテキスト+画像)。付いていればリスト名(wordlist)より優先する
+        wordlist_csv: UploadFile | None = None,
+        wordlist_text: str = Form(""),
+        wordlist_images: list[UploadFile] = File(default_factory=list),
     ) -> dict[str, Any]:
         """MIDI+単語リストから変換済みeditorセッションJSONを組んで返す。
 
         WebUIがこれを sessionStorage["soramimic-editor"] に書いてから
         /editor/editor.html を iframe で開くと、そのまま編集を始められる。
         run_pipeline の analyze→convert 段を同期・ジョブ無しで実行する。
+
+        自作リストのときは、editor がDBを組めるよう正規化済みCSVを
+        editor-sessions/<sid>/ に置き、JSONの単語リスト設定を
+        /editor/session-wordlists/<sid>.csv 向けにして返す。
         """
         import tempfile
 
         from .align import align_lines
-        from .convert import convert_project, resolve_wordlist
-        from .editor_io import export_editor, save_raw
+        from .convert import convert_project, parse_convert_params, resolve_wordlist
+        from .editor_io import (
+            SESSION_WORDLIST_FILENAME,
+            custom_wordlist_entry,
+            export_editor,
+            save_raw,
+        )
         from .xfparse import analyze_midi
 
         midi_bytes = await midi.read()
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
-        if not wordlist.strip():
-            raise HTTPException(
-                status_code=422, detail="単語リスト名(wordlist)が必要です"
-            )
+        custom: wordlist_zip_mod.WordlistZip | None = None
+        has_wordlist_file = wordlist_csv is not None and bool(wordlist_csv.filename)
         try:
-            resolve_wordlist(wordlist.strip())
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if has_wordlist_file and wordlist_csv is not None:
+                custom = wordlist_zip_mod.parse_upload(await wordlist_csv.read())
+            elif wordlist_text.strip():
+                custom = wordlist_zip_mod.parse_parts(
+                    wordlist_text.encode("utf-8"),
+                    await _read_wordlist_images(wordlist_images),
+                )
+        except wordlist_csv_mod.WordlistCsvError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if custom is None and not wordlist.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="単語リスト名(wordlist)か自作リスト(wordlist_csv/wordlist_text)が必要です",
+            )
+        entry: dict[str, Any] | None = None
+        if custom is not None:
+            # 自作リストは名前で引けないので、editorが取りに来られる場所に置く
+            sid = store_editor_session_wordlist(config["editor_sessions"], custom)
+            conv_wordlist = str(
+                config["editor_sessions"] / sid / SESSION_WORDLIST_FILENAME
+            )
+            # 絞り込み(where)の対象になる列を持たないので付けない(/api/jobs と同じ)
+            conv_where: str | None = None
+            entry = custom_wordlist_entry(sid)
+        else:
+            try:
+                resolve_wordlist(wordlist.strip())
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            conv_wordlist = wordlist.strip()
+            conv_where = where.strip() or None
 
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -1849,16 +1963,39 @@ def create_app(
             try:
                 raw = convert_project(
                     project,
-                    wordlist=wordlist.strip(),
-                    where=where.strip() or None,
-                    params={},
+                    wordlist=conv_wordlist,
+                    where=conv_where,
+                    params=parse_convert_params(convert_params),
+                    # 自作リストはこの入力限りなので単語DBの共有キャッシュに載せない
+                    cache_db=custom is None,
                 )
             except (FileNotFoundError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             save_raw(raw, d)
             project.save(d)
-            path = export_editor(project, d)
+            path = export_editor(project, d, wordlist_entry=entry)
             return json.loads(path.read_text(encoding="utf-8"))
+
+    @app.get("/editor/session-wordlists/{sid}.csv")
+    def editor_session_wordlist(sid: str) -> Response:
+        """自作リストで開いたeditorのDB構築が取りに来るCSVを返す。
+
+        editor JSONの wordlist.filepath = "session-wordlists/<sid>.csv" が
+        /editor/session-wordlists/<sid>.csv に解決される。実体は
+        /api/editor-session が置いた editor-sessions/<sid>/wordlist.csv。
+        """
+        from .editor_io import session_wordlist_path
+
+        path = session_wordlist_path(config["editor_sessions"], sid)
+        if path is None:
+            raise HTTPException(status_code=404, detail="単語リストが見つかりません")
+        text = path.read_text(encoding="utf-8")
+        # editorのCSVパーサは行を素朴にsplitするので、末尾の改行があると
+        # 最後に空行が混ざって落ちる。image列(サーバー上の絶対パス)も返さない
+        return Response(
+            content=_csv_without_image_column(text).rstrip("\n"),
+            media_type="text/csv; charset=utf-8",
+        )
 
     if editor_available:
         # 上のルートで拾わなかった /editor/* は静的ビルドから配信する。

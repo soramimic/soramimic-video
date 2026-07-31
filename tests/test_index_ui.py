@@ -117,6 +117,19 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
+def test_editor_session_sends_the_custom_wordlist():
+    """自作リストでもエディタを開ける(中身と変換パラメータを添えて送る)。"""
+    script = _script()
+    body = _function_body(script, "async function convertAndOpenEditor()")
+    assert "自作リストは替え歌エディタに対応していません" not in script
+    # 生成時と同じ形(appendCustomWordlist)で中身そのものを送る
+    assert "appendCustomWordlist(form)" in body
+    # 変換パラメータも送る(エディタの中身と生成結果を揃える)
+    assert 'form.append("convert_params", buildConvertParams())' in body
+    # 自作リストは名前も絞り込みも持たない
+    assert 'form.append("wordlist", custom ? "" : wl)' in body
+
+
 def test_restored_sample_midi_is_refetched_at_startup():
     """復元したMIDIがサンプル曲なら、保存時点の中身を使わず取り直す。"""
     init = _function_body(_script(), "async function initBuilder()")
