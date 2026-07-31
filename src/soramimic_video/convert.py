@@ -17,11 +17,28 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .kana import normalize_small_vowels, split_fine_moras, split_moras, vowel_of
+from .kana import (
+    normalize_small_vowels,
+    open_long_vowel_runs,
+    split_fine_moras,
+    split_moras,
+    vowel_of,
+)
 from .project import Parody, ParodyLine, ParodyWord, Project
 from .soramimic_engine import UnitWeightsFunc, run_convert
 
 logger = logging.getLogger(__name__)
+
+
+def _engine_kana(kana: str) -> str:
+    """エンジンへ渡す読み・突き合わせる音符側の読みに共通で掛ける正規化。
+
+    小書き母音の開き(セェ→セエ)と連続長音の開き(ドーー→ドーオ)。どちらも
+    「一致する単語が無い単独ユニットができて行の変換が丸ごと空になる」
+    エンジンのトークナイズ起因の問題への前処理。1文字→1文字なので
+    文字オフセットの対応は恒等に保たれる。
+    """
+    return open_long_vowel_runs(normalize_small_vowels(kana))
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORDLISTS_DIR = REPO_ROOT / "external" / "soramimic-wordlists"
@@ -142,8 +159,8 @@ def unit_note_seconds(
     長音符(ヨウ)は両ユニットがその長さを受け取る。
     どの音符にも対応づかなかったユニットは行平均の raw で埋める(重みを持たせない)。
     """
-    unit_concat = normalize_small_vowels("".join(unit_prons))
-    note_concat = normalize_small_vowels("".join(note_kanas))
+    unit_concat = _engine_kana("".join(unit_prons))
+    note_concat = _engine_kana("".join(note_kanas))
     offset_map = _offset_map(unit_concat, note_concat)
     note_cum = [0]
     for kana in note_kanas:
@@ -1209,7 +1226,7 @@ def convert_project(
     # 同母音の小書き(ウッセェワ)はエンジンのトークナイズで「セ」「ェ」に割れ、
     # 「ェ」に一致する単語が無いためその行の変換結果が空になる。1文字→1文字で
     # 開いて(ウッセエワ)から渡す(文字数もモーラ位置も変わらない)
-    phrases = [normalize_small_vowels(line.xf_kana) for line in project.lines]
+    phrases = [_engine_kana(line.xf_kana) for line in project.lines]
 
     # α>0 のときだけ重みを渡す。α=0(既定)は weights_per_line=None で従来と完全に同一
     weights = project_note_length_weights(project, alpha) if alpha > 0 else None
@@ -1241,11 +1258,11 @@ def apply_converted_lines(
         unit_lens = [len(u["pronunciation"]) for u in converted["units"]]
         # 小書き母音の開き(セェ→セエ)はエンジンに渡す側だけに掛かるので、
         # 突き合わせる音符側にも同じ正規化を掛けて位置対応を恒等に保つ
-        unit_concat = normalize_small_vowels(
+        unit_concat = _engine_kana(
             "".join(u["pronunciation"] for u in converted["units"])
         )
         note_lens = [len(project.notes[i].kana) for i in line.note_ids]
-        note_concat = normalize_small_vowels(
+        note_concat = _engine_kana(
             "".join(project.notes[i].kana for i in line.note_ids)
         )
         if unit_concat != note_concat:
