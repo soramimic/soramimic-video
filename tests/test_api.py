@@ -1341,6 +1341,9 @@ def test_index_html_restores_layout_json_only_when_layout_matches():
     )
     assert "layoutJsonFor: leLayoutFor," in html
     assert "layoutDirty: leDirty," in html
+    # ベースの素性とクリーンな内容も保存する(リロード後も「〈ベース名〉の編集」に戻す)
+    assert "layoutBaseKey: leBaseKey," in html
+    assert "layoutBaseline: leBaseline," in html
     assert 'if (state.layoutJson && state.layoutJsonFor === (state.layout || "")) {' in html
 
 
@@ -1428,7 +1431,7 @@ def test_index_html_advanced_is_grouped_by_role():
         "① 曲と歌詞",
         "② 空耳のもと",
         "③ 歌声",
-        "④ 見た目",
+        "④ レイアウト",
     ]
     # どのグループにも1行の説明を添える
     assert _advanced_html().count('class="hint opt-group-lead"') == 4
@@ -1456,9 +1459,50 @@ def test_index_html_advanced_groups_hold_the_right_fields():
     assert 'id="synthesizer"' in voice
     assert 'id="auto-octave"' in voice and 'id="transpose"' in voice
     assert 'id="preview"' in voice
-    look = g["④ 見た目"]
-    assert 'id="layout-select"' in look and 'id="le-details"' in look
-    assert 'id="layout-file"' in look
+    look = g["④ レイアウト"]
+    # プリセット選択も編集も全画面モーダル(#le-modal)へ寄せたので、グループに残るのは
+    # 送信値の正本(隠しinput)・モーダルを開くボタン・カスタム編集中の目印だけ。
+    # レイアウトは単語リストに連動して自動で決まるものなので、ふだんは選ばせない
+    assert 'id="layout"' in look and 'id="le-open"' in look
+    assert 'id="le-status"' in look
+    assert 'id="le-details"' not in _index_html()
+    assert 'id="layout-select"' not in look
+    assert 'id="layout-file"' not in look
+
+
+def test_index_html_layout_base_select_lives_in_the_editor_modal():
+    """ベースレイアウトのプルダウンはモーダルのツールバーに置き、選んだ即時に反映する。"""
+    html = _index_html()
+    modal = html.split('<div class="editor-modal" id="le-modal"')[1].split("<script>")[0]
+    assert 'id="layout-select"' in modal
+    # 押し直す「読み込み」ボタンは廃止(プルダウンに統合した)
+    assert 'id="layout-load"' not in html
+    # ベースからの差分は ● で示し、↺ でベースの内容へ戻せる
+    assert 'id="le-modified"' in modal and 'id="le-revert"' in modal
+    # ファイル入力そのものは隠し、label ボタンの for= で開く(.click() は使わない)
+    assert 'id="layout-file" accept=".json" hidden' in modal
+    handler = html.split('$("layout-select").addEventListener("change", async () => {')[1]
+    handler = handler.split("\n});")[0]
+    assert '$("layout-file").click();' not in html
+    # 同じベースに戻ってきたら、退避しておいた編集を復元する
+    assert "if (leStash && leStash.baseKey === key) { leRestoreStash(); return; }" in handler
+    # 編集していないときも既存の退避を持ち越す(A編集→B→Cと見比べてもAへ戻れる)
+    assert "const stash = leCaptureCustom() || leStash;" in handler
+    assert "leStash = stash;" in handler
+    # 新しい編集・レイアウトの破棄では退避も捨てる
+    assert "leStash = null;" in html.split("function leToJson() {")[1].split("\n}")[0]
+    assert "leStash = null;" in html.split("function leClearLayout() {")[1].split("\n}")[0]
+
+
+def test_index_html_layout_base_values_never_reach_the_hidden_input():
+    """ファイル系の選択値(センチネル・📄項目)は送信値#layoutに書かない。"""
+    html = _index_html()
+    assert 'const LE_FILE_PREFIX = "file:";' in html
+    sync = html.split("function syncChoice(base) {")[1].split("\n}")[0]
+    assert "if (leIsPresetValue(sel.value)) hidden.value =" in sync
+    # ● はベース読み込み時の内容(leBaseline)との比較で決める
+    modified = html.split("function leModified() {")[1].split("\n}")[0]
+    assert "JSON.stringify(leLayout) !== leBaseline" in modified
 
 
 def test_index_html_convert_params_are_demoted_to_a_collapsible():
@@ -1519,15 +1563,22 @@ def test_index_html_layout_other_is_replaced_by_a_file_input():
     html = _index_html()
     assert 'id="layout-other"' not in html
     assert 'id="layout-file" accept=".json"' in html
-    assert "レイアウトを読み込む(ファイル)" in html
+    # 読み込みの導線はプルダウンの隣の label ボタン(for= の標準挙動でピッカーが
+    # 開くのでスクリプトの .click() が要らず、iOS Safari でも確実)。
+    # ユーザー提供物の呼び名は単語リスト側の「自作リスト」と揃える
+    assert '<label for="layout-file" class="le-file-btn"' in html
+    assert ">インポート</label>" in html   # エクスポートと対の呼び名にする
     # 手入力欄を持つ base(=model)だけ「その他」を選択肢に足す
     assert 'if ($(base + "-other")) add(CHOICE_OTHER, "その他(手入力)…");' in html
     # 読み込んだ内容はユーザーの編集扱い(leToJson が leDirty を立てる)なので
     # 生成時に layout_json として送られる
     layout_file = html.split('$("layout-file").addEventListener("change"')[1]
     layout_file = layout_file.split("\n});")[0]
-    assert "leLayout = parsed;" in layout_file
-    assert "leToJson();" in layout_file
+    # 読み込んだ内容はベースとして登録し(項目に残して選び直せる)、そのまま適用する
+    assert "leFiles.set(f.name, parsed);" in layout_file
+    assert "leAddFileOption(f.name);" in layout_file
+    assert "leLoadBase(LE_FILE_PREFIX + f.name)" in layout_file
+    assert "leToJson();" in html.split("function leLoadBase(key) {")[1].split("\n}")[0]
     # 来歴ガード: レイアウト名が入れ替わったら読み込んだファイルごと捨てる
     clear = html.split("function leClearLayout() {")[1].split("\n}")[0]
     assert '$("layout-file").value = "";' in clear
