@@ -23,6 +23,14 @@ def cmd_edit_timing(args: argparse.Namespace) -> int:
         port=args.port,
         audio=Path(args.audio) if args.audio else None,
         reference_midi=Path(args.reference_midi) if args.reference_midi else None,
+        options={
+            "synthesizer": args.synthesizer,
+            "model": args.model,
+            "soundfont": args.soundfont,
+            "engine_url": args.voicevox_url,
+            "style_id": args.voicevox_style,
+            "transpose": args.transpose,
+        },
     )
     return 0
 
@@ -373,6 +381,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--reference-midi", help="背景に薄く表示する参照メロディMIDI(既定: 編集前の音符)"
     )
+    # 「🎤この行」「🔄合成」で使う合成設定(synthesize/mixと同じ意味)
+    p.add_argument("--synthesizer", default="voicevox", choices=["voicevox", "neutrino"])
+    p.add_argument("--model", default="MERROW", help="NEUTRINOの歌声モデル名")
+    p.add_argument("--soundfont", help="伴奏レンダリング用のsf2(MIDI入力のプロジェクト)")
+    p.add_argument("--voicevox-url", help="VOICEVOXエンジンのURL")
+    p.add_argument("--voicevox-style", type=int, default=3003, help="VOICEVOXのスタイルID")
+    p.add_argument("--transpose", type=int, default=0, help="移調(半音)")
     p.set_defaults(func=cmd_edit_timing)
 
     p = sub.add_parser("synthesize", help="替え歌を歌唱合成する(NEUTRINO/VOICEVOX)")

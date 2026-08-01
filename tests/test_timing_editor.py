@@ -15,7 +15,9 @@ from soramimic_video.timing_editor import (
     apply_payload,
     build_payload,
     grid_lines,
+    rebuild,
     sec_to_tick,
+    synthesize_line,
     tick_to_sec,
 )
 
@@ -149,3 +151,64 @@ def test_saved_project_reloads(tmp_path: Path) -> None:
     reloaded = Project.load(tmp_path)
     assert reloaded.notes[1].end_sec == pytest.approx(0.9)
     assert len(reloaded.lines) == 2
+
+
+def test_synthesize_line_shifts_to_leave_a_leading_rest(monkeypatch) -> None:
+    from soramimic_video import voicevox
+
+    captured: dict = {}
+
+    def fake_run(preview, project_dir, **kwargs):
+        captured["project"] = preview
+        captured["kwargs"] = kwargs
+        out = Path(project_dir) / "vocal.wav"
+        out.write_bytes(b"RIFFfake")
+        return out
+
+    monkeypatch.setattr(voicevox, "run_voicevox", fake_run)
+    moras = [
+        {"start": 10.0, "end": 10.5, "pitch": 62, "text": "ラ"},
+        {"start": 10.5, "end": 11.0, "pitch": 64, "text": "ソ"},
+    ]
+    wav, offset = synthesize_line(_project(), moras, lead_sec=0.3)
+
+    assert wav == b"RIFFfake"
+    assert offset == pytest.approx(9.7)  # wavの先頭が対応する曲中の秒
+    notes = captured["project"].notes
+    # 先頭は必ず休符から始める(VOICEVOXは最初の音符に子音があると弾く)
+    assert notes[0].start_sec == pytest.approx(0.3)
+    assert notes[-1].end_sec == pytest.approx(1.3)
+    assert [n.kana for n in notes] == ["ラ", "ソ"]
+    # 移調は曲全体の音域で決める(本番と同じキーで鳴らすため)
+    assert captured["kwargs"]["octave_keys"] == [60, 62, 64]
+
+
+def test_synthesize_line_rejects_empty() -> None:
+    with pytest.raises(ValueError):
+        synthesize_line(_project(), [])
+
+
+def test_rebuild_leaves_engine_url_unset_when_not_given(monkeypatch, tmp_path: Path) -> None:
+    from soramimic_video import mix as mix_module
+    from soramimic_video import synthesize as synthesize_module
+
+    seen: dict = {}
+
+    def fake_synthesize(project, project_dir, **kwargs):
+        seen["kwargs"] = kwargs
+        return None
+
+    def fake_mix(project, project_dir, soundfont=None):
+        seen["soundfont"] = soundfont
+        return Path(project_dir) / "song.wav"
+
+    monkeypatch.setattr(synthesize_module, "synthesize", fake_synthesize)
+    monkeypatch.setattr(mix_module, "mix", fake_mix)
+    _project().save(tmp_path)
+
+    out = rebuild(tmp_path, {"soundfont": "x.sf2", "style_id": 42})
+
+    assert "voicevox_url" not in seen["kwargs"]  # Noneを渡すと合成側の既定を壊す
+    assert seen["kwargs"]["voicevox_style"] == 42
+    assert seen["soundfont"] == "x.sf2"
+    assert out.name == "song.wav"

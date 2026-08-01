@@ -25,6 +25,7 @@ canvas{display:block;cursor:default;touch-action:none}
 </style></head><body>
 <div id="bar">
  <button id="bplay" title="Space">▶ 再生</button>
+ <select id="asrc" title="鳴らす音源"><option value="main">音源</option><option value="mixed" disabled>ミックス</option></select>
  <select id="aspd"><option value="1">1.0x</option><option value="0.75">0.75x</option><option value="0.5">0.5x</option><option value="0.25">0.25x</option></select>
  <button id="bsnap" class="on" title="ドラッグ時にノート境界へ吸着">吸着</button>
  <select id="bunit" title="吸着・調整の単位(拍の分割)"><option value="auto">単位:自動</option><option value="1">1拍</option><option value="2">1/2拍</option><option value="3">1/3拍</option><option value="4">1/4拍</option><option value="6">1/6拍</option><option value="12">1/12拍</option></select>
@@ -33,6 +34,7 @@ canvas{display:block;cursor:default;touch-action:none}
  <span class="sp"></span>
  <button id="bundo" title="Ctrl+Z">↩</button><button id="bredo" title="Ctrl+Y">↪</button>
  <button id="bsave" title="Ctrl+S">💾 保存</button>
+ <button id="brebuild" title="保存して歌唱合成→伴奏ミックスをやり直す">🔄 合成</button>
  <span id="status">読込中…</span>
 </div>
 <div id="wrap"><canvas id="cv"></canvas><input id="txtedit"></div>
@@ -49,6 +51,7 @@ canvas{display:block;cursor:default;touch-action:none}
  <button id="bmerge" title="次のモーラと結合">結合</button>
  <button id="bdel">削除</button>
  <button id="bgoto">▶ここから</button>
+ <button id="bsynth" title="選択行を未保存の編集込みで合成して聴く">🎤この行</button>
  <button id="blegato" title="選択行内の小さな隙間(0.15秒未満)と食い込みを解消して長さを揃える。実休符は残す">間詰め</button>
  <button id="blegall" title="全モーラに長さ揃えを一括適用(隙間0.15秒未満のみ埋める)。Undo可">間詰め(全)</button>
  <button id="bdist" title="複数モーラを含むブロックを、実ノートの区切りで1モーラずつ順に割り付け直す。直後のーは吸収">モーラ割付</button>
@@ -67,8 +70,8 @@ const RULER=30,LYRIC=20,WAVE=56;
 let undoStack=[],redoStack=[];
 let audio=new Audio(),audioOffset=0,playing=false;
 audio.preload='auto';
-const AUDIO={main:{src:'/audio',off:0}};
-let lineAudio=null,lineT0=0;   // 将来の部分プレビュー用(現状は常にnull)
+const AUDIO={main:{src:'/audio',off:0},mixed:{src:'/mixed',off:0}};
+let lineAudio=null,lineT0=0,synthing=false;
 audio.addEventListener('error',()=>setStatus('音声読込エラー: '+(audio.error&&audio.error.code)));
 audio.addEventListener('ended',()=>{playing=false;$('bplay').textContent='▶ 再生'});
 
@@ -359,7 +362,30 @@ function play(force){
  if(pr)pr.catch(e=>{playing=false;$('bplay').textContent='▶ 再生';setStatus('再生失敗: '+e.message)});
 }
 $('bplay').onclick=()=>play();
-$('aspd').onchange=ev=>{audio.playbackRate=+ev.target.value;audio.preservesPitch=true};
+$('aspd').onchange=ev=>{const r=+ev.target.value;audio.playbackRate=r;audio.preservesPitch=true;
+ if(lineAudio){lineAudio.playbackRate=r;lineAudio.preservesPitch=true}};
+$('asrc').onchange=ev=>setAudio(ev.target.value);
+$('bsynth').onclick=async()=>{
+ if(sel<0){setStatus('モーラを選んでから押してください');return}
+ if(synthing)return;
+ synthing=true;const ln=moras[sel].line;
+ setStatus('L'+ln+' を合成中…');$('bsynth').textContent='⏳';
+ try{
+  const ms=moras.filter(m=>m.line===ln).sort((a,b)=>a.start-b.start);
+  const r=await fetch('/synth',{method:'POST',body:JSON.stringify({moras:ms})});
+  if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.error||r.status)}
+  lineT0=parseFloat(r.headers.get('X-Start')||'0');
+  const blob=await r.blob();
+  if(lineAudio){lineAudio.pause();URL.revokeObjectURL(lineAudio.src)}
+  audio.pause();playing=false;$('bplay').textContent='▶ 再生';
+  lineAudio=new Audio(URL.createObjectURL(blob));
+  lineAudio.playbackRate=+$('aspd').value;lineAudio.preservesPitch=true;
+  lineAudio.onended=()=>{lineAudio=null;draw()};
+  await lineAudio.play();
+  setStatus('L'+ln+' を合成して再生中(この行だけ)');
+  const spin=()=>{if(lineAudio){draw();requestAnimationFrame(spin)}};spin();
+ }catch(e){setStatus('行の合成に失敗: '+e.message)}
+ finally{synthing=false;$('bsynth').textContent='🎤この行'}};
 function tick(){if(playing){const t=curTime();
   if($('bfollow').classList.contains('on')&&(t2x(t)>cv.width*.85||t2x(t)<0))t0=t-1;
   draw()}
@@ -377,6 +403,19 @@ async function save(){renum();
   else setStatus('保存失敗: '+(j.error||r.status))}
  catch(e){setStatus('保存失敗: '+e.message)}}
 $('bsave').onclick=save;
+$('brebuild').onclick=async()=>{
+ if(dirty)await save();
+ const r=await fetch('/rebuild',{method:'POST'});
+ if(!r.ok){const j=await r.json().catch(()=>({}));setStatus('合成を始められません: '+(j.error||r.status));return}
+ setStatus('合成中…(歌唱合成→伴奏ミックス)');poll()};
+async function poll(){
+ const j=await fetch('/rebuild_status').then(x=>x.json()).catch(()=>null);
+ if(!j)return;
+ if(j.state==='running'){setStatus('合成中… '+j.message);setTimeout(poll,2000)}
+ else if(j.state==='done'){setStatus('合成できました ✓ 「ミックス」で聴けます');
+  const opt=$('asrc').querySelector('option[value=mixed]');
+  if(opt&&j.has_mix){opt.disabled=false;$('asrc').value='mixed';setAudio('mixed')}}
+ else if(j.state==='error')setStatus('合成に失敗: '+j.message)}
 $('blegato').onclick=()=>{const li=lineInfo();if(!li)return;snap();
  const idxs=li.idxs;let fixed=0;
  for(let k=0;k<idxs.length-1;k++){const m=moras[idxs[k]],n=moras[idxs[k+1]];

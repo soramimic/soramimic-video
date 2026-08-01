@@ -20,8 +20,11 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 import time
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from .project import Line, Note, Project, SongInfo
@@ -276,6 +279,105 @@ def reference_from_midi(midi_path: Path, channel: int | None = None) -> list[lis
     ]
 
 
+# ---- 試聴(選択行のソロ合成 / 全体の作り直し) ----
+
+
+def synthesize_line(
+    project: Project,
+    moras: list[dict[str, Any]],
+    *,
+    engine_url: str | None = None,
+    style_id: int = 3003,
+    transpose: int = 0,
+    lead_sec: float = 0.3,
+) -> tuple[bytes, float]:
+    """選択行のモーラだけをVOICEVOXで歌わせる(未保存の編集をそのまま試聴する用)。
+
+    戻り値は ``(wavのバイト列, wavの先頭が対応する曲中の秒)``。曲頭からの長い
+    休符を作らないよう、行の少し手前を0秒として合成する。移調は曲全体の音域で
+    決めるので(``octave_keys``)、本番の合成と同じキーで鳴る。
+    """
+    from . import voicevox
+
+    if not moras:
+        raise ValueError("moras が空です")
+    ordered = sorted(moras, key=lambda m: float(m["start"]))
+    # 先頭は必ず休符から始める(VOICEVOXは最初の音符に子音があると400を返す)
+    offset = float(ordered[0]["start"]) - lead_sec
+    song = dataclass_replace(project.song, key_shift=0)
+    notes: list[Note] = []
+    for i, item in enumerate(ordered):
+        start = float(item["start"]) - offset
+        end = max(float(item["end"]) - offset, start + 0.02)
+        notes.append(Note(
+            id=i,
+            midi_note=int(item.get("pitch", 60)),
+            start_tick=sec_to_tick(song, start),
+            end_tick=sec_to_tick(song, end),
+            start_sec=start,
+            end_sec=end,
+            line=0,
+            surface="",
+            kana=str(item.get("text") or ""),
+            raw="",
+        ))
+    preview = Project(
+        song=song,
+        notes=notes,
+        lines=[Line(id=0, xf_surface="", xf_kana="".join(n.kana for n in notes),
+                    note_ids=[n.id for n in notes])],
+    )
+    with TemporaryDirectory() as tmp:
+        wav = voicevox.run_voicevox(
+            preview,
+            Path(tmp),
+            engine_url=engine_url or voicevox.DEFAULT_ENGINE_URL,
+            style_id=style_id,
+            transpose=transpose,
+            octave_keys=[n.midi_note for n in project.notes] or None,
+        )
+        return wav.read_bytes(), offset
+
+
+def rebuild(project_dir: Path, options: dict[str, Any]) -> Path:
+    """編集後のproject.jsonで歌唱合成→伴奏ミックスまでやり直し、ミックスwavを返す。"""
+    from .mix import mix
+    from .synthesize import synthesize
+
+    project = Project.load(project_dir)
+    extra: dict[str, Any] = {}
+    if options.get("engine_url"):  # 未指定なら synthesize 側の既定に任せる
+        extra["voicevox_url"] = options["engine_url"]
+    synthesize(
+        project,
+        project_dir,
+        model=options.get("model", "MERROW"),
+        transpose=options.get("transpose", 0),
+        synthesizer=options.get("synthesizer", "voicevox"),
+        voicevox_style=options.get("style_id", 3003),
+        auto_octave=options.get("auto_octave", True),
+        **extra,
+    )
+    project.save(project_dir)  # 自動移調が決めたkey_shiftを伴奏へ渡す
+    return mix(project, project_dir, soundfont=options.get("soundfont"))
+
+
+def _start_rebuild(state: dict[str, Any]) -> None:
+    job = state["job"]
+
+    def worker() -> None:
+        try:
+            out = rebuild(state["project_dir"], state["options"])
+            job.update(state="done", message=f"完了: {out.name}", mixed=out)
+            logger.info("作り直し完了: %s", out)
+        except Exception as exc:  # GUIに理由を出す
+            logger.exception("作り直しに失敗しました")
+            job.update(state="error", message=str(exc))
+
+    job.update(state="running", message="合成中…", mixed=job.get("mixed"))
+    threading.Thread(target=worker, daemon=True).start()
+
+
 # ---- サーバー ----
 
 
@@ -335,6 +437,12 @@ def _make_handler(state: dict[str, Any]) -> type[http.server.BaseHTTPRequestHand
                     envelope=state["envelope"],
                     has_audio=state["audio"] is not None,
                 ))
+            elif path == "/rebuild_status":
+                job = state["job"]
+                self._json(200, {"state": job["state"], "message": job["message"],
+                                 "has_mix": job.get("mixed") is not None})
+            elif path == "/mixed" and state["job"].get("mixed") is not None:
+                self._file(state["job"]["mixed"], "audio/wav")
             elif path == "/audio" and state["audio"] is not None:
                 audio: Path = state["audio"]
                 ctype = "audio/mpeg" if audio.suffix.lower() == ".mp3" else "audio/wav"
@@ -346,6 +454,35 @@ def _make_handler(state: dict[str, Any]) -> type[http.server.BaseHTTPRequestHand
             path = self.path.split("?")[0]
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b"{}"
+            if path == "/synth":
+                try:
+                    project = Project.load(state["project_dir"])
+                    opts = state["options"]
+                    wav, offset = synthesize_line(
+                        project, json.loads(body).get("moras") or [],
+                        engine_url=opts.get("engine_url"),
+                        style_id=opts.get("style_id", 3003),
+                        transpose=opts.get("transpose", 0),
+                    )
+                except Exception as exc:
+                    logger.warning("行の試聴合成に失敗しました: %s", exc)
+                    self._json(500, {"error": str(exc)})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(wav)))
+                self.send_header("X-Start", str(offset))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(wav)
+                return
+            if path == "/rebuild":
+                if state["job"]["state"] == "running":
+                    self._json(409, {"error": "すでに実行中です"})
+                else:
+                    _start_rebuild(state)
+                    self._json(200, {"state": "running"})
+                return
             if path != "/save":
                 self._json(404, {"error": "not found"})
                 return
@@ -376,8 +513,13 @@ def serve(
     port: int = DEFAULT_PORT,
     audio: Path | None = None,
     reference_midi: Path | None = None,
+    options: dict[str, Any] | None = None,
 ) -> None:
-    """編集GUIをローカルで配信する(Ctrl-Cで終了)。"""
+    """編集GUIをローカルで配信する(Ctrl-Cで終了)。
+
+    ``options`` は試聴・作り直しに渡す合成設定(synthesizer/model/soundfont/
+    engine_url/style_id/transpose)。
+    """
     project = Project.load(project_dir)
     audio_path = _resolve_audio(project, project_dir, audio)
     state: dict[str, Any] = {
@@ -385,6 +527,8 @@ def serve(
         "audio": audio_path,
         "envelope": audio_envelope(audio_path) if audio_path else None,
         "reference": reference_from_midi(reference_midi) if reference_midi else None,
+        "options": options or {},
+        "job": {"state": "idle", "message": "", "mixed": None},
     }
     logger.info(
         "モーラ%d個 / 行%d個 / 音源%s",
