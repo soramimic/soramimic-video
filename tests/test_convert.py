@@ -345,6 +345,59 @@ def test_convert_project_small_vowel_line_not_empty(tmp_path: Path):
     _assert_no_shared_notes(project)
 
 
+def test_convert_project_filler_fills_unmatched_line(tmp_path: Path):
+    """単語が足りない行でも空にならず、filler(元歌詞のかなのまま)が返る。
+
+    エンジン(soramimic#128)は1ユニット区間に必ず万能候補を置くので、
+    「どの単語も合わない → 行が丸ごと空」という結果が出なくなった。
+    filler は単語リストの語ではないので id を持たず、行も引かない。
+    """
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,鈴鹿,鈴鹿,スズカ", encoding="utf-8"
+    )
+    project = _line_project(["ル", "ニ"])
+    raw = convert_project(project, wordlist=str(csv_path))
+    # エンジンの生応答が filler を返している(id は無い)
+    raw_words = raw["lines"][0]["words"]
+    assert raw_words and all(w.get("filler") for w in raw_words)
+    assert all("id" not in w for w in raw_words)
+
+    assert project.parody is not None
+    words = project.parody.lines[0].words
+    assert [w.surface for w in words] == ["ル", "ニ"]
+    assert all(w.filler for w in words)
+    assert all(w.wordlist_row is None for w in words)  # 単語画像なし=文字フレーム
+    assert all(w.note_ids for w in words)              # 音符には載る(歌える)
+    _assert_no_shared_notes(project)
+
+
+def test_convert_project_filler_keeps_multi_char_mora(tmp_path: Path):
+    """拗音のように2文字以上のユニットでも、filler が音符へ正しく載る。"""
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,鈴鹿,鈴鹿,スズカ", encoding="utf-8"
+    )
+    project = _line_project(["キョ", "ウ"])
+    convert_project(project, wordlist=str(csv_path))
+    assert project.parody is not None
+    (word,) = project.parody.lines[0].words
+    assert word.filler and word.surface == "キョウ"
+    assert word.note_ids == [0, 1]
+    assert word.note_kana == ["キョ", "ウ"]  # 元歌詞と同じ割り付け
+
+
+def test_find_row_ignores_filler_without_id(tmp_path: Path):
+    """id を持たない filler は、id列が空のCSV行に誤って当たらない。"""
+    from soramimic_video.convert import _find_row, _rows_by_id
+
+    rows = _rows_by_id(["id,original,surface,pronunciation", ",鈴鹿,鈴鹿,スズカ"])
+    assert rows[""], "前提: id が空の行は \"\" のバケツに入る"
+    assert _find_row(rows, {"surface": "ル", "kana": "ル", "filler": True}) is None
+    assert _find_row(rows, {"surface": "ル", "kana": "ル"}) is None  # id キー自体が無い
+    assert _find_row(rows, {"id": "", "surface": "鈴鹿"}) is not None  # 実単語は従来通り
+
+
 def _empty_wordlist(tmp_path: Path) -> str:
     csv_path = tmp_path / "words.csv"
     csv_path.write_text("id,original,surface,pronunciation\n", encoding="utf-8")

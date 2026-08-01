@@ -447,8 +447,15 @@ def pick_headline_words(words: Sequence[dict[str, Any]]) -> list[dict[str, Any]]
     「春が来た → ダブラン」のように曲名の一部しか言い換えていない
     見出しになる。全部並べるのが正しい。長すぎる曲名の保険としてのみ
     HEADLINE_MAX_WORDS で切る。
+
+    filler(万能候補)は「元歌詞のかなのまま」の仮想語なので、それしか無い
+    ときは言い換えになっていない。エンジンが filler を返すようになる前と
+    同じく空リストを返す(見出しを出さない)。
     """
-    return [w for w in words if str(w.get("surface") or "")][:HEADLINE_MAX_WORDS]
+    picked = [w for w in words if str(w.get("surface") or "")][:HEADLINE_MAX_WORDS]
+    if not any(not w.get("filler") for w in picked):
+        return []
+    return picked
 
 
 def _cover(img: Image.Image, width: int, height: int) -> Image.Image:

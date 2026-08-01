@@ -73,6 +73,10 @@ class ParodyWord:
     note_kana: list[str] = field(default_factory=list)  # 音符ごとの歌唱カナ(note_idsと同長)
     wordlist_row: dict[str, Any] | None = None  # image列などを含むCSV行
     locked: bool = False
+    # 変換エンジンの filler(万能候補)。単語が足りない/どの単語も合わない区間を
+    # 「元歌詞のかなのまま」で埋める仮想語で、単語リストの行(id)を持たない。
+    # 画像も無いので文字フレームで流し、エンドロールの使用単語には数えない。
+    filler: bool = False
 
 
 @dataclass

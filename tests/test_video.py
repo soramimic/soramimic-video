@@ -1294,6 +1294,11 @@ def test_used_words_dedupes_in_order(tmp_path: Path):
         ParodyWord(surface="謎", kana="ナゾ", original="", original_surface="ナゾ",
                    originalkana="ナゾ", note_ids=[2], note_kana=["ム"])
     )
+    # filler(元歌詞のかなのまま残った区間)は単語リストの語ではないので数えない
+    words.append(
+        ParodyWord(surface="ルニ", kana="ルニ", original="", original_surface="ルニ",
+                   originalkana="ルニ", note_ids=[2], note_kana=["ム"], filler=True)
+    )
     # original 列を出し、無い単語(手入力)は替え歌表記で代用する
     assert used_words(project) == ["静", "西川正治", "謎"]
 

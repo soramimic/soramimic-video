@@ -85,6 +85,9 @@ def import_edit(project: Project, project_dir: Path) -> None:
                 # (モーラを先頭から1音符1つ、足りない分は直前の音を伸ばす)
                 moras = split_moras(kana)
                 w.note_kana = moras + ["ー"] * (len(w.note_ids) - len(moras))
+            if ew["surface"] != w.surface:
+                # 人が書き換えた語はもう filler(元歌詞のかなのまま)ではない
+                w.filler = False
             w.surface = ew["surface"]
             w.kana = kana
             w.locked = bool(ew.get("locked", False))

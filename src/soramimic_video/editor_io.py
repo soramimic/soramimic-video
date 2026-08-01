@@ -419,7 +419,7 @@ def build_editor_preview(
         original_text = original_by_line[i]
         for w in line_words:
             row = _find_row(rows_by_id, w) or {}
-            # 単語リストに行がない単語(未知語)はfallback側で描く
+            # 単語リストに行がない単語(未知語・filler)はfallback側で描く
             use_fallback = not row
             word = ParodyWord(
                 surface=w.get("surface", ""),
@@ -428,6 +428,7 @@ def build_editor_preview(
                 original_surface=w.get("original_surface", ""),
                 originalkana=w.get("originalkana", ""),
                 note_ids=[],
+                filler=bool(w.get("filler", False)),
             )
             data = word_frame_data(word, row)
             # 画像列が空の既知語も実動画(build_image_cues)と同じく文字フレームに落とす

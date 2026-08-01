@@ -608,6 +608,103 @@ def test_job_rejects_oversized_original_csv(job_client, monkeypatch):
     assert "大きすぎます" in res.json()["detail"]
 
 
+# ---- filler(万能候補)----
+# 変換エンジンは単語が足りない/どの単語も合わない1ユニット区間を「元歌詞の
+# かなのまま」の仮想語(filler)で埋める(soramimic#128)。この単語は単語リストの
+# 語ではないので id を持たない。取り込みでもプレビューでも、行が引けない単語
+# =文字フレームのフォールバックとして素直に流れることを見る。
+
+
+def _filler_words(units: list[dict]) -> list[dict]:
+    """ユニット列を全部 filler で埋めた results 1行ぶん(エンジンの出力と同じ形)。"""
+    return [
+        {
+            "surface": u["pronunciation"],
+            "pronunciation": u["pronunciation"],
+            "kana": u["pronunciation"],
+            "original": "",
+            "filler": True,
+            "sim": 1e6,
+            "score": 1e6,
+            "originalkana": u["pronunciation"],
+            "original_surface": u["pronunciation"],
+            "period": [i, i + 1],
+        }
+        for i, u in enumerate(units)
+    ]
+
+
+def test_import_editor_accepts_filler_words(client, tmp_path):
+    """id を持たない filler が混ざっても取り込めて、行は引かない(文字フレーム行き)。"""
+    payload = _original_payload(client, tmp_path)
+    payload["results"][0] = _filler_words(payload["unitsList"][0])
+    project, _d = _import(payload, tmp_path)
+
+    words = project.parody.lines[0].words
+    assert words, "filler だけの行が空になっている"
+    assert all(w.filler for w in words)
+    # 単語リストの語ではないので行は引かない(=単語画像なし・文字フレーム)
+    assert all(w.wordlist_row is None for w in words)
+    # 歌わせるカナは元歌詞のまま。音符にも対応づく
+    assert all(w.note_ids for w in words)
+    assert "".join(w.kana for w in words) == "".join(
+        u["pronunciation"] for u in payload["unitsList"][0]
+    )
+
+
+def test_import_editor_filler_survives_project_roundtrip(client, tmp_path):
+    """filler フラグは project.json を書いて読み直しても残る(旧project.jsonも読める)。"""
+    from soramimic_video.project import Project
+
+    payload = _original_payload(client, tmp_path)
+    payload["results"][0] = _filler_words(payload["unitsList"][0])
+    project, d = _import(payload, tmp_path)
+    project.save(d)
+    assert all(w.filler for w in Project.load(d).parody.lines[0].words)
+
+    # filler キーが無い旧 project.json も既定 False で読める
+    raw = json.loads((d / "project.json").read_text(encoding="utf-8"))
+    for pl in raw["parody"]["lines"]:
+        for w in pl["words"]:
+            del w["filler"]
+    (d / "project.json").write_text(json.dumps(raw, ensure_ascii=False), "utf-8")
+    assert not any(w.filler for w in Project.load(d).parody.lines[0].words)
+
+
+def test_editor_preview_filler_uses_fallback(client):
+    """レイアウトプレビューでも filler は行なし=フォールバック側で描く。"""
+    payload = _preview_payload()
+    payload["results"][0] = [
+        dict(_filler_words([{"pronunciation": "シズオカ"}])[0], period=[0, 1])
+    ]
+    res = client.post(
+        "/api/editor-preview",
+        files={"editor": ("editor.json",
+                          json.dumps(payload).encode(), "application/json")},
+        data={"layout_json": json.dumps(_SHOW_ALL_LAYOUT)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 1                    # キューから消えない
+    assert body["use_fallback"] is True          # 単語リストの行が当たっていない
+    assert body["data"]["surface"] == "シズオカ"   # 元歌詞のかながそのまま出る
+    assert not body["data"].get("image")         # 単語画像は無い
+
+
+def test_job_accepts_editor_with_filler(job_client, tmp_path):
+    """filler 混じりの editor.json はそのままジョブに投入できる。"""
+    payload = _original_payload(job_client, tmp_path)
+    payload["results"][0] = _filler_words(payload["unitsList"][0])
+    res = job_client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "editor": ("editor.json", json.dumps(payload).encode(), "application/json"),
+        },
+    )
+    assert res.status_code == 200, res.text
+
+
 def test_index_treats_original_wordlist_as_custom():
     """トップ画面の表示でも ORIGINAL は custom: と同じ「自作リスト」扱いにする。"""
     index = (
