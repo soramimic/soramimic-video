@@ -287,28 +287,6 @@
   .editor-modal-foot input[type="file"] {
     width: auto; max-width: 100%; flex: 0 1 auto; padding: .3rem .4rem; font-size: .8rem;
   }
-  /* ---- 自作の単語リストの全画面モーダル ---- */
-  /* 単語を書く欄・ファイル・画像と入力が多く、詳細設定の中に置くと周りに埋もれる。
-     枠組み(.editor-modal 一式)は替え歌エディタと共用し、中身だけここで足す。 */
-  .modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: .8rem .7rem; }
-  /* 狭い画面(375px)でも読める幅に収め、広い画面では中央に置く */
-  .modal-body-inner { max-width: 40rem; margin: 0 auto; }
-  #wordlist-text { min-height: 12rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  /* 選んだ画像の一覧。1件ずつ × で外せるピルにする */
-  .file-chips { display: flex; flex-wrap: wrap; gap: .3rem; margin: .4rem 0 0; padding: 0; list-style: none; }
-  .file-chips li {
-    display: inline-flex; align-items: center; gap: .2rem; max-width: 100%;
-    padding: .1rem .2rem .1rem .5rem; font-size: .8rem;
-    border: 1px solid var(--border); border-radius: 999px; background: var(--panel-2);
-  }
-  .file-chips .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .file-chips button {
-    padding: 0 .35rem; min-height: 0; line-height: 1.4;
-    border: 0; background: none; color: var(--muted);
-  }
-  /* 詳細設定側に残す要約(中身の編集はモーダルで行う) */
-  .custom-wordlist-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-  #custom-wordlist-summary { font-size: .85rem; }
   /* 自動オクターブ調整ONで無効化した移調欄(disabled + 視覚的にミュート) */
   #transpose-row.is-disabled { opacity: .5; }
   /* モーダルを開いているあいだは裏のページをスクロールさせない */
@@ -369,27 +347,27 @@
   /* 読み込み結果のメッセージは他のボタンと同じ行に並ばせず、次の行に出す */
   #layout-file-msg { flex: 1 0 100%; }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
-  /* ---- ビルダーカード: 曲×単語リストのプルダウン + その場のサムネプレビュー ---- */
-  /* 🎲ランダムはカードの右上に小さく置く(プルダウンのショートカットで主役ではない)。
+  /* ---- ビルダーカード: サムネプレビュー + ⚙(編集)と🎲(ランダム) ---- */
+  /* カードから触れる操作は⚙と🎲の2つだけ。主役はサムネ枠なので右上に小さく置く。
      ただしアイコンだけだと気づかれないので、文字ラベルを添えたピルにして
      「押せるもの」だと一目で分かるようにする(主張しすぎない大きさに留める) */
-  .builder-topbar { display: flex; justify-content: flex-end; margin-bottom: .3rem; }
-  #lucky {
+  .builder-topbar {
+    display: flex; justify-content: flex-end; gap: .4rem; margin-bottom: .3rem;
+  }
+  #lucky, #builder-edit {
     display: inline-flex; align-items: center; gap: .3rem;
     padding: .25rem .7rem; min-height: 0; line-height: 1.4;
     border-radius: 999px; background: var(--panel-2);
   }
-  #lucky .lucky-icon { font-size: 1rem; line-height: 1; }
-  /* プルダウンは横並び(狭い画面では1列に折り返す) */
-  .builder-selects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
-  @media (max-width: 26rem) { .builder-selects { grid-template-columns: 1fr; } }
-  /* ラベルとプルダウンは同じ行に置く(モバイル幅でも1行に収める) */
-  .builder-selects .field { display: flex; align-items: center; gap: .5rem; }
-  .builder-selects label { margin: 0; flex: 0 0 auto; white-space: nowrap; }
-  .builder-selects select { flex: 1 1 auto; min-width: 0; }
-  /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
-     2つ目だけ下にずれるので消す */
-  .builder-selects .field + .field { margin-top: 0; }
+  .lucky-icon { font-size: 1rem; line-height: 1; }
+  /* いま何が作られるか(曲 × 単語リスト)の1行。選び直しは🎲と⚙からなので、
+     ここは押せない表示専用。控えめに、枠の絵の邪魔をしない大きさにする。
+     中身が空のあいだも行の高さは保つ(サムネの位置を上下に暴れさせない。
+     ここをプルダウンに差し替えるときも、同じ場所に同じ高さで収まる) */
+  .builder-state {
+    margin: .45rem 0 0; text-align: center; font-size: .8rem; color: var(--muted);
+    min-height: 1.4em;
+  }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -466,28 +444,44 @@
   <p class="hint" id="server-info"></p>
 </header>
 
-<!-- 1. ビルダーカード(この画面の主役)。曲と単語リストのプルダウンを選ぶと、その
-     組み合わせで実際に作られるサムネがその場に出る(/api/thumbnail-preview)。
-     選択は詳細設定側の #sample-select / #wordlist-select と双方向に同期し、
-     そのサムネ枠(#builder-play)をタップすればそのまま生成が走る。
-     見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
+<!-- 1. ビルダーカード(この画面の主役)。いまの組み合わせで実際に作られるサムネが
+     その場に出て(/api/thumbnail-preview)、その枠(#builder-play)をタップすれば
+     そのまま生成が走る。
+     曲・単語リストのプルダウンは置かない: 単語リストの選び直し・絞り込み・変換の
+     しかたは同梱エディタの⚙モーダルに一本化したので、カードは「動画にする係」に
+     徹して、操作は⚙(替え歌を編集)と🎲(ランダム)の2つだけにする。
+     いま何が作られるかは枠の下の1行(#builder-state)で示す。
+     見出しや説明文は置かない(サムネが出る、で分かる)。
+     プルダウンでの選択に戻す場合の勘所はスクリプト側の「カードの状態表示」の
+     コメントに書いてある(正本の構造は変えていないので revert で足りる)。 -->
 <section class="card" id="lucky-card">
-  <!-- 🎲ランダムはプルダウンのショートカット。主役ではないので右上に小さく置く -->
+  <!-- カードから触れる操作はこの2つだけ。主役ではないので右上に小さく置く。
+       アイコンだけだと気づかれないので、どちらも文字ラベルを添える(読み上げは
+       文字の方だけでよいので、絵文字は aria-hidden にする) -->
   <div class="builder-topbar">
-    <!-- アイコンだけだと気づかれないので「ランダム」の文字を添える(読み上げは
-         文字の方だけでよいので、絵文字は aria-hidden にする) -->
+    <!-- 替え歌エディタへの導線。押したときの流れは詳細設定にあった編集ボタンと
+         同じ openEditorFlow(保存済みがあれば下の #editor-resume で選んでもらう)。
+         エディタを同梱していないサーバーでは loadConfig がこの枠ごと隠す -->
+    <div id="editor-embed-controls" hidden>
+      <button type="button" id="builder-edit" class="btn-sm"
+        aria-label="替え歌を編集" title="替え歌を編集">
+        <span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>
+    </div>
     <button type="button" id="lucky" class="btn-sm" title="曲と単語リストをランダムに選ぶ">
       <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
   </div>
-  <div class="builder-selects">
-    <div class="field" id="builder-sample-field">
-      <label for="builder-sample">曲</label>
-      <select id="builder-sample" aria-label="曲(サンプル曲)"></select>
-    </div>
-    <div class="field" id="builder-wordlist-field">
-      <!-- 「(何に空耳させるか)」の補足は幅を食うので title に退避する -->
-      <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
-      <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
+  <!-- ⚙を押したときの応答。押したボタンのすぐ下に出す -->
+  <span id="open-editor-msg" class="error"></span>
+  <!-- 保存済みの替え歌があるときだけ出す選択(破棄する側を押し間違えないよう、
+       ボタンを分けて意味を書く)。既定の推し(btn-primary)は来歴で切り替える -->
+  <div id="editor-resume" class="editor-resume" hidden
+    role="group" aria-labelledby="editor-resume-title">
+    <p class="editor-resume-title" id="editor-resume-title">保存済みの替え歌歌詞があります。</p>
+    <p class="hint" id="editor-resume-note"></p>
+    <div class="editor-resume-actions">
+      <button type="button" id="editor-resume-continue" class="btn-sm">続きから再開</button>
+      <button type="button" id="editor-resume-regen" class="btn-sm">現在のパラメータで再生成してから編集</button>
+      <button type="button" id="editor-resume-cancel" class="btn-sm">やめる</button>
     </div>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
@@ -517,6 +511,15 @@
       <button type="button" id="builder-cancel" class="btn-danger btn-sm">中断</button>
     </div>
   </div>
+  <!-- いま何が作られるか(曲 × 単語リスト)。カードから選ぶ操作を無くしたぶん、
+       ここだけは常に見えるようにする。押せない表示専用(選び直しは⚙と🎲) -->
+  <p class="hint builder-state" id="builder-state" aria-live="polite"></p>
+  <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
+       「使われます」「別の入力から作られた編集なので使いません」を出す。
+       エディタへの導線がカードの⚙になったので、この表示もカードに置く -->
+  <p class="hint" id="editor-auto-status" hidden></p>
+  <!-- 編集済み替え歌JSONの状態(renderParodyStatus)。取り消しの導線もここ -->
+  <p id="parody-status" class="hint"></p>
   <!-- 代表画像へ落ちているあいだの控えめな表示(裏で本物を取り直している) -->
   <p class="hint" id="builder-preview-pending" hidden>プレビューを準備中…</p>
   <!-- 完成した動画のシェア導線。枠のすぐ下に出す(中身は SHARE_HTML) -->
@@ -569,16 +572,29 @@
   </details>
 </section>
 
-<!-- 2. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
-     曲・単語リストの欄もここに残し(送信値の正本)、上のビルダーカードと双方向に
-     同期する。歌声・歌詞・レイアウト・変換パラメータはここだけにある。 -->
-<details class="card" id="advanced">
-  <summary>⚙️ 詳細設定(曲と歌詞・空耳のもと・歌声・見た目)</summary>
+<!-- 単語リストの「正本」の置き場。選ぶ操作はエディタの⚙モーダルへ移したので画面には
+     出さないが、値そのもの(リスト名と絞り込み)はサーバー送信・サムネプレビュー・
+     🎲の抽選・単語画像の解決に使うのでここに隠して残す。
+     - #wordlist-select … /editor/conf/setting.json から作った選択肢の一覧。
+       選択状態のほか、🎲の抽選対象と表示名の引き当てにも使う。conf が取れない
+       構成では hidden のまま(=リスト名の直接指定に落ちる)
+     - #wordlist … リスト名(stem)。自作リストのときは空
+     - #where … 選んだリストの絞り込み条件(エディタで絞り込んだらそれが入る) -->
+<div id="wordlist-store" hidden>
+  <select id="wordlist-select" hidden></select>
+  <input type="hidden" id="wordlist">
+  <input type="hidden" id="where">
+</div>
 
-  <!-- 中身は役割ごとに4つのグループに分け、よく使う順(曲 → 空耳のもと → 歌声 →
-       見た目)に並べる。フラットに並べると初見の人がどこから触ればいいか
-       分からないため、小見出し+1行の説明で区切る。
-       DOMの移動だけで、ID・同期・復元・来歴ガードのロジックは触っていない。 -->
+<!-- 2. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
+     曲(自分のMIDI)・歌声・見た目はここだけにある。単語リストと変換のしかたは
+     エディタの⚙モーダルに一本化したので、ここには残っていない。 -->
+<details class="card" id="advanced">
+  <summary>⚙️ 詳細設定(曲と歌詞・歌声・見た目)</summary>
+
+  <!-- 中身は役割ごとに3つのグループに分け、よく使う順(曲 → 歌声 → 見た目)に
+       並べる。フラットに並べると初見の人がどこから触ればいいか分からないため、
+       小見出し+1行の説明で区切る。ふだん触らないものは末尾の「上級者向け」へ。 -->
 
   <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig が auth_required を見て
        hidden を外す)。公開モードや認証なしの構成では最後まで hidden のまま。
@@ -630,86 +646,9 @@
     </div>
   </section>
 
-  <!-- ② 空耳のもと -->
+  <!-- ② 歌声 -->
   <section class="opt-group">
-    <h3 class="opt-group-title">② 空耳のもと</h3>
-    <p class="hint opt-group-lead" data-info>歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタに進んでください(変換のしかたの調整も単語リストの絞り込みも、エディタの中でできます)。</p>
-
-    <div class="field">
-      <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
-      <select id="wordlist-select" hidden></select>
-      <input type="text" id="wordlist" placeholder="例: stations">
-      <!-- 自作の単語リスト。プルダウンで「自作リストを使う」を選んだときだけ出す。
-           中身の編集は専用モーダル(#wordlist-modal-wrap)で行い、ここには今の
-           内容の要約と開き直す導線だけを置く。書き換えるたびに
-           /api/wordlist-check に投げて検査するので、通った内容だけが生成に使われる。 -->
-      <div id="custom-wordlist" hidden>
-        <label>自作の単語リスト</label>
-        <div class="custom-wordlist-row">
-          <span id="custom-wordlist-summary">未設定</span>
-          <button type="button" id="edit-wordlist" class="btn-sm">編集</button>
-        </div>
-        <p class="error" id="custom-wordlist-error" hidden></p>
-      </div>
-      <!-- 絞り込み(where)は、プルダウンで選んだ単語リスト(confエントリ)の条件を
-           そのまま持ち回るための隠し値。手入力欄とファセットのチェックボックスは
-           廃止し、細かい絞り込みはエディタの「変換のしかた」で行う。ここは
-           /api/editor-session・生成への受け渡しの正本として残す。 -->
-      <input type="hidden" id="where">
-    </div>
-
-    <div class="field">
-      <label>替え歌の編集</label>
-      <!-- エディタへの導線はこのボタン1つだけ。保存済みの替え歌が無ければ暗黙に
-           変換してから開き、有れば下の #editor-resume で「続きから」か
-           「今のパラメータで作り直し」かを選んでもらう(openEditorFlow) -->
-      <div id="editor-embed-controls" hidden>
-        <button type="button" id="open-editor" class="btn-sm">✏️ 替え歌を編集</button>
-        <p class="hint" data-info>MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
-          変換のしかた(音の合わせ方・単語の長さ・単語重複)の調整や単語リストの絞り込みも、
-          エディタの中の「変換のしかた」でできます(そこで再変換した結果がそのまま残ります)。
-          自作の単語リストでも開けます。
-          編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
-        <span id="open-editor-msg" class="error"></span>
-        <!-- 保存済みの替え歌があるときだけ出す選択(破棄する側を押し間違えないよう、
-             ボタンを分けて意味を書く)。既定の推し(btn-primary)は来歴で切り替える -->
-        <div id="editor-resume" class="editor-resume" hidden
-          role="group" aria-labelledby="editor-resume-title">
-          <p class="editor-resume-title" id="editor-resume-title">保存済みの替え歌歌詞があります。</p>
-          <p class="hint" id="editor-resume-note"></p>
-          <div class="editor-resume-actions">
-            <button type="button" id="editor-resume-continue" class="btn-sm">続きから再開</button>
-            <button type="button" id="editor-resume-regen" class="btn-sm">現在のパラメータで再生成してから編集</button>
-            <button type="button" id="editor-resume-cancel" class="btn-sm">やめる</button>
-          </div>
-        </div>
-      </div>
-      <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
-           「使われます」「別の入力から作られた編集なので使いません」を出す -->
-      <p class="hint" id="editor-auto-status" hidden></p>
-      <!-- 編集済み替え歌JSONの状態(renderParodyStatus)。再編集・取り消しの導線もここ -->
-      <p id="parody-status" class="hint"></p>
-    </div>
-
-    <!-- 変換のしかた(プリセット・スライダー・単語重複・絞り込み)は同梱エディタの
-         「変換のしかた」パネルに一本化した(external/soramimic fcff70d)。video側に
-         対応表を持たなくて済むよう、ここに残すのはエディタにも本家にも無い
-         soramimic-video 独自の「ノート長重視 α」だけ。 -->
-    <details id="parody-advanced" class="sub-details">
-      <summary>変換のしかたを細かく調整する(上級者向け)</summary>
-      <p class="hint" data-info>音の合わせ方・文節の区切り・単語の長さ・単語重複、そして単語リストの絞り込みは、「✏️ 替え歌を編集」で開くエディタの中の「変換のしかた」で調整して再変換できます。ここに残っているのは、エディタにも本家soramimicにも無いsoramimic-video独自の項目だけです。</p>
-      <!-- 送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
-      <label>ノート長重視 α(soramimic-video独自)</label>
-      <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
-        aria-label="ノート長重視 α(0でオフ)">
-      <p class="hint" data-info>この項目だけ本家soramimic(と同梱エディタ)にはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
-    </details>
-
-  </section>
-
-  <!-- ③ 歌声 -->
-  <section class="opt-group">
-    <h3 class="opt-group-title">③ 歌声</h3>
+    <h3 class="opt-group-title">② 歌声</h3>
     <p class="hint opt-group-lead" data-info>誰の声で、どの高さで歌うか。</p>
 
     <div class="field">
@@ -761,11 +700,11 @@
     </div>
   </section>
 
-  <!-- ④ レイアウト -->
+  <!-- ③ 見た目 -->
   <section class="opt-group">
     <!-- 中身がレイアウトだけになったので、見出し「見た目」+ラベル「レイアウト」の
          二段構えをやめて見出しに統合(ⓘも1つに) -->
-    <h3 class="opt-group-title">④ レイアウト</h3>
+    <h3 class="opt-group-title">③ 見た目</h3>
     <p class="hint opt-group-lead" data-info>動画の画面の作り(画像・説明文・字幕の配置)。単語リストに合わせて自動で決まります。細かく変えたいときは「レイアウトを調整」から(全画面で開きます)。プリセットの選び直しや、自作レイアウト(JSONファイル)の読み込みも編集画面の中にあります。</p>
 
     <div class="field">
@@ -786,6 +725,22 @@
       </div>
     </div>
   </section>
+
+  <!-- 上級者向け。ふだんは触らないものはグループに並べず、末尾の折りたたみへ入れる。
+       変換のしかた(プリセット・音の合わせ方・文節の区切り・単語の長さ・単語重複)と
+       単語リストの絞り込みは同梱エディタの⚙モーダルに一本化した(video側に本家の
+       値対応表を持たないため)ので、ここに残るのはエディタにも本家にも無い
+       soramimic-video 独自の項目だけ。 -->
+  <details id="advanced-extra" class="sub-details">
+    <summary>上級者向け</summary>
+    <!-- 送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
+    <div class="field">
+      <label for="p-notelen">ノート長重視 α(soramimic-video独自)</label>
+      <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
+        aria-label="ノート長重視 α(0でオフ)">
+      <p class="hint" data-info>この項目だけ本家soramimic(と同梱エディタ)にはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
+    </div>
+  </details>
 
 </details>
 
@@ -914,56 +869,6 @@
         </details>
       </div>
     </div>
-  </div>
-</div>
-
-<!-- 自作の単語リストのモーダル。単語をその場で書けるようにし、画像は別々に選ばせる
-     (zipを作らなくても単語画像を出せる)。書き換えるたびに /api/wordlist-check で
-     検査し、通った内容だけを生成に使う。ファイルから読み込んだ .csv/.txt は
-     テキスト欄に流し込み、以後はテキスト欄が正本。画像入りzipだけは中身を
-     ほどかずそのまま送る。枠組みのCSSは替え歌エディタのモーダルと共用。
-     説明は ⓘ に畳まない(data-info のフロートはモーダルより下に出るため)。 -->
-<div class="editor-modal" id="wordlist-modal-wrap" hidden role="dialog" aria-modal="true"
-  aria-labelledby="wordlist-modal-title">
-  <div class="editor-modal-head">
-    <h2 id="wordlist-modal-title">📝 自作の単語リスト</h2>
-    <button type="button" id="wordlist-modal-close" class="btn-sm">閉じる</button>
-    <p class="hint">書いた内容はその場で検査され、通っていればそのまま生成に使われます(Escでも閉じます)。</p>
-  </div>
-  <div class="modal-body">
-    <div class="modal-body-inner">
-      <div class="field">
-        <label for="wordlist-name">リスト名(任意)</label>
-        <input type="text" id="wordlist-name" placeholder="custom">
-        <p class="hint">サムネイルや履歴・ダウンロード名に出る名前です。</p>
-      </div>
-      <div class="field">
-        <label for="wordlist-text">単語(1行に1語)</label>
-        <p class="hint">かんたん形式は「表記,読み」。読みはカタカナかひらがなで、省くと表記から自動で推定します(<code>#</code> 以降は行コメント)。1行目に <code>surface,pronunciation</code> と列名を書いたCSVも使えます。単語画像を出すときは <code>image</code> 列に下で選んだ画像のファイル名を書きます。</p>
-        <textarea id="wordlist-text" placeholder="ねこ,ネコ&#10;田中太郎,タナカタロウ"></textarea>
-      </div>
-      <div class="field">
-        <label for="wordlist-file">ファイルから読み込む</label>
-        <input type="file" id="wordlist-file" accept=".csv,.txt,.zip,text/csv,text/plain,application/zip">
-        <p class="hint">.csv / .txt を選ぶと中身が上の欄に入ります(文字化けするときはUTF-8で保存し直すか、zipにまとめてください)。CSVと画像をまとめたzipを選んだときは、そのzipをそのまま使います。</p>
-        <div id="wordlist-zip-note" class="custom-wordlist-row" hidden>
-          <span id="wordlist-zip-name"></span>
-          <button type="button" id="wordlist-zip-clear" class="btn-sm">zipをやめて自分で書く</button>
-        </div>
-      </div>
-      <div class="field">
-        <label for="wordlist-images">単語画像(任意・PNG / JPEG / WebP)</label>
-        <input type="file" id="wordlist-images" multiple accept="image/png,image/jpeg,image/webp">
-        <p class="hint">表記(<code>original</code> 列があればその値)と同じファイル名の画像が自動で紐づきます。</p>
-        <ul id="wordlist-image-list" class="file-chips"></ul>
-      </div>
-      <p class="hint" id="wordlist-status" hidden></p>
-      <p class="error" id="wordlist-error" hidden></p>
-    </div>
-  </div>
-  <div class="editor-modal-foot">
-    <button type="button" id="wordlist-apply" class="btn-primary btn-sm">この内容を使う</button>
-    <p class="hint">検査が通っていれば閉じるだけでも使われます。</p>
   </div>
 </div>
 
@@ -1693,9 +1598,7 @@ function setBusy(busy) {
   $("preview").disabled = busy;
   $("preview-high").disabled = busy;
   $("preview-low").disabled = busy;
-  // ビルダーカードのプルダウンとショートカット(🎲ランダム)
-  $("builder-sample").disabled = busy;
-  $("builder-wordlist").disabled = busy;
+  // カードの操作(🎲ランダム)は生成中は止める
   $("lucky").disabled = busy;
   updateBuilderOverlay();   // 生成中は「タップで動画を生成」を出さない
 }
@@ -1734,7 +1637,6 @@ async function submitJob(previewSec, previewMode) {
   // 曲を選んだ直後に押されたときは、MIDIの取得と歌詞チェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
   if (midiChecking) await midiChecking;
-  if (wordlistChecking) await wordlistChecking;   // 自作リストの検査が終わるまで待つ
   // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
   // いたり、復元した古い中身が入っていたりする状態では投げない。
   if (!await ensureSelectedSampleMidi()) {
@@ -1744,18 +1646,10 @@ async function submitJob(previewSec, previewMode) {
   const midi = $("midi").files[0];
   if (!midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
-    // 曲はカードのプルダウンで選べる。自分のMIDIを使う人は詳細設定へ誘導する
+    // 曲は🎲で選び直せる。自分のMIDIを使う人は詳細設定へ誘導する
     showSubmitMsg("曲がまだセットされていません。"
-      + "上の「曲」から選び直すか、「⚙️ 詳細設定」で曲"
+      + "🎲で選び直すか、「⚙️ 詳細設定」で曲"
       + "(サンプル曲か、自分のXF MIDIファイル)を選んでください。");
-    return;
-  }
-  // 自作リストを選んだまま中身が無い(書いていない・検査に落ちた)状態では投げない
-  if (isCustomWordlist() && !customWordlist && previewSec <= 0) {
-    setBusy(false);
-    $("advanced").open = true;
-    showSubmitMsg("自作の単語リストの中身がまだ決まっていません。"
-      + "「⚙️ 詳細設定」の「自作の単語リスト」の「編集」から単語を書いてください。");
     return;
   }
   showSubmitMsg("");
@@ -1800,8 +1694,6 @@ async function submitJob(previewSec, previewMode) {
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(midi));
   form.append("wordlist", $("wordlist").value);
-  // 自作リストはリスト名ではなく中身そのものを送る(サーバー側で名前より優先される)
-  if (customWordlist && isCustomWordlist()) appendCustomWordlist(form);
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
   form.append("layout", $("layout").value);
@@ -1858,7 +1750,6 @@ async function loadSamples() {
     samples.forEach((s) => { if (s.description) sampleDescriptions[s.id] = s.description; });
     $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
-    syncBuilderOptions();  // カードの曲プルダウンへ写す
   } catch {
     // サンプルが取れない環境ではサンプル選択の折りたたみ(#sample-details)ごと隠す。
     // MIDIファイル選択は詳細設定の中に出たままなので、そちらを使ってもらう。
@@ -1915,9 +1806,9 @@ async function applySample(opts = {}) {
       $("lyrics").value = await lyricsRes.text();
       $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
     }
-    // 単語リスト: セレクトが出ていればその選択を尊重、手入力欄が空のときだけ埋める
-    // (MIDIの取り直しは曲を選ぶ操作ではないので触らない)
-    if (!opts.midiOnly && !$("wordlist").hidden && !$("wordlist").value.trim()) {
+    // 単語リスト: 曲を選ぶ操作でリストの選択は変えない。confが取れない構成
+    // (リスト名を直接指定する)で未指定のときだけ、既定のリスト名を入れておく
+    if (!opts.midiOnly && $("wordlist-select").hidden && !$("wordlist").value.trim()) {
       $("wordlist").value = "stations";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
     }
@@ -2103,267 +1994,18 @@ const HIDDEN_PREVIEW_WORDLISTS = {
   insect: "昆虫の画像が苦手な方への配慮で、プレビューを隠しています。",
 };
 
-// ---- 自作の単語リスト ----
-// 単語リストのプルダウンの最後にある「自作リストを使う」。選ぶと専用のモーダル
-// (#wordlist-modal-wrap)が開き、そこで単語をその場で書く(またはCSV/zipを
-// 読み込む)。書き換えるたびに /api/wordlist-check に検査させる(投入してから
-// 落とさない)。通った内容は投入時に multipart で送り、サーバーがジョブ
-// ディレクトリに保存して変換に使う。送り方は中身の持ち方で2通り:
-//   zip  : wordlist_csv にzipファイルそのもの(中身はサーバーがほどく)
-//   text : wordlist_text(書いた内容)+ wordlist_name + wordlist_images(画像を1枚ずつ)
-// 選択中はリスト名(#wordlist)を空にするので、レイアウトはサーバー既定になり、
-// 🎲ランダムの抽選対象からも外れ、サムネのプレビューも作らない。
-const CUSTOM_WORDLIST = "__custom__";
-
-// 検査を通った自作リスト。未設定なら null。
-// { mode: "text"|"zip", file, text, images, name, rows, imageCount, fingerprint }
-let customWordlist = null;
-// 検査中のPromise(投入がこれを待つ。未検査のまま送らないため)
-let wordlistChecking = null;
-let wordlistCheckTimer = null;
-let wordlistCheckSeq = 0;        // 応答の追い越しを捨てるための世代番号
-let wordlistZipFile = null;      // 画像入りzipを選んでいるあいだはそれが正本
-let wordlistImages = [];         // 選ばれた画像(input.filesは書き換えられないので配列で持つ)
-let wordlistModalOpener = null;  // 開く前にフォーカスがあった要素(閉じたら戻す)
-let wordlistRestoredImages = 0;  // 前回の入力にあったが復元できなかった画像の枚数
-
-const isCustomWordlist = () =>
-  !$("wordlist-select").hidden && $("wordlist-select").value === CUSTOM_WORDLIST;
-
-// 詳細設定側に残す1行の要約(中身の編集はモーダルで行う)
-function renderCustomWordlistSummary() {
-  const wl = customWordlist;
-  $("custom-wordlist-summary").textContent = wl
-    ? `${wl.name}: ${wl.rows}語` + (wl.imageCount ? `・画像${wl.imageCount}枚` : "")
-    : "未設定";
-}
-
-// 状態とエラーはモーダルに出す。エラーだけはモーダルを閉じていても見えるよう、
-// 詳細設定側の要約の下にも同じ文を出す。
-function showCustomWordlistMsg(status, error) {
-  $("wordlist-status").textContent = status || "";
-  $("wordlist-status").hidden = !status;
-  $("wordlist-error").textContent = error || "";
-  $("wordlist-error").hidden = !error;
-  $("custom-wordlist-error").textContent = error || "";
-  $("custom-wordlist-error").hidden = !error;
-  renderCustomWordlistSummary();
-}
-
-// 選ばれた画像の一覧を描き直す(×で1枚ずつ外せる)
-function renderWordlistImages() {
-  const list = $("wordlist-image-list");
-  list.textContent = "";
-  wordlistImages.forEach((f, i) => {
-    const li = document.createElement("li");
-    const name = document.createElement("span");
-    name.className = "chip-name";
-    name.textContent = f.name;
-    const del = document.createElement("button");
-    del.type = "button";
-    del.textContent = "×";
-    del.setAttribute("aria-label", `${f.name} を外す`);
-    del.addEventListener("click", () => {
-      wordlistImages.splice(i, 1);
-      renderWordlistImages();
-      scheduleWordlistCheck();
-    });
-    li.append(name, del);
-    list.appendChild(li);
-  });
-}
-
-// 同じ名前の画像が2つあると、どちらを行に当てるか決まらない(サーバーも断る)。
-// 選び足したときは名前で重複を落として、その場で分かるようにする。
-function addWordlistImages(files) {
-  for (const f of files) {
-    if (!wordlistImages.some((x) => x.name === f.name)) wordlistImages.push(f);
-  }
-  if (wordlistImages.length) wordlistRestoredImages = 0;
-  renderWordlistImages();
-}
-
-// zipを選んだらそのzipをそのまま送る(中身はサーバーがほどく)。書いた内容や
-// 別に選んだ画像はzipの中身と食い違うので、そのあいだは触れないようにする。
-function setWordlistZip(file) {
-  wordlistZipFile = file || null;
-  const zip = !!wordlistZipFile;
-  $("wordlist-text").disabled = zip;
-  $("wordlist-images").disabled = zip;
-  $("wordlist-zip-note").hidden = !zip;
-  $("wordlist-zip-name").textContent = zip
-    ? `zip「${wordlistZipFile.name}」の内容をそのまま使います。` : "";
-}
-
-// 「ファイルから読み込む」。.csv/.txt は中身を書く欄へ流し込み(以後はその欄が正本
-// なのでファイル選択自体は空に戻す)、zipはほどかずそのまま使う。
-async function loadWordlistFile() {
-  const f = $("wordlist-file").files[0];
-  if (!f) return;
-  $("wordlist-file").value = "";
-  if (/\.zip$/i.test(f.name)) {
-    setWordlistZip(f);
-    scheduleWordlistCheck();
-    return;
-  }
-  try {
-    // UTF-8として読む。Shift_JISのファイルは化けるので、その旨は欄の説明に書いてある
-    const text = await f.text();
-    setWordlistZip(null);
-    $("wordlist-text").value = text;
-    if (!$("wordlist-name").value.trim()) {
-      $("wordlist-name").value = f.name.replace(/\.[^.]*$/, "");
-    }
-  } catch {
-    showCustomWordlistMsg("", "ファイルを読み込めませんでした。");
-    return;
-  }
-  scheduleWordlistCheck();
-}
-
-// 書くたびに投げないよう、少し待ってから1回だけ検査に出す(scheduleMidiCheckと同じ流儀)。
-// wordlistChecking は投入時の待ち合わせに使うので、予約した時点で差し替える。
-function scheduleWordlistCheck() {
-  if (wordlistCheckTimer) clearTimeout(wordlistCheckTimer);
-  wordlistChecking = new Promise((resolve) => {
-    wordlistCheckTimer = setTimeout(() => { checkCustomWordlist().then(resolve, resolve); }, 250);
-  });
-}
-
-// 今の中身をサーバーに検査させる。通らなければ理由を出して未設定に戻す
-// (入力そのものは消さない——直せば次の検査で通るため)。
-async function checkCustomWordlist() {
-  const seq = ++wordlistCheckSeq;
-  const zip = wordlistZipFile;
-  const text = $("wordlist-text").value;
-  const name = $("wordlist-name").value.trim();
-  const images = wordlistImages.slice();
-  if (!zip && !text.trim()) {
-    // 何も書かれていない=未設定。まだ書いていないだけなのでエラーは出さない
-    customWordlist = null;
-    showCustomWordlistMsg("", "");
-    saveForm();
-    schedulePreview();
-    updateEditorAutoStatus();
-    renderParodyStatus();
-    hideEditorResume();
-    return;
-  }
-  showCustomWordlistMsg("確認中…", "");
-  const form = new FormData();
-  if (zip) {
-    form.append("wordlist_csv", zip);
-  } else {
-    form.append("wordlist_text", text);
-    form.append("wordlist_name", name);
-    for (const f of images) form.append("wordlist_images", f);
-  }
-  try {
-    const res = await fetch("/api/wordlist-check",
-      { method: "POST", body: form, headers: headers() });
-    const body = await res.json();
-    if (seq !== wordlistCheckSeq) return;   // 追い越された応答は捨てる
-    if (!res.ok) throw new Error(body.detail || res.status);
-    customWordlist = {
-      mode: zip ? "zip" : "text",
-      file: zip, text, images,
-      name: body.name, rows: body.rows,
-      imageCount: body.images || 0, fingerprint: body.fingerprint,
-    };
-    const notes = [];
-    if (body.auto_reading_rows) {
-      notes.push(`うち${body.auto_reading_rows}語は読みを自動推定します`);
-    }
-    // 画像が付いているなら image 列は使えているので、落とした列の注意は出さない
-    if (!body.images && (body.dropped_columns || []).length) {
-      notes.push("画像の列は使いません");
-    }
-    // 前回の入力から戻したときは画像だけ復元できない(localStorageに入れていない)
-    if (wordlistRestoredImages && !images.length) {
-      notes.push(`前回の画像${wordlistRestoredImages}枚は選び直してください`);
-    }
-    showCustomWordlistMsg(
-      `✓ 「${body.name}」から${body.rows}語`
-      + (body.images ? `(画像${body.images}枚)` : "")
-      + "を読み込みました" + (notes.length ? `(${notes.join("・")})` : ""), "");
-  } catch (err) {
-    if (seq !== wordlistCheckSeq) return;
-    customWordlist = null;
-    showCustomWordlistMsg("", "この単語リストは使えません: " + err.message);
-  }
-  saveForm();
-  schedulePreview();
-  // 自作リストの中身が変わると編集内容の来歴も変わる(指紋が別物になる)ので、
-  // 曲や変換パラメータの change と同じく状態表示を出し直す
-  updateEditorAutoStatus();
-  renderParodyStatus();
-  hideEditorResume();
-}
-
-// 自作リストを multipart に載せる(/api/wordlist-check に送ったのと同じ形)。
-function appendCustomWordlist(form) {
-  const wl = customWordlist;
-  if (!wl) return;
-  if (wl.mode === "zip") { form.append("wordlist_csv", wl.file); return; }
-  form.append("wordlist_text", wl.text);
-  form.append("wordlist_name", wl.name);
-  for (const f of wl.images) form.append("wordlist_images", f);
-}
-
-function openWordlistModal(trigger) {
-  wordlistModalOpener = trigger || null;
-  $("wordlist-modal-wrap").hidden = false;
-  document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
-  $("wordlist-modal-close").focus();           // 開いた直後からEscと同じ導線が押せる
-  // 前回の入力を戻しただけで未検査のことがある(復元直後)。開いた時点で一度見る
-  if (!customWordlist && ($("wordlist-text").value.trim() || wordlistZipFile)) {
-    scheduleWordlistCheck();
-  }
-}
-
-// 閉じても入力は捨てず、巻き戻しもしない。検査は書くたびに走っているので、
-// 「最後に検査を通った内容」がそのまま生成に使われる(取り消しは持たない)。
-function closeWordlistModal() {
-  $("wordlist-modal-wrap").hidden = true;
-  document.body.classList.remove("modal-open");
-  const back = wordlistModalOpener;
-  wordlistModalOpener = null;
-  // モーダルを開く前の場所へ戻す(押したボタンにフォーカスを返す)
-  if (back && back.isConnected && !back.disabled) back.focus();
-}
-
-// 自作リストを選んだ直後にモーダルを開く(まだ中身が決まっていないときだけ)
-function openCustomWordlistIfEmpty(trigger) {
-  if (isCustomWordlist() && !customWordlist) openWordlistModal(trigger);
-}
-
-$("wordlist-text").addEventListener("input", scheduleWordlistCheck);
-$("wordlist-name").addEventListener("input", scheduleWordlistCheck);
-$("wordlist-file").addEventListener("change", loadWordlistFile);
-$("wordlist-images").addEventListener("change", () => {
-  addWordlistImages($("wordlist-images").files);
-  $("wordlist-images").value = "";   // 外した画像を選び直せるよう入力は空に戻す
-  scheduleWordlistCheck();
-});
-$("wordlist-zip-clear").addEventListener("click", () => {
-  setWordlistZip(null);
-  scheduleWordlistCheck();
-});
-$("wordlist-modal-close").addEventListener("click", closeWordlistModal);
-$("wordlist-apply").addEventListener("click", async () => {
-  if (wordlistChecking) await wordlistChecking;   // 検査中なら結果を見てから閉じる
-  // 直せば通る入力(エラーを出している)のときだけ開いたままにする
-  if ($("wordlist-error").hidden) closeWordlistModal();
-});
-$("edit-wordlist").addEventListener("click", () => openWordlistModal($("edit-wordlist")));
-
-// Escで閉じる。替え歌エディタのモーダルと body.modal-open を共有しているので、
-// 互いのEscに反応しないよう自分の枠が開いているときだけ働く。
-document.addEventListener("keydown", (ev) => {
-  if (ev.key !== "Escape" || $("wordlist-modal-wrap").hidden) return;
-  ev.preventDefault();
-  closeWordlistModal();
-});
+// ---- 自作の単語リスト(video側の画像つきモーダルは撤去済み) ----
+// 単語リストを自分で書く導線は、同梱エディタの⚙モーダル(「変換のしかた」)の
+// テキスト欄に一本化した。エディタで書いたリストは editor.json の
+// wordlist.value = "ORIGINAL" + csvText として運ばれるので、video側は名前でも
+// ファイルでもなく「編集済み替え歌そのもの」を受け取って生成する。
+// video側にあった自作リスト(単語ごとの画像を付けられるモーダル)は、UIが二重に
+// なるため撤去した。単語画像つきの自作リストは、将来ホスト移譲方式(サーバーに
+// 置いたリストをエディタにも見せる)で復活させる予定。
+// サーバー側のAPI(/api/wordlist-check、生成の wordlist_csv / wordlist_text /
+// wordlist_images、/api/editor-session の custom:<sid>)は、その復活とAPI利用者の
+// 互換のためそのまま残してある。過去に作った editor.json(wordlist.value が
+// custom:<sid>)の表示・生成も従来どおり動く。
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -2393,9 +2035,7 @@ function luckyRandomCombo() {
   const samples = [...$("sample-select").options].filter((o) => o.value);
   if (!samples.length) return null;
   const sel = $("wordlist-select");
-  // 自作リスト(CSV)はファイルが要るのでランダムでは選ばない
-  const all = sel.hidden ? []
-    : [...sel.options].filter((o) => o.value && o.value !== CUSTOM_WORDLIST);
+  const all = sel.hidden ? [] : [...sel.options].filter((o) => o.value);
   const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
   const fast = all.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
   const pool = fast.length ? fast : all;
@@ -2404,32 +2044,42 @@ function luckyRandomCombo() {
   return luckyCombo(song.value, wl ? nameOf(wl) : "");
 }
 
-// ---- カードのプルダウンと詳細設定の双方向同期 ----
-// カード側のプルダウンは詳細設定側セレクトの「写し」で、選択の正本は常に
-// #sample-select / #wordlist-select(さらにその先の #wordlist / #where)。
-// カードで選んだときは正本へ流して change を発火し(applySample、
-// applyWordlistSelection → レイアウト自動切替・フォーム保存がそのまま動く)、
-// 詳細設定で選んだときはカードへ写し戻す。
+// ---- カードの状態表示(曲 × 単語リスト) ----
+// カードからプルダウン(#builder-sample / #builder-wordlist とその写し同期
+// syncBuilderOptions / syncBuilderValues)を外し、いま何が作られるかはこの1行だけが
+// 示すようにした。選び直しは🎲(pickCombo)とエディタの⚙(applyEditorWordlist)から。
+// 値の正本は従来どおり #sample-select / #wordlist(+#where)で、その構造と役割は
+// 変えていない——カード側は正本を読んで表示するだけ。プルダウンでの選択に戻したく
+// なったら、このコミットを revert すれば足りる(カードのDOMと配線を足し直すだけで、
+// 正本・カタログ・抽選のコードはそのまま使える)。
+// 表示に使う「今の曲名」「今のリスト名」は、プルダウンを戻したときにも同じものが
+// 要る(選択肢のラベル解決)ので、レンダリングに埋め込まず小さな関数に分けてある。
 
 let builderReady = false;   // 初期化済みか(loadConfigはAPIキー変更で再実行される)
 let builderLive = false;    // 初期選択が決まったか(それまでプレビューは出さない)
 
-// 詳細設定側の選択肢をカードのプルダウンへ複製する(optgroupごとそのまま)。
-// サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
-function syncBuilderOptions() {
-  $("builder-sample").innerHTML = $("sample-select").innerHTML;
-  const wl = $("wordlist-select");
-  $("builder-wordlist").innerHTML = wl.innerHTML;
-  // 単語リストのプルダウンが出ない構成(editor conf が無い)ではカード側も出さない
-  $("builder-wordlist-field").hidden = wl.hidden;
-  syncBuilderValues();
+// 状態表示に出す曲名。サンプル曲は samples.json の表示名、自前のMIDIはファイル名。
+function currentSongLabel() {
+  const sid = $("sample-select").value;
+  return sid ? sampleTitleOf(sid) : songTitleOf($("midi").files[0]);
 }
 
-// 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
-function syncBuilderValues() {
-  $("builder-sample").value = $("sample-select").value;
-  const wl = $("wordlist-select");
-  $("builder-wordlist").value = wl.hidden ? "" : wl.value;
+// 状態表示に出す単語リスト名。名前付きリストは conf の表示名(例: 駅名)、
+// 自作リスト(エディタの⚙で書いたもの)は「自作リスト」。どちらでもなければ空。
+function currentWordlistLabel() {
+  const name = currentWordlistName();
+  if (name) {
+    const g = wordlistGroups.find((x) => x.name === name);
+    return (g && g.text) || name;
+  }
+  return usesEditorWordlist() ? "自作リスト" : "";
+}
+
+// 「かたつむり × 駅名」
+function renderBuilderState() {
+  const song = currentSongLabel(), wl = currentWordlistLabel();
+  $("builder-state").textContent =
+    song && wl ? `${song} × ${wl}` : (song || wl || "");
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -2548,14 +2198,13 @@ function hiddenPreviewReason(name) {
   return (!previewShowImages && HIDDEN_PREVIEW_WORDLISTS[name]) || "";
 }
 
-// いま正本のフォームが指している単語リスト名(セレクト優先、無ければ手入力欄)。
-// 自作リスト(CSV)は名前を持たないので空文字になる(プレビュー・レイアウト
-// 自動切替は「未指定」として扱われ、サーバー既定に落ちる)。
+// いま正本のフォームが指している単語リスト名(セレクト優先、無ければ隠し値)。
+// エディタの中で書いた自作リストは名前を持たないので空文字になる(プレビュー・
+// レイアウト自動切替は「未指定」として扱われ、サーバー既定に落ちる)。
 function currentWordlistName() {
   const sel = $("wordlist-select");
   if (!sel.hidden) {
     const opt = sel.selectedOptions[0];
-    if (opt && opt.value === CUSTOM_WORDLIST) return "";
     if (opt && opt.value) {
       return (wordlistGroups[Number(opt.value)] || {}).name || "";
     }
@@ -2727,9 +2376,9 @@ function retryThumbnailPreview(url, seq) {
 // いまの選択でカードの表示(時間の注意 + プレビュー)を作り直す。
 function renderBuilder() {
   const c = currentCombo();
-  // 自作リストはサーバーに置いていないのでサムネのプレビューが作れない。
-  // 黙って空枠にせず、その旨だけ静かに出して生成には進めるようにする
-  const custom = isCustomWordlist();
+  // 自作リスト(エディタの⚙で書いたもの)はサーバーに置いていないのでサムネの
+  // プレビューが作れない。黙って空枠にせず、その旨だけ静かに出して生成には進める
+  const custom = usesEditorWordlist();
   const note = custom
     ? "自作リストはプレビューに対応していません。そのまま生成できます。"
     : (c.slow
@@ -2743,12 +2392,11 @@ function renderBuilder() {
 // よう、少し待ってから1回だけ取りに行く。同じ組み合わせなら何もしない。
 // force は「画像を表示する」用(同じ組み合わせでも作り直す)。
 function schedulePreview(force) {
+  renderBuilderState();   // 状態表示はプレビューを作らない構成でも出す
   if (!builderLive || $("lucky-card").hidden) return;
   showBuilderMsg("");
   const c = currentCombo();
-  // 自作リストは名前が空なので、指紋(中身が変われば変わる)まで込みで区別する
-  const custom = isCustomWordlist() ? `\ncustom:${(customWordlist || {}).fingerprint || ""}` : "";
-  const combo = `${c.sampleId}\n${c.wordlistName}${custom}`;
+  const combo = `${c.sampleId}\n${c.wordlistName}`;
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -2792,7 +2440,6 @@ async function applyCombo(c) {
     clearEditorFile();
   }
   $("sample-select").value = c.sampleId;
-  syncBuilderValues();
   schedulePreview();
   return await trackSample(applySample());
 }
@@ -2814,31 +2461,13 @@ async function pickCombo(c) {
 
 // ---- カードの配線 ----
 
-// カードのプルダウン: 正本へ流して change を発火し、プレビューを予約する
-$("builder-sample").addEventListener("change", () => {
-  $("sample-select").value = $("builder-sample").value;
-  $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
-  schedulePreview();
-});
-$("builder-wordlist").addEventListener("change", () => {
-  const v = $("builder-wordlist").value;
-  const sel = $("wordlist-select");
-  sel.value = v;
-  sel.dispatchEvent(new Event("change", { bubbles: true }));
-  // 「自作リストを使う」は編集の導線が詳細設定側にあるので、そちらを開いて
-  // 見せたうえでモーダルを出す(押した本人の操作なので開いてよい)
-  if (v === CUSTOM_WORDLIST) {
-    $("advanced").open = true;
-    openCustomWordlistIfEmpty($("builder-wordlist"));
-  } else clearEditorFile();
-  schedulePreview();
-});
-
-// 詳細設定側で変えたときはカードのプルダウンとプレビューを追従させる
-$("sample-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
-$("wordlist-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
-// セレクトが無い構成・「その他」の手入力でもプレビューは追従する
+// 正本(詳細設定の曲・隠しの単語リスト)が変わったらプレビューと状態表示を追従させる
+$("sample-select").addEventListener("change", () => { schedulePreview(); });
+$("wordlist-select").addEventListener("change", () => { schedulePreview(); });
+// セレクトが無い構成・エディタからの書き戻しでもプレビューは追従する
 $("wordlist").addEventListener("change", () => schedulePreview());
+// 自分のMIDIを選んだときも状態表示の曲名を出し直す
+$("midi").addEventListener("change", () => renderBuilderState());
 
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
@@ -2857,7 +2486,6 @@ async function initBuilder() {
   builderReady = true;
   await samplesReady;         // 曲のプルダウンが揃うのを待つ
   if ($("lucky-card").hidden) return;   // サンプルが取れない環境ではカードごと出ない
-  syncBuilderOptions();
   const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
   const def = DEFAULT_COMBO;
   // 1. 曲: 復元されたMIDIがサンプル曲なら、その選択に戻し、MIDIは取り直す。
@@ -2870,8 +2498,8 @@ async function initBuilder() {
     trackSample(applySample({ midiOnly: true }));
   }
   // 2. 単語リストが未設定なら既定の組み合わせのものにする
-  //    (自作リストを選んでいるときは名前が空でも「未設定」ではない)
-  if (!currentWordlistName() && !isCustomWordlist() && def.wordlist) {
+  //    (エディタで書いた自作リストを使っているときは名前が空でも「未設定」ではない)
+  if (!currentWordlistName() && !usesEditorWordlist() && def.wordlist) {
     selectWordlist(def.wordlist);
   }
   // 3. 曲がまだ無ければ既定の組み合わせをセットする(MIDIと元歌詞をここで取りに行く)
@@ -2879,10 +2507,12 @@ async function initBuilder() {
     $("sample-select").value = def.sample;
     trackSample(applySample());
   }
-  syncBuilderValues();
   builderLive = true;
   schedulePreview();
 }
+
+// カードの⚙: 詳細設定にあった「✏️ 替え歌を編集」と同じ導線(openEditorFlow)
+$("builder-edit").addEventListener("click", openEditorFlow);
 
 // サムネ枠そのものが唯一の生成ボタン(カード下の青い生成ボタンは廃止した)
 $("builder-play").addEventListener("click", () => submitJob(0));
@@ -4186,24 +3816,24 @@ const EDITOR_KEY = "soramimic-editor";
 // シード時の指紋と来歴は sessionStorage に置く(タブのリロードをまたいでも判定できる)。
 const EDITOR_SEED_KEY = "soramimic-video-editor-seed";
 
-// いま詳細設定で選ばれている入力の指紋。エディタのシードを書いた時点のものと
-// 突き合わせて、編集内容の来歴が今の選択と一致するかを見る。
+// いま選ばれている入力の指紋。エディタのシードを書いた時点のものと突き合わせて、
+// 編集内容の来歴が今の選択と一致するかを見る。
 // 曲はファイル名+サイズ、単語リストはname+where、変換パラメータは送信文字列。
-// 自作リストは名前を持たないので、ファイル名+中身の指紋を別のキーで見る
-// (同じファイル名でも中身を書き換えたら別のリスト扱いになる)。
+// エディタの中で書いた自作リストは名前を持たない(#wordlist が空)ので、
+// 「名前なし」同士として一致する——中身の違いは編集内容そのもの(sig)に出る。
 function editorProvenance() {
   const midi = $("midi").files[0];
-  const custom = isCustomWordlist() && customWordlist
-    ? `${customWordlist.name}:${customWordlist.fingerprint}` : "";
   return {
     song: midi ? `${midi.name}:${midi.size}` : "",
     wordlist: $("wordlist").value.trim(),
-    customWordlist: custom,
     where: $("where").value.trim(),
     params: buildConvertParams(),
   };
 }
 
+// customWordlist は撤去した video側の自作リスト(画像つき)の指紋。今は誰も
+// 書かないが、キーは残す——撤去前に作った古いシードが sessionStorage に残って
+// いたら、それは「今と別の入力から作られた編集」として弾きたいため。
 const PROVENANCE_KEYS = ["song", "wordlist", "customWordlist", "where", "params"];
 const sameProvenance = (a, b) =>
   PROVENANCE_KEYS.every((k) => ((a || {})[k] || "") === ((b || {})[k] || ""));
@@ -4270,9 +3900,9 @@ function updateEditorAutoStatus() {
     el.textContent = "✏️ エディタの編集内容がこのまま動画生成に使われます"
       + "(「取り込んで閉じる」は押さなくてかまいません)。";
   } else if (live.state === "stale") {
-    // 自作リストは名前(#wordlist)が空。呼称は生成状態表示と同じ「自作リスト」に揃える
-    const wlName = live.from.wordlist
-      || (live.from.customWordlist ? "自作リスト" : "?");
+    // エディタの中で書いたリストは名前(#wordlist)を持たない。呼称は生成状態表示と
+    // 同じ「自作リスト」に揃える(撤去した video側の自作リストの古いシードも同じ)
+    const wlName = live.from.wordlist || "自作リスト";
     // 来歴キーは「ファイル名:サイズ」なので、表示はファイル名だけにする
     const songName = (live.from.song || "").replace(/:\d+$/, "");
     el.textContent = `⚠ エディタの編集内容は別の入力(曲「${songName || "?"}」/`
@@ -4284,11 +3914,77 @@ function updateEditorAutoStatus() {
   el.hidden = !el.textContent;
 }
 
+// ---- エディタ側の単語リストを親へ書き戻す ----
+// 単語リストの選択はエディタの⚙モーダルに一本化したので、そこで選び直した結果を
+// 親の正本(#wordlist / #where)へ写す必要がある。カードの状態表示・サムネ
+// プレビュー・生成時の単語画像とレイアウトの解決は、すべて正本を見ているため。
+
+// エディタのセッション(sessionStorage)が持っている単語リストのエントリ。
+function editorSessionWordlist() {
+  const data = parseJson(sessionStorage.getItem(EDITOR_KEY) || "null");
+  const w = data && data.wordlist;
+  return w && typeof w === "object" ? w : null;
+}
+
+// エディタ側が「名前で引けないリスト」を使っている状態か。
+//   ORIGINAL    … エディタの⚙モーダルで書いた自作リスト(中身は csvText)
+//   custom:<sid>… 撤去した video側の自作リストで作った古い編集(読めるよう残す)
+// どちらも表示は「自作リスト」で、サムネのプレビューは作れない。
+function usesEditorWordlist() {
+  const v = String((editorSessionWordlist() || {}).value || "");
+  return v === "ORIGINAL" || v.startsWith("custom:");
+}
+
+// エディタの中で選ばれている単語リストを親の正本へ書き戻す。
+// 変わっていなければ何もしない(何もしないことが大事: 毎周期で来歴を付け替えると、
+// 曲を差し替えたときに stale にならなくなってしまう)。
+function applyEditorWordlist() {
+  const w = editorSessionWordlist();
+  if (!w) return;
+  const value = String(w.value || "");
+  // 古い自作リスト(custom:<sid>)は名前も絞り込みも持たないので ORIGINAL と同じ扱い
+  const own = value === "ORIGINAL" || value.startsWith("custom:");
+  const name = own ? ""
+    : String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "");
+  if (!own && !name) return;        // 素性が読めないものは触らない
+  const wantWhere = own ? "" : String(w.where || "").trim();
+  const cur = $("wordlist").value.trim();
+  if (name
+      ? (cur === name && (!wantWhere || $("where").value.trim() === wantWhere))
+      : !cur) {
+    return;   // すでに一致している
+  }
+  if (name) {
+    selectWordlist(name);                 // #wordlist/#where + レイアウト自動切替
+    if (wantWhere) setWhere(wantWhere);   // エディタで絞り込んだ条件を優先する
+  } else {
+    // 名前で引けないリスト。プルダウンの選択も外して「未選択」にする
+    const sel = $("wordlist-select");
+    if (!sel.hidden) sel.selectedIndex = -1;
+    $("wordlist").value = "";
+    setWhere("");
+    $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  // 書き戻しで来歴が食い違うと、いま作られたばかりの編集が「別の入力から作られた
+  // もの」として捨てられてしまう。エディタの中で選び直した編集の出どころは
+  // 「選び直したあとのリスト」なので、シードの来歴も同じところへ付け替える。
+  adoptEditorSeedProvenance();
+  updateEditorAutoStatus();
+  renderParodyStatus();
+}
+
 // エディタ(iframe)の編集は親から検知できないので、開いているあいだだけ軽く監視する。
+// 単語リストの書き戻しもここで拾う(閉じるまで待つと、開いているあいだカードの
+// 状態表示が古いままになる)。
+function syncEditorSession() {
+  applyEditorWordlist();
+  updateEditorAutoStatus();
+}
+
 let editorWatchTimer = null;
 function watchEditorSession(on) {
   if (editorWatchTimer) { clearInterval(editorWatchTimer); editorWatchTimer = null; }
-  if (on) editorWatchTimer = setInterval(updateEditorAutoStatus, 1500);
+  if (on) editorWatchTimer = setInterval(syncEditorSession, 1500);
 }
 
 // ---- エディタへの導線(「✏️ 替え歌を編集」1本) ----
@@ -4376,7 +4072,6 @@ async function regenerateEditor() {
 
 async function convertAndOpenEditor() {
   if (midiChecking) await midiChecking;
-  if (wordlistChecking) await wordlistChecking;   // 自作リストの検査が終わるまで待つ
   // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
   if (!await ensureSelectedSampleMidi((m) => { $("open-editor-msg").textContent = m; })) {
     return;
@@ -4386,25 +4081,22 @@ async function convertAndOpenEditor() {
   const msg = $("open-editor-msg");
   msg.textContent = "";
   if (!midi) { msg.textContent = "MIDIファイルを選んでください"; return; }
-  // 自作リストは名前で引けないので、中身そのものを送る(生成時と同じ形)。
-  // サーバーはそれをeditor用に置き、エディタが同一オリジンで取りに行く
-  const custom = isCustomWordlist();
-  if (custom && !customWordlist) {
-    msg.textContent = "自作の単語リストの中身がまだ決まっていません"
-      + "(「自作の単語リスト」の「編集」から単語を書いてください)";
+  // 名前で引けるリストが要る。エディタの中で書いた自作リストを使っているあいだは
+  // #wordlist が空なのでここへ来る。🎲は曲ごと振り直してしまうので勧めない
+  //(その自作リストごと開き直せる「続きから再開」か、エディタの中の再変換が正解)
+  if (!wl) {
+    msg.textContent = "いまの替え歌は替え歌エディタの中で書いた単語リストで作られています。"
+      + "「続きから再開」で開き、エディタの⚙(変換のしかた)から作り直してください。";
     return;
   }
-  if (!custom && !wl) { msg.textContent = "単語リストを入力してください"; return; }
   const form = new FormData();
   form.append("midi", midi);
   form.append("lyrics", $("lyrics").value);
-  form.append("wordlist", custom ? "" : wl);
-  // 自作リストは絞り込み(where)の対象になる列を持たない(サーバーも無視する)
-  form.append("where", custom ? "" : $("where").value.trim());
-  if (custom) appendCustomWordlist(form);
+  form.append("wordlist", wl);
+  form.append("where", $("where").value.trim());
   // 変換パラメータは生成時と同じものを使う(エディタの中身と生成結果を揃える)
   form.append("convert_params", buildConvertParams());
-  const btn = $("open-editor");
+  const btn = $("builder-edit");
   btn.disabled = true;
   const label = btn.textContent;
   btn.textContent = "変換中…";
@@ -4442,9 +4134,11 @@ function closeEditor() {
   $("editor-frame").src = "about:blank";
   document.body.classList.remove("modal-open");
   watchEditorSession(false);
-  updateEditorAutoStatus();   // 閉じても編集は生きている(その旨を出す)
+  // 閉じても編集は生きている(その旨を出す)。エディタの中で単語リストを
+  // 選び直していたら、ここで最後に親の正本へ書き戻してから表示を作り直す
+  syncEditorSession();
   // モーダルを開く前の場所へ戻す(押したボタンにフォーカスを返す)
-  if (!$("open-editor").disabled) $("open-editor").focus();
+  if (!$("builder-edit").disabled) $("builder-edit").focus();
 }
 
 function showEditorFrame() {
@@ -4487,12 +4181,11 @@ async function reEditParodyFile() {
   showEditorFrame();
 }
 
-$("open-editor").addEventListener("click", openEditorFlow);
 $("editor-resume-continue").addEventListener("click", resumeEditor);
 $("editor-resume-regen").addEventListener("click", regenerateEditor);
 $("editor-resume-cancel").addEventListener("click", () => {
   hideEditorResume();
-  $("open-editor").focus();
+  $("builder-edit").focus();
 });
 $("editor-import").addEventListener("click", importEditor);
 $("editor-close").addEventListener("click", closeEditor);
@@ -4506,11 +4199,13 @@ $("editor-close").addEventListener("click", closeEditor);
     hideEditorResume();
   }));
 
-// ---- 単語リスト選択(同梱editorのconfを唯一の情報源に) ----
-// editorが使えるときは /editor/conf/setting.json の wordlist からプルダウンを組む。
-// 選択は canonical な #wordlist(テキスト欄)に name(filepathのstem)を書き込み、
+// ---- 単語リストの一覧(同梱editorのconfを唯一の情報源に) ----
+// editorが使えるときは /editor/conf/setting.json の wordlist から選択肢を組む。
+// 選ぶ操作はエディタの⚙モーダルへ移したのでこの <select> は画面に出さないが、
+// 🎲の抽選対象・表示名の引き当て・選択状態の置き場として残している。
+// 選択は canonical な #wordlist に name(filepathのstem)を書き込み、
 // #where に絞り込みを反映する。これで既存の読み手($("wordlist"))は変えずに済む。
-// プルダウンの各項目が指す単語リスト。同じ value(なければ名前)の
+// 各項目が指す単語リスト。同じ value(なければ名前)の
 // 絞り込み違いエントリを1グループにまとめる。 { name, text, entries: [conf順] }
 let wordlistGroups = [];
 
@@ -4535,10 +4230,8 @@ function flattenWordlist(list, groupLabel) {
 async function loadWordlistSelect(editorAvailable) {
   const sel = $("wordlist-select");
   wordlistGroups = [];
-  const bail = () => {
-    sel.hidden = true; $("wordlist").hidden = false;
-    syncBuilderOptions();  // カード側の単語リストプルダウンも引っ込める
-  };
+  // conf が取れない構成では選択肢を持てない。#wordlist(リスト名)を直接使う
+  const bail = () => { sel.hidden = true; };
   if (!editorAvailable) { bail(); return; }
   let entries;
   try {
@@ -4586,15 +4279,10 @@ async function loadWordlistSelect(editorAvailable) {
       sel.appendChild(o);
     }
   });
-  // 自作の単語リスト。用意したリストの中に無いものに空耳させたい人の逃げ道は
-  // これ1つ(リスト名の手入力は廃止した)。
-  const custom = document.createElement("option");
-  custom.value = CUSTOM_WORDLIST;
-  custom.textContent = "自作リストを使う";
-  sel.appendChild(custom);
+  // 用意したリストの中に無いものに空耳させたい人の逃げ道は、エディタの⚙モーダルの
+  // 自作リスト(テキスト欄)。ここには選択肢を足さない。
   sel.hidden = false;
   applyWordlistSelection();
-  syncBuilderOptions();  // カードの単語リストプルダウンへ写す
 }
 
 // #where を設定し、その change を発火する(不一致警告の再描画がこれを見ている)
@@ -4630,28 +4318,13 @@ function facetDefaultWhere(g) {
 }
 
 // 選択内容を canonical な #wordlist / #where に反映する。
-// 「自作リストを使う」なら自作リストの要約を出し、リスト名は空にする
-// (自作リストはリスト名ではなく中身そのものを投入時に送る)。
-// 選択肢が1つも無い構成では従来どおりリスト名のテキスト欄に落ちる。
+// 選択なし(selectedIndex=-1)は「名前で引けないリスト」——エディタの中で書いた
+// 自作リストを使っている状態で、#wordlist は書き戻し側が空にする。
 function applyWordlistSelection() {
   const sel = $("wordlist-select");
   const opt = sel.selectedOptions[0];
-  const custom = !!opt && opt.value === CUSTOM_WORDLIST;
-  $("custom-wordlist").hidden = !custom;
-  if (!opt || custom) {
-    if (custom) {
-      // 名前でも絞り込みでもなくCSVで指定するので、どちらも空にして送らない
-      $("wordlist").hidden = true;
-      $("wordlist").value = "";
-      setWhere("");
-      $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
-    } else {
-      $("wordlist").hidden = false;
-    }
-    return;
-  }
+  if (!opt) return;
   const g = wordlistGroups[Number(opt.value)];
-  $("wordlist").hidden = true;
   $("wordlist").value = g ? g.name : "";
   // 絞り込みは conf の既定(facetsのdefault、無ければentryのwhere)を入れる。
   // これを変えたい人はエディタの「変換のしかた」で絞り込み直す
@@ -4659,12 +4332,7 @@ function applyWordlistSelection() {
   // 列取得・キュープレビュー等(#wordlistのchangeを見ている)を更新する
   $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
 }
-$("wordlist-select").addEventListener("change", (ev) => {
-  applyWordlistSelection();
-  // 自作リストは選んだ直後にモーダルを開く(選択即実行)。復元・カード側からの
-  // 同期のような合成イベントでは開かない(勝手に画面が覆われないように)
-  if (ev.isTrusted) openCustomWordlistIfEmpty($("wordlist-select"));
-});
+$("wordlist-select").addEventListener("change", applyWordlistSelection);
 
 // 替え歌JSONの有無・単語リストとの不一致に応じた状態表示を更新する。
 // localStorage復元による注入は取り込み直後と区別がつかないため、restoreForm側が
@@ -4796,12 +4464,6 @@ function saveForm() {
     localStorage.setItem(FORM_KEY, JSON.stringify({
       lyrics: $("lyrics").value,
       wordlist: $("wordlist").value,
-      // 自作リストは書いた内容とリスト名だけ持ち回る。画像とzipはlocalStorageの
-      // 容量に収まらないので保存せず、枚数だけ控えて選び直しを促す
-      wordlistCustom: isCustomWordlist(),
-      wordlistText: $("wordlist-text").value,
-      wordlistName: $("wordlist-name").value,
-      wordlistImages: (customWordlist || {}).imageCount || 0,
       // 選んだ単語リスト(confエントリ)の絞り込み。画面には出さないが、同名で
       // 絞り込み違いのグループを復元時に選び分けるために持ち回る
       where: $("where").value,
@@ -4987,12 +4649,12 @@ async function doRestoreForm() {
         sel.value = String(gi);
         applyWordlistSelection();  // #wordlist/#where設定 + change
       } else {
-        // 保存されていた名前が今の選択肢に無い(confが変わった・自作リストを
-        // 選んだままリロードした)。選択なし(selectedIndex=-1)にすると
-        // applyWordlistSelection がリスト名のテキスト欄を出す経路に落ちる
-        // ——自作リストのCSVは保存できないので、ここには戻せない
+        // 保存されていた名前が今の選択肢に無い(confが変わった・エディタの中で
+        // 書いた自作リストを使ったままリロードした)。選択なし(selectedIndex=-1)に
+        // 戻して、保存されていた値だけを入れ直す(自作リストなら空のまま)。
+        // 撤去した自作リストの保存(wordlistText / wordlistCustom)が残っていても
+        // ここには効かない——名前が無いので単に「未選択」として復元される
         sel.selectedIndex = -1;
-        applyWordlistSelection();  // リスト名のテキスト欄を出す
         $("wordlist").value = state.wordlist || "";
         $("where").value = state.where || "";
         $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
@@ -5001,23 +4663,6 @@ async function doRestoreForm() {
       $("wordlist").value = state.wordlist || "";
       $("where").value = state.where || "";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    // 1b. 自作リスト: 前回書いた内容とリスト名を戻す。前回それを選んでいたときだけ
-    //     選択も自作リストへ戻し(選択中は state.wordlist が空なので、上の名前一致
-    //     では戻らない)、そのまま検査に出す。画像は保存していないので、前回付いて
-    //     いたときだけ「選び直してください」を検査結果に添える。
-    if (state.wordlistText) {
-      $("wordlist-text").value = state.wordlistText;
-      $("wordlist-name").value = state.wordlistName || "";
-      wordlistRestoredImages = state.wordlistImages || 0;
-      const hasCustomOpt =
-        !sel.hidden && [...sel.options].some((o) => o.value === CUSTOM_WORDLIST);
-      if (state.wordlistCustom && hasCustomOpt) {
-        sel.value = CUSTOM_WORDLIST;
-        applyWordlistSelection();
-        scheduleWordlistCheck();
-      }
-      // 選んでいなかったときは検査しない(モーダルを開いた時点で見る)
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
