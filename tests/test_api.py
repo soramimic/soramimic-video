@@ -178,7 +178,7 @@ def test_index_html_conversion_params_moved_to_the_editor():
         assert gone not in html, gone
     # 絞り込み(where)の受け渡しだけは隠し値として残す(選んだ単語リストの条件)
     assert '<input type="hidden" id="where">' in html
-    assert 'form.append("where", custom ? "" : $("where").value.trim());' in html
+    assert 'form.append("where", $("where").value.trim());' in html
 
 
 def test_index_html_note_length_weight_input():
@@ -247,40 +247,31 @@ def test_index_html_gates_neutrino_by_config():
     assert 'id="synth-unavailable"' in html
 
 
-def test_index_html_custom_wordlist_replaces_the_name_input():
-    """単語リストのプルダウンは「その他(名前を入力)」を廃止し、自作リストにした。"""
+def test_index_html_has_no_custom_wordlist_ui():
+    """video側の自作リスト(画像つきモーダル)の導線は撤去した。
+
+    自作リストは同梱エディタの⚙モーダル(テキスト欄 = ORIGINAL/csvText)に
+    一本化した。単語画像つきのリストは将来ホスト移譲方式で復活させる予定なので、
+    サーバー側のAPI(/api/wordlist-check・wordlist_text/wordlist_images 等)は
+    残してあるが、フロントからは作れない。
+    """
     html = _index_html()
-    # 廃止: リスト名の手入力を促す選択肢はもう出さない
+    # 廃止: モーダル・選択肢・検査・multipartの組み立てはフロントに残っていない
+    for gone in (
+        'id="wordlist-modal-wrap"', 'id="wordlist-text"', 'id="wordlist-images"',
+        'id="wordlist-file"', 'id="edit-wordlist"', 'id="custom-wordlist"',
+        'const CUSTOM_WORDLIST', "isCustomWordlist", "appendCustomWordlist",
+        "scheduleWordlistCheck", '"/api/wordlist-check"',
+        'form.append("wordlist_text"', 'form.append("wordlist_csv"',
+    ):
+        assert gone not in html, gone
+    # リスト名の手入力に戻したわけでもない(名前で選ぶのはエディタのconf経由だけ)
     assert "その他(名前を入力)" not in html
-    assert 'other.value = "__other__";' not in html
-    # 追加: 自作リストの選択肢と、詳細設定に残す要約+編集の導線
-    assert 'const CUSTOM_WORDLIST = "__custom__";' in html
-    assert "custom.value = CUSTOM_WORDLIST;" in html
-    assert 'custom.textContent = "自作リストを使う";' in html
-    assert '<div id="custom-wordlist" hidden>' in html
-    assert '<span id="custom-wordlist-summary">未設定</span>' in html
-    assert '<button type="button" id="edit-wordlist"' in html
-    # 中身の編集は専用モーダル(替え歌エディタと同じ .editor-modal の枠組み)
-    assert '<div class="editor-modal" id="wordlist-modal-wrap" hidden' in html
-    assert '<textarea id="wordlist-text"' in html
-    assert '<input type="file" id="wordlist-file"' in html
-    assert '<input type="file" id="wordlist-images" multiple' in html
-    # 書き換えるたびにサーバーに検査させ、結果/エラーをその場に出す
-    assert '"/api/wordlist-check"' in html
-    assert '<p class="hint" id="wordlist-status" hidden></p>' in html
-    assert '<p class="error" id="wordlist-error" hidden></p>' in html
-    assert '$("wordlist-text").addEventListener("input", scheduleWordlistCheck);' in html
-    # 絞り込み(where)は隠し値になったので出し分けは不要。自作リスト選択時は空にする
-    assert '<input type="hidden" id="where">' in html
-    assert '      setWhere("");' in html
-    # 投入時はリスト名ではなく中身そのものを送る(zipはファイル、書いた内容はテキスト+画像)
-    assert 'form.append("wordlist_csv", wl.file); return; }' in html
-    assert 'form.append("wordlist_text", wl.text);' in html
-    assert 'form.append("wordlist_images", f);' in html
-    # 🎲ランダムは自作リストを選ばない(中身の入力が要るため)
-    assert '[...sel.options].filter((o) => o.value && o.value !== CUSTOM_WORDLIST)' in html
-    # 自作リストはサムネのプレビューを作らない(理由を静かに出して生成には進める)
+    # 撤去の理由と復活の見通しはコードにコメントで残す
+    assert "ホスト移譲方式" in html
+    # 自作リスト(エディタ側)はサムネのプレビューを作らない(理由を静かに出す)
     assert "自作リストはプレビューに対応していません。" in html
+    assert "const custom = usesEditorWordlist();" in html
 
 
 def test_index_html_hides_preview_for_sensitive_wordlists():
@@ -307,30 +298,54 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
     assert "schedulePreview(true);" in html
 
 
-def test_index_html_builder_card_syncs_with_advanced():
-    """トップのビルダーカードと詳細設定の曲・単語リストは双方向に同期する。"""
+def test_index_html_builder_card_has_no_selects():
+    """カードから曲・単語リストのプルダウンを撤去し、⚙と🎲だけにする。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # カードのプルダウン
-    assert '<select id="builder-sample"' in html
-    assert '<select id="builder-wordlist"' in html
-    # カード → 詳細設定(正本へ流して change を発火する)
-    assert '$("sample-select").value = $("builder-sample").value;' in html
-    # 詳細設定 → カード(写し戻し)
-    assert (
-        '$("sample-select").addEventListener("change", '
-        "() => { syncBuilderValues(); schedulePreview(); });" in html
-    )
-    assert (
-        '$("wordlist-select").addEventListener("change", '
-        "() => { syncBuilderValues(); schedulePreview(); });" in html
-    )
+    # 撤去したプルダウンと、その写し同期のコードは残っていない
+    # (関数名は「戻すときはrevert」の道しるべとしてコメントにだけ出てよい)
+    for gone in (
+        'id="builder-sample"', 'id="builder-wordlist"',
+        "function syncBuilderOptions()", "function syncBuilderValues()",
+        "syncBuilderOptions();", "syncBuilderValues();", "builder-selects",
+    ):
+        assert gone not in html, gone
+    # 正本(#sample-select / #wordlist-select)が変わればプレビューが追従する
+    assert '$("sample-select").addEventListener("change", () => { schedulePreview(); });' in html
+    assert '$("wordlist-select").addEventListener("change", () => { schedulePreview(); });' in html
     # 確認モーダルは廃止し、🎲ランダムはカードの選択を差し替えるだけになった
     assert "lucky-modal" not in html
     assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
     # 進捗・結果は畳んである詳細(ビルダーカードの中の控えめなテキストリンク)
     assert '<details class="sub-details" id="job-card" hidden>' in html
+
+
+def test_index_html_builder_card_has_gear_and_state_line():
+    """カードの操作は⚙(替え歌を編集)と🎲(ランダム)の2つ。状態は1行で示す。"""
+    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
+    # ⚙は🎲と同じ topbar に置き、押すと従来と同じ導線(openEditorFlow)で開く
+    assert '<button type="button" id="builder-edit" class="btn-sm"' in card
+    assert 'aria-label="替え歌を編集" title="替え歌を編集"' in card
+    assert card.index('id="builder-edit"') < card.index('id="lucky"')
+    assert '$("builder-edit").addEventListener("click", openEditorFlow);' in html
+    # エディタを同梱していないサーバーでは⚙ごと出さない
+    assert card.index('id="editor-embed-controls"') < card.index('id="builder-edit"')
+    # サムネ枠の下に「曲 × 単語リスト」の1行(操作はできない表示専用)
+    assert '<p class="hint builder-state" id="builder-state" aria-live="polite"></p>' in card
+    assert card.index('id="builder-figure"') < card.index('id="builder-state"')
+    assert "function renderBuilderState() {" in html
+    assert "song && wl ? `${song} × ${wl}` : (song || wl || \"\");" in html
+    # プルダウンでの選択に戻すときの目印(正本の構造は変えていない)
+    assert "このコミットを revert すれば足りる" in html
+    # 名前付きリストは conf の表示名、エディタで書いた自作リストは「自作リスト」
+    assert "return usesEditorWordlist() ? \"自作リスト\" : \"\";" in html
+    # 編集の状態表示もカードに移した(エディタの導線がカードにあるので)
+    for moved in ('id="editor-auto-status"', 'id="parody-status"', 'id="editor-resume"'):
+        assert moved in card, moved
 
 
 def test_index_html_job_card_is_collapsed_by_default():
@@ -395,19 +410,15 @@ def test_index_html_builder_card_is_bare():
     # 見出しと導入文は削除済み
     assert "まずはここから" not in html
     assert "lucky-lead" not in html
-    # ラベルはプルダウンと同じ行。補足「何に空耳させるか」は title に退避する
-    assert ".builder-selects .field { display: flex; align-items: center;" in html
-    assert (
-        '<label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>' in html
-    )
     # 例示コンボのボタンは廃止(組み立てるコードごと消えている)
     assert "renderLuckyCombos" not in html
     assert "lucky-combo" not in html
-    # 🎲ランダムはカードの右上に小さく置くだけ。ただしアイコンだけだと気づかれない
+    # ⚙と🎲はカードの右上に小さく置くだけ。ただしアイコンだけだと気づかれない
     # ので、文字ラベルを添えたピルにする(絵文字は読み上げ対象から外す)
     assert '<div class="builder-topbar">' in html
     assert '<button type="button" id="lucky" class="btn-sm"' in html
     assert '<span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>' in html
+    assert '<span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>' in html
     assert "border-radius: 999px; background: var(--panel-2);" in html
 
 
@@ -1305,7 +1316,9 @@ def _index_html() -> str:
 
 
 def _advanced_html() -> str:
-    return _index_html().split('<details class="card" id="advanced">')[1]
+    """詳細設定(#advanced)の中身だけ。後ろのモーダル類は含めない。"""
+    body = _index_html().split('<details class="card" id="advanced">')[1]
+    return body.split('<details class="card" id="history">')[0]
 
 
 def test_index_html_advanced_song_field_leads_with_midi_upload():
@@ -1327,14 +1340,14 @@ def test_index_html_sample_select_stays_the_source_of_truth():
     """格下げしても #sample-select はDOMに残す(ビルダーカードとの同期の正本)。"""
     html = _index_html()
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in html
-    # カード → 詳細設定 → applySample の経路はそのまま
-    assert '$("sample-select").value = $("builder-sample").value;' in html
+    # 🎲 → #sample-select → applySample の経路はそのまま
+    assert '$("sample-select").value = c.sampleId;' in html
     # 選び直しは applySample で反映する(取得の失敗はカードに出す)
     assert '$("sample-select").addEventListener("change", () => {' in html
     assert "trackSample(applySample()).then((ok) => {" in html
     assert (
-        '$("sample-select").addEventListener("change", '
-        "() => { syncBuilderValues(); schedulePreview(); });" in html
+        '$("sample-select").addEventListener("change", () => { schedulePreview(); });'
+        in html
     )
     # サンプルが取れない環境では折りたたみごと隠す(消えた #midi-details は参照しない)
     assert '$("sample-details").hidden = true;' in html
@@ -1346,11 +1359,10 @@ def test_index_html_lyrics_follows_the_song_and_is_recommended():
     advanced = _advanced_html()
     assert '<label for="lyrics">元歌詞(推奨・字幕用)</label>' in advanced
     assert "元歌詞(任意・字幕用)" not in advanced
-    # 曲(MIDI)の直後・単語リストより前(歌声より後ろだった旧位置から移動)
+    # 曲(MIDI)の直後・歌声より前(歌声より後ろだった旧位置から移動)
     assert (
         advanced.index('id="midi"')
         < advanced.index('id="lyrics"')
-        < advanced.index('id="wordlist-select"')
         < advanced.index('id="synthesizer"')
     )
     # 無いときに何が起きるかを書く
@@ -1374,15 +1386,18 @@ def _opt_groups() -> dict[str, str]:
 
 
 def test_index_html_advanced_is_grouped_by_role():
-    """フラットな長い並びをやめ、役割ごとの5グループを使用頻度順に置く。"""
+    """フラットな長い並びをやめ、役割ごとのグループを使用頻度順に置く。
+
+    「空耳のもと」(単語リスト選択・エディタの導線)は、選ぶ操作がエディタの⚙と
+    カードの⚙に移ったのでグループごと廃止した。
+    """
     assert list(_opt_groups()) == [
         "① 曲と歌詞",
-        "② 空耳のもと",
-        "③ 歌声",
-        "④ レイアウト",
+        "② 歌声",
+        "③ 見た目",
     ]
     # どのグループにも1行の説明を添える
-    assert _advanced_html().count('class="hint opt-group-lead"') == 4
+    assert _advanced_html().count('class="hint opt-group-lead"') == 3
     # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
     advanced = _advanced_html()
     assert advanced.index('id="auth"') < advanced.index('<section class="opt-group">')
@@ -1397,16 +1412,11 @@ def test_index_html_advanced_groups_hold_the_right_fields():
     g = _opt_groups()
     song = g["① 曲と歌詞"]
     assert 'id="midi"' in song and 'id="sample-select"' in song and 'id="lyrics"' in song
-    parody = g["② 空耳のもと"]
-    assert 'id="wordlist-select"' in parody
-    assert 'id="open-editor"' in parody
-    assert 'id="editor-auto-status"' in parody
-    assert 'id="parody-status"' in parody
-    voice = g["③ 歌声"]
+    voice = g["② 歌声"]
     assert 'id="synthesizer"' in voice
     assert 'id="auto-octave"' in voice and 'id="transpose"' in voice
     assert 'id="preview"' in voice
-    look = g["④ レイアウト"]
+    look = g["③ 見た目"]
     # プリセット選択も編集も全画面モーダル(#le-modal)へ寄せたので、グループに残るのは
     # 送信値の正本(隠しinput)・モーダルを開くボタン・カスタム編集中の目印だけ。
     # レイアウトは単語リストに連動して自動で決まるものなので、ふだんは選ばせない
@@ -1452,33 +1462,37 @@ def test_index_html_layout_base_values_never_reach_the_hidden_input():
     assert "JSON.stringify(leLayout) !== leBaseline" in modified
 
 
-def test_index_html_convert_params_are_demoted_to_a_collapsible():
-    """変換パラメータと替え歌JSONの読み書きは折りたたみでさらに格下げする。"""
-    parody = _opt_groups()["② 空耳のもと"]
-    assert '<details id="parody-advanced" class="sub-details">' in parody
-    assert "<summary>変換のしかたを細かく調整する(上級者向け)</summary>" in parody
-    # 折りたたみに残るのはエディタに無い独自項目(ノート長重視α)だけ
-    assert 'id="p-notelen"' in parody
-    # 絞り込み(where)は単語リストの選択と同じ組に置く隠し値
-    assert 'id="where"' in parody
-    assert parody.index('id="where"') < parody.index('id="parody-advanced"')
-    # 替え歌JSONの読み書きは詳細設定から撤去し、エディタのモーダルへ移した
-    assert 'id="parody-io"' not in parody
-    assert 'id="editor" accept=".json"' not in parody
-    assert 'id="download-editor"' not in parody
-    # よく触る単語リストの選択は畳まない(折りたたみより前に置く)
-    assert parody.index('id="wordlist-select"') < parody.index('id="parody-advanced"')
+def test_index_html_advanced_extra_holds_only_note_length_weight():
+    """ふだん触らない項目は詳細設定の末尾「上級者向け」に1つだけ畳む。"""
+    advanced = _advanced_html()
+    assert '<details id="advanced-extra" class="sub-details">' in advanced
+    assert "<summary>上級者向け</summary>" in advanced
+    # グループ(①②③)より後ろ、詳細設定の末尾に置く
+    assert advanced.index('id="advanced-extra"') > advanced.index("③ 見た目")
+    extra = advanced.split('<details id="advanced-extra" class="sub-details">')[1]
+    # 中身はエディタにも本家にも無い独自項目(ノート長重視α)だけ
+    assert 'id="p-notelen"' in extra
+    # 旧「変換のしかたを細かく調整する」の折りたたみは廃止
+    assert 'id="parody-advanced"' not in advanced
+    # 自作リスト(画像つき)の導線は撤去した(エディタの⚙に一本化)
+    assert 'id="edit-wordlist"' not in advanced
+    assert 'id="custom-wordlist"' not in advanced
+    # 替え歌JSONの読み書きも詳細設定には無い(エディタのモーダル側)
+    assert 'id="parody-io"' not in advanced
+    assert 'id="download-editor"' not in advanced
 
 
-def test_index_html_where_is_a_hidden_passthrough():
-    """絞り込み(where)は手入力させず、選んだ単語リストの条件を運ぶ隠し値にする。"""
-    parody = _opt_groups()["② 空耳のもと"]
-    field = parody.split('<div class="field">')[1]
-    # 単語リストのフィールドの中に、選択と(隠しの)where が並んでいる
-    assert 'id="wordlist-select"' in field
-    assert '<input type="hidden" id="where">' in field
-    # プルダウンの選択がその値を書き込む経路は維持する
+def test_index_html_wordlist_values_are_hidden_canonicals():
+    """単語リストの選択UIは無くし、値(名前・絞り込み)だけを隠して持つ。"""
     html = _index_html()
+    store = html.split('<div id="wordlist-store" hidden>')[1].split("</div>")[0]
+    # 選択肢の一覧(🎲の抽選・表示名の引き当てに使う)と、送信値の正本
+    assert '<select id="wordlist-select" hidden></select>' in store
+    assert '<input type="hidden" id="wordlist">' in store
+    assert '<input type="hidden" id="where">' in store
+    # 詳細設定の中には出さない(カードの外・折りたたみの外の隠し置き場)
+    assert 'id="wordlist-store"' not in _advanced_html()
+    # プルダウンの選択がその値を書き込む経路は維持する
     assert "setWhere(facetDefaultWhere(g));" in html
 
 
@@ -1670,8 +1684,9 @@ def test_index_html_editor_auto_import_checks_provenance():
     assert 'wordlist: $("wordlist").value.trim(),' in prov
     assert 'where: $("where").value.trim(),' in prov
     assert "params: buildConvertParams()," in prov
-    # 自作リスト(CSV)は名前を持たないので、ファイル名+中身の指紋を別キーで見る
-    assert "customWordlist: custom," in prov
+    # 撤去した自作リスト(画像つき)の指紋キーは書かない。ただし古いシードを
+    # 「別の入力」として弾けるよう、比較キーの並びからは外さない
+    assert "customWordlist" not in prov
     assert (
         'const PROVENANCE_KEYS = '
         '["song", "wordlist", "customWordlist", "where", "params"];' in html

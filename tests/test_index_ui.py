@@ -3,7 +3,7 @@
 ブラウザを起動せずに守れる約束だけを見る。
 - 詳細設定の「読まなくても操作できる説明」は data-info で ⓘ に畳まれている
 - 状態・警告・エラーの動的メッセージは畳まれていない(常時表示のまま)
-- エディタへの導線はボタン1つ("✏️ 替え歌を編集")で、保存済みの選択UIがある
+- エディタへの導線はカードの⚙ボタン1つで、保存済みの選択UIがある
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def test_info_hints_cover_the_static_explanations():
     ids = {a.get("id") for tag, a in _tags() if "data-info" in a}
     # 各グループの1行説明(opt-group-lead)はすべて ⓘ の中
     leads = [a for tag, a in _tags() if "opt-group-lead" in (a.get("class") or "")]
-    assert len(leads) == 4
+    assert len(leads) == 3
     assert all("data-info" in a for a in leads)
     # 動的メッセージ(状態・警告・エラー)は畳まない
     always_visible = {
@@ -51,6 +51,7 @@ def test_info_hints_cover_the_static_explanations():
         "midi-error",           # 歌詞なしMIDIの拒否
         "lyrics-midi-warn",     # 元歌詞とMIDI歌詞の食い違い
         "sample-status",        # ✓ ...をセットしました
+        "builder-state",        # かたつむり × 駅名
         "editor-auto-status",   # エディタの編集内容が使われます/使いません
         "parody-status",        # 編集済みの替え歌を使用します
         "voicevox-credit",
@@ -73,11 +74,13 @@ def test_static_hints_in_advanced_are_all_folded():
 
 def test_editor_entry_point_is_a_single_button():
     markup = _markup()
-    assert "✏️ 替え歌を編集" in markup
     assert "editorで変換・編集" not in markup
+    # 詳細設定にあった「✏️ 替え歌を編集」はカードの⚙に置き換えた
+    assert "✏️ 替え歌を編集" not in markup
+    assert 'id="open-editor"' not in markup
     ids = [a.get("id") for tag, a in _tags() if tag == "button" and a.get("id")]
     # エディタを開く導線はこれ1つ(モーダル側の閉じる/取り込みは別物)
-    assert ids.count("open-editor") == 1
+    assert ids.count("builder-edit") == 1
     # 保存済みがあるときの2択(+やめる)
     for btn in ("editor-resume-continue", "editor-resume-regen", "editor-resume-cancel"):
         assert btn in ids
@@ -117,17 +120,22 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
-def test_editor_session_sends_the_custom_wordlist():
-    """自作リストでもエディタを開ける(中身と変換パラメータを添えて送る)。"""
+def test_editor_session_sends_the_selected_wordlist():
+    """暗黙の変換は、いま選ばれている名前付きリストと変換パラメータで行う。
+
+    自作リストはエディタの⚙モーダル(ORIGINAL/csvText)へ一本化したので、
+    video側から中身を送る経路は無い。名前が無い(=その自作リストを使っている)
+    状態では変換せず、「続きから再開」でその編集を開き直す。
+    """
     script = _script()
     body = _function_body(script, "async function convertAndOpenEditor()")
-    assert "自作リストは替え歌エディタに対応していません" not in script
-    # 生成時と同じ形(appendCustomWordlist)で中身そのものを送る
-    assert "appendCustomWordlist(form)" in body
+    assert 'form.append("wordlist", wl)' in body
+    assert 'form.append("where", $("where").value.trim())' in body
     # 変換パラメータも送る(エディタの中身と生成結果を揃える)
     assert 'form.append("convert_params", buildConvertParams())' in body
-    # 自作リストは名前も絞り込みも持たない
-    assert 'form.append("wordlist", custom ? "" : wl)' in body
+    # 名前が無ければ変換しない(自作リストの中身は video 側が持っていない)
+    # 自作リスト(エディタ内)使用中は名前で引けないので、再変換ではなく再開へ誘導する
+    assert "「続きから再開」で開き" in body
 
 
 def test_restored_sample_midi_is_refetched_at_startup():
@@ -165,3 +173,52 @@ def test_info_hint_opens_as_floating_popover():
     for needle in ("function placeInfoPop", "function openInfoPop", "function closeInfoPop",
                    'ev.key !== "Escape"'):
         assert needle in text
+
+
+def test_editor_wordlist_is_written_back_to_the_form():
+    """エディタの⚙で単語リストを変えたら、親の正本(#wordlist / #where)へ書き戻す。
+
+    カードから単語リストの選択が消えたので、書き戻さないと状態表示・サムネ
+    プレビュー・生成時の単語画像/レイアウトの解決が古いリストのままになる。
+    """
+    script = _script()
+    body = _function_body(script, "function applyEditorWordlist()")
+    # 名前付きリスト(filepath) → stem を既存の選択経路へ流し、where はエディタ優先
+    assert r'String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "")' in body
+    assert "selectWordlist(name);" in body
+    assert "if (wantWhere) setWhere(wantWhere);" in body
+    # 名前で引けないリスト(ORIGINAL / 古い custom:<sid>)は名前も絞り込みも空にする
+    assert 'const own = value === "ORIGINAL" || value.startsWith("custom:");' in body
+    assert 'if (!sel.hidden) sel.selectedIndex = -1;' in body
+    assert '$("wordlist").value = "";' in body
+    assert 'setWhere("");' in body
+    # 書き戻しで来歴が食い違って編集が捨てられないよう、シードの来歴も付け替える
+    assert "adoptEditorSeedProvenance();" in body
+    # 変わっていなければ何もしない(毎周期で来歴を付け替えると曲の差し替えを
+    # 見逃してしまう)
+    assert "return;   // すでに一致している" in body
+    # 拾うのは監視ポーリングと「閉じる」の2経路
+    assert "if (on) editorWatchTimer = setInterval(syncEditorSession, 1500);" in script
+    close = _function_body(script, "function closeEditor()")
+    assert "syncEditorSession();" in close
+
+
+def test_card_shows_the_current_combination():
+    """カードの状態表示は「曲 × 単語リスト」。曲はサンプル名(自前MIDIはファイル名)。
+
+    名前の解決は小さな関数に分けておく(プルダウンでの選択に戻すときも、
+    選択肢のラベル解決として同じものが要るため)。
+    """
+    script = _script()
+    body = _function_body(script, "function renderBuilderState()")
+    assert "const song = currentSongLabel(), wl = currentWordlistLabel();" in body
+    assert '$("builder-state").textContent =' in body
+    song = _function_body(script, "function currentSongLabel()")
+    assert 'const sid = $("sample-select").value;' in song
+    assert 'return sid ? sampleTitleOf(sid) : songTitleOf($("midi").files[0]);' in song
+    label = _function_body(_script(), "function currentWordlistLabel()")
+    # 名前付きリストは conf の表示名(例: 駅名)
+    assert "const g = wordlistGroups.find((x) => x.name === name);" in label
+    assert "return (g && g.text) || name;" in label
+    # エディタの中で書いたリストは名前を持たないので「自作リスト」
+    assert 'return usesEditorWordlist() ? "自作リスト" : "";' in label
