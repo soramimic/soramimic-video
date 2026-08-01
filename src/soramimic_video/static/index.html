@@ -680,6 +680,7 @@
       <div id="editor-embed-controls" hidden>
         <button type="button" id="open-editor" class="btn-sm">✏️ 替え歌を編集</button>
         <p class="hint" data-info>MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
+          自作の単語リストでも開けます(絞り込みは効きません)。
           編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
         <span id="open-editor-msg" class="error"></span>
         <!-- 保存済みの替え歌があるときだけ出す選択(破棄する側を押し間違えないよう、
@@ -2263,6 +2264,9 @@ async function checkCustomWordlist() {
     showCustomWordlistMsg("", "");
     saveForm();
     schedulePreview();
+    updateEditorAutoStatus();
+    renderParodyStatus();
+    hideEditorResume();
     return;
   }
   showCustomWordlistMsg("確認中…", "");
@@ -2309,6 +2313,11 @@ async function checkCustomWordlist() {
   }
   saveForm();
   schedulePreview();
+  // 自作リストの中身が変わると編集内容の来歴も変わる(指紋が別物になる)ので、
+  // 曲や変換パラメータの change と同じく状態表示を出し直す
+  updateEditorAutoStatus();
+  renderParodyStatus();
+  hideEditorResume();
 }
 
 // 自作リストを multipart に載せる(/api/wordlist-check に送ったのと同じ形)。
@@ -4281,8 +4290,13 @@ function updateEditorAutoStatus() {
     el.textContent = "✏️ エディタの編集内容がこのまま動画生成に使われます"
       + "(「取り込んで閉じる」は押さなくてかまいません)。";
   } else if (live.state === "stale") {
-    el.textContent = `⚠ エディタの編集内容は別の入力(曲「${live.from.song || "?"}」/`
-      + `単語リスト「${live.from.wordlist || "?"}」)から作られたものなので使いません。`
+    // 自作リストは名前(#wordlist)が空。呼称は生成状態表示と同じ「自作リスト」に揃える
+    const wlName = live.from.wordlist
+      || (live.from.customWordlist ? "自作リスト" : "?");
+    // 来歴キーは「ファイル名:サイズ」なので、表示はファイル名だけにする
+    const songName = (live.from.song || "").replace(/:\d+$/, "");
+    el.textContent = `⚠ エディタの編集内容は別の入力(曲「${songName || "?"}」/`
+      + `単語リスト「${wlName}」)から作られたものなので使いません。`
       + "今の選択で自動変換して生成します(編集を使うなら、その入力に戻すか変換し直してください)。";
   } else {
     el.textContent = "";
@@ -4382,6 +4396,7 @@ async function regenerateEditor() {
 
 async function convertAndOpenEditor() {
   if (midiChecking) await midiChecking;
+  if (wordlistChecking) await wordlistChecking;   // 自作リストの検査が終わるまで待つ
   // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
   if (!await ensureSelectedSampleMidi((m) => { $("open-editor-msg").textContent = m; })) {
     return;
@@ -4391,18 +4406,24 @@ async function convertAndOpenEditor() {
   const msg = $("open-editor-msg");
   msg.textContent = "";
   if (!midi) { msg.textContent = "MIDIファイルを選んでください"; return; }
-  // 同梱エディタはサーバーにあるリストを名前で引くので、自作リストは渡せない
-  if (isCustomWordlist()) {
-    msg.textContent = "自作リストは替え歌エディタに対応していません"
-      + "(そのまま動画を生成してください)";
+  // 自作リストは名前で引けないので、中身そのものを送る(生成時と同じ形)。
+  // サーバーはそれをeditor用に置き、エディタが同一オリジンで取りに行く
+  const custom = isCustomWordlist();
+  if (custom && !customWordlist) {
+    msg.textContent = "自作の単語リストの中身がまだ決まっていません"
+      + "(「自作の単語リスト」の「編集」から単語を書いてください)";
     return;
   }
-  if (!wl) { msg.textContent = "単語リストを入力してください"; return; }
+  if (!custom && !wl) { msg.textContent = "単語リストを入力してください"; return; }
   const form = new FormData();
   form.append("midi", midi);
   form.append("lyrics", $("lyrics").value);
-  form.append("wordlist", wl);
-  form.append("where", $("where").value.trim());
+  form.append("wordlist", custom ? "" : wl);
+  // 自作リストは絞り込み(where)の対象になる列を持たない(サーバーも無視する)
+  form.append("where", custom ? "" : $("where").value.trim());
+  if (custom) appendCustomWordlist(form);
+  // 変換パラメータは生成時と同じものを使う(エディタの中身と生成結果を揃える)
+  form.append("convert_params", buildConvertParams());
   const btn = $("open-editor");
   btn.disabled = true;
   const label = btn.textContent;
@@ -4498,9 +4519,10 @@ $("editor-close").addEventListener("click", closeEditor);
 // 曲・単語リスト・変換パラメータを変えると、編集内容の来歴が今の選択と合わなく
 // なることがある。そのときは表示を出し直す(生成時のガードと同じ判定)
 // 出したままの「保存済みの替え歌があります」も、前提が変わったら一度引っ込める
-["midi", "wordlist", "where", "p-preset", "p-sound", "p-phrase", "p-wordnum", "p-notelen"]
+["midi", "wordlist", "where", "duplicate", "p-preset", "p-sound", "p-phrase", "p-wordnum", "p-notelen"]
   .forEach((id) => $(id).addEventListener("change", () => {
     updateEditorAutoStatus();
+    renderParodyStatus();   // 取り込み済みJSONの扱い(使う/捨てる)も来歴で変わる
     hideEditorResume();
   }));
 
@@ -4859,7 +4881,13 @@ function renderParodyStatus() {
   // 出さない(押すと保存済みを見つけて「続きから再開」を出す)。
   // 残すのは、そこからは戻せない「取り消して自動変換に戻す」だけ。
   const clear = '<a href="#" id="clear-editor">取り消して自動変換に戻す</a>';
-  if (parodyMismatch()) {
+  // 生成時の判定(editorSourceForSubmit)と同じ結論を表示する。取り込み済みでも
+  // 来歴違いで捨てられるなら「使用します」とは出さない(表示が嘘をつかないように)
+  const src = editorSourceForSubmit();
+  if (!src.file && src.dropped) {
+    s.innerHTML = "⚠ 編集済みの替え歌は、作成したときと入力が変わったため使われません — "
+      + `今の選択で自動変換して生成します(${clear})`;
+  } else if (parodyMismatch()) {
     s.innerHTML = `⚠ 単語リスト「${escapeHtml($("wordlist").value.trim())}」は使われません — `
       + `編集済み替え歌(「${escapeHtml(editorWordlist.name)}」から作成)が優先されます(${clear})`;
   } else {
@@ -4889,8 +4917,13 @@ async function updateParodyStatus() {
       editorFileSig = editorContentSig(data);
       const w = data.wordlist;
       if (w && w.filepath) {
+        // 自作リストはセッション置き場のCSV(名前はハッシュ)なので、
+        // 表示は "自作リスト" にする(w.text がそれ)
+        const custom = String(w.value || "").startsWith("custom:");
         editorWordlist = {
-          name: String(w.filepath).replace(/.*\//, "").replace(/\.csv$/, ""),
+          name: custom
+            ? (w.text || "自作リスト")
+            : String(w.filepath).replace(/.*\//, "").replace(/\.csv$/, ""),
           where: w.where || "",
         };
       }
@@ -4900,9 +4933,8 @@ async function updateParodyStatus() {
   updateEditorAutoStatus();
 }
 $("editor").addEventListener("change", updateParodyStatus);
-// 単語リスト側の変更でも不一致警告を出し直す
-$("wordlist").addEventListener("change", renderParodyStatus);
-$("where").addEventListener("change", renderParodyStatus);
+// 単語リスト・変換パラメータ側の変更での出し直しは、来歴の変化をまとめて拾う
+// changeリスナー(updateEditorAutoStatusと同じ配列)が renderParodyStatus を呼ぶ
 
 // 現在の替え歌JSON(editorファイル入力の中身)を保存する(バックアップ・再利用向け)
 $("download-editor").addEventListener("click", async () => {
