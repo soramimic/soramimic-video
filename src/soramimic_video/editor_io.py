@@ -421,14 +421,14 @@ def import_editor(
     sid = custom_wordlist_sid(payload)
     if sid:
         # 自作リスト。名前では引けないので、変換時に置いたセッションのCSVを使う
-        path = session_wordlist_path(sessions_dir, sid)
-        if path is None:
+        session_csv = session_wordlist_path(sessions_dir, sid)
+        if session_csv is None:
             raise ValueError(
                 "自作リストの単語データが見つかりません"
                 f"(セッション {sid})。替え歌エディタを開き直して"
                 "作り直してください"
             )
-        wordlist = str(path)
+        wordlist = str(session_csv)
         where = None
     elif filepath.endswith(".csv"):
         # まずパスそのもの、だめならリスト名(stem)で解決を試みる
