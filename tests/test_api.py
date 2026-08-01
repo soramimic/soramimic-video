@@ -160,82 +160,32 @@ def test_convert_params_default_empty(client):
     assert body["params"]["convert_params"] == ""
 
 
-def test_index_html_param_sliders():
-    # 変換パラメータのスライダーが本家(external/soramimic 4443a7b frontend/src/app.js
-    # の createSliderItem 呼び出し)と同じ範囲・既定値であることを固定する。
-    import re
-
+def test_index_html_conversion_params_moved_to_the_editor():
+    # 変換のしかた(プリセット・スライダー・単語重複)とファセットの絞り込みUIは
+    # 同梱エディタの「変換のしかた」に一本化した。video側に本家の値対応表を
+    # 持たない(= soramimic を上げるたびに追従しなくてよい)ことを固定する。
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    expected = {
-        "p-sound": ("0.1", "0.9", "0.1", "0.8"),  # 音の合わせ方(vowelRatio)
-        "p-phrase": ("0", "8", "1", "1"),         # 文節の区切り
-        "p-wordnum": ("0", "6", "1", "2"),        # 単語の長さ
-    }
-    for sid, (mn, mx, step, val) in expected.items():
-        m = re.search(rf'<input type="range" id="{sid}"([^>]*)>', html)
-        assert m, f"{sid} のスライダーが見つからない"
-        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
-        assert (attrs["min"], attrs["max"], attrs["step"], attrs["value"]) == (
-            mn, mx, step, val,
-        ), sid
-
-
-def test_index_html_preset_mapping():
-    # プリセットが本家 app.js の PRESETS(バランス/音そっくり/文節重視/長い単語、
-    # 全プリセット r=0.8)と同一であることを固定する。既定はバランス。
-    import re
-
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    m = re.search(r'<select id="p-preset">(.*?)</select>', html, re.DOTALL)
-    assert m, "p-preset のセレクトが見つからない"
-    opts = re.findall(r'<option value="([^"]*)"', m.group(1))
-    assert opts == ["バランス", "音そっくり", "文節重視", "長い単語", ""]
-    assert re.search(r'<option value="バランス" selected>', m.group(1))
-
-    expected = {
-        "バランス": {"p-sound": "0.8", "p-phrase": "1", "p-wordnum": "2"},
-        "音そっくり": {"p-sound": "0.8", "p-phrase": "0", "p-wordnum": "0"},
-        "文節重視": {"p-sound": "0.8", "p-phrase": "8", "p-wordnum": "2"},
-        "長い単語": {"p-sound": "0.8", "p-phrase": "1", "p-wordnum": "6"},
-    }
-    body = re.search(r"const PRESETS = \{(.*?)\n\};", html, re.DOTALL)
-    assert body, "PRESETS が見つからない"
-    for name, params in expected.items():
-        row = re.search(rf'"{name}":\s*\{{([^}}]*)\}}', body.group(1))
-        assert row, f"プリセット {name} が見つからない"
-        got = dict(re.findall(r'"(p-[a-z]+)":\s*"([^"]*)"', row.group(1)))
-        assert got == params, f"{name}: {got} != {params}"
-
-
-def test_index_html_convert_params_new_model():
-    # buildConvertParams が本家 getParam と同じ新パラメータモデルで送ることを固定する
-    # (VOWEL_RATIO / VARIATION_COST=20r / SAME_PHRASE_BREAK_REWARD=0 /
-    #  MID_PHRASE_BREAK_PENALTY=文節×20 / WORD_NUMBER_PENALTY=単語長×10)。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    for needle in (
-        '"VOWEL_RATIO=" + r',
-        '"VARIATION_COST=" + 20 * r',
-        '"SAME_PHRASE_BREAK_REWARD=0"',
-        '"MID_PHRASE_BREAK_PENALTY=" + Number($("p-phrase").value) * 20',
-        '"WORD_NUMBER_PENALTY=" + Number($("p-wordnum").value) * 10',
+    for gone in (
+        'id="p-preset"', 'id="p-sound"', 'id="p-phrase"', 'id="p-wordnum"',
+        'id="duplicate"', 'id="wordlist-filters"',
+        "const PRESETS", "PARAM_SLIDER_IDS",
+        "VOWEL_RATIO", "VARIATION_COST", "SAME_PHRASE_BREAK_REWARD",
+        "MID_PHRASE_BREAK_PENALTY", "WORD_NUMBER_PENALTY", "DUPLICATE=",
+        "SAME_VOWEL_REWARD", "SAME_CONSONANT_REWARD",
     ):
-        assert needle in html, needle
-    # 旧モデルの掛け算ハック(#102で撤廃)を送っていないこと
-    assert "SAME_VOWEL_REWARD" not in html
-    assert "SAME_CONSONANT_REWARD" not in html
+        assert gone not in html, gone
+    # 絞り込み(where)の受け渡しだけは隠し値として残す(選んだ単語リストの条件)
+    assert '<input type="hidden" id="where">' in html
+    assert 'form.append("where", custom ? "" : $("where").value.trim());' in html
 
 
 def test_index_html_note_length_weight_input():
     # soramimic-video 独自の「ノート長重視 α」の数値入力(0〜2 / 0.05刻み / 既定0.25)。
     # 既定0.25はタイブレーク運用(2曲のスイープ実験で単語長・短ノートへの
     # 副作用がほぼゼロのまま長ノートの母音一致だけ改善する点として選定)。
-    # 本家準拠のプリセット・スライダーとは別枠なので PARAM_SLIDER_IDS には入れない。
+    # エディタの「変換のしかた」にも無い唯一の項目なので、video側に残している。
     import re
 
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
@@ -247,8 +197,6 @@ def test_index_html_note_length_weight_input():
     assert (attrs["min"], attrs["max"], attrs["step"], attrs["value"]) == (
         "0", "2", "0.05", "0.25",
     )
-    # 本家由来のスライダー群には混ぜない(プリセット選択で上書きされないこと)
-    assert 'const PARAM_SLIDER_IDS = ["p-sound", "p-phrase", "p-wordnum"];' in html
     # video独自であることがUI上わかる注記
     assert "soramimic-video独自" in html
 
@@ -260,7 +208,7 @@ def test_index_html_note_length_weight_sent_only_when_positive():
         encoding="utf-8"
     )
     assert 'const noteLen = Number($("p-notelen").value);' in html
-    assert 'if (noteLen > 0) out.push("NOTE_LENGTH_WEIGHT=" + noteLen);' in html
+    assert 'return noteLen > 0 ? "NOTE_LENGTH_WEIGHT=" + noteLen : "";' in html
 
 
 def test_index_html_model_layout_use_select_not_datalist():
@@ -322,9 +270,9 @@ def test_index_html_custom_wordlist_replaces_the_name_input():
     assert '<p class="hint" id="wordlist-status" hidden></p>' in html
     assert '<p class="error" id="wordlist-error" hidden></p>' in html
     assert '$("wordlist-text").addEventListener("input", scheduleWordlistCheck);' in html
-    # 絞り込み(where)は自作リストに効かないので選択中は隠す
-    assert '<div id="where-field">' in html
-    assert '$("where-field").hidden = custom;' in html
+    # 絞り込み(where)は隠し値になったので出し分けは不要。自作リスト選択時は空にする
+    assert '<input type="hidden" id="where">' in html
+    assert '      setWhere("");' in html
     # 投入時はリスト名ではなく中身そのものを送る(zipはファイル、書いた内容はテキスト+画像)
     assert 'form.append("wordlist_csv", wl.file); return; }' in html
     assert 'form.append("wordlist_text", wl.text);' in html
@@ -1451,7 +1399,6 @@ def test_index_html_advanced_groups_hold_the_right_fields():
     assert 'id="midi"' in song and 'id="sample-select"' in song and 'id="lyrics"' in song
     parody = g["② 空耳のもと"]
     assert 'id="wordlist-select"' in parody
-    assert 'id="wordlist-filters"' in parody
     assert 'id="open-editor"' in parody
     assert 'id="editor-auto-status"' in parody
     assert 'id="parody-status"' in parody
@@ -1510,8 +1457,9 @@ def test_index_html_convert_params_are_demoted_to_a_collapsible():
     parody = _opt_groups()["② 空耳のもと"]
     assert '<details id="parody-advanced" class="sub-details">' in parody
     assert "<summary>変換のしかたを細かく調整する(上級者向け)</summary>" in parody
-    assert 'id="p-preset"' in parody
-    # 絞り込み(where)はチェックボックスの出力そのものなので折りたたまない
+    # 折りたたみに残るのはエディタに無い独自項目(ノート長重視α)だけ
+    assert 'id="p-notelen"' in parody
+    # 絞り込み(where)は単語リストの選択と同じ組に置く隠し値
     assert 'id="where"' in parody
     assert parody.index('id="where"') < parody.index('id="parody-advanced"')
     # 替え歌JSONの読み書きは詳細設定から撤去し、エディタのモーダルへ移した
@@ -1522,13 +1470,35 @@ def test_index_html_convert_params_are_demoted_to_a_collapsible():
     assert parody.index('id="wordlist-select"') < parody.index('id="parody-advanced"')
 
 
-def test_index_html_where_sits_with_the_wordlist_facets():
-    """絞り込み(where)は単語リスト選択・ファセットのチェックと同じ視野に置く。"""
+def test_index_html_where_is_a_hidden_passthrough():
+    """絞り込み(where)は手入力させず、選んだ単語リストの条件を運ぶ隠し値にする。"""
     parody = _opt_groups()["② 空耳のもと"]
     field = parody.split('<div class="field">')[1]
-    # 単語リストのフィールドの中に、選択・ファセット・where が並んでいる
+    # 単語リストのフィールドの中に、選択と(隠しの)where が並んでいる
     assert 'id="wordlist-select"' in field
-    assert field.index('id="wordlist-filters"') < field.index('id="where"')
+    assert '<input type="hidden" id="where">' in field
+    # プルダウンの選択がその値を書き込む経路は維持する
+    html = _index_html()
+    assert "setWhere(facetDefaultWhere(g));" in html
+
+
+def test_index_html_keeps_the_conf_default_filters():
+    """チェックボックスUIを畳んでも、confのfacet既定(default:true)の絞り込みは残す。
+
+    駅名は現存駅だけ・流行はセンシティブ除外…といった既定が消えると、UIの整理が
+    そのまま出力の変化になってしまう。式の形はエディタ側 convertControls.js の
+    renderFacets(default) + compileWhere と対で、restoreFacets が同じチェック状態を
+    復元できるものにそろえる。
+    """
+    html = _index_html()
+    body = html.split("function facetDefaultWhere(g) {")[1].split("\n}")[0]
+    # 既定ONの値だけを集める / 全部ONのファセットは節を出さない
+    assert "values.filter((v) => v.default === true)" in body
+    assert "if (!on.length || on.length === values.length) return;" in body
+    # 値の述語は where 優先、無ければ col=v(複数列は全列)
+    assert "(v.where ? [v.where] : cols.map((c) => c + \"=\" + v.v))" in body
+    # facets の無いエントリは従来どおり entry.where
+    assert 'if (!facets.length) return (e && e.where) || "";' in body
 
 
 def test_index_html_parody_json_io_lives_in_the_editor_modal():

@@ -136,15 +136,6 @@
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
     box-shadow: 0 .4rem 1.2rem #0000004d;
   }
-  .slider-row { display: flex; align-items: center; gap: .5rem; }
-  .slider-row span { font-size: .75rem; color: var(--muted); white-space: nowrap; }
-  .slider-row input[type=range] { flex: 1; margin: 0; min-width: 0; }
-  .wordlist-filters { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; margin-top: .4rem; }
-  .wordlist-facet { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .8rem; flex: 1 0 100%; }
-  .wordlist-filters-label { font-size: .8rem; color: var(--muted); font-weight: 600; }
-  .wordlist-filter { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-weight: normal; font-size: .85rem; color: var(--text); }
-  .wordlist-filter input[type=checkbox] { width: auto; margin: 0; }
-  .wordlist-filter-hint { font-size: .8rem; color: var(--muted); }
   .stages { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 .8rem; padding: 0; list-style: none; }
   .stages li {
     padding: .2rem .6rem; border-radius: 999px; font-size: .85rem;
@@ -642,13 +633,12 @@
   <!-- ② 空耳のもと -->
   <section class="opt-group">
     <h3 class="opt-group-title">② 空耳のもと</h3>
-    <p class="hint opt-group-lead" data-info>歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタや変換パラメータに進んでください。</p>
+    <p class="hint opt-group-lead" data-info>歌詞を何に空耳させるか。単語リストを選ぶだけで作れます。仕上がりに納得できないときだけ、エディタに進んでください(変換のしかたの調整も単語リストの絞り込みも、エディタの中でできます)。</p>
 
     <div class="field">
       <label for="wordlist-select">単語リスト(何に空耳させるか)</label>
       <select id="wordlist-select" hidden></select>
       <input type="text" id="wordlist" placeholder="例: stations">
-      <div id="wordlist-filters" class="wordlist-filters" hidden></div>
       <!-- 自作の単語リスト。プルダウンで「自作リストを使う」を選んだときだけ出す。
            中身の編集は専用モーダル(#wordlist-modal-wrap)で行い、ここには今の
            内容の要約と開き直す導線だけを置く。書き換えるたびに
@@ -661,15 +651,11 @@
         </div>
         <p class="error" id="custom-wordlist-error" hidden></p>
       </div>
-      <!-- 絞り込み(where)はファセットのチェックボックスの出力そのものなので、
-           チェックを触ったときに何が入ったのかが見えるよう同じ視野に置く
-           (詳細調整の折りたたみの中に隠すと、対応が分からなくなる)。 -->
-      <!-- 自作リスト(CSV)では効かないので、選択中はこの組ごと隠す -->
-      <div id="where-field">
-        <label for="where">絞り込み(where・任意)</label>
-        <input type="text" id="where" placeholder="例: type=family or type=full">
-        <p class="hint" data-info>単語リストの行を絞り込む条件。上の単語リストやチェックボックスを選ぶと自動入力されます。</p>
-      </div>
+      <!-- 絞り込み(where)は、プルダウンで選んだ単語リスト(confエントリ)の条件を
+           そのまま持ち回るための隠し値。手入力欄とファセットのチェックボックスは
+           廃止し、細かい絞り込みはエディタの「変換のしかた」で行う。ここは
+           /api/editor-session・生成への受け渡しの正本として残す。 -->
+      <input type="hidden" id="where">
     </div>
 
     <div class="field">
@@ -680,7 +666,9 @@
       <div id="editor-embed-controls" hidden>
         <button type="button" id="open-editor" class="btn-sm">✏️ 替え歌を編集</button>
         <p class="hint" data-info>MIDIと単語リストから替え歌に変換し、全画面のエディタで編集できます。
-          自作の単語リストでも開けます(絞り込みは効きません)。
+          変換のしかた(音の合わせ方・単語の長さ・単語重複)の調整や単語リストの絞り込みも、
+          エディタの中の「変換のしかた」でできます(そこで再変換した結果がそのまま残ります)。
+          自作の単語リストでも開けます。
           編集した内容は、取り込み操作をしなくてもそのまま動画生成に使われます。</p>
         <span id="open-editor-msg" class="error"></span>
         <!-- 保存済みの替え歌があるときだけ出す選択(破棄する側を押し間違えないよう、
@@ -703,53 +691,18 @@
       <p id="parody-status" class="hint"></p>
     </div>
 
+    <!-- 変換のしかた(プリセット・スライダー・単語重複・絞り込み)は同梱エディタの
+         「変換のしかた」パネルに一本化した(external/soramimic fcff70d)。video側に
+         対応表を持たなくて済むよう、ここに残すのはエディタにも本家にも無い
+         soramimic-video 独自の「ノート長重視 α」だけ。 -->
     <details id="parody-advanced" class="sub-details">
       <summary>変換のしかたを細かく調整する(上級者向け)</summary>
-      <p class="hint" data-info>単語の選ばれ方を決める値です。既定のままでも作れます。</p>
-      <!-- 「単語重複」は本家 soramimic の単語重複トグル(frontend/index.html: あり/なし、
-           なしが既定)と文言・選択肢・既定をそろえたもの(external/soramimic 53dcff1)。 -->
-      <label>単語重複</label>
-      <select id="duplicate">
-        <option value="true">あり</option>
-        <option value="false" selected>なし</option>
-      </select>
-      <p class="hint" data-info>替え歌変換で同じ単語を何度も使うか(本家soramimicと同じ)。既定は「なし」。この場の変換(上の単語リスト指定)にのみ効き、読み込んだ替え歌JSONやeditor編集には影響しません。</p>
-      <!-- パラメータUIは本家 soramimic(external/soramimic 4443a7b frontend)の
-           「プリセット + スライダー3本」構成に合わせたもの。プリセット定義と
-           スライダーの範囲・既定値は app.js の PRESETS / createSliderItem 呼び出しと同一。
-           送信値の組み立て(本家 getParam 相当)は JS の buildConvertParams を参照。 -->
-      <label>プリセット</label>
-      <select id="p-preset">
-        <option value="バランス" selected>バランス</option>
-        <option value="音そっくり">音そっくり</option>
-        <option value="文節重視">文節重視</option>
-        <option value="長い単語">長い単語</option>
-        <option value="">カスタム(下のスライダーで調整)</option>
-      </select>
-      <p class="hint" data-info>本家soramimicと同じプリセット。選ぶと下の3項目に値が入ります(スライダーを動かすと「カスタム」になります)。既定は本家と同じ「バランス」。</p>
-      <label>音の合わせ方</label>
-      <div class="slider-row"><span>子音重視</span>
-        <input type="range" id="p-sound" min="0.1" max="0.9" step="0.1" value="0.8"
-          aria-label="音の合わせ方(子音重視〜母音重視)">
-        <span>母音重視</span></div>
-      <label>文節の区切り</label>
-      <div class="slider-row"><span>無視</span>
-        <input type="range" id="p-phrase" min="0" max="8" step="1" value="1"
-          aria-label="文節の区切り(無視〜がっちり守る)">
-        <span>がっちり守る</span></div>
-      <label>単語の長さ</label>
-      <div class="slider-row"><span>細かめ</span>
-        <input type="range" id="p-wordnum" min="0" max="6" step="1" value="2"
-          aria-label="単語の長さ(細かめ〜長め)">
-        <span>長め</span></div>
-      <p class="hint" data-info data-info-standalone data-info-label="変換パラメータ">本家soramimicと同じ項目・範囲・既定値。変換エンジンも本家現行版と同じ新パラメータ(母音重み・文節内切断ペナルティなど)で動きます。</p>
-      <!-- ここから下は soramimic-video 独自(本家 soramimic には無い項目)。
-           上のプリセット・スライダーは本家準拠なので、独自項目は混ぜず末尾に置く。
-           送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
+      <p class="hint" data-info>音の合わせ方・文節の区切り・単語の長さ・単語重複、そして単語リストの絞り込みは、「✏️ 替え歌を編集」で開くエディタの中の「変換のしかた」で調整して再変換できます。ここに残っているのは、エディタにも本家soramimicにも無いsoramimic-video独自の項目だけです。</p>
+      <!-- 送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
       <label>ノート長重視 α(soramimic-video独自)</label>
       <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
         aria-label="ノート長重視 α(0でオフ)">
-      <p class="hint" data-info>この項目だけ本家soramimicにはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
+      <p class="hint" data-info>この項目だけ本家soramimic(と同梱エディタ)にはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
     </details>
 
   </section>
@@ -4519,7 +4472,7 @@ $("editor-close").addEventListener("click", closeEditor);
 // 曲・単語リスト・変換パラメータを変えると、編集内容の来歴が今の選択と合わなく
 // なることがある。そのときは表示を出し直す(生成時のガードと同じ判定)
 // 出したままの「保存済みの替え歌があります」も、前提が変わったら一度引っ込める
-["midi", "wordlist", "where", "duplicate", "p-preset", "p-sound", "p-phrase", "p-wordnum", "p-notelen"]
+["midi", "wordlist", "where", "p-notelen"]
   .forEach((id) => $(id).addEventListener("change", () => {
     updateEditorAutoStatus();
     renderParodyStatus();   // 取り込み済みJSONの扱い(使う/捨てる)も来歴で変わる
@@ -4554,10 +4507,9 @@ function flattenWordlist(list, groupLabel) {
 
 async function loadWordlistSelect(editorAvailable) {
   const sel = $("wordlist-select");
-  const filters = $("wordlist-filters");
   wordlistGroups = [];
   const bail = () => {
-    sel.hidden = true; filters.hidden = true; $("wordlist").hidden = false;
+    sel.hidden = true; $("wordlist").hidden = false;
     syncBuilderOptions();  // カード側の単語リストプルダウンも引っ込める
   };
   if (!editorAvailable) { bail(); return; }
@@ -4624,152 +4576,30 @@ function setWhere(v) {
   $("where").dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-// ---- ファセット(本体conf形式)対応 ----
-// エントリに非空の facets があればそこからチェックボックスUIを組む。
-// facets が無いグループはチェックボックスを出さず、先頭エントリの where をそのまま使う。
-function groupFacets(g) {
+// 選んだ単語リストの既定の絞り込み(where)。conf の facets には既定でONの値が
+// 決まっている(例: 駅名は現存だけ、流行はセンシティブを外す)ので、チェックボックス
+// UIを畳んだあとも同じ式を組み立てて #where に入れる。式の形はエディタ側の
+// convertControls.js(renderFacets の default + compileWhere)と対になっていて、
+// エディタは restoreFacets でこの where から同じチェック状態を復元する。
+// 全値が既定ONのファセットは無条件と同義なので節を出さない(式が伸びるほど変換が遅い)。
+// facets の無いエントリは従来どおり entry.where をそのまま使う。
+function facetDefaultWhere(g) {
   const e = g && g.entries[0];
-  return e && Array.isArray(e.facets) && e.facets.length ? e.facets : null;
-}
-
-// facetの対象列。単数 column / 複数 columns(例: ポケモンのタイプ=type1,type2)の
-// 両形式に対応する。複数列は「いずれかの列が値に一致」の意味。
-function facetCols(f) {
-  return f.columns || (f.column ? [f.column] : []);
-}
-
-// 述語文字列 "col op value"(op は = / != / ~= / !~=)を正規化する。前後・演算子
-// 周りの空白を除いて "col{op}value" に揃える。演算子が無ければ null。
-function normalizePred(p) {
-  const m = String(p || "").trim().match(/^(.+?)\s*(!~=|~=|!=|=)\s*(.+)$/);
-  if (!m) return null;
-  return m[1].trim() + m[2] + m[3].trim();
-}
-
-// facet値が合成時に出す述語文字列の配列。値に where があればそれを1述語として
-// そのまま使い、なければ列ごとに col=v を組む(複数列は各列ぶん)。
-function facetValuePreds(f, val) {
-  const raw = val.where ? [val.where] : facetCols(f).map((c) => c + "=" + val.v);
-  return raw.map((p) => normalizePred(p) || p);
-}
-
-// facetの全値が出しうる述語文字列を返す(語彙の被覆判定用)
-function facetVocabKeys(facets) {
-  const keys = [];
-  facets.forEach((f) => (f.values || []).forEach(
-    (v) => facetValuePreds(f, v).forEach((p) => keys.push(p))));
-  return keys;
-}
-
-// パーサ: paren深さ0の " and " で分割(and節は括弧付き想定)。値にandは出ない前提。
-function splitTopLevelAnd(s) {
-  const parts = [];
-  let depth = 0, buf = "", i = 0;
-  while (i < s.length) {
-    const ch = s[i];
-    if (ch === "(") { depth++; buf += ch; i++; continue; }
-    if (ch === ")") { depth--; buf += ch; i++; continue; }
-    if (depth === 0 && s.slice(i, i + 3).toLowerCase() === "and"
-        && /\s|^/.test(s[i - 1] || " ") && /\s|$/.test(s[i + 3] || " ")) {
-      parts.push(buf); buf = ""; i += 3; continue;
-    }
-    buf += ch; i++;
-  }
-  parts.push(buf);
-  return parts.map((p) => p.trim()).filter(Boolean);
-}
-
-// facet形式のwhereを正規化済み述語文字列("col op value")の配列に解析する。
-// and連結された(括弧付き or 単一の)or節を平坦に並べ、各項を演算子
-// = / != / ~= / !~= で解釈できれば配列、できなければ null、条件無しは空配列。
-function parseFacetWhere(where) {
-  const w = (where || "").trim();
-  if (!w) return [];
-  const preds = [];
-  for (let c of splitTopLevelAnd(w)) {
-    c = c.trim();
-    if (c.startsWith("(") && c.endsWith(")")) c = c.slice(1, -1).trim();
-    if (/[()]/.test(c) || /\band\b/i.test(c)) return null;  // 想定外のネスト
-    for (const p of c.split(/\s+or\s+/i).map((t) => t.trim()).filter(Boolean)) {
-      const np = normalizePred(p);
-      if (np === null) return null;
-      preds.push(np);
-    }
-  }
-  return preds;
-}
-
-// ファセットごとに1行のチェックボックスUIを組み立て、#whereへ反映する。
-function renderFacetFilters(facets) {
-  const filters = $("wordlist-filters");
-  filters.hidden = false;
-  facets.forEach((f) => {
-    const cols = facetCols(f);
-    const values = f.values || [];
-    // 各値が出す述語文字列。列指定が無くても where があれば述語を作れる。
-    // どの値も述語を作れないfacet(列なし・where無し)は無視(conf不備)。
-    const vpreds = values.map((val) => facetValuePreds(f, val));
-    if (!vpreds.some((ps) => ps.length)) return;
-    const row = document.createElement("div");
-    row.className = "wordlist-facet";
-    const lbl = document.createElement("span");
-    lbl.className = "wordlist-filters-label";
-    lbl.textContent = (f.label || cols.join("/") || "絞り込み") + ":";
-    row.appendChild(lbl);
-    values.forEach((val, vi) => {
-      const preds = vpreds[vi];
-      if (!preds.length) return;  // 述語を作れない値は出さない
-      const wrap = document.createElement("label");
-      wrap.className = "wordlist-filter";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.dataset.preds = JSON.stringify(preds);
-      cb.value = val.v;
-      cb.checked = val.default === true;
-      cb.addEventListener("change", updateWhereFromFilters);
-      wrap.appendChild(cb);
-      wrap.appendChild(document.createTextNode(val.label || val.v));
-      row.appendChild(wrap);
-    });
-    filters.appendChild(row);
-  });
-  const hint = document.createElement("span");
-  hint.className = "wordlist-filter-hint";
-  filters.appendChild(hint);
-  updateWhereFromFilters();
-}
-
-// 選択中グループのフィルターUIを組み立てる。facets があれば facet UI を出し、
-// 無ければチェックボックスを出さず先頭エントリの where をそのまま #where に使う。
-function renderWordlistFilters(g) {
-  const filters = $("wordlist-filters");
-  filters.innerHTML = "";
-  const facets = groupFacets(g);
-  if (facets) { renderFacetFilters(facets); return; }
-  filters.hidden = true;
-  setWhere(g && g.entries[0] ? (g.entries[0].where || "") : "");
-}
-
-// チェック済みのファセット値から #where を組み立てる。各ファセット = チェック済み値の
-// 述語を定義順に " or " 連結した1節。1節なら括弧なし、複数節は各節を括弧で包み
-// " and " 連結する。値の述語は where があればそれ、なければ col=v(複数列は全列ぶん)。
-// 全部ONのファセットは無条件と同義なので節を出さない(式が伸びるぶん変換が遅くなる)。
-function updateWhereFromFilters() {
-  const filters = $("wordlist-filters");
-  const hint = filters.querySelector(".wordlist-filter-hint");
-  const rows = [...filters.querySelectorAll(".wordlist-facet")];
+  const facets = e && Array.isArray(e.facets) ? e.facets : [];
+  if (!facets.length) return (e && e.where) || "";
   const clauses = [];
-  rows.forEach((row) => {
-    const boxes = [...row.querySelectorAll('input[type="checkbox"]')];
-    const checked = boxes.filter((b) => b.checked);
-    if (!checked.length || checked.length === boxes.length) return;
-    clauses.push(checked.flatMap((b) => JSON.parse(b.dataset.preds)).join(" or "));
+  facets.forEach((f) => {
+    const values = f.values || [];
+    const on = values.filter((v) => v.default === true);
+    if (!on.length || on.length === values.length) return;
+    // 値の述語: where があればそれ、なければ列ごとの col=v(複数列は全列ぶん)
+    const cols = f.columns || (f.column ? [f.column] : []);
+    const preds = on.flatMap(
+      (v) => (v.where ? [v.where] : cols.map((c) => c + "=" + v.v)));
+    if (preds.length) clauses.push(preds.join(" or "));
   });
-  let where = "";
-  if (clauses.length === 1) where = clauses[0];
-  else if (clauses.length > 1) where = clauses.map((c) => "(" + c + ")").join(" and ");
-  if (hint) hint.textContent = where ? "" : "(絞り込みなし: すべての行を使用)";
-  setWhere(where);
+  if (clauses.length === 1) return clauses[0];
+  return clauses.map((c) => "(" + c + ")").join(" and ");
 }
 
 // 選択内容を canonical な #wordlist / #where に反映する。
@@ -4778,13 +4608,10 @@ function updateWhereFromFilters() {
 // 選択肢が1つも無い構成では従来どおりリスト名のテキスト欄に落ちる。
 function applyWordlistSelection() {
   const sel = $("wordlist-select");
-  const filters = $("wordlist-filters");
   const opt = sel.selectedOptions[0];
   const custom = !!opt && opt.value === CUSTOM_WORDLIST;
   $("custom-wordlist").hidden = !custom;
-  $("where-field").hidden = custom;   // 自作リストに絞り込みは効かない
   if (!opt || custom) {
-    filters.hidden = true; filters.innerHTML = "";
     if (custom) {
       // 名前でも絞り込みでもなくCSVで指定するので、どちらも空にして送らない
       $("wordlist").hidden = true;
@@ -4799,7 +4626,9 @@ function applyWordlistSelection() {
   const g = wordlistGroups[Number(opt.value)];
   $("wordlist").hidden = true;
   $("wordlist").value = g ? g.name : "";
-  renderWordlistFilters(g);  // #where を設定 + change 発火
+  // 絞り込みは conf の既定(facetsのdefault、無ければentryのwhere)を入れる。
+  // これを変えたい人はエディタの「変換のしかた」で絞り込み直す
+  setWhere(facetDefaultWhere(g));  // change も発火
   // 列取得・キュープレビュー等(#wordlistのchangeを見ている)を更新する
   $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -4809,39 +4638,6 @@ $("wordlist-select").addEventListener("change", (ev) => {
   // 同期のような合成イベントでは開かない(勝手に画面が覆われないように)
   if (ev.isTrusted) openCustomWordlistIfEmpty($("wordlist-select"));
 });
-
-// 復元された #where に合わせて facet のチェック状態を戻す。filters が隠れている
-// (facets の無いグループ)なら復元値をそのまま #where に入れる。facetモードでは
-// and連結の(括弧付き/単一)or節として述語文字列に解析し、各チェックボックスが
-// 合成時に出す述語集合と照合する。全述語が既知ならチェックを合わせる。解釈できない
-// /未知の述語があれば見た目と実際が食い違わないようチェックボックス行を非表示にし、
-// #where に復元値を残す(グループを選び直せば renderWordlistFilters が再描画する)。
-function restoreWordlistFilters(where) {
-  const filters = $("wordlist-filters");
-  if (filters.hidden) { setWhere(where); return; }
-  const boxes = [...filters.querySelectorAll('input[type="checkbox"]')];
-  // 各チェックボックスが出す述語集合。復元は全述語が揃っている値だけをチェックする
-  // (合成側が全述語を出すので、自前生成のwhereなら一致する)
-  const boxPreds = (b) => JSON.parse(b.dataset.preds);
-  const preds = parseFacetWhere(where);
-  const known = new Set(boxes.flatMap(boxPreds));
-  if (preds !== null && preds.every((p) => known.has(p))) {
-    const want = new Set(preds);
-    // 節が出ていないファセットは「そのファセットでは絞り込まない」= 全選択として戻す
-    // (全部ONなら節を出さない updateWhereFromFilters と対になる)
-    [...filters.querySelectorAll(".wordlist-facet")].forEach((row) => {
-      const rowBoxes = [...row.querySelectorAll('input[type="checkbox"]')];
-      const inWhere = rowBoxes.some((b) => boxPreds(b).some((k) => want.has(k)));
-      rowBoxes.forEach((b) => {
-        b.checked = inWhere ? boxPreds(b).every((k) => want.has(k)) : true;
-      });
-    });
-    updateWhereFromFilters();
-  } else {
-    filters.hidden = true;
-    setWhere(where);
-  }
-}
 
 // 替え歌JSONの有無・単語リストとの不一致に応じた状態表示を更新する。
 // localStorage復元による注入は取り込み直後と区別がつかないため、restoreForm側が
@@ -4953,59 +4749,14 @@ $("download-editor").addEventListener("click", async () => {
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
 
-// 変換パラメータのスライダー(本家 external/soramimic 4443a7b frontend/src/app.js の
-// createSliderItem 3本と同一の範囲・既定値)。
-const PARAM_SLIDER_IDS = ["p-sound", "p-phrase", "p-wordnum"];
-
-// 本家 app.js の PRESETS と同一。全プリセット r=0.8(母音ロック)固定で、
-// 文節・単語長の強さだけ変える(#102):
-//   バランス   文節1/単語長2(既定)
-//   音そっくり 文節0/単語長0(音韻マックス)
-//   文節重視   文節8(スライダー最大)/単語長2
-//   長い単語   文節1/単語長6(スライダー最大)
-const PRESETS = {
-  "バランス":   { "p-sound": "0.8", "p-phrase": "1", "p-wordnum": "2" },
-  "音そっくり": { "p-sound": "0.8", "p-phrase": "0", "p-wordnum": "0" },
-  "文節重視":   { "p-sound": "0.8", "p-phrase": "8", "p-wordnum": "2" },
-  "長い単語":   { "p-sound": "0.8", "p-phrase": "1", "p-wordnum": "6" },
-};
-
-// 生成時に送る変換パラメータ(KEY=VALUE を改行区切り)。本家 app.js の getParam と
-// 同じ写像で新パラメータモデルへ送る:
-//   VOWEL_RATIO = r(音の合わせ方)、VARIATION_COST = 20×r(#105)、
-//   SAME_PHRASE_BREAK_REWARD = 0(報酬方式は廃止 #98)、
-//   MID_PHRASE_BREAK_PENALTY = 文節×20(#98)、WORD_NUMBER_PENALTY = 単語長×10。
-// SAME_VOWEL/CONSONANT_REWARD は撤廃(#102)。母音/子音の重みは VOWEL_RATIO が担う。
-// soramimic-video 独自の NOTE_LENGTH_WEIGHT(ノート長重視α)だけは本家に無いので、
-// 0(既定=OFF)のときは送らない。送らなければ本家とまったく同じパラメータになる。
+// 生成時に送る変換パラメータ(KEY=VALUE を改行区切り)。音の合わせ方・文節の区切り・
+// 単語の長さ・単語重複は同梱エディタの「変換のしかた」に一本化したので、ここからは
+// 送らない(未指定はサーバー既定=本家のバランス相当・単語重複なし)。
+// soramimic-video 独自の NOTE_LENGTH_WEIGHT(ノート長重視α)だけは本家・エディタに
+// 無いので、0(=OFF)以外のときにここで足す。
 function buildConvertParams() {
-  const r = Number($("p-sound").value);
-  const out = [
-    "DUPLICATE=" + $("duplicate").value,
-    "VOWEL_RATIO=" + r,
-    "VARIATION_COST=" + 20 * r,
-    "SAME_PHRASE_BREAK_REWARD=0",
-    "MID_PHRASE_BREAK_PENALTY=" + Number($("p-phrase").value) * 20,
-    "WORD_NUMBER_PENALTY=" + Number($("p-wordnum").value) * 10,
-  ];
   const noteLen = Number($("p-notelen").value);
-  if (noteLen > 0) out.push("NOTE_LENGTH_WEIGHT=" + noteLen);
-  return out.join("\n");
-}
-
-// プリセット選択でスライダーへ流し込む(本家 applyPreset 相当)。
-// 「カスタム」("")は何も流し込まず現状維持。プログラム代入なので input は発火しない。
-$("p-preset").addEventListener("change", () => {
-  const p = PRESETS[$("p-preset").value];
-  if (p) for (const [id, v] of Object.entries(p)) $(id).value = v;
-  saveForm();
-});
-
-// スライダーを手で動かしたらプリセット選択を「カスタム」に戻す
-// (本家の「詳細設定を触るとプリセットの選択表示が外れる」と同じ挙動)。
-// 保存は後段で登録される saveForm の change リスナーが行う(input より後に発火)。
-for (const id of PARAM_SLIDER_IDS) {
-  $(id).addEventListener("input", () => { $("p-preset").value = ""; });
+  return noteLen > 0 ? "NOTE_LENGTH_WEIGHT=" + noteLen : "";
 }
 
 function saveForm() {
@@ -5021,13 +4772,9 @@ function saveForm() {
       wordlistText: $("wordlist-text").value,
       wordlistName: $("wordlist-name").value,
       wordlistImages: (customWordlist || {}).imageCount || 0,
+      // 選んだ単語リスト(confエントリ)の絞り込み。画面には出さないが、同名で
+      // 絞り込み違いのグループを復元時に選び分けるために持ち回る
       where: $("where").value,
-      duplicate: $("duplicate").value,
-      preset: $("p-preset").value,
-      convertSliders: Object.fromEntries(
-        PARAM_SLIDER_IDS.map((id) => [id, $(id).value])
-      ),
-      // 独自項目はプリセット(本家準拠)と無関係なので convertSliders には入れない
       noteLenWeight: $("p-notelen").value,
       transpose: $("transpose").value,
       layout: $("layout").value,
@@ -5133,8 +4880,7 @@ $("layout-select").addEventListener("change", async () => {
 
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)。
 // model / layout は上の syncChoice が保存するのでここには入れない。
-["lyrics", "wordlist", "where", "duplicate",
- "p-sound", "p-phrase", "p-wordnum", "p-notelen",
+["lyrics", "wordlist", "where", "p-notelen",
  "transpose", "layout-json",
  "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
@@ -5194,34 +4940,29 @@ async function doRestoreForm() {
     // 1. 単語リスト: 選択肢があれば name/where 一致のoptionを選ぶ
     const sel = $("wordlist-select");
     if (!sel.hidden && sel.options.length) {
-      // 同name複数グループでは、復元whereの全 column=v が facet 語彙に収まる
-      // グループを優先する。facetsの無いグループや、whereが解釈不能/どの候補にも
-      // 収まらない場合はname一致の先頭にフォールバックする。
+      // 同name複数グループ(絞り込み違い)では、前回と同じ絞り込みのグループを
+      // 優先し、無ければname一致の先頭にフォールバックする。#where 自体は
+      // applyWordlistSelection がグループから入れ直す(画面から編集できない値を
+      // 古い保存から引きずらないため)。
       const wantName = state.wordlist || "";
+      const wantWhere = (state.where || "").trim();
       const cands = wordlistGroups
         .map((g, i) => ({ g, i }))
         .filter(({ g }) => g.name === wantName);
-      const wantFacetTerms = parseFacetWhere(state.where || "");
       let gi = -1;
-      const hit = cands.find(({ g }) => {
-        const facets = groupFacets(g);
-        if (!facets || wantFacetTerms === null) return false;
-        const vocab = new Set(facetVocabKeys(facets));
-        return wantFacetTerms.every((t) => vocab.has(t));
-      });
+      const hit = cands.find(({ g }) => facetDefaultWhere(g).trim() === wantWhere);
       if (hit) gi = hit.i;
       if (gi < 0 && cands.length) gi = cands[0].i;
       if (gi >= 0) {
         sel.value = String(gi);
-        applyWordlistSelection();  // #wordlist/#where設定 + チェックボックス + change
-        restoreWordlistFilters(state.where || "");  // 復元whereに合わせてチェック
+        applyWordlistSelection();  // #wordlist/#where設定 + change
       } else {
         // 保存されていた名前が今の選択肢に無い(confが変わった・自作リストを
         // 選んだままリロードした)。選択なし(selectedIndex=-1)にすると
         // applyWordlistSelection がリスト名のテキスト欄を出す経路に落ちる
         // ——自作リストのCSVは保存できないので、ここには戻せない
         sel.selectedIndex = -1;
-        applyWordlistSelection();  // チェックボックスを隠しテキスト欄を出す
+        applyWordlistSelection();  // リスト名のテキスト欄を出す
         $("wordlist").value = state.wordlist || "";
         $("where").value = state.where || "";
         $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
@@ -5250,25 +4991,8 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
-    if (state.duplicate
-        && [...$("duplicate").options].some((o) => o.value === state.duplicate)) {
-      $("duplicate").value = state.duplicate;
-    }
-    if (state.convertSliders) {
-      for (const id of PARAM_SLIDER_IDS) {
-        const v = state.convertSliders[id];
-        if (v != null && v !== "") $(id).value = v;
-      }
-    }
-    // プリセットは表示状態の復元(値の正本はスライダー)。旧形式の保存
-    // (convertSliders無し・プリセット名のみ)はプリセット値を流し込んで揃える
-    if (state.preset != null
-        && [...$("p-preset").options].some((o) => o.value === state.preset)) {
-      $("p-preset").value = state.preset;
-      if (!state.convertSliders && PRESETS[state.preset]) {
-        for (const [id, v] of Object.entries(PRESETS[state.preset])) $(id).value = v;
-      }
-    }
+    // 旧版の保存(duplicate / preset / convertSliders)はもう画面に対応する項目が
+    // ないので読まない(エディタの「変換のしかた」に移した)。残っていても無視するだけ
     if (state.noteLenWeight != null && state.noteLenWeight !== "") {
       $("p-notelen").value = state.noteLenWeight;
     }
