@@ -51,7 +51,6 @@ def test_info_hints_cover_the_static_explanations():
         "midi-error",           # 歌詞なしMIDIの拒否
         "lyrics-midi-warn",     # 元歌詞とMIDI歌詞の食い違い
         "sample-status",        # ✓ ...をセットしました
-        "builder-state",        # かたつむり × 駅名
         "editor-auto-status",   # エディタの編集内容が使われます/使いません
         "parody-status",        # 編集済みの替え歌を使用します
         "voicevox-credit",
@@ -178,8 +177,8 @@ def test_info_hint_opens_as_floating_popover():
 def test_editor_wordlist_is_written_back_to_the_form():
     """エディタの⚙で単語リストを変えたら、親の正本(#wordlist / #where)へ書き戻す。
 
-    カードから単語リストの選択が消えたので、書き戻さないと状態表示・サムネ
-    プレビュー・生成時の単語画像/レイアウトの解決が古いリストのままになる。
+    書き戻さないと、カードのプルダウン・サムネプレビュー・生成時の単語画像/
+    レイアウトの解決が古いリストのままになる(どれも正本を見ている)。
     """
     script = _script()
     body = _function_body(script, "function applyEditorWordlist()")
@@ -203,22 +202,39 @@ def test_editor_wordlist_is_written_back_to_the_form():
     assert "syncEditorSession();" in close
 
 
-def test_card_shows_the_current_combination():
-    """カードの状態表示は「曲 × 単語リスト」。曲はサンプル名(自前MIDIはファイル名)。
+def test_card_selects_mirror_the_canonical_form():
+    """カードのプルダウンは正本の写し。選択肢も値も片方向に写して二重管理しない。"""
+    script = _script()
+    opts = _function_body(script, "function syncBuilderOptions()")
+    # 選択肢は optgroup ごとそのまま複製する(表示名の付け直しをしない)
+    assert '$("builder-sample").innerHTML = $("sample-select").innerHTML;' in opts
+    assert '$("builder-wordlist").innerHTML = wl.innerHTML;' in opts
+    # 単語リストのセレクトが出ない構成(editor conf 無し)ではカード側も出さない
+    assert '$("builder-wordlist-field").hidden = wl.hidden;' in opts
+    assert "syncBuilderValues();" in opts
+    # カード → 正本 → change の順(既存の applySample / applyWordlistSelection を通す)
+    wiring = script[script.index('$("builder-sample").addEventListener'):]
+    wiring = wiring[: wiring.index('$("sample-select").addEventListener')]
+    assert '$("sample-select").value = $("builder-sample").value;' in wiring
+    assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
 
-    名前の解決は小さな関数に分けておく(プルダウンでの選択に戻すときも、
-    選択肢のラベル解決として同じものが要るため)。
+
+def test_card_wordlist_select_shows_the_editor_own_list():
+    """エディタの中で自作リストを使っているあいだは、合成の選択肢で選択済みに見せる。
+
+    自作リスト(ORIGINAL/csvText)のときは正本 #wordlist が空になるので、その
+    ままだとカードのプルダウンが「未選択」になって何に空耳させているか分からない。
     """
     script = _script()
-    body = _function_body(script, "function renderBuilderState()")
-    assert "const song = currentSongLabel(), wl = currentWordlistLabel();" in body
-    assert '$("builder-state").textContent =' in body
-    song = _function_body(script, "function currentSongLabel()")
-    assert 'const sid = $("sample-select").value;' in song
-    assert 'return sid ? sampleTitleOf(sid) : songTitleOf($("midi").files[0]);' in song
-    label = _function_body(_script(), "function currentWordlistLabel()")
-    # 名前付きリストは conf の表示名(例: 駅名)
-    assert "const g = wordlistGroups.find((x) => x.name === name);" in label
-    assert "return (g && g.text) || name;" in label
-    # エディタの中で書いたリストは名前を持たないので「自作リスト」
-    assert 'return usesEditorWordlist() ? "自作リスト" : "";' in label
+    assert 'const EDITOR_WORDLIST_VALUE = "__editor__";' in script
+    assert 'const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";' in script
+    # 正本に名前が入っていればそちらが優先(古い ORIGINAL セッションに引きずられない)
+    shows = _function_body(script, "function showsEditorWordlist()")
+    assert "return !currentWordlistName() && usesEditorWordlist();" in shows
+    body = _function_body(script, "function syncBuilderValues()")
+    assert "const own = showsEditorWordlist();" in body
+    assert "card.appendChild(o);" in body     # 自作リストのあいだだけ足す
+    assert "synth.remove();" in body          # 名前付きリストに戻ったら取り除く
+    assert 'card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);' in body
+    # 選び直されても正本は触らない(「何も選ばない」に落とさない)
+    assert "if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }" in script

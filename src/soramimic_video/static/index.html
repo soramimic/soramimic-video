@@ -347,10 +347,10 @@
   /* 読み込み結果のメッセージは他のボタンと同じ行に並ばせず、次の行に出す */
   #layout-file-msg { flex: 1 0 100%; }
   #turnstile-widget:not(:empty) { margin: .6rem 0; }
-  /* ---- ビルダーカード: サムネプレビュー + ⚙(編集)と🎲(ランダム) ---- */
-  /* カードから触れる操作は⚙と🎲の2つだけ。主役はサムネ枠なので右上に小さく置く。
-     ただしアイコンだけだと気づかれないので、文字ラベルを添えたピルにして
-     「押せるもの」だと一目で分かるようにする(主張しすぎない大きさに留める) */
+  /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー + ⚙と🎲 ---- */
+  /* ⚙(替え歌を編集)と🎲(ランダム)はプルダウンの隣人。主役はサムネ枠なので
+     右上に小さく置く。ただしアイコンだけだと気づかれないので、文字ラベルを添えた
+     ピルにして「押せるもの」だと一目で分かるようにする(主張しすぎない大きさに留める) */
   .builder-topbar {
     display: flex; justify-content: flex-end; gap: .4rem; margin-bottom: .3rem;
   }
@@ -360,14 +360,16 @@
     border-radius: 999px; background: var(--panel-2);
   }
   .lucky-icon { font-size: 1rem; line-height: 1; }
-  /* いま何が作られるか(曲 × 単語リスト)の1行。選び直しは🎲と⚙からなので、
-     ここは押せない表示専用。控えめに、枠の絵の邪魔をしない大きさにする。
-     中身が空のあいだも行の高さは保つ(サムネの位置を上下に暴れさせない。
-     ここをプルダウンに差し替えるときも、同じ場所に同じ高さで収まる) */
-  .builder-state {
-    margin: .45rem 0 0; text-align: center; font-size: .8rem; color: var(--muted);
-    min-height: 1.4em;
-  }
+  /* プルダウンは横並び(狭い画面では1列に折り返す) */
+  .builder-selects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+  @media (max-width: 26rem) { .builder-selects { grid-template-columns: 1fr; } }
+  /* ラベルとプルダウンは同じ行に置く(モバイル幅でも1行に収める) */
+  .builder-selects .field { display: flex; align-items: center; gap: .5rem; }
+  .builder-selects label { margin: 0; flex: 0 0 auto; white-space: nowrap; }
+  .builder-selects select { flex: 1 1 auto; min-width: 0; }
+  /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
+     2つ目だけ下にずれるので消す */
+  .builder-selects .field + .field { margin-top: 0; }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -444,18 +446,17 @@
   <p class="hint" id="server-info"></p>
 </header>
 
-<!-- 1. ビルダーカード(この画面の主役)。いまの組み合わせで実際に作られるサムネが
-     その場に出て(/api/thumbnail-preview)、その枠(#builder-play)をタップすれば
-     そのまま生成が走る。
-     曲・単語リストのプルダウンは置かない: 単語リストの選び直し・絞り込み・変換の
-     しかたは同梱エディタの⚙モーダルに一本化したので、カードは「動画にする係」に
-     徹して、操作は⚙(替え歌を編集)と🎲(ランダム)の2つだけにする。
-     いま何が作られるかは枠の下の1行(#builder-state)で示す。
-     見出しや説明文は置かない(サムネが出る、で分かる)。
-     プルダウンでの選択に戻す場合の勘所はスクリプト側の「カードの状態表示」の
-     コメントに書いてある(正本の構造は変えていないので revert で足りる)。 -->
+<!-- 1. ビルダーカード(この画面の主役)。曲と単語リストのプルダウンを選ぶと、その
+     組み合わせで実際に作られるサムネがその場に出て(/api/thumbnail-preview)、
+     その枠(#builder-play)をタップすればそのまま生成が走る。
+     プルダウンは正本(#sample-select / #wordlist-select)の写しで、選択は双方向に
+     同期する(syncBuilderOptions / syncBuilderValues)。
+     右上には⚙(替え歌を編集)と🎲(ランダム)。単語リストの絞り込み・変換のしかた
+     の調整と自作リストは、⚙で開く同梱エディタの⚙モーダルに一本化してある
+     (エディタの中で選び直した結果は正本を経由してこのプルダウンにも出る)。
+     見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
-  <!-- カードから触れる操作はこの2つだけ。主役ではないので右上に小さく置く。
+  <!-- ⚙(編集)と🎲(ランダム)。主役ではないので右上に小さく置く。
        アイコンだけだと気づかれないので、どちらも文字ラベルを添える(読み上げは
        文字の方だけでよいので、絵文字は aria-hidden にする) -->
   <div class="builder-topbar">
@@ -482,6 +483,21 @@
       <button type="button" id="editor-resume-continue" class="btn-sm">続きから再開</button>
       <button type="button" id="editor-resume-regen" class="btn-sm">現在のパラメータで再生成してから編集</button>
       <button type="button" id="editor-resume-cancel" class="btn-sm">やめる</button>
+    </div>
+  </div>
+  <!-- 曲と単語リストのプルダウン。値の正本は詳細設定側の #sample-select と
+       隠しの #wordlist-select で、ここはその写し(syncBuilderOptions)。
+       エディタの中で書いた自作リストを使っているあいだは、単語リスト側に
+       合成の選択肢「自作リスト(替え歌エディタ)」が足されて選択済みになる。 -->
+  <div class="builder-selects">
+    <div class="field" id="builder-sample-field">
+      <label for="builder-sample">曲</label>
+      <select id="builder-sample" aria-label="曲(サンプル曲)"></select>
+    </div>
+    <div class="field" id="builder-wordlist-field">
+      <!-- 「(何に空耳させるか)」の補足は幅を食うので title に退避する -->
+      <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
+      <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
@@ -511,9 +527,6 @@
       <button type="button" id="builder-cancel" class="btn-danger btn-sm">中断</button>
     </div>
   </div>
-  <!-- いま何が作られるか(曲 × 単語リスト)。カードから選ぶ操作を無くしたぶん、
-       ここだけは常に見えるようにする。押せない表示専用(選び直しは⚙と🎲) -->
-  <p class="hint builder-state" id="builder-state" aria-live="polite"></p>
   <!-- 編集内容が生成でどう扱われるかの現状表示(updateEditorAutoStatus)。
        「使われます」「別の入力から作られた編集なので使いません」を出す。
        エディタへの導線がカードの⚙になったので、この表示もカードに置く -->
@@ -572,12 +585,12 @@
   </details>
 </section>
 
-<!-- 単語リストの「正本」の置き場。選ぶ操作はエディタの⚙モーダルへ移したので画面には
-     出さないが、値そのもの(リスト名と絞り込み)はサーバー送信・サムネプレビュー・
-     🎲の抽選・単語画像の解決に使うのでここに隠して残す。
+<!-- 単語リストの「正本」の置き場。選ぶ操作はビルダーカードのプルダウンと
+     エディタの⚙モーダルにあるのでここは画面に出さないが、値そのもの(リスト名と
+     絞り込み)はサーバー送信・サムネプレビュー・🎲の抽選・単語画像の解決に使う。
      - #wordlist-select … /editor/conf/setting.json から作った選択肢の一覧。
-       選択状態のほか、🎲の抽選対象と表示名の引き当てにも使う。conf が取れない
-       構成では hidden のまま(=リスト名の直接指定に落ちる)
+       カードのプルダウンはこれの写しで、🎲の抽選対象と表示名の引き当ても兼ねる。
+       conf が取れない構成では hidden のまま(=カード側のプルダウンも出ない)
      - #wordlist … リスト名(stem)。自作リストのときは空
      - #where … 選んだリストの絞り込み条件(エディタで絞り込んだらそれが入る) -->
 <div id="wordlist-store" hidden>
@@ -1598,7 +1611,9 @@ function setBusy(busy) {
   $("preview").disabled = busy;
   $("preview-high").disabled = busy;
   $("preview-low").disabled = busy;
-  // カードの操作(🎲ランダム)は生成中は止める
+  // カードの操作(プルダウンと🎲ランダム)は生成中は止める
+  $("builder-sample").disabled = busy;
+  $("builder-wordlist").disabled = busy;
   $("lucky").disabled = busy;
   updateBuilderOverlay();   // 生成中は「タップで動画を生成」を出さない
 }
@@ -1750,6 +1765,7 @@ async function loadSamples() {
     samples.forEach((s) => { if (s.description) sampleDescriptions[s.id] = s.description; });
     $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
+    syncBuilderOptions();  // カードの曲プルダウンへ写す
   } catch {
     // サンプルが取れない環境ではサンプル選択の折りたたみ(#sample-details)ごと隠す。
     // MIDIファイル選択は詳細設定の中に出たままなので、そちらを使ってもらう。
@@ -2044,42 +2060,60 @@ function luckyRandomCombo() {
   return luckyCombo(song.value, wl ? nameOf(wl) : "");
 }
 
-// ---- カードの状態表示(曲 × 単語リスト) ----
-// カードからプルダウン(#builder-sample / #builder-wordlist とその写し同期
-// syncBuilderOptions / syncBuilderValues)を外し、いま何が作られるかはこの1行だけが
-// 示すようにした。選び直しは🎲(pickCombo)とエディタの⚙(applyEditorWordlist)から。
-// 値の正本は従来どおり #sample-select / #wordlist(+#where)で、その構造と役割は
-// 変えていない——カード側は正本を読んで表示するだけ。プルダウンでの選択に戻したく
-// なったら、このコミットを revert すれば足りる(カードのDOMと配線を足し直すだけで、
-// 正本・カタログ・抽選のコードはそのまま使える)。
-// 表示に使う「今の曲名」「今のリスト名」は、プルダウンを戻したときにも同じものが
-// 要る(選択肢のラベル解決)ので、レンダリングに埋め込まず小さな関数に分けてある。
+// ---- カードのプルダウンと詳細設定の双方向同期 ----
+// カード側のプルダウンは詳細設定側セレクトの「写し」で、選択の正本は常に
+// #sample-select / #wordlist-select(さらにその先の #wordlist / #where)。
+// カードで選んだときは正本へ流して change を発火し(applySample、
+// applyWordlistSelection → レイアウト自動切替・フォーム保存がそのまま動く)、
+// 正本が変わったときはカードへ写し戻す。エディタの中で選び直した単語リストも
+// applyEditorWordlist が正本へ書き戻すので、同じ経路でカードに出る。
 
 let builderReady = false;   // 初期化済みか(loadConfigはAPIキー変更で再実行される)
 let builderLive = false;    // 初期選択が決まったか(それまでプレビューは出さない)
 
-// 状態表示に出す曲名。サンプル曲は samples.json の表示名、自前のMIDIはファイル名。
-function currentSongLabel() {
-  const sid = $("sample-select").value;
-  return sid ? sampleTitleOf(sid) : songTitleOf($("midi").files[0]);
+// エディタの中で書いた自作リスト(ORIGINAL / 旧 custom:<sid>)を使っているあいだ、
+// 単語リストの正本(#wordlist)は空になる。そのままだとカードのプルダウンが
+// 「未選択」に見えて何に空耳させているのか分からないので、そのときだけこの合成の
+// 選択肢を末尾に足して選択済みに見せる(名前付きリストに戻ったら取り除く)。
+// value は正本のどの選択肢とも重ならない印。ユーザーがこれを選び直しても正本は
+// 触らず表示を戻すだけにして、「何も選ばない」に落ちないようにする。
+const EDITOR_WORDLIST_VALUE = "__editor__";
+const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";
+
+// 正本がいま「エディタで書いた自作リスト」を指している状態か。
+// 正本に名前が入っていれば(カードや🎲で選び直した直後など)そちらが優先で、
+// エディタのセッションに古い ORIGINAL が残っていても合成の選択肢は出さない。
+function showsEditorWordlist() {
+  return !currentWordlistName() && usesEditorWordlist();
 }
 
-// 状態表示に出す単語リスト名。名前付きリストは conf の表示名(例: 駅名)、
-// 自作リスト(エディタの⚙で書いたもの)は「自作リスト」。どちらでもなければ空。
-function currentWordlistLabel() {
-  const name = currentWordlistName();
-  if (name) {
-    const g = wordlistGroups.find((x) => x.name === name);
-    return (g && g.text) || name;
+// 詳細設定側の選択肢をカードのプルダウンへ複製する(optgroupごとそのまま)。
+// サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
+function syncBuilderOptions() {
+  $("builder-sample").innerHTML = $("sample-select").innerHTML;
+  const wl = $("wordlist-select");
+  $("builder-wordlist").innerHTML = wl.innerHTML;
+  // 単語リストのプルダウンが出ない構成(editor conf が無い)ではカード側も出さない
+  $("builder-wordlist-field").hidden = wl.hidden;
+  syncBuilderValues();
+}
+
+// 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
+// 自作リストのあいだだけ合成の選択肢を足し、抜けたら取り除く。
+function syncBuilderValues() {
+  $("builder-sample").value = $("sample-select").value;
+  const wl = $("wordlist-select"), card = $("builder-wordlist");
+  const own = showsEditorWordlist();
+  const synth = [...card.options].find((o) => o.value === EDITOR_WORDLIST_VALUE);
+  if (own && !synth) {
+    const o = document.createElement("option");
+    o.value = EDITOR_WORDLIST_VALUE;
+    o.textContent = EDITOR_WORDLIST_LABEL;
+    card.appendChild(o);
+  } else if (!own && synth) {
+    synth.remove();
   }
-  return usesEditorWordlist() ? "自作リスト" : "";
-}
-
-// 「かたつむり × 駅名」
-function renderBuilderState() {
-  const song = currentSongLabel(), wl = currentWordlistLabel();
-  $("builder-state").textContent =
-    song && wl ? `${song} × ${wl}` : (song || wl || "");
+  card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -2378,7 +2412,7 @@ function renderBuilder() {
   const c = currentCombo();
   // 自作リスト(エディタの⚙で書いたもの)はサーバーに置いていないのでサムネの
   // プレビューが作れない。黙って空枠にせず、その旨だけ静かに出して生成には進める
-  const custom = usesEditorWordlist();
+  const custom = showsEditorWordlist();
   const note = custom
     ? "自作リストはプレビューに対応していません。そのまま生成できます。"
     : (c.slow
@@ -2392,7 +2426,6 @@ function renderBuilder() {
 // よう、少し待ってから1回だけ取りに行く。同じ組み合わせなら何もしない。
 // force は「画像を表示する」用(同じ組み合わせでも作り直す)。
 function schedulePreview(force) {
-  renderBuilderState();   // 状態表示はプレビューを作らない構成でも出す
   if (!builderLive || $("lucky-card").hidden) return;
   showBuilderMsg("");
   const c = currentCombo();
@@ -2440,6 +2473,7 @@ async function applyCombo(c) {
     clearEditorFile();
   }
   $("sample-select").value = c.sampleId;
+  syncBuilderValues();
   schedulePreview();
   return await trackSample(applySample());
 }
@@ -2461,13 +2495,30 @@ async function pickCombo(c) {
 
 // ---- カードの配線 ----
 
-// 正本(詳細設定の曲・隠しの単語リスト)が変わったらプレビューと状態表示を追従させる
-$("sample-select").addEventListener("change", () => { schedulePreview(); });
-$("wordlist-select").addEventListener("change", () => { schedulePreview(); });
-// セレクトが無い構成・エディタからの書き戻しでもプレビューは追従する
-$("wordlist").addEventListener("change", () => schedulePreview());
-// 自分のMIDIを選んだときも状態表示の曲名を出し直す
-$("midi").addEventListener("change", () => renderBuilderState());
+// カードのプルダウン: 正本へ流して change を発火し、プレビューを予約する
+$("builder-sample").addEventListener("change", () => {
+  $("sample-select").value = $("builder-sample").value;
+  $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  schedulePreview();
+});
+$("builder-wordlist").addEventListener("change", () => {
+  const v = $("builder-wordlist").value;
+  // 合成の選択肢(自作リスト)は正本に対応する値を持たない。選ばれても正本には
+  // 何も書かず表示だけ戻す(いまの自作リストのまま=実質なにも起きない)
+  if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }
+  const sel = $("wordlist-select");
+  sel.value = v;
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  clearEditorFile();   // 取り込み済みの替え歌JSONは別のリストから作られたもの
+  schedulePreview();
+});
+
+// 正本(詳細設定の曲・隠しの単語リスト)が変わったらカードのプルダウンと
+// プレビューを追従させる
+$("sample-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+$("wordlist-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+// セレクトが無い構成・エディタからの書き戻し(自作リストで空になる)でも追従する
+$("wordlist").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
 
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
@@ -2486,6 +2537,7 @@ async function initBuilder() {
   builderReady = true;
   await samplesReady;         // 曲のプルダウンが揃うのを待つ
   if ($("lucky-card").hidden) return;   // サンプルが取れない環境ではカードごと出ない
+  syncBuilderOptions();
   const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
   const def = DEFAULT_COMBO;
   // 1. 曲: 復元されたMIDIがサンプル曲なら、その選択に戻し、MIDIは取り直す。
@@ -2507,6 +2559,7 @@ async function initBuilder() {
     $("sample-select").value = def.sample;
     trackSample(applySample());
   }
+  syncBuilderValues();
   builderLive = true;
   schedulePreview();
 }
@@ -3915,9 +3968,9 @@ function updateEditorAutoStatus() {
 }
 
 // ---- エディタ側の単語リストを親へ書き戻す ----
-// 単語リストの選択はエディタの⚙モーダルに一本化したので、そこで選び直した結果を
-// 親の正本(#wordlist / #where)へ写す必要がある。カードの状態表示・サムネ
-// プレビュー・生成時の単語画像とレイアウトの解決は、すべて正本を見ているため。
+// エディタの⚙モーダルでも単語リストを選び直せるので、その結果を親の正本
+// (#wordlist / #where)へ写す必要がある。カードのプルダウン・サムネプレビュー・
+// 生成時の単語画像とレイアウトの解決は、すべて正本を見ているため。
 
 // エディタのセッション(sessionStorage)が持っている単語リストのエントリ。
 function editorSessionWordlist() {
@@ -3975,9 +4028,12 @@ function applyEditorWordlist() {
 
 // エディタ(iframe)の編集は親から検知できないので、開いているあいだだけ軽く監視する。
 // 単語リストの書き戻しもここで拾う(閉じるまで待つと、開いているあいだカードの
-// 状態表示が古いままになる)。
+// プルダウンが古いままになる)。
 function syncEditorSession() {
   applyEditorWordlist();
+  // 自作リストへの出入りは正本の change を伴わないことがある(セッションを
+  // 捨てたときなど)ので、カードのプルダウンはここでも合わせ直す
+  syncBuilderValues();
   updateEditorAutoStatus();
 }
 
@@ -4201,8 +4257,8 @@ $("editor-close").addEventListener("click", closeEditor);
 
 // ---- 単語リストの一覧(同梱editorのconfを唯一の情報源に) ----
 // editorが使えるときは /editor/conf/setting.json の wordlist から選択肢を組む。
-// 選ぶ操作はエディタの⚙モーダルへ移したのでこの <select> は画面に出さないが、
-// 🎲の抽選対象・表示名の引き当て・選択状態の置き場として残している。
+// この <select> 自体は画面に出さない(カードのプルダウンがその写し)。
+// 🎲の抽選対象・表示名の引き当て・選択状態の置き場も兼ねている。
 // 選択は canonical な #wordlist に name(filepathのstem)を書き込み、
 // #where に絞り込みを反映する。これで既存の読み手($("wordlist"))は変えずに済む。
 // 各項目が指す単語リスト。同じ value(なければ名前)の
@@ -4231,7 +4287,10 @@ async function loadWordlistSelect(editorAvailable) {
   const sel = $("wordlist-select");
   wordlistGroups = [];
   // conf が取れない構成では選択肢を持てない。#wordlist(リスト名)を直接使う
-  const bail = () => { sel.hidden = true; };
+  const bail = () => {
+    sel.hidden = true;
+    syncBuilderOptions();   // カード側の単語リストプルダウンも引っ込める
+  };
   if (!editorAvailable) { bail(); return; }
   let entries;
   try {
@@ -4283,6 +4342,7 @@ async function loadWordlistSelect(editorAvailable) {
   // 自作リスト(テキスト欄)。ここには選択肢を足さない。
   sel.hidden = false;
   applyWordlistSelection();
+  syncBuilderOptions();  // カードの単語リストプルダウンへ写す
 }
 
 // #where を設定し、その change を発火する(不一致警告の再描画がこれを見ている)
