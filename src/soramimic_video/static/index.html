@@ -4739,10 +4739,13 @@ async function updateParodyStatus() {
       const data = JSON.parse(await f.text());
       editorFileSig = editorContentSig(data);
       const w = data.wordlist;
-      if (w && w.filepath) {
-        // 自作リストはセッション置き場のCSV(名前はハッシュ)なので、
-        // 表示は "自作リスト" にする(w.text がそれ)
-        const custom = String(w.value || "").startsWith("custom:");
+      // 自作リストは2通り。video側で選んだもの(custom:<sid>・セッションのCSV)と、
+      // エディタの中で選んだもの(ORIGINAL・単語データはJSONに同梱)。後者は
+      // filepath を持たないので、value も見て拾う
+      const custom = !!w && (String(w.value || "").startsWith("custom:")
+        || String(w.value || "") === "ORIGINAL");
+      if (w && (w.filepath || custom)) {
+        // どちらも名前で引けるリストではないので、表示は "自作リスト"(w.text がそれ)
         editorWordlist = {
           name: custom
             ? (w.text || "自作リスト")

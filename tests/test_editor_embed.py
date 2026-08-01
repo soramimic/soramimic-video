@@ -371,6 +371,259 @@ def test_job_rejects_editor_with_unknown_session(job_client, tmp_path):
     assert "自作リスト" in res.json()["detail"]
 
 
+# ---- エディタの中で選んだ自作リスト(wordlist.value = ORIGINAL + csvText)----
+# エディタ側の⚙モーダルで自作リストを使うと、書き出しJSONに単語データそのもの
+# (csvText)が入る。サーバーのセッション置き場を必要としない自己完結の経路。
+
+# idは連番でない(=取り込み側が振り直したら行が当たらなくなる)
+ORIGINAL_CSV = (
+    "id,original,surface,pronunciation\n"
+    "7,静岡駅,静岡,シズオカ\n"
+    "42,鈴鹿,鈴鹿,スズカ"
+)
+
+# 既知/未知どちらの単語もsurfaceで必ず出るレイアウト(プレビューのキューが消えない)
+_SHOW_ALL_LAYOUT = {
+    "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2]}],
+    "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2]}],
+}
+
+
+def _original_entry(csv_text: str | None = ORIGINAL_CSV) -> dict:
+    entry = {"value": "ORIGINAL", "text": "自作リスト"}
+    if csv_text is not None:
+        entry["csvText"] = csv_text
+    return entry
+
+
+def _original_payload(client, tmp_path, csv_text: str | None = ORIGINAL_CSV) -> dict:
+    """エディタの中で自作リストに切り替えて書き出したJSON相当。
+
+    変換結果(results/unitsList)は実際のセッションから作り、単語リストだけを
+    ORIGINAL+csvText に差し替える(先頭単語は csvText の id=42 の行を指す)。
+    """
+    payload = _custom_session(client, tmp_path)
+    payload["wordlist"] = _original_entry(csv_text)
+    payload["results"][0][0] = dict(
+        payload["results"][0][0],
+        surface="鈴鹿", kana="スズカ", original="鈴鹿", id="42",
+        pronunciation=["ス", "ズ", "カ"],
+    )
+    return payload
+
+
+def _import(payload: dict, tmp_path: Path):
+    """editor.json を書いて import_editor に通す(セッション置き場は渡さない)。"""
+    from soramimic_video.editor_io import import_editor
+    from soramimic_video.xfparse import analyze_midi
+
+    d = tmp_path / "project"
+    d.mkdir(exist_ok=True)
+    (d / "editor.json").write_text(json.dumps(payload, ensure_ascii=False), "utf-8")
+    project = analyze_midi(_xf_midi(tmp_path))
+    import_editor(project, d, d / "editor.json")
+    return project, d
+
+
+def test_import_editor_uses_embedded_original_csv(client, tmp_path):
+    """csvTextの行がそのまま引ける(idは振り直さない)。セッションは不要。"""
+    project, d = _import(_original_payload(client, tmp_path), tmp_path)
+    row = project.parody.lines[0].words[0].wordlist_row
+    assert row is not None
+    assert (row["id"], row["surface"], row["original"]) == ("42", "鈴鹿", "鈴鹿")
+    # 単語データはジョブディレクトリに置かれ、以後は普通のCSVとして扱える
+    saved = d / "original-wordlist.csv"
+    assert str(saved) == project.parody.wordlist
+    assert saved.read_text(encoding="utf-8").startswith("id,original,surface,pronunciation\n")
+    assert not saved.read_text(encoding="utf-8").endswith("\n")  # 末尾改行なし
+    assert project.parody.where is None  # 自作リストに絞り込みは無い
+
+
+def test_import_editor_original_requires_csv_text(client, tmp_path):
+    payload = _original_payload(client, tmp_path, csv_text=None)
+    with pytest.raises(ValueError, match="csvText"):
+        _import(payload, tmp_path)
+    # 文字列でない値(オブジェクトなど)も同じ扱い
+    payload["wordlist"] = {"value": "ORIGINAL", "csvText": {"rows": []}}
+    with pytest.raises(ValueError, match="csvText"):
+        _import(payload, tmp_path)
+
+
+def test_import_editor_original_rejects_broken_csv(client, tmp_path):
+    """ヘッダが無い・必要な列が無いCSVは、黙って別のリストに落ちずにエラーにする。"""
+    for broken, message in (
+        ("静岡,シズオカ\n鈴鹿,スズカ", "surface"),          # ヘッダ行が無い
+        ("surface,pronunciation\n静岡,シズオカ", "id"),      # id列が無い
+        ("", "csvText"),                                    # 空
+    ):
+        payload = _original_payload(client, tmp_path, csv_text=broken)
+        with pytest.raises(ValueError, match=message):
+            _import(payload, tmp_path)
+
+
+def test_import_editor_original_drops_image_column(client, tmp_path):
+    """image列に何が来てもサーバーのファイルは読まない(列ごと落とす)。"""
+    csv_text = (
+        "id,original,surface,pronunciation,image\n"
+        "7,静岡駅,静岡,シズオカ,file:///etc/passwd\n"
+        "42,鈴鹿,鈴鹿,スズカ,/etc/shadow"
+    )
+    project, d = _import(_original_payload(client, tmp_path, csv_text), tmp_path)
+    row = project.parody.lines[0].words[0].wordlist_row
+    assert row is not None and row["surface"] == "鈴鹿"
+    assert "image" not in row  # 動画側(download_image)へ渡る値そのものが無い
+    saved = (d / "original-wordlist.csv").read_text(encoding="utf-8")
+    assert "passwd" not in saved and "shadow" not in saved and "file://" not in saved
+
+
+def _preview_payload(csv_text: str = ORIGINAL_CSV) -> dict:
+    return {
+        "format": "soramimic-editor/1",
+        "phrases": ["シズオカ"],
+        "results": [[{
+            "surface": "鈴鹿", "kana": "スズカ", "id": "42", "original": "鈴鹿",
+            "originalkana": "シズオカ", "original_surface": "シズオカ",
+        }]],
+        "unitsList": [[]],
+        "wordlist": _original_entry(csv_text),
+    }
+
+
+def test_editor_preview_resolves_embedded_original_csv(client):
+    """プレビューでも csvText の行が引ける(フォームのリスト名には落ちない)。"""
+    res = client.post(
+        "/api/editor-preview",
+        files={"editor": ("editor.json",
+                          json.dumps(_preview_payload()).encode(), "application/json")},
+        data={"layout_json": json.dumps(_SHOW_ALL_LAYOUT), "wordlist": "stations"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 1
+    assert body["use_fallback"] is False          # 単語リストの行が当たっている
+    assert body["data"]["pronunciation"] == "スズカ"  # 行から来る列(単語側には無い)
+    assert body["wordlist"] == ""                 # 名前で引けるリストではない
+
+
+def test_editor_preview_original_keeps_shared_ids(client):
+    """1語に読みが複数ある行(同じidが並ぶ)でも、表記で正しい行が当たる。
+
+    エディタの plainToCsv は「読みが複数の語」に同じidの行を並べる(0始まり)。
+    idを振り直すとこの対応が崩れるので、そのままの並びで引けることを見る。
+    """
+    csv_text = (
+        "id,original,surface,pronunciation\n"
+        "0,カレーライス,カレー,カレー\n"
+        "0,カレーライス,ライス,ライス\n"
+        "1,寿司,寿司,スシ"
+    )
+    payload = _preview_payload(csv_text)
+    payload["results"][0][0] = dict(
+        payload["results"][0][0], surface="ライス", kana="ライス", id="0"
+    )
+    res = client.post(
+        "/api/editor-preview",
+        files={"editor": ("editor.json",
+                          json.dumps(payload).encode(), "application/json")},
+        data={"layout_json": json.dumps(_SHOW_ALL_LAYOUT)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["use_fallback"] is False
+    assert body["data"]["pronunciation"] == "ライス"  # カレー(同じid)の行ではない
+
+
+def test_editor_preview_original_ignores_image_column(client):
+    csv_text = (
+        "id,original,surface,pronunciation,image\n"
+        "42,鈴鹿,鈴鹿,スズカ,file:///etc/passwd"
+    )
+    res = client.post(
+        "/api/editor-preview",
+        files={"editor": ("editor.json",
+                          json.dumps(_preview_payload(csv_text)).encode(),
+                          "application/json")},
+        data={"layout_json": json.dumps(_SHOW_ALL_LAYOUT)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["image_url"] == "" and "image" not in body["data"]
+
+
+def test_editor_preview_original_reports_broken_csv(client):
+    res = client.post(
+        "/api/editor-preview",
+        files={"editor": ("editor.json",
+                          json.dumps(_preview_payload("静岡,シズオカ")).encode(),
+                          "application/json")},
+        data={"layout_json": json.dumps(_SHOW_ALL_LAYOUT)},
+    )
+    assert res.status_code == 400
+    assert "自作リスト" in res.json()["detail"]
+
+
+def _post_job(job_client, payload: dict):
+    return job_client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "editor": ("editor.json", json.dumps(payload).encode(), "application/json"),
+        },
+    )
+
+
+def test_job_accepts_editor_with_embedded_original_csv(job_client, tmp_path):
+    """csvText付きのeditor JSONは、リストを再添付しなくても投入できる。"""
+    res = _post_job(job_client, _original_payload(job_client, tmp_path))
+    assert res.status_code == 200, res.text
+    params = job_client.get(f"/api/jobs/{res.json()['id']}").json()["params"]
+    assert params["wordlist"] == "自作リスト"  # 履歴・ダウンロード名に出る表示名
+    assert params["where"] == ""
+    assert params["parody_source"] == "editor"
+
+
+def test_job_rejects_original_without_csv_text(job_client):
+    res = _post_job(job_client, {
+        "results": [], "unitsList": [], "wordlist": _original_entry(csv_text=None),
+    })
+    assert res.status_code == 422
+    assert "csvText" in res.json()["detail"]
+
+
+def test_job_rejects_broken_original_csv(job_client):
+    res = _post_job(job_client, {
+        "results": [], "unitsList": [],
+        "wordlist": _original_entry("静岡,シズオカ\n鈴鹿,スズカ"),
+    })
+    assert res.status_code == 400
+    assert "surface" in res.json()["detail"]
+
+
+def test_job_rejects_oversized_original_csv(job_client, monkeypatch):
+    monkeypatch.setenv("SORAMIMIC_MAX_WORDLIST_BYTES", "50")
+    res = _post_job(job_client, {
+        "results": [], "unitsList": [], "wordlist": _original_entry(),
+    })
+    assert res.status_code == 413
+    assert "大きすぎます" in res.json()["detail"]
+
+
+def test_index_treats_original_wordlist_as_custom():
+    """トップ画面の表示でも ORIGINAL は custom: と同じ「自作リスト」扱いにする。"""
+    index = (
+        Path(__file__).resolve().parents[1] / "src/soramimic_video/static/index.html"
+    ).read_text(encoding="utf-8")
+    body = index[index.index("async function updateParodyStatus(") :]
+    body = body[: body.index("\n}\n")]
+    # filepath を持たない ORIGINAL も拾い、名前は w.text(=自作リスト)を使う
+    assert '=== "ORIGINAL"' in body
+    assert 'w.text || "自作リスト"' in body
+    # 編集内容の指紋は results を見るので、エディタ内でリストだけ切り替えて
+    # 変換結果が変われば「編集あり」として検知される(=生成に反映される)
+    sig = index[index.index("function editorContentSig(") :]
+    assert "data.results" in sig[: sig.index("\n}\n")]
+
+
 def test_setting_json_from_source_conf(client):
     """/editor/conf/setting.json は dist ではなくソース側の conf を返す。"""
     from soramimic_video.editor_io import SETTING_JSON

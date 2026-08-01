@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import csv
 import difflib
+import io
 import itertools
 import logging
 import math
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -1150,10 +1152,23 @@ def _resolve_shared_notes(
 
 
 def _load_wordlist_rows(csv_path: Path) -> dict[str, list[dict[str, str]]]:
-    rows: dict[str, list[dict[str, str]]] = {}
     with open(csv_path, encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            rows.setdefault(row.get("id", ""), []).append(row)
+        return _rows_by_id(f)
+
+
+def wordlist_rows_from_text(text: str) -> dict[str, list[dict[str, str]]]:
+    """CSVテキストから id → 行 の索引を作る(ファイルに置かない単語リスト用)。
+
+    editor.json に同梱されてくる自作リスト(csvText)のように、サーバー上の
+    ファイルとして存在しないリストを _find_row に渡すための入口。
+    """
+    return _rows_by_id(io.StringIO(text))
+
+
+def _rows_by_id(lines: Iterable[str]) -> dict[str, list[dict[str, str]]]:
+    rows: dict[str, list[dict[str, str]]] = {}
+    for row in csv.DictReader(lines):
+        rows.setdefault(row.get("id", ""), []).append(row)
     return rows
 
 

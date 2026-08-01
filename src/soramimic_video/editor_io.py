@@ -52,6 +52,17 @@ CUSTOM_WORDLIST_TEXT = "自作リスト"
 _SID_RE = re.compile(r"[0-9a-f]{16}")
 
 
+# ---- 自作リスト(エディタが同梱してくる csvText)----
+# エディタ側の⚙モーダルで自作リストを使うと、書き出しJSONの wordlist は
+#   {"value": "ORIGINAL", "text": "自作リスト", "csvText": "<正規化済みtidy CSV>"}
+# になる(filepath は持たない)。csvText は results の id を振ったときのCSVその
+# ものなので、これをそのまま行の引き当てに使えば id が必ず一致する。
+# サーバー上のセッション(custom:<sid>)を必要としない自己完結の経路。
+ORIGINAL_WORDLIST_VALUE = "ORIGINAL"
+# 取り込み時にジョブディレクトリへ書き出すファイル名(以後ここから行を引く)
+ORIGINAL_WORDLIST_FILENAME = "original-wordlist.csv"
+
+
 def editor_sessions_dir(jobs_dir: Path) -> Path:
     """自作リストのeditorセッション置き場(ジョブディレクトリの隣)。"""
     return jobs_dir.resolve() / EDITOR_SESSIONS_DIRNAME
@@ -97,6 +108,53 @@ def custom_wordlist_sid(payload: dict | None) -> str | None:
         return None
     sid = value[len(CUSTOM_WORDLIST_PREFIX) :]
     return sid if valid_session_id(sid) else None
+
+
+def is_original_wordlist(payload: dict | None) -> bool:
+    """editor JSON の wordlist が「エディタ内の自作リスト」(ORIGINAL)かどうか。"""
+    entry = (payload or {}).get("wordlist") or {}
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("value", "")) == ORIGINAL_WORDLIST_VALUE
+
+
+def original_wordlist_text(payload: dict | None) -> str | None:
+    """ORIGINAL の単語リスト本体(csvText)。無い・文字列でないなら None。"""
+    entry = (payload or {}).get("wordlist") or {}
+    if not is_original_wordlist(payload):
+        return None
+    text = entry.get("csvText")
+    return text if isinstance(text, str) else None
+
+
+def normalized_original_wordlist(payload: dict | None) -> str:
+    """ORIGINAL の csvText を検証して、そのまま .csv として置けるテキストを返す。
+
+    id 列は書き換えない(results の id と対応しているため)。画像列は落とす。
+    壊れている・そもそも入っていないときは理由付きの ValueError を投げる。
+    """
+    from .wordlist_csv import WordlistCsvError, parse_editor_text
+
+    text = original_wordlist_text(payload)
+    if text is None:
+        raise ValueError(
+            "自作リストの単語データ(csvText)がありません。"
+            "替え歌エディタを開き直して、自作リストを選び直してください。"
+        )
+    try:
+        return parse_editor_text(text).text
+    except WordlistCsvError as exc:
+        raise ValueError(f"自作リストの単語データ(csvText)が読めません: {exc}") from exc
+
+
+def write_original_wordlist(payload: dict, project_dir: Path) -> Path:
+    """ORIGINAL の csvText を検証して、プロジェクトディレクトリに書き出す。
+
+    以後の工程(単語行の引き当て・曲名の変換)は普通のCSVパスとして扱える。
+    """
+    path = Path(project_dir) / ORIGINAL_WORDLIST_FILENAME
+    path.write_text(normalized_original_wordlist(payload), encoding="utf-8")
+    return path
 
 
 def save_raw(raw: dict, project_dir: Path) -> Path:
@@ -243,8 +301,13 @@ def _resolve_preview_wordlist(
     editor JSONのwordlist情報(filepath: パスそのもの→リスト名stem)を優先し、
     だめならフォームのwordlist名にフォールバックする(import_editorと同じ考え方)。
     自作リスト(value が custom:<sid>)は sessions_dir 配下の正規化済みCSVを使う。
+    エディタ内の自作リスト(value が ORIGINAL)は名前でもパスでも引けないので
+    None を返す(行は csvText から直接引く。:func:`build_editor_preview` 参照)。
     どれも解決できなければ None(=単語リスト行なしでプレビュー)。
     """
+    if is_original_wordlist(payload):
+        # フォームのリスト名へフォールバックさせない(別のリストの行が当たるため)
+        return None
     sid = custom_wordlist_sid(payload)
     if sid:
         path = session_wordlist_path(sessions_dir, sid)
@@ -289,7 +352,7 @@ def build_editor_preview(
         effective_granularities,
         segment_text_by_line,
     )
-    from .convert import _find_row, _load_wordlist_rows
+    from .convert import _find_row, _load_wordlist_rows, wordlist_rows_from_text
     from .video import WORD_SEP, effective_fallback, word_frame_data, word_is_shown
 
     results = payload.get("results")
@@ -339,7 +402,11 @@ def build_editor_preview(
     )
     resolved = _resolve_preview_wordlist(payload, wordlist, sessions_dir)
     rows_by_id: dict[str, list[dict[str, str]]] = {}
-    if resolved is not None:
+    if is_original_wordlist(payload):
+        # エディタ内の自作リスト。行はJSONに同梱されたCSVから直接引く
+        # (ファイルに置かないので resolved は空のまま=画像URLも作らない)
+        rows_by_id = wordlist_rows_from_text(normalized_original_wordlist(payload))
+    elif resolved is not None:
         rows_by_id = _load_wordlist_rows(resolve_wordlist(resolved))
 
     cues: list[dict[str, Any]] = []
@@ -396,6 +463,9 @@ def import_editor(
     sessions_dir は自作リスト(wordlist.value が custom:<sid>)の置き場。
     単語画像は単語リスト行の image 列から引くので、行を引ける正規化済みCSVが
     ここに残っている必要がある(/api/editor-session が置く)。
+
+    エディタの中で選んだ自作リスト(wordlist.value が ORIGINAL)は単語データを
+    JSON自体が持っている(csvText)ので、sessions_dir は要らない。
     """
     path = file or (project_dir / EDITOR_FILENAME)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -419,7 +489,13 @@ def import_editor(
     entry = payload.get("wordlist") or {}
     filepath = entry.get("filepath", "")
     sid = custom_wordlist_sid(payload)
-    if sid:
+    if is_original_wordlist(payload):
+        # エディタの中で使った自作リスト。単語データ(csvText)がJSONに入って
+        # いるので、それをジョブディレクトリに置いてそのまま行の引き当てに使う
+        # (results の id と同じ採番のCSVなので、必ず同じ行が当たる)
+        wordlist = str(write_original_wordlist(payload, project_dir))
+        where = None
+    elif sid:
         # 自作リスト。名前では引けないので、変換時に置いたセッションのCSVを使う
         session_csv = session_wordlist_path(sessions_dir, sid)
         if session_csv is None:
