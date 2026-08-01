@@ -1617,11 +1617,38 @@ def create_app(
                 CUSTOM_WORDLIST_TEXT,
                 _resolve_preview_wordlist,
                 custom_wordlist_sid,
+                is_original_wordlist,
+                original_wordlist_text,
                 session_wordlist_path,
             )
 
             sid = custom_wordlist_sid(editor_payload)
-            if sid:
+            if is_original_wordlist(editor_payload):
+                # エディタの中で使った自作リスト。単語データ(csvText)がJSONに
+                # 入っている自己完結の経路なので、サーバー側の置き場は見ない。
+                # 中身は取り込み時にも検証するが、走らせてから落とさないよう
+                # 受付時に型・大きさ・形をここで見る
+                csv_text = original_wordlist_text(editor_payload)
+                if csv_text is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="自作リストの単語データ(csvText)がありません。"
+                        "替え歌エディタを開き直してから生成してください。",
+                    )
+                if len(csv_text.encode("utf-8")) > wordlist_csv_mod.max_bytes():
+                    raise HTTPException(
+                        status_code=413,
+                        detail="自作リストが大きすぎます"
+                        f"(上限は{wordlist_csv_mod.max_bytes() / 1024 / 1024:.1f}MBです)。",
+                    )
+                try:
+                    wordlist_csv_mod.parse_editor_text(csv_text)
+                except wordlist_csv_mod.WordlistCsvError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
+                wordlist = CUSTOM_WORDLIST_TEXT
+                where = ""  # 自作リストに絞り込み(ファセット)は無い
+            elif sid:
                 # 自作リストで作った替え歌。単語リスト行(=単語画像)は
                 # editorセッションのCSVから引くので、無ければ受け付けない
                 if session_wordlist_path(config["editor_sessions"], sid) is None:

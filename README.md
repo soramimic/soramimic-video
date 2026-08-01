@@ -155,6 +155,13 @@ zip** をアップロードする(zipの中身はCSV1枚(`.csv` か `.txt`)と�
   `<ジョブディレクトリ>/editor-sessions/<sid>/wordlist.csv`(`sid` は中身の指紋)に
   置いてから、editorに `/editor/session-wordlists/<sid>.csv` として引かせる。
   ただし絞り込み(where)は自作リストでは効かない(投入時も空で送る)
+- editorの中(⚙)で自作リストに切り替えたときは、書き出しJSONの単語リストが
+  `{"value": "ORIGINAL", "text": "自作リスト", "csvText": "<正規化済みtidy CSV>"}` に
+  なる。単語データがJSON自体に入っている自己完結の形なので、サーバー側のセッションは
+  要らない。投入(`POST /api/jobs`)・レイアウトプレビューはこの `csvText` から
+  そのまま単語行を引く(`id` 列は書き換えない。JSONの `results` の id と対応するため)。
+  取り込み時は `<ジョブディレクトリ>/original-wordlist.csv` に置く。
+  `image` 列はこの経路では常に落とす(サーバーのファイルやURLを外から指させない)
 
 ### 🎲ランダムのプレビュー画像を隠す単語リスト
 

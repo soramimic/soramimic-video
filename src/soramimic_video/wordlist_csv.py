@@ -365,6 +365,89 @@ def _parse_tidy(
     return columns, out, auto, sorted(set(dropped))
 
 
+def parse_editor_text(text: str) -> WordlistCsv:
+    """替え歌エディタが editor.json に同梱してきた tidy CSV テキストを検証する。
+
+    エディタの中で「自作リスト」を使うと、書き出しJSONの wordlist エントリに
+    ``csvText``(エディタが変換に使ったのと同じ正規化済みCSV)が入る。ここは
+    その受け口で、:func:`parse` と違って**行の中身を作り直さない**:
+
+    * ``id`` 列は絶対に振り直さない。JSONの results 側の id と1対1で対応して
+      いるので、書き換えると別の語の行を引いてしまう
+    * 列の並びもそのまま(エンジン・_find_row はどちらも列名で引く)
+    * 読みのカナ検査はしない(変換はブラウザ側で済んでいる)
+
+    それでも通すのは、あとで素朴に split(",") されても壊れない形に均すこと
+    (値のカンマ・改行・BOM落とし)と、``image`` 列を落とすことの2つ。画像列は
+    サーバー上のパスやURLを外から差し込む口になるので、この経路では受け取らない
+    (エディタ内の自作リストに単語画像は付かない)。
+    """
+    data_len = len(text.encode("utf-8"))
+    limit = max_bytes()
+    if data_len > limit:
+        raise WordlistCsvError(
+            f"単語リストが大きすぎます({data_len / 1024 / 1024:.1f}MB、"
+            f"上限は{limit / 1024 / 1024:.1f}MBです)。"
+        )
+    if not text.strip():
+        raise WordlistCsvError("単語リスト(csvText)が空です。")
+    rows = [row for row in _split_rows(text) if any(c.strip() for c in row)]
+    if not rows:
+        raise WordlistCsvError("単語リスト(csvText)に中身がありません。")
+
+    header = [normalize_column(c) for c in rows[0]]
+    keep: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    dropped: list[str] = []
+    for i, name in enumerate(header):
+        if not name or name in seen:
+            continue
+        if name in DROPPED_COLUMNS:
+            dropped.append(name)
+            continue
+        seen.add(name)
+        keep.append((i, name))
+    missing = [c for c in ("id", "surface") if c not in seen]
+    if missing:
+        raise WordlistCsvError(
+            f"単語リスト(csvText)に {', '.join(missing)} の列がありません。"
+            "1行目が列名の行(id,original,surface,pronunciation …)である必要があります。"
+            f" 見つかった列: {', '.join(n for n in header if n) or '(なし)'}"
+        )
+
+    columns = [name for _, name in keep]
+    surface_at = columns.index("surface")
+    # 動画側(word_frame_data)と曲名の変換が名前で引く列は、無ければ足しておく。
+    # 足すのは末尾なので、既存の列(特に id)の中身も並びも変わらない
+    added = [c for c in ("original", "pronunciation") if c not in seen]
+    body: list[list[str]] = []
+    for row in rows[1:]:
+        cells = [_clean_value(c) for c in row]
+        values = [cells[i] if i < len(cells) else "" for i, _ in keep]
+        if not values[surface_at]:
+            continue  # 表記のない行(末尾の空行など)は捨てる
+        values += [values[surface_at] if name == "original" else "" for name in added]
+        body.append(values)
+    if not body:
+        raise WordlistCsvError("単語リスト(csvText)に単語が1行もありません。")
+    row_limit = max_rows()
+    if len(body) > row_limit:
+        raise WordlistCsvError(
+            f"単語が多すぎます({len(body)}行、上限は{row_limit}行です)。"
+        )
+
+    columns += added
+    # 末尾に改行を付けない(parse と同じ。エンジンのCSVパーサが落ちるため)
+    out = "\n".join([",".join(columns), *(",".join(values) for values in body)])
+    return WordlistCsv(
+        text=out,
+        rows=len(body),
+        columns=columns,
+        dropped_columns=sorted(set(dropped)),
+        samples=[dict(zip(columns, values, strict=True)) for values in body[:3]],
+    )
+
+
 def parse(data: bytes, *, image_map: Mapping[str, str] | None = None) -> WordlistCsv:
     """アップロードされたCSVを検証して、正規化済みの tidy CSV を返す。
 
