@@ -45,6 +45,12 @@ uv run soramimic-video analyze --midi song.mid --lyrics lyrics.txt --project wor
 uv run soramimic-video analyze-audio --audio song.wav --lyrics lyrics.txt \
   --melody-midi song.mid --project work/song
 
+# 1''. モーラのタイミングを手直しする(任意。ピアノロールGUI)
+#      音高と長さが見える画面で、モーラの位置・長さ・読みを直せる。project.jsonを直接書き換える
+#      (保存時に project.json.bak-* を残す)。LANの別端末から開くなら --host 0.0.0.0
+uv run soramimic-video edit-timing --project work/song
+#      → http://127.0.0.1:8765/ をブラウザで開く
+
 # 2. 替え歌単語歌詞に変換(soramimic)
 uv run soramimic-video convert --project work/song --wordlist stations
 

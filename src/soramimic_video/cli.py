@@ -14,6 +14,19 @@ from pathlib import Path
 from .project import Project
 
 
+def cmd_edit_timing(args: argparse.Namespace) -> int:
+    from .timing_editor import serve
+
+    serve(
+        Path(args.project),
+        host=args.host,
+        port=args.port,
+        audio=Path(args.audio) if args.audio else None,
+        reference_midi=Path(args.reference_midi) if args.reference_midi else None,
+    )
+    return 0
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     from .align import align_lines
     from .xfparse import analyze_midi
@@ -342,6 +355,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True)
     p.add_argument("--file", help="editorが書き出したJSON(省略時は editor.json)")
     p.set_defaults(func=cmd_import_editor)
+
+    p = sub.add_parser(
+        "edit-timing", help="モーラのタイミングをピアノロールGUIで手直しする"
+    )
+    p.add_argument("--project", required=True)
+    p.add_argument(
+        "--port", type=int, default=8765, help="GUIを配信するポート(既定: 8765)"
+    )
+    p.add_argument(
+        "--host", default="127.0.0.1",
+        help="待ち受けアドレス(既定: 127.0.0.1。LANの別端末から開くなら 0.0.0.0)",
+    )
+    p.add_argument(
+        "--audio", help="重ねて聴く音源(既定: project.jsonのvocals_path/audio_path)"
+    )
+    p.add_argument(
+        "--reference-midi", help="背景に薄く表示する参照メロディMIDI(既定: 編集前の音符)"
+    )
+    p.set_defaults(func=cmd_edit_timing)
 
     p = sub.add_parser("synthesize", help="替え歌を歌唱合成する(NEUTRINO/VOICEVOX)")
     p.add_argument("--project", required=True)
