@@ -103,7 +103,7 @@
   .info-btn {
     position: relative; display: inline-flex; align-items: center; justify-content: center;
     width: 1.5rem; height: 1.5rem; min-height: 0; padding: 0; margin-left: .1rem;
-    vertical-align: -.3rem;
+    vertical-align: middle;
     border: 0; border-radius: 50%; background: transparent; color: var(--muted);
     font-size: 1rem; line-height: 1;
   }
@@ -1002,8 +1002,10 @@ function findInfoAnchor(body) {
   return null;
 }
 
-// 開いている説明はいつも1つだけ(2つ重なると読みづらいし、閉じ方も分からなくなる)
-let openInfo = null;   // { btn, body }
+// 開いている説明はいつも1つだけ(2つ重なると読みづらいし、閉じ方も分からなくなる)。
+// pinned はクリックで開いた印。ホバーで開いただけのものはマウスが離れたら閉じるが、
+// クリックで留めたものはホバー移動では閉じない(外側タップ・Esc で閉じる)。
+let openInfo = null;   // { btn, body, pinned }
 
 // 説明を ⓘ の真下(入らなければ真上)に置き、左右も画面からはみ出さないよう寄せる。
 // スマホの細い画面では ⓘ の中央合わせだと端で切れるので、最後に必ずクランプする。
@@ -1031,11 +1033,11 @@ function closeInfoPop() {
   btn.setAttribute("aria-expanded", "false");
 }
 
-function openInfoPop(btn, body) {
+function openInfoPop(btn, body, pinned) {
   closeInfoPop();
   body.hidden = false;   // 位置の計算には実寸が要るので、先に出してから置く
   btn.setAttribute("aria-expanded", "true");
-  openInfo = { btn, body };
+  openInfo = { btn, body, pinned };
   placeInfoPop(btn, body);
 }
 
@@ -1084,9 +1086,34 @@ function setupInfoHints() {
       // <label> や <summary> の中に置くので、チェック切り替え・開閉の巻き添えを止める
       ev.preventDefault();
       ev.stopPropagation();
-      if (openInfo && openInfo.btn === btn) closeInfoPop();
-      else openInfoPop(btn, body);
+      if (openInfo && openInfo.btn === btn) {
+        // ホバーで出ているだけなら留める。すでに留めてあれば閉じる
+        if (openInfo.pinned) closeInfoPop();
+        else openInfo.pinned = true;
+      } else {
+        openInfoPop(btn, body, true);
+      }
     });
+    // マウスではホバーでも開く。タッチでもタップで mouseenter → click の順に
+    // 発火するが、mouseenter で開いた直後の click が pinned にするだけなので、
+    // 従来どおり「タップで開く」のまま(hover の有無で分岐しない)。
+    // ⓘ と説明の間には数pxの隙間があるので、少し待ってから閉じて移動を許す
+    let hoverCloseTimer = 0;
+    const hoverOpen = () => {
+      clearTimeout(hoverCloseTimer);
+      if (!(openInfo && openInfo.btn === btn)) openInfoPop(btn, body, false);
+    };
+    const hoverClose = () => {
+      if (!openInfo || openInfo.btn !== btn || openInfo.pinned) return;
+      clearTimeout(hoverCloseTimer);
+      hoverCloseTimer = setTimeout(() => {
+        if (openInfo && openInfo.btn === btn && !openInfo.pinned) closeInfoPop();
+      }, 200);
+    };
+    btn.addEventListener("mouseenter", hoverOpen);
+    btn.addEventListener("mouseleave", hoverClose);
+    body.addEventListener("mouseenter", () => clearTimeout(hoverCloseTimer));
+    body.addEventListener("mouseleave", hoverClose);
     if (anchor) anchor.appendChild(btn);
     else body.parentNode.insertBefore(btn, body);
     // 説明の本体は body 直下へ移す。ⓘ だけが見える場所(ラベル)に残り、本体は
