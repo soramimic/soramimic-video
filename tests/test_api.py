@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -271,7 +272,7 @@ def test_index_html_has_no_custom_wordlist_ui():
     assert "ホスト移譲方式" in html
     # 自作リスト(エディタ側)はサムネのプレビューを作らない(理由を静かに出す)
     assert "自作リストはプレビューに対応していません。" in html
-    assert "const custom = usesEditorWordlist();" in html
+    assert "const custom = showsEditorWordlist();" in html
 
 
 def test_index_html_hides_preview_for_sensitive_wordlists():
@@ -298,22 +299,46 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
     assert "schedulePreview(true);" in html
 
 
-def test_index_html_builder_card_has_no_selects():
-    """カードから曲・単語リストのプルダウンを撤去し、⚙と🎲だけにする。"""
+def test_index_html_builder_card_has_selects():
+    """カードで曲・単語リストを選べる。値の正本は詳細設定側で、写しを双方向に同期する。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # 撤去したプルダウンと、その写し同期のコードは残っていない
-    # (関数名は「戻すときはrevert」の道しるべとしてコメントにだけ出てよい)
-    for gone in (
-        'id="builder-sample"', 'id="builder-wordlist"',
-        "function syncBuilderOptions()", "function syncBuilderValues()",
-        "syncBuilderOptions();", "syncBuilderValues();", "builder-selects",
-    ):
-        assert gone not in html, gone
-    # 正本(#sample-select / #wordlist-select)が変わればプレビューが追従する
-    assert '$("sample-select").addEventListener("change", () => { schedulePreview(); });' in html
-    assert '$("wordlist-select").addEventListener("change", () => { schedulePreview(); });' in html
+    card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
+    # プルダウンは2つ横並び。サムネ枠より上に置く(選ぶ → 下に絵が出る)
+    assert '<div class="builder-selects">' in card
+    assert '<select id="builder-sample" aria-label="曲(サンプル曲)"></select>' in card
+    assert (
+        '<select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>'
+        in card
+    )
+    assert card.index('class="builder-selects"') < card.index('id="builder-figure"')
+    # 写し同期(選択肢と値)。正本は #sample-select / #wordlist-select のまま
+    assert "function syncBuilderOptions() {" in html
+    assert "function syncBuilderValues() {" in html
+    assert '$("builder-sample").innerHTML = $("sample-select").innerHTML;' in html
+    # カードで選んだら正本へ書いて change を発火する(既存ロジックがそのまま動く)
+    assert '$("sample-select").value = $("builder-sample").value;' in html
+    assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in html
+    # 正本が変わればカードのプルダウンとプレビューが追従する
+    assert (
+        '$("sample-select").addEventListener("change", '
+        "() => { syncBuilderValues(); schedulePreview(); });" in html
+    )
+    assert (
+        '$("wordlist-select").addEventListener("change", '
+        "() => { syncBuilderValues(); schedulePreview(); });" in html
+    )
+    # 単語リストの選び直しは「カードのプルダウン」と「エディタの⚙」だけ。
+    # 詳細設定の中には単語リストのUIを置かない(正本は hidden の置き場)
+    advanced = _advanced_html()
+    assert 'id="wordlist' not in advanced
+    assert re.findall(r'<select id="([^"]+)"', advanced) == [
+        "sample-select", "synthesizer", "model-select", "voicevox-style",
+    ]
+    # 「曲 × 単語リスト」の1行はプルダウンと重複するので置かない
+    assert 'id="builder-state"' not in html
+    assert "renderBuilderState" not in html
     # 確認モーダルは廃止し、🎲ランダムはカードの選択を差し替えるだけになった
     assert "lucky-modal" not in html
     assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
@@ -321,8 +346,8 @@ def test_index_html_builder_card_has_no_selects():
     assert '<details class="sub-details" id="job-card" hidden>' in html
 
 
-def test_index_html_builder_card_has_gear_and_state_line():
-    """カードの操作は⚙(替え歌を編集)と🎲(ランダム)の2つ。状態は1行で示す。"""
+def test_index_html_builder_card_has_gear_and_editor_status():
+    """カードの右上は⚙(替え歌を編集)と🎲(ランダム)。編集の状態表示もカードに置く。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
@@ -334,15 +359,6 @@ def test_index_html_builder_card_has_gear_and_state_line():
     assert '$("builder-edit").addEventListener("click", openEditorFlow);' in html
     # エディタを同梱していないサーバーでは⚙ごと出さない
     assert card.index('id="editor-embed-controls"') < card.index('id="builder-edit"')
-    # サムネ枠の下に「曲 × 単語リスト」の1行(操作はできない表示専用)
-    assert '<p class="hint builder-state" id="builder-state" aria-live="polite"></p>' in card
-    assert card.index('id="builder-figure"') < card.index('id="builder-state"')
-    assert "function renderBuilderState() {" in html
-    assert "song && wl ? `${song} × ${wl}` : (song || wl || \"\");" in html
-    # プルダウンでの選択に戻すときの目印(正本の構造は変えていない)
-    assert "このコミットを revert すれば足りる" in html
-    # 名前付きリストは conf の表示名、エディタで書いた自作リストは「自作リスト」
-    assert "return usesEditorWordlist() ? \"自作リスト\" : \"\";" in html
     # 編集の状態表示もカードに移した(エディタの導線がカードにあるので)
     for moved in ('id="editor-auto-status"', 'id="parody-status"', 'id="editor-resume"'):
         assert moved in card, moved
@@ -1346,8 +1362,8 @@ def test_index_html_sample_select_stays_the_source_of_truth():
     assert '$("sample-select").addEventListener("change", () => {' in html
     assert "trackSample(applySample()).then((ok) => {" in html
     assert (
-        '$("sample-select").addEventListener("change", () => { schedulePreview(); });'
-        in html
+        '$("sample-select").addEventListener("change", '
+        "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
     # サンプルが取れない環境では折りたたみごと隠す(消えた #midi-details は参照しない)
     assert '$("sample-details").hidden = true;' in html
