@@ -154,7 +154,7 @@ zip** をアップロードする(zipの中身はCSV1枚(`.csv` か `.txt`)と�
   `POST /api/editor-session` が自作リストも受け取り、正規化済みCSVを
   `<ジョブディレクトリ>/editor-sessions/<sid>/wordlist.csv`(`sid` は中身の指紋)に
   置いてから、editorに `/editor/session-wordlists/<sid>.csv` として引かせる。
-  ただし絞り込み(where)は自作リストでは効かない
+  ただし絞り込み(where)は自作リストでは効かない(投入時も空で送る)
 
 ### 🎲ランダムのプレビュー画像を隠す単語リスト
 
@@ -212,6 +212,13 @@ uv run soramimic-video serve            # dist があれば自動で /editor/ �
 `vite build --base=/editor/` を実行する)。dist を別の場所に置く場合は
 `serve --editor-dist <path>` で指定する。dist が無ければボタンは表示されず、
 従来どおり editor の書き出しJSONをファイルアップロードして使える。
+
+変換のしかた(プリセット・音の合わせ方・文節の区切り・単語の長さ・単語重複)と
+単語リストの絞り込みは、**エディタの中の「変換のしかた」に一本化**している。
+トップ画面の「② 空耳のもと」に残しているのは、単語リストの選択・「✏️ 替え歌を編集」・
+状態表示と、エディタにも本家にも無い soramimic-video 独自の「ノート長重視 α」
+(`NOTE_LENGTH_WEIGHT`。α>0 のときだけ `convert_params` に載る)だけ。
+指定しなかったパラメータはサーバー既定(本家のバランス相当・単語重複なし)になる。
 
 ## ブラウザ+Colabで使う(ローカル環境不要)
 
