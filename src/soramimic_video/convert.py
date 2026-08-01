@@ -1175,6 +1175,11 @@ def _rows_by_id(lines: Iterable[str]) -> dict[str, list[dict[str, str]]]:
 def _find_row(
     rows_by_id: dict[str, list[dict[str, str]]], word: dict
 ) -> dict[str, str] | None:
+    # filler(万能候補)は単語リストの語ではない仮想語で id を持たない。
+    # id 無しのまま引くと、id列が空のCSV行(rows_by_id の "" バケツ)に
+    # 誤って当たって別の単語の画像が出てしまうので、先に弾く。
+    if word.get("filler") or "id" not in word:
+        return None
     rows = rows_by_id.get(str(word.get("id", "")))
     if not rows:
         return None
@@ -1347,6 +1352,7 @@ def apply_converted_lines(
                     note_kana=note_kana,
                     wordlist_row=_find_row(rows_by_id, word),
                     locked=bool(word.get("locked", False)),
+                    filler=bool(word.get("filler", False)),
                 )
             )
         parody.lines.append(pline)

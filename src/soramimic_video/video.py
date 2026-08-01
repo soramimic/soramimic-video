@@ -479,6 +479,7 @@ def used_words(project: Project) -> list[str]:
 
     単語リストの original 列(「新宿」「アインシュタイン」など元の語)を出す。
     リストに無い手入力の単語は original が空なので替え歌側の表記で代用する。
+    filler(元歌詞のかなのまま残った区間)は単語リストの語ではないので数えない。
     """
     if project.parody is None:
         return []
@@ -486,6 +487,8 @@ def used_words(project: Project) -> list[str]:
     seen: set[str] = set()
     for line in project.parody.lines:
         for w in line.words:
+            if w.filler:
+                continue
             label = (w.original or w.surface or "").strip()
             if label and label not in seen:
                 seen.add(label)

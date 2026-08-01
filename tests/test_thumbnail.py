@@ -86,6 +86,16 @@ def test_pick_headline_handles_missing_and_empty():
     assert len(pick_headline_words([{"surface": "モノ"}])) == 1
 
 
+def test_pick_headline_skips_all_filler():
+    # filler(万能候補)は「元歌詞のかなのまま」なので、それだけの結果は
+    # 言い換えになっていない。見出しを出さない(エンジンにfillerが入る前と同じ)
+    assert pick_headline_words([{"surface": "ハルガ", "filler": True},
+                                {"surface": "キタ", "filler": True}]) == []
+    # 実単語が1つでもあれば、filler ごと並べて曲名を最後まで覆う
+    got = pick_headline_words([{"surface": "ダブラン"}, {"surface": "キタ", "filler": True}])
+    assert [w["surface"] for w in got] == ["ダブラン", "キタ"]
+
+
 # ---- レイアウト・文言 ----
 
 
