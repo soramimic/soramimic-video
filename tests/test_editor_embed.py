@@ -261,6 +261,37 @@ def test_editor_session_passes_convert_params(client, tmp_path, monkeypatch):
     assert seen["cache_db"] is True
 
 
+def test_editor_session_note_length_weights(client, tmp_path):
+    """ノート長重視α>0のとき、行別ユニット重み(weightsList)がJSONに同梱される。
+
+    αはエンジンパラメータではなくvideo側の重み計算なので、editorの再変換にも
+    効かせるには計算済みの重みを渡すしかない(editorはweightsPerLineに使う)。
+    """
+    midi = _xf_midi(tmp_path)
+    wordlist = _wordlist_csv(tmp_path)
+    res = client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+        data={"wordlist": str(wordlist), "convert_params": "NOTE_LENGTH_WEIGHT=1"},
+    )
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    weights = payload["weightsList"]
+    assert len(weights) == len(payload["unitsList"])
+    for row, units in zip(weights, payload["unitsList"], strict=True):
+        assert len(row) == len(units)
+        assert all(isinstance(w, (int, float)) and w >= 0 for w in row)
+
+    # α無し(既定)では従来どおりフィールド自体を付けない
+    res = client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+        data={"wordlist": str(wordlist)},
+    )
+    assert res.status_code == 200, res.text
+    assert "weightsList" not in res.json()
+
+
 def test_import_editor_resolves_custom_session(client, tmp_path):
     """custom:<sid> のeditor JSONから、単語画像つきの単語リスト行が引ける。"""
     from soramimic_video.editor_io import import_editor

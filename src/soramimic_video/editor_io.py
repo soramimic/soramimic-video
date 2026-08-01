@@ -186,12 +186,18 @@ def export_editor(
     project: Project,
     project_dir: Path,
     wordlist_entry: dict[str, Any] | None = None,
+    weights_list: list[list[float]] | None = None,
 ) -> Path:
     """editorの「読み込み」で開けるJSONを書き出す。
 
     wordlist_entry を渡すと、単語リスト設定をそのまま使う(自作リストのように
     conf/setting.json にもリスト名にも紐づかないリスト向け。
     :func:`custom_wordlist_entry` を渡す)。
+
+    weights_list はノート長重み(NOTE_LENGTH_WEIGHT のα由来、行ごとの
+    ユニット位置別重み)。α はエンジンパラメータではないので param には
+    載らず、計算済みの重みだけを editor へ渡す。editor はこれを再変換の
+    weightsPerLine としてそのまま使う(soramimic-editor/1 の追加フィールド)。
     """
     if project.parody is None:
         raise ValueError("替え歌案がありません。先に convert を実行してください")
@@ -222,6 +228,8 @@ def export_editor(
         ),
         "unitsList": [line["units"] for line in raw["lines"]],
     }
+    if weights_list is not None:
+        payload["weightsList"] = weights_list
     path = project_dir / EDITOR_FILENAME
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return path

@@ -1902,7 +1902,13 @@ def create_app(
         import tempfile
 
         from .align import align_lines
-        from .convert import convert_project, parse_convert_params, resolve_wordlist
+        from .convert import (
+            convert_project,
+            parse_convert_params,
+            pop_note_length_weight,
+            project_note_length_weights,
+            resolve_wordlist,
+        )
         from .editor_io import (
             SESSION_WORDLIST_FILENAME,
             custom_wordlist_entry,
@@ -1960,12 +1966,13 @@ def create_app(
                 ) from exc
             if lyrics.strip():
                 align_lines(project, lyrics.splitlines())
+            conv_params = parse_convert_params(convert_params)
             try:
                 raw = convert_project(
                     project,
                     wordlist=conv_wordlist,
                     where=conv_where,
-                    params=parse_convert_params(convert_params),
+                    params=conv_params,
                     # 自作リストはこの入力限りなので単語DBの共有キャッシュに載せない
                     cache_db=custom is None,
                 )
@@ -1973,7 +1980,17 @@ def create_app(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             save_raw(raw, d)
             project.save(d)
-            path = export_editor(project, d, wordlist_entry=entry)
+            # ノート長重視α(video独自)はエンジンparamに載らないので、editorでの
+            # 再変換にも効くよう、計算済みの行別ユニット重みをJSONに同梱する
+            alpha = pop_note_length_weight(dict(conv_params))
+            weights = (
+                project_note_length_weights(project, alpha)(
+                    [line["units"] for line in raw["lines"]]
+                )
+                if alpha > 0
+                else None
+            )
+            path = export_editor(project, d, wordlist_entry=entry, weights_list=weights)
             return json.loads(path.read_text(encoding="utf-8"))
 
     @app.get("/editor/session-wordlists/{sid}.csv")
