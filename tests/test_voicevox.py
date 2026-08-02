@@ -45,6 +45,11 @@ def _project(notes: list[Note]) -> Project:
     return Project(song=SongInfo(midi_path="", ticks_per_beat=480), notes=notes)
 
 
+# 曲頭(0.0秒)から始まる音符は、エンジン制約の先頭休符に頭の数フレームを取られる
+# (_ensure_head_rest)。モーラ配分そのものを見るテストは、そのぶん後ろに音符を置く。
+HEAD_SEC = vv.HEAD_REST_FRAMES / FRAME_RATE
+
+
 def _valid_wav_bytes(seconds: float = 0.1, rate: int = 24000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -114,10 +119,13 @@ def test_build_score_absorbs_one_frame_gap():
 
 
 def test_build_score_one_frame_gap_at_head():
-    # 曲頭の1フレーム休符は音符の前倒しで吸収する
+    # 曲頭の1フレーム休符は音符の前倒しで吸収する(そのうえで先頭休符を作り直す)
     score = build_score(_project([_note(0, 60, 1 / FRAME_RATE, 0.5, "ド")]))
-    assert score["notes"][0]["key"] == 60
-    assert score["notes"][0]["frame_length"] == round(0.5 * FRAME_RATE)
+    keys = [n["key"] for n in score["notes"]]
+    assert keys == [None, 60]  # 1フレーム休符は出ず、先頭は規定長の休符
+    assert score["notes"][0]["frame_length"] == vv.HEAD_REST_FRAMES
+    # 合計は変わらない(絶対時間が保たれる)
+    assert sum(n["frame_length"] for n in score["notes"]) == round(0.5 * FRAME_RATE)
 
 
 def test_build_score_choon_note_inherits_prev_vowel():
@@ -163,7 +171,7 @@ def test_build_score_back_loads_stacked_moras_by_default():
     # Lemon「嘘みたい」実例: 675msの複合ノートに タ+リ が載る。均等割りだと
     # リが音符のど真ん中(+338ms)に立って「遅れた別音節」に聞こえる。最終音符は
     # 後ろが無音(auto既定でback)なので、タが伸ばし・リは160msの短い返し=「たーい」型
-    score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
+    score = build_score(_project([_note(0, 68, HEAD_SEC, HEAD_SEC + 0.675, "タリ")]))
     pitched = [n for n in score["notes"] if n["key"] is not None]
     assert [n["lyric"] for n in pitched] == ["タ", "リ"]
     lengths = [n["frame_length"] for n in pitched]
@@ -177,7 +185,7 @@ def test_build_score_back_loads_stacked_moras_by_default():
 
 def test_build_score_three_moras_back_loaded():
     # 3モーラ以上も先頭モーラが伸ばしを持ち、後続は同じアタック長で末尾に並ぶ
-    score = build_score(_project([_note(0, 60, 0.0, 1.0, "タラリ")]))
+    score = build_score(_project([_note(0, 60, HEAD_SEC, HEAD_SEC + 1.0, "タラリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
     total = round(1.0 * FRAME_RATE)
@@ -186,7 +194,7 @@ def test_build_score_three_moras_back_loaded():
 
 def test_build_score_short_note_scales_attack_by_ratio():
     # 200msに2モーラ: 返しは固定160msではなくノート長の30%(約64ms)に縮む
-    score = build_score(_project([_note(0, 60, 0.0, 0.2, "タリ")]))
+    score = build_score(_project([_note(0, 60, HEAD_SEC, HEAD_SEC + 0.2, "タリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     total = round(0.2 * FRAME_RATE)
     assert sum(lengths) == total
@@ -197,7 +205,7 @@ def test_build_score_short_note_scales_attack_by_ratio():
 def test_build_score_desu_note_keeps_short_return():
     # うっせぇわ「デス」実例: 336msノートに ゲ+ツ。固定160msだとほぼ等分に
     # 聞こえるため、返しはノート長の30%(約100ms)に縮めて 主音長め+短い返し にする
-    score = build_score(_project([_note(0, 83, 0.0, 0.336, "ゲツ")]))
+    score = build_score(_project([_note(0, 83, HEAD_SEC, HEAD_SEC + 0.336, "ゲツ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     total = round(0.336 * FRAME_RATE)
     attack = round(total * vv.STACKED_MORA_ATTACK_MAX_RATIO)
@@ -215,13 +223,13 @@ def test_build_score_tiny_note_falls_back_to_even_split():
 def test_stacked_mora_mode_front(monkeypatch):
     # front: 非最終モーラを固定アタック長で頭に並べ、最終モーラが伸ばす(たいー型)
     monkeypatch.setenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "front")
-    score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
+    score = build_score(_project([_note(0, 68, HEAD_SEC, HEAD_SEC + 0.675, "タリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
     total = round(0.675 * FRAME_RATE)
     assert lengths == [attack, total - attack]
     # 短い音符は back と同様に返しがノート長の30%へ縮む(頭側に置かれる)
-    score = build_score(_project([_note(0, 60, 0.0, 0.2, "タリ")]))
+    score = build_score(_project([_note(0, 60, HEAD_SEC, HEAD_SEC + 0.2, "タリ")]))
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     short_total = round(0.2 * FRAME_RATE)
     short_attack = round(short_total * vv.STACKED_MORA_ATTACK_MAX_RATIO)
@@ -231,7 +239,7 @@ def test_stacked_mora_mode_front(monkeypatch):
 def test_stacked_mora_mode_first(monkeypatch):
     # first: 最初のモーラだけを発音して音符いっぱいに伸ばす
     monkeypatch.setenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE", "first")
-    score = build_score(_project([_note(0, 68, 0.0, 0.675, "タリ")]))
+    score = build_score(_project([_note(0, 68, HEAD_SEC, HEAD_SEC + 0.675, "タリ")]))
     pitched = [n for n in score["notes"] if n["key"] is not None]
     assert [n["lyric"] for n in pitched] == ["タ"]
     assert pitched[0]["frame_length"] == round(0.675 * FRAME_RATE)
@@ -246,7 +254,7 @@ def test_stacked_mora_mode_unknown_falls_back_to_default(monkeypatch):
 
 def test_auto_mode_drops_tail_when_next_note_is_close():
     # 次の音符がすぐ続く(間<TAIL_GAP_MIN_SEC)複合ノートは first 相当(返しを落とす)
-    notes = [_note(0, 68, 0.0, 0.675, "タリ"), _note(1, 70, 0.7, 1.0, "ラ")]
+    notes = [_note(0, 68, HEAD_SEC, HEAD_SEC + 0.675, "タリ"), _note(1, 70, 0.7, 1.0, "ラ")]
     score = build_score(_project(notes))
     lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
     assert lyrics == ["タ", "ラ"]
@@ -254,7 +262,7 @@ def test_auto_mode_drops_tail_when_next_note_is_close():
 
 def test_auto_mode_sings_tail_when_gap_follows():
     # 後ろに間(>=TAIL_GAP_MIN_SEC)があれば back(短い返しを歌う)
-    notes = [_note(0, 68, 0.0, 0.675, "タリ"), _note(1, 70, 1.0, 1.5, "ラ")]
+    notes = [_note(0, 68, HEAD_SEC, HEAD_SEC + 0.675, "タリ"), _note(1, 70, 1.0, 1.5, "ラ")]
     score = build_score(_project(notes))
     lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
     assert lyrics == ["タ", "リ", "ラ"]
@@ -290,6 +298,54 @@ def test_build_score_clips_overlap():
 def test_build_score_empty_raises():
     with pytest.raises(ValueError):
         build_score(_project([]))
+
+
+# ---- 曲頭(0.0秒)から音符が始まる曲の先頭休符 ----
+
+
+def test_build_score_head_rest_when_song_starts_at_zero():
+    # エンジンはスコア先頭の要素が子音を持つと400を返す
+    # (consonant_lengths[0] must be 0)。先頭には必ず休符が要る。
+    notes = [
+        _note(i, 60 + i, i * 0.5, i * 0.5 + 0.5, kana)
+        for i, kana in enumerate("シズムヨル")
+    ]
+    score = build_score(_project(notes))
+    head = score["notes"][0]
+    assert head["key"] is None
+    assert head["lyric"] == ""
+    assert head["frame_length"] == vv.HEAD_REST_FRAMES
+    assert score["notes"][1]["lyric"] == "シ"
+
+
+def test_build_score_head_rest_keeps_absolute_time():
+    # 休符は「足す」のではなく先頭音符の頭から借りる。合計フレーム数(=絶対時間)は
+    # 変わらず、2音目以降の位置もずれない(ミックス・字幕との同期を壊さないため)
+    notes = [_note(0, 60, 0.0, 0.5, "シ"), _note(1, 62, 0.5, 1.0, "ズ")]
+    score = build_score(_project(notes))
+    lengths = [n["frame_length"] for n in score["notes"]]
+    assert sum(lengths) == round(1.0 * FRAME_RATE)
+    # 先頭休符 + 短くなった1音目 = 元の1音目の終端(2音目の開始位置は不変)
+    assert lengths[0] + lengths[1] == round(0.5 * FRAME_RATE)
+    assert lengths[0] == vv.HEAD_REST_FRAMES
+
+
+def test_build_score_head_rest_absorbs_too_short_first_note():
+    # 頭を借りると潰れてしまう極短音符(2フレーム)は丸ごと休符にする
+    # (1フレームの音符・休符はエンジンが500を返すため)
+    short = 2 / FRAME_RATE
+    notes = [_note(0, 60, 0.0, short, "シ"), _note(1, 62, short, 0.5, "ズ")]
+    score = build_score(_project(notes))
+    assert [n["key"] for n in score["notes"]] == [None, 62]
+    assert score["notes"][0]["frame_length"] == 2
+    assert sum(n["frame_length"] for n in score["notes"]) == round(0.5 * FRAME_RATE)
+    assert all(n["frame_length"] >= vv.MIN_ELEMENT_FRAMES for n in score["notes"])
+
+
+def test_build_score_head_rest_untouched_when_song_starts_with_rest():
+    # 曲頭に隙間がある通常の曲は何も変えない
+    score = build_score(_project([_note(0, 60, 0.5, 1.0, "ド")]))
+    assert score["notes"][0]["frame_length"] == round(0.5 * FRAME_RATE)
 
 
 # ---- auto_octave_shift ----
@@ -745,3 +801,18 @@ def test_voicevox_end_to_end(tmp_path):
         dur = w.getnframes() / w.getframerate()
     # 楽譜末尾は2.5秒なので、生成WAVもおおよそ2.5秒(絶対時間を保つ)
     assert dur == pytest.approx(2.5, abs=0.3)
+
+
+@pytest.mark.skipif(not _engine_up(), reason="VOICEVOXエンジンが起動していない")
+def test_voicevox_end_to_end_song_starting_at_zero(tmp_path):
+    # 曲頭(0.0秒)から音符が始まる曲。先頭休符が無いとエンジンが400を返していた
+    # (consonant_lengths[0] must be 0)
+    notes = [
+        _note(0, 60, 0.0, 0.5, "シ"),  # 子音つきの1音目
+        _note(1, 62, 0.5, 1.0, "ズ"),
+        _note(2, 64, 1.0, 1.5, "ム"),
+    ]
+    out = run_voicevox(_project(notes), tmp_path, style_id=3003)
+    with wave.open(str(out)) as w:
+        dur = w.getnframes() / w.getframerate()
+    assert dur == pytest.approx(1.5, abs=0.3)  # 先頭休符のぶん後ろにずれない

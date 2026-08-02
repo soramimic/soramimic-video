@@ -3,7 +3,8 @@
 構造は midi2musicxml で実績のある最小形式:
 score-partwise > part > measure > note {pitch, duration, lyric} / rest。
 divisions は ticks_per_beat をそのまま使い、曲頭(tick 0)から休符で埋めて
-絶対時間を保つ(伴奏とのミックス時に位置合わせが不要になる)。
+絶対時間を保つ(伴奏とのミックス時に位置合わせが不要になる)。曲頭から音符が始まる曲でも
+先頭には必ず休符を置く(NEUTRINOが2秒の休符を勝手に足すのを防ぐ。HEAD_REST_SEC 参照)。
 """
 
 from __future__ import annotations
@@ -21,6 +22,14 @@ _STEPS = [
     ("C", 0), ("C", 1), ("D", 0), ("D", 1), ("E", 0), ("F", 0),
     ("F", 1), ("G", 0), ("G", 1), ("A", 0), ("A", 1), ("B", 0),
 ]
+
+# 曲頭から音符が始まるとき、先頭に置く休符の長さ(秒)。NEUTRINOのmusicXMLtoLabelは
+# 休符で始まらないスコアに2秒の休符を勝手に足す("The score does not start with a rest.
+# Added a rest")ため、そのままだと歌が2秒遅れて伴奏とずれる。休符を「足す」と同じく
+# 絶対時間がずれるので、先頭音符の頭から借りる。NEUTRINOは子音をこの休符から取り、
+# 母音は休符の終わり+約11msに来る(実測)ので、短いほど1音目の遅れが小さい。ただし
+# 極端に短い休符はラベルが潰れるため、30ms程度を目安にする。
+HEAD_REST_SEC = 0.03
 
 XML_HEADER = (
     '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -53,6 +62,30 @@ def _measure_boundaries(time_signatures: list[list[int]], end_tick: int,
     return bounds
 
 
+def _head_rest_ticks(project: Project) -> int:
+    """HEAD_REST_SEC 相当のtick数(曲頭のテンポで換算)。"""
+    tpb = project.song.ticks_per_beat
+    us_per_beat = project.song.tempo_map[0][1] if project.song.tempo_map else 500_000
+    ticks_per_sec = tpb * 1_000_000 / us_per_beat
+    return max(1, round(HEAD_REST_SEC * ticks_per_sec))
+
+
+def _insert_head_rest(segments: list[_Segment], lead: int) -> None:
+    """先頭の音符の頭を休符に置き換える(合計tick=絶対時間は変えない)。
+
+    NEUTRINOは休符始まりでないスコアの頭に2秒の休符を勝手に足すため、曲頭から音符が
+    始まる曲では自前で休符を作る。借りるのは lead tick まで、かつ音符の半分まで
+    (短い音符を潰さない)。1tickしかなく分けられない音符は丸ごと休符にする。
+    """
+    head = segments[0]
+    lead = min(lead, (head.end - head.start) // 2)
+    if lead <= 0:  # 分けられない極短音符(1tick)は休符にする
+        head.midi_note, head.lyric = None, None
+        return
+    head.start += lead
+    segments.insert(0, _Segment(0, lead, None))
+
+
 def build_musicxml(
     project: Project, lyric_map: dict[int, str], transpose: int = 0
 ) -> str:
@@ -81,6 +114,8 @@ def build_musicxml(
 
     if not segments:
         raise ValueError("音符がありません")
+    if segments[0].midi_note is not None:  # 曲頭(tick 0)から音符が始まる曲
+        _insert_head_rest(segments, _head_rest_ticks(project))
     end_tick = segments[-1].end
 
     # 「ー」で始まる歌詞は直前の音の母音を引き継ぐが、休符直後や行頭では
