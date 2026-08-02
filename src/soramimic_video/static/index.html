@@ -4026,11 +4026,201 @@ function applyEditorWordlist() {
   renderParodyStatus();
 }
 
+// ---- エディタからの依頼(hostRequest)に応える ----
+// セットアップ画面の曲プルダウンはエディタ側にあるが、MIDIの実体も解析も持って
+// いるのは親(video)だけなので、曲の差し替えは親に依頼してもらう形にしている。
+// 親は起動時のシードに「選べる曲(host.songs)」と「自分のMIDIを渡せるか
+//(host.canUploadSong)」を書き、エディタは選ばれたものを hostRequest として
+// 同じペイロードに書く。親はポーリングでそれを見つけて応える。
+//   {type:"song", id:"<host.songsのid>", nonce:<数値>} … 同梱サンプルへ差し替え
+//   {type:"song-upload", nonce:<数値>}                  … 親でMIDIファイル選択を開く
+// 応えたら hostRequest は必ず消す(残すとエディタが待ち続ける)。
+const HOST_REQUEST_TYPES = ["song", "song-upload"];
+
+function editorSessionData() {
+  return parseJson(sessionStorage.getItem(EDITOR_KEY) || "null");
+}
+
+// エディタのセットアップ画面に出す曲の一覧。カードの曲プルダウン(正本の
+// #sample-select)と同じ並び・同じ表示名にする(二重管理しない)。
+function hostSongList() {
+  return [...$("sample-select").options]
+    .filter((o) => o.value)
+    .map((o) => ({ id: o.value, title: o.textContent }));
+}
+
+// シード(と差し替え後のペイロード)に host 情報と曲のIDを載せる。
+// song.id があるとエディタは「いまどの曲が選ばれているか」を出せる。
+function withHostInfo(payload) {
+  const data = { ...(payload || {}) };
+  data.host = { songs: hostSongList(), canUploadSong: true };
+  const song = { ...(data.song || {}) };
+  // 自分で選んだMIDI(midiSampleId が空)は一覧のどれでもないので id を付けない
+  if (midiSampleId) song.id = midiSampleId;
+  else delete song.id;
+  if (song.title || song.id) data.song = song;
+  return data;
+}
+
+// 未処理の依頼(型が読めないものは無視する)
+function pendingHostRequest() {
+  const req = (editorSessionData() || {}).hostRequest;
+  if (!req || typeof req !== "object") return null;
+  return HOST_REQUEST_TYPES.includes(String(req.type || "")) ? req : null;
+}
+
+// 依頼の同一性。同じ依頼を二度処理しない・応えているあいだに来た別の依頼を
+// 取りこぼさない、の両方に使う。
+const hostRequestKey = (req) => `${req.type}:${req.id || ""}:${req.nonce}`;
+
+// 依頼だけを消して書き戻す。編集内容の指紋(editorContentSig)は hostRequest を
+// 見ないので、これで来歴・編集済み判定が動くことはない。
+// key を渡すと、その依頼が今も載っているときだけ消す(応えているあいだに
+// 新しい依頼が書かれていたら、消さずに次の周期へ回す)。
+function clearHostRequest(key) {
+  const data = editorSessionData();
+  const req = data && data.hostRequest;
+  if (!req) return;
+  if (key && hostRequestKey(req) !== key) return;
+  delete data.hostRequest;
+  sessionStorage.setItem(EDITOR_KEY, JSON.stringify(data));
+}
+
+let hostRequestBusy = false;   // 応答中(1.5秒ごとのポーリングで二重に走らせない)
+let hostRequestSeen = "";      // 直前に応えた依頼(同じ nonce を二度処理しない)
+
+// 依頼を1件だけ処理する。syncEditorSession(ポーリング)から呼ばれる。
+async function handleHostRequest() {
+  if (hostRequestBusy) return;
+  if ($("editor-frame-wrap").hidden) return;   // 閉じているあいだは応えない
+  const req = pendingHostRequest();
+  if (!req) return;
+  const key = hostRequestKey(req);
+  // 応えたのに同じ依頼が残っている(書き戻しの行き違い)ときは消すだけにする
+  if (key === hostRequestSeen) { clearHostRequest(key); return; }
+  hostRequestBusy = true;
+  hostRequestSeen = key;
+  try {
+    if (req.type === "song") await hostChangeSong(String(req.id || ""));
+    else await hostUploadSong();
+  } catch (err) {
+    // エディタ側には結果を返せないので、親のエディタ用メッセージ欄に出す
+    $("open-editor-msg").textContent = "曲を変えられませんでした: " + err.message;
+  } finally {
+    clearHostRequest(key);
+    hostRequestBusy = false;
+  }
+}
+
+// 同梱サンプルへの差し替え。正本(#sample-select / #midi)を先に動かしてから
+// 解析し直す——カードの曲プルダウン・サムネプレビュー・生成はすべて正本を見ている。
+async function hostChangeSong(sid) {
+  if (!hostSongList().some((s) => s.id === sid)) throw new Error(`知らない曲です(${sid})`);
+  $("sample-select").value = sid;
+  $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  if (samplePending) await samplePending;   // change が始めたMIDI取得を待つ
+  if (midiChecking) await midiChecking;     // 歌詞なしMIDIの拒否を待つ
+  let failed = "";
+  // 取得に失敗して前の曲のMIDIが残っていたら、ここで取り直す(最後の関門)
+  if (!await ensureSelectedSampleMidi((m) => { failed = m; })) {
+    throw new Error(failed || `「${sampleTitleOf(sid)}」の曲データを取得できませんでした`);
+  }
+  await reseedEditorSong();
+}
+
+// 自分のMIDIへの差し替え。親の #midi(既存のファイル選択)をそのまま使う。
+async function hostUploadSong() {
+  if (!await pickMidiFile()) return;       // やめた: 何も変えずに依頼だけ消す
+  if (midiChecking) await midiChecking;    // 歌詞なしMIDIはここで取り消される
+  if (!$("midi").files[0]) {
+    throw new Error("そのMIDIは使えません(歌詞入りのXF形式MIDIが必要です)");
+  }
+  // サンプルの選択を外す。残すと投入前の突き合わせ(ensureSelectedSampleMidi)が
+  // サンプルのMIDIを取り直して、選んだファイルを上書きしてしまう
+  $("sample-select").value = "";
+  $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  await reseedEditorSong();
+}
+
+// 親のファイル選択を開き、選ばれたか(true)やめたか(false)を返す。
+// やめたときは cancel が飛んでくる。出さないブラウザのために、ウィンドウへ
+// フォーカスが戻ってしばらく change が来なければ「やめた」とみなす保険を置く
+//(返さないと依頼が消えず、エディタが待ち続けてしまう)。
+// ユーザー操作から離れたファイル選択を止めるブラウザでは何も起きない。その場合は
+// エディタを開き直せば応答中フラグごとやり直せる(showEditorFrame)。
+function pickMidiFile() {
+  return new Promise((resolve) => {
+    const input = $("midi");
+    let done = false;
+    const finish = (picked) => {
+      if (done) return;
+      done = true;
+      input.removeEventListener("change", onChange);
+      input.removeEventListener("cancel", onCancel);
+      window.removeEventListener("focus", onFocus);
+      resolve(picked);
+    };
+    const onChange = () => finish(true);
+    const onCancel = () => finish(false);
+    const onFocus = () => setTimeout(() => finish(false), 1000);
+    input.addEventListener("change", onChange);
+    input.addEventListener("cancel", onCancel);
+    window.addEventListener("focus", onFocus);
+    input.click();
+  });
+}
+
+// 差し替えた曲で解析だけをやり直し(convert=0)、エディタのペイロードへ差し戻す。
+// 入れ替えるのは曲から作られるもの(phrases/song/weightsList)だけ——単語リストと
+// 変換のしかた(wordlist/param)はエディタ側の今の設定をそのまま残す。
+// 前の曲の変換結果(results/tokensList/unitsList)は捨てて未変換に戻すので、
+// エディタは「この設定で変換」からやり直せる。
+async function reseedEditorSong() {
+  const midi = $("midi").files[0];
+  if (!midi) throw new Error("MIDIファイルがありません");
+  const form = new FormData();
+  form.append("midi", midi);
+  form.append("lyrics", $("lyrics").value);
+  form.append("wordlist", $("wordlist").value.trim());
+  form.append("where", $("where").value.trim());
+  form.append("convert_params", buildConvertParams());
+  form.append("song_title", songTitleOf(midi));
+  form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
+  const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || res.status);
+  const fresh = withHostInfo(body);
+  const data = editorSessionData() || {};
+  delete data.hostRequest;
+  data.phrases = fresh.phrases;
+  data.host = fresh.host;
+  if (fresh.song) data.song = fresh.song; else delete data.song;
+  if (fresh.weightsList) data.weightsList = fresh.weightsList;
+  else delete data.weightsList;
+  delete data.results;
+  delete data.tokensList;
+  delete data.unitsList;
+  const text = JSON.stringify(data);
+  sessionStorage.setItem(EDITOR_KEY, text);
+  // これが新しい「編集前」。来歴も差し替えた曲のものへ付け替える——付け替えないと、
+  // 曲を変えた直後に作られる編集が「別の入力から作られたもの」として捨てられる
+  //(markEditorSeed は指紋と来歴の両方を今の状態で書き直す)
+  markEditorSeed(text);
+  // 前の曲で取り込んだ替え歌JSONは、この曲のものではない(未変換に戻した今、
+  // それが生成に使われてしまうので外す。カードの単語リスト変更と同じ扱い)
+  clearEditorFile();
+  syncBuilderValues();
+  updateEditorAutoStatus();
+  renderParodyStatus();
+}
+
 // エディタ(iframe)の編集は親から検知できないので、開いているあいだだけ軽く監視する。
 // 単語リストの書き戻しもここで拾う(閉じるまで待つと、開いているあいだカードの
 // プルダウンが古いままになる)。
 function syncEditorSession() {
   applyEditorWordlist();
+  // 「曲を変えたい」の依頼もここで拾う(非同期。開いているあいだだけ応える)
+  handleHostRequest();
   // 自作リストへの出入りは正本の change を伴わないことがある(セッションを
   // 捨てたときなど)ので、カードのプルダウンはここでも合わせ直す
   syncBuilderValues();
@@ -4159,7 +4349,8 @@ async function convertAndOpenEditor() {
     const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
-    const seed = JSON.stringify(body);
+    // 曲を選び直せることをエディタへ伝える(host.songs / host.canUploadSong)
+    const seed = JSON.stringify(withHostInfo(body));
     sessionStorage.setItem(EDITOR_KEY, seed);
     // 未変換のシード=編集前の状態。ここからセットアップ画面で変換されると
     // results が入って指紋が変わり、その結果が生成に使われる(liveEditorEdit)
@@ -4191,6 +4382,8 @@ function closeEditor() {
   $("editor-frame").src = "about:blank";
   document.body.classList.remove("modal-open");
   watchEditorSession(false);
+  // 応えないまま閉じた依頼は持ち越さない(次に開いたときに突然曲が変わらないように)
+  clearHostRequest();
   // 閉じても編集は生きている(その旨を出す)。エディタの中で単語リストを
   // 選び直していたら、ここで最後に親の正本へ書き戻してから表示を作り直す
   syncEditorSession();
@@ -4205,7 +4398,11 @@ function showEditorFrame() {
   document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
   // 開いた直後は親側にフォーカスを置く(この時点でEscが効く)
   $("editor-close").focus();
-  watchEditorSession(true);   // 編集の有無を拾って表示を更新する
+  // 前のセッションの依頼は引き継がない(nonce の衝突と、ファイル選択を
+  // 開けないブラウザで応答中のまま固まった場合の取り戻しを兼ねる)
+  hostRequestSeen = "";
+  hostRequestBusy = false;
+  watchEditorSession(true);   // 編集の有無と、曲の差し替え依頼を拾う
   updateEditorAutoStatus();
 }
 
