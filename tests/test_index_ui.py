@@ -264,3 +264,95 @@ def test_card_wordlist_select_shows_the_editor_own_list():
     assert 'card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);' in body
     # 選び直されても正本は触らない(「何も選ばない」に落とさない)
     assert "if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }" in script
+# ---- エディタからの「曲を変えたい」依頼(hostRequest)にホストが応える ----
+
+
+def test_editor_seed_advertises_the_song_choices():
+    """シードに host.songs / host.canUploadSong / song.id を載せる。
+
+    エディタ側は MIDI の実体も解析も持たないので、選べる曲は親が教える。
+    一覧は正本(#sample-select)の写しで、カードの曲プルダウンと同じもの。
+    """
+    script = _script()
+    body = _function_body(script, "function withHostInfo(payload)")
+    assert "data.host = { songs: hostSongList(), canUploadSong: true };" in body
+    # 曲のIDは来歴(midiSampleId)から決める。自分で選んだMIDIには付けない
+    assert "if (midiSampleId) song.id = midiSampleId;" in body
+    assert "else delete song.id;" in body
+    songs = _function_body(script, "function hostSongList()")
+    assert '[...$("sample-select").options]' in songs
+    assert "id: o.value, title: o.textContent" in songs
+    # セットアップ画面のシードはこれを通してから書く
+    opened = _function_body(script, "async function convertAndOpenEditor()")
+    assert "const seed = JSON.stringify(withHostInfo(body));" in opened
+
+
+def test_host_request_is_polled_and_handled_once():
+    """依頼の処理は監視ポーリングの中で、開いているあいだだけ、1件ずつ。"""
+    script = _script()
+    sync = _function_body(script, "function syncEditorSession()")
+    assert "handleHostRequest();" in sync
+    body = _function_body(script, "async function handleHostRequest()")
+    # 多重処理を防ぐ(処理中フラグと、応えた nonce の記録)
+    assert "if (hostRequestBusy) return;" in body
+    assert "hostRequestSeen = key;" in body
+    assert "if (key === hostRequestSeen) { clearHostRequest(key); return; }" in body
+    # 閉じているあいだは応えない
+    assert 'if ($("editor-frame-wrap").hidden) return;' in body
+    # 成否によらず依頼は消す(残すとエディタが待ち続ける)
+    assert "clearHostRequest(key);" in body and "hostRequestBusy = false;" in body
+    # 応えているあいだに来た別の依頼は消さない(次の周期で応える)
+    clear = _function_body(script, "function clearHostRequest(key)")
+    assert "if (key && hostRequestKey(req) !== key) return;" in clear
+    # 失敗は親のエディタ用メッセージ欄に出す
+    assert '$("open-editor-msg").textContent = "曲を変えられませんでした: "' in body
+    # 閉じたら止める(監視を切り、応えないまま残った依頼も持ち越さない)
+    close = _function_body(script, "function closeEditor()")
+    assert "watchEditorSession(false);" in close and "clearHostRequest();" in close
+    show = _function_body(script, "function showEditorFrame()")
+    assert 'hostRequestSeen = "";' in show and "hostRequestBusy = false;" in show
+
+
+def test_host_song_request_moves_the_canonical_form_first():
+    """曲の差し替えは正本(#sample-select / #midi)を動かしてから解析し直す。
+
+    カードの曲プルダウン・サムネプレビュー・生成はすべて正本を見ているので、
+    正本を動かさないとエディタの中だけ別の曲になってしまう。
+    """
+    script = _script()
+    body = _function_body(script, "async function hostChangeSong(sid)")
+    assert '$("sample-select").value = sid;' in body
+    assert '$("sample-select").dispatchEvent(new Event("change", { bubbles: true }));' in body
+    # 取得の失敗・古いMIDIの残りは既存の関門で止める
+    assert "ensureSelectedSampleMidi(" in body
+    assert body.index("ensureSelectedSampleMidi(") < body.index("reseedEditorSong()")
+    up = _function_body(script, "async function hostUploadSong()")
+    # キャンセルは何も変えずに戻る(依頼だけが消える)
+    assert "if (!await pickMidiFile()) return;" in up
+    # 自分のMIDIにしたらサンプルの選択は外す(投入前の突き合わせに上書きされる)
+    assert '$("sample-select").value = "";' in up
+    picker = _function_body(script, "function pickMidiFile()")
+    for needle in ('input.addEventListener("change", onChange);',
+                   'input.addEventListener("cancel", onCancel);',
+                   'window.addEventListener("focus", onFocus);',
+                   "input.click();"):
+        assert needle in picker
+
+
+def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
+    """曲だけを差し替える。単語リストと変換のしかたは残し、変換結果は捨てる。"""
+    script = _script()
+    body = _function_body(script, "async function reseedEditorSong()")
+    assert 'form.append("convert", "0")' in body        # 解析のみ(既存の経路)
+    for keep in ("data.phrases = fresh.phrases;", "data.host = fresh.host;",
+                 "if (fresh.song) data.song = fresh.song; else delete data.song;"):
+        assert keep in body
+    for drop in ("delete data.results;", "delete data.tokensList;", "delete data.unitsList;"):
+        assert drop in body
+    # 単語リスト・パラメータには触らない(エディタ側の今の設定のまま)
+    assert "data.wordlist" not in body and "data.param" not in body
+    # 新しいシードの指紋と来歴を控える。付け替えないと、曲を変えた直後の編集が
+    # 「別の入力から作られたもの」として捨てられてしまう
+    assert "markEditorSeed(text);" in body
+    # 前の曲で取り込んだ替え歌JSONは外す
+    assert "clearEditorFile();" in body
