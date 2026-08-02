@@ -73,3 +73,29 @@ def test_analyze_midi_multi_mora_note(tmp_path: Path):
     project = analyze_midi(midi)
     assert len(project.notes) == 2
     assert project.notes[1].kana == "ライ"
+
+
+def test_analyze_midi_fixes_particle_reading(tmp_path: Path):
+    """助詞の「は」はXFでは表記どおり(ハ)なので、読みを発音形(ワ)に直す。"""
+    midi = build_xf_midi(
+        tmp_path / "particle.mid",
+        notes=[(0, 240, 60), (240, 240, 62), (480, 240, 64), (720, 240, 65)],
+        lyric_events=[(0, "<僕[ぼ]"), (240, "く"), (480, "は"), (720, "花[はな]")],
+    )
+    project = analyze_midi(midi)
+    kanas = [n.kana for n in project.notes]
+    assert kanas == ["ボ", "ク", "ワ", "ハナ"]  # 助詞だけ ワ、「花」の ハ は不変
+    assert project.lines[0].xf_kana == "ボクワハナ"
+    assert [n.surface for n in project.notes] == ["僕", "く", "は", "花"]  # 表記は不変
+    assert project.notes[2].raw == "は"  # 生テキストも不変
+
+
+def test_analyze_midi_keeps_non_particle_ha(tmp_path: Path):
+    """助詞でない「は」は触らない。"""
+    midi = build_xf_midi(
+        tmp_path / "hana.mid",
+        notes=[(0, 240, 60), (240, 240, 62)],
+        lyric_events=[(0, "<は"), (240, "な")],
+    )
+    project = analyze_midi(midi)
+    assert [n.kana for n in project.notes] == ["ハ", "ナ"]
