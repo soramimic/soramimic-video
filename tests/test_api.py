@@ -300,7 +300,7 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
 
 
 def test_index_html_builder_card_has_selects():
-    """カードで曲・単語リストを選べる。値の正本は詳細設定側で、写しを双方向に同期する。"""
+    """カードで曲・単語リストを選べる。隠しの正本と写しを双方向に同期する。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
@@ -329,12 +329,12 @@ def test_index_html_builder_card_has_selects():
         '$("wordlist-select").addEventListener("change", '
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
-    # 単語リストの選び直しは「カードのプルダウン」と「エディタの⚙」だけ。
-    # 詳細設定の中には単語リストのUIを置かない(正本は hidden の置き場)
+    # 曲・単語リストの選び直しはカードとエディタだけ。詳細設定には置かない。
     advanced = _advanced_html()
+    assert 'id="sample-select"' not in advanced
     assert 'id="wordlist' not in advanced
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
-        "sample-select", "synthesizer", "model-select", "voicevox-style",
+        "synthesizer", "model-select", "voicevox-style",
     ]
     # 「曲 × 単語リスト」の1行はプルダウンと重複するので置かない
     assert 'id="builder-state"' not in html
@@ -1322,7 +1322,7 @@ def test_index_html_restores_layout_json_only_when_layout_matches():
     assert 'if (state.layoutJson && state.layoutJsonFor === (state.layout || "")) {' in html
 
 
-# ---- 詳細設定(#advanced)の並べ替え: 曲=MIDIアップロードが主役 ----
+# ---- 曲・元歌詞の正本は非表示、操作はカードとエディタに一本化 ----
 
 
 def _index_html() -> str:
@@ -1337,52 +1337,39 @@ def _advanced_html() -> str:
     return body.split('<details class="card" id="history">')[0]
 
 
-def test_index_html_advanced_song_field_leads_with_midi_upload():
-    """詳細設定の「曲」はMIDIファイル選択が主役で、サンプル選択は従属UI。"""
-    advanced = _advanced_html()
-    # MIDIファイル入力は折りたたみの外(直に見える)
-    assert '<label for="midi">曲(XF MIDIファイル)</label>' in advanced
-    assert '<input type="file" id="midi" accept=".mid,.midi">' in advanced
-    # 旧構成(サンプルが主役・MIDIが折りたたみ)は残っていない
-    assert 'id="midi-details"' not in advanced
-    assert "自分の曲を使う(XF MIDIファイル)" not in advanced
-    # サンプル選択は「サンプルから選ぶ」の折りたたみへ格下げし、MIDIより後に置く
-    assert '<details class="sub-details" id="sample-details">' in advanced
-    assert "<summary>サンプルから選ぶ</summary>" in advanced
-    assert advanced.index('id="midi"') < advanced.index('id="sample-select"')
-
-
-def test_index_html_sample_select_stays_the_source_of_truth():
-    """格下げしても #sample-select はDOMに残す(ビルダーカードとの同期の正本)。"""
+def test_index_html_song_values_are_hidden_canonicals():
+    """曲・MIDI・元歌詞の正本はDOMに残すが、詳細設定には表示しない。"""
     html = _index_html()
-    assert '<select id="sample-select" aria-label="サンプル曲"></select>' in html
-    # 🎲 → #sample-select → applySample の経路はそのまま
+    store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
+    assert '<input type="file" id="midi" accept=".mid,.midi">' in store
+    assert '<select id="sample-select" aria-label="サンプル曲"></select>' in store
+    assert '<textarea id="lyrics"></textarea>' in store
+    for dynamic_id in (
+        "midi-restore-hint",
+        "midi-error",
+        "sample-status",
+        "lyrics-midi-warn",
+    ):
+        assert f'id="{dynamic_id}"' in store
+
+    advanced = _advanced_html()
+    assert 'id="midi"' not in advanced
+    assert 'id="sample-select"' not in advanced
+    assert 'id="lyrics"' not in advanced
+    assert "曲と歌詞" not in advanced
+    assert "曲(XF MIDIファイル)" not in advanced
+    assert "元歌詞(推奨・字幕用)" not in advanced
+
+    # 正本をhiddenへ移してもカード・🎲・エディタとの既存経路は維持する
     assert '$("sample-select").value = c.sampleId;' in html
-    # 選び直しは applySample で反映する(取得の失敗はカードに出す)
     assert '$("sample-select").addEventListener("change", () => {' in html
     assert "trackSample(applySample()).then((ok) => {" in html
     assert (
         '$("sample-select").addEventListener("change", '
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
-    # サンプルが取れない環境では折りたたみごと隠す(消えた #midi-details は参照しない)
     assert '$("sample-details").hidden = true;' in html
     assert '$("midi-details")' not in html
-
-
-def test_index_html_lyrics_follows_the_song_and_is_recommended():
-    """元歌詞は曲のすぐ後ろに置き、「推奨」と無いときの影響を書く。"""
-    advanced = _advanced_html()
-    assert '<label for="lyrics">元歌詞(推奨・字幕用)</label>' in advanced
-    assert "元歌詞(任意・字幕用)" not in advanced
-    # 曲(MIDI)の直後・歌声より前(歌声より後ろだった旧位置から移動)
-    assert (
-        advanced.index('id="midi"')
-        < advanced.index('id="lyrics"')
-        < advanced.index('id="synthesizer"')
-    )
-    # 無いときに何が起きるかを書く
-    assert "字幕に元歌詞の行が出ません" in advanced
 
 
 # ---- 詳細設定(#advanced)の情報整理: 役割ごとのグループを使用頻度順に並べる ----
@@ -1408,12 +1395,11 @@ def test_index_html_advanced_is_grouped_by_role():
     カードの⚙に移ったのでグループごと廃止した。
     """
     assert list(_opt_groups()) == [
-        "① 曲と歌詞",
-        "② 歌声",
-        "③ 見た目",
+        "① 歌声",
+        "② 見た目",
     ]
     # どのグループにも1行の説明を添える
-    assert _advanced_html().count('class="hint opt-group-lead"') == 3
+    assert _advanced_html().count('class="hint opt-group-lead"') == 2
     # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
     advanced = _advanced_html()
     assert advanced.index('id="auth"') < advanced.index('<section class="opt-group">')
@@ -1424,15 +1410,13 @@ def test_index_html_advanced_is_grouped_by_role():
 
 
 def test_index_html_advanced_groups_hold_the_right_fields():
-    """DOMの移動だけ。既存のIDはすべて残し、役割どおりのグループに入れる。"""
+    """詳細設定には動画側の歌声と見た目だけを残す。"""
     g = _opt_groups()
-    song = g["① 曲と歌詞"]
-    assert 'id="midi"' in song and 'id="sample-select"' in song and 'id="lyrics"' in song
-    voice = g["② 歌声"]
+    voice = g["① 歌声"]
     assert 'id="synthesizer"' in voice
     assert 'id="auto-octave"' in voice and 'id="transpose"' in voice
     assert 'id="preview"' in voice
-    look = g["③ 見た目"]
+    look = g["② 見た目"]
     # プリセット選択も編集も全画面モーダル(#le-modal)へ寄せたので、グループに残るのは
     # 送信値の正本(隠しinput)・モーダルを開くボタン・カスタム編集中の目印だけ。
     # レイアウトは単語リストに連動して自動で決まるものなので、ふだんは選ばせない
@@ -1483,8 +1467,8 @@ def test_index_html_advanced_extra_holds_only_note_length_weight():
     advanced = _advanced_html()
     assert '<details id="advanced-extra" class="sub-details">' in advanced
     assert "<summary>上級者向け</summary>" in advanced
-    # グループ(①②③)より後ろ、詳細設定の末尾に置く
-    assert advanced.index('id="advanced-extra"') > advanced.index("③ 見た目")
+    # グループ(①②)より後ろ、詳細設定の末尾に置く
+    assert advanced.index('id="advanced-extra"') > advanced.index("② 見た目")
     extra = advanced.split('<details id="advanced-extra" class="sub-details">')[1]
     # 中身はエディタにも本家にも無い独自項目(ノート長重視α)だけ
     assert 'id="p-notelen"' in extra
