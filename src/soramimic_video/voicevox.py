@@ -38,6 +38,15 @@ DEFAULT_CHUNK_SEC = 60.0  # チャンク合成の1チャンク最大秒数(0以�
 # 分割時、2番目以降のチャンク先頭に残す休符フレーム数(ボコーダの立ち上がり安定用)。
 # エンジンは1フレーム休符を弾くため2以上必須。約0.3秒を目安にする。
 LEAD_REST_FRAMES = max(2, round(0.3 * FRAME_RATE))
+# エンジンが弾かない最小の要素長(1フレームの休符は500、1フレームの音符も500になる)。
+MIN_ELEMENT_FRAMES = 2
+# スコア全体の先頭に必ず置く休符のフレーム数。エンジンは先頭要素が子音を持つスコアを
+# 400(consonant_lengths[0] must be 0)で弾くため、曲頭(0.0秒)から音符が始まる曲では
+# 先頭に休符が要る。子音はこの休符から取られる(実測: 休符28フレームなら「シ」の sh に
+# 14フレーム)ので、休符を長くするほど1音目の母音の立ち上がりが遅れる。絶対時間を保つには
+# そのぶんを音符の頭から借りるしかないので、エンジンが受け付ける最小の2フレーム(約21ms)
+# だけ借りる(子音は1フレームに圧縮されるが、母音の位置はほぼずれない)。
+HEAD_REST_FRAMES = MIN_ELEMENT_FRAMES
 # 1音符に複数モーラが載るときの長さ配分。均等割りだと2モーラ目が音符の
 # ど真ん中に立ち「遅れた別の音節」に聞こえるため、短い固定アタック長のモーラと
 # 伸ばしを持つモーラに分ける。並べ方(どちらを伸ばすか)は stacked_mora_mode 参照
@@ -226,10 +235,38 @@ def auto_octave_shift(keys: list[int], transpose: int = 0) -> int:
     return _octave_shift(keys, transpose, SAFE_KEY_MIN, SAFE_KEY_MAX)
 
 
+def _ensure_head_rest(
+    notes: list[dict[str, Any]], lead: int = HEAD_REST_FRAMES
+) -> list[dict[str, Any]]:
+    """スコアの先頭に休符を作る(合計フレーム数=絶対時間は変えない)。
+
+    エンジンは先頭要素が子音を持つスコアを400で弾く(consonant_lengths[0] must be 0)
+    ため、曲頭から音符が始まる曲では先頭に休符が要る。休符を「足す」と以降の絶対時間が
+    全部ずれてしまうので、先頭の音符の頭から lead フレームを借りて休符にする。
+    借りると MIN_ELEMENT_FRAMES 未満になってしまう極短音符(約20ms)は丸ごと休符にする
+    (1フレームの音符もエンジンが弾くため)。
+    """
+    if not notes or notes[0]["key"] is None:
+        return notes  # 既に休符始まり(曲頭に隙間がある通常の曲)
+    rest = 0
+    kept = list(notes)
+    while kept and rest < lead:
+        head = kept[0]
+        need = lead - rest
+        if head["frame_length"] - need >= MIN_ELEMENT_FRAMES:
+            kept[0] = {**head, "frame_length": head["frame_length"] - need}
+            rest = lead
+        else:
+            rest += head["frame_length"]
+            kept.pop(0)
+    return [{"key": None, "frame_length": rest, "lyric": ""}, *kept]
+
+
 def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     """projectからVOICEVOXのScore(dict)を作る。
 
-    - 曲頭(t=0)から休符で埋める(絶対時間を保つ)。
+    - 曲頭(t=0)から休符で埋める(絶対時間を保つ)。曲頭に隙間が無い曲でも先頭には
+      必ず休符を置く(_ensure_head_rest。エンジンの制約)。
     - 音符の重なりは後勝ちでクリップ、隙間は休符で埋める。
     - 1音符=1モーラ。複数モーラのカナは音符フレームを分配する(前詰め。
       mora_frame_bounds 参照)。
@@ -300,7 +337,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
 
     if not out_notes:
         raise ValueError("音符がありません")
-    return {"notes": out_notes}
+    return {"notes": _ensure_head_rest(out_notes)}
 
 
 @dataclass

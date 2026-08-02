@@ -1,3 +1,4 @@
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from helpers import build_xf_midi
@@ -231,3 +232,52 @@ def test_build_musicxml_tempo(tmp_path: Path):
     project = _project(tmp_path)
     xml = build_musicxml(project, {})
     assert '<sound tempo="120' in xml  # 500000us/beat = 120bpm
+
+
+def _zero_start_project(tmp_path: Path):
+    """曲頭(tick 0)から音符が始まる曲。"""
+    midi = build_xf_midi(
+        tmp_path / "zero.mid",
+        notes=[(0, 480, 60), (480, 480, 62)],
+        lyric_events=[(0, "し"), (480, "ず")],
+    )
+    return analyze_midi(midi)
+
+
+def _durations(xml: str) -> list[tuple[bool, int]]:
+    """(休符か, duration) の並び。タイ・小節分割後の生の並びを見る。"""
+    root = ET.fromstring(xml)
+    return [
+        (n.find("rest") is not None, int(n.find("duration").text))
+        for n in root.iter("note")
+    ]
+
+
+def test_build_musicxml_head_rest_when_song_starts_at_zero(tmp_path: Path):
+    # NEUTRINOは休符始まりでないスコアの頭に2秒の休符を勝手に足して歌を遅らせるため、
+    # 曲頭から音符が始まる曲では自前で先頭に休符を置く
+    project = _zero_start_project(tmp_path)
+    xml = build_musicxml(project, build_lyric_map(project))
+    segs = _durations(xml)
+    assert segs[0][0] is True  # 先頭は休符
+    lead = round(0.03 * 960)  # HEAD_REST_SEC × 960tick/秒(480tpb・120bpm)
+    assert segs[0][1] == lead
+    # 休符は「足す」のではなく先頭音符から借りる(2音目以降の位置がずれない)
+    assert segs[1] == (False, 480 - lead)
+    assert segs[0][1] + segs[1][1] == 480  # 2音目は元どおりtick480から始まる
+    assert sum(d for _, d in segs) == 1920  # 曲全体(小節末までの休符埋め)も変わらない
+
+
+def test_build_musicxml_head_rest_scales_with_tempo(tmp_path: Path):
+    # 先頭休符は秒で決めるのでテンポが変わればtick数も変わる(240bpmなら半分)
+    project = _zero_start_project(tmp_path)
+    project.song.tempo_map = [[0, 250_000]]  # 240bpm
+    segs = _durations(build_musicxml(project, {}))
+    assert segs[0] == (True, round(0.03 * 1920))
+
+
+def test_build_musicxml_keeps_head_rest_of_normal_song(tmp_path: Path):
+    # 曲頭に隙間がある通常の曲(1拍目が休符)は何も変えない
+    project = _project(tmp_path)
+    segs = _durations(build_musicxml(project, {}))
+    assert segs[0] == (True, 480)
