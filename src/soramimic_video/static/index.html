@@ -481,7 +481,7 @@
     <p class="hint" id="editor-resume-note"></p>
     <div class="editor-resume-actions">
       <button type="button" id="editor-resume-continue" class="btn-sm">続きから再開</button>
-      <button type="button" id="editor-resume-regen" class="btn-sm">現在のパラメータで再生成してから編集</button>
+      <button type="button" id="editor-resume-regen" class="btn-sm">設定から作り直す</button>
       <button type="button" id="editor-resume-cancel" class="btn-sm">やめる</button>
     </div>
   </div>
@@ -4046,8 +4046,8 @@ function watchEditorSession(on) {
 // ---- エディタへの導線(「✏️ 替え歌を編集」1本) ----
 // 保存済みの替え歌が無ければ、押したらそのまま変換してエディタを開く(暗黙の変換)。
 // 有るときは黙って上書きも黙って再開もせず、#editor-resume で選んでもらう。
-//   (a) 続きから再開          … 保存済みをシードにエディタを開く
-//   (b) 現在のパラメータで再生成 … 保存済みを捨て、今の選択で変換し直してから開く
+//   (a) 続きから再開        … 保存済みをシードにエディタを開く(編集画面から)
+//   (b) 設定から作り直す      … 保存済みを捨て、セットアップ画面から開き直す
 // 来歴(provenance)が今の選択と食い違う保存済みは、そのままでは生成に使われない
 // (liveEditorEdit の stale)ので (b) を既定の推しにする。
 
@@ -4085,12 +4085,12 @@ async function openEditorFlow() {
   if (saved.stale) {
     note.textContent = "ただしその替え歌は今と別の入力(曲・単語リスト・変換パラメータ)"
       + "から作られたものです。このままでは動画生成にも使われないので、"
-      + "「現在のパラメータで再生成」がおすすめです"
+      + "「設定から作り直す」がおすすめです"
       + "(「続きから再開」を選ぶと、今の入力のものとして引き継ぎます)。";
   } else {
     note.textContent = "「続きから再開」はその替え歌をそのまま開きます。"
-      + "「現在のパラメータで再生成」は保存済みを破棄して、今の曲・単語リスト・"
-      + "変換パラメータで変換し直します(編集内容は戻せません)。";
+      + "「設定から作り直す」は保存済みを破棄して、単語リストと変換のしかたを"
+      + "選ぶ画面から作り直します(編集内容は戻せません)。";
   }
   $("editor-resume-continue").classList.toggle("btn-primary", !saved.stale);
   $("editor-resume-regen").classList.toggle("btn-primary", saved.stale);
@@ -4113,7 +4113,7 @@ async function resumeEditor() {
   await reEditParodyFile();
 }
 
-// (b) 現在のパラメータで再生成(保存済みは破棄する)
+// (b) 設定から作り直す(保存済みは破棄し、セットアップ画面から始める)
 async function regenerateEditor() {
   hideEditorResume();
   sessionStorage.removeItem(EDITOR_KEY);
@@ -4126,6 +4126,12 @@ async function regenerateEditor() {
   await convertAndOpenEditor();
 }
 
+// エディタを「セットアップ画面」から開く。サーバーには変換させず(convert=0)、
+// 解析だけ——行ごとの読みカナ(phrases)と初期設定(単語リスト・パラメータ・
+// 絞り込み・曲名・ノート長重み)——を貰ってシードにする。エディタは results の
+// 無いシードを未変換とみなし、単語リストと変換のしかたを選ぶ画面から始めて、
+// 「この設定で変換」でブラウザ内で変換する(soramimic frontend/README の約束)。
+// 単語リストは無くてよい(エディタ側が conf の既定で始める)。
 async function convertAndOpenEditor() {
   if (midiChecking) await midiChecking;
   // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
@@ -4133,36 +4139,31 @@ async function convertAndOpenEditor() {
     return;
   }
   const midi = $("midi").files[0];
-  const wl = $("wordlist").value.trim();
   const msg = $("open-editor-msg");
   msg.textContent = "";
   if (!midi) { msg.textContent = "MIDIファイルを選んでください"; return; }
-  // 名前で引けるリストが要る。エディタの中で書いた自作リストを使っているあいだは
-  // #wordlist が空なのでここへ来る。🎲は曲ごと振り直してしまうので勧めない
-  //(その自作リストごと開き直せる「続きから再開」か、エディタの中の再変換が正解)
-  if (!wl) {
-    msg.textContent = "いまの替え歌は替え歌エディタの中で書いた単語リストで作られています。"
-      + "「続きから再開」で開き、エディタの⚙(変換のしかた)から作り直してください。";
-    return;
-  }
   const form = new FormData();
   form.append("midi", midi);
   form.append("lyrics", $("lyrics").value);
-  form.append("wordlist", wl);
+  form.append("wordlist", $("wordlist").value.trim());
   form.append("where", $("where").value.trim());
-  // 変換パラメータは生成時と同じものを使う(エディタの中身と生成結果を揃える)
+  // 変換パラメータは生成時と同じものを使う(エディタの初期値と生成結果を揃える)
   form.append("convert_params", buildConvertParams());
+  form.append("song_title", songTitleOf(midi));
+  form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
   const btn = $("builder-edit");
   btn.disabled = true;
   const label = btn.textContent;
-  btn.textContent = "変換中…";
+  btn.textContent = "準備中…";
   try {
     const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
     const seed = JSON.stringify(body);
     sessionStorage.setItem(EDITOR_KEY, seed);
-    markEditorSeed(seed);   // この変換結果=編集前の状態。来歴もここで確定する
+    // 未変換のシード=編集前の状態。ここからセットアップ画面で変換されると
+    // results が入って指紋が変わり、その結果が生成に使われる(liveEditorEdit)
+    markEditorSeed(seed);
     showEditorFrame();
   } catch (err) {
     msg.textContent = "編集の準備に失敗しました: " + err.message;
@@ -4353,9 +4354,13 @@ function setWhere(v) {
 
 // 選んだ単語リストの既定の絞り込み(where)。conf の facets には既定でONの値が
 // 決まっている(例: 駅名は現存だけ、流行はセンシティブを外す)ので、チェックボックス
-// UIを畳んだあとも同じ式を組み立てて #where に入れる。式の形はエディタ側の
-// convertControls.js(renderFacets の default + compileWhere)と対になっていて、
-// エディタは restoreFacets でこの where から同じチェック状態を復元する。
+// UIを畳んだあとも同じ式を組み立てて #where に入れる。
+// 【注意】組み立てる式は「意味」はエディタ側(convertControls.js の
+// renderFacets の default + compileWhere)と同じだが「形」は違う——こちらは
+// `type=family or type=full`、エディタは `(type=family) or (type=full)`。
+// エディタの restoreFacets はカッコつきの断片を探すので、この式をシードの
+// トップレベル where として渡すと1つも一致せず、全チェックが外れて絞り込みが
+// 消える。だから渡さない(api.py の editor_setup_seed 参照)。
 // 全値が既定ONのファセットは無条件と同義なので節を出さない(式が伸びるほど変換が遅い)。
 // facets の無いエントリは従来どおり entry.where をそのまま使う。
 function facetDefaultWhere(g) {

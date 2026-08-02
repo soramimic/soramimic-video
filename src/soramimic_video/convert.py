@@ -42,6 +42,16 @@ def _engine_kana(kana: str) -> str:
     """
     return open_long_vowel_runs(normalize_small_vowels(kana))
 
+
+def engine_phrases(project: Project) -> list[str]:
+    """変換エンジンへ渡す行ごとの読み(1行=カナ1文字列)。
+
+    convert_project の入口と、変換せず解析だけする経路(/api/editor-session の
+    解析のみモード)で同じ前処理を共有するための小さなヘルパ。
+    """
+    return [_engine_kana(line.xf_kana) for line in project.lines]
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORDLISTS_DIR = REPO_ROOT / "external" / "soramimic-wordlists"
 
@@ -1190,7 +1200,7 @@ def _find_row(
 
 
 def resolve_convert_settings(
-    csv_path: Path,
+    csv_path: Path | None,
     where: str | None = None,
     params: dict[str, Any] | None = None,
 ) -> tuple[str | None, dict[str, Any], float]:
@@ -1199,8 +1209,12 @@ def resolve_convert_settings(
     convert_project の入口と、曲名だけを同じ条件で変換したいところ
     (thumbnail.py のサムネ生成・そのプレビュー)で共有する。
     渡された params は壊さない(コピーして返す)。
+
+    csv_path は単語リストごとの既定の絞り込み(DEFAULT_WHERE)を引くためだけに使う。
+    単語リストが決まっていない場面(変換せず解析だけする /api/editor-session)では
+    None を渡してよい——その場合 where は渡されたものをそのまま使う。
     """
-    if where is None:
+    if where is None and csv_path is not None:
         where = DEFAULT_WHERE.get(csv_path.stem)
     # video 専用パラメータはエンジンへ渡す前に取り除く(呼び出し側のdictは壊さない)
     params = dict(params or {})
@@ -1246,7 +1260,7 @@ def convert_project(
     # 同母音の小書き(ウッセェワ)はエンジンのトークナイズで「セ」「ェ」に割れ、
     # 「ェ」に一致する単語が無いためその行の変換結果が空になる。1文字→1文字で
     # 開いて(ウッセエワ)から渡す(文字数もモーラ位置も変わらない)
-    phrases = [_engine_kana(line.xf_kana) for line in project.lines]
+    phrases = engine_phrases(project)
 
     # α>0 のときだけ重みを渡す。α=0(既定)は weights_per_line=None で従来と完全に同一
     weights = project_note_length_weights(project, alpha) if alpha > 0 else None

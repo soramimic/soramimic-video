@@ -292,6 +292,146 @@ def test_editor_session_note_length_weights(client, tmp_path):
     assert "weightsList" not in res.json()
 
 
+# ---- 解析のみモード(convert=0): editor のセットアップ画面から始めるシード ----
+
+
+def _setup_seed(client, tmp_path, **extra):
+    """解析のみモードで editor シードを取る。"""
+    midi = _xf_midi(tmp_path)
+    res = client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+        data={"convert": "0", **extra},
+    )
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_setup_seed_has_phrases_but_no_conversion(client, tmp_path):
+    """変換結果は返さない。editor はこれを未変換とみなしてセットアップ画面から始める。"""
+    payload = _setup_seed(
+        client, tmp_path, wordlist=str(_wordlist_csv(tmp_path)), song_title="しずむ歌"
+    )
+    assert payload["format"] == "soramimic-editor/1"
+    # ブラウザ側で導出できるものは返さない(これが「未変換」の目印になる)
+    for key in ("results", "tokensList", "unitsList"):
+        assert key not in payload
+    # 行ごとの読みカナ。convert_project がエンジンへ渡すのと同じ前処理済みの値
+    assert payload["phrases"] == ["シズム"]
+    # 初期選択の単語リストは、変換込みモードと同じ組み立て(editor の conf 形式)
+    assert payload["wordlist"]["filepath"] == "wordlists/words.csv"
+    assert payload["wordlist"]["dbtype"] == "tidy"
+    # 曲名はセットアップ画面に出すだけ
+    assert payload["song"] == {"title": "しずむ歌"}
+
+
+def test_setup_seed_param_is_the_effective_engine_default(client, tmp_path):
+    """param はエンジン既定を埋めた実効値(パラメータUIが初期値を逆算できる形)。"""
+    payload = _setup_seed(
+        client,
+        tmp_path,
+        wordlist=str(_wordlist_csv(tmp_path)),
+        convert_params="VOWEL_RATIO=0.5",
+    )
+    param = payload["param"]
+    # 指定した値はそのまま(型は数値に寄せる)
+    assert param["VOWEL_RATIO"] == 0.5
+    # 未指定は本家Web UIの既定プリセット。editor の valuesFromParam が読むキー
+    assert param["DUPLICATE"] is False
+    assert param["MID_PHRASE_BREAK_PENALTY"] == 20
+    assert param["WORD_NUMBER_PENALTY"] == 20
+    # video 独自パラメータはエンジンparamに載せない(従来どおり)
+    assert "NOTE_LENGTH_WEIGHT" not in param
+
+
+def test_setup_seed_works_without_a_wordlist(client, tmp_path):
+    """解析に単語リストは要らない。リストはセットアップ画面で選ぶ。
+
+    エディタ内の自作リスト(ORIGINAL)を使っているあいだ video 側の #wordlist は
+    空になるが、その状態でも⚙から開けること。entry を入れられないので
+    wordlist フィールドは省き、editor は conf の既定(active)で始まる。
+    """
+    payload = _setup_seed(client, tmp_path)
+    assert payload["phrases"] == ["シズム"]
+    assert "wordlist" not in payload
+    # 変換込み(既定)では従来どおり単語リスト必須のまま
+    midi = _xf_midi(tmp_path)
+    res = client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+    )
+    assert res.status_code == 422
+
+
+def test_setup_seed_puts_the_filter_on_the_entry_only(client, tmp_path):
+    """絞り込み(where)は単語リストのエントリにだけ載せる(トップレベルには出さない)。
+
+    editor はトップレベルの where をファセットのチェック状態の復元に使うが、
+    その照合は `(type=family)` の形が前提で、video が組む `type=family` とは
+    形が違う。渡すと全チェックが外れて絞り込みごと消えるので渡さない
+    (E2Eで確認済み)。エントリに載せておけば editor は既定のチェック状態
+    ——video が送ってきたのと同じ条件——で始まる。
+    """
+    payload = _setup_seed(
+        client, tmp_path, wordlist=str(_wordlist_csv(tmp_path)), where="type=family"
+    )
+    assert payload["wordlist"]["where"] == "type=family"
+    assert "where" not in payload
+
+
+def test_setup_seed_note_length_weights(client, tmp_path):
+    """α>0 のときは変換せずに重みだけ計算して同梱する(トークナイズのみ)。
+
+    変換しないので単語DBは要らないが、重みの計算にはエンジンと同じユニット列が
+    必要なので、トークナイザだけを呼ぶ(soramimic_engine.run_tokenize)。
+    """
+    payload = _setup_seed(
+        client,
+        tmp_path,
+        wordlist=str(_wordlist_csv(tmp_path)),
+        convert_params="NOTE_LENGTH_WEIGHT=1",
+    )
+    weights = payload["weightsList"]
+    assert len(weights) == len(payload["phrases"])
+    for row in weights:
+        assert row and all(isinstance(w, (int, float)) and w >= 0 for w in row)
+    # α無し(既定)ではフィールド自体を付けない(=重みなしで変換される)
+    assert "weightsList" not in _setup_seed(
+        client, tmp_path, wordlist=str(_wordlist_csv(tmp_path))
+    )
+
+
+def test_setup_seed_accepts_a_custom_wordlist(client, tmp_path):
+    """自作リスト(アップロード)も解析のみモードで初期選択にできる。"""
+    midi = _xf_midi(tmp_path)
+    res = client.post(
+        "/api/editor-session",
+        files=[("midi", ("song.mid", midi.read_bytes(), "audio/midi"))],
+        data={"wordlist_text": CUSTOM_TEXT, "convert": "0"},
+    )
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    entry = payload["wordlist"]
+    sid = entry["value"].removeprefix("custom:")
+    assert entry["filepath"] == f"session-wordlists/{sid}.csv"
+    assert "results" not in payload
+    # DB構築用の正規化CSVは変換込みモードと同じく置かれる
+    assert (tmp_path / "jobs" / "editor-sessions" / sid / "wordlist.csv").is_file()
+
+
+def test_editor_session_still_converts_by_default(client, tmp_path):
+    """convert を送らなければ従来どおり変換済みJSON(後方互換)。"""
+    midi = _xf_midi(tmp_path)
+    res = client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+        data={"wordlist": str(_wordlist_csv(tmp_path))},
+    )
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["results"] and payload["unitsList"] and payload["tokensList"]
+
+
 def test_import_editor_resolves_custom_session(client, tmp_path):
     """custom:<sid> のeditor JSONから、単語画像つきの単語リスト行が引ける。"""
     from soramimic_video.editor_io import import_editor

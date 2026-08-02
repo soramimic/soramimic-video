@@ -119,22 +119,48 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
-def test_editor_session_sends_the_selected_wordlist():
-    """暗黙の変換は、いま選ばれている名前付きリストと変換パラメータで行う。
+def test_editor_opens_from_the_setup_screen():
+    """⚙はサーバーに変換させず(convert=0)、セットアップ画面から開く。
 
-    自作リストはエディタの⚙モーダル(ORIGINAL/csvText)へ一本化したので、
-    video側から中身を送る経路は無い。名前が無い(=その自作リストを使っている)
-    状態では変換せず、「続きから再開」でその編集を開き直す。
+    いま選ばれている単語リスト・絞り込み・変換パラメータ・曲名は初期値として
+    送る(エディタのセットアップ画面がそれを初期選択にする)。単語リストが
+    空でも呼べる——リストはセットアップ画面で選べるため。
     """
     script = _script()
     body = _function_body(script, "async function convertAndOpenEditor()")
-    assert 'form.append("wordlist", wl)' in body
+    assert 'form.append("convert", "0")' in body
+    assert 'form.append("wordlist", $("wordlist").value.trim())' in body
     assert 'form.append("where", $("where").value.trim())' in body
-    # 変換パラメータも送る(エディタの中身と生成結果を揃える)
+    # 変換パラメータも初期値として送る(エディタの初期表示と生成条件を揃える)
     assert 'form.append("convert_params", buildConvertParams())' in body
-    # 名前が無ければ変換しない(自作リストの中身は video 側が持っていない)
-    # 自作リスト(エディタ内)使用中は名前で引けないので、再変換ではなく再開へ誘導する
-    assert "「続きから再開」で開き" in body
+    # セットアップ画面に出す曲名(投入時と同じ来歴から決める)
+    assert 'form.append("song_title", songTitleOf(midi))' in body
+    # 単語リスト名が無いことを理由に止める門番はもう無い
+    assert "「続きから再開」で開き" not in body
+
+
+def test_regenerate_button_says_it_starts_from_the_setup_screen():
+    """「再生成」は実態がセットアップ画面からのやり直しなので、そう名乗る。"""
+    markup = _markup()
+    assert "設定から作り直す" in markup
+    assert "現在のパラメータで再生成" not in markup
+    # 説明文も揃える(押すとどこから始まるかが分かること)
+    script = _script()
+    note = _function_body(script, "async function openEditorFlow()")
+    assert "「設定から作り直す」" in note
+
+
+def test_setup_seed_has_no_results_so_viewing_alone_is_not_an_edit():
+    """未変換シードは results 等を持たないので、来歴ガードは「編集なし」と見る。
+
+    セットアップ画面で変換されると results が入って指紋が変わり、
+    その結果が(取り込み操作なしで)そのまま生成に使われる。
+    """
+    script = _script()
+    sig = _function_body(script, "function editorContentSig(data)")
+    assert "data.results" in sig and "data.tokensList" in sig and "data.unitsList" in sig
+    live = _function_body(script, "function liveEditorEdit()")
+    assert "sig === meta.sig" in live and 'state: "none"' in live
 
 
 def test_restored_sample_midi_is_refetched_at_startup():

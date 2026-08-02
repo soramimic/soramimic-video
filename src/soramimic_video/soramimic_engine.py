@@ -347,6 +347,35 @@ def _json_safe(word: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def run_tokenize(
+    phrases: list[str], params: dict[str, Any] | None = None
+) -> list[list[dict[str, Any]]]:
+    """行ごとの音節ユニット列だけを作る(単語DB不要・変換なし)。
+
+    run_convert の前半——トークナイズ(MeCab)と
+    ``get_yomi_and_phrase_break``——だけを走らせる。単語リストが要らないので、
+    「変換はブラウザ側でやるが、ノート長重み(NOTE_LENGTH_WEIGHT のα)は
+    サーバーで計算して渡したい」場面(/api/editor-session の解析のみモード)で使う。
+
+    戻り値の各要素は run_convert が update_func で拾うのと同じ形の dict
+    (surface_form / pronunciation / phrase)で、
+    :func:`convert.project_note_length_weights` にそのまま渡せる。
+    """
+    app = _get_app((params or {}).get("VOWEL_RATIO"))
+    tokens_list = app.text_analyzer.tokenize_together(phrases)
+    return [
+        [
+            {
+                "surface_form": u["surface_form"],
+                "pronunciation": u["pronunciation"],
+                "phrase": u["phrase"],
+            }
+            for u in app.text_analyzer.get_yomi_and_phrase_break(t)
+        ]
+        for t in tokens_list
+    ]
+
+
 def run_convert(
     phrases: list[str],
     wordlist_csv: Path,
