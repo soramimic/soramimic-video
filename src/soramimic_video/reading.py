@@ -113,6 +113,49 @@ def text_to_kana_unidic(text: str) -> str:
     return _kana_with_ruby(text, _unidic_kana) or ""
 
 
+_PARTICLE_PRON = {"ハ": "ワ", "ヘ": "エ", "ヲ": "オ"}
+_PARTICLE_SURFACES = frozenset("はハへヘをヲ")
+
+
+def particle_pronunciations(text: str) -> list[tuple[int, str]]:
+    """助詞の「は/へ/を」の位置と発音形カナを返す。
+
+    XFの歌詞カナは表記どおりで、助詞の「は」も ``ハ`` のまま入っている
+    (市販のXFでも同じ)。そのまま歌うと「ボクは」が「ボクハ」になり、
+    発音形で書かれた単語リストとの突き合わせでも取りこぼす。表記は変えずに
+    読みだけ直したいので、置き換える位置を返す。
+
+    戻り値は ``(text 上の文字オフセット, 発音形カナ1文字)`` の列。
+    1文字→1文字なので文字オフセットの対応は恒等に保たれる。
+    形態素解析器(MeCab + unidic-lite)が無ければ RuntimeError。
+    """
+    found: dict[int, str] = {}
+    # カタカナ書きの歌詞(消失のセリフ等)は解析器が助詞と見てくれないので、
+    # ひらがなに開いた写しでも解析する。カタカナ→ひらがなは1文字→1文字なので
+    # オフセットはそのまま使える。
+    variants = [text]
+    hira = jaconv.kata2hira(text)
+    if hira != text:
+        variants.append(hira)
+    for variant in variants:
+        node = _get_tagger().parseToNode(variant)
+        cur = 0
+        while node:
+            surface = node.surface
+            if surface:
+                pos = variant.find(surface, cur)
+                if pos < 0:
+                    pos = cur
+                cur = pos + len(surface)
+                if len(surface) == 1 and surface in _PARTICLE_SURFACES:
+                    fields = _feature_fields(node.feature)
+                    pron = _PARTICLE_PRON.get(jaconv.hira2kata(surface))
+                    if pron and fields and fields[0] == "助詞":
+                        found.setdefault(pos, pron)
+            node = node.next
+    return sorted(found.items())
+
+
 def _yomi_tokens(text: str) -> list[tuple[str, str]]:
     """soramimic-yomi の (表層形, カタカナ読み) トークン列(素テキスト前提)。"""
     import soramimic_yomi  # 遅延import(未導入環境で既存機能を壊さない)
@@ -122,7 +165,7 @@ def _yomi_tokens(text: str) -> list[tuple[str, str]]:
         surface = tok.get("surface_form", "")
         if not surface:
             continue
-        reading = tok.get("reading") or tok.get("pronunciation") or ""
+        reading = tok.get("pronunciation") or tok.get("reading") or ""
         tokens.append((surface, _kana_only(reading)))
     return tokens
 
@@ -132,10 +175,11 @@ def reading_tokens(text: str) -> list[tuple[str, str]]:
 
     元歌詞のフレーズ切り出し(align.split_lyric_to_phrases)で、表層位置と読みの
     対応を取るために使う。get_tokens はデフォルトで表層を保持する(位置写像に好都合)。
-    読みは reading(表層準拠。は→ハ 等)を採る。XFカナも表層準拠のことが多く、
-    長音のゆれ(ヨウ/ヨー)は突き合わせ側の正規化で吸収するため、pronunciation
-    (は→ワ)よりも取りこぼしが少ない。soramimic-yomi 未インストールなら
-    ImportError(呼び出し側で按分にフォールバック)。
+    読みは pronunciation(発音形。は→ワ 等)を採る。突き合わせ相手のXFカナも
+    xfparse が助詞を発音形に直しているので、こちらを揃えないと助詞のモーラで
+    フレーズの切れ目がずれる。長音のゆれ(ヨウ/ヨー)は突き合わせ側
+    (align._pron_normalize)の normalize_long_vowels が両側に掛かるので吸収される。
+    soramimic-yomi 未インストールなら ImportError(呼び出し側で按分にフォールバック)。
 
     ルビ記法つきのテキストを渡すと、注釈区間は1トークン(表層=素テキスト,
     読み=指定読み)にまとめて返す。表層は plain 座標なので、呼び出し側が

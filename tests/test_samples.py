@@ -62,7 +62,11 @@ def test_sample_midi_roundtrip(sample_id: str):
 
     # 音符数=歌詞モーラ数=打ち込みデータの要素数(取りこぼした歌詞イベントが無い)
     assert len(project.notes) == len(score)
-    assert [n.kana for n in project.notes] == [normalize_kana(k) for k, _, _ in score]
+    # 読みは助詞が発音形に直る(は→ワ)ので、打ち込みデータとは生テキスト側で
+    # 突き合わせる(取りこぼし・生成し直し忘れの検出という目的は変わらない)
+    assert [normalize_kana(n.raw) for n in project.notes] == [
+        normalize_kana(k) for k, _, _ in score
+    ]
     assert [n.midi_note for n in project.notes] == [note for _, note, _ in score]
     # 1音符=1モーラに正規化してある(拗音「チャ」等だけが2文字)
     for n in project.notes:

@@ -54,3 +54,10 @@ def test_reading_candidates_dedupes_by_long_vowel_normalization():
 def test_reading_candidates_nonempty_first():
     cands = reading_candidates("夜に駆ける")
     assert cands and cands[0]
+
+
+def test_reading_tokens_uses_pronunciation_for_particles():
+    """助詞は発音形(は→ワ、へ→エ)。XFカナ側(xfparse)と揃える必要がある。"""
+    pytest.importorskip("soramimic_yomi")
+    assert reading_tokens("私は歌う") == [("私", "ワタシ"), ("は", "ワ"), ("歌う", "ウタウ")]
+    assert reading_tokens("海へ行く") == [("海", "ウミ"), ("へ", "エ"), ("行く", "イク")]

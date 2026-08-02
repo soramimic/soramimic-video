@@ -197,6 +197,44 @@ def _select_melody_channel(
     return best_ch
 
 
+def _fix_particle_kana(lines: list[Line], notes: list[Note]) -> int:
+    """助詞の「は/へ/を」の読みを発音形「ワ/エ/オ」に直す(表記はそのまま)。
+
+    XFの歌詞カナは表記どおりで、助詞の「は」も ``ハ`` のまま入っている
+    (市販のXFでも同じ)。この読みは①合成でそのまま歌われる、②替え歌の
+    単語照合に使われる、の2箇所に効くので、読み込んだ時点で直しておく。
+    形態素解析器が無い環境では何もしない(従来どおりの読みになる)。
+    """
+    try:
+        from .reading import particle_pronunciations
+    except ImportError:  # pragma: no cover - 依存が無い環境
+        return 0
+    fixed = 0
+    for line in lines:
+        spans: list[tuple[int, int, Note]] = []
+        pos = 0
+        for i in line.note_ids:
+            surface = notes[i].surface
+            if surface:
+                spans.append((pos, pos + len(surface), notes[i]))
+                pos += len(surface)
+        try:
+            marks = particle_pronunciations(line.xf_surface)
+        except RuntimeError as exc:
+            logger.warning("助詞の読み補正をスキップします: %s", exc)
+            return fixed
+        for offset, pron in marks:
+            for start, end, note in spans:
+                if start <= offset < end:
+                    # 1音符=助詞1文字のときだけ触る(結合モーラは対象外)
+                    if end - start == 1 and len(note.kana) == 1 and note.kana != pron:
+                        note.kana = pron
+                        fixed += 1
+                    break
+        line.xf_kana = "".join(notes[i].kana for i in line.note_ids)
+    return fixed
+
+
 def analyze_midi(midi_path: Path) -> Project:
     """XF MIDIを解析してProject(notes/lines/song)を作る。"""
     midi = XFMidiFile(str(midi_path), charset="cp932")
@@ -290,6 +328,10 @@ def analyze_midi(midi_path: Path) -> Project:
         )
         cur_note_ids.append(nid)
     close_line()
+
+    fixed = _fix_particle_kana(lines, notes)
+    if fixed:
+        logger.info("助詞の読みを発音形に補正しました: %d音符 (は→ワ 等)", fixed)
 
     song = SongInfo(
         midi_path=str(midi_path),

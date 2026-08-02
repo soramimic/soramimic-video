@@ -175,3 +175,18 @@ def test_align_reading_absorbs_long_vowel_variants():
     # XFカナが仮名形(トウキョウ)でも発音形(トーキョー)でも、長音正規化で揃う
     assert align_texts(["トウキョウノソラ"], ["東京の空"]) == [0]
     assert align_texts(["トーキョーノソラ"], ["東京の空"]) == [0]
+
+
+def test_split_lyric_particle_boundary_needs_pronunciation_reading():
+    """XFカナの助詞は発音形(ワ)なので、元歌詞側の読みも発音形で揃える。
+
+    表層準拠(ハ)のままだと助詞のモーラが一致せず、フレーズの切れ目が
+    1モーラ手前にずれる(字幕の既定経路 video.py の original/phrase で効く)。
+    """
+    lyric = "ボクは生まれる"
+    xf = ["ボクワ", "ウマレル"]
+    surface_form = [("ボク", "ボク"), ("は", "ハ"), ("生まれる", "ウマレル")]
+    pron_form = [("ボク", "ボク"), ("は", "ワ"), ("生まれる", "ウマレル")]
+    assert split_lyric_to_phrases(xf, lyric, reader=_reader(pron_form)) == ["ボクは", "生まれる"]
+    # 揃っていないと境界がずれる(この差分を防ぐのがこのテストの目的)
+    assert split_lyric_to_phrases(xf, lyric, reader=_reader(surface_form)) == ["ボク", "は生まれる"]
