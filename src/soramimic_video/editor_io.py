@@ -217,6 +217,15 @@ def _wordlist_entry(name: str, where: str | None) -> dict[str, Any]:
     return entry
 
 
+def named_wordlist_entry(name: str, where: str | None = None) -> dict[str, Any]:
+    """名前付き単語リストの editor 設定エントリ(conf/setting.json と同じ形)。
+
+    export_editor が変換結果から組むのと同じもの。変換せず解析だけする経路
+    (/api/editor-session の解析のみモード)からも同じ形を返せるようにする。
+    """
+    return _wordlist_entry(name, where)
+
+
 def wordlist_display_name(name: str) -> str:
     """単語リストの表示名(conf/setting.json の text。例: stations → 駅名)。
 

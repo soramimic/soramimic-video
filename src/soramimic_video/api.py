@@ -36,7 +36,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -56,6 +56,9 @@ from .layout import (
 )
 from .soramimic_engine import start_warmup_thread
 from .thumbnail_preview import RateLimiter, preview_cache_dir
+
+if TYPE_CHECKING:  # 型注釈だけ。実行時のimportはハンドラの中で行う(起動を軽く保つ)
+    from .project import Project
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +404,73 @@ def store_editor_session_wordlist(
         text = _store_wordlist_images(session_dir, text, custom.images)
     (session_dir / SESSION_WORDLIST_FILENAME).write_text(text, encoding="utf-8")
     return sid
+
+
+def editor_setup_seed(
+    project: Project,
+    wordlist: str,
+    where: str | None,
+    params: dict[str, str],
+    wordlist_entry: dict[str, Any] | None = None,
+    song_title: str = "",
+) -> dict[str, Any]:
+    """変換せずに解析だけした editor シード(セットアップ画面から始まる形)。
+
+    editor は ``results`` が無いシードを「未変換」とみなし、セットアップ画面
+    (曲・単語リスト・変換のしかた)から起動して、ブラウザ内で変換してから
+    編集画面に入る(soramimic frontend/README)。ここで返すのはその材料だけ:
+
+    - ``phrases``   … 行ごとの読みカナ(convert_project がエンジンへ渡すのと同じ)
+    - ``wordlist``  … 初期選択の単語リスト設定(conf/setting.json と同じ形)。
+      絞り込み(where)はこのエントリに載せる——editor はトップレベルの ``where`` を
+      ファセットのチェック状態の復元(restoreFacets)に使うが、その照合は
+      convertControls.js の ``facetClause`` が作る ``(type=family)`` の形が前提で、
+      video の ``facetDefaultWhere`` が作る ``type=family`` とは形が違う。
+      渡すと全チェックが外れて**絞り込みが消える**ので渡さない。エントリの where
+      なら editor は既定のチェック状態(=video が送ってきたのと同じ条件)で始まる。
+      export_editor(変換込みモード)も同じくエントリにだけ載せている
+    - ``param``     … 初期パラメータ(エンジン既定を埋めた実効値。UIが逆算する)
+    - ``song``      … 表示用の曲名
+    - ``weightsList`` … ノート長重視α>0 のときだけ(video独自パラメータのため)
+
+    ``results``/``tokensList``/``unitsList`` は入れない——ブラウザ側で導出される。
+
+    wordlist_entry を渡すと単語リスト設定にそのまま使う(自作リスト用。
+    export_editor と同じ約束)。渡さないときは wordlist 名から組み立て、
+    リスト名も空(=解析のみモードで単語リスト未指定)ならフィールドごと省く
+    ——editor はそのとき conf/setting.json の既定(active)で始まる。
+    """
+    from .convert import (
+        engine_phrases,
+        project_note_length_weights,
+        resolve_convert_settings,
+        resolve_wordlist,
+    )
+    from .editor_io import EXPORT_FORMAT, named_wordlist_entry
+    from .soramimic_engine import run_tokenize
+
+    csv_path = resolve_wordlist(wordlist) if wordlist else None
+    eff_where, coerced, alpha = resolve_convert_settings(csv_path, where, params)
+    phrases = engine_phrases(project)
+    payload: dict[str, Any] = {
+        "format": EXPORT_FORMAT,
+        "phrases": phrases,
+        "param": coerced,
+    }
+    if wordlist_entry is None and csv_path is not None:
+        wordlist_entry = named_wordlist_entry(csv_path.stem, eff_where)
+    if wordlist_entry is not None:
+        payload["wordlist"] = wordlist_entry
+    if song_title.strip():
+        payload["song"] = {"title": song_title.strip()}
+    if alpha > 0:
+        # 重みの計算にはエンジンが使うのと同じユニット列が要る。単語DBは要らないので
+        # トークナイズだけを走らせる(変換はブラウザ側がやる)。ユニット数が
+        # ブラウザ側のトークナイズと食い違えばエンジンが重みを無視する(安全側)
+        payload["weightsList"] = project_note_length_weights(project, alpha)(
+            run_tokenize(phrases, coerced)
+        )
+    return payload
 
 
 def _csv_without_image_column(text: str) -> str:
@@ -1910,17 +1980,30 @@ def create_app(
         wordlist: str = Form(""),
         where: str = Form(""),
         convert_params: str = Form(""),
+        # セットアップ画面に出す曲名(表示用。UIの songTitleOf と同じもの)
+        song_title: str = Form(""),
+        # 変換までやるか、解析(MIDI→行ごとの読みカナ)だけで返すか。
+        # 既定は従来どおり変換込み。convert=0 は「解析のみモード」で、
+        # editor はセットアップ画面から始まってブラウザ内で変換する
+        convert: bool = Form(True),
         # 自作の単語リスト。/api/jobs と同じ2通りの入口(zip/CSV1ファイル、または
         # 貼り付けテキスト+画像)。付いていればリスト名(wordlist)より優先する
         wordlist_csv: UploadFile | None = None,
         wordlist_text: str = Form(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
     ) -> dict[str, Any]:
-        """MIDI+単語リストから変換済みeditorセッションJSONを組んで返す。
+        """MIDI(+単語リスト)から editor セッションJSONを組んで返す。
 
         WebUIがこれを sessionStorage["soramimic-editor"] に書いてから
         /editor/editor.html を iframe で開くと、そのまま編集を始められる。
-        run_pipeline の analyze→convert 段を同期・ジョブ無しで実行する。
+
+        convert=1(既定)… run_pipeline の analyze→convert 段を同期・ジョブ無しで
+        実行し、変換済み(results 入り)のJSONを返す。editor は編集画面から始まる。
+
+        convert=0(解析のみ)… 変換はせず、セットアップ画面の材料
+        (phrases/wordlist/param/where/song/weightsList)だけを返す。
+        editor はセットアップ画面から始まり、「この設定で変換」でブラウザ内で
+        変換してから編集画面に入る。単語リストは要らない(エディタで選べる)。
 
         自作リストのときは、editor がDBを組めるよう正規化済みCSVを
         editor-sessions/<sid>/ に置き、JSONの単語リスト設定を
@@ -1959,12 +2042,9 @@ def create_app(
                 )
         except wordlist_csv_mod.WordlistCsvError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if custom is None and not wordlist.strip():
-            raise HTTPException(
-                status_code=422,
-                detail="単語リスト名(wordlist)か自作リスト(wordlist_csv/wordlist_text)が必要です",
-            )
         entry: dict[str, Any] | None = None
+        conv_wordlist = ""
+        conv_where: str | None = None
         if custom is not None:
             # 自作リストは名前で引けないので、editorが取りに来られる場所に置く
             sid = store_editor_session_wordlist(config["editor_sessions"], custom)
@@ -1972,14 +2052,22 @@ def create_app(
                 config["editor_sessions"] / sid / SESSION_WORDLIST_FILENAME
             )
             # 絞り込み(where)の対象になる列を持たないので付けない(/api/jobs と同じ)
-            conv_where: str | None = None
             entry = custom_wordlist_entry(sid)
-        else:
+        elif wordlist.strip():
             try:
                 resolve_wordlist(wordlist.strip())
             except FileNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             conv_wordlist = wordlist.strip()
+            conv_where = where.strip() or None
+        elif convert:
+            raise HTTPException(
+                status_code=422,
+                detail="単語リスト名(wordlist)か自作リスト(wordlist_csv/wordlist_text)が必要です",
+            )
+        else:
+            # 解析のみモードは単語リストが要らない(セットアップ画面で選ぶ)。
+            # 初期選択のエントリを入れられないので、editor は conf の既定で始まる
             conv_where = where.strip() or None
 
         with tempfile.TemporaryDirectory() as td:
@@ -1994,6 +2082,15 @@ def create_app(
             if lyrics.strip():
                 align_lines(project, lyrics.splitlines())
             conv_params = parse_convert_params(convert_params)
+            if not convert:
+                return editor_setup_seed(
+                    project,
+                    conv_wordlist,
+                    conv_where,
+                    conv_params,
+                    wordlist_entry=entry,
+                    song_title=song_title,
+                )
             try:
                 raw = convert_project(
                     project,
