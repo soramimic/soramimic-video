@@ -1,0 +1,505 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>モーラタイミング編集</title>
+<style>
+:root{--bg:#1b1d24;--panel:#242730;--fg:#dde;--acc:#6cf;--sel:#fc6}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 sans-serif;overflow:hidden;
+ -webkit-user-select:none;user-select:none;overscroll-behavior:none}
+#bar,#panel{display:flex;gap:6px;align-items:center;padding:6px 8px;background:var(--panel);flex-wrap:wrap}
+button,select{background:#333845;color:var(--fg);border:1px solid #4a4f5c;border-radius:6px;
+ padding:7px 12px;cursor:pointer;font-size:14px;touch-action:manipulation}
+button:hover{background:#3e4453}
+button.on{background:#2a5d8f;border-color:var(--acc)}
+.sp{flex:1}
+#status{font-size:12px;color:#9ab;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw}
+#wrap{position:relative}
+canvas{display:block;cursor:default;touch-action:none}
+#panel input{background:#181a20;color:var(--fg);border:1px solid #4a4f5c;border-radius:6px;padding:6px;font-size:16px}
+#ptext{width:3.5em;text-align:center}
+#pstart,#pend{width:5.5em}#ppitch{width:3.5em}
+#pline{color:#9ab;max-width:30vw;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#pline b{color:var(--sel)}
+#txtedit{position:absolute;display:none;width:3.6em;font-size:16px;text-align:center;z-index:5;
+ border:2px solid var(--sel);border-radius:4px;background:#181a20;color:#fff}
+</style></head><body>
+<div id="bar">
+ <button id="bplay" title="Space">▶ 再生</button>
+ <select id="asrc" title="鳴らす音源"><option value="main">音源</option><option value="mixed" disabled>ミックス</option></select>
+ <select id="aspd"><option value="1">1.0x</option><option value="0.75">0.75x</option><option value="0.5">0.5x</option><option value="0.25">0.25x</option></select>
+ <button id="bsnap" class="on" title="ドラッグ時にノート境界へ吸着">吸着</button>
+ <select id="bunit" title="吸着・調整の単位(拍の分割)"><option value="auto">単位:自動</option><option value="1">1拍</option><option value="2">1/2拍</option><option value="3">1/3拍</option><option value="4">1/4拍</option><option value="6">1/6拍</option><option value="12">1/12拍</option></select>
+ <button id="bfollow" class="on">追従</button>
+ <button id="bbeat" class="on" title="拍・三連符の補助線の表示">拍線</button>
+ <span class="sp"></span>
+ <button id="bundo" title="Ctrl+Z">↩</button><button id="bredo" title="Ctrl+Y">↪</button>
+ <button id="bsave" title="Ctrl+S">💾 保存</button>
+ <button id="brebuild" title="保存して歌唱合成→伴奏ミックスをやり直す">🔄 合成</button>
+ <span id="status">読込中…</span>
+</div>
+<div id="wrap"><canvas id="cv"></canvas><input id="txtedit"></div>
+<div id="panel">
+ <button id="bprev">◀</button><button id="bnext">▶</button>
+ <span style="border-left:1px solid #4a4f5c;margin:0 2px"></span>
+ <button id="bml" title="単位ぶん前へ移動">⇤</button><button id="bmr" title="単位ぶん後ろへ移動">⇥</button>
+ <button id="bshort" title="単位ぶん短く">長−</button><button id="blong" title="単位ぶん長く">長＋</button>
+ <button id="bpdn" title="半音下げ">♭</button><button id="bpup" title="半音上げ">♯</button>
+ <input id="ptext" title="モーラ"><input id="pstart" title="開始秒"><input id="pend" title="終了秒"><input id="ppitch" title="ピッチ">
+ <button id="bpull" title="選択した「ー」を消費して、後ろの歌詞を(行をまたいで)1つ前へ詰める。文字は消えない">◀つめる</button>
+ <button id="bpush" title="歌詞を1スロット後ろへ。先にあるーの空きまで玉突きで送る(行境界も一緒に動く)">おくる▶</button>
+ <button id="bsplit" title="半分に割って後半をーに">分割</button>
+ <button id="bmerge" title="次のモーラと結合">結合</button>
+ <button id="bdel">削除</button>
+ <button id="bgoto">▶ここから</button>
+ <button id="bsynth" title="選択行を未保存の編集込みで合成して聴く">🎤この行</button>
+ <button id="blegato" title="選択行内の小さな隙間(0.15秒未満)と食い込みを解消して長さを揃える。実休符は残す">間詰め</button>
+ <button id="blegall" title="全モーラに長さ揃えを一括適用(隙間0.15秒未満のみ埋める)。Undo可">間詰め(全)</button>
+ <button id="bdist" title="複数モーラを含むブロックを、実ノートの区切りで1モーラずつ順に割り付け直す。直後のーは吸収">モーラ割付</button>
+ <button id="bquant" title="選択行の開始位置を吸着(近くの実ノート開始を優先、なければ8分/16分/三連の拍分割点)。長さも区切りに整える。Undo可">グリッド整列</button>
+ <span id="pline"></span>
+</div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const cv=$('cv'),ctx=cv.getContext('2d');
+let notes=[],moras=[],rms=null,beats={measures:[],beats:[]},lineTexts={};
+let sel=-1,dirty=false;
+let t0=25,pps=120;
+let pTop=94,pBot=64,rowH=16,pView=92;
+const RULER=30,LYRIC=20,WAVE=56;
+let undoStack=[],redoStack=[];
+let audio=new Audio(),audioOffset=0,playing=false;
+audio.preload='auto';
+const AUDIO={main:{src:'/audio',off:0},mixed:{src:'/mixed',off:0}};
+let lineAudio=null,lineT0=0,synthing=false;
+audio.addEventListener('error',()=>setStatus('音声読込エラー: '+(audio.error&&audio.error.code)));
+audio.addEventListener('ended',()=>{playing=false;$('bplay').textContent='▶ 再生'});
+
+function rollH(){return cv.height-RULER-LYRIC-WAVE}
+function resize(){cv.width=innerWidth;cv.height=innerHeight-$('bar').offsetHeight-$('panel').offsetHeight-2;
+ rowH=Math.max(16,Math.floor(rollH()/(pTop-pBot+1)));clampV();draw()}
+addEventListener('resize',resize);
+const x2t=x=>t0+x/pps, t2x=t=>(t-t0)*pps;
+const p2y=p=>RULER+LYRIC+(pView-p)*rowH, y2p=y=>Math.round(pView-(y-RULER-LYRIC)/rowH);
+function clampV(){const vis=Math.floor(rollH()/rowH);
+ if(vis>=pTop-pBot+1){pView=pTop;return}
+ pView=Math.min(pTop,Math.max(pBot+vis-1,pView))}
+
+async function load(){
+ const d=await fetch('/data').then(x=>x.json());
+ moras=(d.moras||[]).slice().sort((x,y)=>x.start-y.start);
+ notes=d.reference||[];rms=d.rms||null;beats=d.grid||{measures:[],beats:[]};lineTexts=d.line_texts||{};
+ // 表示位置と音域は中身に合わせる
+ const ps=[...moras.map(m=>m.pitch),...notes.map(n=>n[2])];
+ if(ps.length){pTop=Math.min(127,Math.max(...ps)+3);pBot=Math.max(0,Math.min(...ps)-3)}
+ pView=pTop;
+ if(moras.length){t0=Math.max(0,moras[0].start-1);
+  const span=moras[moras.length-1].end-moras[0].start;
+  if(span>0)pps=Math.min(300,Math.max(20,(innerWidth-40)/Math.min(span,20)))}
+ if(d.has_audio)setAudio('main');else{$('bplay').disabled=true;$('aspd').disabled=true}
+ setStatus('モーラ'+moras.length+'個'+(d.has_audio?'':' / 音源なし'));resize()}
+function setStatus(s){$('status').textContent=s}
+function setAudio(k){const c=AUDIO[k];const t=curTime();audio.pause();playing=false;$('bplay').textContent='▶ 再生';
+ audio.src=c.src;audioOffset=c.off;audio.load();seekTo(t)}
+function curTime(){return audio.currentTime-audioOffset}
+function seekTo(t){try{audio.currentTime=Math.max(0,t+audioOffset)}catch(e){}}
+
+function lineStarts(){const seen={};const out=[];for(const m of moras){if(!(m.line in seen)){seen[m.line]=1;out.push(m)}}return out}
+function draw(){
+ const W=cv.width,H=cv.height;ctx.fillStyle='#1b1d24';ctx.fillRect(0,0,W,H);
+ const tA=x2t(0),tB=x2t(W);
+ for(let p=pBot;p<=pTop;p++){const y=p2y(p);const k=((p%12)+12)%12;
+  ctx.fillStyle=[1,3,6,8,10].includes(k)?'#20232c':'#262a34';ctx.fillRect(0,y-rowH,W,rowH-1);
+  if(k===0){ctx.fillStyle='#889';ctx.fillText('C'+((p/12|0)-1),4,y-3)}}
+ ctx.fillStyle='#242730';ctx.fillRect(0,0,W,RULER);
+ const step=pps>200?1:pps>60?5:10;
+ ctx.fillStyle='#9ab';ctx.strokeStyle='#333845';
+ for(let t=Math.ceil(tA/step)*step;t<tB;t+=step){const x=t2x(t);
+  ctx.beginPath();ctx.moveTo(x,RULER);ctx.lineTo(x,H-WAVE);ctx.stroke();
+  ctx.fillText((t/60|0)+':'+String(t%60|0).padStart(2,'0'),x+3,19)}
+ ctx.fillStyle='#1f222a';ctx.fillRect(0,RULER,W,LYRIC);
+ for(const m of lineStarts()){if(m.start>tB)break;if(m.start<tA-30)continue;
+  const x=t2x(m.start);ctx.strokeStyle='#445';ctx.beginPath();ctx.moveTo(x,RULER);ctx.lineTo(x,H-WAVE);ctx.stroke();
+  ctx.fillStyle='#8ac';ctx.fillText('L'+m.line,x+2,RULER+14)}
+ // 小節・拍・三連符グリッド
+ {const H2=H-WAVE;const showBeats=$('bbeat').classList.contains('on');
+  if(showBeats&&pps>40)for(const bt of beats.beats){if(bt<tA||bt>tB)continue;const x=t2x(bt);
+   ctx.strokeStyle='#2e3340';ctx.beginPath();ctx.moveTo(x,RULER+LYRIC);ctx.lineTo(x,H2);ctx.stroke()}
+  if(showBeats&&pps>150){ctx.strokeStyle='#272b35';
+   const bs=[...beats.measures.map(m=>m[0]),...beats.beats].sort((a,b)=>a-b);
+   for(let i=0;i<bs.length-1;i++){const a=bs[i],b=bs[i+1];if(b<tA||a>tB)continue;
+    const d=(b-a)/3;if(d>0.5)continue;
+    for(let k=1;k<3;k++){const x=t2x(a+k*d);
+     ctx.beginPath();ctx.moveTo(x,RULER+LYRIC);ctx.lineTo(x,H2);ctx.stroke()}}}
+  for(const[mt,mn]of beats.measures){if(mt<tA||mt>tB)continue;const x=t2x(mt);
+   ctx.strokeStyle='#4a5164';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x,RULER);ctx.lineTo(x,H2);ctx.stroke();ctx.lineWidth=1;
+   if(pps>60){ctx.fillStyle='#7a8299';ctx.fillText(mn,x+2,H2-4)}}}
+ ctx.fillStyle='#3a4152';
+ for(const[s,e,p]of notes){if(e<tA||s>tB)continue;
+  ctx.fillRect(t2x(s),p2y(p)-rowH,Math.max(2,(e-s)*pps),rowH-1)}
+ for(let i=0;i<moras.length;i++){const m=moras[i];if(m.end<tA||m.start>tB)continue;
+  const x=t2x(m.start),w=Math.max(3,(m.end-m.start)*pps),y=p2y(m.pitch);
+  ctx.fillStyle=i===sel?'#fc6':(m.line%2?'#5b8dd6':'#4fb08a');
+  ctx.globalAlpha=.85;ctx.fillRect(x,y-rowH,w,rowH-1);ctx.globalAlpha=1;
+  ctx.strokeStyle=i===sel?'#fff':'#111';ctx.strokeRect(x+.5,y-rowH+.5,w-1,rowH-2);
+  if(w>11){ctx.fillStyle=i===sel?'#000':'#fff';ctx.font=(rowH>14?13:11)+'px sans-serif';
+   ctx.fillText(m.text,x+2,y-4,w-3)}}
+ const wy=H-WAVE;ctx.fillStyle='#14161c';ctx.fillRect(0,wy,W,WAVE);
+ if(rms){ctx.fillStyle='#4a7';const r=rms.rate;
+  for(let x=0;x<W;x++){const i=Math.round(x2t(x)*r);if(i<0||i>=rms.v.length)continue;
+   const h=rms.v[i]*(WAVE-6);ctx.fillRect(x,wy+WAVE-3-h,1,h)}}
+  const ptt=(lineAudio&&!lineAudio.paused)?lineAudio.currentTime+lineT0:curTime();
+  if(ptt>=tA&&ptt<=tB){const x=t2x(ptt);
+  ctx.strokeStyle='#f55';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();ctx.lineWidth=1;
+  for(let i=0;i<moras.length;i++){const m=moras[i];
+   if(m.start<=ptt&&ptt<m.end){const mx=t2x(m.start),mw=Math.max(3,(m.end-m.start)*pps),my=p2y(m.pitch);
+    ctx.strokeStyle='#f90';ctx.lineWidth=2;ctx.strokeRect(mx,my-rowH,mw,rowH-1);ctx.lineWidth=1;break}}}
+}
+
+function select(i,scroll){sel=i;const m=moras[i];if(!m){$('pline').textContent='';draw();return}
+ $('ptext').value=m.text;$('pstart').value=m.start.toFixed(3);$('pend').value=m.end.toFixed(3);$('ppitch').value=m.pitch;
+ const ls=moras.filter(x=>x.line===m.line).sort((a,b)=>a.start-b.start);
+ const lt=lineTexts[m.line]?' 〈'+lineTexts[m.line]+'〉':'';
+ $('pline').innerHTML='L'+m.line+lt+': '+ls.map(x=>x===m?'<b>'+x.text+'</b>':x.text).join('');
+ if(scroll){const x=t2x(m.start);if(x<60||x>cv.width-120)t0=m.start-1}
+ draw()}
+function hit(x,y){for(let i=moras.length-1;i>=0;i--){const m=moras[i];
+  const mx=t2x(m.start),mw=Math.max(3,(m.end-m.start)*pps),my=p2y(m.pitch);
+  if(x>=mx-3&&x<=mx+mw+3&&y>=my-rowH-3&&y<=my+3)return i}return -1}
+
+function snap(){undoStack.push(JSON.stringify(moras));if(undoStack.length>200)undoStack.shift();redoStack=[];dirty=true;setStatus('未保存の変更あり')}
+function undo(){if(!undoStack.length)return;redoStack.push(JSON.stringify(moras));moras=JSON.parse(undoStack.pop());sel=-1;draw()}
+function redo(){if(!redoStack.length)return;undoStack.push(JSON.stringify(moras));moras=JSON.parse(redoStack.pop());sel=-1;draw()}
+
+// ---- ポインタ操作(マウス+タッチ統合) ----
+// タップ=選択 / 選択済みモーラをドラッグ=移動(端で伸縮) / 余白ドラッグ=スワイプ移動 / 2本指=ピンチズーム
+const ptrs=new Map();
+let drag=null,pinch=null,lastTap={t:0,i:-1};
+function cvPos(ev){const r=cv.getBoundingClientRect();return[ev.clientX-r.left,ev.clientY-r.top]}
+cv.addEventListener('pointerdown',ev=>{
+ ev.preventDefault();cv.setPointerCapture(ev.pointerId);
+ const[x,y]=cvPos(ev);ptrs.set(ev.pointerId,{x,y});
+ if(ptrs.size===2){drag=null;const a=[...ptrs.values()];
+  pinch={d:Math.abs(a[0].x-a[1].x)+1,mid:x2t((a[0].x+a[1].x)/2),pps0:pps};return}
+ if(y<RULER){seekTo(x2t(x));draw();return}
+ const i=hit(x,y);
+ const isMouse=ev.pointerType==='mouse';
+ if(i>=0&&(isMouse||i===sel)){
+  const m=moras[i];const mx=t2x(m.start),mw=(m.end-m.start)*pps;
+  let mode='move';if(x-mx<Math.min(8,mw/3))mode='l';else if(mx+mw-x<Math.min(8,mw/3))mode='r';
+  if(i!==sel)select(i);
+  drag={kind:'mora',i,mode,x0:x,y0:y,s0:m.start,e0:m.end,p0:m.pitch,snapped:false,moved:false};
+ }else{
+  drag={kind:'pan',x0:x,y0:y,t00:t0,pv0:pView,hitI:i,moved:false};
+ }
+});
+cv.addEventListener('pointermove',ev=>{
+ if(!ptrs.has(ev.pointerId))return;
+ const[x,y]=cvPos(ev);ptrs.set(ev.pointerId,{x,y});
+ if(pinch&&ptrs.size===2){const a=[...ptrs.values()];
+  const d=Math.abs(a[0].x-a[1].x)+1;
+  pps=Math.min(600,Math.max(15,pinch.pps0*d/pinch.d));
+  t0=pinch.mid-((a[0].x+a[1].x)/2)/pps;draw();return}
+ if(!drag)return;
+ const dx=x-drag.x0,dy=y-drag.y0;
+ if(Math.abs(dx)+Math.abs(dy)>6)drag.moved=true;
+ if(drag.kind==='pan'){t0=drag.t00-dx/pps;pView=drag.pv0+dy/rowH;clampV();draw();return}
+ if(!drag.moved)return;
+ if(!drag.snapped){snap();drag.snapped=true}
+ const m=moras[drag.i],dt=dx/pps;
+ if(!drag.gp)drag.gp=unitMode()==='auto'?gridPoints():unitGrid();
+ const useNotes=unitMode()==='auto';
+ const sn=v=>{if(!$('bsnap').classList.contains('on'))return v;
+  let best=v,bd=8/pps;
+  if(useNotes)for(const[s,e]of notes){for(const c of[s,e]){const d=Math.abs(c-v);if(d<bd){bd=d;best=c}}}
+  for(const c of drag.gp){const d=Math.abs(c-v);if(d<bd){bd=d;best=c}}
+  return best};
+ if(drag.mode==='move'){const len=drag.e0-drag.s0;m.start=sn(drag.s0+dt);m.end=m.start+len;
+  const p=y2p(y);if(p>=pBot&&p<=pTop)m.pitch=p}
+ else if(drag.mode==='l'){m.start=Math.min(sn(drag.s0+dt),m.end-0.01)}
+ else{m.end=Math.max(sn(drag.e0+dt),m.start+0.01)}
+ select(drag.i);
+});
+function ptrEnd(ev){
+ if(!ptrs.has(ev.pointerId))return;
+ const[x,y]=cvPos(ev);ptrs.delete(ev.pointerId);
+ if(pinch){if(ptrs.size<2)pinch=null;return}
+ if(drag&&!drag.moved&&y>=RULER){
+  const i=drag.kind==='mora'?drag.i:drag.hitI;
+  if(i>=0){
+   const now=Date.now();
+   if(lastTap.i===i&&now-lastTap.t<400){editText(i);lastTap={t:0,i:-1}}
+   else{select(i);lastTap={t:now,i}}
+  }else select(-1);
+ }
+ drag=null;
+}
+cv.addEventListener('pointerup',ptrEnd);
+cv.addEventListener('pointercancel',ptrEnd);
+function editText(i){select(i);const m=moras[i];const te=$('txtedit');
+ te.style.display='block';
+ te.style.left=Math.max(0,Math.min(cv.width-60,t2x(m.start)))+'px';
+ te.style.top=(p2y(m.pitch)-rowH)+'px';
+ te.value=m.text;te.focus();te.select();
+ te.onkeydown=e=>{if(e.key==='Enter')commit();if(e.key==='Escape')te.style.display='none';e.stopPropagation()};
+ te.onblur=commit;
+ function commit(){if(te.style.display==='none')return;
+  if(te.value&&te.value!==m.text){snap();m.text=te.value}
+  te.style.display='none';select(i)}}
+cv.addEventListener('wheel',ev=>{ev.preventDefault();
+ if(ev.ctrlKey){const t=x2t(ev.offsetX);pps=Math.min(600,Math.max(15,pps*(ev.deltaY<0?1.2:1/1.2)));t0=t-ev.offsetX/pps}
+ else if(ev.shiftKey){t0+=(ev.deltaY+ev.deltaX)/pps*1.5}
+ else{t0+=ev.deltaX/pps*1.5;pView-=ev.deltaY/rowH/6;clampV()}
+ draw()},{passive:false});
+
+$('bprev').onclick=()=>{if(sel>0)select(sel-1,true)};
+$('bnext').onclick=()=>{if(sel<moras.length-1)select(sel+1,true)};
+for(const[id,f]of[['ptext',(m,v)=>m.text=v],['pstart',(m,v)=>m.start=+v],['pend',(m,v)=>m.end=+v],['ppitch',(m,v)=>m.pitch=+v|0]])
+ $(id).addEventListener('change',ev=>{if(sel<0)return;snap();f(moras[sel],ev.target.value);select(sel)});
+function lineInfo(){if(sel<0)return null;const ln=moras[sel].line;
+ const order=moras.map((m,i)=>i).sort((a,b)=>moras[a].start-moras[b].start);
+ const idxs=order.filter(i=>moras[i].line===ln);
+ const pos=idxs.indexOf(sel);if(pos<0)return null;
+ const gpos=order.indexOf(sel);
+ return {ln,tail:idxs.slice(pos),atHead:pos===0,prev:gpos>0?order[gpos-1]:-1,idxs}}
+$('bpull').onclick=()=>{
+ if(sel<0)return;
+ if(moras[sel].text!=='ー'){setStatus('つめるは「ー」の上で押す(文字を消すときは削除)');return}
+ snap();
+ // 選択したーを消費し、連続領域(隙間<0.15s)の後続を行またぎで1つ前へ
+ const order=moras.map((m,i)=>i).sort((a,b)=>moras[a].start-moras[b].start);
+ const g=order.indexOf(sel);
+ let end=g;
+ for(let k=g+1;k<order.length;k++){
+  const prev=moras[order[k-1]],cur=moras[order[k]];
+  if(cur.start-prev.end>0.15)break;
+  end=k}
+ if(end<=g){setStatus('後ろに詰める歌詞がない');undoStack.pop();return}
+ const slots=order.slice(g,end+1);
+ for(let k=0;k<slots.length-1;k++){
+  moras[slots[k]].text=moras[slots[k+1]].text;
+  moras[slots[k]].line=moras[slots[k+1]].line}
+ moras[slots[slots.length-1]].text='ー';
+ renum();select(sel)};
+$('bpush').onclick=()=>{const li=lineInfo();if(!li)return;snap();
+ // 連続領域(隙間<0.15s)を前方へ走査し、最初の「ー」までを玉突きで1つ後ろへ送る。
+ // ーが無ければ領域末尾で結合。行境界(line)はテキストと一緒に動く。
+ const order=moras.map((m,i)=>i).sort((a,b)=>moras[a].start-moras[b].start);
+ const g=order.indexOf(sel);
+ let end=g,dashAt=-1;
+ for(let k=g+1;k<order.length;k++){
+  const prev=moras[order[k-1]],cur=moras[order[k]];
+  if(cur.start-prev.end>0.15)break;
+  end=k;
+  if(cur.text==='ー'){dashAt=k;break}}
+ const stop=(dashAt>=0?dashAt:end);
+ if(stop<=g){setStatus('送り先がない(この先に連続した音がない)');undoStack.pop();return}
+ const slots=order.slice(g,stop+1);
+ const o=slots.map(i=>({t:moras[i].text,l:moras[i].line}));
+ const n=slots.length;
+ if(dashAt>=0){
+  for(let k=n-1;k>=1;k--){moras[slots[k]].text=o[k-1].t;moras[slots[k]].line=o[k-1].l}
+ }else{
+  moras[slots[n-1]].text=o[n-2].t+(o[n-1].t==='ー'?'':o[n-1].t);moras[slots[n-1]].line=o[n-2].l;
+  for(let k=n-2;k>=1;k--){moras[slots[k]].text=o[k-1].t;moras[slots[k]].line=o[k-1].l}
+  setStatus('先にーが無いため末尾で結合した');
+ }
+ moras[slots[0]].text='ー';
+ if(li.atHead&&li.prev>=0)moras[slots[0]].line=moras[li.prev].line;
+ renum();select(sel)};
+function gridPoints(){// 拍+8分+16分+三連の分割点
+ const pts=[...beats.measures.map(m=>m[0]),...beats.beats].sort((a,b)=>a-b);
+ const out=[];for(let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1];const d=b-a;
+  out.push(a);if(d<1.5)out.push(a+d/4,a+d/3,a+d/2,a+2*d/3,a+3*d/4)}
+ return out}
+function unitMode(){const el=$('bunit');return el?el.value:'auto'}
+function unitGrid(){// 拍をden分割した点列
+ const den=+unitMode();
+ const pts=[...beats.measures.map(m=>m[0]),...beats.beats].sort((a,b)=>a-b);
+ const out=[];for(let i=0;i<pts.length-1;i++){const a=pts[i],b=pts[i+1],d=b-a;
+  for(let k=0;k<den;k++)out.push(a+d*k/den)}
+ out.push(pts[pts.length-1]);return out}
+// 吸着: 単位=自動なら実ノート開始優先→拍分割点、単位指定ならその分割点のみ
+function snapPoint(t){
+ if(unitMode()!=='auto'){let b=t,d2=1e9;for(const g of unitGrid()){const dd=Math.abs(g-t);if(dd<d2){d2=dd;b=g}}return b}
+ let bn=null,bd=0.06;
+ for(const[s,e,p]of notes){const d=Math.abs(s-t);if(d<bd){bd=d;bn=s}}
+ if(bn!==null)return bn;
+ let b=t,d2=1e9;for(const g of gridPoints()){const dd=Math.abs(g-t);if(dd<d2){d2=dd;b=g}}
+ return b}
+function nextPoint(t){
+ if(unitMode()!=='auto'){let b=null;for(const g of unitGrid()){if(g>t+1e-3&&(b===null||g<b))b=g}return b===null?t+0.083:b}
+ let bn=null;
+ for(const[s,e,p]of notes){if(s>t+1e-3&&s<=t+0.2&&(bn===null||s<bn))bn=s}
+ if(bn!==null)return bn;
+ let b=null;for(const g of gridPoints()){if(g>t+1e-3&&(b===null||g<b))b=g}
+ return b===null?t+0.083:b}
+function prevPoint(t){
+ const src=unitMode()!=='auto'?unitGrid():[...notes.map(n=>n[0]),...gridPoints()];
+ let b=null;for(const g of src){if(g<t-1e-3&&(b===null||g>b))b=g}
+ return b}
+$('bsplit').onclick=()=>{if(sel<0)return;snap();const m=moras[sel];
+ // 分割点: 開始直後の三連グリッド線(あれば)、なければ中央
+ let cut=(m.start+m.end)/2;
+ const np=nextPoint(m.start+0.02);
+ if(np<m.end-0.02)cut=np;
+ const nm={...m,start:cut,text:'ー'};m.end=cut;moras.splice(sel+1,0,nm);renum();select(sel)};
+$('bmerge').onclick=()=>{if(sel<0||sel>=moras.length-1)return;snap();const m=moras[sel],n=moras[sel+1];
+ m.end=n.end;
+ // ーは空き扱い: ー+文字→文字が広がる / 文字+ー→文字が伸びる / 文字+文字→連結
+ if(m.text==='ー')m.text=n.text;
+ else if(n.text!=='ー')m.text+=n.text;
+ moras.splice(sel+1,1);renum();select(sel)};
+$('bdel').onclick=()=>{if(sel<0)return;snap();moras.splice(sel,1);renum();select(Math.min(sel,moras.length-1))};
+$('bgoto').onclick=()=>{if(sel<0)return;seekTo(moras[sel].start);play(true)};
+function renum(){const by={};moras.sort((a,b)=>a.start-b.start);
+ for(const m of moras){(by[m.line]=by[m.line]||[]).push(m)}
+ for(const k in by){by[k].forEach((m,j)=>m.i=j)}}
+
+function play(force){
+ if(playing&&!force){audio.pause();playing=false;$('bplay').textContent='▶ 再生';return}
+ const pr=audio.play();playing=true;$('bplay').textContent='⏸ 停止';
+ if(pr)pr.catch(e=>{playing=false;$('bplay').textContent='▶ 再生';setStatus('再生失敗: '+e.message)});
+}
+$('bplay').onclick=()=>play();
+$('aspd').onchange=ev=>{const r=+ev.target.value;audio.playbackRate=r;audio.preservesPitch=true;
+ if(lineAudio){lineAudio.playbackRate=r;lineAudio.preservesPitch=true}};
+$('asrc').onchange=ev=>setAudio(ev.target.value);
+$('bsynth').onclick=async()=>{
+ if(sel<0){setStatus('モーラを選んでから押してください');return}
+ if(synthing)return;
+ synthing=true;const ln=moras[sel].line;
+ setStatus('L'+ln+' を合成中…');$('bsynth').textContent='⏳';
+ try{
+  const ms=moras.filter(m=>m.line===ln).sort((a,b)=>a.start-b.start);
+  const r=await fetch('/synth',{method:'POST',body:JSON.stringify({moras:ms})});
+  if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.error||r.status)}
+  lineT0=parseFloat(r.headers.get('X-Start')||'0');
+  const blob=await r.blob();
+  if(lineAudio){lineAudio.pause();URL.revokeObjectURL(lineAudio.src)}
+  audio.pause();playing=false;$('bplay').textContent='▶ 再生';
+  lineAudio=new Audio(URL.createObjectURL(blob));
+  lineAudio.playbackRate=+$('aspd').value;lineAudio.preservesPitch=true;
+  lineAudio.onended=()=>{lineAudio=null;draw()};
+  await lineAudio.play();
+  setStatus('L'+ln+' を合成して再生中(この行だけ)');
+  const spin=()=>{if(lineAudio){draw();requestAnimationFrame(spin)}};spin();
+ }catch(e){setStatus('行の合成に失敗: '+e.message)}
+ finally{synthing=false;$('bsynth').textContent='🎤この行'}};
+function tick(){if(playing){const t=curTime();
+  if($('bfollow').classList.contains('on')&&(t2x(t)>cv.width*.85||t2x(t)<0))t0=t-1;
+  draw()}
+ requestAnimationFrame(tick)}
+for(const id of['bsnap','bfollow'])$(id).onclick=ev=>ev.target.classList.toggle('on');
+$('bbeat').onclick=ev=>{ev.target.classList.toggle('on');draw()};
+
+async function save(){renum();
+ const body=JSON.stringify({moras});
+ try{const r=await fetch('/save',{method:'POST',body});const j=await r.json();
+  if(r.ok){dirty=false;
+   setStatus('保存OK: '+j.notes+'音符 / '+j.lines+'行'
+    +(j.backup?' (bak-'+j.backup+')':'')
+    +(j.parody_dropped?' ※替え歌データは作り直しが必要':''))}
+  else setStatus('保存失敗: '+(j.error||r.status))}
+ catch(e){setStatus('保存失敗: '+e.message)}}
+$('bsave').onclick=save;
+$('brebuild').onclick=async()=>{
+ if(dirty)await save();
+ const r=await fetch('/rebuild',{method:'POST'});
+ if(!r.ok){const j=await r.json().catch(()=>({}));setStatus('合成を始められません: '+(j.error||r.status));return}
+ setStatus('合成中…(歌唱合成→伴奏ミックス)');poll()};
+async function poll(){
+ const j=await fetch('/rebuild_status').then(x=>x.json()).catch(()=>null);
+ if(!j)return;
+ if(j.state==='running'){setStatus('合成中… '+j.message);setTimeout(poll,2000)}
+ else if(j.state==='done'){setStatus('合成できました ✓ 「ミックス」で聴けます');
+  const opt=$('asrc').querySelector('option[value=mixed]');
+  if(opt&&j.has_mix){opt.disabled=false;$('asrc').value='mixed';setAudio('mixed')}}
+ else if(j.state==='error')setStatus('合成に失敗: '+j.message)}
+$('blegato').onclick=()=>{const li=lineInfo();if(!li)return;snap();
+ const idxs=li.idxs;let fixed=0;
+ for(let k=0;k<idxs.length-1;k++){const m=moras[idxs[k]],n=moras[idxs[k+1]];
+  const gap=n.start-m.end;
+  if(gap>0&&gap<0.15){m.end=n.start;fixed++}
+  else if(gap<0){m.end=n.start;fixed++}}
+ setStatus('L'+li.ln+': '+fixed+'箇所の長さを揃えた');select(sel)};
+$('blegall').onclick=()=>{snap();
+ const order=moras.map((m,i)=>i).sort((a,b)=>moras[a].start-moras[b].start);
+ let fixed=0;
+ for(let k=0;k<order.length-1;k++){const m=moras[order[k]],n=moras[order[k+1]];
+  const gap=n.start-m.end;
+  if(gap!==0&&gap<0.15){m.end=n.start;fixed++}}
+ setStatus('全行: '+fixed+'箇所の長さを揃えた');draw()};
+$('bquant').onclick=()=>{const li=lineInfo();if(!li)return;snap();
+ // 開始・終端をそれぞれ最寄りの単位線へ吸着するだけ
+ for(const i of li.idxs){const m=moras[i];
+  let s0=snapPoint(m.start);
+  let e0=snapPoint(m.end);
+  if(e0<=s0+1e-3)e0=nextPoint(s0);
+  m.start=s0;m.end=e0}
+ setStatus('L'+li.ln+': グリッドに整列した');select(sel)};
+$('bdist').onclick=()=>{
+ if(sel<0)return;
+ const m=moras[sel];
+ const SM='ぁぃぅぇぉゃゅょァィゥェォャュョ';
+ const units=[];for(const ch of m.text){if(SM.includes(ch)&&units.length)units[units.length-1]+=ch;else units.push(ch)}
+ if(units.length<2){setStatus('複数モーラのブロック(例:かい)で押してください');return}
+ snap();
+ const order=moras.map((x,i)=>i).sort((a,b)=>moras[a].start-moras[b].start);
+ const g=order.indexOf(sel);
+ // 次の「文字」モーラの手前まで割付可能。間のーは空きとして吸収
+ let bound=Infinity;const dashes=[];
+ for(let k=g+1;k<order.length;k++){const x=moras[order[k]];
+  if(x.text==='ー'){dashes.push(order[k]);continue}
+  bound=x.start;break}
+ // 割付先: m.start以降の実ノートを順に(1モーラ=1ノート)
+ const tgt=notes.filter(n=>n[1]>m.start+0.02&&n[0]<bound-0.02).slice(0,units.length);
+ const add=[];
+ if(tgt.length>=units.length){
+  m.text=units[0];m.end=tgt[0][1];m.pitch=tgt[0][2];
+  for(let k=1;k<units.length;k++)
+   add.push({line:m.line,i:0,text:units[k],start:tgt[k][0],end:tgt[k][1],pitch:tgt[k][2]});
+  setStatus(units.length+'モーラを後続ノートへ割り付けた');
+ }else{
+  // ノートが足りない: 使える範囲を等分し、ピッチはその位置のノートから
+  const en=tgt.length?tgt[tgt.length-1][1]:m.end;
+  const st=m.start,n=units.length;
+  const pitchAt=t=>{for(const[s2,e2,p2]of notes){if(s2-0.02<=t&&t<e2+0.02)return p2}return m.pitch};
+  m.text=units[0];m.end=st+(en-st)/n;m.pitch=pitchAt(st);
+  for(let k=1;k<n;k++){const a=st+(en-st)*k/n,b=st+(en-st)*(k+1)/n;
+   add.push({line:m.line,i:0,text:units[k],start:a,end:b,pitch:pitchAt(a)})}
+  setStatus('ノートが足りないため等分割付('+n+'モーラ)');
+ }
+ const limit=add.length?add[add.length-1].end:m.end;
+ dashes.filter(i=>moras[i].start<limit-0.02).sort((a,b)=>b-a).forEach(i=>moras.splice(i,1));
+ const pos=moras.indexOf(m);
+ moras.splice(pos+1,0,...add);
+ renum();select(moras.indexOf(m))};
+function nudge(what,dir){if(sel<0)return;snap();const m=moras[sel];
+ if(what==='pitch'){m.pitch=Math.max(pBot,Math.min(pTop,m.pitch+dir))}
+ else if(what==='move'){const len=m.end-m.start;
+  const q=dir>0?nextPoint(m.start):prevPoint(m.start);
+  if(q===null){undoStack.pop();return}
+  m.start=q;m.end=q+len}
+ else{const q=dir>0?nextPoint(m.end):prevPoint(m.end);
+  if(q===null||q<=m.start+0.02){undoStack.pop();return}
+  m.end=q}
+ select(sel)}
+$('bml').onclick=()=>nudge('move',-1);$('bmr').onclick=()=>nudge('move',1);
+$('bshort').onclick=()=>nudge('len',-1);$('blong').onclick=()=>nudge('len',1);
+$('bpdn').onclick=()=>nudge('pitch',-1);$('bpup').onclick=()=>nudge('pitch',1);
+$('bundo').onclick=undo;$('bredo').onclick=redo;
+
+addEventListener('keydown',ev=>{
+ if(ev.target.tagName==='INPUT')return;
+ if(ev.code==='Space'){ev.preventDefault();play()}
+ else if(ev.key==='ArrowLeft'&&sel>0)select(sel-1,true);
+ else if(ev.key==='ArrowRight'&&sel<moras.length-1)select(sel+1,true);
+ else if(ev.key==='Delete'&&sel>=0)$('bdel').onclick();
+ else if(ev.ctrlKey&&ev.key==='z'){ev.preventDefault();undo()}
+ else if(ev.ctrlKey&&(ev.key==='y'||ev.key==='Z')){ev.preventDefault();redo()}
+ else if(ev.ctrlKey&&ev.key==='s'){ev.preventDefault();save()}
+});
+addEventListener('beforeunload',ev=>{if(dirty)ev.preventDefault()});
+load().then(()=>{resize();tick()});
+</script></body></html>
