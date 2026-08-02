@@ -239,7 +239,8 @@ def apply_payload(project: Project, payload: dict[str, Any]) -> dict[str, Any]:
         len(notes) != len(project.notes)
         or len(lines) != len(project.lines)
         or any(a.line != b.line or a.kana != b.kana
-               for a, b in zip(notes, sorted(project.notes, key=lambda n: n.start_sec)))
+               for a, b in zip(notes, sorted(project.notes, key=lambda n: n.start_sec),
+                               strict=True))
     )
     dropped = False
     if structural and project.parody is not None:
