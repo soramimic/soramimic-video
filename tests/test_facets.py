@@ -242,7 +242,7 @@ def test_new_where_selects_the_same_rows_as_the_old_one():
     (全値ONの節は「列の値がその一覧のどれか」という条件になるので、
     一覧に無い値の行があれば結果が変わりうる)。
     """
-    if not WORDLISTS.is_dir():
+    if not (WORDLISTS / "baseball.csv").is_file():
         pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
     entries = _conf_entries()
     assert len(entries) == 15, f"conf の単語リスト数が変わった: {len(entries)}件"

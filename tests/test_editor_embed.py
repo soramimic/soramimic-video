@@ -387,7 +387,11 @@ def test_setup_seed_passes_a_restorable_filter_at_the_top_level(client, tmp_path
     載せないと editor は conf の既定チェックで始まってしまい、既定と違う
     絞り込みで作られた替え歌が、編集ツールに入った瞬間に条件を失う。
     """
-    if not (Path(__file__).resolve().parents[1] / "external" / "soramimic-wordlists").is_dir():
+    # submodule未取得でもディレクトリだけは在る(空)ので、中身の実在で判定する
+    root = Path(__file__).resolve().parents[1] / "external"
+    if not (root / "soramimic-wordlists" / "baseball.csv").is_file() or not (
+        root / "soramimic" / "conf" / "setting.json"
+    ).is_file():
         pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
     from soramimic_video.facets import default_where
 
