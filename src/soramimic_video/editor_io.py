@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .convert import REPO_ROOT, apply_converted_lines, resolve_wordlist
+from .facets import survives_editor_facets
 from .layout import Layout
 from .project import ParodyWord, Project
 
@@ -192,20 +193,30 @@ def _flatten_wordlists(items: list) -> list[dict[str, Any]]:
     return out
 
 
-def _wordlist_entry(name: str, where: str | None) -> dict[str, Any]:
-    """editorのconf(setting.json)と同じ形の単語リスト設定を返す。
+def conf_wordlist_entry(name: str) -> dict[str, Any] | None:
+    """conf/setting.json の単語リスト設定を名前(stem)で引く。
 
-    リスト名(stem)は filepath(wordlists/<stem>.csv)か value(SEKITSUI などの
-    大文字表記)で引き当てる。設定に無いリストは汎用の設定を組み立てて返す。
+    リスト名は filepath(wordlists/<stem>.csv)か value(SEKITSUI などの
+    大文字表記)で引き当てる。設定に無い(自作リスト等)なら None。
     """
     for entry in _setting_wordlists() if name else []:
         filepath = str(entry.get("filepath", ""))
         value = str(entry.get("value", ""))
         if filepath.endswith(f"/{name}.csv") or value.lower() == name.lower():
-            entry = dict(entry)
-            if where is not None:
-                entry["where"] = where
-            return entry
+            return dict(entry)
+    return None
+
+
+def _wordlist_entry(name: str, where: str | None) -> dict[str, Any]:
+    """editorのconf(setting.json)と同じ形の単語リスト設定を返す。
+
+    設定に無いリストは汎用の設定を組み立てて返す。
+    """
+    conf_entry = conf_wordlist_entry(name)
+    if conf_entry is not None:
+        if where is not None:
+            conf_entry["where"] = where
+        return conf_entry
     entry = {
         "value": name.upper(),
         "text": name,
@@ -295,6 +306,12 @@ def export_editor(
         ),
         "unitsList": [line["units"] for line in raw["lines"]],
     }
+    # ファセットで表せる絞り込みはトップレベルにも載せる。editor は⚙モーダルの
+    # チェック状態をここから復元する(restoreFacets)ので、載せないと再変換で
+    # conf の既定に戻ってしまう——変換に使ったのと違う条件で作り直される。
+    # 表せない形(自作リスト・手書きのwhere)はエントリの where だけ(従来どおり)
+    if survives_editor_facets(payload["wordlist"], project.parody.where):
+        payload["where"] = project.parody.where
     if weights_list is not None:
         payload["weightsList"] = weights_list
     path = project_dir / EDITOR_FILENAME
@@ -522,7 +539,13 @@ def import_editor(
             try:
                 resolve_wordlist(candidate)
                 wordlist = candidate
-                where = entry.get("where")
+                # editorが編集中に使っていた絞り込みはトップレベルの where。
+                # ファセットのチェックを操作すると editor は wordlist を conf の
+                # エントリ(where なし)で置き換えるので、こちらを先に見ないと
+                # ユーザーが絞り込みを変えた事実が落ちる(以後の再変換・曲名変換が
+                # 別の条件になる)。トップレベルが無い旧JSONはエントリの where。
+                top = payload.get("where")
+                where = top if isinstance(top, str) else entry.get("where")
                 break
             except FileNotFoundError:
                 continue

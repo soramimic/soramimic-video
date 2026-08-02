@@ -1516,17 +1516,19 @@ def test_index_html_keeps_the_conf_default_filters():
     """チェックボックスUIを畳んでも、confのfacet既定(default:true)の絞り込みは残す。
 
     駅名は現存駅だけ・流行はセンシティブ除外…といった既定が消えると、UIの整理が
-    そのまま出力の変化になってしまう。式の形はエディタ側 convertControls.js の
-    renderFacets(default) + compileWhere と対で、restoreFacets が同じチェック状態を
-    復元できるものにそろえる。
+    そのまま出力の変化になってしまう。組み立てた式が本当にエディタ側
+    (convertControls.js の facetClause + compileWhere)と同じ形かは、実物のJSを
+    走らせて突き合わせる tests/test_facets.py が見る(ここは骨格だけ)。
     """
     html = _index_html()
     body = html.split("function facetDefaultWhere(g) {")[1].split("\n}")[0]
-    # 既定ONの値だけを集める / 全部ONのファセットは節を出さない
-    assert "values.filter((v) => v.default === true)" in body
-    assert "if (!on.length || on.length === values.length) return;" in body
-    # 値の述語は where 優先、無ければ col=v(複数列は全列)
-    assert "(v.where ? [v.where] : cols.map((c) => c + \"=\" + v.v))" in body
+    # 既定ONの値だけを集める
+    assert '(f.values || []).filter((v) => v.default === true)' in body
+    # 値の述語は where 優先、無ければ col=v の or(複数列は全列)を括弧でくくる
+    assert '(v.where ? v.where : "(" + cols.map((c) => c + "=" + v.v).join(" or ") + ")")' in body
+    # ファセットごとにも括弧をつけ、facetをまたぐと and(エディタの compileWhere と同形)
+    assert 'clauses.push("(" + frags.join(" or ") + ")")' in body
+    assert 'return clauses.join(" and ");' in body
     # facets の無いエントリは従来どおり entry.where
     assert 'if (!facets.length) return (e && e.where) || "";' in body
 

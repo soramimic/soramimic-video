@@ -363,19 +363,47 @@ def test_setup_seed_works_without_a_wordlist(client, tmp_path):
     assert res.status_code == 422
 
 
-def test_setup_seed_puts_the_filter_on_the_entry_only(client, tmp_path):
-    """絞り込み(where)は単語リストのエントリにだけ載せる(トップレベルには出さない)。
+def test_setup_seed_puts_the_filter_on_the_entry(client, tmp_path):
+    """絞り込み(where)は単語リストのエントリに載せる。
 
-    editor はトップレベルの where をファセットのチェック状態の復元に使うが、
-    その照合は `(type=family)` の形が前提で、video が組む `type=family` とは
-    形が違う。渡すと全チェックが外れて絞り込みごと消えるので渡さない
-    (E2Eで確認済み)。エントリに載せておけば editor は既定のチェック状態
-    ——video が送ってきたのと同じ条件——で始まる。
+    ファセットを持たないリスト(自作リスト・conf に無いCSV)では、editor は
+    エントリの where をそのまま使う。チェックボックスで表せる形ではないので
+    トップレベルには出さない——出すと editor が「どのチェックにも当たらない」と
+    解釈して絞り込みを空にしてしまう。
     """
     payload = _setup_seed(
         client, tmp_path, wordlist=str(_wordlist_csv(tmp_path)), where="type=family"
     )
     assert payload["wordlist"]["where"] == "type=family"
+    assert "where" not in payload
+
+
+def test_setup_seed_passes_a_restorable_filter_at_the_top_level(client, tmp_path):
+    """ファセットで表せる where は、editor が復元できるようトップレベルにも載せる。
+
+    editor はトップレベルの where からチェック状態を復元し(restoreFacets)、
+    変換時にそのチェックから where を組み直す。形がそろっている今は、渡した
+    条件がそのまま復元される(tests/test_facets.py が3実装の形を固定)。
+    載せないと editor は conf の既定チェックで始まってしまい、既定と違う
+    絞り込みで作られた替え歌が、編集ツールに入った瞬間に条件を失う。
+    """
+    if not (Path(__file__).resolve().parents[1] / "external" / "soramimic-wordlists").is_dir():
+        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+    from soramimic_video.facets import default_where
+
+    # 既定の絞り込み(video が何も指定しないときに使う条件)
+    payload = _setup_seed(client, tmp_path, wordlist="baseball")
+    assert payload["wordlist"]["value"] == "BASEBALL"
+    assert payload["where"] == default_where(payload["wordlist"])
+    assert payload["where"] == "((type=family) or (type=full) or (type=registered))"
+    assert payload["wordlist"]["where"] == payload["where"]
+    # 既定と違う絞り込み(ファセットの1つだけ)もそのまま渡る
+    picked = "((type=nick))"
+    payload = _setup_seed(client, tmp_path, wordlist="baseball", where=picked)
+    assert payload["where"] == picked
+    # チェックボックスで表せない形は載せない(渡すと絞り込みが消えるため)
+    payload = _setup_seed(client, tmp_path, wordlist="baseball", where="type=nick")
+    assert payload["wordlist"]["where"] == "type=nick"
     assert "where" not in payload
 
 

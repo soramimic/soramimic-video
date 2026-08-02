@@ -3979,6 +3979,15 @@ function editorSessionWordlist() {
   return w && typeof w === "object" ? w : null;
 }
 
+// エディタが実際に使っている絞り込み。エディタはファセットを操作すると
+// wordlist を conf のエントリ(whereなし)で置き換え、条件はトップレベルの
+// where に持つので、そちらを先に見る(無ければ従来どおりエントリの where)。
+function editorWhereOf(data) {
+  const w = (data && data.wordlist) || {};
+  const top = data && data.where;
+  return String((typeof top === "string" ? top : w.where) || "").trim();
+}
+
 // エディタ側が「名前で引けないリスト」を使っている状態か。
 //   ORIGINAL    … エディタの⚙モーダルで書いた自作リスト(中身は csvText)
 //   custom:<sid>… 撤去した video側の自作リストで作った古い編集(読めるよう残す)
@@ -4000,7 +4009,7 @@ function applyEditorWordlist() {
   const name = own ? ""
     : String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "");
   if (!own && !name) return;        // 素性が読めないものは触らない
-  const wantWhere = own ? "" : String(w.where || "").trim();
+  const wantWhere = own ? "" : editorWhereOf(editorSessionData());
   const cur = $("wordlist").value.trim();
   if (name
       ? (cur === name && (!wantWhere || $("where").value.trim() === wantWhere))
@@ -4552,13 +4561,11 @@ function setWhere(v) {
 // 選んだ単語リストの既定の絞り込み(where)。conf の facets には既定でONの値が
 // 決まっている(例: 駅名は現存だけ、流行はセンシティブを外す)ので、チェックボックス
 // UIを畳んだあとも同じ式を組み立てて #where に入れる。
-// 【注意】組み立てる式は「意味」はエディタ側(convertControls.js の
-// renderFacets の default + compileWhere)と同じだが「形」は違う——こちらは
-// `type=family or type=full`、エディタは `(type=family) or (type=full)`。
-// エディタの restoreFacets はカッコつきの断片を探すので、この式をシードの
-// トップレベル where として渡すと1つも一致せず、全チェックが外れて絞り込みが
-// 消える。だから渡さない(api.py の editor_setup_seed 参照)。
-// 全値が既定ONのファセットは無条件と同義なので節を出さない(式が伸びるほど変換が遅い)。
+// 式はエディタ側(convertControls.js の facetClause + compileWhere)と1文字まで
+// 同じ形にする——`((type=family) or (type=full))` のように値ごと・ファセットごとに
+// 括弧を付ける。エディタの restoreFacets はこの形の断片を探してチェック状態を
+// 復元するので、形がずれると渡した絞り込みが復元されず黙って消える(送った条件
+// より広くなる=安全側でない)。Python側の正本は facets.py、対応はテストで固定。
 // facets の無いエントリは従来どおり entry.where をそのまま使う。
 function facetDefaultWhere(g) {
   const e = g && g.entries[0];
@@ -4566,17 +4573,13 @@ function facetDefaultWhere(g) {
   if (!facets.length) return (e && e.where) || "";
   const clauses = [];
   facets.forEach((f) => {
-    const values = f.values || [];
-    const on = values.filter((v) => v.default === true);
-    if (!on.length || on.length === values.length) return;
-    // 値の述語: where があればそれ、なければ列ごとの col=v(複数列は全列ぶん)
+    // 値の述語: where があればそれ、なければ列ごとの col=v の or(複数列は全列ぶん)
     const cols = f.columns || (f.column ? [f.column] : []);
-    const preds = on.flatMap(
-      (v) => (v.where ? [v.where] : cols.map((c) => c + "=" + v.v)));
-    if (preds.length) clauses.push(preds.join(" or "));
+    const frags = (f.values || []).filter((v) => v.default === true).map(
+      (v) => (v.where ? v.where : "(" + cols.map((c) => c + "=" + v.v).join(" or ") + ")"));
+    if (frags.length) clauses.push("(" + frags.join(" or ") + ")");
   });
-  if (clauses.length === 1) return clauses[0];
-  return clauses.map((c) => "(" + c + ")").join(" and ");
+  return clauses.join(" and ");
 }
 
 // 選択内容を canonical な #wordlist / #where に反映する。
@@ -4680,7 +4683,7 @@ async function updateParodyStatus() {
           name: custom
             ? (w.text || "自作リスト")
             : String(w.filepath).replace(/.*\//, "").replace(/\.csv$/, ""),
-          where: w.where || "",
+          where: custom ? "" : editorWhereOf(data),
         };
       }
     } catch { /* 生成元が読めなければ不一致判定を諦める(警告なし) */ }

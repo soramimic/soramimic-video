@@ -93,6 +93,84 @@ def test_import_editor_without_convert(tmp_path: Path):
     assert project.parody.lines[0].words[0].note_ids
 
 
+_FACET_SETTING = {
+    "wordlist": [
+        {
+            "value": "WORDS",
+            "text": "テスト",
+            "filepath": "wordlists/words.csv",
+            "dbtype": "tidy",
+            "facets": [
+                {
+                    "column": "type",
+                    "label": "種類",
+                    "values": [
+                        {"v": "family", "label": "名字", "default": True},
+                        {"v": "nick", "label": "愛称"},
+                    ],
+                }
+            ],
+        }
+    ]
+}
+
+
+def _facet_wordlist(tmp_path: Path) -> Path:
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation,type\n"
+        "0,静岡駅,静岡,シズオカ,family\n"
+        "1,鈴鹿,鈴鹿,スズカ,family\n"
+        "2,清水,清水,シミズ,nick",
+        encoding="utf-8",
+    )
+    return csv_path
+
+
+def test_editor_json_carries_the_facet_filter_both_ways(tmp_path: Path, monkeypatch):
+    """ファセットで表せる絞り込みは editor JSON のトップレベルにも載せ、読み戻す。
+
+    editor は⚙モーダルのチェック状態をトップレベルの where から復元し
+    (restoreFacets)、絞り込みを操作すると wordlist を conf のエントリ
+    (where なし)で置き換えて条件はトップレベルだけに持つ。だから
+    - 書き出し: 載せないと editor の再変換が conf の既定に戻ってしまう
+    - 取り込み: トップレベルを先に見ないと、ユーザーが変えた条件が落ちる
+    """
+    import soramimic_video.editor_io as editor_io
+
+    setting = tmp_path / "setting.json"
+    setting.write_text(json.dumps(_FACET_SETTING, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(editor_io, "SETTING_JSON", setting)
+
+    project = _project(tmp_path)
+    csv_path = _facet_wordlist(tmp_path)
+    where = "((type=family))"
+    raw = convert_project(project, wordlist=str(csv_path), where=where)
+    save_raw(raw, tmp_path)
+
+    payload = json.loads(export_editor(project, tmp_path).read_text(encoding="utf-8"))
+    assert payload["where"] == where
+    assert payload["wordlist"]["where"] == where
+
+    # editorで絞り込みを変えた状態(conf のエントリ + トップレベルの where)
+    payload["wordlist"] = dict(_FACET_SETTING["wordlist"][0], filepath=str(csv_path))
+    payload["where"] = "((type=nick))"
+    (tmp_path / "editor.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    import_editor(project, tmp_path)
+    assert project.parody.where == "((type=nick))"
+
+    # 旧JSON(トップレベルなし)はエントリの where を使う(後方互換)
+    del payload["where"]
+    payload["wordlist"]["where"] = where
+    (tmp_path / "editor.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    import_editor(project, tmp_path)
+    assert project.parody.where == where
+
+
 # ---- 単語リストの表示名(conf/setting.json) ----
 
 _SETTING = {
