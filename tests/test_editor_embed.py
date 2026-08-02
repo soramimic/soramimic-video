@@ -25,6 +25,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from soramimic_video import api as api_mod  # noqa: E402
 from soramimic_video import convert as convert_mod  # noqa: E402
 
+# job_client フィクスチャが api_mod.run_pipeline を差し替えるので、本物を先に押さえる
+REAL_RUN_PIPELINE = api_mod.run_pipeline
+
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
 # 自作リスト(貼り付けテキスト)。かんたん形式(1行1語 + 読み)
@@ -325,6 +328,29 @@ def test_setup_seed_has_phrases_but_no_conversion(client, tmp_path):
     assert payload["song"] == {"title": "しずむ歌"}
 
 
+def test_seed_carries_the_lyrics_both_ways(client, tmp_path):
+    """元歌詞(字幕用)はどちらのモードでもシードに載せてエディタへ渡す。
+
+    エディタ側が元歌詞欄を持ち、編集後の生テキスト(lyrics)を返してくるための
+    入口。ルビ記法は素通しする(記法はエディタの読み生成にも効かせる)。
+    """
+    lyrics = "｜静寂《しじま》\nしずむ"
+    # 解析のみモード(セットアップ画面から始まるシード)
+    seed = _setup_seed(client, tmp_path, lyrics=lyrics)
+    assert seed["lyrics"] == lyrics
+    # 変換込み(既定)モード
+    midi = _xf_midi(tmp_path)
+    res = client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+        data={"wordlist": str(_wordlist_csv(tmp_path)), "lyrics": lyrics},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["lyrics"] == lyrics
+    # 元歌詞が無ければフィールドごと出さない
+    assert "lyrics" not in _setup_seed(client, tmp_path)
+
+
 def test_setup_seed_param_is_the_effective_engine_default(client, tmp_path):
     """param はエンジン既定を埋めた実効値(パラメータUIが初期値を逆算できる形)。"""
     payload = _setup_seed(
@@ -524,6 +550,63 @@ def test_job_accepts_custom_session_editor(job_client, tmp_path):
     params = job_client.get(f"/api/jobs/{res.json()['id']}").json()["params"]
     assert params["wordlist"] == "自作リスト"  # 履歴・ダウンロード名に出る表示名
     assert params["parody_source"] == "editor"
+
+
+def test_job_pipeline_keeps_the_align_lines_originals(job_client, tmp_path, monkeypatch):
+    """字幕の元歌詞は analyze 段の align_lines が正。editor の originalLines は使わない。
+
+    ブラウザ側の対応づけは精度が足りず字幕が劣化するので採用しない。元歌詞が
+    フォームから来ていないジョブだけ、editor.json の lyrics(生テキスト)を
+    align_lines にかけて補う。動画に渡る project で確かめる。
+    """
+    from soramimic_video import mix as mix_mod
+    from soramimic_video import video as video_mod
+
+    midi = _xf_midi(tmp_path)
+    session = job_client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+        data={"wordlist": str(_wordlist_csv(tmp_path))},
+    ).json()
+    # 取り込み側が引ける実在のCSVにしておく(単語リスト解決はこのテストの主題ではない)
+    session["wordlist"]["filepath"] = str(_wordlist_csv(tmp_path))
+    session["originalLines"] = ["エディタが対応づけた元歌詞"]
+    session["lyrics"] = "エディタの元歌詞"
+
+    res = job_client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", midi.read_bytes(), "audio/midi"),
+            "editor": ("editor.json", json.dumps(session).encode(), "application/json"),
+        },
+        data={"lyrics": "しずむ"},
+    )
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    params = job_client.get(f"/api/jobs/{job_id}").json()["params"]
+    job = api_mod.Job(id=job_id, dir=tmp_path / "jobs" / job_id, params=params)
+
+    out = tmp_path / "out.mp4"
+    seen: dict = {}
+
+    def fake_make_video(project, d, **kwargs):
+        seen["originals"] = [ln.original_text for ln in project.lines]
+        return out
+
+    monkeypatch.setattr(api_mod, "_run_synthesize", lambda *a, **k: None)
+    monkeypatch.setattr(mix_mod, "mix", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "make_video", fake_make_video)
+
+    # フォームの元歌詞(lyrics.txt)を align_lines にかけた結果がそのまま残る
+    assert REAL_RUN_PIPELINE(job, {}) == out
+    assert seen["originals"] == ["しずむ"]
+
+    # 元歌詞をフォームから送っていないジョブは、editor.json の lyrics で埋まる
+    (job.dir / "lyrics.txt").unlink()
+    session["lyrics"] = "しずむ夜"
+    (job.dir / "editor.json").write_text(json.dumps(session), encoding="utf-8")
+    assert REAL_RUN_PIPELINE(job, {}) == out
+    assert seen["originals"] == ["しずむ夜"]
 
 
 def test_job_rejects_editor_with_unknown_session(job_client, tmp_path):

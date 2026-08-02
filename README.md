@@ -222,7 +222,7 @@ soramimic の編集ツール(submodule `external/soramimic/frontend`)を静的�
 
 ⚙を押したときサーバーがやるのは**解析だけ**(`POST /api/editor-session` に
 `convert=0`)で、返すのは行ごとの読みカナ(`phrases`)と初期設定
-(`wordlist` / `param` / `song` / ノート長重み `weightsList`)。
+(`wordlist` / `param` / `song` / ノート長重み `weightsList` / 元歌詞 `lyrics`)。
 絞り込み(where)は `wordlist` エントリと、シードのトップレベルの両方に載せる。
 エディタはトップレベルの where からファセットのチェック状態を復元する
 (`restoreFacets`)ので、式の形はエディタの `facetClause` + `compileWhere` と
@@ -231,6 +231,14 @@ soramimic の編集ツール(submodule `external/soramimic/frontend`)を静的�
 実際にJSを走らせて固定)。チェックボックスで表せない形の where(自作リストや
 手書きの条件)はトップレベルに載せない——載せるとチェックが1つも当たらず、
 エディタが組み直した時点で絞り込みが消えて、送った条件より広くなる。
+元歌詞(字幕用)はシードの `lyrics`(生テキスト。ルビ記法も素通し)で渡し、
+エディタは編集後の `lyrics` を書き出しJSONに載せて返す。エディタで直した
+`lyrics` は Web UI が正本(元歌詞欄)へ書き戻し、字幕の行対応づけは従来どおり
+video 側の `align_lines` が行う。エディタも行ごとの対応づけ `originalLines` を
+書き出すが**採用しない**——ブラウザ側の対応づけは境界がずれる・対応づかない行が
+出るなど `align_lines` より精度が低く、字幕が劣化するため(あちらはエディタの
+表示用)。フォームに元歌詞が無いまま editor.json だけを持ち込んだときだけ、
+JSONの `lyrics` を `align_lines` にかけて字幕の元歌詞を埋める。
 変換そのものはエディタがブラウザ内で行う。`convert` を送らなければ従来どおり
 サーバーで変換した `results` 入りのJSONが返る(「続きから再開」で開き直す
 保存済みの編集はこの形なので、編集画面から始まる)。

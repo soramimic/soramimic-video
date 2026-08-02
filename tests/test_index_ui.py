@@ -228,6 +228,31 @@ def test_editor_wordlist_is_written_back_to_the_form():
     assert "syncEditorSession();" in close
 
 
+def test_editor_lyrics_are_written_back_to_the_form():
+    """エディタの中で元歌詞を直したら、親の正本(#lyrics)へ書き戻す。
+
+    元歌詞は生成時に lyrics.txt として送られ、字幕の元歌詞になる。書き戻さない
+    と、エディタで直した元歌詞が動画に反映されない(将来この欄を画面から外して
+    も、hidden の正本としてそのまま機能する)。
+    """
+    script = _script()
+    body = _function_body(script, "function applyEditorLyrics()")
+    assert 'if (!data || typeof data.lyrics !== "string") return;' in body
+    # 変わっていなければ何もしない(毎周期で change を撒かない)
+    assert 'if (data.lyrics === $("lyrics").value) return;' in body
+    assert '$("lyrics").value = data.lyrics;' in body
+    assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
+    # 単語リストの書き戻しと同じ経路(ポーリングと「閉じる」)で拾う
+    sync = _function_body(script, "function syncEditorSession()")
+    assert "applyEditorLyrics();" in sync
+    # 来歴(editorProvenance)は元歌詞を見ないので、書き戻しで編集が捨てられない
+    prov = _function_body(script, "function editorProvenance()")
+    assert "lyrics" not in prov
+    # 元歌詞はエディタへのシードにも載る(サーバーが入れるので送るだけ)
+    for fn in ("async function convertAndOpenEditor()", "async function reseedEditorSong()"):
+        assert 'form.append("lyrics", $("lyrics").value);' in _function_body(script, fn)
+
+
 def test_card_selects_mirror_the_canonical_form():
     """カードのプルダウンは正本の写し。選択肢も値も片方向に写して二重管理しない。"""
     script = _script()
@@ -264,6 +289,24 @@ def test_card_wordlist_select_shows_the_editor_own_list():
     assert 'card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);' in body
     # 選び直されても正本は触らない(「何も選ばない」に落とさない)
     assert "if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }" in script
+def test_layout_preview_image_needs_a_wordlist_name():
+    """レイアウトプレビューの代表画像は、単語リスト名が空なら取りに行かない。
+
+    自作リスト(ORIGINAL/csvText)のあいだは正本 #wordlist が空。空の名前で
+    /api/wordlist-image を叩くと404になるので、loadWordlistImage と同じ空ガードを
+    置いてプレースホルダに落とす。
+    """
+    script = _script()
+    body = _function_body(script, "function leContent(e)")
+    assert 'const name = $("wordlist").value.trim();' in body
+    assert 'if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);' in body
+    # 空の名前をそのまま埋め込む書き方が復活していないこと
+    assert 'encodeURIComponent($("wordlist").value.trim())' not in body
+    # 代表画像のもう一方の経路(サムネ)も同じ流儀の空ガードを持つ
+    thumb = _function_body(script, "function loadWordlistImage(name, seq)")
+    assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in thumb
+
+
 # ---- エディタからの「曲を変えたい」依頼(hostRequest)にホストが応える ----
 
 
@@ -347,8 +390,12 @@ def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
     for keep in ("data.phrases = fresh.phrases;", "data.host = fresh.host;",
                  "if (fresh.song) data.song = fresh.song; else delete data.song;"):
         assert keep in body
-    for drop in ("delete data.results;", "delete data.tokensList;", "delete data.unitsList;"):
+    for drop in ("delete data.results;", "delete data.tokensList;", "delete data.unitsList;",
+                 # 行ごとの元歌詞は前の曲の phrases への対応づけなので一緒に捨てる
+                 "delete data.originalLines;"):
         assert drop in body
+    # 元歌詞そのものは正本の値へ揃え直す(曲とセットの情報)
+    assert "if (fresh.lyrics) data.lyrics = fresh.lyrics; else delete data.lyrics;" in body
     # 単語リスト・パラメータには触らない(エディタ側の今の設定のまま)
     assert "data.wordlist" not in body and "data.param" not in body
     # 新しいシードの指紋と来歴を控える。付け替えないと、曲を変えた直後の編集が

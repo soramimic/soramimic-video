@@ -20,6 +20,7 @@ from .convert import REPO_ROOT, apply_converted_lines, resolve_wordlist
 from .facets import survives_editor_facets
 from .layout import Layout
 from .project import ParodyWord, Project
+from .ruby import strip_ruby
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,45 @@ _SID_RE = re.compile(r"[0-9a-f]{16}")
 ORIGINAL_WORDLIST_VALUE = "ORIGINAL"
 # 取り込み時にジョブディレクトリへ書き出すファイル名(以後ここから行を引く)
 ORIGINAL_WORDLIST_FILENAME = "original-wordlist.csv"
+
+
+# ---- 元歌詞(字幕用)の受け渡し ----
+# 元歌詞は video のフォーム(#lyrics)が正本で、字幕の行対応づけは video 側の
+# align_lines が行う。エディタでも元歌詞を入力・確認できるようにするため、
+# **生テキストだけ**を双方向にやり取りする。
+#
+#   ホスト→エディタ(シード)  lyrics … 元歌詞の生テキスト(任意)
+#   エディタ→ホスト(書き出し) lyrics … エディタで編集されうる生テキスト
+#
+# 書き出しJSONにはエディタが対応づけた行ごとの元歌詞(originalLines)も入るが、
+# **video は採用しない**。ブラウザ側の対応づけ(soramimic の xfAlign 由来)は
+# 精度が足りず、行数が一致する曲でも境界が1〜2文字ずれたり対応づかない行が
+# 出たりして字幕が劣化するため。対応づけは align_lines を正とし、
+# editor.json の originalLines はエディタの表示用と割り切る。
+LYRICS_FIELD = "lyrics"
+
+
+def seed_with_lyrics(payload: dict[str, Any], lyrics: str) -> dict[str, Any]:
+    """editor へのシードに元歌詞の生テキストを載せる(空なら載せない・破壊的)。
+
+    ルビ記法(``｜表層《よみ》``)が入っていても素通しする——記法はエディタ側の
+    読み生成にも効かせたいので、ここで剥がさない(剥がすと読みの指定が落ちる)。
+    """
+    if lyrics.strip():
+        payload[LYRICS_FIELD] = lyrics
+    return payload
+
+
+def editor_lyrics(payload: dict) -> str | None:
+    """editor 書き出しJSONの ``lyrics``(元歌詞の生テキスト)。無ければ None。
+
+    ルビ記法(``｜表層《よみ》``)は剥がさない——対応づけ(align_lines)が記法を
+    解釈して読みに効かせるので、そのまま渡す。
+    """
+    lyrics = payload.get(LYRICS_FIELD)
+    if not isinstance(lyrics, str) or not lyrics.strip():
+        return None
+    return lyrics
 
 
 def editor_sessions_dir(jobs_dir: Path) -> Path:
@@ -389,11 +429,17 @@ def build_editor_preview(
     # 字幕の元歌詞をカナ(phrases)ではなく元歌詞の行で出す
     # 元歌詞のルビ記法(｜表層《よみ》)は align_lines と同じく、突き合わせには
     # 記法つきの行(読みに注釈が効く)を、表示には素テキストを使う
+    # エディタ側が持つ行ごとの対応づけ(originalLines)は使わない——ブラウザ側の
+    # 対応づけは精度が足りず字幕が劣化するため、対応づけは align_lines(こちら)を
+    # 正とする(editor.json の originalLines はエディタの表示用)。実動画
+    # (import_editor)も同じ方針なので、プレビューと本番の字幕が揃う。
     aligned: list[str | None] = [None] * len(phrases)
-    lyric_lines = [ln.strip() for ln in lyrics.splitlines() if ln.strip()]
+    # フォームに元歌詞が無ければ、JSONが持つ生テキストで対応づける
+    # (editor.json だけを持ち込んだケース。import_editor と同じ考え方)
+    source = lyrics if lyrics.strip() else (editor_lyrics(payload) or "")
+    lyric_lines = [ln.strip() for ln in source.splitlines() if ln.strip()]
     if lyric_lines and phrases:
         from .align import align_texts
-        from .ruby import strip_ruby
 
         assignments = align_texts([str(p) for p in phrases], lyric_lines)
         aligned = [strip_ruby(lyric_lines[a]) if a is not None else None for a in assignments]
@@ -493,6 +539,9 @@ def import_editor(
 
     エディタの中で選んだ自作リスト(wordlist.value が ORIGINAL)は単語データを
     JSON自体が持っている(csvText)ので、sessions_dir は要らない。
+
+    字幕の元歌詞がまだ無いプロジェクト(align_lines を通っていない)には、
+    JSONの ``lyrics``(元歌詞の生テキスト)から対応づけて埋める。
     """
     path = file or (project_dir / EDITOR_FILENAME)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -558,6 +607,21 @@ def import_editor(
             "単語リストを特定できません。convert を先に実行するか、"
             "wordlist情報(filepath)を含むeditor JSONを使ってください"
         )
+    # 字幕の元歌詞。JSONが持つ行ごとの対応づけ(originalLines)は**採用しない**——
+    # ブラウザ側の対応づけは精度が足りず字幕が劣化するため、対応づけは
+    # align_lines を正とする(editor.json の originalLines はエディタの表示用)。
+    # ただし元歌詞そのもの(生テキスト)は使う: フォーム/プロジェクト側に元歌詞が
+    # 無い(= original_text が全行 None。align_lines を通していない)のに JSON が
+    # lyrics を持つときは、その生テキストで対応づけて埋める。「editor.json だけを
+    # 持ち込んだ」ケースでも字幕が出る。ルビ記法は align_lines が解釈するので
+    # 剥がさずそのまま渡す。
+    if all(line.original_text is None for line in project.lines):
+        lyrics = editor_lyrics(payload)
+        if lyrics is not None:
+            from .align import align_lines
+
+            align_lines(project, lyrics.splitlines())
+
     default_params = project.parody.params if project.parody else {}
     apply_converted_lines(
         project,

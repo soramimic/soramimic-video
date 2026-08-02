@@ -2986,7 +2986,10 @@ function leContent(e) {
         src = leCue.image_url + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
       }
     } else if (leSide === "elements" && leSample && leSample.image) {
-      src = "/api/wordlist-image?wordlist=" + encodeURIComponent($("wordlist").value.trim());
+      // 自作リストのときは #wordlist が空。空の名前で頼むと404になるので、
+      // loadWordlistImage と同じく名前が無ければ引かない(プレースホルダに落ちる)
+      const name = $("wordlist").value.trim();
+      if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);
     }
     if (src) {
       const img = document.createElement("img");
@@ -3893,6 +3896,11 @@ const sameProvenance = (a, b) =>
 
 // 編集内容そのものの指紋。エディタが起動時に行う正規化(param の補完など)や
 // 履歴(history/future)の増減に振り回されないよう、編集で変わる部分だけを見る。
+// 元歌詞(lyrics / originalLines)は入れない——エディタは読み込み直後に自分で
+// 行対応づけ(originalLines)を書くので、入れると「眺めただけ」が編集済みに
+// なり、変換前(results なし)のJSONが生成へ送られてしまう。元歌詞だけを直した
+// ときは書き戻し(applyEditorLyrics)で正本 #lyrics に入り、video 側の
+// align_lines が同じ字幕を作るので取りこぼしにはならない。
 function editorContentSig(data) {
   if (!data || typeof data !== "object") return "";
   return JSON.stringify([data.results, data.tokensList, data.unitsList]);
@@ -4033,6 +4041,22 @@ function applyEditorWordlist() {
   adoptEditorSeedProvenance();
   updateEditorAutoStatus();
   renderParodyStatus();
+}
+
+// ---- エディタ側の元歌詞(字幕用)を親へ書き戻す ----
+// 元歌詞はエディタの中でも編集できる。正本は親の #lyrics(生成時に lyrics.txt
+// として送られ、字幕の元歌詞になる)なので、単語リストと同じように写す。
+// 将来この欄を画面から外しても、hidden の正本としてそのまま機能する。
+// 来歴(editorProvenance)は曲・単語リスト・変換パラメータだけを見ていて元歌詞を
+// 含まないので、書き戻しで編集が「別の入力から作られたもの」になることはない
+//(だから applyEditorWordlist と違い adoptEditorSeedProvenance は要らない)。
+function applyEditorLyrics() {
+  const data = editorSessionData();
+  if (!data || typeof data.lyrics !== "string") return;
+  if (data.lyrics === $("lyrics").value) return;   // 変わっていなければ何もしない
+  $("lyrics").value = data.lyrics;
+  // change で拾うもの: MIDI歌詞との食い違い警告・レイアウトプレビュー・フォーム保存
+  $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 // ---- エディタからの依頼(hostRequest)に応える ----
@@ -4206,9 +4230,14 @@ async function reseedEditorSong() {
   if (fresh.song) data.song = fresh.song; else delete data.song;
   if (fresh.weightsList) data.weightsList = fresh.weightsList;
   else delete data.weightsList;
+  // 元歌詞も曲とセットの情報。正本(#lyrics)の今の値をそのまま送っているので、
+  // 返ってきたものへ揃える(エディタ側の編集は書き戻し済み=同じ値)
+  if (fresh.lyrics) data.lyrics = fresh.lyrics; else delete data.lyrics;
   delete data.results;
   delete data.tokensList;
   delete data.unitsList;
+  // 行ごとの元歌詞は前の曲の phrases に対する対応づけなので、一緒に捨てる
+  delete data.originalLines;
   const text = JSON.stringify(data);
   sessionStorage.setItem(EDITOR_KEY, text);
   // これが新しい「編集前」。来歴も差し替えた曲のものへ付け替える——付け替えないと、
@@ -4228,6 +4257,7 @@ async function reseedEditorSong() {
 // プルダウンが古いままになる)。
 function syncEditorSession() {
   applyEditorWordlist();
+  applyEditorLyrics();   // 元歌詞(字幕用)の書き戻しも同じ経路で拾う
   // 「曲を変えたい」の依頼もここで拾う(非同期。開いているあいだだけ応える)
   handleHostRequest();
   // 自作リストへの出入りは正本の change を伴わないことがある(セッションを
