@@ -223,10 +223,14 @@ soramimic の編集ツール(submodule `external/soramimic/frontend`)を静的�
 ⚙を押したときサーバーがやるのは**解析だけ**(`POST /api/editor-session` に
 `convert=0`)で、返すのは行ごとの読みカナ(`phrases`)と初期設定
 (`wordlist` / `param` / `song` / ノート長重み `weightsList`)。
-絞り込み(where)は `wordlist` エントリにだけ載せる——シードのトップレベルに置くと
-エディタがファセットのチェック状態を復元しようとして式の形が合わず、絞り込みごと
-消えてしまう(video の `facetDefaultWhere` は `type=family`、エディタの
-`facetClause` は `(type=family)`)。
+絞り込み(where)は `wordlist` エントリと、シードのトップレベルの両方に載せる。
+エディタはトップレベルの where からファセットのチェック状態を復元する
+(`restoreFacets`)ので、式の形はエディタの `facetClause` + `compileWhere` と
+そろえてある(`((type=family) or (type=full))` の形。正本は
+`src/soramimic_video/facets.py`、3実装の一致は `tests/test_facets.py` が
+実際にJSを走らせて固定)。チェックボックスで表せない形の where(自作リストや
+手書きの条件)はトップレベルに載せない——載せるとチェックが1つも当たらず、
+エディタが組み直した時点で絞り込みが消えて、送った条件より広くなる。
 変換そのものはエディタがブラウザ内で行う。`convert` を送らなければ従来どおり
 サーバーで変換した `results` 入りのJSONが返る(「続きから再開」で開き直す
 保存済みの編集はこの形なので、編集画面から始まる)。

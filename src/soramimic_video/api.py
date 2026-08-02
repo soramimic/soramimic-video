@@ -422,13 +422,15 @@ def editor_setup_seed(
 
     - ``phrases``   … 行ごとの読みカナ(convert_project がエンジンへ渡すのと同じ)
     - ``wordlist``  … 初期選択の単語リスト設定(conf/setting.json と同じ形)。
-      絞り込み(where)はこのエントリに載せる——editor はトップレベルの ``where`` を
-      ファセットのチェック状態の復元(restoreFacets)に使うが、その照合は
-      convertControls.js の ``facetClause`` が作る ``(type=family)`` の形が前提で、
-      video の ``facetDefaultWhere`` が作る ``type=family`` とは形が違う。
-      渡すと全チェックが外れて**絞り込みが消える**ので渡さない。エントリの where
-      なら editor は既定のチェック状態(=video が送ってきたのと同じ条件)で始まる。
-      export_editor(変換込みモード)も同じくエントリにだけ載せている
+      絞り込み(where)はこのエントリに載せる(export_editor も同じ)
+    - ``where``     … トップレベルの絞り込み。editor はこれをファセットの
+      チェック状態の復元(restoreFacets)に使う。復元は convertControls.js の
+      ``facetClause`` が作る ``(type=family)`` の形の断片を探す照合なので、
+      **その形で表せる where のときだけ**載せる(:mod:`.facets` の
+      ``survives_editor_facets``)。表せない where を渡すと全チェックが外れ、
+      editor が組み直す where が空になって**絞り込みが消える**——送った条件より
+      広くなるので載せない(エントリの where だけが残り、editor は conf の
+      既定チェックで始まる)
     - ``param``     … 初期パラメータ(エンジン既定を埋めた実効値。UIが逆算する)
     - ``song``      … 表示用の曲名
     - ``weightsList`` … ノート長重視α>0 のときだけ(video独自パラメータのため)
@@ -447,6 +449,7 @@ def editor_setup_seed(
         resolve_wordlist,
     )
     from .editor_io import EXPORT_FORMAT, named_wordlist_entry
+    from .facets import survives_editor_facets
     from .soramimic_engine import run_tokenize
 
     csv_path = resolve_wordlist(wordlist) if wordlist else None
@@ -461,6 +464,8 @@ def editor_setup_seed(
         wordlist_entry = named_wordlist_entry(csv_path.stem, eff_where)
     if wordlist_entry is not None:
         payload["wordlist"] = wordlist_entry
+        if survives_editor_facets(wordlist_entry, eff_where):
+            payload["where"] = eff_where
     if song_title.strip():
         payload["song"] = {"title": song_title.strip()}
     if alpha > 0:

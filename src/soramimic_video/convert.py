@@ -55,11 +55,32 @@ def engine_phrases(project: Project) -> list[str]:
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORDLISTS_DIR = REPO_ROOT / "external" / "soramimic-wordlists"
 
-# editor(conf/setting.json)と同じ既定の絞り込み
-DEFAULT_WHERE = {
-    "baseball": "type=family or type=registered or type=full",
-    "football": "type=family or type=registered or type=full",
-}
+
+def _is_packaged_wordlist(csv_path: Path) -> bool:
+    """同梱の名前付き単語リスト(external/soramimic-wordlists)か。
+
+    既定の絞り込みは conf の列(type・status…)を前提にするので、たまたま同じ
+    ファイル名の手元のCSVに当ててはいけない(列が無いと絞り込みが空振りする)。
+    """
+    try:
+        return csv_path.resolve().parent == WORDLISTS_DIR.resolve()
+    except OSError:  # 解決できないパスは同梱リストではない
+        return False
+
+
+def default_where(name: str) -> str | None:
+    """単語リストの既定の絞り込み(conf/setting.json の facets の default)。
+
+    editor・トップ画面(static/index.html の facetDefaultWhere)と同じ式を
+    facets.default_where が組む。以前はここに2リストぶんを直書きしていたが、
+    conf に facets を持つリストが増えても更新されず(野球・サッカーのみ・
+    サッカーは「役割=選手」が抜けていた)、式の形も editor と違っていたので
+    conf から引くようにした。conf が読めない構成では絞り込みなし。
+    """
+    from .editor_io import conf_wordlist_entry
+    from .facets import default_where as facet_default_where
+
+    return facet_default_where(conf_wordlist_entry(name)) or None
 
 
 def resolve_wordlist(name_or_path: str) -> Path:
@@ -1210,12 +1231,13 @@ def resolve_convert_settings(
     (thumbnail.py のサムネ生成・そのプレビュー)で共有する。
     渡された params は壊さない(コピーして返す)。
 
-    csv_path は単語リストごとの既定の絞り込み(DEFAULT_WHERE)を引くためだけに使う。
-    単語リストが決まっていない場面(変換せず解析だけする /api/editor-session)では
-    None を渡してよい——その場合 where は渡されたものをそのまま使う。
+    csv_path は単語リストごとの既定の絞り込み(:func:`default_where`)を引く
+    ためだけに使う。単語リストが決まっていない場面(変換せず解析だけする
+    /api/editor-session)では None を渡してよい——その場合 where は渡された
+    ものをそのまま使う。
     """
-    if where is None and csv_path is not None:
-        where = DEFAULT_WHERE.get(csv_path.stem)
+    if where is None and csv_path is not None and _is_packaged_wordlist(csv_path):
+        where = default_where(csv_path.stem)
     # video 専用パラメータはエンジンへ渡す前に取り除く(呼び出し側のdictは壊さない)
     params = dict(params or {})
     alpha = pop_note_length_weight(params)
