@@ -135,6 +135,47 @@ def test_lyrics_align_to_original_text(client, tmp_path):
     assert unmatched["original_text"] == "ノブナガヒデヨシ"
 
 
+def test_preview_ignores_the_editor_original_lines(client, tmp_path):
+    """originalLines(エディタが対応づけた元歌詞)は使わない。
+
+    ブラウザ側の対応づけは align より精度が低いので、プレビューも実動画
+    (import_editor)と同じく自前の対応づけ結果を出す。
+    """
+    payload = _editor_payload(_wordlist(tmp_path))
+    payload["originalLines"] = ["エディタの1行目", "エディタの2行目"]
+    layout_json = json.dumps(_LAYOUT_SHOW_ALL)
+    lyrics = "のぶなが秀吉\nかくうの単語"
+
+    first = _post(client, payload, cue="0", layout_json=layout_json, lyrics=lyrics).json()
+    assert first["original_text"] == "のぶなが秀吉"
+    last = _post(client, payload, cue="2", layout_json=layout_json, lyrics=lyrics).json()
+    assert last["original_text"] == "かくうの単語"
+
+    # フォームの元歌詞が無ければカナ(phrase)。originalLines では埋めない
+    none = _post(client, payload, cue="0", layout_json=layout_json).json()
+    assert none["original_text"] == "ノブナガヒデヨシ"
+
+
+def test_preview_falls_back_to_the_editor_lyrics(client, tmp_path):
+    """フォームに元歌詞が無ければ、JSONの lyrics(生テキスト)を対応づけて使う。
+
+    editor.json だけを持ち込んだケースで、プレビューと実動画(import_editor)の
+    字幕が揃う。
+    """
+    payload = _editor_payload(_wordlist(tmp_path))
+    payload["lyrics"] = "のぶなが秀吉\nかくうの単語"
+    layout_json = json.dumps(_LAYOUT_SHOW_ALL)
+
+    first = _post(client, payload, cue="0", layout_json=layout_json).json()
+    assert first["original_text"] == "のぶなが秀吉"
+
+    # フォームの元歌詞があればそちらが正本(JSONの lyrics は見ない)
+    form = _post(
+        client, payload, cue="0", layout_json=layout_json, lyrics="のぶながと秀吉"
+    ).json()
+    assert form["original_text"] == "のぶながと秀吉"
+
+
 def _granularity_payload(csv_path: Path) -> dict:
     """2フレーズ(=2行・各1単語)が1つの元歌詞行に対応する粒度テスト用ペイロード。"""
     return {

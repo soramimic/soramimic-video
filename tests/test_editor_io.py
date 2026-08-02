@@ -93,6 +93,92 @@ def test_import_editor_without_convert(tmp_path: Path):
     assert project.parody.lines[0].words[0].note_ids
 
 
+# ---- 元歌詞(字幕用)の受け渡し ----
+# 行の対応づけ(どのXF行がどの歌詞行か)は video の align_lines を正とする。
+# エディタが書き出す originalLines(ブラウザ側の対応づけ)は精度が足りず字幕が
+# 劣化するので採用しない——受け取るのは元歌詞の生テキスト(lyrics)だけ。
+
+
+def _converted(tmp_path: Path):
+    """convert 済みプロジェクトと、その editor 書き出しJSONのパス。"""
+    project = _project(tmp_path)
+    save_raw(convert_project(project, wordlist=str(_wordlist(tmp_path))), tmp_path)
+    return project, export_editor(project, tmp_path)
+
+
+def _write(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_import_editor_ignores_the_editor_original_lines(tmp_path: Path):
+    """originalLines は無視して、align_lines が埋めた元歌詞をそのまま残す。
+
+    ブラウザ側の対応づけは境界が1〜2文字ずれる・対応づかない行が出るなど
+    align_lines より精度が低い(採用すると字幕が悪くなる)。
+    """
+    from soramimic_video.align import align_lines
+
+    project, path = _converted(tmp_path)
+    align_lines(project, ["しずむ"])   # video 側の対応づけ(これが正)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["originalLines"] = ["エディタが対応づけた元歌詞"]
+    payload["lyrics"] = "エディタが対応づけた元歌詞"
+    _write(path, payload)
+    import_editor(project, tmp_path)
+    assert [ln.original_text for ln in project.lines] == ["しずむ"]
+
+
+def test_import_editor_aligns_the_editor_lyrics_when_the_project_has_none(tmp_path: Path):
+    """元歌詞をまだ持たないプロジェクトは、JSONの lyrics を自分で対応づける。
+
+    「editor.json だけを持ち込んだ」(フォームに元歌詞が無い)ケースでも字幕が
+    出るようにするための経路。対応づけはあくまで align_lines。
+    """
+    project, path = _converted(tmp_path)
+    assert all(ln.original_text is None for ln in project.lines)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["lyrics"] = "しずむ"
+    payload["originalLines"] = ["エディタが対応づけた元歌詞"]   # こちらは使わない
+    _write(path, payload)
+    import_editor(project, tmp_path)
+    assert [ln.original_text for ln in project.lines] == ["しずむ"]
+
+
+def test_import_editor_lyrics_keep_the_ruby_reading(tmp_path: Path):
+    """lyrics のルビ記法は剥がさずに渡す(読みが align_lines に効く)。
+
+    字幕に入るのは素テキスト(｜/《》 は漏れない)。
+    """
+    project, path = _converted(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["lyrics"] = "｜沈《しず》む"
+    _write(path, payload)
+    import_editor(project, tmp_path)
+    assert [ln.original_text for ln in project.lines] == ["沈む"]
+
+
+def test_import_editor_without_lyrics_keeps_the_alignment(tmp_path: Path):
+    """lyrics が無いJSON(従来のエディタ)は従来どおり align_lines の結果のまま。"""
+    from soramimic_video.align import align_lines
+
+    project, path = _converted(tmp_path)
+    align_lines(project, ["しずむ"])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "lyrics" not in payload
+    import_editor(project, tmp_path)
+    assert project.lines[0].original_text == "しずむ"
+
+
+def test_editor_lyrics_helper():
+    """取り出しヘルパの約束(空は None・ルビ記法は素通し)。"""
+    from soramimic_video.editor_io import editor_lyrics
+
+    assert editor_lyrics({}) is None
+    assert editor_lyrics({"lyrics": "  \n "}) is None
+    assert editor_lyrics({"lyrics": ["a"]}) is None          # 形が違う
+    assert editor_lyrics({"lyrics": "｜今日《きょう》"}) == "｜今日《きょう》"
+
+
 _FACET_SETTING = {
     "wordlist": [
         {

@@ -701,7 +701,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     if (d / "editor.json").exists():
         with _stage(job, "import-editor"):
             # 自作リストで作った替え歌は、単語リスト行(=単語画像)を
-            # editorセッションのCSVから引く
+            # editorセッションのCSVから引く。
+            # 字幕の元歌詞は analyze 段の align_lines が埋めたものをそのまま使う
+            # (lyrics.txt を送っていないジョブだけ editor.json の lyrics で補う)
             import_editor(
                 project, d, d / "editor.json",
                 sessions_dir=config.get("editor_sessions"),
@@ -2013,6 +2015,12 @@ def create_app(
         自作リストのときは、editor がDBを組めるよう正規化済みCSVを
         editor-sessions/<sid>/ に置き、JSONの単語リスト設定を
         /editor/session-wordlists/<sid>.csv 向けにして返す。
+
+        元歌詞(lyrics)は、どちらのモードでもシードの ``lyrics`` にそのまま
+        載せて返す(ルビ記法も素通し)。editor はこれを元歌詞欄の初期値にし、
+        書き出しJSONに ``lyrics``(編集後の生テキスト)を載せて返してくる——
+        video が受け取るのはその生テキストだけで、字幕の行対応づけは従来どおり
+        自前の align_lines で行う(:mod:`soramimic_video.editor_io` 参照)。
         """
         import tempfile
 
@@ -2029,6 +2037,7 @@ def create_app(
             custom_wordlist_entry,
             export_editor,
             save_raw,
+            seed_with_lyrics,
         )
         from .xfparse import analyze_midi
 
@@ -2088,13 +2097,16 @@ def create_app(
                 align_lines(project, lyrics.splitlines())
             conv_params = parse_convert_params(convert_params)
             if not convert:
-                return editor_setup_seed(
-                    project,
-                    conv_wordlist,
-                    conv_where,
-                    conv_params,
-                    wordlist_entry=entry,
-                    song_title=song_title,
+                return seed_with_lyrics(
+                    editor_setup_seed(
+                        project,
+                        conv_wordlist,
+                        conv_where,
+                        conv_params,
+                        wordlist_entry=entry,
+                        song_title=song_title,
+                    ),
+                    lyrics,
                 )
             try:
                 raw = convert_project(
@@ -2120,7 +2132,9 @@ def create_app(
                 else None
             )
             path = export_editor(project, d, wordlist_entry=entry, weights_list=weights)
-            return json.loads(path.read_text(encoding="utf-8"))
+            return seed_with_lyrics(
+                json.loads(path.read_text(encoding="utf-8")), lyrics
+            )
 
     @app.get("/editor/session-wordlists/{sid}.csv")
     def editor_session_wordlist(sid: str) -> Response:
