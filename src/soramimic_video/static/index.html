@@ -599,15 +599,31 @@
   <input type="hidden" id="where">
 </div>
 
-<!-- 2. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
-     曲(自分のMIDI)・歌声・見た目はここだけにある。単語リストと変換のしかたは
-     エディタの⚙モーダルに一本化したので、ここには残っていない。 -->
-<details class="card" id="advanced">
-  <summary>⚙️ 詳細設定(曲と歌詞・歌声・見た目)</summary>
+<!-- 曲と元歌詞の「正本」の置き場。選ぶ・アップロードする操作はビルダーカードと
+     替え歌エディタに一本化したので画面には出さないが、既存の送信・保存・復元・
+     MIDI検証・親子同期はこのIDを使うためDOMには残す。状態表示用の要素も、既存の
+     非同期処理が安全に完了できるよう同じ隠し領域に置く。 -->
+<div id="song-store" hidden>
+  <input type="file" id="midi" accept=".mid,.midi">
+  <p id="midi-restore-hint" hidden></p>
+  <p id="midi-error" hidden></p>
+  <div id="sample-details">
+    <select id="sample-select" aria-label="サンプル曲"></select>
+    <p id="sample-status"></p>
+  </div>
+  <textarea id="lyrics"></textarea>
+  <p id="lyrics-midi-warn" hidden></p>
+</div>
 
-  <!-- 中身は役割ごとに3つのグループに分け、よく使う順(曲 → 歌声 → 見た目)に
-       並べる。フラットに並べると初見の人がどこから触ればいいか分からないため、
-       小見出し+1行の説明で区切る。ふだん触らないものは末尾の「上級者向け」へ。 -->
+<!-- 2. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
+     曲・元歌詞・単語リスト・変換のしかたはビルダーカードとエディタに一本化し、
+     ここには動画にする側の歌声と見た目だけを残す。 -->
+<details class="card" id="advanced">
+  <summary>⚙️ 詳細設定(歌声・見た目)</summary>
+
+  <!-- 中身は役割ごとに2つのグループに分ける。フラットに並べると初見の人が
+       どこから触ればいいか分からないため、小見出し+1行の説明で区切る。
+       ふだん触らないものは末尾の「上級者向け」へ。 -->
 
   <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig が auth_required を見て
        hidden を外す)。公開モードや認証なしの構成では最後まで hidden のまま。
@@ -618,50 +634,9 @@
     <input type="password" id="api-key" placeholder="X-API-Key">
   </div>
 
-  <!-- ① 曲と歌詞 -->
+  <!-- ① 歌声 -->
   <section class="opt-group">
-    <h3 class="opt-group-title">① 曲と歌詞</h3>
-    <p class="hint opt-group-lead" data-info>どの曲を歌わせるか。字幕に出す元の歌詞もここ。</p>
-
-    <!-- 曲。詳細設定を開く人の目的は「自分の曲でやる」なので、ここではMIDIファイル
-         選択を主役にして直に見せる。サンプル曲はビルダーカードのプルダウンで選べる
-         ので、この中では「サンプルから選ぶ」の折りたたみに格下げする。
-         ただし送信・同期の正本は従来どおり #sample-select なので、DOMからは消さずに
-         折りたたみの中へ移すだけにする(ビルダーカードとの双方向同期・applySample・
-         前回入力の復元はそのまま動く)。 -->
-    <div class="field">
-      <label for="midi">曲(XF MIDIファイル)</label>
-      <input type="file" id="midi" accept=".mid,.midi">
-      <p class="hint" data-info>歌詞入りのXF形式MIDIファイル。下の「サンプルから選ぶ」やビルダーカードの「曲」で選んだときは、そのMIDIがここに自動でセットされます。</p>
-      <p class="hint" id="midi-restore-hint" hidden></p>
-      <!-- 歌詞なしMIDIの拒否(checkMidi)。選んだ直後にサーバーで歌詞の有無を見て、
-           無ければファイル選択ごと取り消して理由をここに出す -->
-      <p class="error" id="midi-error" hidden></p>
-      <!-- サンプルが取れない環境では loadSamples がこの details ごと隠す -->
-      <details class="sub-details" id="sample-details">
-        <summary>サンプルから選ぶ</summary>
-        <div id="sample-field">
-          <select id="sample-select" aria-label="サンプル曲"></select>
-          <p class="hint" id="sample-status"></p>
-        </div>
-      </details>
-    </div>
-
-    <!-- 元歌詞は曲とセットの情報(その曲の歌詞)なので、曲のすぐ下に置く。
-         字幕の元歌詞行はここ(かMIDIの歌詞)が出どころなので「推奨」扱いにする。 -->
-    <div class="field">
-      <label for="lyrics">元歌詞(推奨・字幕用)</label>
-      <textarea id="lyrics" placeholder="1行1フレーズで貼り付け"></textarea>
-      <p class="hint" data-info>MIDIに歌詞が入っていればそちらが使われるので不要です。どちらも無いと字幕に元歌詞の行が出ません(替え歌だけの字幕になります)。字幕の元歌詞を差し替えたいときにも使います。</p>
-      <!-- 元歌詞とMIDIの歌詞が食い違っているときの警告(checkMidi)。
-           生成はできるので止めない。常時表示の状態メッセージ扱い -->
-      <p class="hint" id="lyrics-midi-warn" hidden></p>
-    </div>
-  </section>
-
-  <!-- ② 歌声 -->
-  <section class="opt-group">
-    <h3 class="opt-group-title">② 歌声</h3>
+    <h3 class="opt-group-title">① 歌声</h3>
     <p class="hint opt-group-lead" data-info>誰の声で、どの高さで歌うか。</p>
 
     <div class="field">
@@ -713,11 +688,11 @@
     </div>
   </section>
 
-  <!-- ③ 見た目 -->
+  <!-- ② 見た目 -->
   <section class="opt-group">
     <!-- 中身がレイアウトだけになったので、見出し「見た目」+ラベル「レイアウト」の
          二段構えをやめて見出しに統合(ⓘも1つに) -->
-    <h3 class="opt-group-title">③ 見た目</h3>
+    <h3 class="opt-group-title">② 見た目</h3>
     <p class="hint opt-group-lead" data-info>動画の画面の作り(画像・説明文・字幕の配置)。単語リストに合わせて自動で決まります。細かく変えたいときは「レイアウトを調整」から(全画面で開きます)。プリセットの選び直しや、自作レイアウト(JSONファイル)の読み込みも編集画面の中にあります。</p>
 
     <div class="field">
@@ -1767,12 +1742,11 @@ async function loadSamples() {
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
     syncBuilderOptions();  // カードの曲プルダウンへ写す
   } catch {
-    // サンプルが取れない環境ではサンプル選択の折りたたみ(#sample-details)ごと隠す。
-    // MIDIファイル選択は詳細設定の中に出たままなので、そちらを使ってもらう。
-    // ビルダーカードも成立しないので隠し、入力欄のある詳細設定を開いて迷子にしない
+    // 正本の選択肢とカード側の曲プルダウンだけを隠す。カード自体は残し、
+    // 一時的な取得失敗を見える形にする(詳細設定には曲入力がもう無いため)。
     $("sample-details").hidden = true;
-    $("lucky-card").hidden = true;
-    $("advanced").open = true;
+    $("builder-sample-field").hidden = true;
+    showBuilderMsg("⚠ 曲一覧を読み込めませんでした。ページを再読み込みしてください。");
   }
 }
 // 初期表示のプレビューはサンプル一覧が揃ってからなので、完了を待てるよう持っておく
@@ -1843,8 +1817,8 @@ function trackSample(p) {
   samplePending = p.catch(() => false);   // 失敗は呼び出し側が拾う
   return p;
 }
-// 取得に失敗すると前の曲のMIDIがそのまま残る。#sample-status は詳細設定の中に
-// あって畳まれていることが多いので、ビルダーカードにも理由を出す(黙って
+// 取得に失敗すると前の曲のMIDIがそのまま残る。#sample-status は非表示の
+// 正本領域にあるため、ビルダーカードに理由を出す(黙って
 // 別の曲で生成されるのを防ぐのは ensureSelectedSampleMidi)。
 $("sample-select").addEventListener("change", () => {
   const sid = $("sample-select").value;
@@ -2536,7 +2510,6 @@ async function initBuilder() {
   if (builderReady) return;   // loadConfig はAPIキー変更で再実行される
   builderReady = true;
   await samplesReady;         // 曲のプルダウンが揃うのを待つ
-  if ($("lucky-card").hidden) return;   // サンプルが取れない環境ではカードごと出ない
   syncBuilderOptions();
   const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
   const def = DEFAULT_COMBO;
