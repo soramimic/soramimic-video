@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -192,6 +193,28 @@ def test_job_ttl_cleanup(tmp_path, monkeypatch):
     assert not job_dir.exists()
     assert client.get("/api/jobs").json() == []
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_job_ttl_cleanup_removes_stale_editor_sessions(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    manager = client.app.state.manager
+    sessions = manager.config["editor_sessions"]
+    stale = sessions / ("a" * 16)
+    recent = sessions / ("b" * 16)
+    unmanaged = sessions / "keep-me"
+    for directory in (stale, recent, unmanaged):
+        directory.mkdir(parents=True)
+        (directory / "wordlist.csv").write_text("id,surface\n", encoding="utf-8")
+    os.utime(stale / "wordlist.csv", (1000, 1000))
+    os.utime(recent / "wordlist.csv", (9000, 9000))
+
+    manager.cleanup_expired(now=10_000)
+
+    assert not stale.exists()
+    assert recent.exists()
+    assert unmanaged.exists()  # fingerprint形式でない管理外ディレクトリには触れない
 
 
 def test_job_ttl_disabled_by_default(tmp_path, monkeypatch):

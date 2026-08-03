@@ -19,7 +19,7 @@
     │▓▓▓▓▓【ダイオージャ】▓▓▓▓▓▓▓▓▓▓│  ← 背景は単語の画像(1語なら1枚、
     │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│     2語なら左右に2枚)
     │▓▓▓ lemon を 架空のアニメキャラ で歌ってみた ▓│
-    │ 撮影者 (CC BY)      lyrics by Soramimic │
+    │ 撮影者 (CC BY)      lyrics & video by Soramimic │
     └─────────────────────────────┘
 
 言い換えは1語だけだと意味が取りにくいことがあるので、短い語のときは2語目まで
@@ -647,7 +647,7 @@ def render_thumbnail(
 
     words / image_paths / image_credits は1件でも複数(言い換え2語)でもよい。
     STYLE_FULLBLEED では画像を全面に敷いた背景を先に合成し、その上に文字を描く。
-    app_credit は隅の署名(既定は「lyrics by Soramimic」。動画本編と同じ文言)。
+    app_credit は隅の署名(既定は「lyrics & video by Soramimic」。動画本編と同じ文言)。
     design で文字の可読性デザインを差し替えられる(既定は TEXT_DESIGN)。
     """
     if isinstance(image_paths, Path):

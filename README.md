@@ -222,7 +222,8 @@ soramimic の編集ツール(submodule `external/soramimic/frontend`)を静的�
 
 ⚙を押したときサーバーがやるのは**解析だけ**(`POST /api/editor-session` に
 `convert=0`)で、返すのは行ごとの読みカナ(`phrases`)と初期設定
-(`wordlist` / `param` / `song` / ノート長重み `weightsList` / 元歌詞 `lyrics`)。
+(`wordlist` / `param` / `song` / ノート長生重み `noteLengthRawList` /
+ノート長設定 `noteLengthAlpha` / 元歌詞 `lyrics`)。
 絞り込み(where)は `wordlist` エントリと、シードのトップレベルの両方に載せる。
 エディタはトップレベルの where からファセットのチェック状態を復元する
 (`restoreFacets`)ので、式の形はエディタの `facetClause` + `compileWhere` と
@@ -254,11 +255,11 @@ uv run soramimic-video serve            # dist があれば自動で /editor/ �
 従来どおり editor の書き出しJSONをファイルアップロードして使える。
 
 単語リストの選択・絞り込みと変換のしかた(プリセット・音の合わせ方・文節の区切り・
-単語の長さ・単語重複)は、**エディタの中の「変換のしかた」に一本化**している。
-video側に残っているのは、エディタにも本家にも無い soramimic-video 独自の
-「ノート長重視 α」(`NOTE_LENGTH_WEIGHT`。α>0 のときだけ `convert_params` に載る)
-だけで、置き場は「⚙️ 詳細設定」の末尾の「上級者向け」。
-指定しなかったパラメータはサーバー既定(本家のバランス相当・単語重複なし)になる。
+単語の長さ・単語重複・ノート長重視α)は、**エディタの中の「変換のしかた」に
+一本化**している。ノート長の生重みはvideo側が曲から作って渡し、αの設定と
+指数計算はsoramimic側が担う。CLI/API向けの `NOTE_LENGTH_WEIGHT` は後方互換として
+引き続き利用できる。指定しなかった他のパラメータはサーバー既定
+(本家のバランス相当・単語重複なし)になる。
 
 エディタの中で単語リストを選び直すと、その結果は親画面の正本(リスト名と絞り込み)へ
 書き戻される。カードの状態表示・サムネプレビュー・生成時の単語画像とレイアウトの
@@ -289,8 +290,11 @@ uv run mypy src
   ライセンス表記に従うこと。クレジット表記が必要な画像(Wikimedia Commonsで
   作者表示が求められるもの)は出典文言を動画フレームに自動で焼き込む
   (レイアウトの `"credit": false` で無効化できるが、その場合は自分で表記すること)。
-- 動画フレームの左下には「lyrics by Soramimic」を小さく焼き込む。VOICEVOXで
-  歌わせたジョブは規約に合わせて「lyrics by Soramimic / VOICEVOX:キャラ名」になる。
+- 動画フレームの左下には「lyrics & video by Soramimic」を小さく焼き込む。VOICEVOXで
+  歌わせたジョブは規約に合わせて「lyrics & video by Soramimic / VOICEVOX:キャラ名」になる。
   レイアウトの `"app_credit": false` で無効化、text要素で `{app_credit}` を
   自前配置すれば位置・見た目を変えられる(無効化した場合、VOICEVOXのクレジットは
   動画の説明欄などで自分で表記すること)。
+- エンドクレジットには元曲名を必ず表示する。Web UIの「元曲クレジット」で著作者と
+  権利者指定の表記を入力でき、指定表記は改変せず動画内へ焼き込む。CLIでは
+  `--song-title`、`--original-credit`、`--credit-notice`を使う。

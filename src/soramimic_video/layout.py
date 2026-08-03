@@ -66,8 +66,8 @@
   "credit": false で無効化できる。位置や見た目を変えたいときは text 要素で
   {image_credit} を自分で参照すれば自動追加はされない
 - アプリのクレジット表記: どのレイアウトでも {app_credit}(既定
-  「lyrics by Soramimic」。歌声合成のクレジットが必要なときは
-  「lyrics by Soramimic / VOICEVOX:キャラ名」のように連結される)を
+  「lyrics & video by Soramimic」。歌声合成のクレジットが必要なときは
+  「lyrics & video by Soramimic / VOICEVOX:キャラ名」のように連結される)を
   フレーム左下に小さく自動で焼き込む。画像クレジット(画像の右下)や既定字幕
   (〜画面高95%)と重ならない最下段に置く。"app_credit": false で無効化でき、
   位置や見た目を変えたいときは text 要素で {app_credit} を自分で参照すれば
@@ -117,6 +117,9 @@
     - image_credits: 使用画像のクレジットをまとめた文言。既定のエンドロールでは
       使っていない(各単語フレームの右下に個別のクレジットを焼いているため)
     - page / pages: 後奏が複数枚に分かれたときのページ番号と総ページ数
+    - original_song: 元曲名
+    - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
+    - credit_notice: 権利者やライセンスから指定された表記
     - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
       クレジットページで使う。表記が要らない合成では空なので、その行の要素には
       "require": "synth_credit" を付けて丸ごと出さないようにする
@@ -137,6 +140,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -153,6 +157,8 @@ NON_FRAME_LAYOUTS = frozenset({"thumbnail"})
 # 歌唱なし区間の種別。前奏(1単語目より前)・間奏(単語と単語の間)・後奏(最終単語より後)、
 # credits=後奏の最後に出すクレジットページ
 IDLE_SECTIONS = ("intro", "interlude", "outro", "credits")
+# 描画ロジックを変えたときに共有PNGキャッシュを確実に無効化する。
+FRAME_RENDER_CACHE_VERSION = 1
 # 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
 SECTION_DEFAULTS_PATH = Path(__file__).resolve().parent / "section_defaults.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
@@ -179,8 +185,8 @@ _COLUMN_MIN_ROWS = 4
 
 # 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
 # 歌声合成側のクレジット表記が要るときは呼び出し側が
-# 「lyrics by Soramimic / VOICEVOX:キャラ名」のように連結して data に入れる
-APP_CREDIT = "lyrics by Soramimic"
+# 「lyrics & video by Soramimic / VOICEVOX:キャラ名」のように連結して data に入れる
+APP_CREDIT = "lyrics & video by Soramimic"
 # 自動追加するアプリクレジットの位置(フレーム左下)と見た目。
 # 画像クレジット(画像の右下)・既定字幕(下端0.945)と重ならない最下段に、
 # 画像クレジット(0.025)より小さい文字で、白を少し透かして置く
@@ -609,7 +615,7 @@ def resolve_app_credit(data: dict) -> str:
     """{app_credit} に入れる文言。dataに指定があればそれ、無ければ既定の署名。
 
     歌声合成のクレジット表記が要るジョブでは video.py が
-    「lyrics by Soramimic / VOICEVOX:キャラ名」を data に入れてくる。
+    「lyrics & video by Soramimic / VOICEVOX:キャラ名」を data に入れてくる。
     """
     text = str(data.get("app_credit") or "").strip()
     return text or APP_CREDIT
@@ -1121,17 +1127,38 @@ def _render_to_cache(
             and (not e.get("require") or str(values.get(e["require"]) or "").strip())
         ],
     }
+    image_key: list[str | int] = []
+    if image_path is not None:
+        try:
+            st = image_path.stat()
+            image_key = [image_path.name, st.st_size, st.st_mtime_ns]
+        except OSError:
+            image_key = [image_path.name]
     key = hashlib.sha1(
         json.dumps(
-            [tag, raw_visual, image_path.name if image_path else "", texts, width, height],
+            [FRAME_RENDER_CACHE_VERSION, tag, raw_visual, image_key, texts, width, height],
             ensure_ascii=False,
             sort_keys=True,
         ).encode()
     ).hexdigest()[:16]
     out = out_dir / f"frame_{key}.png"
     if out.exists():
+        # 共有キャッシュの刈り取りで、最近使ったフレームを残せるようatime代わりにする
+        try:
+            os.utime(out, None)
+        except OSError:
+            pass
         return out
-    _render_canvas(layout, image_path, data, width, height, elements, texts).save(out)
+    # APIの並行ジョブが同じ共有キャッシュキーを同時に描画しても、ffmpegから
+    # 書きかけのPNGが見えないよう、一時ファイルを完成させてから原子的に公開する。
+    tmp = out.with_name(f".{out.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        _render_canvas(layout, image_path, data, width, height, elements, texts).save(
+            tmp, format="PNG"
+        )
+        os.replace(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)
     return out
 
 

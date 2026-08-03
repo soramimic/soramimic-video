@@ -714,21 +714,25 @@
     </div>
   </section>
 
-  <!-- 上級者向け。ふだんは触らないものはグループに並べず、末尾の折りたたみへ入れる。
-       変換のしかた(プリセット・音の合わせ方・文節の区切り・単語の長さ・単語重複)と
-       単語リストの絞り込みは同梱エディタの⚙モーダルに一本化した(video側に本家の
-       値対応表を持たないため)ので、ここに残るのはエディタにも本家にも無い
-       soramimic-video 独自の項目だけ。 -->
-  <details id="advanced-extra" class="sub-details">
-    <summary>上級者向け</summary>
-    <!-- 送信は buildConvertParams が α>0 のときだけ NOTE_LENGTH_WEIGHT を追記する。 -->
+  <!-- ③ 元曲クレジット -->
+  <section class="opt-group">
+    <h3 class="opt-group-title">③ 元曲クレジット</h3>
+    <p class="hint opt-group-lead" data-info>動画の最後に元曲名を表示します。著作者や権利者から表記を指定されている場合は、ここにそのまま入力してください。</p>
+
     <div class="field">
-      <label for="p-notelen">ノート長重視 α(soramimic-video独自)</label>
-      <input type="number" id="p-notelen" min="0" max="2" step="0.05" value="0.25"
-        aria-label="ノート長重視 α(0でオフ)">
-      <p class="hint" data-info>この項目だけ本家soramimic(と同梱エディタ)にはありません。MIDIで長く伸ばす音符ほど音を合わせることを優先します。既定の0.25は「甲乙つけがたい候補の間でだけ、伸ばしが合う方を選ぶ」控えめな設定(単語の選ばれ方の傾向は変わりません)。0.5〜1に上げると長い音符を優先した積極的な単語選びになり、そのぶん短い音符の一致や単語の切り方が変わります。<strong>0にすると従来とまったく同じ結果</strong>になります。</p>
+      <label for="original-credit">元曲の著作者</label>
+      <textarea id="original-credit" rows="2" maxlength="500"
+        placeholder="例: 作詞: ○○ / 作曲: △△"></textarea>
+      <p class="hint" data-info>作詞・作曲・編曲など。不明なら空欄のままにせず、公開前に権利情報を確認してください。</p>
     </div>
-  </details>
+
+    <div class="field">
+      <label for="credit-notice">権利者から指定された表記</label>
+      <textarea id="credit-notice" rows="3" maxlength="1000"
+        placeholder="例: ©表記、ライセンス名、許諾番号など"></textarea>
+      <p class="hint" data-info>入力文を改変せずエンドクレジットに載せます。</p>
+    </div>
+  </section>
 
 </details>
 
@@ -1683,6 +1687,8 @@ async function submitJob(previewSec, previewMode) {
   form.append("preview", String(previewSec));
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(midi));
+  form.append("original_credit", $("original-credit").value.trim());
+  form.append("credit_notice", $("credit-notice").value.trim());
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
@@ -4177,7 +4183,7 @@ function pickMidiFile() {
 }
 
 // 差し替えた曲で解析だけをやり直し(convert=0)、エディタのペイロードへ差し戻す。
-// 入れ替えるのは曲から作られるもの(phrases/song/weightsList)だけ——単語リストと
+// 入れ替えるのは曲から作られるもの(phrases/song/noteLengthRawList)だけ——単語リストと
 // 変換のしかた(wordlist/param)はエディタ側の今の設定をそのまま残す。
 // 前の曲の変換結果(results/tokensList/unitsList)は捨てて未変換に戻すので、
 // エディタは「この設定で変換」からやり直せる。
@@ -4201,6 +4207,9 @@ async function reseedEditorSong() {
   data.phrases = fresh.phrases;
   data.host = fresh.host;
   if (fresh.song) data.song = fresh.song; else delete data.song;
+  if (fresh.noteLengthRawList) data.noteLengthRawList = fresh.noteLengthRawList;
+  else delete data.noteLengthRawList;
+  // αはエディタで選んだ値を維持する。旧エディタ向けweightsListだけ更新する。
   if (fresh.weightsList) data.weightsList = fresh.weightsList;
   else delete data.weightsList;
   // 元歌詞も曲とセットの情報。正本(#lyrics)の今の値をそのまま送っているので、
@@ -4458,7 +4467,7 @@ $("editor-close").addEventListener("click", closeEditor);
 // 曲・単語リスト・変換パラメータを変えると、編集内容の来歴が今の選択と合わなく
 // なることがある。そのときは表示を出し直す(生成時のガードと同じ判定)
 // 出したままの「保存済みの替え歌があります」も、前提が変わったら一度引っ込める
-["midi", "wordlist", "where", "p-notelen"]
+["midi", "wordlist", "where"]
   .forEach((id) => $(id).addEventListener("change", () => {
     updateEditorAutoStatus();
     renderParodyStatus();   // 取り込み済みJSONの扱い(使う/捨てる)も来歴で変わる
@@ -4715,14 +4724,11 @@ $("download-editor").addEventListener("click", async () => {
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
 
-// 生成時に送る変換パラメータ(KEY=VALUE を改行区切り)。音の合わせ方・文節の区切り・
-// 単語の長さ・単語重複は同梱エディタの「変換のしかた」に一本化したので、ここからは
-// 送らない(未指定はサーバー既定=本家のバランス相当・単語重複なし)。
-// soramimic-video 独自の NOTE_LENGTH_WEIGHT(ノート長重視α)だけは本家・エディタに
-// 無いので、0(=OFF)以外のときにここで足す。
+// 変換の詳細設定は同梱soramimicへ一本化した。エディタを経由しない従来フローも
+// これまでの画面既定と同じ結果になるよう、ノート長α=0.25だけを既定値として送る。
+// エディタ内で変更したαは変換結果JSONに反映済みなので、video側で再設定しない。
 function buildConvertParams() {
-  const noteLen = Number($("p-notelen").value);
-  return noteLen > 0 ? "NOTE_LENGTH_WEIGHT=" + noteLen : "";
+  return "NOTE_LENGTH_WEIGHT=0.25";
 }
 
 function saveForm() {
@@ -4735,7 +4741,6 @@ function saveForm() {
       // 選んだ単語リスト(confエントリ)の絞り込み。画面には出さないが、同名で
       // 絞り込み違いのグループを復元時に選び分けるために持ち回る
       where: $("where").value,
-      noteLenWeight: $("p-notelen").value,
       transpose: $("transpose").value,
       layout: $("layout").value,
       // 自動でセットしたレイアウト名も持ち回る(復元後も手動選択と区別するため)
@@ -4749,6 +4754,8 @@ function saveForm() {
       // 「〈ベース名〉の編集(●)」として表示し、↺や📄項目も再構成できるようにする
       layoutBaseKey: leBaseKey,
       layoutBaseline: leBaseline,
+      originalCredit: $("original-credit").value,
+      creditNotice: $("credit-notice").value,
       model: $("model").value,
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
@@ -4840,8 +4847,9 @@ $("layout-select").addEventListener("change", async () => {
 
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)。
 // model / layout は上の syncChoice が保存するのでここには入れない。
-["lyrics", "wordlist", "where", "p-notelen",
+["lyrics", "wordlist", "where",
  "transpose", "layout-json",
+ "original-credit", "credit-notice",
  "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
@@ -4934,11 +4942,10 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
+    $("original-credit").value = state.originalCredit || "";
+    $("credit-notice").value = state.creditNotice || "";
     // 旧版の保存(duplicate / preset / convertSliders)はもう画面に対応する項目が
     // ないので読まない(エディタの「変換のしかた」に移した)。残っていても無視するだけ
-    if (state.noteLenWeight != null && state.noteLenWeight !== "") {
-      $("p-notelen").value = state.noteLenWeight;
-    }
     if (state.transpose != null) $("transpose").value = state.transpose;
     if (state.model) setChoice("model", state.model);
     // 3. 合成エンジン: そのエンジンが使えないサーバーなら復元しない。復元した値は

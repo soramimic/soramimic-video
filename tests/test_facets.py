@@ -187,11 +187,32 @@ def test_server_predicts_the_editor_roundtrip():
         assert survives_editor_facets(entry, where)
         # 絞り込み無し(None)は載せるものが無いので渡さない
         assert not survives_editor_facets(entry, None)
-        # 旧video形(値ごとの括弧なし)はチェックに一致せず、絞り込みが消える
+        # 旧video形(括弧なし)は正規形と一致しないのでそのままでは渡さない。
+        # ``where`` を明示した値は認識されて正規形に戻り、それ以外は消える。
         flat = where.replace("(", "").replace(")", "")
         if flat != where:
-            assert restored_where(entry, flat) == ""
+            restored = restored_where(entry, flat)
+            assert restored in ("", where)
             assert not survives_editor_facets(entry, flat)
+
+
+def test_gimukyoiku_defaults_to_elementary_and_middle_school_only():
+    """義務教育リストは高校を含めず、小学校・中学校を既定選択にする。"""
+    entry = next(e for e in _conf_entries() if e["value"] == "GIMUKYOIKU")
+    assert entry["text"] == "義務教育"
+    assert default_where(entry) == "(level~=小学校 or level~=中学校)"
+
+    csv_path = WORDLISTS / Path(entry["filepath"]).name
+    selected = _select(csv_path, default_where(entry))
+    header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    level_index = header.index("level")
+    assert selected
+    assert all(
+        "小学校" in row[level_index] or "中学校" in row[level_index]
+        for row in selected
+    )
+    assert any("小学校" in row[level_index] for row in selected)
+    assert any("中学校" in row[level_index] for row in selected)
 
 
 def _legacy_default_where(entry: dict[str, Any]) -> str:

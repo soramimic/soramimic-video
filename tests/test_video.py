@@ -3,6 +3,7 @@ import hashlib
 import itertools
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from soramimic_video.video import (
     download_image,
     layout_column_mismatch,
     layout_template_columns,
+    prune_rendered_frame_cache,
     word_frame_data,
     write_slideshow,
 )
@@ -427,6 +429,26 @@ def test_black_frame_creates_missing_dir(tmp_path: Path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_prune_rendered_frame_cache(tmp_path: Path):
+    cache = tmp_path / "rendered-frames"
+    cache.mkdir()
+    old = cache / "frame_old.png"
+    recent = cache / "frame_recent.png"
+    newest = cache / "frame_newest.png"
+    unrelated = cache / "other.png"
+    for path in (old, recent, newest, unrelated):
+        path.touch()
+    os.utime(old, (10, 10))
+    os.utime(recent, (80, 80))
+    os.utime(newest, (90, 90))
+
+    removed = prune_rendered_frame_cache(cache, ttl_sec=50, max_entries=1, now=100)
+
+    assert removed == [old, recent]
+    assert newest.exists()
+    assert unrelated.exists()
+
+
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
 def test_image_cues_and_slideshow(tmp_path: Path):
     project = _project(tmp_path)
@@ -449,6 +471,13 @@ def test_image_cues_and_slideshow(tmp_path: Path):
     assert credits[0]["image_page"] == "https://example.com/page"
     # 単語の歌唱区間から始まる(tick480 @120bpm = 0.5s)
     assert abs(cues[0].start - 0.5) < 0.01
+    assert cues[0].frame.parent == cache / "rendered-frames"
+
+    # 作業ディレクトリが違っても、明示した画像キャッシュが同じなら描画PNGを再利用する
+    reused, _ = build_image_cues(
+        project, tmp_path / "other-video", 320, 180, image_cache=cache
+    )
+    assert reused[0].frame == cues[0].frame
 
     out = write_slideshow(cues, work, 320, 180, total_sec=3.0)
     assert out.exists() and out.stat().st_size > 0
@@ -546,7 +575,7 @@ def test_image_cues_bake_app_credit(tmp_path: Path):
     project2 = _project(tmp_path)
     credited, _ = build_image_cues(
         project2, tmp_path / "v2", 320, 180, layout=layout,
-        app_credit="lyrics by Soramimic / VOICEVOX:四国めたん",
+        app_credit="lyrics & video by Soramimic / VOICEVOX:四国めたん",
     )
     assert plain and credited
     assert plain[0].frame.name != credited[0].frame.name
@@ -1434,13 +1463,19 @@ def test_build_section_cues_appends_credits_page(tmp_path: Path):
     layout = load_layout("default")
     work = tmp_path / "v"
     got = build_section_cues(project, [_cue(0.0, 10.0)], 30.0, layout, work, 320, 180,
-                             synth_credit="VOICEVOX:四国めたん")
+                             synth_credit="VOICEVOX:四国めたん",
+                             original_song="赤とんぼ",
+                             original_credit="作詞: 三木露風 / 作曲: 山田耕筰",
+                             credit_notice="権利者指定の表記")
     # 最後のキューはクレジットページ。単語ページの直後から後奏の終わりまでを埋める
     assert got[-1].start == got[-2].end and got[-1].end == 30.0
     expected = render_section_frame(
         layout,
         section_frame_data(project, section="credits", duration=20.0,
-                           synth_credit="VOICEVOX:四国めたん"),
+                           synth_credit="VOICEVOX:四国めたん",
+                           original_song="赤とんぼ",
+                           original_credit="作詞: 三木露風 / 作曲: 山田耕筰",
+                           credit_notice="権利者指定の表記"),
         320, 180, work / "frames", "credits",
     )
     assert got[-1].frame == expected

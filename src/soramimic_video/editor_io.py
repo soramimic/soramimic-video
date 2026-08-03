@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +109,48 @@ def editor_lyrics(payload: dict) -> str | None:
 def editor_sessions_dir(jobs_dir: Path) -> Path:
     """自作リストのeditorセッション置き場(ジョブディレクトリの隣)。"""
     return jobs_dir.resolve() / EDITOR_SESSIONS_DIRNAME
+
+
+def cleanup_editor_sessions(
+    sessions_dir: Path | None,
+    max_age_seconds: float,
+    now: float | None = None,
+) -> list[str]:
+    """最終保存から ``max_age_seconds`` を過ぎた自作リストを削除する。
+
+    fingerprint形式の直下ディレクトリだけを対象にし、管理外のファイルや
+    ディレクトリには触れない。セッション保存は同じリストを開くたびCSVを
+    書き直すため、そのmtimeを最終利用時刻として扱える。
+    """
+    if sessions_dir is None or max_age_seconds <= 0:
+        return []
+    root = Path(sessions_dir)
+    if not root.is_dir():
+        return []
+    deadline = (time.time() if now is None else now) - max_age_seconds
+    expired: list[tuple[str, Path]] = []
+    for session_dir in root.iterdir():
+        if (
+            not valid_session_id(session_dir.name)
+            or session_dir.is_symlink()
+            or not session_dir.is_dir()
+        ):
+            continue
+        wordlist = session_dir / SESSION_WORDLIST_FILENAME
+        try:
+            last_used = (
+                wordlist.stat().st_mtime
+                if wordlist.is_file()
+                else session_dir.stat().st_mtime
+            )
+        except OSError:
+            continue
+        if last_used <= deadline:
+            expired.append((session_dir.name, session_dir))
+    for sid, session_dir in expired:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        logger.info("editorセッション %s を保存期間超過のため削除しました", sid)
+    return [sid for sid, _ in expired]
 
 
 def valid_session_id(sid: str | None) -> bool:
@@ -305,6 +349,8 @@ def export_editor(
     project_dir: Path,
     wordlist_entry: dict[str, Any] | None = None,
     weights_list: list[list[float]] | None = None,
+    note_length_raw_list: list[list[float]] | None = None,
+    note_length_alpha: float | None = None,
 ) -> Path:
     """editorの「読み込み」で開けるJSONを書き出す。
 
@@ -312,10 +358,9 @@ def export_editor(
     conf/setting.json にもリスト名にも紐づかないリスト向け。
     :func:`custom_wordlist_entry` を渡す)。
 
-    weights_list はノート長重み(NOTE_LENGTH_WEIGHT のα由来、行ごとの
-    ユニット位置別重み)。α はエンジンパラメータではないので param には
-    載らず、計算済みの重みだけを editor へ渡す。editor はこれを再変換の
-    weightsPerLine としてそのまま使う(soramimic-editor/1 の追加フィールド)。
+    weights_list は従来の計算済み位置別重み(後方互換)。
+    note_length_raw_list は曲由来のα=1の生重みで、note_length_alpha とともに
+    soramimicへ渡す。指数計算と設定変更はsoramimic側が担う。
     """
     if project.parody is None:
         raise ValueError("替え歌案がありません。先に convert を実行してください")
@@ -354,6 +399,11 @@ def export_editor(
         payload["where"] = project.parody.where
     if weights_list is not None:
         payload["weightsList"] = weights_list
+    if note_length_raw_list is not None:
+        payload["noteLengthRawList"] = note_length_raw_list
+        payload["noteLengthAlpha"] = (
+            0.25 if note_length_alpha is None else note_length_alpha
+        )
     path = project_dir / EDITOR_FILENAME
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return path

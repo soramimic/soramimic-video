@@ -149,6 +149,11 @@ def test_render_frame_image_and_text(tmp_path):
     other = render_frame(layout, img, {**data, "original": "沼津駅"},
                          320, 180, tmp_path / "frames")
     assert other != out
+    # 同名の元画像が差し替わった場合は共有キャッシュを無効化する
+    img.write_bytes(img.read_bytes() + b"\0")
+    replaced = render_frame(layout, img, data, 320, 180, tmp_path / "frames")
+    assert replaced != out
+    assert replaced is not None and replaced.exists()
 
 
 def test_render_frame_text_only(tmp_path):

@@ -182,35 +182,27 @@ def test_index_html_conversion_params_moved_to_the_editor():
     assert 'form.append("where", $("where").value.trim());' in html
 
 
-def test_index_html_note_length_weight_input():
-    # soramimic-video 独自の「ノート長重視 α」の数値入力(0〜2 / 0.05刻み / 既定0.25)。
-    # 既定0.25はタイブレーク運用(2曲のスイープ実験で単語長・短ノートへの
-    # 副作用がほぼゼロのまま長ノートの母音一致だけ改善する点として選定)。
-    # エディタの「変換のしかた」にも無い唯一の項目なので、video側に残している。
-    import re
+def test_note_length_weight_setting_moved_to_soramimic():
+    video_html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    editor_html = (
+        Path(api_mod.__file__).parents[2]
+        / "external/soramimic/frontend/editor.html"
+    ).read_text(encoding="utf-8")
 
+    assert 'id="p-notelen"' not in video_html
+    assert 'id="advanced-extra"' not in video_html
+    assert 'id="editor-note-length-alpha"' in editor_html
+    assert 'min="0" max="2" step="0.05" value="0.25"' in editor_html
+
+
+def test_index_html_keeps_note_length_default_for_non_editor_flow():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    m = re.search(r'<input type="number" id="p-notelen"([^>]*)>', html)
-    assert m, "p-notelen の数値入力が見つからない"
-    attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
-    assert (attrs["min"], attrs["max"], attrs["step"], attrs["value"]) == (
-        "0", "2", "0.05", "0.25",
-    )
-    # video独自であることがUI上わかる注記
-    assert "soramimic-video独自" in html
-
-
-def test_index_html_note_length_weight_sent_only_when_positive():
-    # α>0 のときだけ NOTE_LENGTH_WEIGHT を convert_params に追記する
-    # (0=既定では送らない → 本家と完全に同じパラメータになる)。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    assert 'const noteLen = Number($("p-notelen").value);' in html
-    assert 'return noteLen > 0 ? "NOTE_LENGTH_WEIGHT=" + noteLen : "";' in html
-
+    assert 'return "NOTE_LENGTH_WEIGHT=0.25";' in html
+    assert 'Number($("p-notelen").value)' not in html
 
 def test_index_html_model_layout_use_select_not_datalist():
     # iOS Safari が datalist を表示しない問題への対応:
@@ -1068,9 +1060,14 @@ def test_thumbnail_unknown_job_is_404(client):
 
 def test_song_title_is_stored(client):
     # UIはサンプル曲なら samples.json の曲名、自分のMIDIならファイル名を送る
-    job_id = submit(client, wordlist="stations", song_title=" うっせぇわ(確認用) ")
+    job_id = submit(
+        client, wordlist="stations", song_title=" うっせぇわ(確認用) ",
+        original_credit=" 作詞: ○○ ", credit_notice=" © 2026 権利者 ",
+    )
     body = wait_done(client, job_id)
     assert body["params"]["song_title"] == "うっせぇわ(確認用)"
+    assert body["params"]["original_credit"] == "作詞: ○○"
+    assert body["params"]["credit_notice"] == "© 2026 権利者"
 
 
 def test_song_title_falls_back_to_midi_filename():
@@ -1397,9 +1394,10 @@ def test_index_html_advanced_is_grouped_by_role():
     assert list(_opt_groups()) == [
         "① 歌声",
         "② 見た目",
+        "③ 元曲クレジット",
     ]
     # どのグループにも1行の説明を添える
-    assert _advanced_html().count('class="hint opt-group-lead"') == 2
+    assert _advanced_html().count('class="hint opt-group-lead"') == 3
     # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
     advanced = _advanced_html()
     assert advanced.index('id="auth"') < advanced.index('<section class="opt-group">')
@@ -1425,6 +1423,9 @@ def test_index_html_advanced_groups_hold_the_right_fields():
     assert 'id="le-details"' not in _index_html()
     assert 'id="layout-select"' not in look
     assert 'id="layout-file"' not in look
+    credit = g["③ 元曲クレジット"]
+    assert 'id="original-credit"' in credit
+    assert 'id="credit-notice"' in credit
 
 
 def test_index_html_layout_base_select_lives_in_the_editor_modal():
@@ -1462,19 +1463,12 @@ def test_index_html_layout_base_values_never_reach_the_hidden_input():
     assert "JSON.stringify(leLayout) !== leBaseline" in modified
 
 
-def test_index_html_advanced_extra_holds_only_note_length_weight():
-    """ふだん触らない項目は詳細設定の末尾「上級者向け」に1つだけ畳む。"""
+def test_index_html_conversion_settings_live_in_editor():
+    """変換設定はvideoの詳細設定へ重複させず、同梱エディタに一本化する。"""
     advanced = _advanced_html()
-    assert '<details id="advanced-extra" class="sub-details">' in advanced
-    assert "<summary>上級者向け</summary>" in advanced
-    # グループ(①②)より後ろ、詳細設定の末尾に置く
-    assert advanced.index('id="advanced-extra"') > advanced.index("② 見た目")
-    extra = advanced.split('<details id="advanced-extra" class="sub-details">')[1]
-    # 中身はエディタにも本家にも無い独自項目(ノート長重視α)だけ
-    assert 'id="p-notelen"' in extra
-    # 旧「変換のしかたを細かく調整する」の折りたたみは廃止
+    assert 'id="advanced-extra"' not in advanced
+    assert 'id="p-notelen"' not in advanced
     assert 'id="parody-advanced"' not in advanced
-    # 自作リスト(画像つき)の導線は撤去した(エディタの⚙に一本化)
     assert 'id="edit-wordlist"' not in advanced
     assert 'id="custom-wordlist"' not in advanced
     # 替え歌JSONの読み書きも詳細設定には無い(エディタのモーダル側)

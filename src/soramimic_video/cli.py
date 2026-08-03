@@ -213,6 +213,10 @@ def cmd_video(args: argparse.Namespace) -> int:
         image_cache=Path(args.image_cache) if args.image_cache else None,
         layout=args.layout,
         synth_credit=args.synth_credit,
+        fps=args.fps,
+        song_title=args.song_title,
+        original_credit=args.original_credit,
+        credit_notice=args.credit_notice,
     )
     print(f"動画完成: {out}")
     return 0
@@ -262,6 +266,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         layout=args.layout,
         editor_dist=Path(args.editor_dist) if args.editor_dist else None,
         voicevox_url=args.voicevox_url,
+        video_fps=args.video_fps,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
@@ -437,6 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True)
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
+    p.add_argument("--fps", type=int, default=30, help="動画のフレームレート(既定: 30)")
     p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
     p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
     p.add_argument(
@@ -452,7 +458,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--synth-credit",
         default="",
         help="歌声合成のクレジット表記(例 'VOICEVOX:四国めたん')。"
-        "指定するとフレーム左下の署名に「lyrics by Soramimic / ...」と併記する",
+        "指定するとフレーム左下の署名に「lyrics & video by Soramimic / ...」と併記する",
+    )
+    p.add_argument(
+        "--song-title",
+        default="",
+        help="末尾クレジットに出す元曲名(省略時はMIDIファイル名)",
+    )
+    p.add_argument(
+        "--original-credit",
+        default="",
+        help="元曲の著作者クレジット(例: '作詞: ○○ / 作曲: △△')",
+    )
+    p.add_argument(
+        "--credit-notice",
+        default="",
+        help="権利者やライセンスから指定された表記(改変せず末尾に表示)",
     )
     p.set_defaults(func=cmd_video)
 
@@ -478,6 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--soundfont", help="伴奏用サウンドフォント(.sf2)")
     p.add_argument("--font", help="字幕フォント名(既定はOSに応じて選択)")
     p.add_argument("--threads", type=int, default=4, help="NEUTRINOのスレッド数")
+    p.add_argument("--video-fps", type=int, default=30, help="生成動画のfps(既定: 30)")
     p.add_argument(
         "--voicevox-url",
         default="http://127.0.0.1:50021",
