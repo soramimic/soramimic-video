@@ -186,13 +186,16 @@ def test_note_length_weight_setting_moved_to_soramimic():
     video_html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    editor_html = (
-        Path(api_mod.__file__).parents[2]
-        / "external/soramimic/frontend/editor.html"
-    ).read_text(encoding="utf-8")
-
     assert 'id="p-notelen"' not in video_html
     assert 'id="advanced-extra"' not in video_html
+
+    # 移設先の確認はsubmoduleが要る。CIではsoramimic本体を取得しないので飛ばす
+    editor_path = (
+        Path(api_mod.__file__).parents[2] / "external/soramimic/frontend/editor.html"
+    )
+    if not editor_path.is_file():
+        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+    editor_html = editor_path.read_text(encoding="utf-8")
     assert 'id="editor-note-length-alpha"' in editor_html
     assert 'min="0" max="2" step="0.05" value="0.25"' in editor_html
 
