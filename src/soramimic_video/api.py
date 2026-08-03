@@ -433,7 +433,9 @@ def editor_setup_seed(
       既定チェックで始まる)
     - ``param``     … 初期パラメータ(エンジン既定を埋めた実効値。UIが逆算する)
     - ``song``      … 表示用の曲名
-    - ``weightsList`` … ノート長重視α>0 のときだけ(video独自パラメータのため)
+    - ``noteLengthRawList`` … 曲のノート長から作るα=1の生重み
+    - ``noteLengthAlpha`` … soramimic側UIの初期値。既定0.25
+    - ``weightsList`` … 旧soramimic互換の計算済み重み
 
     ``results``/``tokensList``/``unitsList`` は入れない——ブラウザ側で導出される。
 
@@ -468,13 +470,21 @@ def editor_setup_seed(
             payload["where"] = eff_where
     if song_title.strip():
         payload["song"] = {"title": song_title.strip()}
-    if alpha > 0:
-        # 重みの計算にはエンジンが使うのと同じユニット列が要る。単語DBは要らないので
-        # トークナイズだけを走らせる(変換はブラウザ側がやる)。ユニット数が
-        # ブラウザ側のトークナイズと食い違えばエンジンが重みを無視する(安全側)
-        payload["weightsList"] = project_note_length_weights(project, alpha)(
-            run_tokenize(phrases, coerced)
-        )
+    # 重みの計算にはエンジンが使うのと同じユニット列が要る。単語DBは要らないので
+    # トークナイズだけを走らせる(変換はブラウザ側がやる)。ホストはα=1の生重みを
+    # 渡し、αの設定と指数計算はsoramimic側が担当する。
+    units = run_tokenize(phrases, coerced)
+    raw_weights = project_note_length_weights(project, 1.0)(units)
+    note_alpha = alpha if "NOTE_LENGTH_WEIGHT" in (params or {}) else 0.25
+    if raw_weights is not None:
+        payload["noteLengthRawList"] = raw_weights
+        payload["noteLengthAlpha"] = note_alpha
+        # 更新前のsoramimicにも従来どおり効く互換フィールド。
+        if note_alpha > 0:
+            payload["weightsList"] = [
+                [raw**note_alpha if raw > 0 else 0.0 for raw in row]
+                for row in raw_weights
+            ]
     return payload
 
 
@@ -746,6 +756,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             song_title=song_title_of(job.params),
             song_title_kana=song_title_kana_of(job.params),
             synth_credit=synth_credit_of(job.params, config),
+            fps=config.get("video_fps", 30),
+            original_credit=str(job.params.get("original_credit") or ""),
+            credit_notice=str(job.params.get("credit_notice") or ""),
         )
 
 
@@ -987,6 +1000,16 @@ class JobManager:
         for job in expired:
             shutil.rmtree(job.dir, ignore_errors=True)
             logger.info("[job %s] 保存期間を過ぎたので削除しました", job.id)
+
+        # 自作リストのeditorセッションも同じTTLで掃除する。保存処理は同じ
+        # fingerprintを再利用するたびCSVを書き直すので、mtimeが最終利用時刻になる。
+        from .editor_io import cleanup_editor_sessions
+
+        cleanup_editor_sessions(
+            self.config.get("editor_sessions"),
+            hours * 3600,
+            now=time.time() if now is None else now,
+        )
         return [job.id for job in expired]
 
     def _save(self, job: Job) -> None:
@@ -1101,6 +1124,7 @@ def create_app(
     layout: str | None = None,
     editor_dist: Path | None = None,
     voicevox_url: str = "http://127.0.0.1:50021",
+    video_fps: int = 30,
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     from .editor_io import editor_sessions_dir
@@ -1118,6 +1142,7 @@ def create_app(
         "threads": threads,
         "layout": layout,
         "voicevox_url": voicevox_url,
+        "video_fps": video_fps,
         # 合成の所要時間の目安(曲秒あたりの実処理秒)を実行ごとに記録して次回に使う
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
     }
@@ -1610,6 +1635,8 @@ def create_app(
         # サムネ・表示用の曲名。WebUIはサンプル曲なら samples.json の title、
         # 自分のMIDIならファイル名(拡張子なし)を送る。未指定なら midi_filename を使う
         song_title: str = Form(""),
+        original_credit: str = Form(""),
+        credit_notice: str = Form(""),
         wordlist: str = Form(""),
         where: str = Form(""),
         convert_params: str = Form(""),
@@ -1760,6 +1787,8 @@ def create_app(
             "parody_source": "editor" if editor_bytes else "convert",
             "midi_filename": midi.filename,
             "song_title": song_title.strip(),
+            "original_credit": original_credit.strip(),
+            "credit_notice": credit_notice.strip(),
         }
         if custom is not None:
             # 表示名(履歴・サムネ・ダウンロード名)はアップロードしたファイル名から作る
@@ -2008,7 +2037,7 @@ def create_app(
         実行し、変換済み(results 入り)のJSONを返す。editor は編集画面から始まる。
 
         convert=0(解析のみ)… 変換はせず、セットアップ画面の材料
-        (phrases/wordlist/param/where/song/weightsList)だけを返す。
+        (phrases/wordlist/param/where/song/noteLengthRawList/noteLengthAlpha)だけを返す。
         editor はセットアップ画面から始まり、「この設定で変換」でブラウザ内で
         変換してから編集画面に入る。単語リストは要らない(エディタで選べる)。
 
@@ -2096,6 +2125,9 @@ def create_app(
             if lyrics.strip():
                 align_lines(project, lyrics.splitlines())
             conv_params = parse_convert_params(convert_params)
+            # Web UIのノート長設定はsoramimicへ移したが、変換済みセッションを
+            # 直接作る経路も従来の画面既定0.25と同じ結果にする。
+            conv_params.setdefault("NOTE_LENGTH_WEIGHT", "0.25")
             if not convert:
                 return seed_with_lyrics(
                     editor_setup_seed(
@@ -2121,17 +2153,26 @@ def create_app(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             save_raw(raw, d)
             project.save(d)
-            # ノート長重視α(video独自)はエンジンparamに載らないので、editorでの
-            # 再変換にも効くよう、計算済みの行別ユニット重みをJSONに同梱する
+            # ホストはα=1の生重みを渡し、以後の設定と指数計算はsoramimicが担う。
             alpha = pop_note_length_weight(dict(conv_params))
+            units = [line["units"] for line in raw["lines"]]
+            raw_weights = project_note_length_weights(project, 1.0)(units)
             weights = (
-                project_note_length_weights(project, alpha)(
-                    [line["units"] for line in raw["lines"]]
-                )
-                if alpha > 0
+                [
+                    [value**alpha if value > 0 else 0.0 for value in row]
+                    for row in raw_weights
+                ]
+                if raw_weights is not None and alpha > 0
                 else None
             )
-            path = export_editor(project, d, wordlist_entry=entry, weights_list=weights)
+            path = export_editor(
+                project,
+                d,
+                wordlist_entry=entry,
+                weights_list=weights,
+                note_length_raw_list=raw_weights,
+                note_length_alpha=alpha,
+            )
             return seed_with_lyrics(
                 json.loads(path.read_text(encoding="utf-8")), lyrics
             )

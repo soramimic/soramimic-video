@@ -257,13 +257,16 @@ f0とMIDIの音高差の中央値で移調も自動補正。メロディチャ�
   差し替える(そのときは作り直し済み=キャッシュヒットなので、レート制限も
   変換も追加で消費しない)。詳細(キャッシュキー・レート制限)は
   docs/public-mode.md。
-- クレジット表記: フレーム左下に「lyrics by Soramimic」を小さく焼き込む
+- クレジット表記: フレーム左下に「lyrics & video by Soramimic」を小さく焼き込む
   (単語フレーム・fallback・idle・サムネで共通)。VOICEVOX利用時は規約に合わせて
-  「lyrics by Soramimic / VOICEVOX:キャラ名」にする(キャラ名はエンジンの
+  「lyrics & video by Soramimic / VOICEVOX:キャラ名」にする(キャラ名はエンジンの
   スタイル一覧から引く。NEUTRINOは公式FAQで名称の記載が任意なので焼き込まない)。
   画像クレジットは画像の右下なので位置が衝突しない。レイアウトの
   `"app_credit": false` で無効化、text要素で `{app_credit}` を自前配置すれば移動できる
   (サムネは全面画像スタイルの右下に自前配置しているので二重にならない)。
+- エンドクレジット: 元曲名(`original_song`)を表示し、フォームまたはCLIで指定された
+  著作者表記(`original_credit`)と権利者指定表記(`credit_notice`)を改変せず追加する。
+  任意項目が空なら `require` により該当行だけを隠す。
 
 ## リポジトリ構成
 

@@ -244,7 +244,11 @@ def test_editor_session_passes_convert_params(client, tmp_path, monkeypatch):
     monkeypatch.setattr(convert_mod, "convert_project", spy)
 
     _custom_session(client, tmp_path, convert_params="DUPLICATE=true;VOWEL_RATIO=0.5")
-    assert seen["params"] == {"DUPLICATE": "true", "VOWEL_RATIO": "0.5"}
+    assert seen["params"] == {
+        "DUPLICATE": "true",
+        "VOWEL_RATIO": "0.5",
+        "NOTE_LENGTH_WEIGHT": "0.25",
+    }
     assert seen["where"] is None          # 自作リストに絞り込みは無い
     assert seen["cache_db"] is False      # この入力限りのリストは共有キャッシュに載せない
     assert seen["wordlist"].endswith("wordlist.csv")
@@ -265,11 +269,7 @@ def test_editor_session_passes_convert_params(client, tmp_path, monkeypatch):
 
 
 def test_editor_session_note_length_weights(client, tmp_path):
-    """ノート長重視α>0のとき、行別ユニット重み(weightsList)がJSONに同梱される。
-
-    αはエンジンパラメータではなくvideo側の重み計算なので、editorの再変換にも
-    効かせるには計算済みの重みを渡すしかない(editorはweightsPerLineに使う)。
-    """
+    """videoは生重みを渡し、αの設定と指数計算をsoramimicへ委ねる。"""
     midi = _xf_midi(tmp_path)
     wordlist = _wordlist_csv(tmp_path)
     res = client.post(
@@ -280,19 +280,39 @@ def test_editor_session_note_length_weights(client, tmp_path):
     assert res.status_code == 200, res.text
     payload = res.json()
     weights = payload["weightsList"]
-    assert len(weights) == len(payload["unitsList"])
-    for row, units in zip(weights, payload["unitsList"], strict=True):
+    raw = payload["noteLengthRawList"]
+    assert payload["noteLengthAlpha"] == 1
+    assert raw == weights
+    assert len(raw) == len(payload["unitsList"])
+    for row, units in zip(raw, payload["unitsList"], strict=True):
         assert len(row) == len(units)
         assert all(isinstance(w, (int, float)) and w >= 0 for w in row)
 
-    # α無し(既定)では従来どおりフィールド自体を付けない
+    # αの指定がなければ、soramimic UIの既定0.25を初期値として渡す。
     res = client.post(
         "/api/editor-session",
         files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
         data={"wordlist": str(wordlist)},
     )
     assert res.status_code == 200, res.text
-    assert "weightsList" not in res.json()
+    default = res.json()
+    assert default["noteLengthAlpha"] == 0.25
+    assert default["noteLengthRawList"]
+    assert default["weightsList"]
+
+    # 明示的な0はオフ。生重みは残すのでsoramimicで再び有効化できる。
+    res = client.post(
+        "/api/editor-session",
+        files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
+        data={
+            "wordlist": str(wordlist),
+            "convert_params": "NOTE_LENGTH_WEIGHT=0",
+        },
+    )
+    off = res.json()
+    assert off["noteLengthAlpha"] == 0
+    assert off["noteLengthRawList"]
+    assert "weightsList" not in off
 
 
 # ---- 解析のみモード(convert=0): editor のセットアップ画面から始めるシード ----
@@ -450,13 +470,31 @@ def test_setup_seed_note_length_weights(client, tmp_path):
         convert_params="NOTE_LENGTH_WEIGHT=1",
     )
     weights = payload["weightsList"]
-    assert len(weights) == len(payload["phrases"])
-    for row in weights:
+    raw = payload["noteLengthRawList"]
+    assert payload["noteLengthAlpha"] == 1
+    assert raw == weights
+    assert len(raw) == len(payload["phrases"])
+    for row in raw:
         assert row and all(isinstance(w, (int, float)) and w >= 0 for w in row)
-    # α無し(既定)ではフィールド自体を付けない(=重みなしで変換される)
-    assert "weightsList" not in _setup_seed(
+    default = _setup_seed(
         client, tmp_path, wordlist=str(_wordlist_csv(tmp_path))
     )
+    assert default["noteLengthAlpha"] == 0.25
+    assert default["noteLengthRawList"]
+
+
+def test_setup_seed_omits_note_length_fields_when_projection_is_unavailable(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        convert_mod,
+        "project_note_length_weights",
+        lambda project, alpha: lambda units: None,
+    )
+    payload = _setup_seed(client, tmp_path, wordlist=str(_wordlist_csv(tmp_path)))
+    assert "noteLengthRawList" not in payload
+    assert "noteLengthAlpha" not in payload
+    assert "weightsList" not in payload
 
 
 def test_setup_seed_accepts_a_custom_wordlist(client, tmp_path):

@@ -1,11 +1,10 @@
 """動画生成ステージ: 単語画像+字幕(替え歌/元歌詞)+歌唱音源 → out.mp4。
 
-構成(ffmpeg 3パス):
+構成(ffmpeg 1パス):
  1. 単語リスト由来の画像をダウンロードし、レイアウト定義(layout.py)に従って
     列情報のテキストと合成した同一サイズのフレームPNGを作る
- 2. concatデマルチプレクサで「歌唱タイミングにフレームが出るスライドショー」を作る
-    (単語数が多くてもffmpegの入力数が増えない)
- 3. ASS字幕(下部: 替え歌歌詞/元歌詞)と音声を焼き込んで完成
+ 2. concatデマルチプレクサでフレームPNGを直接読み、ASS字幕と音声を一度に合成する
+    (中間動画を作らないので、全編のH.264エンコードは1回だけ)
 
 あわせて曲名を空耳変換したサムネ画像(thumbnail.py)をプロジェクトディレクトリに
 作り、前奏区間(t=0〜歌い出し)のフレームとしても差し込む。
@@ -19,8 +18,8 @@
 単語リストによっては画像がSVG(生成カード画像)なので、PillowがSVGを開けない
 ぶんはダウンロード時にPNGへラスタライズしてキャッシュする(svg_to_png)。
 
-フレームの左下には「lyrics by Soramimic」(歌声合成のクレジット表記が要るときは
-「lyrics by Soramimic / VOICEVOX:キャラ名」)を小さく焼き込む。単語フレーム・
+フレームの左下には「lyrics & video by Soramimic」(歌声合成のクレジット表記が要るときは
+「lyrics & video by Soramimic / VOICEVOX:キャラ名」)を小さく焼き込む。単語フレーム・
 fallback・idle・サムネで共通で、レイアウトの "app_credit": false で外せる
 (layout.py 参照)。
 """
@@ -33,6 +32,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -90,6 +90,12 @@ ENDROLL_PAGE_SEC = 3.0
 # Commonsのサムネイル生成(Special:FilePath?width=)は並列4だと429が返ることを実測済み。
 # 2なら429なしで、リトライ待ちが入る4より速かった(20枚: 24.6秒 vs 31.5秒)
 IMAGE_FETCH_WORKERS = 2
+# 最速サンプル(初音ミクの消失)には38.5msの音符がある。15fpsの66.7ms刻みでは
+# 1モーラ分の表示が落ちうるため、時間解像度を保てる従来どおりの30fpsを既定にする。
+DEFAULT_VIDEO_FPS = 30
+RENDERED_FRAME_CACHE_DIR = "rendered-frames"
+RENDERED_FRAME_CACHE_TTL_SEC = 30 * 24 * 3600
+RENDERED_FRAME_CACHE_MAX = 4000
 
 
 def _run(cmd: list[str], what: str) -> None:
@@ -313,6 +319,35 @@ def image_cache_dir(work: Path, image_cache: Path | None = None) -> Path:
     return image_cache or Path(
         os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
     )
+
+
+def prune_rendered_frame_cache(
+    cache_dir: Path,
+    ttl_sec: float = RENDERED_FRAME_CACHE_TTL_SEC,
+    max_entries: int = RENDERED_FRAME_CACHE_MAX,
+    now: float | None = None,
+) -> list[Path]:
+    """共有フレームPNGをTTL超過→上限超過の順で古いものから刈る。"""
+    if not cache_dir.is_dir():
+        return []
+    current = time.time() if now is None else now
+    entries: list[tuple[float, Path]] = []
+    for path in cache_dir.glob("frame_*.png"):
+        try:
+            entries.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    removed = {path for mtime, path in entries if current - mtime > ttl_sec}
+    kept = sorted(
+        ((mtime, path) for mtime, path in entries if path not in removed),
+        reverse=True,
+    )
+    removed.update(path for _, path in kept[max_entries:])
+    for path in removed:
+        path.unlink(missing_ok=True)
+    if removed:
+        logger.info("共有フレームキャッシュを%d件削除しました", len(removed))
+    return sorted(removed)
 
 
 def _black_frame(out_dir: Path, width: int, height: int) -> Path:
@@ -575,6 +610,9 @@ def section_frame_data(
     page: int = 1,
     pages: int = 1,
     synth_credit: str = "",
+    original_song: str = "",
+    original_credit: str = "",
+    credit_notice: str = "",
 ) -> dict:
     """区間フレームのテンプレートに渡す値(idle_frame_data に区間固有の列を足す)。
 
@@ -585,6 +623,9 @@ def section_frame_data(
       焼き込みをしないレイアウト向けに残してある
     - page / pages / page_label: エンドロールが複数枚に分かれたときのページ表示
       (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
+    - original_song: 元曲名
+    - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
+    - credit_notice: 権利者やライセンスから指定された表記
     - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
       クレジットページで使う。表記が要らない合成では空文字なので、require で
       その行ごと出さない
@@ -599,6 +640,9 @@ def section_frame_data(
             "pages": str(pages),
             "page_label": f"({page}/{pages})" if pages > 1 else "",
             "synth_credit": synth_credit,
+            "original_song": original_song,
+            "original_credit": original_credit,
+            "credit_notice": credit_notice,
         }
     )
     return data
@@ -615,6 +659,9 @@ def build_section_cues(
     app_credit: str = "",
     credits: list[dict] | None = None,
     synth_credit: str = "",
+    original_song: str = "",
+    original_credit: str = "",
+    credit_notice: str = "",
 ) -> list[ImageCue]:
     """前奏・間奏・後奏の専用フレームをキューにする(専用定義が無い区間は空)。
 
@@ -649,6 +696,9 @@ def build_section_cues(
                     project, app_credit, "outro", sec.duration,
                     page_words, credit_text, i + 1, len(pages),
                     synth_credit=synth_credit,
+                    original_song=original_song,
+                    original_credit=original_credit,
+                    credit_notice=credit_notice,
                 )
                 frame = render_section_frame(
                     layout, data, width, height, frames_dir, "outro"
@@ -675,6 +725,9 @@ def build_section_cues(
                 data = section_frame_data(
                     project, app_credit, "credits", sec.duration,
                     image_credits=credit_text, synth_credit=synth_credit,
+                    original_song=original_song,
+                    original_credit=original_credit,
+                    credit_notice=credit_notice,
                 )
                 frame = render_section_frame(
                     layout, data, width, height, frames_dir, "credits"
@@ -695,8 +748,8 @@ def build_section_cues(
 def app_credit_text(synth_credit: str = "") -> str:
     """フレームに焼き込むクレジット文言。
 
-    既定は「lyrics by Soramimic」。歌声合成側にもクレジット表記が要るとき
-    (VOICEVOXのキャラ名など)は「lyrics by Soramimic / VOICEVOX:四国めたん」の
+    既定は「lyrics & video by Soramimic」。歌声合成側にもクレジット表記が要るとき
+    (VOICEVOXのキャラ名など)は「lyrics & video by Soramimic / VOICEVOX:四国めたん」の
     ように後ろに足す。表記の並びはWeb UIの「公開時のクレジット表記」と揃える。
     """
     synth = (synth_credit or "").strip()
@@ -866,7 +919,7 @@ def build_image_cues(
 
     フレームは単語リスト行の画像+列情報をレイアウト定義で合成したもの。
     画像がなくてもレイアウトのtext要素が埋まる単語はテキストのみで表示する。
-    app_credit は全フレームの隅に焼き込む署名(既定は「lyrics by Soramimic」)。
+    app_credit は全フレームの隅に焼き込む署名(既定は「lyrics & video by Soramimic」)。
     """
     if project.parody is None:
         return [], []
@@ -877,7 +930,11 @@ def build_image_cues(
     cues: list[ImageCue] = []
     credits: dict[str, dict] = {}
     cache = image_cache_dir(work, image_cache)
-    norm = work / "frames"
+    # 画像と同じ共有キャッシュ配下へ置き、同じ単語・レイアウトのPNGをジョブ間で再利用する
+    norm = cache / RENDERED_FRAME_CACHE_DIR
+    # 描画前に刈る。描画後だと、上限を超える巨大ジョブでこのあとffmpegが読む
+    # フレームまで削除しかねない。
+    prune_rendered_frame_cache(norm)
     # 逐次ループが読む画像/クレジットを先に並列で温める(キャッシュが冷えていると
     # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
     _prefetch_image_assets(frames, cache)
@@ -954,7 +1011,7 @@ def prepend_thumbnail_cue(
     return [ImageCue(start=0.0, end=end, frame=frame), *kept]
 
 
-def write_slideshow(
+def _write_slideshow_concat(
     cues: list[ImageCue],
     work: Path,
     width: int,
@@ -962,7 +1019,7 @@ def write_slideshow(
     total_sec: float,
     idle_frame: Path | None = None,
 ) -> Path:
-    """concatデマルチプレクサでスライドショー動画を作る。
+    """静止画タイムラインをffconcatファイルへ書き出す。
 
     歌唱がない隙間(前奏・間奏・後奏)は idle_frame があればそれで、なければ黒で埋める。
     """
@@ -988,6 +1045,26 @@ def write_slideshow(
         lines.append(f"file '{entries[-1][0].resolve()}'")
     concat_path = work / "slideshow.txt"
     concat_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return concat_path
+
+
+def write_slideshow(
+    cues: list[ImageCue],
+    work: Path,
+    width: int,
+    height: int,
+    total_sec: float,
+    idle_frame: Path | None = None,
+) -> Path:
+    """スライドショーだけを動画化する(互換用ヘルパー)。
+
+    本番の make_video は中間動画を作らず、ffconcatを字幕・音声と一緒に
+    直接エンコードする。この関数はスライドショー単体が必要な呼び出しとテスト用に残す。
+    """
+    concat_path = _write_slideshow_concat(
+        cues, work, width, height, total_sec, idle_frame
+    )
 
     out = work / "slideshow.mp4"
     _run(
@@ -1408,7 +1485,12 @@ def make_video(
     song_title: str | None = None,
     synth_credit: str = "",
     song_title_kana: str = "",
+    fps: int = DEFAULT_VIDEO_FPS,
+    original_credit: str = "",
+    credit_notice: str = "",
 ) -> Path:
+    if fps <= 0:
+        raise ValueError("fps は1以上で指定してください")
     layout_obj = load_layout(layout)
     # 動画に焼き込むクレジット(サムネ・単語フレーム・idleで共通)
     credit_text = app_credit_text(synth_credit)
@@ -1438,6 +1520,7 @@ def make_video(
         )
         total_sec = extended_sec
 
+    prepare_started = time.monotonic()
     cues, credits = build_image_cues(
         project, work, width, height, image_cache, layout_obj, credit_text
     )
@@ -1466,6 +1549,9 @@ def make_video(
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
+        original_song=(song_title or Path(project.song.midi_path).stem).strip(),
+        original_credit=original_credit.strip(),
+        credit_notice=credit_notice.strip(),
     )
     if section_cues:
         logger.info("間奏・後奏のフレーム: %d件", len(section_cues))
@@ -1474,7 +1560,9 @@ def make_video(
     idle_frame = render_idle_frame(
         layout_obj, idle_frame_data(project, credit_text), width, height, work / "frames"
     )
-    slideshow = write_slideshow(cues, work, width, height, total_sec, idle_frame)
+    concat_path = _write_slideshow_concat(
+        cues, work, width, height, total_sec, idle_frame
+    )
 
     ass_path = work / "subtitles.ass"
     ass_path.write_text(
@@ -1484,6 +1572,7 @@ def make_video(
     credits_path = write_credits(credits, work)
     if credits_path:
         logger.info("画像クレジットを書き出しました: %s", credits_path)
+    logger.info("動画前処理完了: %.1f秒", time.monotonic() - prepare_started)
 
     out = work / "out.mp4"
     # subtitlesフィルタのパスはffmpegのフィルタ構文でエスケープが要る
@@ -1493,11 +1582,13 @@ def make_video(
     # 総尺は常に total_sec に揃える。音声が短い(エンドロール用に映像を延ばした)
     # ときは apad で無音を足し、音声が長いときは -t で切る(-shortest だと映像側が
     # 音声に合わせて切られ、足したエンドロールが消えてしまう)
+    encode_started = time.monotonic()
+    logger.info("動画エンコード開始: 1パス / %dfps", fps)
     _run(
         [_ffmpeg(), "-y",
-         "-i", str(slideshow),
+         "-f", "concat", "-safe", "0", "-i", str(concat_path),
          "-i", str(audio_path),
-         "-vf", f"subtitles='{ass_arg}'",
+         "-vf", f"fps={fps},format=yuv420p,subtitles='{ass_arg}'",
          "-af", "apad",
          "-c:v", "libx264", "-preset", "fast",
          "-c:a", "aac", "-b:a", "192k",
@@ -1505,4 +1596,5 @@ def make_video(
          str(out)],
         "動画の最終合成",
     )
+    logger.info("動画エンコード完了: %.1f秒", time.monotonic() - encode_started)
     return out

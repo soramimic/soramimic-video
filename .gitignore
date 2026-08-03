@@ -20,3 +20,7 @@ work/
 
 # サムネのデザイン比較用の出力(scripts/render_thumbnail_samples.py)
 thumbnail-samples/
+
+# ローカルのエージェント作業状態・生成用scratch(成果物ではない)
+.claude/
+.tmp-imagegen/

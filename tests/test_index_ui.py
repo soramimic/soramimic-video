@@ -42,7 +42,7 @@ def test_info_hints_cover_the_static_explanations():
     ids = {a.get("id") for tag, a in _tags() if "data-info" in a}
     # 各グループの1行説明(opt-group-lead)はすべて ⓘ の中
     leads = [a for tag, a in _tags() if "opt-group-lead" in (a.get("class") or "")]
-    assert len(leads) == 2
+    assert len(leads) == 3
     assert all("data-info" in a for a in leads)
     # 動的メッセージ(状態・警告・エラー)は畳まない
     always_visible = {

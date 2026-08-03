@@ -22,7 +22,7 @@ uv run soramimic-video serve --host 0.0.0.0
 | `SORAMIMIC_QUEUE_LIMIT` | 5 | 待機中+実行中ジョブの合計上限(サーバー全体)。超過した投入は429 |
 | `SORAMIMIC_DAILY_QUOTA` | 5 | セッションごとの直近24時間の投入本数上限。超過は429 |
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420 | 入力MIDIの演奏時間の上限(秒)。超過は400 |
-| `SORAMIMIC_JOB_TTL_HOURS` | 0(無効) | 完了・失敗・中断から何時間でジョブのディレクトリと履歴を消すか。正の値で1時間ごとに掃除する |
+| `SORAMIMIC_JOB_TTL_HOURS` | 0(無効) | 完了・失敗・中断から何時間でジョブを消すか。同じ期間使われていない自作リストのeditorセッションも対象。正の値で1時間ごとに掃除する |
 | `SORAMIMIC_SAMPLES_DIR` | 未設定 | 同梱サンプル曲(`static/sample`)の差し替え先ディレクトリ。`samples.json` と `<id>.mid` / `<id>_lyrics.txt` を置く |
 | `SORAMIMIC_WARMUP_WORDLISTS` | 未設定 | カンマ区切りの単語リスト名。起動時にバックグラウンドで前処理(parse_tidy)を済ませ、キャッシュに載せておく |
 | `SORAMIMIC_PREVIEW_RATE_LIMIT` | 10 | サムネプレビュー(`/api/thumbnail-preview`)をセッションごとに何回まで作るか。`0` 以下で無効 |
@@ -104,8 +104,11 @@ HttpOnly cookie `sv_session`(有効期限30日)で発行する。ジョブには
 公開モードではフッターに歌声合成エンジンのクレジット(VOICEVOXは選択中の
 キャラクター名を含む)を表示する。
 
-動画側にも、フレーム左下に「lyrics by Soramimic」を小さく焼き込む。VOICEVOXで
-歌わせたジョブは規約に合わせて「lyrics by Soramimic / VOICEVOX:キャラ名」になる
+動画側にも、フレーム左下に「lyrics & video by Soramimic」を小さく焼き込む。VOICEVOXで
+歌わせたジョブは規約に合わせて「lyrics & video by Soramimic / VOICEVOX:キャラ名」になる
 (キャラ名はエンジンのスタイル一覧から引く。NEUTRINOは公式FAQで名称の記載が
 任意なので焼き込まない)。レイアウトの `"app_credit": false` で無効化できるので、
 その場合や、ライブラリ個別の規約で表記が必要な場合は利用者側で表記すること。
+
+末尾のCreditsページには元曲名を表示する。「⚙️ 詳細設定」の「元曲クレジット」へ
+作詞・作曲等と、権利者やライセンスが指定する文言を入力すると動画内へそのまま焼き込む。
