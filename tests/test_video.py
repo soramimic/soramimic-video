@@ -581,8 +581,9 @@ def test_image_cues_bake_app_credit(tmp_path: Path):
     assert plain[0].frame.name != credited[0].frame.name
 
 
-def test_effective_fallback_keeps_normal_texts():
-    # 通常側にまだ出せるテキストがある単語はfallbackへ落とさない
+def test_effective_fallback_image_box_falls_back():
+    # 通常側に画像枠があるレイアウトでは、画像が無い単語はテキストが残っていても
+    # fallback(文字フレーム)へ落とす(画像枠が真っ黒のまま残るのを防ぐ)
     from soramimic_video.layout import parse_layout
     from soramimic_video.video import effective_fallback
 
@@ -594,11 +595,41 @@ def test_effective_fallback_keeps_normal_texts():
         "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2]}],
     }, "<test>")
     data = {"surface": "静", "original": "沈"}
-    assert effective_fallback(layout, data, False, has_image=False) is False
+    assert effective_fallback(layout, data, False, has_image=False) is True
     assert effective_fallback(layout, {"surface": "静", "original": ""}, False,
                               has_image=False) is True
     assert effective_fallback(layout, data, False, has_image=True) is False
     assert effective_fallback(layout, data, True, has_image=False) is True
+
+
+def test_effective_fallback_text_only_layout_keeps_normal_texts():
+    # 画像要素の無いテキスト専用レイアウトは、テキストが残っていればfallbackしない
+    from soramimic_video.layout import parse_layout
+    from soramimic_video.video import effective_fallback
+
+    layout = parse_layout({
+        "elements": [{"type": "text", "text": "{original}", "box": [0.1, 0.3, 0.8, 0.2]}],
+    }, "<test>")
+    data = {"surface": "静", "original": "沈"}
+    assert effective_fallback(layout, data, False, has_image=False) is False
+    assert effective_fallback(layout, {"surface": "静", "original": ""}, False,
+                              has_image=False) is True
+
+
+def test_effective_fallback_image_require_unmet_stays_normal():
+    # 画像要素がrequireで出ない単語(=画像枠がそもそも描かれない)はfallbackしない
+    from soramimic_video.layout import parse_layout
+    from soramimic_video.video import effective_fallback
+
+    layout = parse_layout({
+        "elements": [
+            {"type": "image", "box": [0, 0, 1, 0.7], "require": "image"},
+            {"type": "text", "text": "{original}", "box": [0.1, 0.8, 0.8, 0.1]},
+        ],
+        "fallback": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2]}],
+    }, "<test>")
+    data = {"surface": "静", "original": "沈"}  # image列が空 → 画像要素は描かれない
+    assert effective_fallback(layout, data, False, has_image=False) is False
 
 
 def test_image_cues_require_skips_empty_column(tmp_path: Path):

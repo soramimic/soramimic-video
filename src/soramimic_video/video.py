@@ -36,11 +36,12 @@ import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from string import Formatter
 
 import requests
-from PIL import ImageColor, ImageFont
+from PIL import Image, ImageChops, ImageColor, ImageFont
 
 from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
@@ -48,9 +49,13 @@ from .kana import normalize_long_vowels
 from .layout import (
     APP_CREDIT,
     DEFAULT_SUBTITLES,
+    ImageElement,
     Layout,
     SubtitleElement,
     _font,
+    _require_met,
+    _SafeDict,
+    is_missing,
     load_layout,
     render_frame,
     render_idle_frame,
@@ -242,6 +247,38 @@ def _rasterized(path: Path) -> Path | None:
     if out != path:
         path.unlink(missing_ok=True)
     return out
+
+
+# 黒背景(レイアウト既定)に置いたときに実質見えないとみなす最大輝度のしきい値。
+# 透明背景の黒線画(SVG等)はアルファ合成しても黒のまま残るので、これ未満の画像は
+# 文字フレーム(fallback)へ落とす(真っ黒の画像枠を作らない)。
+INVISIBLE_IMAGE_MAX_LUMINANCE = 48
+
+
+@lru_cache(maxsize=4096)
+def image_is_visible(image_path: Path) -> bool:
+    """黒背景へのアルファ合成後の最大輝度がしきい値以上あるか。
+
+    読めない画像は見えないものとして扱う。キャッシュファイルは一度書いたら
+    内容が変わらない(原子置換)ので、パスをそのままキャッシュキーにできる。
+    """
+    raw = _rasterized(image_path)
+    if raw is None:
+        return False
+    try:
+        with Image.open(raw) as im:
+            im = im.convert("RGBA")
+        _, _, _, a = im.split()
+    except Exception:
+        return False
+    # 輝度は convert("L") の 0.299R+0.587G+0.114B。透明部分(RGBが残っていても
+    # alpha=0)は黒(0)として合成してから最大値を取る
+    composited = ImageChops.multiply(im.convert("L"), a)
+    try:
+        _, maximum = composited.getextrema()
+    except ValueError:  # pragma: no cover - 空画像は滅多にない
+        return False
+    return maximum >= INVISIBLE_IMAGE_MAX_LUMINANCE
 
 
 def _cached_raw(url: str, cache_dir: Path) -> Path | None:
@@ -767,14 +804,26 @@ def word_is_shown(layout: Layout, data: dict, use_fallback: bool) -> bool:
 def effective_fallback(
     layout: Layout, data: dict, use_fallback: bool, has_image: bool
 ) -> bool:
-    """画像が無く通常側に出せるテキストも無い単語を、未知語と同じfallbackへ落とす判定。
+    """画像が無い単語を、未知語と同じfallbackへ落とす判定。
 
     既知語でも画像列が空だったり画像が取得できなかったときに、何も出さない
-    のではなく文字フレーム(fallback)で描くために使う。editorのキュープレビュー
-    (editor_io)と build_image_cues で共用する。
+    のではなく文字フレーム(fallback)で描くために使う。画像枠をレイアウトに持つ
+    単語で画像が無いと、その枠が真っ黒のまま残るのでfallbackへ落とす。
+    editorのキュープレビュー(editor_io)と build_image_cues で共用する。
     """
     if use_fallback or has_image:
         return use_fallback
+    values = _SafeDict(
+        # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
+        {k: ("" if is_missing(v) else v) for k, v in data.items() if v is not None}
+    )
+    # 通常側で実際に描かれる画像要素がある(=画像枠が黒抜けになる)レイアウトは
+    # テキストが残っていてもfallbackへ落とす(例: gimukyoiku_card の左半分)。
+    if any(
+        isinstance(el, ImageElement) and _require_met(el, values)
+        for el in layout.active_elements(False)
+    ):
+        return True
     return not any(layout.render_texts(data, False))
 
 
@@ -945,6 +994,11 @@ def build_image_cues(
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
+        if raw is not None and not image_is_visible(raw):
+            # 黒背景カード上で実質見えない画像(黒線+透明SVGなど)は無いものとして
+            # 扱い、文字フレーム(fallback)へ落とす(真っ黒の画像枠を残さない)
+            logger.info("画像が黒背景上で見えないため文字フレームにします: %s", url)
+            raw = None
         if raw is None:
             # 画像が取得できなかった既知語も未知語と同じ文字フレームに落とす
             use_fallback = effective_fallback(layout, data, use_fallback, has_image=False)

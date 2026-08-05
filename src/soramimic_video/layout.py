@@ -158,7 +158,8 @@ NON_FRAME_LAYOUTS = frozenset({"thumbnail"})
 # credits=後奏の最後に出すクレジットページ
 IDLE_SECTIONS = ("intro", "interlude", "outro", "credits")
 # 描画ロジックを変えたときに共有PNGキャッシュを確実に無効化する。
-FRAME_RENDER_CACHE_VERSION = 1
+# v2: 透明画像のアルファ合成(黒潰れの解消)と、画像なし語のfallback化
+FRAME_RENDER_CACHE_VERSION = 2
 # 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
 SECTION_DEFAULTS_PATH = Path(__file__).resolve().parent / "section_defaults.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
@@ -745,12 +746,19 @@ def _box_px(
 
 def _paste_image(canvas: Image.Image, image_path: Path, el: ImageElement) -> None:
     x, y, w, h = _box_px(el.box, canvas.width, canvas.height)
-    img = Image.open(image_path).convert("RGB")
+    img = Image.open(image_path)
     scale = min(w / img.width, h / img.height)
     nw = max(1, round(img.width * scale))
     nh = max(1, round(img.height * scale))
     img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-    canvas.paste(img, (x + (w - nw) // 2, y + (h - nh) // 2))
+    pos = (x + (w - nw) // 2, y + (h - nh) // 2)
+    if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+        # 透明なSVG/PNGは convert("RGB") すると透明部分が黒に潰れるので、
+        # アルファをマスクにして下地(黒背景)の上に合成する
+        rgba = img.convert("RGBA")
+        canvas.paste(rgba, pos, rgba)
+    else:
+        canvas.paste(img.convert("RGB"), pos)
 
 
 def fitted_image_box(
@@ -1268,5 +1276,3 @@ def render_idle_frame(
 ) -> Path | None:
     """歌唱なし区間の既定(idle)フレーム。区間種別を問わない従来の入口。"""
     return render_section_frame(layout, data, width, height, out_dir, "idle")
-
-

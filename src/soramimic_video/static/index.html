@@ -1791,6 +1791,10 @@ function songTitleOf(file) {
 
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
 let sampleDescriptions = {};
+// サンプルID → クレジットプリセット({originalCredit, creditNotice})。
+// 権利者から表記が指定されている曲(初音ミクの消失・魔王魂など)だけを持つ。
+// 選曲時に ③元曲クレジット へ自動で入れて、表記漏れを防ぐ。
+let sampleCredits = {};
 
 async function loadSamples() {
   try {
@@ -1798,7 +1802,14 @@ async function loadSamples() {
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
     sampleDescriptions = {};
-    samples.forEach((s) => { if (s.description) sampleDescriptions[s.id] = s.description; });
+    sampleCredits = {};
+    samples.forEach((s) => {
+      if (s.description) sampleDescriptions[s.id] = s.description;
+      const credit = {};
+      if (s.original_credit) credit.originalCredit = s.original_credit;
+      if (s.credit_notice) credit.creditNotice = s.credit_notice;
+      if (credit.originalCredit || credit.creditNotice) sampleCredits[s.id] = credit;
+    });
     $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
       samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
     syncBuilderOptions();  // カードの曲プルダウンへ写す
@@ -1856,6 +1867,16 @@ async function applySample(opts = {}) {
     if (lyricsRes) {
       $("lyrics").value = await lyricsRes.text();
       $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    // クレジット表記: プリセットがある曲は選曲時に自動で入れる(権利者指定の
+    // 表記を漏らさない)。プリセットの無い曲へ切り替えたら、前の曲の表記が
+    // 残らないよう消す。midiOnly(復元)では触らない(復元値に任せる)
+    if (!opts.midiOnly) {
+      const credit = sampleCredits[sid] || {};
+      $("original-credit").value = credit.originalCredit || "";
+      $("credit-notice").value = credit.creditNotice || "";
+      $("original-credit").dispatchEvent(new Event("change", { bubbles: true }));
+      $("credit-notice").dispatchEvent(new Event("change", { bubbles: true }));
     }
     // 単語リスト: 曲を選ぶ操作でリストの選択は変えない。confが取れない構成
     // (リスト名を直接指定する)で未指定のときだけ、既定のリスト名を入れておく
