@@ -516,6 +516,13 @@ def test_index_html_polling_survives_background():
     assert "function resumePolling()" in html
     assert 'if (document.visibilityState === "hidden") return;' in html
     assert "restartPolling(currentJob);" in html
+    # 復帰直後の死んだ接続にfetchが刺さったままにならないよう、1回ごとに
+    # タイムアウトで見切る(2026-08-05: 復帰後もリクエストが届かないまま
+    # 「再接続しています…」が続いた実測への対処)
+    assert "const POLL_FETCH_TIMEOUT_MS" in html
+    assert "setTimeout(() => ctrl.abort(), POLL_FETCH_TIMEOUT_MS);" in html
+    assert "signal: ctrl.signal" in html
+    assert "clearTimeout(killTimer);" in html
     # 一時的な失敗ではチェーンを殺さず、間隔を伸ばして取り直す
     assert "function pollFailed(id, seq, detail)" in html
     assert "pollFailed(id, seq, (e && e.message) || \"通信エラー\");" in html

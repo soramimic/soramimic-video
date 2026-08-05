@@ -1350,6 +1350,12 @@ let currentJob = null;
 const POLL_INTERVAL_MS = 2000;
 const POLL_RETRY_MAX_MS = 15000;   // 失敗が続くときの最大間隔
 const POLL_MAX_FAILURES = 60;      // これだけ連続で失敗したら諦める
+// 1回のfetchの見切り時間。スマホがバックグラウンドから戻った直後は、死んだ
+// 接続(トンネル/VPNの張り直し前)にfetchが刺さったまま何十秒も返らないことが
+// ある(2026-08-05実測: 復帰後もリクエストがサーバーに一切届かないまま
+// 「再接続しています…」が続いた)。タイムアウトで失敗扱いにして次を投げれば、
+// 回線が戻り次第すぐ追いつける。
+const POLL_FETCH_TIMEOUT_MS = 8000;
 // 取り直しても直らない(=ジョブが無い・権限が無い)ステータス
 const POLL_FATAL_STATUS = [401, 403, 404, 410];
 
@@ -1468,8 +1474,12 @@ async function poll(id, seq = pollSeq) {
   if (seq !== pollSeq || id !== currentJob) return;   // 古いチェーンは捨てる
   pollLastAt = Date.now();
   let job;
+  // 刺さったfetchを見切るタイムアウト(POLL_FETCH_TIMEOUT_MS 参照)
+  const ctrl = new AbortController();
+  const killTimer = setTimeout(() => ctrl.abort(), POLL_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(`/api/jobs/${id}`, { headers: headers(), cache: "no-store" });
+    const res = await fetch(`/api/jobs/${id}`,
+      { headers: headers(), cache: "no-store", signal: ctrl.signal });
     if (POLL_FATAL_STATUS.includes(res.status)) {
       // 取り直しても直らない。busyのままにせず操作を返す
       stopPolling();
@@ -1483,9 +1493,12 @@ async function poll(id, seq = pollSeq) {
     if (!res.ok) { pollFailed(id, seq, String(res.status)); return; }
     job = await res.json();
   } catch (e) {
-    // 通信断・バックグラウンドでの凍結・JSONの途中切れ。どれも一時的とみなす
+    // 通信断・バックグラウンドでの凍結・タイムアウト・JSONの途中切れ。
+    // どれも一時的とみなす
     pollFailed(id, seq, (e && e.message) || "通信エラー");
     return;
+  } finally {
+    clearTimeout(killTimer);
   }
   if (seq !== pollSeq) return;   // 待っている間に取り直しが走っていたら捨てる
   pollFailures = 0;
@@ -1628,6 +1641,9 @@ function finish() {
   currentJob = null;
   setBusy(false);
   loadHistory();
+  // 生成中に選択が変わっていて、完成した動画を出していない(エラー等で枠が
+  // preview に戻っている)なら、ここでプレビューを今の選択に合わせ直す
+  if (previewDeferred && builderState !== "done") renderBuilder();
 }
 
 function setBusy(busy) {
@@ -1635,10 +1651,10 @@ function setBusy(busy) {
   $("preview").disabled = busy;
   $("preview-high").disabled = busy;
   $("preview-low").disabled = busy;
-  // カードの操作(プルダウンと🎲ランダム)は生成中は止める
-  $("builder-sample").disabled = busy;
-  $("builder-wordlist").disabled = busy;
-  $("lucky").disabled = busy;
+  // カードの選択(プルダウンと🎲)は生成中も触れる。走っているジョブは投入時の
+  // 選択で確定していて影響しないし、それは説明しなくても分かる(押しても無反応の
+  // 方が不親切)。サムネ枠は進捗表示が使っているので、プレビューの作り直しだけ
+  // renderBuilder 側で生成が終わるまで先送りする
   updateBuilderOverlay();   // 生成中は「タップで動画を生成」を出さない
 }
 
@@ -2198,6 +2214,9 @@ function updateBuilderOverlay() {
 function releaseBuilderDone() {
   if (builderState !== "done") return;
   setBuilderState("preview");
+  // 生成中に選択が変わっていたら、完成表示を解いたこのタイミングで
+  // サムネプレビューを今の選択に合わせ直す
+  if (previewDeferred) renderBuilder();
 }
 
 // 生成に効く入力は詳細設定・レイアウトエディタ・替え歌エディタに散っているので、
@@ -2429,8 +2448,16 @@ function retryThumbnailPreview(url, seq) {
   }, PREVIEW_RETRY_MS);
 }
 
+// 生成中に選択が変わった印。枠が空いたらプレビューを作り直す(finish /
+// releaseBuilderDone から renderBuilder へ戻ってくる)
+let previewDeferred = false;
+
 // いまの選択でカードの表示(時間の注意 + プレビュー)を作り直す。
 function renderBuilder() {
+  // 生成中はサムネ枠を進捗表示が使っている。ここで作り直すと state が preview に
+  // 戻って進捗が消えるので、選択だけ受けて作り直しは終わるまで先送りする
+  if (submitBusy) { previewDeferred = true; return; }
+  previewDeferred = false;
   const c = currentCombo();
   // 自作リスト(エディタの⚙で書いたもの)はサーバーに置いていないのでサムネの
   // プレビューが作れない。黙って空枠にせず、その旨だけ静かに出して生成には進める
