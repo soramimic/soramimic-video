@@ -538,6 +538,13 @@
       <button type="button" id="builder-cancel" class="btn-danger btn-sm">中断</button>
     </div>
   </div>
+  <!-- 元歌詞とMIDIの歌詞が食い違っているときの警告(checkMidi → renderLyricsMidiWarning)。
+       これだけは正本(#song-store)に置いたままにできない: 生成を止めない「助言」なので
+       他の警告のようにどこかへ中継されず、隠し領域に置くと黙って消えるだけになる。
+       字幕の元歌詞がずれる理由を事前に知らせる唯一の導線なので、元歌詞を直せる場所
+       (⚙の替え歌エディタ)へ戻るきっかけが見える位置に出す(サムネ枠のすぐ下、
+       他の現状表示と同じ並び)。 -->
+  <p class="hint" id="lyrics-midi-warn" hidden></p>
   <!-- 編集済み替え歌JSONの状態(renderParodyStatus)。取り消しの導線もここ -->
   <p id="parody-status" class="hint"></p>
   <!-- 代表画像へ落ちているあいだの控えめな表示(裏で本物を取り直している) -->
@@ -608,8 +615,19 @@
 
 <!-- 曲と元歌詞の「正本」の置き場。選ぶ・アップロードする操作はビルダーカードと
      替え歌エディタに一本化したので画面には出さないが、既存の送信・保存・復元・
-     MIDI検証・親子同期はこのIDを使うためDOMには残す。状態表示用の要素も、既存の
-     非同期処理が安全に完了できるよう同じ隠し領域に置く。 -->
+     MIDI検証・親子同期はこのIDを使うためDOMには残す。
+     状態表示用の要素も、書き込む側の非同期処理を書き換えずに済むよう同じ隠し領域に
+     置く。ここに置いてよいのは「読まれなくてもユーザーが困らないもの」だけで、
+     残すか移すかは中身の役割ごとに次のように決めた:
+     - #midi-error(歌詞なしMIDIの拒否) … 生成も編集も止める重い警告だが、rejectMidi が
+       同じ文面を #submit-msg へ中継するので、ここは論理の受け皿として不可視で温存する
+     - #sample-status(✓ …をセットしました) … 成功の合図はサムネが差し替わることで伝わる。
+       失敗のほうは #sample-select の change ハンドラが #builder-msg へ中継する
+     - #midi-restore-hint(前回のファイルを復元: …) … 復元した曲名はカードの曲プルダウンに
+       出るので二重。復元直後に scheduleMidiCheck が走り、使えないMIDIなら上の拒否経路に
+       乗るため、見えなくても事故にはならない
+     食い違い警告(#lyrics-midi-warn)だけはどこにも中継先が無いので、ここではなく
+     ビルダーカードへ移してある。 -->
 <div id="song-store" hidden>
   <input type="file" id="midi" accept=".mid,.midi">
   <p id="midi-restore-hint" hidden></p>
@@ -619,7 +637,6 @@
     <p id="sample-status"></p>
   </div>
   <textarea id="lyrics"></textarea>
-  <p id="lyrics-midi-warn" hidden></p>
 </div>
 
 <!-- 2. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
@@ -1668,10 +1685,11 @@ async function submitJob(previewSec, previewMode) {
   const midi = $("midi").files[0];
   if (!midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
-    // 曲は🎲で選び直せる。自分のMIDIを使う人は詳細設定へ誘導する
+    // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
+    // サンプル曲はカードの「曲」プルダウン(🎲でも選び直せる)、自分のMIDIは⚙のエディタ。
     showSubmitMsg("曲がまだセットされていません。"
-      + "🎲で選び直すか、「⚙️ 詳細設定」で曲"
-      + "(サンプル曲か、自分のXF MIDIファイル)を選んでください。");
+      + "上の「曲」から選ぶか🎲で選び直してください"
+      + "(自分のXF MIDIファイルを使うときは⚙の編集画面から読み込めます)。");
     return;
   }
   showSubmitMsg("");
@@ -1932,7 +1950,8 @@ function rejectMidi(detail) {
     + (detail ? `\n(${detail})` : "");
   $("midi-error").textContent = text;
   $("midi-error").hidden = false;
-  // 詳細設定を開いていない人(ビルダーカードの曲プルダウン)にも見えるように
+  // #midi-error は隠しの正本領域にあって読まれないので、生成の導線のすぐ下へ中継する。
+  // 生成も編集も進めなくなる拒否なので、理由が見えないまま止まるのは避ける
   showSubmitMsg(text);
 }
 
@@ -1940,6 +1959,8 @@ function rejectMidi(detail) {
 // (align_lines)をサーバーで試した結果 unmatched_lines で見る。
 // 数行の取りこぼしはこの割り付けでは普通に起きるので、MIDIの歌詞行の2割以上
 // (かつ2行以上)が対応づかないときだけ、はっきりした不整合として警告する。
+// 出し先の #lyrics-midi-warn は、詳細設定①の撤去にあわせてビルダーカードへ移してある
+// (止めない警告なので他所へ中継されず、隠し領域に置くと黙って消えるだけになるため)。
 function renderLyricsMidiWarning(info) {
   const el = $("lyrics-midi-warn");
   const lines = info.lines || 0;
@@ -2482,7 +2503,8 @@ async function applyCombo(c) {
 // 🎲ランダム・初期表示の共通処理。失敗はカードの案内に出す。
 async function pickCombo(c) {
   if (!c) {
-    showBuilderMsg("サンプル曲を読み込めませんでした。「⚙️ 詳細設定」で曲を選んでください。");
+    // 曲の選び直しは詳細設定から無くなったので、カードの「曲」プルダウンへ案内する
+    showBuilderMsg("サンプル曲を読み込めませんでした。上の「曲」から選んでください。");
     return;
   }
   try {

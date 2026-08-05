@@ -472,9 +472,10 @@ def test_index_html_has_no_separate_submit_button():
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    # 曲が未セットのときの案内は残す(詳細設定の折りたたみは同じ視野にあるので、
-    # カード下の常設の案内文は置かない)
-    assert '「⚙️ 詳細設定」で曲' in html
+    # 曲が未セットのときの案内は残す(カード下の常設の案内文は置かない)。
+    # 曲の入力は詳細設定から無くなったので、案内先はカードの「曲」と⚙のエディタだけ
+    assert '上の「曲」から選ぶか🎲で選び直してください' in html
+    assert "⚙️ 詳細設定」で曲" not in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
@@ -1341,17 +1342,22 @@ def _advanced_html() -> str:
 
 
 def test_index_html_song_values_are_hidden_canonicals():
-    """曲・MIDI・元歌詞の正本はDOMに残すが、詳細設定には表示しない。"""
+    """曲・MIDI・元歌詞の正本はDOMに残すが、詳細設定には表示しない。
+
+    選ぶ操作はビルダーカードと替え歌エディタに移譲済み。送信・保存・復元・MIDI検証・
+    親子同期はこのIDを読むので、要素そのものは hidden の正本として温存する。
+    """
     html = _index_html()
     store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
     assert '<input type="file" id="midi" accept=".mid,.midi">' in store
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in store
     assert '<textarea id="lyrics"></textarea>' in store
+    # 隠しのまま置いてよいのは、中身が別の見える場所へ中継されるか、
+    # 読まれなくてもユーザーが困らないものだけ(理由はマークアップのコメント)
     for dynamic_id in (
         "midi-restore-hint",
         "midi-error",
         "sample-status",
-        "lyrics-midi-warn",
     ):
         assert f'id="{dynamic_id}"' in store
 
@@ -1373,6 +1379,27 @@ def test_index_html_song_values_are_hidden_canonicals():
     )
     assert '$("sample-details").hidden = true;' in html
     assert '$("midi-details")' not in html
+
+
+def test_index_html_song_warnings_stay_reachable_without_section_one():
+    """詳細設定①に出していた警告が、正本をhiddenにしたことで黙って消えていない。
+
+    行き先は警告の役割で分ける:
+    - 歌詞なしMIDIの拒否は生成も編集も止めるので、隠しの #midi-error に入れたうえで
+      見える #submit-msg へ中継する
+    - 元歌詞とMIDI歌詞の食い違いは生成を止めない助言で中継先が無いため、要素ごと
+      ビルダーカードへ移して見える場所に置く
+    """
+    html = _index_html()
+    assert '$("midi-error").hidden = false;' in html
+    assert "showSubmitMsg(text);" in html   # 拒否の文面をカードの生成導線の下へ
+
+    card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
+    assert '<p class="hint" id="lyrics-midi-warn" hidden></p>' in card
+    store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
+    assert "lyrics-midi-warn" not in store
+    # 書き込む側(renderLyricsMidiWarning)は移設後もそのままIDを読む
+    assert 'const el = $("lyrics-midi-warn");' in html
 
 
 # ---- 詳細設定(#advanced)の情報整理: 役割ごとのグループを使用頻度順に並べる ----
