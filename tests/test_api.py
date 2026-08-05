@@ -342,7 +342,7 @@ def test_index_html_builder_card_has_selects():
 
 
 def test_index_html_builder_card_has_gear_and_editor_status():
-    """カードの右上は⚙(替え歌を編集)と🎲(ランダム)。編集の状態表示もカードに置く。"""
+    """カードの右上は⚙(替え歌を編集)と🎲(ランダム)。替え歌の状態表示もカードに置く。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
@@ -354,9 +354,12 @@ def test_index_html_builder_card_has_gear_and_editor_status():
     assert '$("builder-edit").addEventListener("click", openEditorFlow);' in html
     # エディタを同梱していないサーバーでは⚙ごと出さない
     assert card.index('id="editor-embed-controls"') < card.index('id="builder-edit"')
-    # 編集の状態表示もカードに移した(エディタの導線がカードにあるので)
-    for moved in ('id="editor-auto-status"', 'id="parody-status"', 'id="editor-resume"'):
-        assert moved in card, moved
+    # 替え歌の状態表示もカードに移した(エディタの導線がカードにあるので)
+    assert 'id="parody-status"' in card
+    # 「保存済みの替え歌があります」の選択はカード内に展開せず(サムネ枠が押し
+    # 下がる)、他のモーダルと同じく .wrap の外のモーダルにする
+    assert 'id="editor-resume"' not in card
+    assert 'id="editor-resume"' in html
 
 
 def test_index_html_job_card_is_collapsed_by_default():
@@ -1704,10 +1707,10 @@ def test_index_html_editor_auto_import_checks_provenance():
         "const sameAsFile = !!f && !!editorFileSig && editorFileSig === live.sig;" in src
     )
     assert "return { file: sameAsFile ? null : f, dropped: live.from };" in src
-    # 落としたことはユーザーに分かる形で出す(詳細設定の中と生成ボタンの近くの両方)
-    assert "if (editorSrc.dropped) {" in html
-    assert '<p class="hint" id="editor-auto-status" hidden></p>' in html
-    assert "別の入力(曲・単語リストなど)から" in html
+    # 来歴違いで捨てたことは警告表示しない(生成はそのまま自動変換に落ちる)
+    assert "if (editorSrc.dropped) {" not in html
+    assert 'id="editor-auto-status"' not in html
+    assert "別の入力(曲・単語リストなど)から" not in html
     # 自動取り込みぶんは来歴を確かめてあるので、単語リスト不一致の確認は挟まない
     assert "if (editorSrc.file && !editorSrc.live && parodyMismatch()" in html
 

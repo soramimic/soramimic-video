@@ -51,7 +51,6 @@ def test_info_hints_cover_the_static_explanations():
         "midi-error",           # 歌詞なしMIDIの拒否
         "lyrics-midi-warn",     # 元歌詞とMIDI歌詞の食い違い
         "sample-status",        # ✓ ...をセットしました
-        "editor-auto-status",   # エディタの編集内容が使われます/使いません
         "parody-status",        # 編集済みの替え歌を使用します
         "voicevox-credit",
         "auto-octave-hint",
@@ -80,16 +79,38 @@ def test_editor_entry_point_is_a_single_button():
     ids = [a.get("id") for tag, a in _tags() if tag == "button" and a.get("id")]
     # エディタを開く導線はこれ1つ(モーダル側の閉じる/取り込みは別物)
     assert ids.count("builder-edit") == 1
-    # 保存済みがあるときの2択(+やめる)
-    for btn in ("editor-resume-continue", "editor-resume-regen", "editor-resume-cancel"):
+    # 保存済みがあるときの2択+右上の×。「やめる」の文字ボタンは置かない
+    # (×・背景クリック・Escに吸収)
+    for btn in ("editor-resume-continue", "editor-resume-regen", "editor-resume-close"):
         assert btn in ids
+    assert "editor-resume-cancel" not in ids
 
 
 def test_editor_resume_panel_is_hidden_by_default():
+    # カード内のパネルからモーダルに変えた(インライン展開だとサムネ枠が押し下がる)
     panel = next(a for tag, a in _tags() if a.get("id") == "editor-resume")
     assert "hidden" in panel
-    assert panel.get("role") == "group"
+    assert panel.get("role") == "dialog"
+    assert panel.get("aria-modal") == "true"
     assert panel.get("aria-labelledby") == "editor-resume-title"
+
+
+def test_editor_resume_dialog_only_asks_when_provenance_is_stale():
+    """⚙を押す期待は「押したら編集画面」。来歴が一致していれば聞かずに再開し、
+    モーダルが出るのは引き継ぐ/捨てるを本人にしか決められないstaleのときだけ。"""
+    body = _function_body(_script(), "async function openEditorFlow()")
+    assert "if (!saved.stale) { await resumeEditor(); return; }" in body
+    # 推しは静的に「設定から作り直す」(stale専用になったので切り替え不要)
+    assert 'classList.toggle("btn-primary"' not in body
+    markup = _markup()
+    assert '<button type="button" id="editor-resume-regen" class="btn-primary btn-sm">' in markup
+
+
+def test_parody_status_does_not_repeat_the_same_wordlist_name():
+    """絞り込みだけが違うとき、同じリスト名を2回並べる意味不明な警告にしない。"""
+    body = _function_body(_script(), "function renderParodyStatus()")
+    assert "選択中の絞り込みは使われません" in body
+    assert "優先されます" not in body
 
 
 def _script() -> str:
