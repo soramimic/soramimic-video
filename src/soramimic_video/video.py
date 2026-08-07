@@ -41,7 +41,7 @@ from pathlib import Path
 from string import Formatter
 
 import requests
-from PIL import Image, ImageChops, ImageColor, ImageFont
+from PIL import Image, ImageChops, ImageColor
 
 from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
@@ -266,8 +266,8 @@ def image_is_visible(image_path: Path) -> bool:
     if raw is None:
         return False
     try:
-        with Image.open(raw) as im:
-            im = im.convert("RGBA")
+        with Image.open(raw) as source:
+            im = source.convert("RGBA")
         _, _, _, a = im.split()
     except Exception:
         return False
@@ -275,10 +275,12 @@ def image_is_visible(image_path: Path) -> bool:
     # alpha=0)は黒(0)として合成してから最大値を取る
     composited = ImageChops.multiply(im.convert("L"), a)
     try:
-        _, maximum = composited.getextrema()
+        visible = composited.point(
+            lambda value: 255 if value >= INVISIBLE_IMAGE_MAX_LUMINANCE else 0
+        )
     except ValueError:  # pragma: no cover - 空画像は滅多にない
         return False
-    return maximum >= INVISIBLE_IMAGE_MAX_LUMINANCE
+    return visible.getbbox() is not None
 
 
 def _cached_raw(url: str, cache_dir: Path) -> Path | None:
@@ -1282,24 +1284,6 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
     return segments
 
 
-def _measuring_font(font_path: Path | None, ass_fontsize: int):
-    """ASSの本文と同じ字面幅を測るためのPillowフォント。
-
-    libass(VSFilter互換)はASSのFontsizeを「行セル高(アセント+ディセント)」として
-    扱うため、実際の字面(em)は Fontsize×em/セル高 に縮む。Pillowのサイズ指定は
-    emそのものなので、そのまま測ると横位置が字面比ぶん(Noto CJKで約1.48倍)
-    外側へずれていく。セル高比で縮めたサイズで測って揃える。
-    """
-    font = _font(font_path, ass_fontsize)
-    if not isinstance(font, ImageFont.FreeTypeFont):  # フォント未解決時は補正不能
-        return font
-    ascent, descent = font.getmetrics()
-    cell = ascent + descent
-    if cell <= 0 or cell == ass_fontsize:
-        return font
-    return _font(font_path, max(1, round(ass_fontsize * ass_fontsize / cell)))
-
-
 def _ruby_events(
     el: SubtitleElement,
     name: str,
@@ -1324,7 +1308,9 @@ def _ruby_events(
     body_px = int(el.size * height)
     if body_px <= 0 or not words:
         return []
-    font = _measuring_font(font_path, body_px)
+    # libassと同じフォントサイズで字送り幅を測る。メトリクスのセル高で縮めると
+    # 行中心から離れたルビほど中心側へ寄ってしまう。
+    font = _font(font_path, body_px)
     full = WORD_SEP.join(w.surface for w in words)
     total_w = font.getlength(full)
     # 本文行の左端x。build_ass本体の px(align基準点)と揃える
