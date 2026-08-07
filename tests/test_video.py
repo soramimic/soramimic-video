@@ -286,6 +286,30 @@ def test_build_ass_ruby_positions_monotonic(tmp_path: Path):
     assert xs == sorted(xs) and len(set(xs)) == len(xs)  # 単語順に単調増加
 
 
+def test_build_ass_ruby_positions_use_body_font_size(tmp_path: Path, monkeypatch):
+    import soramimic_video.video as video
+    from soramimic_video.layout import load_layout
+
+    measured_sizes = []
+
+    class _Font:
+        def __init__(self, size):
+            self.size = size
+
+        def getlength(self, text):
+            measured_sizes.append(self.size)
+            return len(text) * self.size
+
+    monkeypatch.setattr(video, "_font", lambda _path, size: _Font(size))
+    project = _multi_word_project(tmp_path)
+    layout = load_layout(_ruby_layout(tmp_path))
+    build_ass(project, 1280, 720, "Font", layout)
+
+    body_px = int(layout.subtitles[0].size * 720)
+    assert measured_sizes
+    assert set(measured_sizes) == {body_px}
+
+
 def test_build_ass_ruby_disabled(tmp_path: Path):
     from soramimic_video.layout import load_layout
 
