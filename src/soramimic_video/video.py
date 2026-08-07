@@ -266,8 +266,8 @@ def image_is_visible(image_path: Path) -> bool:
     if raw is None:
         return False
     try:
-        with Image.open(raw) as im:
-            im = im.convert("RGBA")
+        with Image.open(raw) as source:
+            im = source.convert("RGBA")
         _, _, _, a = im.split()
     except Exception:
         return False
@@ -275,10 +275,12 @@ def image_is_visible(image_path: Path) -> bool:
     # alpha=0)は黒(0)として合成してから最大値を取る
     composited = ImageChops.multiply(im.convert("L"), a)
     try:
-        _, maximum = composited.getextrema()
+        visible = composited.point(
+            lambda value: 255 if value >= INVISIBLE_IMAGE_MAX_LUMINANCE else 0
+        )
     except ValueError:  # pragma: no cover - 空画像は滅多にない
         return False
-    return maximum >= INVISIBLE_IMAGE_MAX_LUMINANCE
+    return visible.getbbox() is not None
 
 
 def _cached_raw(url: str, cache_dir: Path) -> Path | None:

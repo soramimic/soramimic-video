@@ -746,11 +746,11 @@ def _box_px(
 
 def _paste_image(canvas: Image.Image, image_path: Path, el: ImageElement) -> None:
     x, y, w, h = _box_px(el.box, canvas.width, canvas.height)
-    img = Image.open(image_path)
-    scale = min(w / img.width, h / img.height)
-    nw = max(1, round(img.width * scale))
-    nh = max(1, round(img.height * scale))
-    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+    with Image.open(image_path) as source:
+        scale = min(w / source.width, h / source.height)
+        nw = max(1, round(source.width * scale))
+        nh = max(1, round(source.height * scale))
+        img = source.resize((nw, nh), Image.Resampling.LANCZOS)
     pos = (x + (w - nw) // 2, y + (h - nh) // 2)
     if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
         # 透明なSVG/PNGは convert("RGB") すると透明部分が黒に潰れるので、
