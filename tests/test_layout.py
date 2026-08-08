@@ -30,7 +30,37 @@ def test_wordlist_layouts_are_builtin():
     """同梱の対応表は組み込みレイアウト名だけを指していること。"""
     mapping = load_wordlist_layouts()
     assert mapping["scientist"] == "scientist_card"
+    assert {mapping[name] for name in ("football", "baseball", "nations")} == {
+        "info_card"
+    }
+    assert mapping["stations"] == "station_info_card"
     assert set(mapping.values()) <= set(builtin_layout_names())
+
+
+def test_info_card_uses_description_with_player_and_station_details():
+    player_layout = load_layout("info_card")
+    station_layout = load_layout("station_info_card")
+    player = {
+        "original": "選手名",
+        "description": "選手の説明",
+        "team": "所属チーム",
+        "type": "選手",
+    }
+    station = {
+        "original": "駅名",
+        "description": "駅の説明",
+        "prefecture": "東京都",
+        "city": "千代田区",
+        "lines": "路線名",
+        "operator": "鉄道会社",
+        "opened_year": "1900",
+        "station_code": "XX01",
+    }
+    assert "選手の説明" in player_layout.render_texts(player)
+    station_texts = station_layout.render_texts(station)
+    assert "駅の説明" in station_texts
+    assert "東京都  路線名" in station_texts
+    assert not any("運営" in text or "1900" in text or "XX01" in text for text in station_texts)
 
 
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):

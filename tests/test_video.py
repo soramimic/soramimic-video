@@ -286,15 +286,20 @@ def test_build_ass_ruby_positions_monotonic(tmp_path: Path):
     assert xs == sorted(xs) and len(set(xs)) == len(xs)  # 単語順に単調増加
 
 
-def test_build_ass_ruby_positions_use_body_font_size(tmp_path: Path, monkeypatch):
+def test_build_ass_ruby_positions_match_ass_cell_height(tmp_path: Path, monkeypatch):
+    from PIL import ImageFont
+
     import soramimic_video.video as video
     from soramimic_video.layout import load_layout
 
     measured_sizes = []
 
-    class _Font:
+    class _Font(ImageFont.FreeTypeFont):
         def __init__(self, size):
             self.size = size
+
+        def getmetrics(self):
+            return self.size, self.size // 2
 
         def getlength(self, text):
             measured_sizes.append(self.size)
@@ -307,7 +312,8 @@ def test_build_ass_ruby_positions_use_body_font_size(tmp_path: Path, monkeypatch
 
     body_px = int(layout.subtitles[0].size * 720)
     assert measured_sizes
-    assert set(measured_sizes) == {body_px}
+    expected = round(body_px * body_px / (body_px + body_px // 2))
+    assert set(measured_sizes) == {expected}
 
 
 def test_build_ass_ruby_disabled(tmp_path: Path):
@@ -569,6 +575,14 @@ def test_app_credit_text_appends_synth_credit():
     assert app_credit_text() == APP_CREDIT
     assert app_credit_text("  ") == APP_CREDIT
     assert app_credit_text("VOICEVOX:四国めたん") == f"{APP_CREDIT} / VOICEVOX:四国めたん"
+    assert app_credit_text(
+        "VOICEVOX:四国めたん",
+        "作詞・作曲: 作者",
+        "権利者指定表記",
+    ) == (
+        f"{APP_CREDIT} / VOICEVOX:四国めたん / "
+        "Original: 作詞・作曲: 作者 / 権利者指定表記"
+    )
 
 
 def test_idle_frame_data_carries_app_credit(tmp_path: Path):
@@ -897,6 +911,94 @@ def test_download_image_file_url(tmp_path: Path):
 
 def test_download_image_missing_local(tmp_path: Path):
     assert download_image(str(tmp_path / "nope.jpg"), tmp_path / "cache") is None
+
+
+def test_download_image_refreshes_changed_local_file(tmp_path: Path):
+    src = tmp_path / "portrait.jpg"
+    cache = tmp_path / "cache"
+    src.write_bytes(b"old")
+    got = download_image(str(src), cache)
+    assert got is not None and got.read_bytes() == b"old"
+    src.write_bytes(b"new")
+    os.utime(src, ns=(got.stat().st_mtime_ns + 1, got.stat().st_mtime_ns + 1))
+    assert download_image(str(src), cache).read_bytes() == b"new"
+
+
+def test_download_image_revalidates_remote_cache_with_etag(tmp_path: Path, monkeypatch):
+    import soramimic_video.video as video_mod
+
+    url = "https://example.com/photo.png"
+    cache = tmp_path / "cache"
+    calls = []
+    responses = [
+        _FakeResp(_png_bytes("red"), headers={"ETag": '"v1"'}),
+        _FakeResp(status_code=304),
+    ]
+
+    def fake_get(target, *, headers, timeout):
+        calls.append(headers)
+        return responses.pop(0)
+
+    monkeypatch.setattr(video_mod, "http_get_with_retry", fake_get)
+    first = download_image(url, cache)
+    assert first is not None
+    original_mtime = first.stat().st_mtime_ns
+    # TTL内は通信せず、明示更新時だけIf-None-Matchを送る。
+    assert download_image(url, cache) == first
+    assert download_image(url, cache, revalidate=True) == first
+    assert calls == [
+        {"User-Agent": video_mod.USER_AGENT},
+        {"User-Agent": video_mod.USER_AGENT, "If-None-Match": '"v1"'},
+    ]
+    assert first.stat().st_mtime_ns == original_mtime
+
+
+def test_download_image_replaces_changed_same_url(tmp_path: Path, monkeypatch):
+    import soramimic_video.video as video_mod
+
+    url = "https://example.com/photo.png"
+    old = _png_bytes("red")
+    new = _png_bytes("blue")
+    responses = [
+        _FakeResp(old, headers={"ETag": '"v1"'}),
+        _FakeResp(new, headers={"ETag": '"v2"'}),
+    ]
+    monkeypatch.setattr(
+        video_mod,
+        "http_get_with_retry",
+        lambda target, *, headers, timeout: responses.pop(0),
+    )
+    cached = download_image(url, tmp_path / "cache")
+    assert cached is not None and cached.read_bytes() == old
+    refreshed = download_image(url, tmp_path / "cache", revalidate=True)
+    assert refreshed == cached
+    assert refreshed.read_bytes() == new
+
+
+def test_download_image_refetches_inconsistent_validator_metadata(tmp_path: Path, monkeypatch):
+    import soramimic_video.video as video_mod
+
+    url = "https://example.com/photo.png"
+    original = _png_bytes("red")
+    refreshed = _png_bytes("green")
+    responses = [
+        _FakeResp(original, headers={"ETag": '"v1"'}),
+        _FakeResp(refreshed, headers={"ETag": '"v2"'}),
+    ]
+    calls = []
+
+    def fake_get(target, *, headers, timeout):
+        calls.append(headers)
+        return responses.pop(0)
+
+    monkeypatch.setattr(video_mod, "http_get_with_retry", fake_get)
+    cached = download_image(url, tmp_path / "cache")
+    assert cached is not None
+    # 別プロセスとの競合で画像だけ別内容になった状態。TTL内でも検出し、
+    # 対応関係の壊れたETagを送らず無条件で正しい内容を取り直す。
+    cached.write_bytes(_png_bytes("blue"))
+    assert download_image(url, tmp_path / "cache").read_bytes() == refreshed
+    assert calls[1] == {"User-Agent": video_mod.USER_AGENT}
 
 
 # ---- SVGのラスタライズ(生成カード画像はSVG配布でPillowが開けない) ----
