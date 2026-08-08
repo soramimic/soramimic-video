@@ -140,6 +140,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -210,6 +211,13 @@ class _SafeDict(dict):
 
     def __missing__(self, key: str) -> str:
         return ""
+
+
+def _display_value(column: str, value: object) -> object:
+    """CSVの保存形式を変えず、カード表示向けに値を整える。"""
+    if column == "team":
+        return re.sub(r"(?<=[^\x00-\x7f])-(?=[^\x00-\x7f])", "・", str(value))
+    return value
 
 
 @dataclass
@@ -312,7 +320,11 @@ def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> li
     """
     values = _SafeDict(
         # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
-        {k: ("" if is_missing(v) else v) for k, v in data.items() if v is not None}
+        {
+            k: ("" if is_missing(v) else _display_value(k, v))
+            for k, v in data.items()
+            if v is not None
+        }
     )
     out = []
     for el in elements:
