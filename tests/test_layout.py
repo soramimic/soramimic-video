@@ -77,6 +77,16 @@ def test_load_layout_from_json_path(tmp_path):
     assert layout.render_texts({"surface": "静岡"}) == ["静岡"]
 
 
+def test_team_transfer_separator_is_displayed_as_middle_dot():
+    layout = parse_layout({
+        "elements": [
+            {"type": "text", "text": "{team}", "box": [0.1, 0.1, 0.8, 0.2]},
+        ],
+    })
+    assert layout.render_texts({"team": "中日-横浜"}) == ["中日・横浜"]
+    assert layout.render_texts({"team": "FC東京U-23"}) == ["FC東京U-23"]
+
+
 def test_load_subtitle_elements(tmp_path):
     p = tmp_path / "sub.json"
     p.write_text(json.dumps({
