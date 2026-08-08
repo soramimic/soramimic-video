@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from helpers import build_xf_midi
+from soramimic_video import reading as reading_mod
 from soramimic_video.xfparse import analyze_midi, normalize_kana, parse_lyric_events
 
 
@@ -73,6 +74,20 @@ def test_analyze_midi_multi_mora_note(tmp_path: Path):
     project = analyze_midi(midi)
     assert len(project.notes) == 2
     assert project.notes[1].kana == "ライ"
+
+
+def test_analyze_midi_fills_kanji_without_ruby(tmp_path: Path, monkeypatch):
+    midi = build_xf_midi(
+        tmp_path / "missing-ruby.mid",
+        notes=[(0, 240, 60), (240, 240, 62), (480, 240, 64)],
+        lyric_events=[(0, "<僕"), (240, "の"), (480, "事")],
+    )
+    monkeypatch.setattr(reading_mod, "text_to_kana", lambda _text: "ボクノコト")
+
+    project = analyze_midi(midi)
+
+    assert [n.kana for n in project.notes] == ["ボク", "ノ", "コト"]
+    assert project.lines[0].xf_kana == "ボクノコト"
 
 
 def test_analyze_midi_fixes_particle_reading(tmp_path: Path):

@@ -34,6 +34,10 @@ def test_wordlist_layouts_are_builtin():
     assert mapping["scientist"] == "scientist_card"
     assert mapping["school"] == "school_card"
     assert mapping["municipality"] == "municipality_card"
+    assert {mapping[name] for name in ("football", "baseball", "nations")} == {
+        "info_card"
+    }
+    assert mapping["stations"] == "station_info_card"
     assert set(mapping.values()) <= set(builtin_layout_names())
 
 
@@ -104,6 +108,32 @@ def test_player_card_uses_team_position_and_description_independently():
     assert "MF" in layout.render_texts({**common, "position": "MF"})
     assert "所属チーム" in layout.render_texts({**common, "team": "所属チーム"})
     assert "選手の説明" in layout.render_texts(common)
+
+
+def test_info_card_uses_description_with_player_and_station_details():
+    player_layout = load_layout("info_card")
+    station_layout = load_layout("station_info_card")
+    player = {
+        "original": "選手名",
+        "description": "選手の説明",
+        "team": "所属チーム",
+        "type": "選手",
+    }
+    station = {
+        "original": "駅名",
+        "description": "駅の説明",
+        "prefecture": "東京都",
+        "city": "千代田区",
+        "lines": "路線名",
+        "operator": "鉄道会社",
+        "opened_year": "1900",
+        "station_code": "XX01",
+    }
+    assert "選手の説明" in player_layout.render_texts(player)
+    station_texts = station_layout.render_texts(station)
+    assert "駅の説明" in station_texts
+    assert "東京都  路線名" in station_texts
+    assert not any("運営" in text or "1900" in text or "XX01" in text for text in station_texts)
 
 
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):
