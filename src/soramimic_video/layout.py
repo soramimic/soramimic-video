@@ -798,14 +798,28 @@ def fitted_image_box(
 def _wrap_chars(
     draw: ImageDraw.ImageDraw, text: str, font, max_w: int
 ) -> list[str]:
-    """日本語向けの文字単位折り返し(空白区切りに頼らない)。"""
+    """日本語向けの文字単位折り返し。句読点・閉じ括弧は行頭に置かない。"""
+    no_line_start = frozenset("、。，．・：；？！‼⁉ー〜…‥）」』】〕〉》”’")
+    no_line_end = frozenset("（「『【〔〈《“‘")
+    max_overhang = 2
     lines: list[str] = []
     for para in text.split("\n"):
         line = ""
+        overhang = 0
         for ch in para:
             if line and draw.textlength(line + ch, font=font) > max_w:
-                lines.append(line)
-                line = ch
+                if ch in no_line_start and overhang < max_overhang:
+                    line += ch
+                    overhang += 1
+                    continue
+                carry = ""
+                while line and line[-1] in no_line_end:
+                    carry = line[-1] + carry
+                    line = line[:-1]
+                if line:
+                    lines.append(line)
+                line = carry + ch
+                overhang = 0
             else:
                 line += ch
         lines.append(line)
