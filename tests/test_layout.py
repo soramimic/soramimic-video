@@ -33,6 +33,18 @@ def test_wordlist_layouts_are_builtin():
     assert set(mapping.values()) <= set(builtin_layout_names())
 
 
+def test_player_card_uses_team_position_and_description_independently():
+    layout = load_layout("player_card")
+    common = {"original": "選手名", "description": "選手の説明"}
+
+    assert "所属チーム　MF" in layout.render_texts({
+        **common, "team": "所属チーム", "position": "MF",
+    })
+    assert "MF" in layout.render_texts({**common, "position": "MF"})
+    assert "所属チーム" in layout.render_texts({**common, "team": "所属チーム"})
+    assert "選手の説明" in layout.render_texts(common)
+
+
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):
     p = tmp_path / "wordlist_layouts.json"
     p.write_text(json.dumps({
@@ -470,6 +482,34 @@ def test_render_frame_wrap_long_text(tmp_path):
     data = {"achievement": "天然鉱石と光の拡散関係の初期論説" * 5}
     out = render_frame(layout, None, data, 320, 180, tmp_path / "f")
     assert out is not None and out.exists()
+
+
+def test_wrap_chars_applies_japanese_line_break_rules():
+    image = Image.new("RGB", (320, 180))
+    draw = layout_mod.ImageDraw.Draw(image)
+    font = layout_mod._font(None, 24)
+    max_w = int(draw.textlength("あいう", font=font))
+
+    lines = layout_mod._wrap_chars(draw, "あいう。え（かき", font, max_w)
+
+    assert all(not line.startswith(("。", "、", "）")) for line in lines)
+    assert all(not line.endswith(("（", "「", "『")) for line in lines)
+    assert all(lines)
+
+    narrow_w = int(draw.textlength("（", font=font))
+    opening = layout_mod._wrap_chars(draw, "（あいう", font, narrow_w)
+    assert all(opening)
+
+    punctuation = layout_mod._wrap_chars(
+        draw, "あいう。。。。。。え", font, max_w
+    )
+    allowed_overhang = 2 * max(
+        draw.textlength(ch, font=font) for ch in ("。", "）", "…")
+    )
+    assert all(
+        draw.textlength(line, font=font) <= max_w + allowed_overhang
+        for line in punctuation
+    )
 
 
 # ---- 縁取り(strokes)とぼかし影(shadow) ----
