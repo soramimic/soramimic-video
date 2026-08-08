@@ -215,6 +215,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         synth_credit=args.synth_credit,
         fps=args.fps,
         song_title=args.song_title,
+        song_title_kana=args.song_title_kana,
         original_credit=args.original_credit,
         credit_notice=args.credit_notice,
     )
@@ -236,10 +237,14 @@ def cmd_prewarm_images(args: argparse.Namespace) -> int:
             os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or "work/api-jobs/image-cache"
         )
     summary = prewarm_images(
-        [Path(p) for p in args.csv], cache_dir, delay=args.delay
+        [Path(p) for p in args.csv],
+        cache_dir,
+        delay=args.delay,
+        revalidate=args.revalidate,
     )
     print(
-        f"prewarm完了: 取得 {summary['fetched']} / スキップ {summary['skipped']} / "
+        f"prewarm完了: 取得 {summary['fetched']} / 更新確認 {summary['revalidated']} / "
+        f"スキップ {summary['skipped']} / "
         f"失敗 {summary['failed']} (URL計 {summary['total']}) -> {cache_dir}"
     )
     return 0
@@ -466,6 +471,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="末尾クレジットに出す元曲名(省略時はMIDIファイル名)",
     )
     p.add_argument(
+        "--song-title-kana",
+        default="",
+        help="サムネの曲名変換に使う読み(カタカナ)",
+    )
+    p.add_argument(
         "--original-credit",
         default="",
         help="元曲の著作者クレジット(例: '作詞: ○○ / 作曲: △△')",
@@ -489,6 +499,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--delay", type=float, default=1.0, help="リクエスト間の待機秒(既定1.0)"
+    )
+    p.add_argument(
+        "--revalidate",
+        action="store_true",
+        help="キャッシュ済み画像もETag/Last-Modifiedで更新確認する",
     )
     p.set_defaults(func=cmd_prewarm_images)
 

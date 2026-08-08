@@ -27,6 +27,7 @@ fallback・idle・サムネで共通で、レイアウトの "app_credit": false
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -41,7 +42,7 @@ from pathlib import Path
 from string import Formatter
 
 import requests
-from PIL import Image, ImageChops, ImageColor
+from PIL import Image, ImageChops, ImageColor, ImageFont
 
 from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
@@ -101,6 +102,8 @@ DEFAULT_VIDEO_FPS = 30
 RENDERED_FRAME_CACHE_DIR = "rendered-frames"
 RENDERED_FRAME_CACHE_TTL_SEC = 30 * 24 * 3600
 RENDERED_FRAME_CACHE_MAX = 4000
+IMAGE_CACHE_METADATA_DIR = ".metadata"
+IMAGE_CACHE_REVALIDATE_SEC = 24 * 3600
 
 
 def _run(cmd: list[str], what: str) -> None:
@@ -291,6 +294,50 @@ def _cached_raw(url: str, cache_dir: Path) -> Path | None:
     return None
 
 
+def _image_metadata_path(url: str, cache_dir: Path) -> Path:
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    return cache_dir / IMAGE_CACHE_METADATA_DIR / f"{name}.json"
+
+
+def _read_image_metadata(url: str, cache_dir: Path) -> dict:
+    path = _image_metadata_path(url, cache_dir)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_image_metadata(url: str, cache_dir: Path, metadata: dict) -> None:
+    path = _image_metadata_path(url, cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(
+        path,
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode(),
+    )
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _store_image_revision(
+    url: str, cache_dir: Path, extension: str, data: bytes
+) -> Path | None:
+    """新しい画像内容を保存し、同じURLの旧拡張子ファイルだけを取り除く。"""
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    result = _store_image(cache_dir / f"{name}.{extension}", data)
+    # SVG変換失敗時は _store_image が .svg を保存してNoneを返す。その新しいSVGを
+    # revision本体として残し、同じURLの古いPNGを誤って選ばない。
+    stored_svg = cache_dir / f"{name}.svg"
+    kept = result or (stored_svg if stored_svg.exists() else _cached_raw(url, cache_dir))
+    for old in cache_dir.glob(f"{name}.*"):
+        if old != kept:
+            old.unlink(missing_ok=True)
+    image_is_visible.cache_clear()
+    return result
+
+
 def cached_image(url: str, cache_dir: Path) -> Path | None:
     """すでにキャッシュにある画像のパス(無ければ None)。ダウンロードは一切しない。
 
@@ -302,13 +349,18 @@ def cached_image(url: str, cache_dir: Path) -> Path | None:
     return _rasterized(raw) if raw is not None else None
 
 
-def download_image(url: str, cache_dir: Path) -> Path | None:
+def download_image(
+    url: str, cache_dir: Path, *, revalidate: bool = False
+) -> Path | None:
+    """画像を取得し、同じURLは一定期間ごとにHTTP validatorsで更新確認する。
+
+    キャッシュ済み画像は24時間そのまま利用する。期限後または revalidate=True では
+    ETag / Last-Modifiedを使った条件付きGETを行い、304なら画像ファイルを書き換えない。
+    validatorが無い配信元でも内容hashが同じなら書き換えないため、行や説明だけが
+    変わった単語リストで画像キャッシュを削除する必要はない。
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
-    # 変換に失敗するSVGでも「キャッシュにはある」ので落とし直さない(_rasterizedがNone)
     raw = _cached_raw(url, cache_dir)
-    if raw is not None:
-        return _rasterized(raw)
     # ローカルパス / file:// はコピーで取り込む(生成・ローカル単語リストの画像用)
     local = url[7:] if url.startswith("file://") else url
     if "://" not in local:
@@ -316,20 +368,85 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
         if not src.exists():
             logger.warning("画像が見つかりません: %s", url)
             return None
+        if raw is not None:
+            try:
+                if src.stat().st_mtime_ns <= raw.stat().st_mtime_ns:
+                    return _rasterized(raw)
+            except OSError:
+                pass
         ext = src.suffix.lstrip(".").lower() or "img"
-        return _store_image(cache_dir / f"{name}.{ext}", src.read_bytes())
+        return _store_image_revision(url, cache_dir, ext, src.read_bytes())
+
+    metadata = _read_image_metadata(url, cache_dir)
+    checked_at = metadata.get("checked_at")
+    cached_digest = metadata.get("cached_sha256")
+    cache_consistent = False
+    if raw is not None and isinstance(cached_digest, str) and cached_digest:
+        try:
+            cache_consistent = _file_sha256(raw) == cached_digest
+        except OSError:
+            pass
+    if (
+        raw is not None
+        and cache_consistent
+        and not revalidate
+        and isinstance(checked_at, (int, float))
+    ):
+        if time.time() - checked_at < IMAGE_CACHE_REVALIDATE_SEC:
+            return _rasterized(raw)
+
     fetch_url = url
     if "Special:FilePath" in url and "?" not in url:
         fetch_url = url + "?width=1200"  # フル解像度は不要なのでサムネイルをもらう
+    headers = {"User-Agent": USER_AGENT}
+    # 内容hashがメタデータと一致しない場合は、並行更新でvalidatorと画像が
+    # 入れ違った可能性がある。条件付きGETの304を信用できないので無条件取得する。
+    if raw is not None and cache_consistent:
+        if metadata.get("etag"):
+            headers["If-None-Match"] = str(metadata["etag"])
+        if metadata.get("last_modified"):
+            headers["If-Modified-Since"] = str(metadata["last_modified"])
     try:
-        resp = http_get_with_retry(fetch_url, headers={"User-Agent": USER_AGENT}, timeout=30)
+        resp = http_get_with_retry(fetch_url, headers=headers, timeout=30)
     except requests.RequestException as e:
         logger.warning("画像の取得に失敗: %s (%s)", url, e)
-        return None
+        # 一時的な通信障害で既存動画から画像を消さない。失敗は記録せず次回再試行する。
+        return _rasterized(raw) if raw is not None else None
+
+    now = time.time()
+    if resp.status_code == 304 and raw is not None:
+        metadata["checked_at"] = now
+        _write_image_metadata(url, cache_dir, metadata)
+        return _rasterized(raw)
+
+    digest = hashlib.sha256(resp.content).hexdigest()
+    new_metadata = {
+        "url": url,
+        "checked_at": now,
+        "etag": resp.headers.get("ETag", ""),
+        "last_modified": resp.headers.get("Last-Modified", ""),
+        "content_sha256": digest,
+    }
+    if (
+        raw is not None
+        and cache_consistent
+        and metadata.get("content_sha256") == digest
+    ):
+        new_metadata["cached_sha256"] = _file_sha256(raw)
+        _write_image_metadata(url, cache_dir, new_metadata)
+        return _rasterized(raw)
+
     ext = url.rsplit(".", 1)[-1].lower()
     if ext not in ("jpg", "jpeg", "png", "gif", "webp", "svg"):
         ext = "img"
-    return _store_image(cache_dir / f"{name}.{ext}", resp.content)
+    result = _store_image_revision(url, cache_dir, ext, resp.content)
+    stored = _cached_raw(url, cache_dir)
+    if stored is None:
+        logger.warning("画像キャッシュへの保存に失敗: %s", url)
+        return _rasterized(raw) if raw is not None else None
+    new_metadata["cached_sha256"] = _file_sha256(stored)
+    _write_image_metadata(url, cache_dir, new_metadata)
+    return result
 
 
 def _store_image(path: Path, data: bytes) -> Path | None:
@@ -784,15 +901,29 @@ def build_section_cues(
     return out
 
 
-def app_credit_text(synth_credit: str = "") -> str:
+def app_credit_text(
+    synth_credit: str = "",
+    original_credit: str = "",
+    credit_notice: str = "",
+) -> str:
     """フレームに焼き込むクレジット文言。
 
     既定は「lyrics & video by Soramimic」。歌声合成側にもクレジット表記が要るとき
-    (VOICEVOXのキャラ名など)は「lyrics & video by Soramimic / VOICEVOX:四国めたん」の
-    ように後ろに足す。表記の並びはWeb UIの「公開時のクレジット表記」と揃える。
+    (VOICEVOXのキャラ名など)や、元曲・権利者の表記があるときは後ろに足す。
+    元曲情報はエンドロールにも詳しく出すが、必要な表記が動画から切り離されないよう
+    全フレームの署名にも焼き込む。
     """
     synth = (synth_credit or "").strip()
-    return f"{APP_CREDIT} / {synth}" if synth else APP_CREDIT
+    original = (original_credit or "").strip()
+    notice = (credit_notice or "").strip()
+    parts = [APP_CREDIT]
+    if synth:
+        parts.append(synth)
+    if original:
+        parts.append(f"Original: {original}")
+    if notice:
+        parts.append(notice)
+    return " / ".join(parts)
 
 
 def word_is_shown(layout: Layout, data: dict, use_fallback: bool) -> bool:
@@ -1284,6 +1415,25 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
     return segments
 
 
+def _ass_text_measuring_font(font_path: Path | None, ass_fontsize: int):
+    """libassで描画される本文の字送り幅に合わせたPillowフォント。
+
+    ASSのFontsizeは字面のem高ではなく、アセントとディセントを含む行セル高として
+    libassへ渡される。一方Pillowのsizeはem高なので、同じ数値で測ると本文より
+    約1.5倍広くなり、行端へ行くほどルビが外側へずれる。Pillow側をメトリクス比で
+    縮め、実際に描画される本文の字送り幅へ合わせる。
+    """
+    font = _font(font_path, ass_fontsize)
+    if not isinstance(font, ImageFont.FreeTypeFont):
+        return font
+    ascent, descent = font.getmetrics()
+    cell_height = ascent + descent
+    if cell_height <= 0:
+        return font
+    measured_size = max(1, round(ass_fontsize * ass_fontsize / cell_height))
+    return _font(font_path, measured_size)
+
+
 def _ruby_events(
     el: SubtitleElement,
     name: str,
@@ -1299,8 +1449,8 @@ def _ruby_events(
 ) -> list[str]:
     """替え歌字幕の漢字等の部分の真上にルビ(ふりがな)を置くASSイベント列。
 
-    本文行と同じフォント・同じピクセルサイズでPillowで文字幅を測り、ルビを振る
-    範囲のx中心を求める。本文と同一レイヤー・同一区間で、範囲ごとに小さい
+    libassが描画する本文と同じ字送り幅になるようPillowフォントを補正して測り、
+    ルビを振る範囲のx中心を求める。本文と同一レイヤー・同一区間で、範囲ごとに小さい
     フォントの別イベントを本文の上端すぐ上に \\pos で配置する。
     ルビは表記の非カナ部分にだけ振る(_ruby_segments)。読みを割り付けられない
     単語だけ、従来どおり単語全体に読み全体を置く。
@@ -1308,9 +1458,7 @@ def _ruby_events(
     body_px = int(el.size * height)
     if body_px <= 0 or not words:
         return []
-    # libassと同じフォントサイズで字送り幅を測る。メトリクスのセル高で縮めると
-    # 行中心から離れたルビほど中心側へ寄ってしまう。
-    font = _font(font_path, body_px)
+    font = _ass_text_measuring_font(font_path, body_px)
     full = WORD_SEP.join(w.surface for w in words)
     total_w = font.getlength(full)
     # 本文行の左端x。build_ass本体の px(align基準点)と揃える
@@ -1533,7 +1681,7 @@ def make_video(
         raise ValueError("fps は1以上で指定してください")
     layout_obj = load_layout(layout)
     # 動画に焼き込むクレジット(サムネ・単語フレーム・idleで共通)
-    credit_text = app_credit_text(synth_credit)
+    credit_text = app_credit_text(synth_credit, original_credit, credit_notice)
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 

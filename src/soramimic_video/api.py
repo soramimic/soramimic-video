@@ -532,24 +532,45 @@ def song_title_of(params: dict[str, Any]) -> str:
     return str(params.get("song_title") or params.get("midi_filename") or "")
 
 
+def _sample_entry_of(params: dict[str, Any]) -> dict[str, Any] | None:
+    """ジョブが同梱サンプル曲ならmanifestの1件。自作MIDIならNone。"""
+    stem = re.sub(r"\.[^.]*$", "", str(params.get("midi_filename") or "")).strip()
+    entry = sample_entry(stem) if stem else None
+    if entry is None:
+        return None
+    title = str(params.get("song_title") or "").strip()
+    if title and title != str(entry.get("title") or ""):
+        return None
+    return entry
+
+
 def song_title_kana_of(params: dict[str, Any]) -> str:
     """サムネの曲名変換に使う読み(カタカナ)。分からなければ空文字。
 
     読みが確定しているのは同梱サンプル曲だけ(samples.json の title_kana)。
-    UIはサンプル曲を選ぶと `<サンプルID>.mid` をそのまま送ってくるので、
-    midi_filename の拡張子を落としたものでサンプルを引く。
-    自分のMIDIを上げた人がたまたま同じファイル名を付けていることもあるので、
-    UIが送ってきた曲名がサンプルの曲名と食い違うときは読みを使わない
-    (その場合は従来どおり曲名の文字列から変換エンジンが読みを推定する)。
+    自分のMIDIを上げた人がたまたま同じファイル名を付けている場合は、
+    song_title がmanifestと一致しないためサンプル扱いしない。
     """
-    stem = re.sub(r"\.[^.]*$", "", str(params.get("midi_filename") or "")).strip()
-    entry = sample_entry(stem) if stem else None
+    entry = _sample_entry_of(params)
     if entry is None:
         return ""
-    title = str(params.get("song_title") or "").strip()
-    if title and title != str(entry.get("title") or ""):
-        return ""
     return str(entry.get("title_kana") or "")
+
+
+def original_credit_of(params: dict[str, Any]) -> str:
+    """元曲クレジット。既知のサンプル曲はmanifestの指定を必ず使う。"""
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("original_credit"):
+        return str(entry["original_credit"]).strip()
+    return str(params.get("original_credit") or "").strip()
+
+
+def credit_notice_of(params: dict[str, Any]) -> str:
+    """権利者・ライセンス指定表記。既知のサンプル曲はmanifestを優先する。"""
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("credit_notice"):
+        return str(entry["credit_notice"]).strip()
+    return str(params.get("credit_notice") or "").strip()
 
 
 def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
@@ -757,8 +778,8 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             song_title_kana=song_title_kana_of(job.params),
             synth_credit=synth_credit_of(job.params, config),
             fps=config.get("video_fps", 30),
-            original_credit=str(job.params.get("original_credit") or ""),
-            credit_notice=str(job.params.get("credit_notice") or ""),
+            original_credit=original_credit_of(job.params),
+            credit_notice=credit_notice_of(job.params),
         )
 
 

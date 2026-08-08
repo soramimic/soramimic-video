@@ -17,6 +17,7 @@ from typing import Any
 import jaconv
 from xfmido import XFMidiFile, extract_xf_karaoke_info
 
+from .kana import normalize_long_vowels, split_moras
 from .project import Line, Note, Project, SongInfo
 
 logger = logging.getLogger(__name__)
@@ -235,6 +236,95 @@ def _fix_particle_kana(lines: list[Line], notes: list[Note]) -> int:
     return fixed
 
 
+def _distribute_moras(moras: list[str], count: int) -> list[str] | None:
+    """モーラ列を空カナ音符へ順序を保って均等配分する。"""
+    if count <= 0:
+        return [] if not moras else None
+    if len(moras) < count:
+        return None
+    width, extra = divmod(len(moras), count)
+    out: list[str] = []
+    pos = 0
+    for i in range(count):
+        size = width + (1 if i < extra else 0)
+        out.append("".join(moras[pos:pos + size]))
+        pos += size
+    return out
+
+
+def _fill_missing_kana(lines: list[Line], notes: list[Note]) -> int:
+    """ルビなし漢字の空カナを、行全体の文脈付き読みから補完する。
+
+    市販XFには ``女`` ``々`` ``し`` ``く`` ``て`` のように、漢字イベントだけ
+    読みを持たないデータがある。空カナのままMusicXMLへ渡すとNEUTRINOが有音程
+    ノートを「あ」と発声するため、既存カナをアンカーに行読みを切り分ける。
+    """
+    try:
+        from .reading import text_to_kana
+    except ImportError:  # pragma: no cover - 読み依存が無い環境
+        return 0
+
+    filled = 0
+    for line in lines:
+        line_notes = [notes[i] for i in line.note_ids]
+        if not any(not n.kana for n in line_notes):
+            continue
+        try:
+            full = split_moras(normalize_long_vowels(text_to_kana(line.xf_surface)))
+        except RuntimeError as exc:
+            logger.warning("ルビなし漢字の読み補完をスキップします: %s", exc)
+            return filled
+        if not full:
+            continue
+
+        assignments: dict[int, str] = {}
+        pending: list[int] = []
+        cursor = 0
+        valid = True
+        for i, note in enumerate(line_notes):
+            if not note.kana:
+                pending.append(i)
+                continue
+            anchor = split_moras(normalize_long_vowels(note.kana))
+            start = cursor + len(pending)
+            # XFは助詞を表記どおり「ヲ」と持つことも発音形「オ」と持つこともある。
+            # 読み補完のアンカー照合では同じ発音として扱う。
+            equivalent = {"ヲ": "オ", "ハ": "ワ", "ヘ": "エ"}
+            found = next(
+                (
+                    p
+                    for p in range(start, len(full) - len(anchor) + 1)
+                    if [equivalent.get(m, m) for m in full[p:p + len(anchor)]]
+                    == [equivalent.get(m, m) for m in anchor]
+                ),
+                None,
+            )
+            if found is None:
+                valid = False
+                break
+            distributed = _distribute_moras(full[cursor:found], len(pending))
+            if distributed is None:
+                valid = False
+                break
+            assignments.update(zip(pending, distributed, strict=True))
+            pending = []
+            cursor = found + len(anchor)
+
+        if valid:
+            distributed = _distribute_moras(full[cursor:], len(pending))
+            if distributed is None:
+                valid = False
+            else:
+                assignments.update(zip(pending, distributed, strict=True))
+        if not valid or not assignments:
+            continue
+        for i, kana in assignments.items():
+            line_notes[i].kana = kana
+            filled += 1
+        line.xf_kana = "".join(n.kana for n in line_notes)
+    return filled
+
+
 def analyze_midi(midi_path: Path) -> Project:
     """XF MIDIを解析してProject(notes/lines/song)を作る。"""
     midi = XFMidiFile(str(midi_path), charset="cp932")
@@ -332,6 +422,9 @@ def analyze_midi(midi_path: Path) -> Project:
     fixed = _fix_particle_kana(lines, notes)
     if fixed:
         logger.info("助詞の読みを発音形に補正しました: %d音符 (は→ワ 等)", fixed)
+    filled = _fill_missing_kana(lines, notes)
+    if filled:
+        logger.info("ルビなし漢字の読みを補完しました: %d音符", filled)
 
     song = SongInfo(
         midi_path=str(midi_path),
