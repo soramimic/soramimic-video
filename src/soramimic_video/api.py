@@ -757,6 +757,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             song_title_kana=song_title_kana_of(job.params),
             synth_credit=synth_credit_of(job.params, config),
             fps=config.get("video_fps", 30),
+            image_lead_sec=config.get("video_image_lead_sec", 0.1),
             original_credit=str(job.params.get("original_credit") or ""),
             credit_notice=str(job.params.get("credit_notice") or ""),
         )
@@ -1125,6 +1126,7 @@ def create_app(
     editor_dist: Path | None = None,
     voicevox_url: str = "http://127.0.0.1:50021",
     video_fps: int = 30,
+    video_image_lead_sec: float = 0.1,
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     from .editor_io import editor_sessions_dir
@@ -1143,6 +1145,7 @@ def create_app(
         "layout": layout,
         "voicevox_url": voicevox_url,
         "video_fps": video_fps,
+        "video_image_lead_sec": video_image_lead_sec,
         # 合成の所要時間の目安(曲秒あたりの実処理秒)を実行ごとに記録して次回に使う
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
     }

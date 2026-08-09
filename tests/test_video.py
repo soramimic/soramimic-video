@@ -14,6 +14,7 @@ from helpers import build_xf_midi
 from soramimic_video.layout import load_layout
 from soramimic_video.project import Line, Note, Parody, ParodyLine, ParodyWord, Project, SongInfo
 from soramimic_video.video import (
+    DEFAULT_IMAGE_LEAD_SEC,
     ImageCue,
     build_ass,
     build_image_cues,
@@ -493,8 +494,8 @@ def test_image_cues_and_slideshow(tmp_path: Path):
     cues, credits = build_image_cues(project, work, 320, 180)
     assert len(cues) == 1
     assert credits[0]["image_page"] == "https://example.com/page"
-    # 単語の歌唱区間から始まる(tick480 @120bpm = 0.5s)
-    assert abs(cues[0].start - 0.5) < 0.01
+    # カードは単語の歌唱開始(tick480 @120bpm = 0.5s)より0.1秒早く出る
+    assert abs(cues[0].start - (0.5 - DEFAULT_IMAGE_LEAD_SEC)) < 0.01
     assert cues[0].frame.parent == cache / "rendered-frames"
 
     # 作業ディレクトリが違っても、明示した画像キャッシュが同じなら描画PNGを再利用する
@@ -502,6 +503,27 @@ def test_image_cues_and_slideshow(tmp_path: Path):
         project, tmp_path / "other-video", 320, 180, image_cache=cache
     )
     assert reused[0].frame == cues[0].frame
+
+    # 先行表示は無効化でき、音符の元時刻には影響しない
+    unshifted, _ = build_image_cues(
+        project, tmp_path / "unshifted", 320, 180,
+        image_cache=cache, image_lead_sec=0,
+    )
+    assert abs(unshifted[0].start - 0.5) < 0.01
+    assert project.notes[0].start_sec == pytest.approx(0.5)
+
+    # 先行分が歌唱開始より長くても、負の時刻にはしない
+    project.notes[0].start_sec = 0.05
+    clamped, _ = build_image_cues(
+        project, tmp_path / "clamped", 320, 180,
+        image_cache=cache, image_lead_sec=DEFAULT_IMAGE_LEAD_SEC,
+    )
+    assert clamped[0].start == 0.0
+
+    with pytest.raises(ValueError, match="0以上"):
+        build_image_cues(
+            project, tmp_path / "invalid", 320, 180, image_lead_sec=-0.1,
+        )
 
     out = write_slideshow(cues, work, 320, 180, total_sec=3.0)
     assert out.exists() and out.stat().st_size > 0
@@ -699,16 +721,16 @@ def test_hold_next_extends_show_end(tmp_path: Path):
     project = _two_word_project()
     cap, hold = _text_layouts(tmp_path)
 
-    # 既定: 3秒(HOLD_MAX_SEC)で上限。1単語目は3.75s(0.75+3.0)で切れる
+    # 既定: 3秒(HOLD_MAX_SEC)で上限にし、カード全体を0.1秒先行する
     cues, _ = build_image_cues(project, tmp_path / "cap", 320, 180, layout=cap)
     assert len(cues) == 2
-    assert abs(cues[0].end - 3.75) < 0.01
-    assert abs(cues[1].end - 7.75) < 0.01  # 最終単語は end+3.0
+    assert abs(cues[0].end - (3.75 - DEFAULT_IMAGE_LEAD_SEC)) < 0.01
+    assert abs(cues[1].end - (7.75 - DEFAULT_IMAGE_LEAD_SEC)) < 0.01
 
-    # hold=next: 1単語目は次の歌唱(4.5s)まで持続。最終単語は end 止め(後奏はidle/黒)
+    # hold=nextも同じ先行量を保つ。最終単語は余韻なし(後奏はidle/黒)
     cues_h, _ = build_image_cues(project, tmp_path / "hold", 320, 180, layout=hold)
-    assert abs(cues_h[0].end - 4.5) < 0.01
-    assert abs(cues_h[1].end - 4.75) < 0.01
+    assert abs(cues_h[0].end - (4.5 - DEFAULT_IMAGE_LEAD_SEC)) < 0.01
+    assert abs(cues_h[1].end - (4.75 - DEFAULT_IMAGE_LEAD_SEC)) < 0.01
 
 
 _TEXT_LAYOUT = {
@@ -744,19 +766,24 @@ def _dialogue_spans(ass: str, style: str = "Parody") -> list[tuple[float, float]
     return spans
 
 
-def test_subtitle_end_matches_image_hold(tmp_path: Path):
+def test_subtitle_timing_is_not_shifted_with_image_cues(tmp_path: Path):
     # 間奏の手前(次の単語まで3.75s)で、字幕が画像より先に消えない
     from soramimic_video.video import HOLD_MAX_SEC, SUB_PAD_SEC
 
     project = _two_word_project()
     cap, hold = _text_layouts(tmp_path)
 
-    # 既定: 画像と同じく 行末+HOLD_MAX_SEC まで残る(従来は 行末+0.15s で消えていた)
+    # 字幕は従来どおり行末+HOLD_MAX_SECまで。カードだけ0.1秒先行する。
     spans = _dialogue_spans(build_ass(project, 1280, 720, "Font", cap))
     assert abs(spans[0][1] - (0.75 + HOLD_MAX_SEC)) < 0.01
-    assert abs(spans[1][1] - (4.75 + HOLD_MAX_SEC)) < 0.01  # 最終行も画像に揃える
+    assert abs(spans[1][1] - (4.75 + HOLD_MAX_SEC)) < 0.01
     cues, _ = build_image_cues(project, tmp_path / "cap", 320, 180, layout=cap)
-    assert abs(spans[0][1] - cues[0].end) < 0.01
+    unshifted, _ = build_image_cues(
+        project, tmp_path / "cap-unshifted", 320, 180,
+        layout=cap, image_lead_sec=0,
+    )
+    assert abs(spans[0][1] - unshifted[0].end) < 0.01
+    assert abs((spans[0][1] - cues[0].end) - DEFAULT_IMAGE_LEAD_SEC) < 0.01
 
     # hold=next: 次の単語(4.5s)まで。ただし次の行の字幕開始(4.5-0.15s)で交代する
     spans_h = _dialogue_spans(build_ass(project, 1280, 720, "Font", hold))
