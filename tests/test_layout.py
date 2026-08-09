@@ -8,6 +8,8 @@ from PIL import Image
 from soramimic_video import layout as layout_mod
 from soramimic_video.layout import (
     APP_CREDIT,
+    ImageElement,
+    TextElement,
     builtin_layout_names,
     load_layout,
     load_wordlist_layouts,
@@ -30,7 +32,62 @@ def test_wordlist_layouts_are_builtin():
     """同梱の対応表は組み込みレイアウト名だけを指していること。"""
     mapping = load_wordlist_layouts()
     assert mapping["scientist"] == "scientist_card"
+    assert mapping["school"] == "school_card"
+    assert mapping["municipality"] == "municipality_card"
     assert set(mapping.values()) <= set(builtin_layout_names())
+
+
+def test_school_card_places_image_left_and_school_information_right():
+    layout = load_layout("school_card")
+    image = next(el for el in layout.elements if isinstance(el, ImageElement))
+    texts = [el for el in layout.elements if isinstance(el, TextElement)]
+
+    assert image.box[0] < 0.5
+    assert all(el.box[0] > 0.5 for el in texts)
+    assert layout.render_texts({
+        "original": "青空市立山川小学校",
+        "founder": "公立",
+        "school_type": "小学校",
+        "prefecture": "青空県",
+        "city": "青空市",
+        "status": "current",
+        "description": "地域とともに歩む学校。",
+    }) == [
+        "青空市立山川小学校",
+        "公立　小学校",
+        "青空県　青空市",
+        "current",
+        "地域とともに歩む学校。",
+    ]
+    assert layout.render_texts({"original": "山川小学校"}) == [
+        "山川小学校", "", "", "", "",
+    ]
+
+
+def test_municipality_card_places_image_left_and_municipality_information_right():
+    layout = load_layout("municipality_card")
+    image = next(el for el in layout.elements if isinstance(el, ImageElement))
+    texts = [el for el in layout.elements if isinstance(el, TextElement)]
+
+    assert image.box[0] < 0.5
+    assert all(el.box[0] > 0.5 for el in texts)
+    assert layout.render_texts({
+        "original": "中央区",
+        "prefecture": "青空県",
+        "parent": "青空市",
+        "population": "123456",
+        "status": "current",
+        "description": "青空市の中心部にある行政区。",
+    }) == [
+        "中央区",
+        "青空県　青空市",
+        "人口: 123456",
+        "current",
+        "青空市の中心部にある行政区。",
+    ]
+    assert layout.render_texts({
+        "original": "青空町", "prefecture": "青空県", "status": "former",
+    }) == ["青空町", "青空県", "", "former", ""]
 
 
 def test_player_card_uses_team_position_and_description_independently():

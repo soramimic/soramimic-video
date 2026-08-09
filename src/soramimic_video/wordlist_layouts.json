@@ -5,10 +5,12 @@
   "fictional_scientist": "scientist_card",
   "football": "player_card",
   "gimukyoiku": "gimukyoiku_card",
+  "municipality": "municipality_card",
   "plant": "plant_card",
   "pokemon": "pokemon_card",
   "scientist": "scientist_card",
   "sekitsui": "animal_card",
+  "school": "school_card",
   "stations": "station_card",
   "youtuber": "youtuber_card"
 }
