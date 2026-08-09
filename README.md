@@ -163,7 +163,7 @@ id,original,surface,pronunciation,team
 `SORAMIMIC_MAX_WORDLIST_ZIP_BYTES` / `SORAMIMIC_MAX_WORDLIST_IMAGE_BYTES` /
 `SORAMIMIC_MAX_WORDLIST_IMAGES` で変えられる。画像もCSVと同じくそのジョブの
 ディレクトリ(`<ジョブ>/wordlist/images/`)にだけ置かれる。CSV自体のサイズ上限は
-2MB / 10,000行(`SORAMIMIC_MAX_WORDLIST_BYTES` / `SORAMIMIC_MAX_WORDLIST_ROWS`)。
+10MB / 10,000行(`SORAMIMIC_MAX_WORDLIST_BYTES` / `SORAMIMIC_MAX_WORDLIST_ROWS`)。
 
 `POST /api/editor-session` も自作リストを受け取れる。正規化済みCSVを
 `<ジョブディレクトリ>/editor-sessions/<sid>/wordlist.csv`(`sid` は中身の指紋)に

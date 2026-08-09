@@ -36,12 +36,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-# 上限。既定はどちらも「手で作ったリスト」には十分すぎる大きさで、
-# 行数の上限は変換前処理(読み推定+バリエーション展開)が現実的な時間で
-# 終わる範囲に切っている(1万行で数分かかる)。
+# 上限。stations.csv のような同梱リストも自作リストとして読み直せるよう、
+# ファイルサイズには余裕を持たせる。実際の処理量は、変換前処理
+# (読み推定+バリエーション展開)が現実的な時間で終わる行数側でも制限する。
 MAX_BYTES_ENV = "SORAMIMIC_MAX_WORDLIST_BYTES"
 MAX_ROWS_ENV = "SORAMIMIC_MAX_WORDLIST_ROWS"
-DEFAULT_MAX_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_ROWS = 10000
 
 # 必ず出力する先頭4列(エンジンが名前で引く列)
