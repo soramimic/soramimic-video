@@ -1646,11 +1646,16 @@ def test_index_html_editor_opens_as_fullscreen_modal():
 
 
 def test_index_html_editor_modal_close_controls_are_pinned_to_the_head():
-    """閉じる導線(取り込んで閉じる/閉じる)はモーダル上部に固定する。"""
+    """編集内容を取り込む「閉じる」導線はモーダル上部に固定する。"""
     html = _index_html()
     head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
-    assert 'id="editor-import"' in head
-    assert 'id="editor-close"' in head
+    assert (
+        '<button type="button" id="editor-import" class="btn-primary btn-sm">'
+        "閉じる</button>" in head
+    )
+    assert 'id="editor-close"' not in head
+    assert '$("editor-close")' not in html
+    assert '$("editor-import").focus();' in html
     # ヘッダは縮まず、下のiframeだけがスクロール領域になる
     assert ".editor-modal-head {\n    flex: 0 0 auto;" in html
     # 閉じても編集は生きている(自動取り込み)ことをその場に書く
@@ -1680,16 +1685,16 @@ def test_index_html_editor_modal_locks_background_scroll():
 
 
 def test_index_html_editor_edits_are_used_without_import_click():
-    """「取り込んで閉じる」を押さなくても、編集内容が生成に使われる。"""
+    """閉じるボタンを押さなくても、編集内容が生成に使われる。"""
     html = _index_html()
     # 生成時に出どころを決める(#editor のファイル固定ではない)
     assert "const editorSrc = editorSourceForSubmit();" in html
     assert 'if (editorSrc.file) form.append("editor", editorSrc.file);' in html
     assert 'if ($("editor").files[0]) form.append("editor"' not in html
-    # ボタンは残す(押したときの挙動は従来どおり)
+    # 閉じるボタンは編集内容を明示的に取り込む(挙動は従来どおり)
     assert (
         '<button type="button" id="editor-import" class="btn-primary btn-sm">'
-        "編集内容を取り込んで閉じる</button>" in html
+        "閉じる</button>" in html
     )
 
 

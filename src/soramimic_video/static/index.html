@@ -770,15 +770,13 @@
 
 <!-- 替え歌エディタ(同梱editor)の全画面モーダル。開くまではDOMにあるだけで空。
      .wrap の外に置いてページ全体を覆う(詳細設定の中に展開すると編集領域が狭い)。
-     閉じる導線は上部に固定し、Escでも閉じる。閉じても編集は生きている
-     (sessionStorageに残り、生成時に自動で使われる: liveEditorEdit)ので、
-     「取り込んで閉じる」を押さなくても編集は失われない。 -->
+     閉じる導線は上部に固定し、Escでも閉じる。Escで閉じても編集は生きている
+     (sessionStorageに残り、生成時に自動で使われる: liveEditorEdit)。 -->
 <div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" aria-modal="true"
   aria-labelledby="editor-modal-title">
   <div class="editor-modal-head">
     <h2 id="editor-modal-title">✏️ 替え歌エディタ</h2>
-    <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
-    <button type="button" id="editor-close" class="btn-sm">閉じる</button>
+    <button type="button" id="editor-import" class="btn-primary btn-sm">閉じる</button>
     <p class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。</p>
   </div>
   <iframe id="editor-frame" title="soramimic editor"></iframe>
@@ -4483,7 +4481,7 @@ function showEditorFrame() {
   $("editor-frame-wrap").hidden = false;
   document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
   // 開いた直後は親側にフォーカスを置く(この時点でEscが効く)
-  $("editor-close").focus();
+  $("editor-import").focus();
   // 前のセッションの依頼は引き継がない(nonce の衝突と、ファイル選択を
   // 開けないブラウザで応答中のまま固まった場合の取り戻しを兼ねる)
   hostRequestSeen = "";
@@ -4540,7 +4538,6 @@ document.addEventListener("keydown", (ev) => {
   cancelEditorResume();
 });
 $("editor-import").addEventListener("click", importEditor);
-$("editor-close").addEventListener("click", closeEditor);
 // 曲・単語リスト・変換パラメータを変えると、取り込み済み替え歌の扱い(使う/捨てる)
 // が変わることがある。そのときは表示を出し直し、出したままの「保存済みの替え歌が
 // あります」も、前提が変わったら一度引っ込める
