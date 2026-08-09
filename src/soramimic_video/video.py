@@ -98,6 +98,9 @@ IMAGE_FETCH_WORKERS = 2
 # 最速サンプル(初音ミクの消失)には38.5msの音符がある。15fpsの66.7ms刻みでは
 # 1モーラ分の表示が落ちうるため、時間解像度を保てる従来どおりの30fpsを既定にする。
 DEFAULT_VIDEO_FPS = 30
+# カードは発声と同時よりわずかに先に見せる方が、知覚上の遅れを感じにくい。
+# 30fpsでは3フレーム。音声・字幕の時刻は動かさない。
+DEFAULT_IMAGE_LEAD_SEC = 0.1
 RENDERED_FRAME_CACHE_DIR = "rendered-frames"
 RENDERED_FRAME_CACHE_TTL_SEC = 30 * 24 * 3600
 RENDERED_FRAME_CACHE_MAX = 4000
@@ -965,13 +968,17 @@ def build_image_cues(
     image_cache: Path | None = None,
     layout: Layout | None = None,
     app_credit: str = "",
+    image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> tuple[list[ImageCue], list[dict]]:
     """替え歌単語の歌唱区間に対応するフレームキュー列と、使用画像のクレジット情報。
 
     フレームは単語リスト行の画像+列情報をレイアウト定義で合成したもの。
     画像がなくてもレイアウトのtext要素が埋まる単語はテキストのみで表示する。
     app_credit は全フレームの隅に焼き込む署名(既定は「lyrics & video by Soramimic」)。
+    image_lead_sec はカードだけを歌唱より先に出す秒数。字幕・音声は変更しない。
     """
+    if image_lead_sec < 0:
+        raise ValueError("image_lead_sec は0以上で指定してください")
     if project.parody is None:
         return [], []
     if layout is None:
@@ -990,7 +997,10 @@ def build_image_cues(
     # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
     _prefetch_image_assets(frames, cache)
     for i, wf in enumerate(frames):
-        start, data, use_fallback = wf.start, wf.data, wf.use_fallback
+        # 画像・見出し・説明を含むカード全体だけを少し先行表示する。
+        # 音声と字幕はprojectの元時刻を使い続ける。
+        start = max(0.0, wf.start - image_lead_sec)
+        data, use_fallback = wf.data, wf.use_fallback
         # 全フレーム共通の署名(レイアウトが左下に焼き込む)
         data["app_credit"] = app_credit or APP_CREDIT
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
@@ -1015,8 +1025,12 @@ def build_image_cues(
         frame = render_frame(layout, raw, data, width, height, norm, use_fallback)
         if frame is None:
             continue
-        # 次の単語まで表示を持続(字幕の消灯も build_ass が同じ値に合わせる)
-        show_end = frame_show_end(frames, i, layout.hold_next)
+        # 次の単語までの持続時間もカード全体と同じ量だけ前へ動かす。
+        # 字幕はprojectの元時刻を使うため、この先行量の影響を受けない。
+        show_end = max(
+            start,
+            frame_show_end(frames, i, layout.hold_next) - image_lead_sec,
+        )
         if cues and cues[-1].end > start:
             cues[-1].end = start
         cues.append(ImageCue(start=start, end=show_end, frame=frame))
@@ -1528,6 +1542,7 @@ def make_video(
     fps: int = DEFAULT_VIDEO_FPS,
     original_credit: str = "",
     credit_notice: str = "",
+    image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
@@ -1562,7 +1577,8 @@ def make_video(
 
     prepare_started = time.monotonic()
     cues, credits = build_image_cues(
-        project, work, width, height, image_cache, layout_obj, credit_text
+        project, work, width, height, image_cache, layout_obj, credit_text,
+        image_lead_sec=image_lead_sec,
     )
     if cues:
         logger.info("画像キュー: %d件", len(cues))

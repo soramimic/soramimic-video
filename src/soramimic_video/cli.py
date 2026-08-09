@@ -217,6 +217,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         song_title=args.song_title,
         original_credit=args.original_credit,
         credit_notice=args.credit_notice,
+        image_lead_sec=args.image_lead_sec,
     )
     print(f"動画完成: {out}")
     return 0
@@ -267,6 +268,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         editor_dist=Path(args.editor_dist) if args.editor_dist else None,
         voicevox_url=args.voicevox_url,
         video_fps=args.video_fps,
+        video_image_lead_sec=args.video_image_lead_sec,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
@@ -443,6 +445,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--fps", type=int, default=30, help="動画のフレームレート(既定: 30)")
+    p.add_argument(
+        "--image-lead-sec", type=float, default=0.1,
+        help="カードを音声より先に表示する秒数(既定: 0.1、無効化: 0)",
+    )
     p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
     p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
     p.add_argument(
@@ -500,6 +506,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--font", help="字幕フォント名(既定はOSに応じて選択)")
     p.add_argument("--threads", type=int, default=4, help="NEUTRINOのスレッド数")
     p.add_argument("--video-fps", type=int, default=30, help="生成動画のfps(既定: 30)")
+    p.add_argument(
+        "--video-image-lead-sec", type=float, default=0.1,
+        help="生成カードを音声より先に表示する秒数(既定: 0.1、無効化: 0)",
+    )
     p.add_argument(
         "--voicevox-url",
         default="http://127.0.0.1:50021",
