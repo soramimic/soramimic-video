@@ -377,6 +377,21 @@ def test_host_request_is_polled_and_handled_once():
     assert 'hostRequestSeen = "";' in show and "hostRequestBusy = false;" in show
 
 
+def test_embedded_editor_brand_returns_through_the_host_shell():
+    """editor内の戻る操作はiframeを遷移させず、親で編集を取り込んで閉じる。"""
+    script = _script()
+    show = _function_body(script, "function showEditorFrame()")
+    assert '$("editor-frame").src = "/editor/editor.html?embed=video";' in show
+
+    handler = _function_body(script, "function onEditorHostMessage(ev)")
+    assert "ev.origin !== location.origin" in handler
+    assert 'ev.source !== $("editor-frame").contentWindow' in handler
+    assert 'ev.data.type !== "soramimic:request-close"' in handler
+    assert 'if ($("editor-frame-wrap").hidden) return;' in handler
+    assert "importEditor();" in handler
+    assert 'window.addEventListener("message", onEditorHostMessage);' in script
+
+
 def test_host_song_request_moves_the_canonical_form_first():
     """曲の差し替えは正本(#sample-select / #midi)を動かしてから解析し直す。
 
