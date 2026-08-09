@@ -1,0 +1,25 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "image", "box": [0.02, 0.0366, 0.528, 0.7334]},
+    {"type": "text", "text": "{original}", "box": [0.575, 0.065, 0.385, 0.115],
+     "size": 0.062, "color": "white", "align": "left", "wrap": true},
+    {"type": "text", "text": "{founder}　{school_type}", "box": [0.575, 0.205, 0.385, 0.052],
+     "size": 0.04, "color": "#9ad8ff", "align": "left", "require": "school_type"},
+    {"type": "text", "text": "{prefecture}　{city}", "box": [0.575, 0.273, 0.385, 0.052],
+     "size": 0.038, "color": "#d4d4d4", "align": "left", "require": "prefecture"},
+    {"type": "text", "text": "{status}", "box": [0.575, 0.341, 0.385, 0.052],
+     "size": 0.034, "color": "#b8b8b8", "align": "left", "require": "status"},
+    {"type": "text", "text": "{description}", "box": [0.575, 0.423, 0.385, 0.287],
+     "size": 0.036, "color": "#e6e6e6", "align": "left", "valign": "top",
+     "wrap": true, "require": "description"},
+    {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.1],
+     "size": 0.065, "color": "white", "bold": true, "ruby": true},
+    {"type": "subtitle", "source": "original", "box": [0.02, 0.895, 0.96, 0.05],
+     "size": 0.042, "color": "#b8b8b8"}
+  ],
+  "fallback": [
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08], "size": 0.05, "color": "#aaa"}
+  ]
+}
