@@ -37,6 +37,10 @@ def test_player_card_uses_team_position_and_description_independently():
     layout = load_layout("player_card")
     common = {"original": "選手名", "description": "選手の説明"}
 
+    team_line = next(el for el in layout.elements
+                     if getattr(el, "template", "").startswith("{team}"))
+    assert team_line.color == "#9ad8ff"
+
     assert "所属チーム　MF" in layout.render_texts({
         **common, "team": "所属チーム", "position": "MF",
     })

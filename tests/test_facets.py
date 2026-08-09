@@ -215,6 +215,15 @@ def test_gimukyoiku_defaults_to_elementary_and_middle_school_only():
     assert any("中学校" in row[level_index] for row in selected)
 
 
+def test_football_defaults_to_jleague_scope_only():
+    """世界・海外日本人は収録しても、既定表示には混ぜない。"""
+    entry = next(e for e in _conf_entries() if e["value"] == "FOOTBALL")
+    where = default_where(entry)
+    assert "(scope=jleague)" in where
+    assert "scope=world" not in where
+    assert "scope=overseas_japanese" not in where
+
+
 def _legacy_default_where(entry: dict[str, Any]) -> str:
     """変更前の index.html(facetDefaultWhere)が組んでいた式。
 
