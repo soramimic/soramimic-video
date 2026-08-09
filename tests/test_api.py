@@ -1645,21 +1645,20 @@ def test_index_html_editor_opens_as_fullscreen_modal():
     assert '$("editor-frame-wrap").scrollIntoView' not in html
 
 
-def test_index_html_editor_modal_close_controls_are_pinned_to_the_head():
-    """編集内容を取り込む「閉じる」導線はモーダル上部に固定する。"""
+def test_index_html_editor_modal_uses_the_embedded_back_navigation():
+    """親ヘッダーに閉じるボタンを重複させず、editor内の戻る導線を使う。"""
     html = _index_html()
     head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
-    assert (
-        '<button type="button" id="editor-import" class="btn-primary btn-sm">'
-        "閉じる</button>" in head
-    )
+    assert "<button" not in head
+    assert 'id="editor-import"' not in html
     assert 'id="editor-close"' not in head
+    assert '$("editor-import")' not in html
     assert '$("editor-close")' not in html
-    assert '$("editor-import").focus();' in html
+    assert '$("editor-frame").focus();' in html
     # ヘッダは縮まず、下のiframeだけがスクロール領域になる
     assert ".editor-modal-head {\n    flex: 0 0 auto;" in html
-    # 閉じても編集は生きている(自動取り込み)ことをその場に書く
-    assert "編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。" in html
+    # 閉じても編集は生きていることと、残した導線をその場に書く
+    assert "「動画作成に戻る」またはEscで閉じられます。" in html
 
 
 def test_index_html_editor_modal_closes_with_escape():
@@ -1684,18 +1683,15 @@ def test_index_html_editor_modal_locks_background_scroll():
 # ---- 替え歌エディタ: 取り込み操作なしで最新の編集を使う(来歴ガード付き) ----
 
 
-def test_index_html_editor_edits_are_used_without_import_click():
-    """閉じるボタンを押さなくても、編集内容が生成に使われる。"""
+def test_index_html_editor_edits_are_used_without_back_navigation():
+    """戻る操作をしなくても、編集内容が生成に使われる。"""
     html = _index_html()
     # 生成時に出どころを決める(#editor のファイル固定ではない)
     assert "const editorSrc = editorSourceForSubmit();" in html
     assert 'if (editorSrc.file) form.append("editor", editorSrc.file);' in html
     assert 'if ($("editor").files[0]) form.append("editor"' not in html
-    # 閉じるボタンは編集内容を明示的に取り込む(挙動は従来どおり)
-    assert (
-        '<button type="button" id="editor-import" class="btn-primary btn-sm">'
-        "閉じる</button>" in html
-    )
+    # 親ヘッダーに重複する閉じるボタンは置かない
+    assert 'id="editor-import"' not in html
 
 
 def test_index_html_editor_auto_import_requires_actual_edit():
