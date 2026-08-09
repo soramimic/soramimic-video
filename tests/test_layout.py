@@ -30,6 +30,7 @@ def test_wordlist_layouts_are_builtin():
     """同梱の対応表は組み込みレイアウト名だけを指していること。"""
     mapping = load_wordlist_layouts()
     assert mapping["scientist"] == "scientist_card"
+    assert mapping["nations"] == "nation_card"
     assert set(mapping.values()) <= set(builtin_layout_names())
 
 
@@ -43,6 +44,40 @@ def test_player_card_uses_team_position_and_description_independently():
     assert "MF" in layout.render_texts({**common, "position": "MF"})
     assert "所属チーム" in layout.render_texts({**common, "team": "所属チーム"})
     assert "選手の説明" in layout.render_texts(common)
+
+
+def test_nation_card_uses_structured_facts_without_description():
+    layout = load_layout("nation_card")
+    current = {
+        "original": "国名",
+        "capital": "首都名",
+        "continent": "地域名",
+        "description": "国の説明",
+        "population": "12345",
+        "population_year": "2023",
+        "area_km2": "6789",
+        "established_year": "1900",
+        "ended_year": "",
+        "status": "current",
+    }
+    texts = layout.render_texts(current)
+    assert "首都: 首都名" in texts
+    assert "人口: 12345（2023年）" in texts
+    assert "面積: 6789 km²" in texts
+    assert "地域: 地域名" not in texts
+    assert "国の説明" not in texts
+    assert "旧国家" not in texts
+    assert "存続: 1900–" in texts
+
+    former_texts = layout.render_texts({
+        **current, "status": "former", "ended_year": "1990",
+    })
+    assert "旧国家" not in former_texts
+    assert "存続: 1900–1990" in former_texts
+
+    undated_texts = layout.render_texts({**current, "population_year": ""})
+    assert "人口: 12345" in undated_texts
+    assert not any("（" in text for text in undated_texts if "人口:" in text)
 
 
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):
