@@ -233,8 +233,8 @@ def build_musicxml(
                 if seg.tie in ("start", "continue"):
                     ET.SubElement(notations, "tied", type="start")
             if seg.midi_note is not None and seg.lyric:
-                lyric = ET.SubElement(note_el, "lyric")
-                ET.SubElement(lyric, "text").text = seg.lyric
+                lyric_el = ET.SubElement(note_el, "lyric")
+                ET.SubElement(lyric_el, "text").text = seg.lyric
             seg_i += 1
 
     ET.indent(root)

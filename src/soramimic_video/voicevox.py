@@ -17,7 +17,7 @@ import logging
 import os
 import time
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -528,7 +528,7 @@ def _samples_per_frame(sample_rate: int) -> int:
 
 
 def _concat_chunks(
-    wav_parts: list[bytes | None], chunks: list[ScoreChunk], total_frames: int
+    wav_parts: Sequence[bytes | None], chunks: Sequence[ScoreChunk], total_frames: int
 ) -> bytes:
     """各チャンクのWAVを絶対フレーム位置で連結し、1本のWAVバイト列にする。
 
