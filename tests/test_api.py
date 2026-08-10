@@ -1133,6 +1133,84 @@ def test_song_title_kana_of_without_reading_in_manifest(tmp_path, monkeypatch):
     assert api_mod.song_title_kana_of({"midi_filename": "momiji.mid"}) == ""
 
 
+def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "title_kana": "ケンリキョク",
+                    "original_credit": "作詞・作曲: 作者",
+                    "credit_notice": "指定表記",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {
+        "midi_filename": "licensed.mid",
+        "song_title": "権利曲",
+        "original_credit": "",
+        "credit_notice": "",
+    }
+
+    assert api_mod.original_credit_of(params) == "作詞・作曲: 作者"
+    assert api_mod.credit_notice_of(params) == "指定表記"
+
+
+def test_sample_manifest_credits_cannot_be_omitted_or_overridden(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "original_credit": "正式なクレジット",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+
+    assert api_mod.original_credit_of(
+        {
+            "midi_filename": "licensed.mid",
+            "song_title": "権利曲",
+            "original_credit": "誤ったクレジット",
+        }
+    ) == "正式なクレジット"
+
+
+def test_uploaded_song_keeps_explicit_credits_when_filename_matches_sample(
+    tmp_path, monkeypatch
+):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [{"id": "licensed", "title": "権利曲", "original_credit": "サンプル作者"}]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {
+        "midi_filename": "licensed.mid",
+        "song_title": "自作曲",
+        "original_credit": "自作曲の作者",
+        "credit_notice": "自作曲の指定表記",
+    }
+
+    assert api_mod.original_credit_of(params) == "自作曲の作者"
+    assert api_mod.credit_notice_of(params) == "自作曲の指定表記"
+
+
 def test_load_samples_tolerates_missing_or_broken_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(tmp_path / "nope"))
     assert api_mod.load_samples() == []

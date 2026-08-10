@@ -109,7 +109,13 @@ def build_musicxml(
             else:
                 segments.append(_Segment(cursor, start, None))
         if end > start:
-            segments.append(_Segment(start, end, n.midi_note, lyric_map.get(n.id)))
+            lyric = lyric_map.get(n.id)
+            # build_lyric_map が明示的に空文字を返した音符は、XFのルビ欠落などで
+            # 発音を特定できなかった音符。歌詞なしの有音程ノートをNEUTRINOへ渡すと
+            # 「あ」と発声されるため、推測せず休符にする。キー自体が無い場合は、
+            # 歌詞なしスコアを組み立てる既存の直接呼び出しとして従来どおり扱う。
+            midi_note = None if n.id in lyric_map and not lyric else n.midi_note
+            segments.append(_Segment(start, end, midi_note, lyric))
             cursor = end
 
     if not segments:
@@ -227,8 +233,8 @@ def build_musicxml(
                 if seg.tie in ("start", "continue"):
                     ET.SubElement(notations, "tied", type="start")
             if seg.midi_note is not None and seg.lyric:
-                lyric = ET.SubElement(note_el, "lyric")
-                ET.SubElement(lyric, "text").text = seg.lyric
+                lyric_el = ET.SubElement(note_el, "lyric")
+                ET.SubElement(lyric_el, "text").text = seg.lyric
             seg_i += 1
 
     ET.indent(root)
