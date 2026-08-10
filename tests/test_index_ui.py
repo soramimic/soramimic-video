@@ -65,6 +65,45 @@ def test_info_hints_cover_the_static_explanations():
     assert not (ids & always_visible)
 
 
+def test_head_has_complete_public_ogp_metadata():
+    """LINE等が操作UIを説明文にせず、専用画像と説明を取得できる。"""
+    text = INDEX.read_text(encoding="utf-8")
+    head = text[: text.index("</head>")]
+    assert "<title>Soramimic | 替え歌動画メーカー</title>" in head
+
+    metas = [attrs for tag, attrs in _tags() if tag == "meta"]
+    by_name = {attrs["name"]: attrs.get("content") for attrs in metas if attrs.get("name")}
+    by_property = {
+        attrs["property"]: attrs.get("content")
+        for attrs in metas
+        if attrs.get("property")
+    }
+    description = "曲と単語リストを選ぶだけ。空耳で置き換えた替え歌動画を作れます。"
+    image_url = "https://video.soramimic.com/ogp-soramimic-v1.png"
+    assert by_name["description"] == description
+    assert by_name["twitter:card"] == "summary_large_image"
+    assert by_name["twitter:title"] == "Soramimic | 替え歌動画メーカー"
+    assert by_name["twitter:description"] == description
+    assert by_name["twitter:image"] == image_url
+    assert by_property == {
+        "og:type": "website",
+        "og:site_name": "Soramimic",
+        "og:title": "Soramimic | 替え歌動画メーカー",
+        "og:description": description,
+        "og:url": "https://video.soramimic.com/",
+        "og:locale": "ja_JP",
+        "og:image": image_url,
+        "og:image:type": "image/png",
+        "og:image:width": "1200",
+        "og:image:height": "630",
+        "og:image:alt": "Soramimic — 曲と単語リストから替え歌動画を作成",
+    }
+    links = [attrs for tag, attrs in _tags() if tag == "link"]
+    assert {attrs.get("rel"): attrs.get("href") for attrs in links}["canonical"] == (
+        "https://video.soramimic.com/"
+    )
+
+
 def test_static_hints_in_advanced_are_all_folded():
     """詳細設定の中に、ⓘ にもidにも属さない裸の説明文を残さない。"""
     markup = _markup()
