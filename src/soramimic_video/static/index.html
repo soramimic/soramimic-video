@@ -1547,40 +1547,56 @@ async function poll(id, seq = pollSeq) {
   }
 }
 
-// ---- 完成した動画をシェアする ----
-// 導線は2本に分ける。Xのシェア拡張はOSのシェアシート経由だと動画が添付された
-// かどうか分かりにくい(iOSで特に)ので、
-//  - 「動画を保存」… Web Share API(レベル2)が使える環境ではOSのシェアシート
-//    (ビデオを保存・LINE等)、使えない環境(多くのPCブラウザ)はそのまま保存。
-//  - 「Xでポスト」… 必ずXの投稿画面(web intent)を開くだけ。動画は手で添付。
-// 並び順は実際の手順どおり「保存 → ポスト」。先に保存しないと添付するものがないので、
-// 保存ボタンを左(先)に置く。
-// 文末はハッシュタグにしない。Xの投稿画面はカーソル直前がハッシュタグだと
-// 補完UIを開いてしまい、初見だと「なぜタグ選択?」と混乱するため、
-// 末尾にサイトURLを置いてタグを文中に沈める(リンクの同伴も兼ねる)。
+// ---- 完成した動画を保存・共有する ----
+// UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
+// 誤判定しやすい。まずWeb Share APIで動画ファイルを実際に共有できるかを判定し、
+// OS判定は共有シートの案内文を分かりやすくするためだけに使う。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #soramimic\n" + location.origin;
-// シェアシートに動画ファイルを渡せる環境かどうかでボタンの文言を変える
-const SAVE_LABEL = navigator.share ? "動画を保存・共有" : "動画を保存";
+
+function mobilePlatform() {
+  const platform = (navigator.userAgentData && navigator.userAgentData.platform)
+    || navigator.platform || "";
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/i.test(ua)
+      || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return "ios";
+  if (/Android/i.test(ua) || /Android/i.test(platform)) return "android";
+  return "other";
+}
+
+function supportsVideoFileShare() {
+  if (!navigator.share || !navigator.canShare || typeof File === "undefined") return false;
+  try {
+    const probe = new File([new Uint8Array([0])], "soramimic.mp4", { type: "video/mp4" });
+    return navigator.canShare({ files: [probe] });
+  } catch (_) {
+    return false;
+  }
+}
+
+const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
+const SAVE_LABEL = FILE_SHARE_SUPPORTED ? "動画を保存・共有" : "動画を保存";
+
+function saveHint() {
+  if (!FILE_SHARE_SUPPORTED) return "動画ファイルをダウンロードします。";
+  if (mobilePlatform() === "ios") {
+    return "iPhone・iPadの共有メニューから「ビデオを保存」「ファイルに保存」、または共有先を選べます。";
+  }
+  if (mobilePlatform() === "android") {
+    return "Androidの共有メニューから保存先または共有先を選べます。";
+  }
+  return "端末の共有メニューから保存先または共有先を選べます。";
+}
+
 const SHARE_HTML =
   `<p class="share-row">` +
   `<button type="button" id="share-save" class="btn-sm">${SAVE_LABEL}</button>` +
-  `<button type="button" id="share-x" class="btn-x btn-sm">Xでポスト</button>` +
   `</p>` +
-  `<p class="hint" id="share-hint">` +
-  `動画はポストに自動では付きません。` +
-  `①「${SAVE_LABEL}」で端末に保存 → ②「Xでポスト」で投稿画面を開いて添付してください。` +
-  `</p>`;
+  `<p class="hint" id="share-hint">${saveHint()}</p>`;
 
 // ファイル添付付きのシェアが使えるか(動画を1本渡せるか)は実ファイルで判定する
 function canShareFiles(file) {
   return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
-}
-
-function openXIntent() {
-  const url = "https://twitter.com/intent/tweet?text="
-    + encodeURIComponent(SHARE_TEXT);
-  window.open(url, "_blank", "noopener");
 }
 
 function videoFileName(videoUrl) {
@@ -1600,13 +1616,11 @@ function downloadVideo(videoUrl) {
 }
 
 function bindShare(videoUrl) {
-  const xBtn = $("share-x");
   const saveBtn = $("share-save");
-  if (xBtn) xBtn.addEventListener("click", () => openXIntent());
   if (!saveBtn) return;
   saveBtn.addEventListener("click", async () => {
     if (!videoUrl) return;
-    if (!navigator.share) return downloadVideo(videoUrl);
+    if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
     saveBtn.disabled = true;
     const label = saveBtn.textContent;
     saveBtn.textContent = "準備中…";
