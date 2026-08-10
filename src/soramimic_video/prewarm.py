@@ -44,7 +44,10 @@ def _collect_rows(csv_paths: list[Path]) -> dict[str, dict]:
 
 
 def prewarm_images(
-    csv_paths: list[Path], cache_dir: Path, delay: float = 1.0
+    csv_paths: list[Path],
+    cache_dir: Path,
+    delay: float = 1.0,
+    revalidate: bool = False,
 ) -> dict[str, int]:
     """CSVの画像URLを直列に取得して画像キャッシュを温める。取得数/スキップ数/失敗数を返す。
 
@@ -54,18 +57,23 @@ def prewarm_images(
     cache_dir.mkdir(parents=True, exist_ok=True)
     rows = _collect_rows(csv_paths)
     total = len(rows)
-    fetched = skipped = failed = 0
+    fetched = skipped = failed = revalidated = 0
     for i, (url, row) in enumerate(rows.items(), 1):
-        if _image_cached(url, cache_dir):
+        was_cached = _image_cached(url, cache_dir)
+        if was_cached and not revalidate:
             skipped += 1
             logger.info("[%d/%d] スキップ(キャッシュ済み): %s", i, total, url)
             continue
-        logger.info("[%d/%d] 取得: %s", i, total, url)
-        raw = download_image(url, cache_dir)
+        action = "更新確認" if was_cached else "取得"
+        logger.info("[%d/%d] %s: %s", i, total, action, url)
+        raw = download_image(url, cache_dir, revalidate=revalidate)
         if raw is None:
             failed += 1
             continue
-        fetched += 1
+        if was_cached:
+            revalidated += 1
+        else:
+            fetched += 1
         # image_credit 列が埋まっている行はクレジット取得不要(video側もその文言を優先)
         has_credit_col = bool(str(row.get("image_credit") or "").strip())
         if not has_credit_col and not _credit_cached(url, cache_dir):
@@ -73,7 +81,13 @@ def prewarm_images(
         if delay > 0:
             time.sleep(delay)
     logger.info(
-        "prewarm完了: 取得 %d / スキップ %d / 失敗 %d (URL計 %d)",
-        fetched, skipped, failed, total,
+        "prewarm完了: 取得 %d / 更新確認 %d / スキップ %d / 失敗 %d (URL計 %d)",
+        fetched, revalidated, skipped, failed, total,
     )
-    return {"fetched": fetched, "skipped": skipped, "failed": failed, "total": total}
+    return {
+        "fetched": fetched,
+        "revalidated": revalidated,
+        "skipped": skipped,
+        "failed": failed,
+        "total": total,
+    }

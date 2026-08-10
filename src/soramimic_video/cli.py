@@ -215,8 +215,10 @@ def cmd_video(args: argparse.Namespace) -> int:
         synth_credit=args.synth_credit,
         fps=args.fps,
         song_title=args.song_title,
+        song_title_kana=args.song_title_kana,
         original_credit=args.original_credit,
         credit_notice=args.credit_notice,
+        image_lead_sec=args.image_lead_sec,
     )
     print(f"動画完成: {out}")
     return 0
@@ -236,10 +238,14 @@ def cmd_prewarm_images(args: argparse.Namespace) -> int:
             os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or "work/api-jobs/image-cache"
         )
     summary = prewarm_images(
-        [Path(p) for p in args.csv], cache_dir, delay=args.delay
+        [Path(p) for p in args.csv],
+        cache_dir,
+        delay=args.delay,
+        revalidate=args.revalidate,
     )
     print(
-        f"prewarm完了: 取得 {summary['fetched']} / スキップ {summary['skipped']} / "
+        f"prewarm完了: 取得 {summary['fetched']} / 更新確認 {summary['revalidated']} / "
+        f"スキップ {summary['skipped']} / "
         f"失敗 {summary['failed']} (URL計 {summary['total']}) -> {cache_dir}"
     )
     return 0
@@ -267,6 +273,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         editor_dist=Path(args.editor_dist) if args.editor_dist else None,
         voicevox_url=args.voicevox_url,
         video_fps=args.video_fps,
+        video_image_lead_sec=args.video_image_lead_sec,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
@@ -443,6 +450,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--fps", type=int, default=30, help="動画のフレームレート(既定: 30)")
+    p.add_argument(
+        "--image-lead-sec", type=float, default=0.1,
+        help="カードを音声より先に表示する秒数(既定: 0.1、無効化: 0)",
+    )
     p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
     p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
     p.add_argument(
@@ -464,6 +475,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--song-title",
         default="",
         help="末尾クレジットに出す元曲名(省略時はMIDIファイル名)",
+    )
+    p.add_argument(
+        "--song-title-kana",
+        default="",
+        help="サムネの曲名変換に使う読み(カタカナ)",
     )
     p.add_argument(
         "--original-credit",
@@ -490,6 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--delay", type=float, default=1.0, help="リクエスト間の待機秒(既定1.0)"
     )
+    p.add_argument(
+        "--revalidate",
+        action="store_true",
+        help="キャッシュ済み画像もETag/Last-Modifiedで更新確認する",
+    )
     p.set_defaults(func=cmd_prewarm_images)
 
     p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
@@ -500,6 +521,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--font", help="字幕フォント名(既定はOSに応じて選択)")
     p.add_argument("--threads", type=int, default=4, help="NEUTRINOのスレッド数")
     p.add_argument("--video-fps", type=int, default=30, help="生成動画のfps(既定: 30)")
+    p.add_argument(
+        "--video-image-lead-sec", type=float, default=0.1,
+        help="生成カードを音声より先に表示する秒数(既定: 0.1、無効化: 0)",
+    )
     p.add_argument(
         "--voicevox-url",
         default="http://127.0.0.1:50021",

@@ -1,0 +1,51 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "image", "box": [0.02, 0.0366, 0.528, 0.7334]},
+    {"type": "text", "text": "{original}", "box": [0.575, 0.075, 0.385, 0.14],
+     "size": 0.075, "color": "white", "align": "left", "wrap": true},
+
+    {"type": "text", "text": "{description}", "box": [0.575, 0.225, 0.385, 0.19],
+     "size": 0.038, "color": "#e6e6e6", "align": "left", "valign": "top", "wrap": true,
+     "require": "description"},
+    {"type": "text", "text": "所属: {team}", "box": [0.575, 0.445, 0.385, 0.055],
+     "size": 0.042, "color": "#e6e6e6", "align": "left", "require": "team"},
+    {"type": "text", "text": "区分: {type}", "box": [0.575, 0.52, 0.385, 0.05],
+     "size": 0.038, "color": "#b8b8b8", "align": "left", "require": "type"},
+    {"type": "text", "text": "カテゴリ: {category}", "box": [0.575, 0.59, 0.385, 0.05],
+     "size": 0.038, "color": "#b8b8b8", "align": "left", "require": "category"},
+
+    {"type": "text", "text": "所在地: {prefecture} {city}", "box": [0.575, 0.43, 0.385, 0.05],
+     "size": 0.042, "color": "#e6e6e6", "align": "left", "require": "prefecture"},
+    {"type": "text", "text": "路線: {lines}", "box": [0.575, 0.495, 0.385, 0.075],
+     "size": 0.034, "color": "#b8b8b8", "align": "left", "valign": "top", "wrap": true,
+     "require": "lines"},
+    {"type": "text", "text": "運営: {operator}", "box": [0.575, 0.58, 0.385, 0.045],
+     "size": 0.032, "color": "#b8b8b8", "align": "left", "require": "operator"},
+    {"type": "text", "text": "開業: {opened_year}年", "box": [0.575, 0.64, 0.2, 0.045],
+     "size": 0.032, "color": "#b8b8b8", "align": "left", "require": "opened_year"},
+    {"type": "text", "text": "駅番号: {station_code}", "box": [0.775, 0.64, 0.185, 0.045],
+     "size": 0.032, "color": "#b8b8b8", "align": "left", "require": "station_code"},
+
+    {"type": "text", "text": "首都: {capital}", "box": [0.575, 0.43, 0.385, 0.045],
+     "size": 0.036, "color": "#b8b8b8", "align": "left", "require": "capital"},
+    {"type": "text", "text": "地域: {continent}", "box": [0.575, 0.495, 0.385, 0.05],
+     "size": 0.036, "color": "#b8b8b8", "align": "left", "require": "continent"},
+    {"type": "text", "text": "人口: {population}", "box": [0.575, 0.56, 0.385, 0.05],
+     "size": 0.036, "color": "#b8b8b8", "align": "left", "require": "population"},
+    {"type": "text", "text": "面積: {area_km2} km²", "box": [0.575, 0.625, 0.385, 0.05],
+     "size": 0.036, "color": "#b8b8b8", "align": "left", "require": "area_km2"},
+    {"type": "text", "text": "成立: {established_year}年", "box": [0.575, 0.69, 0.385, 0.05],
+     "size": 0.036, "color": "#b8b8b8", "align": "left", "require": "established_year"},
+
+    {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.1],
+     "size": 0.065, "color": "white", "bold": true, "ruby": true},
+    {"type": "subtitle", "source": "original", "box": [0.02, 0.895, 0.96, 0.05],
+     "size": 0.042, "color": "#b8b8b8"}
+  ],
+  "fallback": [
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08],
+     "size": 0.05, "color": "#aaa"}
+  ]
+}

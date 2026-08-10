@@ -79,6 +79,11 @@ uv run soramimic-video video --project work/song --layout caption
 uv run soramimic-video serve            # http://127.0.0.1:8300/
 ```
 
+手元だけで使う権利曲などは、`src/soramimic_video/static/sample/samples.local.json` に
+サンプル情報を置くと、公開用の `samples.json` へ混ぜずに一覧へ追加できる。このファイルと
+権利曲のMIDI・歌詞はgitignore対象。既存の `SORAMIMIC_SAMPLES_DIR` を使えば、別ディレクトリの
+`samples.json` と `<id>.mid` / `<id>_lyrics.txt` に差し替えることもできる。
+
 曲と単語リストを選び、その場に出るサムネ枠をタップするだけで生成が始まる。
 カードの右上には **🎲(曲と単語リストをランダムに選ぶ)** と **⚙(替え歌を編集)**。
 単語リストの絞り込みと変換のしかたの調整は、⚙ で開く同梱エディタの⚙モーダル
@@ -163,7 +168,7 @@ id,original,surface,pronunciation,team
 `SORAMIMIC_MAX_WORDLIST_ZIP_BYTES` / `SORAMIMIC_MAX_WORDLIST_IMAGE_BYTES` /
 `SORAMIMIC_MAX_WORDLIST_IMAGES` で変えられる。画像もCSVと同じくそのジョブの
 ディレクトリ(`<ジョブ>/wordlist/images/`)にだけ置かれる。CSV自体のサイズ上限は
-2MB / 10,000行(`SORAMIMIC_MAX_WORDLIST_BYTES` / `SORAMIMIC_MAX_WORDLIST_ROWS`)。
+10MB / 10,000行(`SORAMIMIC_MAX_WORDLIST_BYTES` / `SORAMIMIC_MAX_WORDLIST_ROWS`)。
 
 `POST /api/editor-session` も自作リストを受け取れる。正規化済みCSVを
 `<ジョブディレクトリ>/editor-sessions/<sid>/wordlist.csv`(`sid` は中身の指紋)に
@@ -276,6 +281,14 @@ uv run soramimic-video serve            # dist があれば自動で /editor/ �
 Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の手順を参照。
 
 ## 開発
+
+### ブランチ運用
+
+- `main`: 公開中の安定版。通常の開発PRは直接入れない。
+- `dev`: 開発中の変更を集約する常設ブランチ。feature/fix ブランチのPRは `dev` 宛てにする。
+- CIが成功した `dev` 宛てPRは自動マージされる。自動マージしない場合は `no-automerge` ラベルを付ける。
+- `dev` の合成状態を再テストし、毎週月曜日または手動の `release` workflow で `main` へ反映する。
+- 緊急修正だけは `emergency` ラベル付きで `main` 宛てとし、確認後に手動マージする。
 
 ```sh
 uv run pytest        # テスト(楽曲データは使わず合成フィクスチャで実行)

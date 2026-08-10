@@ -1,5 +1,6 @@
 # 同梱サンプルはPD曲だけをコミット対象にする。権利のある曲(確認用の一時
 # サンプル等)のMIDI・歌詞は、ここに名前を足さない限り公開リポジトリに乗らない。
+samples.local.json
 *.mid
 *_lyrics.txt
 !akatombo*

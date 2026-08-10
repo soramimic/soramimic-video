@@ -27,6 +27,7 @@ fallback・idle・サムネで共通で、レイアウトの "app_credit": false
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -72,8 +73,8 @@ logger = logging.getLogger(__name__)
 
 VIDEO_DIR = "video"
 HOLD_MAX_SEC = 3.0  # 次の単語が来ないとき画像を表示し続ける最大時間
-# 前奏(t=0〜歌い出し)にサムネを出す。前奏が短い・無い曲でも冒頭これだけは出す
-THUMBNAIL_MIN_SEC = 3.0
+# 読めない短さでタイトルカードが点滅しないための最低表示時間。
+THUMBNAIL_MIN_SEC = 1.0
 SUB_PAD_SEC = 0.15  # 字幕を歌唱区間より少し早出し/遅消しする
 # 「間奏(X秒)」を出す最短の間奏。これ未満は出しても一瞬で消えて目が滑るので出さない。
 # 単語フレームは既定で最大 HOLD_MAX_SEC(3秒)残るため、間奏らしく見えるのはその後さらに
@@ -98,9 +99,14 @@ IMAGE_FETCH_WORKERS = 2
 # 最速サンプル(初音ミクの消失)には38.5msの音符がある。15fpsの66.7ms刻みでは
 # 1モーラ分の表示が落ちうるため、時間解像度を保てる従来どおりの30fpsを既定にする。
 DEFAULT_VIDEO_FPS = 30
+# カードは発声と同時よりわずかに先に見せる方が、知覚上の遅れを感じにくい。
+# 30fpsでは3フレーム。音声・字幕の時刻は動かさない。
+DEFAULT_IMAGE_LEAD_SEC = 0.1
 RENDERED_FRAME_CACHE_DIR = "rendered-frames"
 RENDERED_FRAME_CACHE_TTL_SEC = 30 * 24 * 3600
 RENDERED_FRAME_CACHE_MAX = 4000
+IMAGE_CACHE_METADATA_DIR = ".metadata"
+IMAGE_CACHE_REVALIDATE_SEC = 24 * 3600
 
 
 def _run(cmd: list[str], what: str) -> None:
@@ -291,6 +297,50 @@ def _cached_raw(url: str, cache_dir: Path) -> Path | None:
     return None
 
 
+def _image_metadata_path(url: str, cache_dir: Path) -> Path:
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    return cache_dir / IMAGE_CACHE_METADATA_DIR / f"{name}.json"
+
+
+def _read_image_metadata(url: str, cache_dir: Path) -> dict:
+    path = _image_metadata_path(url, cache_dir)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_image_metadata(url: str, cache_dir: Path, metadata: dict) -> None:
+    path = _image_metadata_path(url, cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(
+        path,
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode(),
+    )
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _store_image_revision(
+    url: str, cache_dir: Path, extension: str, data: bytes
+) -> Path | None:
+    """新しい画像内容を保存し、同じURLの旧拡張子ファイルだけを取り除く。"""
+    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    result = _store_image(cache_dir / f"{name}.{extension}", data)
+    # SVG変換失敗時は _store_image が .svg を保存してNoneを返す。その新しいSVGを
+    # revision本体として残し、同じURLの古いPNGを誤って選ばない。
+    stored_svg = cache_dir / f"{name}.svg"
+    kept = result or (stored_svg if stored_svg.exists() else _cached_raw(url, cache_dir))
+    for old in cache_dir.glob(f"{name}.*"):
+        if old != kept:
+            old.unlink(missing_ok=True)
+    image_is_visible.cache_clear()
+    return result
+
+
 def cached_image(url: str, cache_dir: Path) -> Path | None:
     """すでにキャッシュにある画像のパス(無ければ None)。ダウンロードは一切しない。
 
@@ -302,13 +352,18 @@ def cached_image(url: str, cache_dir: Path) -> Path | None:
     return _rasterized(raw) if raw is not None else None
 
 
-def download_image(url: str, cache_dir: Path) -> Path | None:
+def download_image(
+    url: str, cache_dir: Path, *, revalidate: bool = False
+) -> Path | None:
+    """画像を取得し、同じURLは一定期間ごとにHTTP validatorsで更新確認する。
+
+    キャッシュ済み画像は24時間そのまま利用する。期限後または revalidate=True では
+    ETag / Last-Modifiedを使った条件付きGETを行い、304なら画像ファイルを書き換えない。
+    validatorが無い配信元でも内容hashが同じなら書き換えないため、行や説明だけが
+    変わった単語リストで画像キャッシュを削除する必要はない。
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
-    # 変換に失敗するSVGでも「キャッシュにはある」ので落とし直さない(_rasterizedがNone)
     raw = _cached_raw(url, cache_dir)
-    if raw is not None:
-        return _rasterized(raw)
     # ローカルパス / file:// はコピーで取り込む(生成・ローカル単語リストの画像用)
     local = url[7:] if url.startswith("file://") else url
     if "://" not in local:
@@ -316,20 +371,85 @@ def download_image(url: str, cache_dir: Path) -> Path | None:
         if not src.exists():
             logger.warning("画像が見つかりません: %s", url)
             return None
+        if raw is not None:
+            try:
+                if src.stat().st_mtime_ns <= raw.stat().st_mtime_ns:
+                    return _rasterized(raw)
+            except OSError:
+                pass
         ext = src.suffix.lstrip(".").lower() or "img"
-        return _store_image(cache_dir / f"{name}.{ext}", src.read_bytes())
+        return _store_image_revision(url, cache_dir, ext, src.read_bytes())
+
+    metadata = _read_image_metadata(url, cache_dir)
+    checked_at = metadata.get("checked_at")
+    cached_digest = metadata.get("cached_sha256")
+    cache_consistent = False
+    if raw is not None and isinstance(cached_digest, str) and cached_digest:
+        try:
+            cache_consistent = _file_sha256(raw) == cached_digest
+        except OSError:
+            pass
+    if (
+        raw is not None
+        and cache_consistent
+        and not revalidate
+        and isinstance(checked_at, (int, float))
+    ):
+        if time.time() - checked_at < IMAGE_CACHE_REVALIDATE_SEC:
+            return _rasterized(raw)
+
     fetch_url = url
     if "Special:FilePath" in url and "?" not in url:
         fetch_url = url + "?width=1200"  # フル解像度は不要なのでサムネイルをもらう
+    headers = {"User-Agent": USER_AGENT}
+    # 内容hashがメタデータと一致しない場合は、並行更新でvalidatorと画像が
+    # 入れ違った可能性がある。条件付きGETの304を信用できないので無条件取得する。
+    if raw is not None and cache_consistent:
+        if metadata.get("etag"):
+            headers["If-None-Match"] = str(metadata["etag"])
+        if metadata.get("last_modified"):
+            headers["If-Modified-Since"] = str(metadata["last_modified"])
     try:
-        resp = http_get_with_retry(fetch_url, headers={"User-Agent": USER_AGENT}, timeout=30)
+        resp = http_get_with_retry(fetch_url, headers=headers, timeout=30)
     except requests.RequestException as e:
         logger.warning("画像の取得に失敗: %s (%s)", url, e)
-        return None
+        # 一時的な通信障害で既存動画から画像を消さない。失敗は記録せず次回再試行する。
+        return _rasterized(raw) if raw is not None else None
+
+    now = time.time()
+    if resp.status_code == 304 and raw is not None:
+        metadata["checked_at"] = now
+        _write_image_metadata(url, cache_dir, metadata)
+        return _rasterized(raw)
+
+    digest = hashlib.sha256(resp.content).hexdigest()
+    new_metadata = {
+        "url": url,
+        "checked_at": now,
+        "etag": resp.headers.get("ETag", ""),
+        "last_modified": resp.headers.get("Last-Modified", ""),
+        "content_sha256": digest,
+    }
+    if (
+        raw is not None
+        and cache_consistent
+        and metadata.get("content_sha256") == digest
+    ):
+        new_metadata["cached_sha256"] = _file_sha256(raw)
+        _write_image_metadata(url, cache_dir, new_metadata)
+        return _rasterized(raw)
+
     ext = url.rsplit(".", 1)[-1].lower()
     if ext not in ("jpg", "jpeg", "png", "gif", "webp", "svg"):
         ext = "img"
-    return _store_image(cache_dir / f"{name}.{ext}", resp.content)
+    result = _store_image_revision(url, cache_dir, ext, resp.content)
+    stored = _cached_raw(url, cache_dir)
+    if stored is None:
+        logger.warning("画像キャッシュへの保存に失敗: %s", url)
+        return _rasterized(raw) if raw is not None else None
+    new_metadata["cached_sha256"] = _file_sha256(stored)
+    _write_image_metadata(url, cache_dir, new_metadata)
+    return result
 
 
 def _store_image(path: Path, data: bytes) -> Path | None:
@@ -784,15 +904,29 @@ def build_section_cues(
     return out
 
 
-def app_credit_text(synth_credit: str = "") -> str:
+def app_credit_text(
+    synth_credit: str = "",
+    original_credit: str = "",
+    credit_notice: str = "",
+) -> str:
     """フレームに焼き込むクレジット文言。
 
     既定は「lyrics & video by Soramimic」。歌声合成側にもクレジット表記が要るとき
-    (VOICEVOXのキャラ名など)は「lyrics & video by Soramimic / VOICEVOX:四国めたん」の
-    ように後ろに足す。表記の並びはWeb UIの「公開時のクレジット表記」と揃える。
+    (VOICEVOXのキャラ名など)や、元曲・権利者の表記があるときは後ろに足す。
+    元曲情報はエンドロールにも詳しく出すが、必要な表記が動画から切り離されないよう
+    全フレームの署名にも焼き込む。
     """
     synth = (synth_credit or "").strip()
-    return f"{APP_CREDIT} / {synth}" if synth else APP_CREDIT
+    original = (original_credit or "").strip()
+    notice = (credit_notice or "").strip()
+    parts = [APP_CREDIT]
+    if synth:
+        parts.append(synth)
+    if original:
+        parts.append(f"Original: {original}")
+    if notice:
+        parts.append(notice)
+    return " / ".join(parts)
 
 
 def word_is_shown(layout: Layout, data: dict, use_fallback: bool) -> bool:
@@ -965,13 +1099,17 @@ def build_image_cues(
     image_cache: Path | None = None,
     layout: Layout | None = None,
     app_credit: str = "",
+    image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> tuple[list[ImageCue], list[dict]]:
     """替え歌単語の歌唱区間に対応するフレームキュー列と、使用画像のクレジット情報。
 
     フレームは単語リスト行の画像+列情報をレイアウト定義で合成したもの。
     画像がなくてもレイアウトのtext要素が埋まる単語はテキストのみで表示する。
     app_credit は全フレームの隅に焼き込む署名(既定は「lyrics & video by Soramimic」)。
+    image_lead_sec はカードだけを歌唱より先に出す秒数。字幕・音声は変更しない。
     """
+    if image_lead_sec < 0:
+        raise ValueError("image_lead_sec は0以上で指定してください")
     if project.parody is None:
         return [], []
     if layout is None:
@@ -990,7 +1128,10 @@ def build_image_cues(
     # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
     _prefetch_image_assets(frames, cache)
     for i, wf in enumerate(frames):
-        start, data, use_fallback = wf.start, wf.data, wf.use_fallback
+        # 画像・見出し・説明を含むカード全体だけを少し先行表示する。
+        # 音声と字幕はprojectの元時刻を使い続ける。
+        start = max(0.0, wf.start - image_lead_sec)
+        data, use_fallback = wf.data, wf.use_fallback
         # 全フレーム共通の署名(レイアウトが左下に焼き込む)
         data["app_credit"] = app_credit or APP_CREDIT
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
@@ -1015,8 +1156,12 @@ def build_image_cues(
         frame = render_frame(layout, raw, data, width, height, norm, use_fallback)
         if frame is None:
             continue
-        # 次の単語まで表示を持続(字幕の消灯も build_ass が同じ値に合わせる)
-        show_end = frame_show_end(frames, i, layout.hold_next)
+        # 次の単語までの持続時間もカード全体と同じ量だけ前へ動かす。
+        # 字幕はprojectの元時刻を使うため、この先行量の影響を受けない。
+        show_end = max(
+            start,
+            frame_show_end(frames, i, layout.hold_next) - image_lead_sec,
+        )
         if cues and cues[-1].end > start:
             cues[-1].end = start
         cues.append(ImageCue(start=start, end=show_end, frame=frame))
@@ -1254,6 +1399,16 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
     if not surface or not kana:
         return None
     runs = _kana_runs(surface)
+    non_kana_runs = [run for run in runs if not run[2]]
+    has_kana_anchor = any(
+        _strip_silent(surface[start:end])
+        for start, end, is_kana in runs
+        if is_kana
+    )
+    if len(non_kana_runs) > 1 and not has_kana_anchor:
+        # 「柳瀬 泰平」のように漢字列が空白だけで分かれ、読み側に境界情報が
+        # ない名前は各列へ正しく配分できない。誤った部分ルビより全体ルビに戻す。
+        return None
     surface_kata = _to_katakana(surface)
     kana_kata = _to_katakana(kana)
 
@@ -1284,6 +1439,25 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
     return segments
 
 
+LIBASS_FONT_SIZE_COEFF = 0.72
+ASS_MEASURE_SCALE = 64
+
+
+def _ass_text_width(font_path: Path | None, ass_fontsize: int, text: str) -> float:
+    """libassと同じ字送り幅をPillowで小数精度まで測る。
+
+    libassはVSFilter互換の固定係数0.72をASS Fontsizeへ掛けてFreeTypeへ渡す。
+    Pillowは整数pxしか指定できないため、64倍で測って縮小し、丸め誤差が行端へ
+    累積しないようにする。
+    """
+    font = _font(font_path, max(1, ass_fontsize * ASS_MEASURE_SCALE))
+    return (
+        font.getlength(text)
+        * LIBASS_FONT_SIZE_COEFF
+        / ASS_MEASURE_SCALE
+    )
+
+
 def _ruby_events(
     el: SubtitleElement,
     name: str,
@@ -1296,23 +1470,26 @@ def _ruby_events(
     an: int,
     height: int,
     font_path: Path | None,
+    max_width: float,
 ) -> list[str]:
-    """替え歌字幕の漢字等の部分の真上にルビ(ふりがな)を置くASSイベント列。
+    """替え歌本文を単語ごとに置き、その真上にルビを置くASSイベント列。
 
-    本文行と同じフォント・同じピクセルサイズでPillowで文字幅を測り、ルビを振る
-    範囲のx中心を求める。本文と同一レイヤー・同一区間で、範囲ごとに小さい
-    フォントの別イベントを本文の上端すぐ上に \\pos で配置する。
+    本文とルビを同じx中心の独立したASSイベントとして描くため、行全体の幅に
+    小さな測定誤差があっても、ルビは対象語からずれない。部分ルビだけは単語内の
+    相対幅を使う。本文と同一レイヤー・同一区間で、範囲ごとに小さいフォントの
+    別イベントを本文の上端すぐ上に \\pos で配置する。
     ルビは表記の非カナ部分にだけ振る(_ruby_segments)。読みを割り付けられない
     単語だけ、従来どおり単語全体に読み全体を置く。
     """
-    body_px = int(el.size * height)
+    base_body_px = int(el.size * height)
+    body_px = base_body_px
     if body_px <= 0 or not words:
         return []
-    # libassと同じフォントサイズで字送り幅を測る。メトリクスのセル高で縮めると
-    # 行中心から離れたルビほど中心側へ寄ってしまう。
-    font = _font(font_path, body_px)
     full = WORD_SEP.join(w.surface for w in words)
-    total_w = font.getlength(full)
+    while body_px > 1 and _ass_text_width(font_path, body_px, full) > max_width:
+        body_px -= 1
+    full = WORD_SEP.join(w.surface for w in words)
+    total_w = _ass_text_width(font_path, body_px, full)
     # 本文行の左端x。build_ass本体の px(align基準点)と揃える
     if el.align == "left":
         x0 = px
@@ -1328,14 +1505,30 @@ def _ruby_events(
     else:
         top = py
     ruby_px = max(1, round(el.ruby_size * body_px))
+    body_an = {1: 2, 2: 2, 3: 2, 4: 5, 5: 5, 6: 5, 7: 8, 8: 8, 9: 8}[an]
     events: list[str] = []
     prefix = ""
     for i, w in enumerate(words):
         if i:
             prefix += WORD_SEP
-        start_x = font.getlength(prefix)
+        start_x = _ass_text_width(font_path, body_px, prefix)
         prefix += w.surface
-        end_x = font.getlength(prefix)
+        end_x = _ass_text_width(font_path, body_px, prefix)
+        size_override = f"\\fs{body_px}" if body_px != base_body_px else ""
+        # 混在語もランごとに本文を置く。「ペルシャ湾」の「湾」など部分ルビの
+        # 対象本文とルビへ、推定ではなく同じ中心座標を指定できる。
+        for run_start, run_end, _is_kana in _kana_runs(w.surface):
+            run_text = w.surface[run_start:run_end]
+            if not _strip_silent(run_text):
+                continue
+            sx = start_x + _ass_text_width(font_path, body_px, w.surface[:run_start])
+            ex = start_x + _ass_text_width(font_path, body_px, w.surface[:run_end])
+            run_cx = x0 + (sx + ex) / 2
+            events.append(
+                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
+                f"{{\\an{body_an}\\pos({run_cx:.2f},{py:.0f}){size_override}}}"
+                f"{_ass_escape(run_text)}"
+            )
         if not _needs_ruby(w.surface, w.kana):
             continue
         # 表記のカナ部分(そのまま読める部分)にはルビを振らず、漢字等のランごとに
@@ -1349,16 +1542,16 @@ def _ruby_events(
                 if _to_katakana(w.surface[s:e]) == reading:
                     continue  # 表記どおりの読みならルビ不要
                 spans.append((
-                    start_x + font.getlength(w.surface[:s]),
-                    start_x + font.getlength(w.surface[:e]),
+                    start_x + _ass_text_width(font_path, body_px, w.surface[:s]),
+                    start_x + _ass_text_width(font_path, body_px, w.surface[:e]),
                     reading,
                 ))
         for sx, ex, reading in spans:
             cx = x0 + (sx + ex) / 2  # ルビを振る範囲の中心x
             # \an2: ルビの下端中央をその範囲の中心・本文上端に合わせる(本文のすぐ上に載る)
             events.append(
-                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
-                f"{{\\an2\\pos({cx:.0f},{top:.0f})\\fs{ruby_px}}}"
+                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},Ruby,0,0,0,,"
+                f"{{\\an2\\pos({cx:.2f},{top:.0f})\\fs{ruby_px}}}"
                 f"{_ass_escape(_to_hiragana(reading))}"
             )
     return events
@@ -1460,13 +1653,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for seg in segments:
             if not seg.text:
                 continue
-            events.append(
-                f"Dialogue: {layer},{_ass_time(seg.start)},{_ass_time(seg.end)},{name},,0,0,0,,"
-                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(seg.text)}"
-            )
             # ルビ(ふりがな): 替え歌字幕のみ。本文と同一レイヤー・同一区間で、
-            # 各単語の真上に小さいフォントの別イベントを追加する(本文は変えない)。
-            # 行マージ(parody=line)時はグループ内の全単語を連結して並べる
+            # 本文も単語ごとの別イベントにしてルビと同じ中心へ置く。
+            # 行マージ(parody=line)時はグループ内の全単語を連結して並べる。
             if el.source == "parody" and el.ruby:
                 words = []
                 for k in seg.indices:
@@ -1477,9 +1666,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     events.extend(
                         _ruby_events(
                             el, name, layer, seg.start, seg.end, words, px, py, an,
-                            height, font_path,
+                            height, font_path, w * width,
                         )
                     )
+                    continue
+            events.append(
+                f"Dialogue: {layer},{_ass_time(seg.start)},{_ass_time(seg.end)},{name},,0,0,0,,"
+                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(seg.text)}"
+            )
     return header + "\n".join(events) + "\n"
 
 
@@ -1528,12 +1722,13 @@ def make_video(
     fps: int = DEFAULT_VIDEO_FPS,
     original_credit: str = "",
     credit_notice: str = "",
+    image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
     layout_obj = load_layout(layout)
     # 動画に焼き込むクレジット(サムネ・単語フレーム・idleで共通)
-    credit_text = app_credit_text(synth_credit)
+    credit_text = app_credit_text(synth_credit, original_credit, credit_notice)
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 
@@ -1562,7 +1757,8 @@ def make_video(
 
     prepare_started = time.monotonic()
     cues, credits = build_image_cues(
-        project, work, width, height, image_cache, layout_obj, credit_text
+        project, work, width, height, image_cache, layout_obj, credit_text,
+        image_lead_sec=image_lead_sec,
     )
     if cues:
         logger.info("画像キュー: %d件", len(cues))

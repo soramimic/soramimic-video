@@ -8,6 +8,8 @@ from PIL import Image
 from soramimic_video import layout as layout_mod
 from soramimic_video.layout import (
     APP_CREDIT,
+    ImageElement,
+    TextElement,
     builtin_layout_names,
     load_layout,
     load_wordlist_layouts,
@@ -30,12 +32,74 @@ def test_wordlist_layouts_are_builtin():
     """同梱の対応表は組み込みレイアウト名だけを指していること。"""
     mapping = load_wordlist_layouts()
     assert mapping["scientist"] == "scientist_card"
+    assert mapping["school"] == "school_card"
+    assert mapping["municipality"] == "municipality_card"
+    assert {mapping[name] for name in ("football", "baseball")} == {"player_card"}
+    assert mapping["nations"] == "nation_card"
+    assert mapping["stations"] == "station_info_card"
     assert set(mapping.values()) <= set(builtin_layout_names())
+
+
+def test_school_card_places_image_left_and_school_information_right():
+    layout = load_layout("school_card")
+    image = next(el for el in layout.elements if isinstance(el, ImageElement))
+    texts = [el for el in layout.elements if isinstance(el, TextElement)]
+
+    assert image.box[0] < 0.5
+    assert all(el.box[0] > 0.5 for el in texts)
+    assert layout.render_texts({
+        "original": "青空市立山川小学校",
+        "founder": "公立",
+        "school_type": "小学校",
+        "prefecture": "青空県",
+        "city": "青空市",
+        "status": "current",
+        "description": "地域とともに歩む学校。",
+    }) == [
+        "青空市立山川小学校",
+        "公立　小学校",
+        "青空県　青空市",
+        "current",
+        "地域とともに歩む学校。",
+    ]
+    assert layout.render_texts({"original": "山川小学校"}) == [
+        "山川小学校", "", "", "", "",
+    ]
+
+
+def test_municipality_card_places_image_left_and_municipality_information_right():
+    layout = load_layout("municipality_card")
+    image = next(el for el in layout.elements if isinstance(el, ImageElement))
+    texts = [el for el in layout.elements if isinstance(el, TextElement)]
+
+    assert image.box[0] < 0.5
+    assert all(el.box[0] > 0.5 for el in texts)
+    assert layout.render_texts({
+        "original": "中央区",
+        "prefecture": "青空県",
+        "parent": "青空市",
+        "population": "123456",
+        "status": "current",
+        "description": "青空市の中心部にある行政区。",
+    }) == [
+        "中央区",
+        "青空県　青空市",
+        "人口: 123456",
+        "current",
+        "青空市の中心部にある行政区。",
+    ]
+    assert layout.render_texts({
+        "original": "青空町", "prefecture": "青空県", "status": "former",
+    }) == ["青空町", "青空県", "", "former", ""]
 
 
 def test_player_card_uses_team_position_and_description_independently():
     layout = load_layout("player_card")
     common = {"original": "選手名", "description": "選手の説明"}
+
+    team_line = next(el for el in layout.elements
+                     if getattr(el, "template", "").startswith("{team}"))
+    assert team_line.color == "#9ad8ff"
 
     assert "所属チーム　MF" in layout.render_texts({
         **common, "team": "所属チーム", "position": "MF",
@@ -57,6 +121,60 @@ def test_youtuber_card_uses_org_debut_and_description():
     assert "所属グループ" in texts
     assert "2020年デビュー" in texts
     assert "ゲーム実況とライブ配信で活動するYouTuber。" in texts
+
+
+def test_info_card_uses_description_with_player_and_station_details():
+    player_layout = load_layout("info_card")
+    station_layout = load_layout("station_info_card")
+    player = {
+        "original": "選手名",
+        "description": "選手の説明",
+        "team": "所属チーム",
+        "type": "選手",
+    }
+    station = {
+        "original": "駅名",
+        "description": "駅の説明",
+        "prefecture": "東京都",
+        "city": "千代田区",
+        "lines": "路線名",
+        "operator": "鉄道会社",
+        "opened_year": "1900",
+        "station_code": "XX01",
+    }
+    assert "選手の説明" in player_layout.render_texts(player)
+    station_texts = station_layout.render_texts(station)
+    assert "駅の説明" in station_texts
+    assert "東京都  路線名" in station_texts
+    assert not any("運営" in text or "1900" in text or "XX01" in text for text in station_texts)
+
+
+def test_animal_card_uses_taxonomy_and_description():
+    layout = load_layout("animal_card")
+    animal = {
+        "original": "シャチ",
+        "order": "偶蹄目",
+        "family": "マイルカ科",
+        "description": "世界中の海に分布し、群れで獲物を捕らえる。",
+    }
+    texts = layout.render_texts(animal)
+    assert "偶蹄目マイルカ科" in texts
+    assert animal["description"] in texts
+
+
+def test_nation_card_prioritizes_capital_region_and_description():
+    layout = load_layout("nation_card")
+    nation = {
+        "original": "国名",
+        "capital": "首都名",
+        "continent": "地域名",
+        "description": "国の説明",
+        "population": "12345",
+    }
+    texts = layout.render_texts(nation)
+    assert "地域名　首都 首都名" in texts
+    assert "国の説明" in texts
+    assert not any("12345" in text for text in texts)
 
 
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):
@@ -248,7 +366,7 @@ def test_require_hides_element_when_column_empty(tmp_path):
 
 
 def test_scientist_card_field_fallback_for_all_missing_entries():
-    """生年・国籍・業績・説明が全欠損でも field 列があれば「分野: X」を出す。
+    """生年・国籍・業績・説明が全欠損でも field 列があれば分野を出す。
 
     scientist.csv の一部エントリ(例: 西川正治, id=248)は画像もbirth_year/country/
     achievement/descriptionも全部NAで、従来は名前だけの黒背景カードになっていた。
@@ -262,15 +380,17 @@ def test_scientist_card_field_fallback_for_all_missing_entries():
         "achievement": "NA", "description": "NA",
     }
     texts = layout.render_texts(nishikawa)
-    assert "分野: 物理" in texts
+    assert "物理" in texts
     # 生年行(country由来)は出ない
     assert not any("生まれ" in t for t in texts)
 
-    # birth_yearがある人では従来の生年行が出て、field行は出ない(重複回避)
+    # birth_yearがある人では分野・生年と国を別行で出し、
+    # fieldだけのフォールバック行は出さない
     with_birth_year = {**nishikawa, "birth_year": "1902", "country": "日本"}
     texts2 = layout.render_texts(with_birth_year)
-    assert "分野: 物理" not in texts2
-    assert any("生まれ" in t for t in texts2)
+    assert texts2.count("物理") == 0
+    assert any("物理" in text and "生まれ" in text for text in texts2)
+    assert "日本" in texts2
 
 
 def test_render_frame_fallback(tmp_path):

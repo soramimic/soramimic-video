@@ -629,6 +629,7 @@ def test_job_pipeline_keeps_the_align_lines_originals(job_client, tmp_path, monk
 
     def fake_make_video(project, d, **kwargs):
         seen["originals"] = [ln.original_text for ln in project.lines]
+        seen.setdefault("image_leads", []).append(kwargs["image_lead_sec"])
         return out
 
     monkeypatch.setattr(api_mod, "_run_synthesize", lambda *a, **k: None)
@@ -638,13 +639,15 @@ def test_job_pipeline_keeps_the_align_lines_originals(job_client, tmp_path, monk
     # フォームの元歌詞(lyrics.txt)を align_lines にかけた結果がそのまま残る
     assert REAL_RUN_PIPELINE(job, {}) == out
     assert seen["originals"] == ["しずむ"]
+    assert seen["image_leads"] == [0.1]
 
     # 元歌詞をフォームから送っていないジョブは、editor.json の lyrics で埋まる
     (job.dir / "lyrics.txt").unlink()
     session["lyrics"] = "しずむ夜"
     (job.dir / "editor.json").write_text(json.dumps(session), encoding="utf-8")
-    assert REAL_RUN_PIPELINE(job, {}) == out
+    assert REAL_RUN_PIPELINE(job, {"video_image_lead_sec": 0}) == out
     assert seen["originals"] == ["しずむ夜"]
+    assert seen["image_leads"][-1] == 0
 
 
 def test_job_rejects_editor_with_unknown_session(job_client, tmp_path):
