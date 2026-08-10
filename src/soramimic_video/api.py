@@ -2380,6 +2380,10 @@ def create_app(
         解析できないMIDI(歌詞なし・XFKMなし・壊れている)はエラーではなく
         has_lyrics=false の判定結果として返す。UIが理由をそのまま出せるように。
         MIDIですらないファイルだけ400。
+
+        midi_lines には XF歌詞の行テキストをそのまま並べて返す(align_lines が
+        元歌詞との突き合わせに使うのと同じ表示テキスト)。自分のMIDIを選んだ
+        人はこれを専用モーダルの元歌詞欄の下敷きに使う。
         """
         import tempfile
 
@@ -2403,6 +2407,7 @@ def create_app(
                     "lines": 0,
                     "lyrics_lines": len(lyric_lines),
                     "unmatched_lines": 0,
+                    "midi_lines": [],
                     "detail": str(exc),
                 }
             if lyric_lines:
@@ -2414,6 +2419,8 @@ def create_app(
             "lyrics_lines": len(lyric_lines),
             # 元歌詞を渡していないときは全行が「対応なし」になるので0で返す
             "unmatched_lines": unmatched if lyric_lines else 0,
+            # 元歌詞欄の下敷き。表記が空の行は読みで代用する。
+            "midi_lines": [ln.xf_surface or ln.xf_kana for ln in project.lines],
             "detail": "",
         }
 

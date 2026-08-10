@@ -1968,6 +1968,9 @@ let midiCheckSeq = 0;       // 応答の追い越しを捨てるための世代�
 let midiCheckTimer = null;
 let midiChecking = null;    // 検証中のPromise(投入・編集の前に待つ)
 let midiRejecting = false;  // 拒否のクリアで自分自身を呼び直さないための番人
+// 最後に通った検証結果。File の同一性も持ち、別のファイルに前回の
+// midi_lines を流用しない。自分のMIDIモーダルの元歌詞欄の下敷きに使う。
+let lastMidiCheck = null;
 
 function scheduleMidiCheck() {
   if (midiRejecting) return;
@@ -1986,7 +1989,7 @@ function clearMidiNotices() {
 }
 
 // 歌詞なしMIDIはその場で取り消す。理由と「どうすれば作れるか」を1行添える。
-function rejectMidi(detail) {
+function rejectMidi(detail, notMidi = false) {
   midiRejecting = true;
   try {
     $("midi").value = "";
@@ -1996,7 +1999,9 @@ function rejectMidi(detail) {
   }
   $("midi-restore-hint").hidden = true;
   $("sample-status").textContent = "";
-  const text = "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。"
+  const text = (notMidi
+    ? "⚠ このファイルはMIDIとして読めないので使えません(取り消しました)。"
+    : "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。")
     + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
     + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
     + (detail ? `\n(${detail})` : "");
@@ -2035,20 +2040,27 @@ async function checkMidi() {
   const f = $("midi").files[0];
   if (!f) { clearMidiNotices(); return; }
   let body;
+  let notMidi = false;
   try {
     const form = new FormData();
     form.append("midi", f);
     form.append("lyrics", $("lyrics").value);
     const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
     body = await res.json();
-    if (!res.ok) throw new Error(body.detail || res.status);
+    if (!res.ok) {
+      // 拡張子だけMIDIのファイルも400ならその場で取り消す。
+      // 401・500等は内容を判定できないので従来どおり生成側へ委ねる。
+      notMidi = res.status === 400 && !!body.detail;
+      if (!notMidi) return;
+    }
   } catch {
     // 検証そのものに失敗したときは黙って通す(生成側で従来どおりのエラーになる)
     return;
   }
   if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
   clearMidiNotices();
-  if (!body.has_lyrics) { rejectMidi(body.detail); return; }
+  if (notMidi || !body.has_lyrics) { rejectMidi(body.detail, notMidi); return; }
+  lastMidiCheck = { file: f, lines: body.midi_lines || [] };
   renderLyricsMidiWarning(body);
 }
 
@@ -4233,11 +4245,31 @@ async function hostUploadSong() {
   if (!$("midi").files[0]) {
     throw new Error("そのMIDIは使えません(歌詞入りのXF形式MIDIが必要です)");
   }
+  prefillOwnMidiLyrics($("midi").files[0]);
   // サンプルの選択を外す。残すと投入前の突き合わせ(ensureSelectedSampleMidi)が
   // サンプルのMIDIを取り直して、選んだファイルを上書きしてしまう
   $("sample-select").value = "";
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   await reseedEditorSong();
+}
+
+// /api/midi-check が返したXF歌詞を、持ち込みMIDI専用モーダルの
+// 元歌詞欄の下敷きにする。空ならそのまま入れ、前の曲の歌詞等があれば
+// 勝手に消さず確認する。ここで正本 #lyrics を更新すると reseedEditorSong が
+// 同じ値をエディタに返し、開いている専用モーダルの textarea に表示される。
+function prefillOwnMidiLyrics(file) {
+  if (!lastMidiCheck || lastMidiCheck.file !== file) return;
+  const text = lastMidiCheck.lines.join("\n");
+  if (!text.trim()) return;
+  const current = $("lyrics").value;
+  if (current === text) return;
+  if (current.trim() && !confirm(
+    "元歌詞欄に現在の内容があります。\n"
+    + "MIDIに入っている歌詞で置き換えますか？\n"
+    + "「キャンセル」で現在の元歌詞を残せます。"
+  )) return;
+  $("lyrics").value = text;
+  $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 // 親のファイル選択を開き、選ばれたか(true)やめたか(false)を返す。

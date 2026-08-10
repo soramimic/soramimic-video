@@ -421,12 +421,34 @@ def test_host_song_request_moves_the_canonical_form_first():
     assert "if (!await pickMidiFile()) return;" in up
     # 自分のMIDIにしたらサンプルの選択は外す(投入前の突き合わせに上書きされる)
     assert '$("sample-select").value = "";' in up
+    # midi-check のXF歌詞を、専用モーダルへ返す前に元歌詞の下敷きにする
+    assert 'prefillOwnMidiLyrics($("midi").files[0]);' in up
+    assert up.index("prefillOwnMidiLyrics") < up.index("reseedEditorSong()")
     picker = _function_body(script, "function pickMidiFile()")
     for needle in ('input.addEventListener("change", onChange);',
                    'input.addEventListener("cancel", onCancel);',
                    'window.addEventListener("focus", onFocus);',
                    "input.click();"):
         assert needle in picker
+
+
+def test_own_midi_lyrics_prefill_preserves_existing_text_by_choice():
+    """XF歌詞は空の元歌詞へ入れ、既存値は勝手に消さない。"""
+    script = _script()
+    body = _function_body(script, "function prefillOwnMidiLyrics(file)")
+    assert "lastMidiCheck.file !== file" in body
+    assert 'lastMidiCheck.lines.join("\\n")' in body
+    assert "current.trim() && !confirm(" in body
+    assert '$("lyrics").value = text;' in body
+    assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
+
+
+def test_midi_check_rejects_a_non_midi_400_response():
+    """拡張子だけMIDIのファイルを検証失敗として握りつぶさない。"""
+    body = _function_body(_script(), "async function checkMidi()")
+    assert "notMidi = res.status === 400 && !!body.detail;" in body
+    assert "rejectMidi(body.detail, notMidi)" in body
+    assert "lastMidiCheck = { file: f, lines: body.midi_lines || [] };" in body
 
 
 def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
