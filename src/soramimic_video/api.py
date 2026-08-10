@@ -71,6 +71,7 @@ API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 # ---- 公開モード(一般公開インスタンス)向けの環境変数 ----
 # いずれも未設定なら従来どおりの挙動(制限なし・ジョブは全員から見える)。
 PUBLIC_ENV = "SORAMIMIC_PUBLIC"  # 1/true で公開モード
+SIMPLE_UI_ENV = "SORAMIMIC_SIMPLE_UI"  # 初回公開用の選択肢を絞ったUI
 QUEUE_LIMIT_ENV = "SORAMIMIC_QUEUE_LIMIT"  # 待機+実行中ジョブの上限
 DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の投入上限
 IP_DAILY_QUOTA_ENV = "SORAMIMIC_IP_DAILY_QUOTA"
@@ -100,6 +101,8 @@ DEFAULT_GET_CACHE_HIT_RATE_LIMIT = 120
 DEFAULT_GET_CACHE_HIT_IP_RATE_LIMIT = 600
 DEFAULT_GET_RATE_WINDOW = 60.0
 GET_CONCURRENCY = 4
+SIMPLE_MAX_REQUEST_BYTES_ENV = "SORAMIMIC_SIMPLE_MAX_REQUEST_BYTES"
+DEFAULT_SIMPLE_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_LIMIT = 5
 DEFAULT_DAILY_QUOTA = 5
 DEFAULT_IP_DAILY_QUOTA = 30
@@ -109,6 +112,7 @@ SESSION_MAX_AGE = 30 * 24 * 3600  # 30日
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 CLEANUP_INTERVAL_SECONDS = 3600  # ジョブ自動削除の巡回間隔
 STATIC_DIR = Path(__file__).parent / "static"
+LAUNCH_CATALOG_PATH = STATIC_DIR / "launch_catalog.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # soramimic editor(submodule)のビルド出力。scripts/build-editor.sh で生成する。
 # /editor/ にマウントして同一オリジン配信し、WebUIからiframeで埋め込む(A-2)。
@@ -142,6 +146,118 @@ def resolve_soundfont(soundfont: str | None) -> str | None:
 def is_public_mode() -> bool:
     """公開モード(SORAMIMIC_PUBLIC)かどうか。未設定なら従来どおりの非公開モード。"""
     return os.environ.get(PUBLIC_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def is_simple_ui() -> bool:
+    """初回公開用の簡易UIかどうか。
+
+    公開モードと分けてあるのは、手元・既存の公開サーバーで
+    従来の全機能UIをそのまま使えるようにするため。
+    """
+    return os.environ.get(SIMPLE_UI_ENV, "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+    )
+
+
+def load_launch_catalog() -> dict[str, Any]:
+    """初回公開で見せる曲・単語リストと固定歌声を読む。"""
+    try:
+        data = json.loads(LAUNCH_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"初回公開カタログが読めません: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("初回公開カタログはJSON objectで指定してください")
+    return data
+
+
+def launch_sample_ids() -> set[str]:
+    """Simple UIで公開するサンプルID。ファイルパスとして安全なIDだけを返す。"""
+    return {
+        str(value)
+        for value in load_launch_catalog().get("samples", [])
+        if re.fullmatch(r"[A-Za-z0-9_-]+", str(value))
+    }
+
+
+def launch_wordlist_names() -> set[str]:
+    """Simple UIの全APIで共有する公開単語リストallowlist。"""
+    return {
+        str(value)
+        for value in load_launch_catalog().get("wordlists", [])
+        if re.fullmatch(r"[A-Za-z0-9_-]+", str(value))
+    }
+
+
+def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
+    """Simple UIではカタログ名だけを許可し、filesystem pathを解決前に拒否する。"""
+    name = wordlist.strip()
+    if is_simple_ui() and name not in launch_wordlist_names():
+        raise HTTPException(
+            status_code=status_code,
+            detail="この単語リストは現在利用できません",
+        )
+    return name
+
+
+def require_launch_midi(filename: str | None, data: bytes) -> str | None:
+    """Simple UIのMIDIをカタログ同梱ファイルの名前とSHA-256で照合する。"""
+    if not is_simple_ui():
+        return None
+    supplied_name = filename or ""
+    supplied_digest = hashlib.sha256(data).digest()
+    for sample_id in sorted(launch_sample_ids()):
+        expected_name = f"{sample_id}.mid"
+        if supplied_name != expected_name:
+            continue
+        path = samples_dir() / expected_name
+        try:
+            expected_digest = hashlib.sha256(path.read_bytes()).digest()
+        except OSError:
+            break
+        if secrets.compare_digest(supplied_digest, expected_digest):
+            return sample_id
+    raise HTTPException(
+        status_code=422,
+        detail="このMIDIファイルは現在利用できません",
+    )
+
+
+async def read_midi_upload(midi: UploadFile) -> bytes:
+    """Simple UIでは最大の同梱MIDIを超えた時点で読み止め、巨大入力を保持しない。"""
+    if not is_simple_ui():
+        return await midi.read()
+    sizes: list[int] = []
+    for sample_id in launch_sample_ids():
+        try:
+            sizes.append((samples_dir() / f"{sample_id}.mid").stat().st_size)
+        except OSError:
+            continue
+    return await midi.read(max(sizes, default=0) + 1)
+
+
+def require_launch_lyrics(sample_id: str | None, lyrics: str) -> str:
+    """Simple UIでは照合済みMIDIに付属する元歌詞を常に使う。"""
+    if not is_simple_ui():
+        return lyrics
+    if not sample_id:
+        raise HTTPException(status_code=422, detail="選択した曲の歌詞を確認できません")
+    try:
+        return (samples_dir() / f"{sample_id}_lyrics.txt").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail="選択した曲の歌詞が見つかりません") from exc
+
+
+def visible_samples() -> list[dict[str, Any]]:
+    """UIとサンプル取得APIに出す曲。簡易UIでは順序も固定する。"""
+    samples = load_samples()
+    if not is_simple_ui():
+        return samples
+    by_id = {str(row.get("id")): row for row in samples if row.get("id")}
+    wanted = load_launch_catalog().get("samples", [])
+    return [by_id[str(sample_id)] for sample_id in wanted if str(sample_id) in by_id]
 
 
 def _env_float(name: str, default: float) -> float:
@@ -1339,6 +1455,31 @@ def create_app(
 
         非公開モードでは何もしない(cookieも発行しない)ので従来と同じ挙動。
         """
+        if is_simple_ui() and request.url.path in {
+            "/api/editor-preview",
+            "/api/editor-session",
+            "/api/wordlist-check",
+        }:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if is_simple_ui() and request.url.path.startswith("/editor/"):
+            allowed_editor_path = request.url.path == "/editor/conf/setting.json" or bool(
+                re.fullmatch(r"/editor/wordlists/[A-Za-z0-9_-]+\.csv", request.url.path)
+            )
+            if not allowed_editor_path:
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if is_simple_ui() and request.method == "POST" and request.url.path in {
+            "/api/jobs",
+            "/api/midi-check",
+        }:
+            maximum = int(
+                _env_float(SIMPLE_MAX_REQUEST_BYTES_ENV, DEFAULT_SIMPLE_MAX_REQUEST_BYTES)
+            )
+            try:
+                length = int(request.headers.get("content-length", ""))
+            except ValueError:
+                length = -1
+            if maximum > 0 and (length < 0 or length > maximum):
+                return JSONResponse({"detail": "入力が大きすぎます"}, status_code=413)
         if not is_public_mode() or request.url.path == "/healthz":
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
@@ -1574,11 +1715,11 @@ def create_app(
     # 同梱サンプル曲(いずれも詞・曲パブリックドメイン、examples/gen_samples.py で生成)。
     # SORAMIMIC_SAMPLES_DIR を設定するとそのディレクトリのサンプルに差し替わる。
     def _sample_ids() -> set[str]:
-        return {str(s["id"]) for s in load_samples() if s.get("id")}
+        return {str(s["id"]) for s in visible_samples() if s.get("id")}
 
     @app.get("/api/samples")
     def list_samples() -> list[dict[str, Any]]:
-        return load_samples()
+        return visible_samples()
 
     # サンプル曲は作り直されることがある(同じURLで中身が変わる)。ブラウザが
     # 古い版を使い回して「更新前の曲」で生成してしまわないよう、毎回問い合わせさせる。
@@ -1632,7 +1773,9 @@ def create_app(
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_layouts.json)
             "wordlist_layouts": load_wordlist_layouts(),
             "editor": editor_available,
-            "wordlist_config": editor_available,
+            # 簡易UIでeditorボタンを隠しても、同梱のsetting.jsonから
+            # 単語リスト選択肢は読むために別の能力値として返す。
+            "wordlist_config": editor_available or is_simple_ui(),
             # 自作の単語リスト(CSV/zipアップロード)の受け入れ上限
             "max_wordlist_bytes": wordlist_csv_mod.max_bytes(),
             "max_wordlist_rows": wordlist_csv_mod.max_rows(),
@@ -1640,6 +1783,14 @@ def create_app(
             "max_wordlist_image_bytes": wordlist_zip_mod.max_image_bytes(),
             "max_wordlist_images": wordlist_zip_mod.max_images(),
         }
+        if is_simple_ui():
+            launch = load_launch_catalog()
+            conf["simple_ui"] = True
+            conf["launch_wordlists"] = launch.get("wordlists", [])
+            conf["fixed_voicevox_style"] = int(launch.get("voicevox_style", 3003))
+            # 初回版は「曲×単語リスト」の核だけを見せる。エディタと
+            # 自作リストは後続アップデートで導線を開ける。
+            conf["editor"] = False
         # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
         if is_public_mode():
             conf["public"] = True
@@ -1684,6 +1835,7 @@ def create_app(
         """レイアウト編集のプレビューに使う代表行(画像のある最初の行、なければ先頭)。"""
         from .convert import resolve_wordlist
 
+        wordlist = require_launch_wordlist(wordlist)
         try:
             with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
                 rows = csv.DictReader(f)
@@ -1705,6 +1857,7 @@ def create_app(
         cols: list[str] = []
         row = None
         if wordlist.strip():
+            wordlist = require_launch_wordlist(wordlist)
             if not _allow_expensive_get(request, cache_hit=True):
                 raise HTTPException(status_code=429, detail="単語リストの取得が続いています")
             try:
@@ -1732,6 +1885,7 @@ def create_app(
         """URLがimage列に実在するかを走査し、見つけ次第止める。"""
         from .convert import resolve_wordlist
 
+        wordlist = require_launch_wordlist(wordlist)
         try:
             with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
                 return any(row.get("image") == url for row in csv.DictReader(f))
@@ -1748,6 +1902,7 @@ def create_app(
         """
         from .video import cached_image, download_image
 
+        wordlist = require_launch_wordlist(wordlist)
         # URL照合にもCSV走査が要るため、cache判定より先に広いhit枠を適用する。
         if not _allow_expensive_get(request, cache_hit=True):
             raise HTTPException(status_code=429, detail="画像の取得が続いています")
@@ -1778,6 +1933,8 @@ def create_app(
 
         未知のIDは404。
         """
+        if is_simple_ui() and sample_id not in launch_sample_ids():
+            raise HTTPException(status_code=404, detail="そのサンプルはありません")
         entry = sample_entry(sample_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
@@ -1819,7 +1976,7 @@ def create_app(
         from .thumbnail_preview import PreviewSpec, render_slot
 
         title, title_kana = _sample_title(sample)
-        wordlist = wordlist.strip()
+        wordlist = require_launch_wordlist(wordlist)
         if not wordlist:
             raise HTTPException(status_code=400, detail="単語リスト名(wordlist)が必要です")
         # PreviewSpecの作成自体がCSV内容hash等を読むため、cache判定より前にも広い枠を置く。
@@ -1896,6 +2053,8 @@ def create_app(
         レイアウト編集画面のプレビューを、単語リストの代表行1件ではなく実際の
         変換結果(replaced単語列)で描くための元データ。cueで動画のキュー順に送る。
         """
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
         from .align import parse_granularity_override
         from .editor_io import build_editor_preview
 
@@ -2048,9 +2207,21 @@ def create_app(
     ) -> dict[str, Any]:
         _check_turnstile(request, turnstile_token)
         quota_exempt = await _quota_exempt(request)
-        midi_bytes = await midi.read()
+        midi_bytes = await read_midi_upload(midi)
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
+        launch_sample_id = require_launch_midi(midi.filename, midi_bytes)
+        lyrics = require_launch_lyrics(launch_sample_id, lyrics)
+        if is_simple_ui() and (
+            (editor is not None and bool(editor.filename))
+            or (wordlist_csv is not None and bool(wordlist_csv.filename))
+            or bool(wordlist_text.strip())
+            or any(bool(image.filename) for image in wordlist_images)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="この入力形式は現在利用できません",
+            )
         owner = owner_of(request)
         client_hash = None if quota_exempt or not is_public_mode() else _client_hash(request)
         editor_bytes = None
@@ -2077,6 +2248,24 @@ def create_app(
                 )
         except wordlist_csv_mod.WordlistCsvError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if is_simple_ui():
+            if editor_bytes is not None or custom is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="選択肢にある曲と単語リストを使ってください",
+                )
+            # 画面から選ばせないだけでなく、過去のlocalStorageや任意の
+            # HTTPクライアントから来た値もここで固定する。
+            launch = load_launch_catalog()
+            synthesizer = "voicevox"
+            voicevox_style = int(launch.get("voicevox_style", 3003))
+            auto_octave = True
+            transpose = 0
+            model = "MERROW"
+            layout = ""
+            layout_json = ""
+            original_credit = ""
+            credit_notice = ""
         # プレビューは元歌詞をそのまま歌わせるので替え歌の入力は不要
         if preview <= 0 and editor_bytes is None and custom is None and not wordlist.strip():
             raise HTTPException(
@@ -2115,6 +2304,8 @@ def create_app(
                 voicevox_auto_octave if voicevox_auto_octave is not None else True
             )
         wordlist = wordlist.strip()
+        if is_simple_ui() and wordlist:
+            wordlist = require_launch_wordlist(wordlist, status_code=422)
         # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
         # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
         if isinstance(editor_payload, dict):
@@ -2170,6 +2361,18 @@ def create_app(
                     wordlist = (
                         Path(resolved).stem if resolved.endswith(".csv") else resolved
                     )
+        if is_simple_ui() and preview <= 0:
+            launch_wordlists = {
+                str(name) for name in load_launch_catalog().get("wordlists", [])
+            }
+            if wordlist not in launch_wordlists:
+                raise HTTPException(
+                    status_code=422,
+                    detail="この単語リストは現在利用できません",
+                )
+            # レイアウトは単一の共通デザインではなく、選んだリストに
+            # 対応する検証済みの既定デザインにサーバー側で固定する。
+            layout = load_wordlist_layouts().get(wordlist, "")
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
@@ -2239,6 +2442,8 @@ def create_app(
         通れば「何語読めたか(と画像が何枚付いたか)」をUIに返して、ジョブを投げる前に
         確認できるようにする(/api/midi-check と同じ流儀)。ここではファイルを保存しない。
         """
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
         has_file = wordlist_csv is not None and bool(wordlist_csv.filename)
         has_text = bool(wordlist_text.strip())
         if has_file and has_text:
@@ -2320,6 +2525,7 @@ def create_app(
 
         if not re.fullmatch(r"[\w-]+", name):
             raise HTTPException(status_code=404, detail="単語リストが見つかりません")
+        require_launch_wordlist(name)
         try:
             path = resolve_wordlist(name)
         except FileNotFoundError as exc:
@@ -2386,9 +2592,11 @@ def create_app(
         from .align import align_lines
         from .xfparse import analyze_midi
 
-        midi_bytes = await midi.read()
+        midi_bytes = await read_midi_upload(midi)
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
+        launch_sample_id = require_launch_midi(midi.filename, midi_bytes)
+        lyrics = require_launch_lyrics(launch_sample_id, lyrics)
         lyric_lines = [ln.strip() for ln in lyrics.splitlines()]
         lyric_lines = [ln for ln in lyric_lines if ln]
         with tempfile.TemporaryDirectory() as td:
@@ -2459,6 +2667,8 @@ def create_app(
         video が受け取るのはその生テキストだけで、字幕の行対応づけは従来どおり
         自前の align_lines で行う(:mod:`soramimic_video.editor_io` 参照)。
         """
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
         import tempfile
 
         from .align import align_lines
@@ -2606,7 +2816,7 @@ def create_app(
             media_type="text/csv; charset=utf-8",
         )
 
-    if editor_available:
+    if editor_available and not is_simple_ui():
         # 上のルートで拾わなかった /editor/* は静的ビルドから配信する。
         # html=True で /editor/ と /editor/editor.html が引ける。
         app.mount(

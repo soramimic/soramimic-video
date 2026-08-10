@@ -86,6 +86,20 @@ def test_editor_entry_point_is_a_single_button():
     assert "editor-resume-cancel" not in ids
 
 
+def test_simple_ui_hides_advanced_and_filters_wordlists():
+    """初回公開版は詳細設定を隠し、サーバーが返したカタログだけ出す。"""
+    script = _script()
+    assert '$("advanced").hidden = simpleMode;' in script
+    assert "loadWordlistSelect(conf.wordlist_config ?? conf.editor)" in script
+    assert "const allowed = new Set(launchWordlists);" in script
+    assert "return allowed.has(name);" in script
+    defaults = _function_body(script, "function applySimpleDefaults()")
+    assert '$("synthesizer").value = "voicevox"' in defaults
+    assert '$("auto-octave").checked = true' in defaults
+    assert '$("transpose").value = "0"' in defaults
+    assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
+
+
 def test_editor_resume_panel_is_hidden_by_default():
     # カード内のパネルからモーダルに変えた(インライン展開だとサムネ枠が押し下がる)
     panel = next(a for tag, a in _tags() if a.get("id") == "editor-resume")
