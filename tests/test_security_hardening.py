@@ -186,9 +186,14 @@ def test_operational_endpoints_are_hidden_from_proxy_users(tmp_path: Path, monke
     health = client.get("/healthz", headers=proxy_headers)
     assert health.status_code == 200 and health.json() == {"status": "ok"}
     assert api_mod.SESSION_COOKIE not in health.cookies
-    ogp = client.get("/ogp-soramimic-v1.png", headers=proxy_headers)
-    assert ogp.status_code == 200
-    assert api_mod.SESSION_COOKIE not in ogp.cookies
+    for path in (
+        "/ogp-soramimic-v1.png",
+        "/ogp-soramimic-v2.png",
+        "/logo-soramimic-v1.png",
+    ):
+        asset = client.get(path, headers=proxy_headers)
+        assert asset.status_code == 200
+        assert api_mod.SESSION_COOKIE not in asset.cookies
     for path in ("/readyz", "/metrics", "/docs", "/redoc", "/openapi.json"):
         assert client.get(path, headers=proxy_headers).status_code == 404
         assert client.get(

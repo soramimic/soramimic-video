@@ -1318,14 +1318,35 @@ def test_index_html_has_one_feature_detected_save_share_button():
 def test_ogp_image_is_public_versioned_png(client):
     from PIL import Image
 
-    response = client.get("/ogp-soramimic-v1.png")
+    # v1はimmutable URLとして公開済みなので、既存SNSキャッシュ向けに残す。
+    for version in ("v1", "v2"):
+        response = client.get(f"/ogp-soramimic-{version}.png")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["cache-control"] == (
+            "public, max-age=31536000, immutable"
+        )
+        assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+        assert len(response.content) < 5 * 1024 * 1024
+        with Image.open(
+            api_mod.STATIC_DIR / f"ogp-soramimic-{version}.png"
+        ) as image:
+            assert image.size == (1200, 630)
+
+
+def test_brand_logo_is_public_versioned_transparent_png(client):
+    from PIL import Image
+
+    response = client.get("/logo-soramimic-v1.png")
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
     assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
-    assert len(response.content) < 5 * 1024 * 1024
-    with Image.open(api_mod.STATIC_DIR / "ogp-soramimic-v1.png") as image:
-        assert image.size == (1200, 630)
+    assert len(response.content) < 1024 * 1024
+    with Image.open(api_mod.STATIC_DIR / "logo-soramimic-v1.png") as image:
+        assert image.mode == "RGBA"
+        assert image.size == (873, 133)
+        assert image.getpixel((0, 0))[3] == 0
 
 
 def test_index_html_share_hint_matches_platform_capability():
