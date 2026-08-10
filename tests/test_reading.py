@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 pytest.importorskip("MeCab")
@@ -9,6 +11,24 @@ from soramimic_video.reading import (  # noqa: E402
     text_to_kana,
     text_to_kana_unidic,
 )
+
+
+def test_public_yomi_hides_native_dictionary_path(monkeypatch, capfd):
+    yomi = pytest.importorskip("soramimic_yomi")
+    internal = b"reading /srv/soramimic/private/user.csv ... 1\n"
+
+    def fake_get_yomi(_text):
+        os.write(1, internal)
+        return "テスト"
+
+    monkeypatch.setattr(yomi, "get_yomi", fake_get_yomi)
+    monkeypatch.setenv("SORAMIMIC_PUBLIC", "1")
+
+    from soramimic_video.reading import text_to_kana_yomi
+
+    assert text_to_kana_yomi("テスト") == "テスト"
+    captured = capfd.readouterr()
+    assert "/srv/soramimic/private" not in captured.out
 
 
 def test_reading_tokens_surface_and_reading():

@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import inspect
 import itertools
 import json
 import logging
@@ -151,16 +152,15 @@ def test_build_ass_original_line_merges_group(tmp_path: Path):
               if ln.startswith("Dialogue:") and ",Original," in ln]
     # 1枚だけ: 開始=1フレーズ目の頭、終了=2フレーズ目の終わり(通しタイミング)
     assert len(starts) == 1
-    assert _parody_texts(ass) == ["静", "川"]  # 替え歌は既定でフレーズ
+    assert _parody_texts(ass) == ["静  川"]  # 替え歌も元歌詞の行に合わせる
 
 
-def test_build_ass_default_is_phrase(tmp_path: Path):
-    # 既定(override・要素指定なし): 替え歌・元歌詞ともフレーズ単位
+def test_build_ass_default_follows_original_lyric_lines(tmp_path: Path):
+    # 既定(override・要素指定なし): 替え歌・元歌詞とも元歌詞の行単位
     project = _two_line_project(tmp_path)
     ass = build_ass(project, 1280, 720, "Font")
-    # 元歌詞の行を各フレーズの部分文字列に切り分けて別々に出す(行全文にはしない)
-    assert _orig_texts(ass) == ["沈むように", "溶けるように"]
-    assert _parody_texts(ass) == ["静", "川"]
+    assert _orig_texts(ass) == ["沈むように 溶けるように"]
+    assert _parody_texts(ass) == ["静  川"]
 
 
 def test_build_ass_original_phrase_splits(tmp_path: Path):
@@ -247,9 +247,9 @@ def _multi_word_project(tmp_path: Path):
 
 
 def _ruby_events(ass: str):
-    # ルビイベントは \fs でフォントサイズを上書きしているので本文と区別できる
+    # Name欄をRubyにして本文イベントと区別する。
     return [ln for ln in ass.splitlines()
-            if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" in ln]
+            if ln.startswith("Dialogue:") and ",Parody,Ruby," in ln]
 
 
 def _pos_x(line: str) -> float:
@@ -271,7 +271,7 @@ def test_build_ass_ruby_events(tmp_path: Path):
     assert "しず" in joined and "やま" in joined and "カワ" not in joined and "かわ" not in joined
     # 本文パロディイベント(\fsなし)と同じ開始・終了区間
     body = next(ln for ln in ass.splitlines()
-                if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" not in ln)
+                if ln.startswith("Dialogue:") and ",Parody,," in ln)
     bstart, bend = body.split(",")[1], body.split(",")[2]
     for ln in ruby:
         assert ln.split(",")[1] == bstart and ln.split(",")[2] == bend
@@ -287,7 +287,47 @@ def test_build_ass_ruby_positions_monotonic(tmp_path: Path):
     assert xs == sorted(xs) and len(set(xs)) == len(xs)  # 単語順に単調増加
 
 
-def test_build_ass_ruby_positions_use_body_font_size(tmp_path: Path, monkeypatch):
+def test_build_ass_ruby_and_whole_word_share_exact_center(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _multi_word_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    body = [
+        line for line in ass.splitlines()
+        if line.startswith("Dialogue:") and ",Parody,," in line
+    ]
+    ruby = _ruby_events(ass)
+    body_positions = {
+        line.rsplit("}", 1)[-1]: _pos_x(line)
+        for line in body
+    }
+    assert _pos_x(ruby[0]) == body_positions["静"]
+    assert _pos_x(ruby[1]) == body_positions["山"]
+
+
+def test_build_ass_partial_ruby_shares_exact_center_with_body_run(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words = [
+        ParodyWord(
+            surface="ペルシャ湾", kana="ペルシャワン", original="",
+            original_surface="", originalkana="", note_ids=[0],
+        )
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    body_positions = {
+        line.rsplit("}", 1)[-1]: _pos_x(line)
+        for line in ass.splitlines()
+        if line.startswith("Dialogue:") and ",Parody,," in line
+    }
+    ruby = _ruby_events(ass)
+    assert set(body_positions) == {"ペルシャ", "湾"}
+    assert len(ruby) == 1 and "わん" in ruby[0]
+    assert _pos_x(ruby[0]) == body_positions["湾"]
+
+
+def test_build_ass_ruby_positions_use_libass_scale(tmp_path: Path, monkeypatch):
     import soramimic_video.video as video
     from soramimic_video.layout import load_layout
 
@@ -308,7 +348,34 @@ def test_build_ass_ruby_positions_use_body_font_size(tmp_path: Path, monkeypatch
 
     body_px = int(layout.subtitles[0].size * 720)
     assert measured_sizes
-    assert set(measured_sizes) == {body_px}
+    assert set(measured_sizes) == {body_px * video.ASS_MEASURE_SCALE}
+    # 64倍計測を縮小した結果は、libassが使う本文サイズ(ASSサイズ×0.72)と一致する。
+    assert video._ass_text_width(None, body_px, "字") == pytest.approx(
+        body_px * video.LIBASS_FONT_SIZE_COEFF
+    )
+
+
+def test_build_ass_ruby_shrinks_long_line_to_subtitle_box(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words = [
+        ParodyWord(
+            surface=f"長大語{i}", kana=f"チョウダイゴ{i}", original="",
+            original_surface="", originalkana="", note_ids=[0],
+        )
+        for i in range(20)
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    body = [
+        line for line in ass.splitlines()
+        if line.startswith("Dialogue:") and ",Parody,," in line
+    ]
+    assert len(body) == 20
+    assert all("\\fs" in line for line in body)
+    xs = [_pos_x(line) for line in body]
+    assert min(xs) >= 0.02 * 1280
+    assert max(xs) <= 0.98 * 1280
 
 
 def test_build_ass_ruby_disabled(tmp_path: Path):
@@ -366,6 +433,8 @@ def test_ruby_segments():
     # 記号+漢字の混在では漢字部分にだけ読みが割り当たる
     assert _ruby_segments("アテル＝参", "アテルサン") == [(4, 5, "サン")]
     assert _ruby_segments("参・アテル", "サンアテル") == [(0, 1, "サン")]
+    # 空白だけで区切られた漢字名は読みの境界を決められないため、全体ルビに戻す
+    assert _ruby_segments("柳瀬 泰平", "ヤナセタイヘイ") is None
 
 
 def test_build_ass_ruby_partial(tmp_path: Path):
@@ -442,6 +511,20 @@ def test_build_ass_ruby_fallback_whole_word(tmp_path: Path):
     ruby = _ruby_events(ass)
     assert len(ruby) == 1
     assert "しずけさ" in ruby[0]
+
+
+def test_build_ass_ruby_full_name_fallback(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words = [
+        ParodyWord(surface="柳瀬 泰平", kana="ヤナセタイヘイ", original="",
+                   original_surface="", originalkana="", note_ids=[0]),
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    ruby = _ruby_events(ass)
+    assert len(ruby) == 1
+    assert "やなせたいへい" in ruby[0]
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
@@ -591,6 +674,14 @@ def test_app_credit_text_appends_synth_credit():
     assert app_credit_text() == APP_CREDIT
     assert app_credit_text("  ") == APP_CREDIT
     assert app_credit_text("VOICEVOX:四国めたん") == f"{APP_CREDIT} / VOICEVOX:四国めたん"
+    assert app_credit_text(
+        "VOICEVOX:四国めたん",
+        "作詞・作曲: 作者",
+        "権利者指定表記",
+    ) == (
+        f"{APP_CREDIT} / VOICEVOX:四国めたん / "
+        "Original: 作詞・作曲: 作者 / 権利者指定表記"
+    )
 
 
 def test_idle_frame_data_carries_app_credit(tmp_path: Path):
@@ -904,6 +995,17 @@ def test_write_credits_table(tmp_path: Path):
     assert "| 山田 | http://img2 |  | http://page2 |" in text
 
 
+def test_make_video_logs_credits_with_public_path_filter():
+    """クレジット成功ログも公開モードの内部パス秘匿を必ず通す。"""
+    from soramimic_video.video import make_video
+
+    source = inspect.getsource(make_video)
+    assert (
+        'runproc.log_generated_path(logger, "画像クレジットを書き出しました", credits_path)'
+        in source
+    )
+
+
 def test_download_image_local_path(tmp_path: Path):
     # ローカルパスの画像はコピーで取り込む(生成・ローカル単語リスト用)
     src = tmp_path / "portrait.jpg"
@@ -924,6 +1026,94 @@ def test_download_image_file_url(tmp_path: Path):
 
 def test_download_image_missing_local(tmp_path: Path):
     assert download_image(str(tmp_path / "nope.jpg"), tmp_path / "cache") is None
+
+
+def test_download_image_refreshes_changed_local_file(tmp_path: Path):
+    src = tmp_path / "portrait.jpg"
+    cache = tmp_path / "cache"
+    src.write_bytes(b"old")
+    got = download_image(str(src), cache)
+    assert got is not None and got.read_bytes() == b"old"
+    src.write_bytes(b"new")
+    os.utime(src, ns=(got.stat().st_mtime_ns + 1, got.stat().st_mtime_ns + 1))
+    assert download_image(str(src), cache).read_bytes() == b"new"
+
+
+def test_download_image_revalidates_remote_cache_with_etag(tmp_path: Path, monkeypatch):
+    import soramimic_video.video as video_mod
+
+    url = "https://example.com/photo.png"
+    cache = tmp_path / "cache"
+    calls = []
+    responses = [
+        _FakeResp(_png_bytes("red"), headers={"ETag": '"v1"'}),
+        _FakeResp(status_code=304),
+    ]
+
+    def fake_get(target, *, headers, timeout):
+        calls.append(headers)
+        return responses.pop(0)
+
+    monkeypatch.setattr(video_mod, "http_get_with_retry", fake_get)
+    first = download_image(url, cache)
+    assert first is not None
+    original_mtime = first.stat().st_mtime_ns
+    # TTL内は通信せず、明示更新時だけIf-None-Matchを送る。
+    assert download_image(url, cache) == first
+    assert download_image(url, cache, revalidate=True) == first
+    assert calls == [
+        {"User-Agent": video_mod.USER_AGENT},
+        {"User-Agent": video_mod.USER_AGENT, "If-None-Match": '"v1"'},
+    ]
+    assert first.stat().st_mtime_ns == original_mtime
+
+
+def test_download_image_replaces_changed_same_url(tmp_path: Path, monkeypatch):
+    import soramimic_video.video as video_mod
+
+    url = "https://example.com/photo.png"
+    old = _png_bytes("red")
+    new = _png_bytes("blue")
+    responses = [
+        _FakeResp(old, headers={"ETag": '"v1"'}),
+        _FakeResp(new, headers={"ETag": '"v2"'}),
+    ]
+    monkeypatch.setattr(
+        video_mod,
+        "http_get_with_retry",
+        lambda target, *, headers, timeout: responses.pop(0),
+    )
+    cached = download_image(url, tmp_path / "cache")
+    assert cached is not None and cached.read_bytes() == old
+    refreshed = download_image(url, tmp_path / "cache", revalidate=True)
+    assert refreshed == cached
+    assert refreshed.read_bytes() == new
+
+
+def test_download_image_refetches_inconsistent_validator_metadata(tmp_path: Path, monkeypatch):
+    import soramimic_video.video as video_mod
+
+    url = "https://example.com/photo.png"
+    original = _png_bytes("red")
+    refreshed = _png_bytes("green")
+    responses = [
+        _FakeResp(original, headers={"ETag": '"v1"'}),
+        _FakeResp(refreshed, headers={"ETag": '"v2"'}),
+    ]
+    calls = []
+
+    def fake_get(target, *, headers, timeout):
+        calls.append(headers)
+        return responses.pop(0)
+
+    monkeypatch.setattr(video_mod, "http_get_with_retry", fake_get)
+    cached = download_image(url, tmp_path / "cache")
+    assert cached is not None
+    # 別プロセスとの競合で画像だけ別内容になった状態。TTL内でも検出し、
+    # 対応関係の壊れたETagを送らず無条件で正しい内容を取り直す。
+    cached.write_bytes(_png_bytes("blue"))
+    assert download_image(url, tmp_path / "cache").read_bytes() == refreshed
+    assert calls[1] == {"User-Agent": video_mod.USER_AGENT}
 
 
 # ---- SVGのラスタライズ(生成カード画像はSVG配布でPillowが開けない) ----
@@ -1278,6 +1468,10 @@ def test_thumbnail_show_end_uses_intro(tmp_path: Path):
 
     project = _two_word_project()  # 最初の歌唱ノートは0.5s(前奏が短い曲)
     assert thumbnail_show_end(project) == 0.0  # 一瞬しか出せないので出さない
+
+    project.notes[0].start_sec = 2.0  # 公開サンプル相当の前奏ならサムネを出す
+    project.notes[1].start_sec = 3.0
+    assert abs(thumbnail_show_end(project) - (2.0 - SUB_PAD_SEC)) < 0.01
 
     project.notes[0].start_sec = 8.0  # 前奏8秒の曲は字幕が出る直前まで
     project.notes[1].start_sec = 9.0

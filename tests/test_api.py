@@ -1133,6 +1133,84 @@ def test_song_title_kana_of_without_reading_in_manifest(tmp_path, monkeypatch):
     assert api_mod.song_title_kana_of({"midi_filename": "momiji.mid"}) == ""
 
 
+def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "title_kana": "ケンリキョク",
+                    "original_credit": "作詞・作曲: 作者",
+                    "credit_notice": "指定表記",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {
+        "midi_filename": "licensed.mid",
+        "song_title": "権利曲",
+        "original_credit": "",
+        "credit_notice": "",
+    }
+
+    assert api_mod.original_credit_of(params) == "作詞・作曲: 作者"
+    assert api_mod.credit_notice_of(params) == "指定表記"
+
+
+def test_sample_manifest_credits_cannot_be_omitted_or_overridden(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "original_credit": "正式なクレジット",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+
+    assert api_mod.original_credit_of(
+        {
+            "midi_filename": "licensed.mid",
+            "song_title": "権利曲",
+            "original_credit": "誤ったクレジット",
+        }
+    ) == "正式なクレジット"
+
+
+def test_uploaded_song_keeps_explicit_credits_when_filename_matches_sample(
+    tmp_path, monkeypatch
+):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [{"id": "licensed", "title": "権利曲", "original_credit": "サンプル作者"}]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {
+        "midi_filename": "licensed.mid",
+        "song_title": "自作曲",
+        "original_credit": "自作曲の作者",
+        "credit_notice": "自作曲の指定表記",
+    }
+
+    assert api_mod.original_credit_of(params) == "自作曲の作者"
+    assert api_mod.credit_notice_of(params) == "自作曲の指定表記"
+
+
 def test_load_samples_tolerates_missing_or_broken_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(tmp_path / "nope"))
     assert api_mod.load_samples() == []
@@ -1142,6 +1220,20 @@ def test_load_samples_tolerates_missing_or_broken_manifest(tmp_path, monkeypatch
     (d / "samples.json").write_text("{", encoding="utf-8")
     monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
     assert api_mod.load_samples() == []
+
+
+def test_load_samples_adds_local_overlay_manifest(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps([{"id": "pd", "title": "公開曲"}]), encoding="utf-8"
+    )
+    (d / "samples.local.json").write_text(
+        json.dumps([{"id": "local", "title": "ローカル曲"}]), encoding="utf-8"
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+
+    assert [entry["id"] for entry in api_mod.load_samples()] == ["pd", "local"]
 
 
 def test_bundled_samples_all_have_a_reading():
@@ -1196,31 +1288,28 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
-def test_index_html_share_buttons_are_separated():
-    # 完成後の導線は「Xでポスト(必ずweb intent)」と「動画を保存(シェアシート
-    # またはダウンロード)」の2本。1つのボタンにまとめ直さない。
+def test_index_html_has_one_feature_detected_save_share_button():
+    # 完成後の導線は保存・共有ボタン1本。X専用ボタンは置かない。
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert 'id="share-x"' in html and 'id="share-save"' in html
-    # Xボタンは intent を開くだけ(ファイル添付シェアは保存ボタン側)
-    assert 'xBtn.addEventListener("click", () => openXIntent());' in html
+    assert 'id="share-save"' in html
+    assert 'id="share-x"' not in html
+    assert "openXIntent" not in html and "twitter.com/intent" not in html
+    assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
+    assert "navigator.canShare({ files: [probe] })" in html
     assert "navigator.share({ files: [file], text: SHARE_TEXT })" in html
-    # シェアシートが使えない環境は動画のダウンロードに落とす
-    assert "if (!navigator.share) return downloadVideo(videoUrl);" in html
+    assert "if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);" in html
 
 
-def test_index_html_share_buttons_follow_the_actual_order():
-    """実際の手順どおり「保存」が先(左)、「Xでポスト」が後(右)。案内文も同じ順。"""
+def test_index_html_share_hint_matches_platform_capability():
+    """共有可否とOSに合わせて、保存・共有の案内を切り替える。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    share_html = html.split("const SHARE_HTML =")[1].split("// ファイル添付付き")[0]
-    assert share_html.index('id="share-save"') < share_html.index('id="share-x"')
-    # X風の黒いボタンのスタイルは維持
-    assert 'id="share-x" class="btn-x btn-sm"' in share_html
-    # 案内文は ①保存 → ②ポスト の順で読める
-    assert "①「${SAVE_LABEL}」で端末に保存 → ②「Xでポスト」で投稿画面を開いて添付" in share_html
+    assert 'return "ios";' in html and 'return "android";' in html
+    assert '「ビデオを保存」「ファイルに保存」' in html
+    assert "動画ファイルをダウンロードします。" in html
 
 
 def test_index_html_no_server_host_line():

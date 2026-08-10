@@ -33,6 +33,12 @@ def submit(client: TestClient, **fields):
     return client.post("/api/jobs", files=files, data={"wordlist": "stations", **fields})
 
 
+def submit_launch(client: TestClient, **fields):
+    midi = (api_mod.STATIC_DIR / "sample" / "furusato.mid").read_bytes()
+    files = {"midi": ("furusato.mid", midi, "audio/midi")}
+    return client.post("/api/jobs", files=files, data={"wordlist": "stations", **fields})
+
+
 def wait_done(client: TestClient, job_id: str) -> dict:
     for _ in range(200):
         body = client.get(f"/api/jobs/{job_id}").json()
@@ -379,6 +385,83 @@ def test_private_config_has_no_public_keys(tmp_path, monkeypatch):
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
     conf = client.get("/api/config").json()
     assert "public" not in conf and "daily_quota" not in conf
+
+
+def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
+    from soramimic_video import editor_io
+
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.setattr(editor_io, "SETTING_JSON", tmp_path / "missing-setting.json")
+    editor_dist = tmp_path / "editor-dist"
+    (editor_dist / "conf").mkdir(parents=True)
+    (editor_dist / "conf" / "setting.json").write_text("{}", encoding="utf-8")
+    client = TestClient(
+        api_mod.create_app(
+            jobs_dir=tmp_path / "jobs",
+            editor_dist=editor_dist,
+        )
+    )
+
+    conf = client.get("/api/config").json()
+    assert conf["simple_ui"] is True
+    assert conf["editor"] is False
+    # editorへの導線は隠すが、同梱setting.jsonは単語リスト選択に使う
+    assert conf["wordlist_config"] is True
+    assert client.get("/editor/conf/setting.json").status_code == 200
+    assert conf["launch_wordlists"] == [
+        "stations", "nations", "baseball", "scientist", "gimukyoiku",
+    ]
+    assert conf["fixed_voicevox_style"] == 3003
+    assert [row["id"] for row in client.get("/api/samples").json()] == [
+        "furusato", "momotarou", "katatsumuri", "shabondama", "akatombo",
+    ]
+    # manifestに存在しても初回公開カタログ外の曲は直接取得できない
+    assert client.get("/api/sample/twinkle/midi").status_code == 404
+
+
+def test_simple_ui_fixes_voice_and_wordlist_layout(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    res = submit_launch(
+        client,
+        synthesizer="neutrino",
+        voicevox_style="6000",
+        auto_octave="false",
+        transpose="12",
+        layout="caption",
+        layout_json='{"elements": []}',
+    )
+    assert res.status_code == 200
+    body = wait_done(client, res.json()["id"])
+    params = body["params"]
+    assert params["synthesizer"] == "voicevox"
+    assert params["voicevox_style"] == 3003
+    assert params["auto_octave"] is True
+    assert params["transpose"] == 0
+    assert params["layout"] == "station_info_card"
+
+
+def test_simple_ui_rejects_unreleased_wordlists_and_editor(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    midi = (api_mod.STATIC_DIR / "sample" / "furusato.mid").read_bytes()
+    files = {"midi": ("furusato.mid", midi, "audio/midi")}
+
+    hidden = client.post("/api/jobs", files=files, data={"wordlist": "plant"})
+    assert hidden.status_code == 422
+    assert hidden.json()["detail"] == "この単語リストは現在利用できません"
+    editor = client.post(
+        "/api/jobs",
+        files={
+            **files,
+            "editor": ("editor.json", b'{"format":"soramimic-editor/1"}', "application/json"),
+        },
+    )
+    assert editor.status_code == 422
+    assert editor.json()["detail"] == "この入力形式は現在利用できません"
 
 
 def test_thumbnail_is_owner_checked(tmp_path, monkeypatch):

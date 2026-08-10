@@ -630,6 +630,62 @@ def test_run_voicevox_chunk_disabled_single_request(tmp_path, monkeypatch):
     assert posts["query"] == 1 and posts["synth"] == 1
 
 
+def test_run_voicevox_splits_score_after_query_500(tmp_path, monkeypatch):
+    """ENGINE内部で長い音符列だけ500になる場合は二分して合成を継続する。"""
+    singers = [
+        {"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}
+    ]
+    monkeypatch.setattr(
+        vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers)
+    )
+    posts = {"query": 0, "synth": 0}
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        if "sing_frame_audio_query" in url:
+            posts["query"] += 1
+            sung = [n for n in json["notes"] if n["key"] is not None]
+            if len(sung) > 1:
+                return _FakeResp(status=500)
+            return _FakeResp(json_data=json)
+        posts["synth"] += 1
+        frames = sum(n["frame_length"] for n in json["notes"])
+        return _FakeResp(content=_wav_const(frames * 256, 1000))
+
+    monkeypatch.setattr(vv.requests, "post", fake_post)
+    notes = [
+        _note(i, 60 + i, 0.5 + i * 0.3, 0.8 + i * 0.3, kana)
+        for i, kana in enumerate(("ド", "レ", "ミ", "ファ"))
+    ]
+    expected_frames = sum(n["frame_length"] for n in build_score(_project(notes))["notes"])
+
+    out = run_voicevox(_project(notes), tmp_path, style_id=6000, chunk_sec=0)
+
+    assert posts == {"query": 7, "synth": 4}
+    assert len(_read_samples(out)) == expected_frames * 256
+
+
+def test_run_voicevox_explains_unsplittable_query_500(tmp_path, monkeypatch):
+    singers = [
+        {"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}
+    ]
+    monkeypatch.setattr(
+        vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers)
+    )
+    monkeypatch.setattr(
+        vv.requests, "post", lambda *args, **kwargs: _FakeResp(status=500)
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="歌詞「ラ」、1音符.*該当箇所の単語を変更.*休符で分けて",
+    ):
+        run_voicevox(
+            _project([_note(0, 60, 0.5, 1.0, "ラ")]),
+            tmp_path,
+            style_id=6000,
+        )
+
+
 def test_run_voicevox_engine_aborted_midrequest(tmp_path, monkeypatch):
     import requests as real_requests
 

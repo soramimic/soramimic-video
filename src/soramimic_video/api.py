@@ -19,6 +19,9 @@ SORAMIMIC_PUBLIC=1 を設定すると「公開モード」になり、匿名セ�
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -41,12 +44,14 @@ from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from . import runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
 from . import wordlist_zip as wordlist_zip_mod
+from .access_identity import canonical_email, valid_issuer, verify_access_email
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -66,21 +71,48 @@ API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 # ---- 公開モード(一般公開インスタンス)向けの環境変数 ----
 # いずれも未設定なら従来どおりの挙動(制限なし・ジョブは全員から見える)。
 PUBLIC_ENV = "SORAMIMIC_PUBLIC"  # 1/true で公開モード
+SIMPLE_UI_ENV = "SORAMIMIC_SIMPLE_UI"  # 初回公開用の選択肢を絞ったUI
 QUEUE_LIMIT_ENV = "SORAMIMIC_QUEUE_LIMIT"  # 待機+実行中ジョブの上限
 DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の投入上限
+IP_DAILY_QUOTA_ENV = "SORAMIMIC_IP_DAILY_QUOTA"
+IP_HASH_KEY_ENV = "SORAMIMIC_IP_HASH_KEY"
 MAX_SONG_SECONDS_ENV = "SORAMIMIC_MAX_SONG_SECONDS"  # 入力MIDIの演奏時間の上限(秒)
 JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除するまでの時間(0=無効)
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
+LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
 TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
 TURNSTILE_SITE_ENV = "TURNSTILE_SITE_KEY"  # 同・サイトキー(フロントに渡す)
+OPS_TOKEN_ENV = "SORAMIMIC_OPS_TOKEN"
+EXPOSE_OPS_ENV = "SORAMIMIC_EXPOSE_OPS"
+ALLOW_LOCAL_OPS_ENV = "SORAMIMIC_ALLOW_LOCAL_OPS"
+TRUSTED_PROXY_IPS_ENV = "SORAMIMIC_TRUSTED_PROXY_IPS"
+QUOTA_EXEMPT_EMAILS_ENV = "SORAMIMIC_QUOTA_EXEMPT_EMAILS"
+CF_ACCESS_TEAM_DOMAIN_ENV = "SORAMIMIC_CF_ACCESS_TEAM_DOMAIN"
+CF_ACCESS_AUD_ENV = "SORAMIMIC_CF_ACCESS_AUD"
+GET_RATE_LIMIT_ENV = "SORAMIMIC_GET_RATE_LIMIT"
+GET_RATE_WINDOW_ENV = "SORAMIMIC_GET_RATE_WINDOW"
+GET_IP_RATE_LIMIT_ENV = "SORAMIMIC_GET_IP_RATE_LIMIT"
+GET_IP_RATE_WINDOW_ENV = "SORAMIMIC_GET_IP_RATE_WINDOW"
+GET_CACHE_HIT_RATE_LIMIT_ENV = "SORAMIMIC_GET_CACHE_HIT_RATE_LIMIT"
+GET_CACHE_HIT_IP_RATE_LIMIT_ENV = "SORAMIMIC_GET_CACHE_HIT_IP_RATE_LIMIT"
+DEFAULT_GET_RATE_LIMIT = 15
+DEFAULT_GET_IP_RATE_LIMIT = 90  # NAT配下の複数利用者を巻き込みにくいバックストップ
+DEFAULT_GET_CACHE_HIT_RATE_LIMIT = 120
+DEFAULT_GET_CACHE_HIT_IP_RATE_LIMIT = 600
+DEFAULT_GET_RATE_WINDOW = 60.0
+GET_CONCURRENCY = 4
+SIMPLE_MAX_REQUEST_BYTES_ENV = "SORAMIMIC_SIMPLE_MAX_REQUEST_BYTES"
+DEFAULT_SIMPLE_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_LIMIT = 5
 DEFAULT_DAILY_QUOTA = 5
+DEFAULT_IP_DAILY_QUOTA = 30
 DEFAULT_MAX_SONG_SECONDS = 420.0
 SESSION_COOKIE = "sv_session"
 SESSION_MAX_AGE = 30 * 24 * 3600  # 30日
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 CLEANUP_INTERVAL_SECONDS = 3600  # ジョブ自動削除の巡回間隔
 STATIC_DIR = Path(__file__).parent / "static"
+LAUNCH_CATALOG_PATH = STATIC_DIR / "launch_catalog.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # soramimic editor(submodule)のビルド出力。scripts/build-editor.sh で生成する。
 # /editor/ にマウントして同一オリジン配信し、WebUIからiframeで埋め込む(A-2)。
@@ -116,6 +148,118 @@ def is_public_mode() -> bool:
     return os.environ.get(PUBLIC_ENV, "").strip().lower() not in ("", "0", "false", "no")
 
 
+def is_simple_ui() -> bool:
+    """初回公開用の簡易UIかどうか。
+
+    公開モードと分けてあるのは、手元・既存の公開サーバーで
+    従来の全機能UIをそのまま使えるようにするため。
+    """
+    return os.environ.get(SIMPLE_UI_ENV, "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+    )
+
+
+def load_launch_catalog() -> dict[str, Any]:
+    """初回公開で見せる曲・単語リストと固定歌声を読む。"""
+    try:
+        data = json.loads(LAUNCH_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"初回公開カタログが読めません: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("初回公開カタログはJSON objectで指定してください")
+    return data
+
+
+def launch_sample_ids() -> set[str]:
+    """Simple UIで公開するサンプルID。ファイルパスとして安全なIDだけを返す。"""
+    return {
+        str(value)
+        for value in load_launch_catalog().get("samples", [])
+        if re.fullmatch(r"[A-Za-z0-9_-]+", str(value))
+    }
+
+
+def launch_wordlist_names() -> set[str]:
+    """Simple UIの全APIで共有する公開単語リストallowlist。"""
+    return {
+        str(value)
+        for value in load_launch_catalog().get("wordlists", [])
+        if re.fullmatch(r"[A-Za-z0-9_-]+", str(value))
+    }
+
+
+def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
+    """Simple UIではカタログ名だけを許可し、filesystem pathを解決前に拒否する。"""
+    name = wordlist.strip()
+    if is_simple_ui() and name not in launch_wordlist_names():
+        raise HTTPException(
+            status_code=status_code,
+            detail="この単語リストは現在利用できません",
+        )
+    return name
+
+
+def require_launch_midi(filename: str | None, data: bytes) -> str | None:
+    """Simple UIのMIDIをカタログ同梱ファイルの名前とSHA-256で照合する。"""
+    if not is_simple_ui():
+        return None
+    supplied_name = filename or ""
+    supplied_digest = hashlib.sha256(data).digest()
+    for sample_id in sorted(launch_sample_ids()):
+        expected_name = f"{sample_id}.mid"
+        if supplied_name != expected_name:
+            continue
+        path = samples_dir() / expected_name
+        try:
+            expected_digest = hashlib.sha256(path.read_bytes()).digest()
+        except OSError:
+            break
+        if secrets.compare_digest(supplied_digest, expected_digest):
+            return sample_id
+    raise HTTPException(
+        status_code=422,
+        detail="このMIDIファイルは現在利用できません",
+    )
+
+
+async def read_midi_upload(midi: UploadFile) -> bytes:
+    """Simple UIでは最大の同梱MIDIを超えた時点で読み止め、巨大入力を保持しない。"""
+    if not is_simple_ui():
+        return await midi.read()
+    sizes: list[int] = []
+    for sample_id in launch_sample_ids():
+        try:
+            sizes.append((samples_dir() / f"{sample_id}.mid").stat().st_size)
+        except OSError:
+            continue
+    return await midi.read(max(sizes, default=0) + 1)
+
+
+def require_launch_lyrics(sample_id: str | None, lyrics: str) -> str:
+    """Simple UIでは照合済みMIDIに付属する元歌詞を常に使う。"""
+    if not is_simple_ui():
+        return lyrics
+    if not sample_id:
+        raise HTTPException(status_code=422, detail="選択した曲の歌詞を確認できません")
+    try:
+        return (samples_dir() / f"{sample_id}_lyrics.txt").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail="選択した曲の歌詞が見つかりません") from exc
+
+
+def visible_samples() -> list[dict[str, Any]]:
+    """UIとサンプル取得APIに出す曲。簡易UIでは順序も固定する。"""
+    samples = load_samples()
+    if not is_simple_ui():
+        return samples
+    by_id = {str(row.get("id")): row for row in samples if row.get("id")}
+    wanted = load_launch_catalog().get("samples", [])
+    return [by_id[str(sample_id)] for sample_id in wanted if str(sample_id) in by_id]
+
+
 def _env_float(name: str, default: float) -> float:
     """数値の環境変数を読む。未設定・読めない値は既定値にフォールバックする。"""
     raw = os.environ.get(name, "").strip()
@@ -135,18 +279,55 @@ def samples_dir() -> Path:
 
 
 def load_samples() -> list[dict[str, Any]]:
-    """samples.json の中身。読めなければ空リスト(サンプル無しとして扱う)。"""
+    """samples.json とローカル限定の追加manifestを読む。
+
+    ``samples.local.json`` は ``.gitignore`` 対象で、手元の権利曲などを
+    公開manifestへ混ぜずにWeb UI/APIへ追加するためのオーバーレイ。無ければ
+    従来どおり ``samples.json`` だけを返す。
+    """
+    directory = samples_dir()
     try:
-        raw = (samples_dir() / "samples.json").read_text(encoding="utf-8")
+        raw = (directory / "samples.json").read_text(encoding="utf-8")
     except OSError:
-        logger.warning("samples.json を読めません: %s", samples_dir())
+        logger.warning("samples.json を読めません: %s", directory)
         return []
     try:
         entries = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("samples.json が壊れています: %s", samples_dir())
+        logger.warning("samples.json が壊れています: %s", directory)
         return []
-    return [e for e in entries if isinstance(e, dict)]
+    base = [e for e in entries if isinstance(e, dict)]
+
+    local_path = directory / LOCAL_SAMPLES_MANIFEST
+    try:
+        local_raw = local_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return base
+    except OSError:
+        logger.warning("ローカルサンプルmanifestを読めません: %s", local_path)
+        return base
+    try:
+        local_entries = json.loads(local_raw)
+    except json.JSONDecodeError:
+        logger.warning("ローカルサンプルmanifestが壊れています: %s", local_path)
+        return base
+
+    merged = list(base)
+    positions = {
+        str(entry["id"]): i
+        for i, entry in enumerate(merged)
+        if entry.get("id")
+    }
+    for entry in local_entries:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        sample_id = str(entry["id"])
+        if sample_id in positions:
+            merged[positions[sample_id]] = {**merged[positions[sample_id]], **entry}
+        else:
+            positions[sample_id] = len(merged)
+            merged.append(entry)
+    return merged
 
 
 def sample_entry(sample_id: str) -> dict[str, Any] | None:
@@ -233,6 +414,9 @@ class Job:
     params: dict[str, Any]
     # 公開モードでの持ち主(匿名セッションID)。非公開モードでは常にNone(全員が見る)
     owner: str | None = None
+    # 公開モードの日次IP枠だけに使う短いHMAC。接続元IPそのものは保存しない。
+    # Accessで免除されたジョブはNoneのままにしてIP枠を消費させない。
+    client_hash: str | None = None
     status: str = "queued"  # queued / running / done / canceled / error
     stage: str | None = None
     stages: list[dict[str, Any]] = field(default_factory=list)
@@ -279,7 +463,8 @@ class Job:
             "stage": self.stage,
             "stages": self.stages,
             "params": self.params,
-            "error": self.error,
+            # 公開APIへ例外本文を返すとparser/ffmpeg由来の内部pathやコマンドが漏れる。
+            "error": "生成に失敗しました" if is_public_mode() and self.error else self.error,
             "created_at": datetime.fromtimestamp(self.created_at).isoformat(
                 timespec="seconds"
             ),
@@ -302,7 +487,7 @@ class Job:
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
             if self.thumbnail.exists():
                 d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
-        if with_log:
+        if with_log and not is_public_mode():
             d["log"] = list(self.log)
         return d
 
@@ -532,24 +717,45 @@ def song_title_of(params: dict[str, Any]) -> str:
     return str(params.get("song_title") or params.get("midi_filename") or "")
 
 
+def _sample_entry_of(params: dict[str, Any]) -> dict[str, Any] | None:
+    """ジョブが同梱サンプル曲ならmanifestの1件。自作MIDIならNone。"""
+    stem = re.sub(r"\.[^.]*$", "", str(params.get("midi_filename") or "")).strip()
+    entry = sample_entry(stem) if stem else None
+    if entry is None:
+        return None
+    title = str(params.get("song_title") or "").strip()
+    if title and title != str(entry.get("title") or ""):
+        return None
+    return entry
+
+
 def song_title_kana_of(params: dict[str, Any]) -> str:
     """サムネの曲名変換に使う読み(カタカナ)。分からなければ空文字。
 
     読みが確定しているのは同梱サンプル曲だけ(samples.json の title_kana)。
-    UIはサンプル曲を選ぶと `<サンプルID>.mid` をそのまま送ってくるので、
-    midi_filename の拡張子を落としたものでサンプルを引く。
-    自分のMIDIを上げた人がたまたま同じファイル名を付けていることもあるので、
-    UIが送ってきた曲名がサンプルの曲名と食い違うときは読みを使わない
-    (その場合は従来どおり曲名の文字列から変換エンジンが読みを推定する)。
+    自分のMIDIを上げた人がたまたま同じファイル名を付けている場合は、
+    song_title がmanifestと一致しないためサンプル扱いしない。
     """
-    stem = re.sub(r"\.[^.]*$", "", str(params.get("midi_filename") or "")).strip()
-    entry = sample_entry(stem) if stem else None
+    entry = _sample_entry_of(params)
     if entry is None:
         return ""
-    title = str(params.get("song_title") or "").strip()
-    if title and title != str(entry.get("title") or ""):
-        return ""
     return str(entry.get("title_kana") or "")
+
+
+def original_credit_of(params: dict[str, Any]) -> str:
+    """元曲クレジット。既知のサンプル曲はmanifestの指定を必ず使う。"""
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("original_credit"):
+        return str(entry["original_credit"]).strip()
+    return str(params.get("original_credit") or "").strip()
+
+
+def credit_notice_of(params: dict[str, Any]) -> str:
+    """権利者・ライセンス指定表記。既知のサンプル曲はmanifestを優先する。"""
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("credit_notice"):
+        return str(entry["credit_notice"]).strip()
+    return str(params.get("credit_notice") or "").strip()
 
 
 def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
@@ -758,8 +964,8 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             synth_credit=synth_credit_of(job.params, config),
             fps=config.get("video_fps", 30),
             image_lead_sec=config.get("video_image_lead_sec", 0.1),
-            original_credit=str(job.params.get("original_credit") or ""),
-            credit_notice=str(job.params.get("credit_notice") or ""),
+            original_credit=original_credit_of(job.params),
+            credit_notice=credit_notice_of(job.params),
         )
 
 
@@ -893,6 +1099,7 @@ class JobManager:
                 dir=status_path.parent,
                 params=data.get("params", {}),
                 owner=data.get("owner"),
+                client_hash=data.get("client_hash"),
                 status=data.get("status", "error"),
                 stages=data.get("stages", []),
                 error=data.get("error"),
@@ -917,6 +1124,7 @@ class JobManager:
         params: dict[str, Any],
         layout_json: str = "",
         owner: str | None = None,
+        client_hash: str | None = None,
         wordlist_csv: str = "",
         wordlist_images: dict[str, bytes] | None = None,
     ) -> Job:
@@ -940,7 +1148,13 @@ class JobManager:
             (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
         if layout_json.strip():
             (job_dir / LAYOUT_FILENAME).write_text(layout_json, encoding="utf-8")
-        job = Job(id=job_id, dir=job_dir, params=params, owner=owner)
+        job = Job(
+            id=job_id,
+            dir=job_dir,
+            params=params,
+            owner=owner,
+            client_hash=client_hash,
+        )
         with self._lock:
             self.jobs[job_id] = job
         self._save(job)
@@ -970,6 +1184,23 @@ class JobManager:
         return sum(
             1 for j in self.jobs.values() if j.owner == owner and j.created_at >= since
         )
+
+    def recent_client_count(self, client_hash: str, since: float) -> int:
+        """Count persisted non-exempt jobs for one nonreversible IP identity."""
+        return sum(
+            1
+            for job in self.jobs.values()
+            if job.client_hash == client_hash and job.created_at >= since
+        )
+
+    def status_counts(self) -> dict[str, int]:
+        """metrics向けの状態別件数。投入と同時でもdict反復を壊さない。"""
+        counts = {name: 0 for name in ("queued", "running", "done", "error", "canceled")}
+        with self._lock:
+            for job in self.jobs.values():
+                if job.status in counts:
+                    counts[job.status] += 1
+        return counts
 
     def _cleanup_loop(self) -> None:
         """完了から一定時間経ったジョブを定期的に消す(公開インスタンスの容量対策)。"""
@@ -1015,10 +1246,15 @@ class JobManager:
 
     def _save(self, job: Job) -> None:
         data = job.to_dict(with_log=False)
+        # status.jsonは公開配信せずProtectHome/StateDirectory内に置く運用データなので、
+        # 再起動後の診断用に実際の例外を保存する。API応答だけ上で一般化する。
+        data["error"] = job.error
         # owner/finished_at はAPIのレスポンス(to_dict)には出さないが、再起動後も
         # 持ち主判定・自動削除ができるよう status.json には残す
         if job.owner:
             data["owner"] = job.owner
+        if job.client_hash:
+            data["client_hash"] = job.client_hash
         if job.finished_at:
             data["finished_at"] = job.finished_at
         if job.video:
@@ -1131,6 +1367,10 @@ def create_app(
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     from .editor_io import editor_sessions_dir
 
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    configured_ip_hash_key = os.environ.get(IP_HASH_KEY_ENV, "").strip()
+
     config: dict[str, Any] = {
         # 単語画像はジョブをまたいで共有する(初回ジョブの動画ステージが
         # 画像ダウンロードで数分かかるため。2回目以降はほぼゼロになる)
@@ -1148,14 +1388,56 @@ def create_app(
         "video_image_lead_sec": video_image_lead_sec,
         # 合成の所要時間の目安(曲秒あたりの実処理秒)を実行ごとに記録して次回に使う
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
+        # Missing configuration still enforces an in-process IP backstop, but
+        # readiness reports it as non-persistent until operators provide a key.
+        "ip_hash_key": (
+            configured_ip_hash_key.encode("utf-8")
+            if configured_ip_hash_key
+            else secrets.token_bytes(32)
+        ),
+        "ip_hash_persistent": bool(configured_ip_hash_key),
     }
     manager = JobManager(jobs_dir, config)
-    # サムネプレビューの短期レート制限(セッション単位)。ジョブの日次クォータとは別枠
-    preview_limiter = RateLimiter()
+    # 高コストGETの短期レート制限。セッション枠に加えてIP枠も必ず確認するため、
+    # cookieを削除してもバックストップを回避できない。IP枠はNATを考慮して広め。
+    get_session_limiter = RateLimiter(
+        limit_env=GET_RATE_LIMIT_ENV,
+        window_env=GET_RATE_WINDOW_ENV,
+        default_limit=DEFAULT_GET_RATE_LIMIT,
+        default_window=DEFAULT_GET_RATE_WINDOW,
+    )
+    get_ip_limiter = RateLimiter(
+        limit_env=GET_IP_RATE_LIMIT_ENV,
+        window_env=GET_IP_RATE_WINDOW_ENV,
+        default_limit=DEFAULT_GET_IP_RATE_LIMIT,
+        default_window=DEFAULT_GET_RATE_WINDOW,
+    )
+    get_hit_session_limiter = RateLimiter(
+        limit_env=GET_CACHE_HIT_RATE_LIMIT_ENV,
+        window_env=GET_RATE_WINDOW_ENV,
+        default_limit=DEFAULT_GET_CACHE_HIT_RATE_LIMIT,
+        default_window=DEFAULT_GET_RATE_WINDOW,
+    )
+    get_hit_ip_limiter = RateLimiter(
+        limit_env=GET_CACHE_HIT_IP_RATE_LIMIT_ENV,
+        window_env=GET_IP_RATE_WINDOW_ENV,
+        default_limit=DEFAULT_GET_CACHE_HIT_IP_RATE_LIMIT,
+        default_window=DEFAULT_GET_RATE_WINDOW,
+    )
+    preview_session_limiter = RateLimiter()
+    get_slots = threading.BoundedSemaphore(GET_CONCURRENCY)
+    # Final quota check and job persistence form one reservation across request threads.
+    quota_submit_lock = threading.Lock()
     # よく使う単語リストの前処理(parse_tidy)は大きいリストだと数分かかる。
     # 指定があればバックグラウンドで先に構築しておき、初回変換も速くする
     start_warmup_thread()
-    app = FastAPI(title="soramimic-video API")
+    # Swagger/OpenAPIは専用の保護ルートとして後で登録する。FastAPI既定の無条件公開は切る。
+    app = FastAPI(
+        title="soramimic-video API",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -1173,7 +1455,32 @@ def create_app(
 
         非公開モードでは何もしない(cookieも発行しない)ので従来と同じ挙動。
         """
-        if not is_public_mode():
+        if is_simple_ui() and request.url.path in {
+            "/api/editor-preview",
+            "/api/editor-session",
+            "/api/wordlist-check",
+        }:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if is_simple_ui() and request.url.path.startswith("/editor/"):
+            allowed_editor_path = request.url.path == "/editor/conf/setting.json" or bool(
+                re.fullmatch(r"/editor/wordlists/[A-Za-z0-9_-]+\.csv", request.url.path)
+            )
+            if not allowed_editor_path:
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if is_simple_ui() and request.method == "POST" and request.url.path in {
+            "/api/jobs",
+            "/api/midi-check",
+        }:
+            maximum = int(
+                _env_float(SIMPLE_MAX_REQUEST_BYTES_ENV, DEFAULT_SIMPLE_MAX_REQUEST_BYTES)
+            )
+            try:
+                length = int(request.headers.get("content-length", ""))
+            except ValueError:
+                length = -1
+            if maximum > 0 and (length < 0 or length > maximum):
+                return JSONResponse({"detail": "入力が大きすぎます"}, status_code=413)
+        if not is_public_mode() or request.url.path == "/healthz":
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
         issued = not re.fullmatch(r"[0-9a-f]{32}", session)
@@ -1199,6 +1506,203 @@ def create_app(
         # 他人のジョブが見えてしまわないようにする(fail-closed)
         return getattr(request.state, "session", None) or "-"
 
+    def _peer_ip(request: Request) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+        try:
+            return ipaddress.ip_address(request.client.host) if request.client else None
+        except ValueError:
+            return None
+
+    def _trusted_proxy(request: Request) -> bool:
+        peer = _peer_ip(request)
+        if peer is None:
+            return False
+        # loopbackも自動では信頼しない。cloudflared等のproxy CIDRを明示設定する。
+        for raw in os.environ.get(TRUSTED_PROXY_IPS_ENV, "").split(","):
+            try:
+                if raw.strip() and peer in ipaddress.ip_network(raw.strip(), strict=False):
+                    return True
+            except ValueError:
+                logger.warning("%s に不正なCIDRがあります", TRUSTED_PROXY_IPS_ENV)
+        return False
+
+    def _request_ip(request: Request) -> str:
+        """信頼proxyだけCF接続元ヘッダを採用し、rate limitキーを偽装させない。"""
+        if _trusted_proxy(request):
+            forwarded = request.headers.get("cf-connecting-ip", "").strip()
+            try:
+                if forwarded:
+                    return str(ipaddress.ip_address(forwarded))
+            except ValueError:
+                pass
+        peer = _peer_ip(request)
+        return str(peer) if peer is not None else "unknown"
+
+    def _client_hash(request: Request) -> str:
+        """Return a short, nonreversible, deployment-keyed client identity."""
+        return hmac.new(
+            config["ip_hash_key"],
+            _request_ip(request).encode("ascii", errors="strict"),
+            hashlib.sha256,
+        ).hexdigest()[:16]
+
+    def _quota_exemption_allowlist() -> set[str]:
+        return {
+            canonical_email(raw)
+            for raw in os.environ.get(QUOTA_EXEMPT_EMAILS_ENV, "").split(",")
+            if canonical_email(raw)
+        }
+
+    def _access_issuer() -> str:
+        issuer = os.environ.get(CF_ACCESS_TEAM_DOMAIN_ENV, "").strip()
+        if issuer.endswith("/"):
+            issuer = issuer[:-1]
+        return issuer if valid_issuer(issuer) else ""
+
+    def _access_config_valid() -> bool:
+        return bool(
+            _access_issuer()
+            and os.environ.get(CF_ACCESS_AUD_ENV, "").strip()
+        )
+
+    async def _quota_exempt(request: Request) -> bool:
+        """Grant quota exemption only to verified Access users behind local proxy."""
+        allowlist = _quota_exemption_allowlist()
+        peer = _peer_ip(request)
+        if (
+            not is_public_mode()
+            or not allowlist
+            or peer is None
+            or not peer.is_loopback
+            or not _trusted_proxy(request)
+        ):
+            return False
+        assertion = request.headers.get("cf-access-jwt-assertion", "")
+        issuer = _access_issuer()
+        audience = os.environ.get(CF_ACCESS_AUD_ENV, "").strip()
+        if not issuer or not audience:
+            return False
+        email = await run_in_threadpool(
+            verify_access_email,
+            assertion,
+            issuer=issuer,
+            audience=audience,
+        )
+        return email is not None and email in allowlist
+
+    def _allow_expensive_get(
+        request: Request,
+        session_limiter: RateLimiter | None = None,
+        *,
+        cache_hit: bool = False,
+    ) -> bool:
+        if not is_public_mode():
+            # private版に以前からあるthumbnail miss制限だけは互換維持する。
+            if session_limiter is None or cache_hit:
+                return True
+            return session_limiter.allow(f"ip:{_request_ip(request)}")
+        session = getattr(request.state, "session", None)
+        session_key = f"session:{session}" if session else f"ip:{_request_ip(request)}"
+        # 両方を評価する。短絡するとIP側の記録が抜け、cookieローテーションで回避できる。
+        chosen_session = (
+            get_hit_session_limiter if cache_hit else (session_limiter or get_session_limiter)
+        )
+        chosen_ip = get_hit_ip_limiter if cache_hit else get_ip_limiter
+        session_ok = chosen_session.allow(session_key)
+        ip_ok = chosen_ip.allow(f"ip:{_request_ip(request)}")
+        return session_ok and ip_ok
+
+    @contextmanager
+    def _expensive_get_slot():
+        if not is_public_mode():
+            yield
+            return
+        if not get_slots.acquire(timeout=2.0):
+            raise HTTPException(status_code=429, detail="画像処理が混み合っています")
+        try:
+            yield
+        finally:
+            get_slots.release()
+
+    def _ops_allowed(request: Request) -> bool:
+        if os.environ.get(EXPOSE_OPS_ENV, "").strip().lower() in ("1", "true", "yes"):
+            return True
+        # public版はloopbackでも自動許可しない(cloudflaredもloopbackに見えるため)。
+        peer = _peer_ip(request)
+        local_ops = not is_public_mode() or os.environ.get(
+            ALLOW_LOCAL_OPS_ENV, ""
+        ).strip().lower() in ("1", "true", "yes")
+        if (
+            local_ops
+            and peer is not None
+            and peer.is_loopback
+            and not request.headers.get("cf-connecting-ip")
+        ):
+            return True
+        expected = os.environ.get(OPS_TOKEN_ENV, "").strip()
+        supplied = request.headers.get("x-soramimic-ops-token", "").strip()
+        return bool(
+            _trusted_proxy(request)
+            and expected
+            and supplied
+            and secrets.compare_digest(expected, supplied)
+        )
+
+    def _require_ops(request: Request) -> None:
+        if not _ops_allowed(request):
+            # endpointの存在や認証方式を一般利用者に教えない。
+            raise HTTPException(status_code=404, detail="Not Found")
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> JSONResponse:
+        return JSONResponse({"status": "ok"}, headers={"Cache-Control": "no-store"})
+
+    @app.get("/readyz", include_in_schema=False)
+    def readyz(request: Request) -> JSONResponse:
+        _require_ops(request)
+        checks: dict[str, bool] = {
+            "jobs_dir_writable": jobs_dir.is_dir() and os.access(jobs_dir, os.W_OK),
+            "persistent_ip_hash": (
+                not is_public_mode() or bool(config["ip_hash_persistent"])
+            ),
+        }
+        if _quota_exemption_allowlist():
+            checks["access"] = _access_config_valid()
+        ready = all(checks.values())
+        return JSONResponse(
+            {"status": "ready" if ready else "not ready", "checks": checks},
+            status_code=200 if ready else 503,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics(request: Request) -> PlainTextResponse:
+        _require_ops(request)
+        counts = manager.status_counts()
+        body = "".join(
+            f'soramimic_jobs{{status="{status}"}} {count}\n'
+            for status, count in counts.items()
+        )
+        return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
+
+    @app.get("/openapi.json", include_in_schema=False)
+    def protected_openapi(request: Request) -> JSONResponse:
+        _require_ops(request)
+        return JSONResponse(app.openapi())
+
+    @app.get("/docs", include_in_schema=False)
+    def protected_docs(request: Request) -> Response:
+        _require_ops(request)
+        from fastapi.openapi.docs import get_swagger_ui_html
+
+        return get_swagger_ui_html(openapi_url="/openapi.json", title=f"{app.title} - Swagger UI")
+
+    @app.get("/redoc", include_in_schema=False)
+    def protected_redoc(request: Request) -> Response:
+        _require_ops(request)
+        from fastapi.openapi.docs import get_redoc_html
+
+        return get_redoc_html(openapi_url="/openapi.json", title=f"{app.title} - ReDoc")
+
     # editorの静的ビルド(scripts/build-editor.sh の出力)があれば /editor/ で配信する。
     # 無くてもサーバーは起動する(WebUIはeditor連携ボタンを隠すだけ)。
     editor_root = (editor_dist or DEFAULT_EDITOR_DIST).resolve()
@@ -1211,11 +1715,11 @@ def create_app(
     # 同梱サンプル曲(いずれも詞・曲パブリックドメイン、examples/gen_samples.py で生成)。
     # SORAMIMIC_SAMPLES_DIR を設定するとそのディレクトリのサンプルに差し替わる。
     def _sample_ids() -> set[str]:
-        return {str(s["id"]) for s in load_samples() if s.get("id")}
+        return {str(s["id"]) for s in visible_samples() if s.get("id")}
 
     @app.get("/api/samples")
     def list_samples() -> list[dict[str, Any]]:
-        return load_samples()
+        return visible_samples()
 
     # サンプル曲は作り直されることがある(同じURLで中身が変わる)。ブラウザが
     # 古い版を使い回して「更新前の曲」で生成してしまわないよう、毎回問い合わせさせる。
@@ -1253,7 +1757,8 @@ def create_app(
         )
 
     @app.get("/api/config")
-    def get_config(request: Request) -> dict[str, Any]:
+    async def get_config(request: Request, response: Response) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
         auth_required = bool(os.environ.get(API_KEY_ENV))
         try:
             _require_api_key(request)
@@ -1268,6 +1773,9 @@ def create_app(
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_layouts.json)
             "wordlist_layouts": load_wordlist_layouts(),
             "editor": editor_available,
+            # 簡易UIでeditorボタンを隠しても、同梱のsetting.jsonから
+            # 単語リスト選択肢は読むために別の能力値として返す。
+            "wordlist_config": editor_available or is_simple_ui(),
             # 自作の単語リスト(CSV/zipアップロード)の受け入れ上限
             "max_wordlist_bytes": wordlist_csv_mod.max_bytes(),
             "max_wordlist_rows": wordlist_csv_mod.max_rows(),
@@ -1275,10 +1783,23 @@ def create_app(
             "max_wordlist_image_bytes": wordlist_zip_mod.max_image_bytes(),
             "max_wordlist_images": wordlist_zip_mod.max_images(),
         }
+        if is_simple_ui():
+            launch = load_launch_catalog()
+            conf["simple_ui"] = True
+            conf["launch_wordlists"] = launch.get("wordlists", [])
+            conf["fixed_voicevox_style"] = int(launch.get("voicevox_style", 3003))
+            # 初回版は「曲×単語リスト」の核だけを見せる。エディタと
+            # 自作リストは後続アップデートで導線を開ける。
+            conf["editor"] = False
         # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
         if is_public_mode():
             conf["public"] = True
-            conf["daily_quota"] = int(_env_float(DAILY_QUOTA_ENV, DEFAULT_DAILY_QUOTA))
+            quota_exempt = await _quota_exempt(request)
+            conf["quota_exempt"] = quota_exempt
+            if not quota_exempt:
+                conf["daily_quota"] = int(
+                    _env_float(DAILY_QUOTA_ENV, DEFAULT_DAILY_QUOTA)
+                )
             conf["max_song_seconds"] = int(
                 _env_float(MAX_SONG_SECONDS_ENV, DEFAULT_MAX_SONG_SECONDS)
             )
@@ -1314,15 +1835,19 @@ def create_app(
         """レイアウト編集のプレビューに使う代表行(画像のある最初の行、なければ先頭)。"""
         from .convert import resolve_wordlist
 
+        wordlist = require_launch_wordlist(wordlist)
         try:
             with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
-                rows = list(csv.DictReader(f))
+                rows = csv.DictReader(f)
+                first = next(rows, None)
+                if first and first.get("image"):
+                    return first
+                return next((row for row in rows if row.get("image")), first)
         except (FileNotFoundError, OSError):
             return None
-        return next((r for r in rows if r.get("image")), rows[0] if rows else None)
 
     @app.get("/api/wordlist-columns", dependencies=[Depends(_require_api_key)])
-    def wordlist_columns(wordlist: str = "") -> dict[str, Any]:
+    def wordlist_columns(request: Request, wordlist: str = "") -> dict[str, Any]:
         """単語リストの列名一覧と代表行(レイアウト編集のWYSIWYG表示向け)。
 
         リストが未指定・見つからない場合も、替え歌単語のフィールドは返す。
@@ -1332,6 +1857,9 @@ def create_app(
         cols: list[str] = []
         row = None
         if wordlist.strip():
+            wordlist = require_launch_wordlist(wordlist)
+            if not _allow_expensive_get(request, cache_hit=True):
+                raise HTTPException(status_code=429, detail="単語リストの取得が続いています")
             try:
                 with open(resolve_wordlist(wordlist.strip()), encoding="utf-8") as f:
                     cols = next(csv.reader(f), [])
@@ -1353,28 +1881,34 @@ def create_app(
             "row": row,
         }
 
-    def _wordlist_image_urls(wordlist: str) -> set[str]:
-        """単語リストのimage列に実在する画像URLの集合(URL指定プロキシの許可リスト)。"""
+    def _wordlist_has_image_url(wordlist: str, url: str) -> bool:
+        """URLがimage列に実在するかを走査し、見つけ次第止める。"""
         from .convert import resolve_wordlist
 
+        wordlist = require_launch_wordlist(wordlist)
         try:
             with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
-                return {r["image"] for r in csv.DictReader(f) if r.get("image")}
+                return any(row.get("image") == url for row in csv.DictReader(f))
         except (FileNotFoundError, OSError):
-            return set()
+            return False
 
     @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
-    def wordlist_image(wordlist: str = "", url: str = "") -> FileResponse:
+    def wordlist_image(request: Request, wordlist: str = "", url: str = "") -> FileResponse:
         """レイアウト編集プレビュー用の画像(WYSIWYG表示向け)。
 
         url指定時はプレビューのキュー画像を返す。オープンプロキシ化を避けるため、
         指定した単語リストのimage列に実在するURLだけを取得して返す。
         url未指定時は代表行(単語リストの最初の画像あり行)の画像。
         """
-        from .video import download_image
+        from .video import cached_image, download_image
+
+        wordlist = require_launch_wordlist(wordlist)
+        # URL照合にもCSV走査が要るため、cache判定より先に広いhit枠を適用する。
+        if not _allow_expensive_get(request, cache_hit=True):
+            raise HTTPException(status_code=429, detail="画像の取得が続いています")
 
         if url:
-            if not wordlist.strip() or url not in _wordlist_image_urls(wordlist.strip()):
+            if not wordlist.strip() or not _wordlist_has_image_url(wordlist.strip(), url):
                 raise HTTPException(status_code=404, detail="画像が見つかりません")
             target = url
         else:
@@ -1382,7 +1916,14 @@ def create_app(
             if not row or not row.get("image"):
                 raise HTTPException(status_code=404, detail="画像のある行がありません")
             target = row["image"]
-        path = download_image(target, jobs_dir.resolve() / "image-cache")
+        cache_dir = jobs_dir.resolve() / "image-cache"
+        path = cached_image(target, cache_dir)
+        if path is None:
+            if not _allow_expensive_get(request):
+                raise HTTPException(status_code=429, detail="画像の取得が続いています")
+            with _expensive_get_slot():
+                # 待機中に別リクエストが保存していればネットワーク処理を繰り返さない。
+                path = cached_image(target, cache_dir) or download_image(target, cache_dir)
         if path is None:
             raise HTTPException(status_code=404, detail="画像を取得できません")
         return FileResponse(path)
@@ -1392,18 +1933,12 @@ def create_app(
 
         未知のIDは404。
         """
+        if is_simple_ui() and sample_id not in launch_sample_ids():
+            raise HTTPException(status_code=404, detail="そのサンプルはありません")
         entry = sample_entry(sample_id)
         if entry is None:
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return str(entry.get("title") or sample_id), str(entry.get("title_kana") or "")
-
-    def _preview_rate_key(request: Request) -> str:
-        """レート制限の単位。公開モードは匿名セッション、無ければ接続元IP。"""
-        session = getattr(request.state, "session", None)
-        if session:
-            return f"session:{session}"
-        client = request.client.host if request.client else "-"
-        return f"ip:{client}"
 
     @app.get("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
     def thumbnail_preview(
@@ -1429,7 +1964,7 @@ def create_app(
         単語画像は数秒だけ待って貼る。間に合わなかったときは文字だけのPNGを
         X-Preview-Images: pending で返し、裏で画像を取り切って同じキャッシュキーを
         絵入りに作り直す。UIは pending を見て数秒後に1回だけ取り直す
-        (そのときには作り直し済み=キャッシュヒットなのでレート制限も変換も
+        (そのときには作り直し済み=キャッシュヒットなので生成miss枠も変換も
         追加で消費しない)。
 
         ジョブではないので日次クォータは消費しないが、連打で変換が走り続けない
@@ -1441,9 +1976,12 @@ def create_app(
         from .thumbnail_preview import PreviewSpec, render_slot
 
         title, title_kana = _sample_title(sample)
-        wordlist = wordlist.strip()
+        wordlist = require_launch_wordlist(wordlist)
         if not wordlist:
             raise HTTPException(status_code=400, detail="単語リスト名(wordlist)が必要です")
+        # PreviewSpecの作成自体がCSV内容hash等を読むため、cache判定より前にも広い枠を置く。
+        if not _allow_expensive_get(request, cache_hit=True):
+            raise HTTPException(status_code=429, detail="プレビューの取得が続いています")
         try:
             spec = PreviewSpec.create(
                 title,
@@ -1460,7 +1998,7 @@ def create_app(
         hit = spec.cached(cache_dir)
         if hit is not None:
             return _preview_response(hit, cached=True, pending=spec.images_pending(cache_dir))
-        if not preview_limiter.allow(_preview_rate_key(request)):
+        if not _allow_expensive_get(request, preview_session_limiter):
             raise HTTPException(
                 status_code=429,
                 detail="プレビューの作成が続いています。少し待ってからお試しください。",
@@ -1515,6 +2053,8 @@ def create_app(
         レイアウト編集画面のプレビューを、単語リストの代表行1件ではなく実際の
         変換結果(replaced単語列)で描くための元データ。cueで動画のキュー順に送る。
         """
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
         from .align import parse_granularity_override
         from .editor_io import build_editor_preview
 
@@ -1566,7 +2106,7 @@ def create_app(
         """Turnstileが設定されていればトークンを検証する(未設定なら何もしない)。"""
         if not os.environ.get(TURNSTILE_SECRET_ENV, "").strip():
             return
-        client_ip = request.client.host if request.client else None
+        client_ip = _request_ip(request)
         if not verify_turnstile(token, client_ip):
             raise HTTPException(
                 status_code=403,
@@ -1574,7 +2114,13 @@ def create_app(
                 "ページを再読み込みしてもう一度お試しください。",
             )
 
-    def _check_public_limits(owner: str | None, midi_bytes: bytes) -> None:
+    def _check_public_limits(
+        owner: str | None,
+        client_hash: str | None,
+        midi_bytes: bytes,
+        *,
+        quota_exempt: bool = False,
+    ) -> None:
         """公開モードの投入制限(キュー上限・日次クォータ・曲長)をまとめて確認する。
 
         非公開モードでは何もしない。超過は429(混雑・クォータ)か400(曲長)。
@@ -1588,14 +2134,24 @@ def create_app(
                 detail=f"順番待ちが混み合っています(同時に{queue_limit}件まで)。"
                 "しばらく待ってからもう一度お試しください。",
             )
+        since = time.time() - 24 * 3600
         quota = int(_env_float(DAILY_QUOTA_ENV, DEFAULT_DAILY_QUOTA))
-        if owner and quota > 0:
-            used = manager.recent_count(owner, time.time() - 24 * 3600)
+        if not quota_exempt and owner and quota > 0:
+            used = manager.recent_count(owner, since)
             if used >= quota:
                 raise HTTPException(
                     status_code=429,
                     detail=f"1日に作れる本数の上限({quota}本)に達しました。"
                     "24時間ほど空けてからまたお試しください。",
+                )
+        ip_quota = int(_env_float(IP_DAILY_QUOTA_ENV, DEFAULT_IP_DAILY_QUOTA))
+        if not quota_exempt and client_hash and ip_quota > 0:
+            used = manager.recent_client_count(client_hash, since)
+            if used >= ip_quota:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"この接続元から1日に作れる本数の上限({ip_quota}本)"
+                    "に達しました。24時間ほど空けてからまたお試しください。",
                 )
         max_seconds = _env_float(MAX_SONG_SECONDS_ENV, DEFAULT_MAX_SONG_SECONDS)
         if max_seconds > 0:
@@ -1650,11 +2206,24 @@ def create_app(
         turnstile_token: str = Form(""),
     ) -> dict[str, Any]:
         _check_turnstile(request, turnstile_token)
-        midi_bytes = await midi.read()
+        quota_exempt = await _quota_exempt(request)
+        midi_bytes = await read_midi_upload(midi)
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
+        launch_sample_id = require_launch_midi(midi.filename, midi_bytes)
+        lyrics = require_launch_lyrics(launch_sample_id, lyrics)
+        if is_simple_ui() and (
+            (editor is not None and bool(editor.filename))
+            or (wordlist_csv is not None and bool(wordlist_csv.filename))
+            or bool(wordlist_text.strip())
+            or any(bool(image.filename) for image in wordlist_images)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="この入力形式は現在利用できません",
+            )
         owner = owner_of(request)
-        _check_public_limits(owner, midi_bytes)
+        client_hash = None if quota_exempt or not is_public_mode() else _client_hash(request)
         editor_bytes = None
         editor_payload: Any = None
         if editor is not None and editor.filename:
@@ -1679,6 +2248,24 @@ def create_app(
                 )
         except wordlist_csv_mod.WordlistCsvError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if is_simple_ui():
+            if editor_bytes is not None or custom is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="選択肢にある曲と単語リストを使ってください",
+                )
+            # 画面から選ばせないだけでなく、過去のlocalStorageや任意の
+            # HTTPクライアントから来た値もここで固定する。
+            launch = load_launch_catalog()
+            synthesizer = "voicevox"
+            voicevox_style = int(launch.get("voicevox_style", 3003))
+            auto_octave = True
+            transpose = 0
+            model = "MERROW"
+            layout = ""
+            layout_json = ""
+            original_credit = ""
+            credit_notice = ""
         # プレビューは元歌詞をそのまま歌わせるので替え歌の入力は不要
         if preview <= 0 and editor_bytes is None and custom is None and not wordlist.strip():
             raise HTTPException(
@@ -1717,6 +2304,8 @@ def create_app(
                 voicevox_auto_octave if voicevox_auto_octave is not None else True
             )
         wordlist = wordlist.strip()
+        if is_simple_ui() and wordlist:
+            wordlist = require_launch_wordlist(wordlist, status_code=422)
         # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
         # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
         if isinstance(editor_payload, dict):
@@ -1772,6 +2361,18 @@ def create_app(
                     wordlist = (
                         Path(resolved).stem if resolved.endswith(".csv") else resolved
                     )
+        if is_simple_ui() and preview <= 0:
+            launch_wordlists = {
+                str(name) for name in load_launch_catalog().get("wordlists", [])
+            }
+            if wordlist not in launch_wordlists:
+                raise HTTPException(
+                    status_code=422,
+                    detail="この単語リストは現在利用できません",
+                )
+            # レイアウトは単一の共通デザインではなく、選んだリストに
+            # 対応する検証済みの既定デザインにサーバー側で固定する。
+            layout = load_wordlist_layouts().get(wordlist, "")
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
@@ -1809,12 +2410,19 @@ def create_app(
                 params["wordlist_images"] = custom.image_count
             # 自作リストは絞り込み(where)の対象になる列が無いので付けない
             params["where"] = ""
-        job = manager.create(
-            midi_bytes, editor_bytes, lyrics, params,
-            layout_json=layout_json, owner=owner,
-            wordlist_csv=custom.csv.text if custom is not None else "",
-            wordlist_images=custom.images if custom is not None else None,
-        )
+        with quota_submit_lock:
+            _check_public_limits(
+                owner,
+                client_hash,
+                midi_bytes,
+                quota_exempt=quota_exempt,
+            )
+            job = manager.create(
+                midi_bytes, editor_bytes, lyrics, params,
+                layout_json=layout_json, owner=owner, client_hash=client_hash,
+                wordlist_csv=custom.csv.text if custom is not None else "",
+                wordlist_images=custom.images if custom is not None else None,
+            )
         return {"id": job.id}
 
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
@@ -1834,6 +2442,8 @@ def create_app(
         通れば「何語読めたか(と画像が何枚付いたか)」をUIに返して、ジョブを投げる前に
         確認できるようにする(/api/midi-check と同じ流儀)。ここではファイルを保存しない。
         """
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
         has_file = wordlist_csv is not None and bool(wordlist_csv.filename)
         has_text = bool(wordlist_text.strip())
         if has_file and has_text:
@@ -1915,6 +2525,7 @@ def create_app(
 
         if not re.fullmatch(r"[\w-]+", name):
             raise HTTPException(status_code=404, detail="単語リストが見つかりません")
+        require_launch_wordlist(name)
         try:
             path = resolve_wordlist(name)
         except FileNotFoundError as exc:
@@ -1975,15 +2586,21 @@ def create_app(
         解析できないMIDI(歌詞なし・XFKMなし・壊れている)はエラーではなく
         has_lyrics=false の判定結果として返す。UIが理由をそのまま出せるように。
         MIDIですらないファイルだけ400。
+
+        midi_lines には XF歌詞の行テキストをそのまま並べて返す(align_lines が
+        元歌詞との突き合わせに使うのと同じ表示テキスト)。自分のMIDIを選んだ
+        人はこれを専用モーダルの元歌詞欄の下敷きに使う。
         """
         import tempfile
 
         from .align import align_lines
         from .xfparse import analyze_midi
 
-        midi_bytes = await midi.read()
+        midi_bytes = await read_midi_upload(midi)
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
+        launch_sample_id = require_launch_midi(midi.filename, midi_bytes)
+        lyrics = require_launch_lyrics(launch_sample_id, lyrics)
         lyric_lines = [ln.strip() for ln in lyrics.splitlines()]
         lyric_lines = [ln for ln in lyric_lines if ln]
         with tempfile.TemporaryDirectory() as td:
@@ -1998,6 +2615,7 @@ def create_app(
                     "lines": 0,
                     "lyrics_lines": len(lyric_lines),
                     "unmatched_lines": 0,
+                    "midi_lines": [],
                     "detail": str(exc),
                 }
             if lyric_lines:
@@ -2009,6 +2627,8 @@ def create_app(
             "lyrics_lines": len(lyric_lines),
             # 元歌詞を渡していないときは全行が「対応なし」になるので0で返す
             "unmatched_lines": unmatched if lyric_lines else 0,
+            # 元歌詞欄の下敷き。表記が空の行は読みで代用する。
+            "midi_lines": [ln.xf_surface or ln.xf_kana for ln in project.lines],
             "detail": "",
         }
 
@@ -2054,6 +2674,8 @@ def create_app(
         video が受け取るのはその生テキストだけで、字幕の行対応づけは従来どおり
         自前の align_lines で行う(:mod:`soramimic_video.editor_io` 参照)。
         """
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
         import tempfile
 
         from .align import align_lines
@@ -2201,7 +2823,7 @@ def create_app(
             media_type="text/csv; charset=utf-8",
         )
 
-    if editor_available:
+    if editor_available and not is_simple_ui():
         # 上のルートで拾わなかった /editor/* は静的ビルドから配信する。
         # html=True で /editor/ と /editor/editor.html が引ける。
         app.mount(

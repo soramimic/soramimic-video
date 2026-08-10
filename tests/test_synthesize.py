@@ -213,6 +213,17 @@ def test_build_musicxml(tmp_path: Path):
     assert xml.count("<text>ム</text>") == 1
 
 
+def test_build_musicxml_silences_explicit_empty_lyric(tmp_path: Path):
+    project = _project(tmp_path)
+    lyric_map = build_lyric_map(project)
+    lyric_map[1] = ""
+
+    root = ET.fromstring(build_musicxml(project, lyric_map))
+    notes = list(root.iter("note"))
+    middle = next(n for n in notes if n.findtext("duration") == "240" and n.find("lyric") is None)
+    assert middle.find("rest") is not None
+
+
 def test_build_musicxml_transpose(tmp_path: Path):
     project = _project(tmp_path)
     xml = build_musicxml(project, {})

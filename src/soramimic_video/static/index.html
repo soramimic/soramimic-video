@@ -491,7 +491,8 @@
         aria-label="替え歌を編集" title="替え歌を編集">
         <span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>
     </div>
-    <button type="button" id="lucky" class="btn-sm" title="曲と単語リストをランダムに選ぶ">
+    <button type="button" id="lucky" class="btn-sm" disabled
+      title="曲と単語リストをランダムに選ぶ">
       <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
   </div>
   <!-- ⚙を押したときの応答。押したボタンのすぐ下に出す -->
@@ -1078,11 +1079,18 @@ let resumed = false;
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
 // 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
 let wordlistLayouts = {};
+let simpleMode = false;
+let launchWordlists = [];
+let fixedVoicevoxStyle = 3003;
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
+  simpleMode = !!conf.simple_ui;
+  launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
+  fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
+  $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
   // 開いたうえで、そこまでスクロールして見えるようにする
   if (conf.auth_required && !apiKey()) {
@@ -1110,9 +1118,10 @@ async function loadConfig() {
   $("editor-embed-controls").hidden = !conf.editor;
   setupPublicMode(conf);
   setupTurnstile(conf.turnstile_site_key || "");
-  await loadWordlistSelect(conf.editor);
+  await loadWordlistSelect(conf.wordlist_config ?? conf.editor);
   updateParodyStatus();
   await restoreForm();  // wordlist選択肢が揃った後に前回の入力を復元(初回のみ)
+  applySimpleDefaults();
   leUpdateStatus();     // 復元した編集の有無をフォーム側の表示に反映
   // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
   await initBuilder();
@@ -1126,6 +1135,26 @@ async function loadConfig() {
     $("status-line").textContent = "実行中のジョブに再接続しました";
     watch(active.id);
   }
+}
+
+function applySimpleDefaults() {
+  if (!simpleMode) return;
+  synthesizerTouched = true;
+  $("synthesizer").value = "voicevox";
+  const style = [...$("voicevox-style").options]
+    .find((o) => Number(o.value) === fixedVoicevoxStyle);
+  if (style) $("voicevox-style").value = style.value;
+  $("auto-octave").checked = true;
+  $("transpose").value = "0";
+  $("original-credit").value = "";
+  $("credit-notice").value = "";
+  const layout = wordlistLayouts[$("wordlist").value.trim()] || "";
+  setChoice("layout", layout);
+  lastAutoLayout = layout;
+  leClearLayout();
+  toggleSynthOpts();
+  updateTransposeEnabled();
+  updateVoicevoxCredit();
 }
 
 // ユーザーが自分でエンジンを選んだか(復元も含む)。既定の上書きを避けるため。
@@ -1194,7 +1223,11 @@ function setupPublicMode(conf) {
   publicMode = !!conf.public;
   if (!publicMode) return;
   const limits = [];
-  if (conf.daily_quota) limits.push(`1日に作れるのは${conf.daily_quota}本までです`);
+  if (conf.quota_exempt === true) {
+    limits.push("検証アカウント：1日の回数制限なし");
+  } else if (conf.daily_quota) {
+    limits.push(`1日に作れるのは${conf.daily_quota}本までです`);
+  }
   if (conf.max_song_seconds) {
     limits.push(conf.max_song_seconds >= 60
       ? `曲の長さは約${Math.round(conf.max_song_seconds / 60)}分までです`
@@ -1547,40 +1580,56 @@ async function poll(id, seq = pollSeq) {
   }
 }
 
-// ---- 完成した動画をシェアする ----
-// 導線は2本に分ける。Xのシェア拡張はOSのシェアシート経由だと動画が添付された
-// かどうか分かりにくい(iOSで特に)ので、
-//  - 「動画を保存」… Web Share API(レベル2)が使える環境ではOSのシェアシート
-//    (ビデオを保存・LINE等)、使えない環境(多くのPCブラウザ)はそのまま保存。
-//  - 「Xでポスト」… 必ずXの投稿画面(web intent)を開くだけ。動画は手で添付。
-// 並び順は実際の手順どおり「保存 → ポスト」。先に保存しないと添付するものがないので、
-// 保存ボタンを左(先)に置く。
-// 文末はハッシュタグにしない。Xの投稿画面はカーソル直前がハッシュタグだと
-// 補完UIを開いてしまい、初見だと「なぜタグ選択?」と混乱するため、
-// 末尾にサイトURLを置いてタグを文中に沈める(リンクの同伴も兼ねる)。
+// ---- 完成した動画を保存・共有する ----
+// UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
+// 誤判定しやすい。まずWeb Share APIで動画ファイルを実際に共有できるかを判定し、
+// OS判定は共有シートの案内文を分かりやすくするためだけに使う。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #soramimic\n" + location.origin;
-// シェアシートに動画ファイルを渡せる環境かどうかでボタンの文言を変える
-const SAVE_LABEL = navigator.share ? "動画を保存・共有" : "動画を保存";
+
+function mobilePlatform() {
+  const platform = (navigator.userAgentData && navigator.userAgentData.platform)
+    || navigator.platform || "";
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/i.test(ua)
+      || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return "ios";
+  if (/Android/i.test(ua) || /Android/i.test(platform)) return "android";
+  return "other";
+}
+
+function supportsVideoFileShare() {
+  if (!navigator.share || !navigator.canShare || typeof File === "undefined") return false;
+  try {
+    const probe = new File([new Uint8Array([0])], "soramimic.mp4", { type: "video/mp4" });
+    return navigator.canShare({ files: [probe] });
+  } catch (_) {
+    return false;
+  }
+}
+
+const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
+const SAVE_LABEL = FILE_SHARE_SUPPORTED ? "動画を保存・共有" : "動画を保存";
+
+function saveHint() {
+  if (!FILE_SHARE_SUPPORTED) return "動画ファイルをダウンロードします。";
+  if (mobilePlatform() === "ios") {
+    return "iPhone・iPadの共有メニューから「ビデオを保存」「ファイルに保存」、または共有先を選べます。";
+  }
+  if (mobilePlatform() === "android") {
+    return "Androidの共有メニューから保存先または共有先を選べます。";
+  }
+  return "端末の共有メニューから保存先または共有先を選べます。";
+}
+
 const SHARE_HTML =
   `<p class="share-row">` +
   `<button type="button" id="share-save" class="btn-sm">${SAVE_LABEL}</button>` +
-  `<button type="button" id="share-x" class="btn-x btn-sm">Xでポスト</button>` +
   `</p>` +
-  `<p class="hint" id="share-hint">` +
-  `動画はポストに自動では付きません。` +
-  `①「${SAVE_LABEL}」で端末に保存 → ②「Xでポスト」で投稿画面を開いて添付してください。` +
-  `</p>`;
+  `<p class="hint" id="share-hint">${saveHint()}</p>`;
 
 // ファイル添付付きのシェアが使えるか(動画を1本渡せるか)は実ファイルで判定する
 function canShareFiles(file) {
   return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
-}
-
-function openXIntent() {
-  const url = "https://twitter.com/intent/tweet?text="
-    + encodeURIComponent(SHARE_TEXT);
-  window.open(url, "_blank", "noopener");
 }
 
 function videoFileName(videoUrl) {
@@ -1600,13 +1649,11 @@ function downloadVideo(videoUrl) {
 }
 
 function bindShare(videoUrl) {
-  const xBtn = $("share-x");
   const saveBtn = $("share-save");
-  if (xBtn) xBtn.addEventListener("click", () => openXIntent());
   if (!saveBtn) return;
   saveBtn.addEventListener("click", async () => {
     if (!videoUrl) return;
-    if (!navigator.share) return downloadVideo(videoUrl);
+    if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
     saveBtn.disabled = true;
     const label = saveBtn.textContent;
     saveBtn.textContent = "準備中…";
@@ -1710,6 +1757,10 @@ async function submitJob(previewSec, previewMode) {
   // 押していなくても、その編集がそのまま使われる(editorSourceForSubmit)。
   // 来歴が今の選択と食い違う編集は使わず、自動変換に落とす。
   const editorSrc = editorSourceForSubmit();
+  if (simpleMode) {
+    editorSrc.file = null;
+    editorSrc.live = false;
+  }
   // editor.jsonがあると単語リスト指定は無視されるため、食い違ったまま
   // 高コストな生成が走る前に最終確認を挟む(自動取り込みぶんは来歴が
   // 一致していることを確かめてあるので確認は要らない)
@@ -1732,10 +1783,11 @@ async function submitJob(previewSec, previewMode) {
   if (editorSrc.file) form.append("editor", editorSrc.file);
   form.append("lyrics", $("lyrics").value);
   form.append("model", $("model").value);
-  form.append("synthesizer", $("synthesizer").value);
-  form.append("voicevox_style", $("voicevox-style").value || "3003");
-  form.append("auto_octave", $("auto-octave").checked ? "true" : "false");
-  form.append("transpose", $("transpose").value.trim() || "0");
+  form.append("synthesizer", simpleMode ? "voicevox" : $("synthesizer").value);
+  form.append("voicevox_style", simpleMode
+    ? String(fixedVoicevoxStyle) : ($("voicevox-style").value || "3003"));
+  form.append("auto_octave", simpleMode ? "true" : ($("auto-octave").checked ? "true" : "false"));
+  form.append("transpose", simpleMode ? "0" : ($("transpose").value.trim() || "0"));
   form.append("preview", String(previewSec));
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(midi));
@@ -1750,8 +1802,10 @@ async function submitJob(previewSec, previewMode) {
   // 失敗して前のリストのJSONが残った等)がそのままサーバー側で優先され、
   // 別の単語リスト向けのカードで生成されてしまう(api.pyはlayout.jsonを名前より
   // 優先する)。編集していなければ名前だけ送り、サーバーに読ませる。
-  if (leDirty && $("layout-json").value.trim()) {
-    form.append("layout_json", $("layout-json").value);
+  if (!simpleMode) {
+    if (leDirty && $("layout-json").value.trim()) {
+      form.append("layout_json", $("layout-json").value);
+    }
   }
   if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
   setBusy(true);
@@ -1950,6 +2004,9 @@ let midiCheckSeq = 0;       // 応答の追い越しを捨てるための世代�
 let midiCheckTimer = null;
 let midiChecking = null;    // 検証中のPromise(投入・編集の前に待つ)
 let midiRejecting = false;  // 拒否のクリアで自分自身を呼び直さないための番人
+// 最後に通った検証結果。File の同一性も持ち、別のファイルに前回の
+// midi_lines を流用しない。自分のMIDIモーダルの元歌詞欄の下敷きに使う。
+let lastMidiCheck = null;
 
 function scheduleMidiCheck() {
   if (midiRejecting) return;
@@ -1968,7 +2025,7 @@ function clearMidiNotices() {
 }
 
 // 歌詞なしMIDIはその場で取り消す。理由と「どうすれば作れるか」を1行添える。
-function rejectMidi(detail) {
+function rejectMidi(detail, notMidi = false) {
   midiRejecting = true;
   try {
     $("midi").value = "";
@@ -1978,7 +2035,9 @@ function rejectMidi(detail) {
   }
   $("midi-restore-hint").hidden = true;
   $("sample-status").textContent = "";
-  const text = "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。"
+  const text = (notMidi
+    ? "⚠ このファイルはMIDIとして読めないので使えません(取り消しました)。"
+    : "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。")
     + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
     + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
     + (detail ? `\n(${detail})` : "");
@@ -2017,20 +2076,27 @@ async function checkMidi() {
   const f = $("midi").files[0];
   if (!f) { clearMidiNotices(); return; }
   let body;
+  let notMidi = false;
   try {
     const form = new FormData();
     form.append("midi", f);
     form.append("lyrics", $("lyrics").value);
     const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
     body = await res.json();
-    if (!res.ok) throw new Error(body.detail || res.status);
+    if (!res.ok) {
+      // 拡張子だけMIDIのファイルも400ならその場で取り消す。
+      // 401・500等は内容を判定できないので従来どおり生成側へ委ねる。
+      notMidi = res.status === 400 && !!body.detail;
+      if (!notMidi) return;
+    }
   } catch {
     // 検証そのものに失敗したときは黙って通す(生成側で従来どおりのエラーになる)
     return;
   }
   if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
   clearMidiNotices();
-  if (!body.has_lyrics) { rejectMidi(body.detail); return; }
+  if (notMidi || !body.has_lyrics) { rejectMidi(body.detail, notMidi); return; }
+  lastMidiCheck = { file: f, lines: body.midi_lines || [] };
   renderLyricsMidiWarning(body);
 }
 
@@ -2101,10 +2167,9 @@ function luckyCombo(sampleId, wordlistName) {
   };
 }
 
-// ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
-// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
-// 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
-function luckyRandomCombo() {
+// 現在値と異なるランダム候補。初期化前や候補が1つしかないときは
+// 空になり、「押せるのに変わらない」状態を作らない。
+function luckyCandidatePools() {
   const currentSampleId = $("sample-select").value;
   const samples = [...$("sample-select").options]
     .filter((o) => o.value && o.value !== currentSampleId);
@@ -2113,6 +2178,19 @@ function luckyRandomCombo() {
   const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
   const currentWordlist = currentWordlistName();
   const alternatives = all.filter((o) => nameOf(o) !== currentWordlist);
+  return { samples, alternatives, nameOf };
+}
+
+function syncLuckyAvailability() {
+  const { samples, alternatives } = luckyCandidatePools();
+  $("lucky").disabled = !samples.length || !alternatives.length;
+}
+
+// ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
+// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
+// 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
+function luckyRandomCombo() {
+  const { samples, alternatives, nameOf } = luckyCandidatePools();
   if (!samples.length || !alternatives.length) return null;
   const fast = alternatives.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
   const pool = fast.length ? fast : alternatives;
@@ -2175,6 +2253,7 @@ function syncBuilderValues() {
     synth.remove();
   }
   card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
+  syncLuckyAvailability();
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -4215,11 +4294,31 @@ async function hostUploadSong() {
   if (!$("midi").files[0]) {
     throw new Error("そのMIDIは使えません(歌詞入りのXF形式MIDIが必要です)");
   }
+  prefillOwnMidiLyrics($("midi").files[0]);
   // サンプルの選択を外す。残すと投入前の突き合わせ(ensureSelectedSampleMidi)が
   // サンプルのMIDIを取り直して、選んだファイルを上書きしてしまう
   $("sample-select").value = "";
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   await reseedEditorSong();
+}
+
+// /api/midi-check が返したXF歌詞を、持ち込みMIDI専用モーダルの
+// 元歌詞欄の下敷きにする。空ならそのまま入れ、前の曲の歌詞等があれば
+// 勝手に消さず確認する。ここで正本 #lyrics を更新すると reseedEditorSong が
+// 同じ値をエディタに返し、開いている専用モーダルの textarea に表示される。
+function prefillOwnMidiLyrics(file) {
+  if (!lastMidiCheck || lastMidiCheck.file !== file) return;
+  const text = lastMidiCheck.lines.join("\n");
+  if (!text.trim()) return;
+  const current = $("lyrics").value;
+  if (current === text) return;
+  if (current.trim() && !confirm(
+    "元歌詞欄に現在の内容があります。\n"
+    + "MIDIに入っている歌詞で置き換えますか？\n"
+    + "「キャンセル」で現在の元歌詞を残せます。"
+  )) return;
+  $("lyrics").value = text;
+  $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 // 親のファイル選択を開き、選ばれたか(true)やめたか(false)を返す。
@@ -4609,6 +4708,13 @@ async function loadWordlistSelect(editorAvailable) {
     // active === false のエントリも除外(旧confにactiveは無いので影響なし)
     entries = flattenWordlist(conf.wordlist).filter(
       (w) => w && w.filepath && w.value !== "ORIGINAL" && w.active !== false);
+    if (simpleMode) {
+      const allowed = new Set(launchWordlists);
+      entries = entries.filter((w) => {
+        const name = w.filepath.replace(/.*\//, "").replace(/\.csv$/, "");
+        return allowed.has(name);
+      });
+    }
   } catch {
     // confが取れなければ従来のテキスト入力にフォールバック
     bail(); return;
@@ -4624,6 +4730,10 @@ async function loadWordlistSelect(editorAvailable) {
     g.entries.push(w);
   });
   wordlistGroups = [...map.values()];
+  if (simpleMode) {
+    const order = new Map(launchWordlists.map((name, i) => [name, i]));
+    wordlistGroups.sort((a, b) => order.get(a.name) - order.get(b.name));
+  }
   sel.innerHTML = "";
   // conf の {label, items} グループは <optgroup> でまとめる。トップレベル(グループ
   // なし)のエントリは従来どおり <select> 直下の <option>。同じラベルのグループが

@@ -86,6 +86,20 @@ def test_editor_entry_point_is_a_single_button():
     assert "editor-resume-cancel" not in ids
 
 
+def test_simple_ui_hides_advanced_and_filters_wordlists():
+    """初回公開版は詳細設定を隠し、サーバーが返したカタログだけ出す。"""
+    script = _script()
+    assert '$("advanced").hidden = simpleMode;' in script
+    assert "loadWordlistSelect(conf.wordlist_config ?? conf.editor)" in script
+    assert "const allowed = new Set(launchWordlists);" in script
+    assert "return allowed.has(name);" in script
+    defaults = _function_body(script, "function applySimpleDefaults()")
+    assert '$("synthesizer").value = "voicevox"' in defaults
+    assert '$("auto-octave").checked = true' in defaults
+    assert '$("transpose").value = "0"' in defaults
+    assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
+
+
 def test_editor_resume_panel_is_hidden_by_default():
     # カード内のパネルからモーダルに変えた(インライン展開だとサムネ枠が押し下がる)
     panel = next(a for tag, a in _tags() if a.get("id") == "editor-resume")
@@ -143,12 +157,24 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
 def test_random_button_always_changes_both_choices():
     """ランダム抽選は現在の曲と現在の単語リストを同時に選び直す。"""
     body = _function_body(_script(), "function luckyRandomCombo()")
-    assert 'o.value !== currentSampleId' in body
-    assert 'nameOf(o) !== currentWordlist' in body
+    assert "luckyCandidatePools()" in body
     # 片方でも別候補がなければ、現在値を再選択して条件を破らない
     assert 'if (!samples.length || !alternatives.length) return null;' in body
     assert 'pickRandom(samples)' in body
     assert 'pickRandom(pool)' in body
+
+
+def test_random_button_is_disabled_until_both_choices_can_change():
+    """候補不足や初期化中に、押せるのに何も変わらない状態を作らない。"""
+    lucky = next(a for tag, a in _tags() if a.get("id") == "lucky")
+    assert "disabled" in lucky
+    pools = _function_body(_script(), "function luckyCandidatePools()")
+    assert 'o.value !== currentSampleId' in pools
+    assert 'nameOf(o) !== currentWordlist' in pools
+    availability = _function_body(_script(), "function syncLuckyAvailability()")
+    assert '$("lucky").disabled = !samples.length || !alternatives.length;' in availability
+    sync = _function_body(_script(), "function syncBuilderValues()")
+    assert "syncLuckyAvailability();" in sync
 
 
 def test_editor_opens_from_the_setup_screen():
@@ -421,12 +447,34 @@ def test_host_song_request_moves_the_canonical_form_first():
     assert "if (!await pickMidiFile()) return;" in up
     # 自分のMIDIにしたらサンプルの選択は外す(投入前の突き合わせに上書きされる)
     assert '$("sample-select").value = "";' in up
+    # midi-check のXF歌詞を、専用モーダルへ返す前に元歌詞の下敷きにする
+    assert 'prefillOwnMidiLyrics($("midi").files[0]);' in up
+    assert up.index("prefillOwnMidiLyrics") < up.index("reseedEditorSong()")
     picker = _function_body(script, "function pickMidiFile()")
     for needle in ('input.addEventListener("change", onChange);',
                    'input.addEventListener("cancel", onCancel);',
                    'window.addEventListener("focus", onFocus);',
                    "input.click();"):
         assert needle in picker
+
+
+def test_own_midi_lyrics_prefill_preserves_existing_text_by_choice():
+    """XF歌詞は空の元歌詞へ入れ、既存値は勝手に消さない。"""
+    script = _script()
+    body = _function_body(script, "function prefillOwnMidiLyrics(file)")
+    assert "lastMidiCheck.file !== file" in body
+    assert 'lastMidiCheck.lines.join("\\n")' in body
+    assert "current.trim() && !confirm(" in body
+    assert '$("lyrics").value = text;' in body
+    assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
+
+
+def test_midi_check_rejects_a_non_midi_400_response():
+    """拡張子だけMIDIのファイルを検証失敗として握りつぶさない。"""
+    body = _function_body(_script(), "async function checkMidi()")
+    assert "notMidi = res.status === 400 && !!body.detail;" in body
+    assert "rejectMidi(body.detail, notMidi)" in body
+    assert "lastMidiCheck = { file: f, lines: body.midi_lines || [] };" in body
 
 
 def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
