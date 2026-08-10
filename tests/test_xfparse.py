@@ -34,6 +34,36 @@ def test_parse_lyric_events_leading_break_in_same_event():
     assert moras[1].kana == "い"
 
 
+def test_parse_lyric_events_repairs_broken_word_internal_breaks():
+    """「止め/る」を1モーラ行にせず、後続の異常な重複表層も除く。"""
+    moras = parse_lyric_events([
+        (0, "/止[と]"), (240, "め"), (480, "/る"),
+        (720, "/る[ほ]"), (960, "ほ"), (1200, "ど"),
+        (1440, "の"), (1680, "い"), (1920, "意思[い"), (2160, "し]"),
+    ])
+
+    assert [m.line_break_before for m in moras] == [True] + [False] * 9
+    assert [(m.surface, m.kana) for m in moras] == [
+        ("止", "と"), ("め", "め"), ("る", "る"),
+        ("", "ー"), ("ほ", "ほ"), ("ど", "ど"),
+        ("の", "の"), ("意思", "い"), ("", "ー"), ("", "し"),
+    ]
+
+
+def test_parse_lyric_events_keeps_legitimate_repeated_short_lines():
+    moras = parse_lyric_events([(0, "/あ"), (480, "/あ")])
+    assert [m.line_break_before for m in moras] == [True, True]
+    assert [m.surface for m in moras] == ["あ", "あ"]
+
+
+def test_parse_lyric_events_does_not_repair_unanchored_long_vowel_shape():
+    moras = parse_lyric_events([(0, "青[あ]"), (240, "お"), (480, "い"),
+                                (720, "色[い"), (960, "ろ]")])
+    assert [(m.surface, m.kana) for m in moras] == [
+        ("青", "あ"), ("お", "お"), ("い", "い"), ("色", "い"), ("", "ろ")
+    ]
+
+
 def test_normalize_kana():
     assert normalize_kana("しズ") == "シズ"
     assert normalize_kana("キャー!") == "キャー"
@@ -62,6 +92,28 @@ def test_analyze_midi_basic(tmp_path: Path):
     # tempo 500000us/beat, 480tpb -> 1tick = 1/960秒
     assert abs(project.notes[0].start_sec - 0.5) < 1e-6
     assert abs(project.notes[0].end_sec - 0.75) < 1e-6
+
+
+def test_analyze_midi_merges_broken_word_internal_xf_lines(tmp_path: Path):
+    midi = build_xf_midi(
+        tmp_path / "broken-break.mid",
+        notes=[(tick, 240, 60 + i) for i, tick in enumerate(range(0, 2400, 240))],
+        lyric_events=[
+            (0, "/止[と]"), (240, "め"), (480, "/る"),
+            (720, "/る[ほ]"), (960, "ほ"), (1200, "ど"),
+            (1440, "の"), (1680, "い"), (1920, "意思[い"), (2160, "し]"),
+        ],
+    )
+
+    project = analyze_midi(midi)
+
+    assert len(project.lines) == 1
+    assert project.lines[0].xf_surface == "止めるほどの意思"
+    assert project.lines[0].xf_kana == "トメルーホドノイーシ"
+    assert [note.line for note in project.notes] == [0] * 10
+    assert project.notes[3].surface == ""  # 後行先頭の重複した「る」
+    assert project.notes[7].surface == "意思"
+    assert project.notes[8].kana == "ー"
 
 
 def test_analyze_midi_multi_mora_note(tmp_path: Path):

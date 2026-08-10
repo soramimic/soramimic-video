@@ -83,7 +83,84 @@ def parse_lyric_events(events: list[tuple[int, str]]) -> list[LyricEvent]:
             )
         )
         pending_break = False
+    repaired = _repair_word_internal_breaks(result)
+    if repaired:
+        logger.warning("XFの語中改行を補正しました: %d箇所", repaired)
     return result
+
+
+def _repair_word_internal_breaks(events: list[LyricEvent]) -> int:
+    """XFの明らかに壊れた語中改行を保守的に取り除く。
+
+    実データに ``/止[と]`` ``め`` ``/る`` ``/る[ほ]`` ``ほ`` のような列が
+    ある。単独行 ``/る`` の直後に、同じ表層 ``る`` を別の読み ``ほ`` で
+    再度出すのは正常な歌詞表記ではない。この特徴が全て揃うときだけ、
+    前行・1モーラ行・後行を連結し、後行先頭の重複表層を継続モーラ
+    として空にする。その音符は直前のモーラを伸ばす音符なので、読みは
+    後続表層の重複ではなく長音に直す。
+
+    単に短い行や ``/あ`` ``/あ`` のよう正常な反復は対象にしない。
+    """
+    repaired = 0
+    for i in range(1, len(events) - 2):
+        one = events[i]
+        following = events[i + 1]
+        one_surface = normalize_kana(one.surface)
+        one_kana = normalize_kana(one.kana)
+        following_kana = normalize_kana(following.kana)
+        if not (
+            one.line_break_before
+            and following.line_break_before
+            and one.surface
+            and one.surface == following.surface
+            and one.raw == f"/{one.surface}"
+            and following.raw == f"/{one.surface}[{following.kana}]"
+            and events[i + 2].raw == following.kana
+            and one_surface
+            and one_surface == one_kana
+            and following_kana
+            and following_kana != one_kana
+        ):
+            continue
+        one.line_break_before = False
+        following.line_break_before = False
+        following.surface = ""
+        following.kana = "ー"
+        # この壊れ方では、同じ行の少し後ろで長音モーラが
+        # 次の表層の手前へずれることがある(「い」「意思[い」「し]」)。
+        stop = next(
+            (j for j in range(i + 2, len(events)) if events[j].line_break_before),
+            len(events),
+        )
+        _repair_shifted_long_vowel(events, i + 2, min(stop, i + 10))
+        repaired += 1
+    return repaired
+
+
+def _repair_shifted_long_vowel(events: list[LyricEvent], start: int, stop: int) -> bool:
+    """認識済みの破損行内で、後続語の手前にずれた長音を1件直す。"""
+    vowels = "あいうえおアイウエオ"
+    for j in range(start, min(stop, len(events) - 2)):
+        vowel, word, continuation = events[j:j + 3]
+        if not (
+            not vowel.line_break_before
+            and not word.line_break_before
+            and not continuation.line_break_before
+            and vowel.raw == vowel.surface == vowel.kana
+            and vowel.raw in vowels
+            and word.surface
+            and re.search(r"[\u3400-\u9fff]", word.surface)
+            and word.raw == f"{word.surface}[{vowel.kana}"
+            and word.kana == vowel.kana
+            and continuation.surface == ""
+            and continuation.raw.endswith("]")
+        ):
+            continue
+        vowel.surface = word.surface
+        word.surface = ""
+        word.kana = "ー"
+        return True
+    return False
 
 
 def _absolute_events(track) -> list[tuple[int, Any]]:
