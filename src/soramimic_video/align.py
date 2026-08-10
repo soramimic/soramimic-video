@@ -159,8 +159,11 @@ def align_lines(project: Project, lyric_lines: list[str]) -> None:
 
 GRANULARITIES = ("line", "phrase")
 # source ごとの既定粒度(subtitle要素・override いずれも未指定のとき)。
-# 既定は替え歌・元歌詞ともフレーズ単位(元歌詞の行全文ではなく対応フレーズを出す)。
-DEFAULT_GRANULARITY = {"parody": "phrase", "original": "phrase"}
+# 元歌詞があるときはその行境界を正本にする。XF MIDI の ``/`` はカラオケ
+# 表示用の分割であり、語中(例: 「止め/る」)に入っている実データもあるため、
+# 既定の字幕境界には使わない。元歌詞未対応行(None)は隣と結合しないので、
+# 元歌詞が無い場合は従来どおり XF 行単位になる。
+DEFAULT_GRANULARITY = {"parody": "line", "original": "line"}
 
 
 def resolve_granularity(
