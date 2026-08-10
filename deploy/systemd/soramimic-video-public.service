@@ -1,0 +1,54 @@
+[Unit]
+Description=Soramimic Video public API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=soramimic-video
+Group=soramimic-video
+WorkingDirectory=/opt/soramimic-video-public/current
+EnvironmentFile=/etc/soramimic-video/public.env
+Environment=HOME=/var/lib/soramimic-video-public/work
+Environment=PYTHONUNBUFFERED=1
+Environment=SORAMIMIC_TRUSTED_PROXY_IPS=127.0.0.1/32,::1/128
+ExecStart=/opt/soramimic-video-public/current/.venv/bin/soramimic-video serve --host 127.0.0.1 --port 8301 --jobs-dir /var/lib/soramimic-video-public/work/api-jobs --voicevox-url http://127.0.0.1:50021
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=mixed
+UMask=0077
+
+# Filesystem: release/OS/home are read-only or hidden; StateDirectory is the only app write root.
+StateDirectory=soramimic-video-public/work
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+# Privileges and kernel surface.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+SystemCallArchitectures=native
+
+# Initial production ceilings. Profile a worst-case normal generation before lowering them.
+MemoryHigh=10G
+MemoryMax=12G
+CPUQuota=600%
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
