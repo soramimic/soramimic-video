@@ -1297,7 +1297,14 @@ def test_index_html_has_one_feature_detected_save_share_button():
     assert 'id="share-x"' not in html
     assert "openXIntent" not in html and "twitter.com/intent" not in html
     assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
-    assert "navigator.canShare({ files: [probe] })" in html
+    support = html[html.index("function supportsVideoFileShare()") :]
+    support = support[: support.index("\n}\n")]
+    # iOS系ブラウザはダミーMP4を共有不可と判定することがある。起動時の
+    # probeで共有を止めず、取得した実ファイルだけをcanShareへ渡す。
+    assert "navigator.canShare" not in support and "probe" not in support
+    assert 'typeof navigator.share === "function"' in support
+    assert 'typeof File !== "undefined"' in support
+    assert "navigator.canShare({ files: [file] })" in html
     assert "navigator.share({ files: [file], text: SHARE_TEXT })" in html
     assert "if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);" in html
 

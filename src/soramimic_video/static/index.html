@@ -1582,8 +1582,8 @@ async function poll(id, seq = pollSeq) {
 
 // ---- 完成した動画を保存・共有する ----
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
-// 誤判定しやすい。まずWeb Share APIで動画ファイルを実際に共有できるかを判定し、
-// OS判定は共有シートの案内文を分かりやすくするためだけに使う。
+// 誤判定しやすい。まずWeb Share APIの有無を見て、クリック後に取得した実動画で
+// ファイル共有の可否を確定する。OS判定は案内文を分かりやすくするためだけに使う。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #soramimic\n" + location.origin;
 
@@ -1598,13 +1598,11 @@ function mobilePlatform() {
 }
 
 function supportsVideoFileShare() {
-  if (!navigator.share || !navigator.canShare || typeof File === "undefined") return false;
-  try {
-    const probe = new File([new Uint8Array([0])], "soramimic.mp4", { type: "video/mp4" });
-    return navigator.canShare({ files: [probe] });
-  } catch (_) {
-    return false;
-  }
+  // iOS系ブラウザでは、起動時に作った1バイトのダミーMP4を canShare() へ
+  // 渡すとfalseでも、取得した実動画なら共有シートを開けることがある。
+  // ここでは共有APIとFileの有無だけを見て、ファイル対応はクリック後の
+  // 実動画に対する canShareFiles() で確定する。
+  return typeof navigator.share === "function" && typeof File !== "undefined";
 }
 
 const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
