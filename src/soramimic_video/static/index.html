@@ -2101,19 +2101,24 @@ function luckyCombo(sampleId, wordlistName) {
   };
 }
 
-// ランダム抽選。曲はサンプル全体から、単語リストは重い辞書を除いた中から選ぶ。
+// ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
+// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
 // 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
 function luckyRandomCombo() {
-  const samples = [...$("sample-select").options].filter((o) => o.value);
-  if (!samples.length) return null;
+  const currentSampleId = $("sample-select").value;
+  const samples = [...$("sample-select").options]
+    .filter((o) => o.value && o.value !== currentSampleId);
   const sel = $("wordlist-select");
   const all = sel.hidden ? [] : [...sel.options].filter((o) => o.value);
   const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
-  const fast = all.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
-  const pool = fast.length ? fast : all;
+  const currentWordlist = currentWordlistName();
+  const alternatives = all.filter((o) => nameOf(o) !== currentWordlist);
+  if (!samples.length || !alternatives.length) return null;
+  const fast = alternatives.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
+  const pool = fast.length ? fast : alternatives;
   const song = pickRandom(samples);
-  const wl = pool.length ? pickRandom(pool) : null;
-  return luckyCombo(song.value, wl ? nameOf(wl) : "");
+  const wl = pickRandom(pool);
+  return luckyCombo(song.value, nameOf(wl));
 }
 
 // ---- カードのプルダウンと詳細設定の双方向同期 ----
@@ -2545,11 +2550,10 @@ async function applyCombo(c) {
   return await trackSample(applySample());
 }
 
-// 🎲ランダム・初期表示の共通処理。失敗はカードの案内に出す。
+// 🎲ランダムの反映。失敗はカードの案内に出す。
 async function pickCombo(c) {
   if (!c) {
-    // 曲の選び直しは詳細設定から無くなったので、カードの「曲」プルダウンへ案内する
-    showBuilderMsg("サンプル曲を読み込めませんでした。上の「曲」から選んでください。");
+    showBuilderMsg("現在と異なる曲と単語リストの候補がありません。");
     return;
   }
   try {

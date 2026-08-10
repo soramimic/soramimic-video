@@ -140,6 +140,17 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
+def test_random_button_always_changes_both_choices():
+    """ランダム抽選は現在の曲と現在の単語リストを同時に選び直す。"""
+    body = _function_body(_script(), "function luckyRandomCombo()")
+    assert 'o.value !== currentSampleId' in body
+    assert 'nameOf(o) !== currentWordlist' in body
+    # 片方でも別候補がなければ、現在値を再選択して条件を破らない
+    assert 'if (!samples.length || !alternatives.length) return null;' in body
+    assert 'pickRandom(samples)' in body
+    assert 'pickRandom(pool)' in body
+
+
 def test_editor_opens_from_the_setup_screen():
     """⚙はサーバーに変換させず(convert=0)、セットアップ画面から開く。
 
