@@ -144,6 +144,17 @@ def test_simple_ui_hides_advanced_and_filters_wordlists():
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
 
 
+def test_simple_ui_hides_the_irrelevant_song_length_limit():
+    """同梱曲しか選べない初回公開版では、持ち込みMIDI向けの曲長案内を出さない。"""
+    body = _function_body(_script(), "function setupPublicMode(conf)")
+    assert "if (conf.max_song_seconds && !simpleMode)" in body
+    # 日次上限や検証アカウントの案内まで一緒に消さない。
+    assert "if (conf.quota_exempt === true)" in body
+    assert "else if (conf.daily_quota)" in body
+    assert "混雑時は順番待ちになります" in body
+    assert "updatePublicCredit();" in body
+
+
 def test_editor_resume_panel_is_hidden_by_default():
     # カード内のパネルからモーダルに変えた(インライン展開だとサムネ枠が押し下がる)
     panel = next(a for tag, a in _tags() if a.get("id") == "editor-resume")
