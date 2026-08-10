@@ -1315,6 +1315,19 @@ def test_index_html_has_one_feature_detected_save_share_button():
     assert "AbortError" in click
 
 
+def test_ogp_image_is_public_versioned_png(client):
+    from PIL import Image
+
+    response = client.get("/ogp-soramimic-v1.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(response.content) < 5 * 1024 * 1024
+    with Image.open(api_mod.STATIC_DIR / "ogp-soramimic-v1.png") as image:
+        assert image.size == (1200, 630)
+
+
 def test_index_html_share_hint_matches_platform_capability():
     """共有可否とOSに合わせて、保存・共有の案内を切り替える。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(

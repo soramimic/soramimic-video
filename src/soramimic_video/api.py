@@ -1480,7 +1480,10 @@ def create_app(
                 length = -1
             if maximum > 0 and (length < 0 or length > maximum):
                 return JSONResponse({"detail": "入力が大きすぎます"}, status_code=413)
-        if not is_public_mode() or request.url.path == "/healthz":
+        if not is_public_mode() or request.url.path in {
+            "/healthz",
+            "/ogp-soramimic-v1.png",
+        }:
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
         issued = not re.fullmatch(r"[0-9a-f]{32}", session)
@@ -1711,6 +1714,15 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/ogp-soramimic-v1.png", include_in_schema=False)
+    def ogp_image() -> FileResponse:
+        """SNSクローラ向けの版付きOGP画像。匿名sessionは発行しない。"""
+        return FileResponse(
+            STATIC_DIR / "ogp-soramimic-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     # 同梱サンプル曲(いずれも詞・曲パブリックドメイン、examples/gen_samples.py で生成)。
     # SORAMIMIC_SAMPLES_DIR を設定するとそのディレクトリのサンプルに差し替わる。
