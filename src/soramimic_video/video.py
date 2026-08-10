@@ -42,7 +42,7 @@ from pathlib import Path
 from string import Formatter
 
 import requests
-from PIL import Image, ImageChops, ImageColor, ImageFont
+from PIL import Image, ImageChops, ImageColor
 
 from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
@@ -1399,6 +1399,16 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
     if not surface or not kana:
         return None
     runs = _kana_runs(surface)
+    non_kana_runs = [run for run in runs if not run[2]]
+    has_kana_anchor = any(
+        _strip_silent(surface[start:end])
+        for start, end, is_kana in runs
+        if is_kana
+    )
+    if len(non_kana_runs) > 1 and not has_kana_anchor:
+        # 「柳瀬 泰平」のように漢字列が空白だけで分かれ、読み側に境界情報が
+        # ない名前は各列へ正しく配分できない。誤った部分ルビより全体ルビに戻す。
+        return None
     surface_kata = _to_katakana(surface)
     kana_kata = _to_katakana(kana)
 
@@ -1429,23 +1439,23 @@ def _ruby_segments(surface: str, kana: str) -> list[tuple[int, int, str]] | None
     return segments
 
 
-def _ass_text_measuring_font(font_path: Path | None, ass_fontsize: int):
-    """libassで描画される本文の字送り幅に合わせたPillowフォント。
+LIBASS_FONT_SIZE_COEFF = 0.72
+ASS_MEASURE_SCALE = 64
 
-    ASSのFontsizeは字面のem高ではなく、アセントとディセントを含む行セル高として
-    libassへ渡される。一方Pillowのsizeはem高なので、同じ数値で測ると本文より
-    約1.5倍広くなり、行端へ行くほどルビが外側へずれる。Pillow側をメトリクス比で
-    縮め、実際に描画される本文の字送り幅へ合わせる。
+
+def _ass_text_width(font_path: Path | None, ass_fontsize: int, text: str) -> float:
+    """libassと同じ字送り幅をPillowで小数精度まで測る。
+
+    libassはVSFilter互換の固定係数0.72をASS Fontsizeへ掛けてFreeTypeへ渡す。
+    Pillowは整数pxしか指定できないため、64倍で測って縮小し、丸め誤差が行端へ
+    累積しないようにする。
     """
-    font = _font(font_path, ass_fontsize)
-    if not isinstance(font, ImageFont.FreeTypeFont):
-        return font
-    ascent, descent = font.getmetrics()
-    cell_height = ascent + descent
-    if cell_height <= 0:
-        return font
-    measured_size = max(1, round(ass_fontsize * ass_fontsize / cell_height))
-    return _font(font_path, measured_size)
+    font = _font(font_path, max(1, ass_fontsize * ASS_MEASURE_SCALE))
+    return (
+        font.getlength(text)
+        * LIBASS_FONT_SIZE_COEFF
+        / ASS_MEASURE_SCALE
+    )
 
 
 def _ruby_events(
@@ -1460,21 +1470,26 @@ def _ruby_events(
     an: int,
     height: int,
     font_path: Path | None,
+    max_width: float,
 ) -> list[str]:
-    """替え歌字幕の漢字等の部分の真上にルビ(ふりがな)を置くASSイベント列。
+    """替え歌本文を単語ごとに置き、その真上にルビを置くASSイベント列。
 
-    libassが描画する本文と同じ字送り幅になるようPillowフォントを補正して測り、
-    ルビを振る範囲のx中心を求める。本文と同一レイヤー・同一区間で、範囲ごとに小さい
-    フォントの別イベントを本文の上端すぐ上に \\pos で配置する。
+    本文とルビを同じx中心の独立したASSイベントとして描くため、行全体の幅に
+    小さな測定誤差があっても、ルビは対象語からずれない。部分ルビだけは単語内の
+    相対幅を使う。本文と同一レイヤー・同一区間で、範囲ごとに小さいフォントの
+    別イベントを本文の上端すぐ上に \\pos で配置する。
     ルビは表記の非カナ部分にだけ振る(_ruby_segments)。読みを割り付けられない
     単語だけ、従来どおり単語全体に読み全体を置く。
     """
-    body_px = int(el.size * height)
+    base_body_px = int(el.size * height)
+    body_px = base_body_px
     if body_px <= 0 or not words:
         return []
-    font = _ass_text_measuring_font(font_path, body_px)
     full = WORD_SEP.join(w.surface for w in words)
-    total_w = font.getlength(full)
+    while body_px > 1 and _ass_text_width(font_path, body_px, full) > max_width:
+        body_px -= 1
+    full = WORD_SEP.join(w.surface for w in words)
+    total_w = _ass_text_width(font_path, body_px, full)
     # 本文行の左端x。build_ass本体の px(align基準点)と揃える
     if el.align == "left":
         x0 = px
@@ -1490,14 +1505,30 @@ def _ruby_events(
     else:
         top = py
     ruby_px = max(1, round(el.ruby_size * body_px))
+    body_an = {1: 2, 2: 2, 3: 2, 4: 5, 5: 5, 6: 5, 7: 8, 8: 8, 9: 8}[an]
     events: list[str] = []
     prefix = ""
     for i, w in enumerate(words):
         if i:
             prefix += WORD_SEP
-        start_x = font.getlength(prefix)
+        start_x = _ass_text_width(font_path, body_px, prefix)
         prefix += w.surface
-        end_x = font.getlength(prefix)
+        end_x = _ass_text_width(font_path, body_px, prefix)
+        size_override = f"\\fs{body_px}" if body_px != base_body_px else ""
+        # 混在語もランごとに本文を置く。「ペルシャ湾」の「湾」など部分ルビの
+        # 対象本文とルビへ、推定ではなく同じ中心座標を指定できる。
+        for run_start, run_end, _is_kana in _kana_runs(w.surface):
+            run_text = w.surface[run_start:run_end]
+            if not _strip_silent(run_text):
+                continue
+            sx = start_x + _ass_text_width(font_path, body_px, w.surface[:run_start])
+            ex = start_x + _ass_text_width(font_path, body_px, w.surface[:run_end])
+            run_cx = x0 + (sx + ex) / 2
+            events.append(
+                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
+                f"{{\\an{body_an}\\pos({run_cx:.2f},{py:.0f}){size_override}}}"
+                f"{_ass_escape(run_text)}"
+            )
         if not _needs_ruby(w.surface, w.kana):
             continue
         # 表記のカナ部分(そのまま読める部分)にはルビを振らず、漢字等のランごとに
@@ -1511,16 +1542,16 @@ def _ruby_events(
                 if _to_katakana(w.surface[s:e]) == reading:
                     continue  # 表記どおりの読みならルビ不要
                 spans.append((
-                    start_x + font.getlength(w.surface[:s]),
-                    start_x + font.getlength(w.surface[:e]),
+                    start_x + _ass_text_width(font_path, body_px, w.surface[:s]),
+                    start_x + _ass_text_width(font_path, body_px, w.surface[:e]),
                     reading,
                 ))
         for sx, ex, reading in spans:
             cx = x0 + (sx + ex) / 2  # ルビを振る範囲の中心x
             # \an2: ルビの下端中央をその範囲の中心・本文上端に合わせる(本文のすぐ上に載る)
             events.append(
-                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},,0,0,0,,"
-                f"{{\\an2\\pos({cx:.0f},{top:.0f})\\fs{ruby_px}}}"
+                f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{name},Ruby,0,0,0,,"
+                f"{{\\an2\\pos({cx:.2f},{top:.0f})\\fs{ruby_px}}}"
                 f"{_ass_escape(_to_hiragana(reading))}"
             )
     return events
@@ -1622,13 +1653,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for seg in segments:
             if not seg.text:
                 continue
-            events.append(
-                f"Dialogue: {layer},{_ass_time(seg.start)},{_ass_time(seg.end)},{name},,0,0,0,,"
-                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(seg.text)}"
-            )
             # ルビ(ふりがな): 替え歌字幕のみ。本文と同一レイヤー・同一区間で、
-            # 各単語の真上に小さいフォントの別イベントを追加する(本文は変えない)。
-            # 行マージ(parody=line)時はグループ内の全単語を連結して並べる
+            # 本文も単語ごとの別イベントにしてルビと同じ中心へ置く。
+            # 行マージ(parody=line)時はグループ内の全単語を連結して並べる。
             if el.source == "parody" and el.ruby:
                 words = []
                 for k in seg.indices:
@@ -1639,9 +1666,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     events.extend(
                         _ruby_events(
                             el, name, layer, seg.start, seg.end, words, px, py, an,
-                            height, font_path,
+                            height, font_path, w * width,
                         )
                     )
+                    continue
+            events.append(
+                f"Dialogue: {layer},{_ass_time(seg.start)},{_ass_time(seg.end)},{name},,0,0,0,,"
+                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(seg.text)}"
+            )
     return header + "\n".join(events) + "\n"
 
 
