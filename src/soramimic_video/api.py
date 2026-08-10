@@ -1483,6 +1483,8 @@ def create_app(
         if not is_public_mode() or request.url.path in {
             "/healthz",
             "/ogp-soramimic-v1.png",
+            "/ogp-soramimic-v2.png",
+            "/logo-soramimic-v1.png",
         }:
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
@@ -1716,10 +1718,28 @@ def create_app(
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     @app.get("/ogp-soramimic-v1.png", include_in_schema=False)
-    def ogp_image() -> FileResponse:
-        """SNSクローラ向けの版付きOGP画像。匿名sessionは発行しない。"""
+    def ogp_image_v1() -> FileResponse:
+        """旧URLを参照するSNSキャッシュ向けのimmutable OGP画像。"""
         return FileResponse(
             STATIC_DIR / "ogp-soramimic-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/ogp-soramimic-v2.png", include_in_schema=False)
+    def ogp_image_v2() -> FileResponse:
+        """SNSクローラ向けの版付きOGP画像。匿名sessionは発行しない。"""
+        return FileResponse(
+            STATIC_DIR / "ogp-soramimic-v2.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-v1.png", include_in_schema=False)
+    def brand_logo_v1() -> FileResponse:
+        """画面ヘッダー向けの版付きブランドロゴ。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-v1.png",
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
