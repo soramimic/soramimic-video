@@ -1305,7 +1305,9 @@ def test_index_html_has_one_feature_detected_save_share_button():
     assert 'typeof navigator.share === "function"' in support
     assert 'typeof File !== "undefined"' in support
     assert "navigator.canShare" not in html
-    assert "navigator.share({ files: [prepared.file] })" in html
+    assert "navigator.share({ files: [prepared.file], text: SHARE_TEXT })" in html
+    assert "#Soramimic" in html
+    assert "#soramimic" not in html
     click = html[html.index("function bindShare(videoUrl)") :]
     click = click[: click.index("\n}\n")]
     assert "fetch(" not in click and "await " not in click

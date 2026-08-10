@@ -190,7 +190,7 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
     存在だけでなくイベントを実行して順序とfallbackを固定する。
     """
     script = _script()
-    share = script[script.index("function mobilePlatform()") :]
+    share = script[script.index("const SHARE_TEXT =") :]
     share = share[: share.index("// ジョブを投入できない状態か")]
     node = textwrap.dedent(
         f"""
@@ -252,7 +252,10 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
           await Promise.resolve();
           assert.equal(fetchCalls, 1, "click must not fetch the video again");
           assert.equal(shareCalls.length, 1);
-          assert.deepEqual(Object.keys(shareCalls[0]), ["files"]);
+          assert.deepEqual(Object.keys(shareCalls[0]), ["files", "text"]);
+          assert.equal(shareCalls[0].text.includes("#Soramimic\\n"), true);
+          assert.equal(shareCalls[0].text.includes("#soramimic"), false);
+          assert.equal(shareCalls[0].text.endsWith("https://video.example"), true);
           assert.equal(downloads, 0);
 
           navigator.share = () => Promise.reject({{ name: "AbortError" }});
