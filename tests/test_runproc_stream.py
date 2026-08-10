@@ -6,7 +6,11 @@ NEUTRINOは進捗を \\r で上書きしながら出すので、\\n だけでな
 
 from __future__ import annotations
 
+import logging
+import os
 import sys
+
+import pytest
 
 from soramimic_video import runproc
 
@@ -48,3 +52,74 @@ def test_run_streaming_callback_error_does_not_break_run():
     )
     assert proc.returncode == 0
     assert "hello" in proc.stdout
+
+
+def test_public_mode_suppresses_unclaimed_subprocess_output(monkeypatch, capfd):
+    internal = "/srv/soramimic/jobs/private-id/input.mid"
+    monkeypatch.setenv(runproc.PUBLIC_ENV, "1")
+
+    proc = runproc.run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; print('reading {internal} ... 1'); "
+            f"print('failed {internal}', file=sys.stderr)",
+        ]
+    )
+
+    assert proc.returncode == 0
+    captured = capfd.readouterr()
+    assert internal not in captured.out
+    assert internal not in captured.err
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "VOICEVOXで歌唱wavを合成しました",
+        "サムネ画像を生成しました",
+        "画像クレジットを書き出しました",
+    ],
+)
+def test_public_mode_generated_log_omits_path(monkeypatch, caplog, message):
+    internal = "/srv/soramimic/jobs/private-id/thumbnail.png"
+    monkeypatch.setenv(runproc.PUBLIC_ENV, "true")
+
+    with caplog.at_level(logging.INFO, logger="soramimic_video.test"):
+        runproc.log_generated_path(
+            logging.getLogger("soramimic_video.test"), message, internal
+        )
+
+    assert message in caplog.text
+    assert internal not in caplog.text
+
+
+def test_private_mode_generated_log_keeps_path(monkeypatch, caplog):
+    internal = "/srv/soramimic/jobs/private-id/thumbnail.png"
+    monkeypatch.delenv(runproc.PUBLIC_ENV, raising=False)
+
+    with caplog.at_level(logging.INFO, logger="soramimic_video.test"):
+        runproc.log_generated_path(
+            logging.getLogger("soramimic_video.test"), "サムネ画像を生成しました", internal
+        )
+
+    assert internal in caplog.text
+
+
+def test_native_output_suppression_is_public_only(monkeypatch, capfd):
+    internal = b"reading /srv/soramimic/private/user.csv ... 1\n"
+    monkeypatch.setenv(runproc.PUBLIC_ENV, "1")
+    with runproc.suppress_native_output_in_public_mode():
+        os.write(1, internal)
+        os.write(2, internal)
+    public = capfd.readouterr()
+    assert "/srv/soramimic/private" not in public.out
+    assert "/srv/soramimic/private" not in public.err
+
+    monkeypatch.delenv(runproc.PUBLIC_ENV)
+    with runproc.suppress_native_output_in_public_mode():
+        os.write(1, internal)
+        os.write(2, internal)
+    private = capfd.readouterr()
+    assert "/srv/soramimic/private" in private.out
+    assert "/srv/soramimic/private" in private.err

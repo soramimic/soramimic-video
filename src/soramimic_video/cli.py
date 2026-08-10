@@ -277,7 +277,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # Access exemption decisions must see the actual socket peer. Do not let
+    # uvicorn rewrite request.client from user-controlled forwarding headers.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
     return 0
 
 

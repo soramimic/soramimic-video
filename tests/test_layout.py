@@ -123,6 +123,20 @@ def test_gimukyoiku_card_combines_school_level_and_subject():
     assert "小学・中学｜国語" in multiple
 
 
+def test_youtuber_card_uses_org_debut_and_description():
+    layout = load_layout("youtuber_card")
+    texts = layout.render_texts({
+        "original": "配信者",
+        "org": "所属グループ",
+        "debut_year": "2020",
+        "description": "ゲーム実況とライブ配信で活動するYouTuber。",
+    })
+    assert "配信者" in texts
+    assert "所属グループ" in texts
+    assert "2020年デビュー" in texts
+    assert "ゲーム実況とライブ配信で活動するYouTuber。" in texts
+
+
 def test_info_card_uses_description_with_player_and_station_details():
     player_layout = load_layout("info_card")
     station_layout = load_layout("station_info_card")
@@ -187,19 +201,38 @@ def test_plant_card_uses_taxonomy_description_and_class_fallback():
     assert "葉は藍染めの染料に用いられる。" not in fallback_texts
 
 
-def test_nation_card_prioritizes_capital_region_and_description():
+def test_nation_card_uses_structured_facts_without_description():
     layout = load_layout("nation_card")
-    nation = {
+    current = {
         "original": "国名",
         "capital": "首都名",
         "continent": "地域名",
         "description": "国の説明",
         "population": "12345",
+        "population_year": "2023",
+        "area_km2": "6789",
+        "established_year": "1900",
+        "ended_year": "",
+        "status": "current",
     }
-    texts = layout.render_texts(nation)
-    assert "地域名　首都 首都名" in texts
-    assert "国の説明" in texts
-    assert not any("12345" in text for text in texts)
+    texts = layout.render_texts(current)
+    assert "首都: 首都名" in texts
+    assert "人口: 12345（2023年）" in texts
+    assert "面積: 6789 km²" in texts
+    assert "地域: 地域名" not in texts
+    assert "国の説明" not in texts
+    assert "旧国家" not in texts
+    assert "存続: 1900–" in texts
+
+    former_texts = layout.render_texts({
+        **current, "status": "former", "ended_year": "1990",
+    })
+    assert "旧国家" not in former_texts
+    assert "存続: 1900–1990" in former_texts
+
+    undated_texts = layout.render_texts({**current, "population_year": ""})
+    assert "人口: 12345" in undated_texts
+    assert not any("（" in text for text in undated_texts if "人口:" in text)
 
 
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):

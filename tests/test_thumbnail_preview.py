@@ -249,6 +249,20 @@ def test_public_mode_rate_limit_is_per_session(
     assert get_preview(second, where="a=3").status_code == 200
 
 
+def test_ip_backstop_survives_cookie_deletion(
+    tmp_path, monkeypatch, wordlist_dir, samples
+):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(preview_mod.RATE_LIMIT_ENV, "100")
+    monkeypatch.setenv(api_mod.GET_IP_RATE_LIMIT_ENV, "1")
+    monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
+    app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
+    first, fresh_cookie = TestClient(app), TestClient(app)
+    assert get_preview(first, where="a=1").status_code == 200
+    # 別cookieでも接続元IPが同じなので、キャッシュミスはIP枠で止まる。
+    assert get_preview(fresh_cookie, where="a=2").status_code == 429
+
+
 # ---- 画像の待ち / 裏読み(1回目から絵入りを出す) ----
 
 

@@ -891,7 +891,7 @@ def build_thumbnail(
     except Exception as e:  # noqa: BLE001 - 描画失敗もジョブは落とさない
         logger.warning("サムネ画像を生成できませんでした: %s", e)
         return None
-    logger.info("サムネ画像を生成しました: %s", path)
+    runproc.log_generated_path(logger, "サムネ画像を生成しました", path)
     return path
 
 

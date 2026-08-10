@@ -741,7 +741,7 @@ def run_voicevox(
     with wave.open(str(wav)) as w:
         if w.getnframes() == 0:
             raise RuntimeError("VOICEVOXが空のWAVを返しました")
-    logger.info("VOICEVOXで歌唱wavを合成しました: %s", wav)
+    runproc.log_generated_path(logger, "VOICEVOXで歌唱wavを合成しました", wav)
     return wav
 
 
