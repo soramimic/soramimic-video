@@ -1584,6 +1584,8 @@ async function poll(id, seq = pollSeq) {
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
 // 誤判定しやすい。まずWeb Share APIの有無を見て、完成した実動画を先に取得して
 // ファイル共有の可否を確定する。OS判定は案内文を分かりやすくするためだけに使う。
+const SHARE_TEXT =
+  "Soramimicで替え歌動画を作りました🎤 #Soramimic\n" + location.origin;
 
 function mobilePlatform() {
   const platform = (navigator.userAgentData && navigator.userAgentData.platform)
@@ -1692,11 +1694,12 @@ function bindShare(videoUrl) {
     if (!prepared.shareable || !prepared.file) return downloadVideo(videoUrl);
     // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
     // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
-    // iOS WebKitでは files と text の併用に不具合があるため動画だけを渡す。
+    // 動画と投稿用本文を同じ共有シートへ渡す。共有API自体はこのクリック内で
+    // 即座に呼び、一時的なユーザー操作権限を失わない。
     let sharing;
     saveBtn.disabled = true;
     try {
-      sharing = navigator.share({ files: [prepared.file] });
+      sharing = navigator.share({ files: [prepared.file], text: SHARE_TEXT });
     } catch (e) {
       if (!(e && e.name === "AbortError")) {
         preparedVideoShare = { videoUrl, file: null, shareable: false };
