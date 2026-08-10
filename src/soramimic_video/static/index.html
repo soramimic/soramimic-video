@@ -491,7 +491,8 @@
         aria-label="替え歌を編集" title="替え歌を編集">
         <span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>
     </div>
-    <button type="button" id="lucky" class="btn-sm" title="曲と単語リストをランダムに選ぶ">
+    <button type="button" id="lucky" class="btn-sm" disabled
+      title="曲と単語リストをランダムに選ぶ">
       <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
   </div>
   <!-- ⚙を押したときの応答。押したボタンのすぐ下に出す -->
@@ -2166,10 +2167,9 @@ function luckyCombo(sampleId, wordlistName) {
   };
 }
 
-// ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
-// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
-// 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
-function luckyRandomCombo() {
+// 現在値と異なるランダム候補。初期化前や候補が1つしかないときは
+// 空になり、「押せるのに変わらない」状態を作らない。
+function luckyCandidatePools() {
   const currentSampleId = $("sample-select").value;
   const samples = [...$("sample-select").options]
     .filter((o) => o.value && o.value !== currentSampleId);
@@ -2178,6 +2178,19 @@ function luckyRandomCombo() {
   const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
   const currentWordlist = currentWordlistName();
   const alternatives = all.filter((o) => nameOf(o) !== currentWordlist);
+  return { samples, alternatives, nameOf };
+}
+
+function syncLuckyAvailability() {
+  const { samples, alternatives } = luckyCandidatePools();
+  $("lucky").disabled = !samples.length || !alternatives.length;
+}
+
+// ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
+// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
+// 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
+function luckyRandomCombo() {
+  const { samples, alternatives, nameOf } = luckyCandidatePools();
   if (!samples.length || !alternatives.length) return null;
   const fast = alternatives.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
   const pool = fast.length ? fast : alternatives;
@@ -2240,6 +2253,7 @@ function syncBuilderValues() {
     synth.remove();
   }
   card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
+  syncLuckyAvailability();
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。

@@ -1807,7 +1807,7 @@ def make_video(
 
     credits_path = write_credits(credits, work)
     if credits_path:
-        logger.info("画像クレジットを書き出しました: %s", credits_path)
+        runproc.log_generated_path(logger, "画像クレジットを書き出しました", credits_path)
     logger.info("動画前処理完了: %.1f秒", time.monotonic() - prepare_started)
 
     out = work / "out.mp4"

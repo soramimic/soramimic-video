@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import inspect
 import itertools
 import json
 import logging
@@ -992,6 +993,17 @@ def test_write_credits_table(tmp_path: Path):
     assert ("| 静岡 | http://img | 山田 太郎, CC BY-SA 4.0, via Wikimedia Commons "
             "| http://page |") in text
     assert "| 山田 | http://img2 |  | http://page2 |" in text
+
+
+def test_make_video_logs_credits_with_public_path_filter():
+    """クレジット成功ログも公開モードの内部パス秘匿を必ず通す。"""
+    from soramimic_video.video import make_video
+
+    source = inspect.getsource(make_video)
+    assert (
+        'runproc.log_generated_path(logger, "画像クレジットを書き出しました", credits_path)'
+        in source
+    )
 
 
 def test_download_image_local_path(tmp_path: Path):
