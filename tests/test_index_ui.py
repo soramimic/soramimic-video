@@ -242,10 +242,10 @@ def test_random_button_is_disabled_until_both_choices_can_change():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error():
-    """iOSの一時的な操作権限を、クリック中の動画取得で失わない。
+    """iOSの一時的な操作権限を失わず、未完了Promiseでもボタンを固めない。
 
-    共有エラーを勝手なdownloadへ変換したのが今回の実機デグレなので、文字列の
-    存在だけでなくイベントを実行して順序とfallbackを固定する。
+    iOSでは共有後もPromiseが完了しないことがある。文字列の存在だけでなくイベントを
+    実行し、payload・順序・ボタン状態・fallbackを固定する。
     """
     script = _script()
     share = script[script.index("const SHARE_TEXT =") :]
@@ -264,7 +264,7 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
           share(data) {{
             assert.equal(activation, true, "share must run directly in click activation");
             shareCalls.push(data);
-            return Promise.resolve();
+            return new Promise(() => {{}});
           }}
         }};
         class File {{
@@ -314,6 +314,8 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
           assert.equal(shareCalls[0].text.includes("#Soramimic\\n"), true);
           assert.equal(shareCalls[0].text.includes("#soramimic"), false);
           assert.equal(shareCalls[0].text.endsWith("https://video.example"), true);
+          assert.equal(elements["share-save"].disabled, false,
+            "a pending iOS share promise must not disable later taps");
           assert.equal(downloads, 0);
 
           navigator.share = () => Promise.reject({{ name: "AbortError" }});
