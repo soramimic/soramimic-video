@@ -12,18 +12,69 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+PUBLIC_ENV = "SORAMIMIC_PUBLIC"
 
 _lock = threading.Lock()
 _current: subprocess.Popen | None = None
 _cancel_check: Callable[[], bool] | None = None
+_native_output_lock = threading.Lock()
 
 
 class Cancelled(Exception):  # noqa: N818 - 制御フロー用
     """中断リクエストにより処理を止めた。"""
+
+
+def is_public_mode() -> bool:
+    """公開モードかどうか。api を import せず循環依存を避ける。"""
+    return os.environ.get(PUBLIC_ENV, "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+    )
+
+
+def log_generated_path(log: logging.Logger, message: str, path: os.PathLike | str) -> None:
+    """生成完了を記録する。公開モードでは内部パスを journal へ出さない。"""
+    if is_public_mode():
+        log.info("%s", message)
+    else:
+        log.info("%s: %s", message, path)
+
+
+@contextmanager
+def suppress_native_output_in_public_mode() -> Iterator[None]:
+    """公開モード中だけ、ネイティブ拡張が直接書く stdout/stderr を破棄する。
+
+    Python の redirect_stdout では C 拡張の ``write(2)`` を捕捉できないため、
+    呼び出し中だけプロセスの FD 1/2 を /dev/null へ差し替える。
+    """
+    if not is_public_mode():
+        yield
+        return
+    with _native_output_lock:
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:  # noqa: BLE001 - 出力抑止が本処理を壊さないようにする
+                pass
+        saved = [os.dup(fd) for fd in (1, 2)]
+        try:
+            with open(os.devnull, "wb") as null:
+                for fd in (1, 2):
+                    os.dup2(null.fileno(), fd)
+                yield
+        finally:
+            for fd, copy in zip((1, 2), saved, strict=True):
+                os.dup2(copy, fd)
+                os.close(copy)
 
 
 def set_cancel_check(fn: Callable[[], bool] | None) -> None:
@@ -59,6 +110,15 @@ def run(
         # ストリーミング読み取りは生バイトで行うので、テキスト系の指定は外す
         for key in ("text", "universal_newlines", "encoding", "errors"):
             kwargs.pop(key, None)
+        kwargs.setdefault("stdout", subprocess.PIPE)
+    if is_public_mode():
+        # capture_output/on_stdout で明示的に受け取る出力は保持する。
+        # それ以外の子プロセス出力は systemd journal を直接流れ、
+        # 作業ディレクトリ等を漏らすことがあるため破棄する。
+        if kwargs.get("stdout") is None:
+            kwargs["stdout"] = subprocess.DEVNULL
+        if kwargs.get("stderr") is None:
+            kwargs["stderr"] = subprocess.DEVNULL
     raise_if_cancelled()  # kill後の後続コマンドを起動しない
     # 新しいセッションにしておくと、プロセスグループごとkillでき、
     # 子(NEUTRINOが起動するプロセス等)も巻き添えにできる

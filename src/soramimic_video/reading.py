@@ -23,7 +23,7 @@ from typing import Any
 
 import jaconv
 
-from . import ruby
+from . import ruby, runproc
 from .kana import normalize_long_vowels
 
 logger = logging.getLogger(__name__)
@@ -160,8 +160,10 @@ def _yomi_tokens(text: str) -> list[tuple[str, str]]:
     """soramimic-yomi の (表層形, カタカナ読み) トークン列(素テキスト前提)。"""
     import soramimic_yomi  # 遅延import(未導入環境で既存機能を壊さない)
 
+    with runproc.suppress_native_output_in_public_mode():
+        raw_tokens = list(soramimic_yomi.get_tokens(text))
     tokens: list[tuple[str, str]] = []
-    for tok in soramimic_yomi.get_tokens(text):
+    for tok in raw_tokens:
         surface = tok.get("surface_form", "")
         if not surface:
             continue
@@ -213,7 +215,9 @@ def _yomi_kana(text: str) -> str | None:
         _yomi_available = False
         return None
     _yomi_available = True
-    return _kana_only(soramimic_yomi.get_yomi(text))
+    with runproc.suppress_native_output_in_public_mode():
+        result = soramimic_yomi.get_yomi(text)
+    return _kana_only(result)
 
 
 def text_to_kana_yomi(text: str) -> str | None:

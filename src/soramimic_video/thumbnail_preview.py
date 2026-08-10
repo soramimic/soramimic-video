@@ -12,7 +12,7 @@ build_thumbnail をそのまま使う(コードは重複させない)ので、�
   待つ。それでも間に合わなければ【言い換え】+文字だけのサムネで返し、裏で
   取り切ってから同じキャッシュキーのPNGを絵入りに作り直す(UIは
   X-Preview-Images: pending を見て数秒後に1回だけ取り直し、静かに差し替える。
-  作り直し済みなのでその取り直しはキャッシュヒット=レート制限を消費しない)
+  作り直し済みなのでその取り直しはキャッシュヒット=生成miss枠を消費しない)
 * 解像度はモーダル表示に足りる 640x360(本番は1280x720)
 
 画像を初期非表示にしている単語リスト(index.html の HIDDEN_PREVIEW_WORDLISTS。
@@ -263,6 +263,7 @@ class PreviewSpec:
 
 _prefetching: set[str] = set()
 _prefetch_lock = threading.Lock()
+_prefetch_slots = threading.BoundedSemaphore(2)
 
 
 def prefetch_images(items: Sequence[tuple[str, str]], image_cache: Path) -> int:
@@ -298,7 +299,7 @@ def refresh_with_images(
     """画像を取り切り、取れたらそのプレビューPNGを絵入りに作り直す(作り直したらTrue)。
 
     UI側は「絵なし」で返ってきたプレビューを数秒後に取り直すので、ここで
-    先に作り直しておけばその取り直しはキャッシュヒットになり、レート制限も
+    先に作り直しておけばその取り直しはキャッシュヒットになり、生成miss枠も
     変換もこれ以上消費しない。取れなければ何もしない(=絵なしのPNGが残るので、
     通信できない環境で再生成を繰り返すことはない)。
     """
@@ -327,8 +328,11 @@ def start_image_refresh(
 ) -> threading.Thread | None:
     """refresh_with_images をdaemonスレッドで走らせる(同じPNGに対しては1本だけ)。"""
     key = spec.key
+    if not _prefetch_slots.acquire(blocking=False):
+        return None
     with _prefetch_lock:
         if key in _prefetching:
+            _prefetch_slots.release()
             return None
         _prefetching.add(key)
 
@@ -338,6 +342,7 @@ def start_image_refresh(
         finally:
             with _prefetch_lock:
                 _prefetching.discard(key)
+            _prefetch_slots.release()
 
     thread = threading.Thread(target=run, name="thumbnail-preview-prefetch", daemon=True)
     thread.start()
@@ -388,23 +393,44 @@ class RateLimiter:
     走り続けないようにここで止める。キャッシュヒットは数えない(コストが無いため)。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        limit_env: str = RATE_LIMIT_ENV,
+        window_env: str = RATE_WINDOW_ENV,
+        default_limit: int = DEFAULT_RATE_LIMIT,
+        default_window: float = DEFAULT_RATE_WINDOW,
+    ) -> None:
         self._hits: dict[str, deque[float]] = {}
         self._lock = threading.Lock()
+        self._limit_env = limit_env
+        self._window_env = window_env
+        self._default_limit = default_limit
+        self._default_window = default_window
+        self._last_prune = 0.0
+        self._max_keys = 10_000
 
     def allow(self, key: str, now: float | None = None) -> bool:
         """1回ぶん記録して、上限内なら True。超過なら記録せず False。"""
-        limit = int(_env_number(RATE_LIMIT_ENV, DEFAULT_RATE_LIMIT))
-        window = _env_number(RATE_WINDOW_ENV, DEFAULT_RATE_WINDOW)
+        limit = int(_env_number(self._limit_env, self._default_limit))
+        window = _env_number(self._window_env, self._default_window)
         if limit <= 0 or window <= 0:
             return True
         now = time.time() if now is None else now
         cutoff = now - window
         with self._lock:
-            # 使われなくなったセッションのエントリを溜めない
-            for k in [k for k, v in self._hits.items() if not v or v[-1] <= cutoff]:
-                del self._hits[k]
-            hits = self._hits.setdefault(key, deque())
+            # 全key走査は高々1分に1回。毎request O(N)にするとlimiter自体がDoS面になる。
+            if now - self._last_prune >= min(window, 60.0):
+                for old_key in [
+                    k for k, values in self._hits.items() if not values or values[-1] <= cutoff
+                ]:
+                    del self._hits[old_key]
+                self._last_prune = now
+            hits = self._hits.get(key)
+            if hits is None:
+                if len(self._hits) >= self._max_keys:
+                    return False
+                hits = self._hits.setdefault(key, deque())
             while hits and hits[0] <= cutoff:
                 hits.popleft()
             if len(hits) >= limit:

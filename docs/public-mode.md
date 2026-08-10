@@ -8,6 +8,8 @@
 SORAMIMIC_PUBLIC=1 \
 SORAMIMIC_QUEUE_LIMIT=5 \
 SORAMIMIC_DAILY_QUOTA=5 \
+SORAMIMIC_IP_DAILY_QUOTA=30 \
+SORAMIMIC_IP_HASH_KEY='<ランダムな永続secret>' \
 SORAMIMIC_MAX_SONG_SECONDS=420 \
 SORAMIMIC_JOB_TTL_HOURS=24 \
 TURNSTILE_SITE_KEY=0x... TURNSTILE_SECRET_KEY=0x... \
@@ -21,17 +23,43 @@ uv run soramimic-video serve --host 0.0.0.0
 | `SORAMIMIC_PUBLIC` | 未設定 | `1`(`0`/`false`/`no`/空 以外)で公開モード。以下のセッション分離と投入制限が有効になる |
 | `SORAMIMIC_QUEUE_LIMIT` | 5 | 待機中+実行中ジョブの合計上限(サーバー全体)。超過した投入は429 |
 | `SORAMIMIC_DAILY_QUOTA` | 5 | セッションごとの直近24時間の投入本数上限。超過は429 |
+| `SORAMIMIC_IP_DAILY_QUOTA` | 30 | 接続元IPごとの直近24時間の投入本数上限。cookieを変えても継続し、超過は429 |
+| `SORAMIMIC_IP_HASH_KEY` | 未設定 | 接続元IPを短いHMACにする永続secret。生IPは保存しない。public readinessは未設定を失敗として報告 |
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420 | 入力MIDIの演奏時間の上限(秒)。超過は400 |
 | `SORAMIMIC_JOB_TTL_HOURS` | 0(無効) | 完了・失敗・中断から何時間でジョブを消すか。同じ期間使われていない自作リストのeditorセッションも対象。正の値で1時間ごとに掃除する |
 | `SORAMIMIC_SAMPLES_DIR` | 未設定 | 同梱サンプル曲(`static/sample`)の差し替え先ディレクトリ。`samples.json` と `<id>.mid` / `<id>_lyrics.txt` を置く |
 | `SORAMIMIC_WARMUP_WORDLISTS` | 未設定 | カンマ区切りの単語リスト名。起動時にバックグラウンドで前処理(parse_tidy)を済ませ、キャッシュに載せておく |
 | `SORAMIMIC_PREVIEW_RATE_LIMIT` | 10 | サムネプレビュー(`/api/thumbnail-preview`)をセッションごとに何回まで作るか。`0` 以下で無効 |
 | `SORAMIMIC_PREVIEW_RATE_WINDOW` | 60 | 上のレート制限の窓(秒) |
+| `SORAMIMIC_GET_RATE_LIMIT` | 15 | `wordlist-image`等の高コストGET cache missをセッションごとに許す回数 |
+| `SORAMIMIC_GET_RATE_WINDOW` | 60 | 上のレート制限の窓(秒) |
+| `SORAMIMIC_GET_IP_RATE_LIMIT` | 90 | cookie削除で回避できないIPバックストップ（NATを考慮した広い枠） |
+| `SORAMIMIC_GET_IP_RATE_WINDOW` | 60 | 上のIP制限の窓(秒) |
+| `SORAMIMIC_GET_CACHE_HIT_RATE_LIMIT` | 120 | 高コストGET cache hitのセッション枠 |
+| `SORAMIMIC_GET_CACHE_HIT_IP_RATE_LIMIT` | 600 | cache hitのIPバックストップ |
+| `SORAMIMIC_OPS_TOKEN` | 未設定 | 信頼proxy経由で運用endpointを読む専用ヘッダートークン |
+| `SORAMIMIC_TRUSTED_PROXY_IPS` | 未設定 | `CF-Connecting-IP`を信頼する直近proxyのCIDR |
+| `SORAMIMIC_CF_ACCESS_TEAM_DOMAIN` | 未設定 | quota免除に使う完全なHTTPS issuer URL。lowercaseの`https://<team>.cloudflareaccess.com`（末尾`/`は1つまで可）のみ許可 |
+| `SORAMIMIC_CF_ACCESS_AUD` | 未設定 | quota免除対象Access Applicationのaudience |
+| `SORAMIMIC_QUOTA_EXEMPT_EMAILS` | 未設定 | JWT検証済みメールの完全一致allowlist（カンマ区切り、大文字小文字は区別しない） |
 | `TURNSTILE_SITE_KEY` | 未設定 | Cloudflare Turnstileのサイトキー。秘密鍵と両方揃うとフロントにウィジェットが出る |
 | `TURNSTILE_SECRET_KEY` | 未設定 | 同・秘密鍵。設定するとジョブ投入時にトークンを検証し、失敗は403 |
 
 `SORAMIMIC_VIDEO_API_KEY`(X-API-Keyによる全API認証)は公開モードとは独立で、
 併用も単独利用もできる。公開インスタンスでは通常は設定しない。
+
+### Cloudflare Access利用者の日次quota免除
+
+免除はpublic modeでだけ有効で、直近peerがloopbackかつ
+`SORAMIMIC_TRUSTED_PROXY_IPS` に明示されている場合に限る。アプリは
+`CF-Access-Jwt-Assertion` をAccessの固定JWKS endpointでRS256検証し、issuer、audience、
+有効期限、発行時刻、メールclaimをすべて確認する。メールheader、cookie、query parameterは
+本人確認に使わない。検証失敗やJWKS取得失敗は通常quotaへfail closedする。
+
+免除されるのはセッション/IPの日次quotaだけで、Turnstile、全体queue、曲長、
+GET rate limit、同時実行枠、ジョブ所有者分離、運用endpoint認可は変わらない。
+免除ジョブはIP HMACを保存せず、IP日次枠を消費しない。`/api/config` は本人情報を返さず
+`quota_exempt` booleanだけを返し、免除時は `daily_quota` を省略する。
 
 ## 単語リストのウォームアップ
 
@@ -69,13 +97,13 @@ SORAMIMIC_WARMUP_WORDLISTS=pokemon,nations,sekitsui uv run soramimic-video serve
   UIは単語リストの代表画像にフォールバックする(モーダルの機能は落ちない)
 - 生成結果は `<jobs-dir>/thumbnail-preview-cache/` にPNGでキャッシュする
   (キーは曲名・単語リストCSVの内容・where・変換パラメータ・解像度・レイアウト定義)。
-  TTL7日・最大300件で刈る。**キャッシュヒットはレート制限を消費しない**
+  TTL7日・最大300件で刈る。**キャッシュヒットは生成miss枠を消費せず、別の緩い枠だけを使う**
 - 単語画像は**合計2秒まで**(`IMAGE_WAIT_SECONDS`)ダウンロードを待つ。間に合えば
   初見の1回目から絵入りで返る
 - 間に合わなかったときは文字だけのPNGを `X-Preview-Images: pending` ヘッダ付きで返し、
   裏で画像を取り切ってから**同じキャッシュキーのPNGを絵入りに作り直す**。UIはpendingを
   見て4秒後に1回だけ取り直し、絵入りが返ってきたら静かに差し替える。取り直しの時点では
-  作り直しが済んでいる=キャッシュヒットなので、**レート制限も変換も追加で消費しない**
+  作り直しが済んでいる=キャッシュヒットなので、**生成miss枠も変換も追加で消費しない**
   (作り直せなかったときだけPNGを捨て、次に開いたときに作り直す)
 - 生成は同時に1本(連打で変換を並列に走らせない)。混み合っていれば429
 - 画像を初期非表示にする単語リスト(`HIDDEN_PREVIEW_WORDLISTS`。昆虫など)では
