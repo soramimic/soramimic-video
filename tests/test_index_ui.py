@@ -234,10 +234,10 @@ def test_random_button_is_disabled_until_both_choices_can_change():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error():
-    """iOSでは動画だけを共有し、一時的な操作権限を失わない。
+    """iOSの一時的な操作権限を失わず、未完了Promiseでもボタンを固めない。
 
-    filesとtextの併用や、共有エラーを勝手なdownloadへ変換したのが実機デグレに
-    なるため、文字列の存在だけでなくイベントを実行してpayload・順序・fallbackを固定する。
+    iOSでは共有後もPromiseが完了しないことがある。文字列の存在だけでなくイベントを
+    実行し、payload・順序・ボタン状態・fallbackを固定する。
     """
     script = _script()
     share = script[script.index("const SHARE_TEXT =") :]
@@ -256,7 +256,7 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
           share(data) {{
             assert.equal(activation, true, "share must run directly in click activation");
             shareCalls.push(data);
-            return Promise.resolve();
+            return new Promise(() => {{}});
           }}
         }};
         class File {{
@@ -302,8 +302,12 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
           await Promise.resolve();
           assert.equal(fetchCalls, 1, "click must not fetch the video again");
           assert.equal(shareCalls.length, 1);
-          assert.deepEqual(Object.keys(shareCalls[0]), ["files"],
-            "iOS must not combine files and text");
+          assert.deepEqual(Object.keys(shareCalls[0]), ["files", "text"]);
+          assert.equal(shareCalls[0].text.includes("#Soramimic\\n"), true);
+          assert.equal(shareCalls[0].text.includes("#soramimic"), false);
+          assert.equal(shareCalls[0].text.endsWith("https://video.example"), true);
+          assert.equal(elements["share-save"].disabled, false,
+            "a pending iOS share promise must not disable later taps");
           assert.equal(downloads, 0);
 
           navigator.share = () => Promise.reject({{ name: "AbortError" }});
