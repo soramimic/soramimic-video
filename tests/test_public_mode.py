@@ -411,7 +411,7 @@ def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
     assert conf["launch_wordlists"] == [
         "stations", "nations", "baseball", "scientist", "gimukyoiku",
     ]
-    assert conf["fixed_voicevox_style"] == 3003
+    assert conf["fixed_voicevox_style"] == 6000
     assert [row["id"] for row in client.get("/api/samples").json()] == [
         "furusato", "momotarou", "katatsumuri", "shabondama", "akatombo",
     ]
@@ -427,7 +427,7 @@ def test_simple_ui_fixes_voice_and_wordlist_layout(tmp_path, monkeypatch):
     res = submit_launch(
         client,
         synthesizer="neutrino",
-        voicevox_style="6000",
+        voicevox_style="3003",
         auto_octave="false",
         transpose="12",
         layout="caption",
@@ -437,7 +437,7 @@ def test_simple_ui_fixes_voice_and_wordlist_layout(tmp_path, monkeypatch):
     body = wait_done(client, res.json()["id"])
     params = body["params"]
     assert params["synthesizer"] == "voicevox"
-    assert params["voicevox_style"] == 3003
+    assert params["voicevox_style"] == 6000
     assert params["auto_octave"] is True
     assert params["transpose"] == 0
     assert params["layout"] == "station_info_card"
