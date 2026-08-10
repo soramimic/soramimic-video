@@ -1288,31 +1288,28 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
-def test_index_html_share_buttons_are_separated():
-    # 完成後の導線は「Xでポスト(必ずweb intent)」と「動画を保存(シェアシート
-    # またはダウンロード)」の2本。1つのボタンにまとめ直さない。
+def test_index_html_has_one_feature_detected_save_share_button():
+    # 完成後の導線は保存・共有ボタン1本。X専用ボタンは置かない。
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert 'id="share-x"' in html and 'id="share-save"' in html
-    # Xボタンは intent を開くだけ(ファイル添付シェアは保存ボタン側)
-    assert 'xBtn.addEventListener("click", () => openXIntent());' in html
+    assert 'id="share-save"' in html
+    assert 'id="share-x"' not in html
+    assert "openXIntent" not in html and "twitter.com/intent" not in html
+    assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
+    assert "navigator.canShare({ files: [probe] })" in html
     assert "navigator.share({ files: [file], text: SHARE_TEXT })" in html
-    # シェアシートが使えない環境は動画のダウンロードに落とす
-    assert "if (!navigator.share) return downloadVideo(videoUrl);" in html
+    assert "if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);" in html
 
 
-def test_index_html_share_buttons_follow_the_actual_order():
-    """実際の手順どおり「保存」が先(左)、「Xでポスト」が後(右)。案内文も同じ順。"""
+def test_index_html_share_hint_matches_platform_capability():
+    """共有可否とOSに合わせて、保存・共有の案内を切り替える。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    share_html = html.split("const SHARE_HTML =")[1].split("// ファイル添付付き")[0]
-    assert share_html.index('id="share-save"') < share_html.index('id="share-x"')
-    # X風の黒いボタンのスタイルは維持
-    assert 'id="share-x" class="btn-x btn-sm"' in share_html
-    # 案内文は ①保存 → ②ポスト の順で読める
-    assert "①「${SAVE_LABEL}」で端末に保存 → ②「Xでポスト」で投稿画面を開いて添付" in share_html
+    assert 'return "ios";' in html and 'return "android";' in html
+    assert '「ビデオを保存」「ファイルに保存」' in html
+    assert "動画ファイルをダウンロードします。" in html
 
 
 def test_index_html_no_server_host_line():
