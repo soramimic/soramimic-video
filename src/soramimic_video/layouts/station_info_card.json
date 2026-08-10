@@ -5,7 +5,7 @@
     {"type": "text", "text": "{original}", "box": [0.575, 0.075, 0.385, 0.14],
      "size": 0.075, "color": "white", "align": "left", "wrap": true},
     {"type": "text", "text": "{prefecture}  {lines}", "box": [0.575, 0.245, 0.385, 0.085],
-     "size": 0.042, "color": "#d8d8d8", "align": "left", "valign": "top", "wrap": true,
+     "size": 0.042, "color": "#9ad8ff", "align": "left", "valign": "top", "wrap": true,
      "require": "prefecture"},
     {"type": "text", "text": "{description}", "box": [0.575, 0.36, 0.385, 0.31],
      "size": 0.04, "color": "#e6e6e6", "align": "left", "valign": "top", "wrap": true,

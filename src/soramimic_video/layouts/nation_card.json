@@ -1,0 +1,23 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "image", "box": [0.035, 0.075, 0.5, 0.61]},
+    {"type": "text", "text": "{original}", "box": [0.575, 0.105, 0.385, 0.14],
+     "size": 0.07, "color": "white", "align": "left", "wrap": true},
+    {"type": "text", "text": "{continent}　首都 {capital}",
+     "box": [0.575, 0.275, 0.385, 0.06],
+     "size": 0.038, "color": "#9ad8ff", "align": "left", "require": "capital"},
+    {"type": "text", "text": "{description}", "box": [0.575, 0.37, 0.385, 0.24],
+     "size": 0.038, "color": "#e6e6e6", "align": "left", "valign": "top",
+     "wrap": true, "require": "description"},
+    {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.1],
+     "size": 0.065, "color": "white", "bold": true, "ruby": true},
+    {"type": "subtitle", "source": "original", "box": [0.02, 0.895, 0.96, 0.05],
+     "size": 0.042, "color": "#b8b8b8"}
+  ],
+  "fallback": [
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08],
+     "size": 0.05, "color": "#aaa"}
+  ]
+}

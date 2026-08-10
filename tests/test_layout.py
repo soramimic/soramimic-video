@@ -34,9 +34,8 @@ def test_wordlist_layouts_are_builtin():
     assert mapping["scientist"] == "scientist_card"
     assert mapping["school"] == "school_card"
     assert mapping["municipality"] == "municipality_card"
-    assert {mapping[name] for name in ("football", "baseball", "nations")} == {
-        "info_card"
-    }
+    assert {mapping[name] for name in ("football", "baseball")} == {"player_card"}
+    assert mapping["nations"] == "nation_card"
     assert mapping["stations"] == "station_info_card"
     assert set(mapping.values()) <= set(builtin_layout_names())
 
@@ -134,6 +133,34 @@ def test_info_card_uses_description_with_player_and_station_details():
     assert "駅の説明" in station_texts
     assert "東京都  路線名" in station_texts
     assert not any("運営" in text or "1900" in text or "XX01" in text for text in station_texts)
+
+
+def test_animal_card_uses_taxonomy_and_description():
+    layout = load_layout("animal_card")
+    animal = {
+        "original": "シャチ",
+        "order": "偶蹄目",
+        "family": "マイルカ科",
+        "description": "世界中の海に分布し、群れで獲物を捕らえる。",
+    }
+    texts = layout.render_texts(animal)
+    assert "偶蹄目マイルカ科" in texts
+    assert animal["description"] in texts
+
+
+def test_nation_card_prioritizes_capital_region_and_description():
+    layout = load_layout("nation_card")
+    nation = {
+        "original": "国名",
+        "capital": "首都名",
+        "continent": "地域名",
+        "description": "国の説明",
+        "population": "12345",
+    }
+    texts = layout.render_texts(nation)
+    assert "地域名　首都 首都名" in texts
+    assert "国の説明" in texts
+    assert not any("12345" in text for text in texts)
 
 
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):
@@ -325,7 +352,7 @@ def test_require_hides_element_when_column_empty(tmp_path):
 
 
 def test_scientist_card_field_fallback_for_all_missing_entries():
-    """生年・国籍・業績・説明が全欠損でも field 列があれば「分野: X」を出す。
+    """生年・国籍・業績・説明が全欠損でも field 列があれば分野を出す。
 
     scientist.csv の一部エントリ(例: 西川正治, id=248)は画像もbirth_year/country/
     achievement/descriptionも全部NAで、従来は名前だけの黒背景カードになっていた。
@@ -339,15 +366,17 @@ def test_scientist_card_field_fallback_for_all_missing_entries():
         "achievement": "NA", "description": "NA",
     }
     texts = layout.render_texts(nishikawa)
-    assert "分野: 物理" in texts
+    assert "物理" in texts
     # 生年行(country由来)は出ない
     assert not any("生まれ" in t for t in texts)
 
-    # birth_yearがある人では従来の生年行が出て、field行は出ない(重複回避)
+    # birth_yearがある人では分野・生年と国を別行で出し、
+    # fieldだけのフォールバック行は出さない
     with_birth_year = {**nishikawa, "birth_year": "1902", "country": "日本"}
     texts2 = layout.render_texts(with_birth_year)
-    assert "分野: 物理" not in texts2
-    assert any("生まれ" in t for t in texts2)
+    assert texts2.count("物理") == 0
+    assert any("物理" in text and "生まれ" in text for text in texts2)
+    assert "日本" in texts2
 
 
 def test_render_frame_fallback(tmp_path):
