@@ -1582,10 +1582,8 @@ async function poll(id, seq = pollSeq) {
 
 // ---- 完成した動画を保存・共有する ----
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
-// 誤判定しやすい。まずWeb Share APIの有無を見て、クリック後に取得した実動画で
+// 誤判定しやすい。まずWeb Share APIの有無を見て、完成した実動画を先に取得して
 // ファイル共有の可否を確定する。OS判定は案内文を分かりやすくするためだけに使う。
-const SHARE_TEXT =
-  "Soramimicで替え歌動画を作りました🎤 #soramimic\n" + location.origin;
 
 function mobilePlatform() {
   const platform = (navigator.userAgentData && navigator.userAgentData.platform)
@@ -1598,18 +1596,15 @@ function mobilePlatform() {
 }
 
 function supportsVideoFileShare() {
-  // iOS系ブラウザでは、起動時に作った1バイトのダミーMP4を canShare() へ
-  // 渡すとfalseでも、取得した実動画なら共有シートを開けることがある。
-  // ここでは共有APIとFileの有無だけを見て、ファイル対応はクリック後の
-  // 実動画に対する canShareFiles() で確定する。
+  // 起動時には実動画がまだ無い。ここではAPIの有無だけを見て、完成後に
+  // 先読みした実動画をshareへ直接渡す。
   return typeof navigator.share === "function" && typeof File !== "undefined";
 }
 
 const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
-const SAVE_LABEL = FILE_SHARE_SUPPORTED ? "動画を保存・共有" : "動画を保存";
 
-function saveHint() {
-  if (!FILE_SHARE_SUPPORTED) return "動画ファイルをダウンロードします。";
+function shareHint(shareable) {
+  if (!shareable) return "動画ファイルをダウンロードします。";
   if (mobilePlatform() === "ios") {
     return "iPhone・iPadの共有メニューから「ビデオを保存」「ファイルに保存」、または共有先を選べます。";
   }
@@ -1621,14 +1616,11 @@ function saveHint() {
 
 const SHARE_HTML =
   `<p class="share-row">` +
-  `<button type="button" id="share-save" class="btn-sm">${SAVE_LABEL}</button>` +
+  `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
+  `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画を保存"}</button>` +
   `</p>` +
-  `<p class="hint" id="share-hint">${saveHint()}</p>`;
-
-// ファイル添付付きのシェアが使えるか(動画を1本渡せるか)は実ファイルで判定する
-function canShareFiles(file) {
-  return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
-}
+  `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
+    ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
@@ -1646,30 +1638,86 @@ function downloadVideo(videoUrl) {
   a.remove();
 }
 
+let sharePreparationSeq = 0;
+let preparedVideoShare = null;
+
+function resetVideoSharePreparation() {
+  sharePreparationSeq += 1;
+  preparedVideoShare = null;
+}
+
+function setShareButtonMode(shareable) {
+  const saveBtn = $("share-save");
+  const hint = $("share-hint");
+  if (!saveBtn || !hint) return;
+  saveBtn.disabled = false;
+  saveBtn.textContent = shareable ? "動画を保存・共有" : "動画を保存";
+  hint.textContent = shareHint(shareable);
+}
+
+async function prepareVideoShare(videoUrl) {
+  const seq = ++sharePreparationSeq;
+  preparedVideoShare = null;
+  if (!FILE_SHARE_SUPPORTED) {
+    preparedVideoShare = { videoUrl, file: null, shareable: false };
+    setShareButtonMode(false);
+    return;
+  }
+  try {
+    const res = await fetch(qs(videoUrl), { headers: headers() });
+    if (!res.ok) throw new Error("動画を取得できませんでした");
+    const blob = await res.blob();
+    const file = new File([blob], videoFileName(videoUrl),
+      { type: blob.type || "video/mp4" });
+    if (seq !== sharePreparationSeq) return;
+    // iOSのアプリ内ブラウザにはshareはあってもcanShareが無いものがあり、
+    // canShareを門番にすると「共有」表示なのに必ずdownloadへ落ちてしまう。
+    // 実Fileを用意できたらshareを直接試し、拒否されたときだけ保存へ切り替える。
+    preparedVideoShare = { videoUrl, file, shareable: true };
+    setShareButtonMode(true);
+  } catch (_e) {
+    if (seq !== sharePreparationSeq) return;
+    preparedVideoShare = { videoUrl, file: null, shareable: false };
+    setShareButtonMode(false);
+  }
+}
+
 function bindShare(videoUrl) {
   const saveBtn = $("share-save");
   if (!saveBtn) return;
-  saveBtn.addEventListener("click", async () => {
+  saveBtn.addEventListener("click", () => {
     if (!videoUrl) return;
-    if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
+    const prepared = preparedVideoShare;
+    if (!prepared || prepared.videoUrl !== videoUrl) return;
+    if (!prepared.shareable || !prepared.file) return downloadVideo(videoUrl);
+    // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
+    // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
+    // iOS WebKitでは files と text の併用に不具合があるため動画だけを渡す。
+    let sharing;
     saveBtn.disabled = true;
-    const label = saveBtn.textContent;
-    saveBtn.textContent = "準備中…";
     try {
-      const res = await fetch(qs(videoUrl), { headers: headers() });
-      if (!res.ok) throw new Error("動画を取得できませんでした");
-      const blob = await res.blob();
-      const file = new File([blob], videoFileName(videoUrl),
-        { type: blob.type || "video/mp4" });
-      if (!canShareFiles(file)) return downloadVideo(videoUrl);
-      await navigator.share({ files: [file], text: SHARE_TEXT });
+      sharing = navigator.share({ files: [prepared.file] });
     } catch (e) {
-      // ユーザーがシェアシートを閉じただけのときは何もしない
-      if (!(e && e.name === "AbortError")) downloadVideo(videoUrl);
-    } finally {
-      saveBtn.disabled = false;
-      saveBtn.textContent = label;
+      if (!(e && e.name === "AbortError")) {
+        preparedVideoShare = { videoUrl, file: null, shareable: false };
+        setShareButtonMode(false);
+        showBuilderMsg("共有メニューを開けませんでした。「動画を保存」をお使いください。");
+      } else {
+        saveBtn.disabled = false;
+      }
+      return;
     }
+    Promise.resolve(sharing).catch((e) => {
+      // キャンセルや共有エラーを勝手なダウンロードに置き換えない。共有が
+      // 拒否された環境では、次の明示操作用にボタンを「動画を保存」へ変える。
+      if (!(e && e.name === "AbortError")) {
+        preparedVideoShare = { videoUrl, file: null, shareable: false };
+        setShareButtonMode(false);
+        showBuilderMsg("共有メニューを開けませんでした。「動画を保存」をお使いください。");
+      }
+    }).finally(() => {
+      if (preparedVideoShare && preparedVideoShare.shareable) saveBtn.disabled = false;
+    });
   });
 }
 
@@ -2280,6 +2328,7 @@ function setBuilderState(state) {
     $("builder-image").hidden = true;   // poster に同じ絵が出るので二重に見せない
     video.hidden = false;
   } else {
+    resetVideoSharePreparation();
     // done から戻るときはサムネ画像を出し直す(直後に作り直す場合は上書きされる)
     if ($("builder-image").getAttribute("src")) $("builder-image").hidden = false;
     video.hidden = true;
@@ -2341,6 +2390,7 @@ function showBuilderVideo(job) {
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
   bindShare(job.video_url);
+  prepareVideoShare(job.video_url);
   setBuilderState("done");
 }
 
