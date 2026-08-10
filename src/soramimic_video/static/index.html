@@ -1612,7 +1612,7 @@ function mobilePlatform() {
   const platform = (navigator.userAgentData && navigator.userAgentData.platform)
     || navigator.platform || "";
   const ua = navigator.userAgent || "";
-  if (/iPhone|iPad|iPod/i.test(ua)
+  if (/iPhone|iPad|iPod/i.test(ua) || /iPhone|iPad|iPod/i.test(platform)
       || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return "ios";
   if (/Android/i.test(ua) || /Android/i.test(platform)) return "android";
   return "other";
@@ -1715,12 +1715,15 @@ function bindShare(videoUrl) {
     if (!prepared.shareable || !prepared.file) return downloadVideo(videoUrl);
     // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
     // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
-    // 動画と投稿用本文を同じ共有シートへ渡す。共有API自体はこのクリック内で
-    // 即座に呼び、一時的なユーザー操作権限を失わない。
+    // iOS WebKitでは files と text を同時に渡すと共有シートが開かないことが
+    // あるため、iPhone・iPadでは動画だけを渡す。他の端末では投稿文も添える。
+    // 共有API自体はこのクリック内で即座に呼び、一時的なユーザー操作権限を失わない。
     let sharing;
     saveBtn.disabled = true;
     try {
-      sharing = navigator.share({ files: [prepared.file], text: SHARE_TEXT });
+      const data = { files: [prepared.file] };
+      if (mobilePlatform() !== "ios") data.text = SHARE_TEXT;
+      sharing = navigator.share(data);
     } catch (e) {
       if (!(e && e.name === "AbortError")) {
         preparedVideoShare = { videoUrl, file: null, shareable: false };
