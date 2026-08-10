@@ -29,6 +29,7 @@ api = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "python-multipart>=0.0.9",
+    "pyjwt[crypto]>=2.9",
 ]
 # analyze-audio(歌唱音源入力)用の重い依存。uv sync --extra audio で入れる
 audio = [

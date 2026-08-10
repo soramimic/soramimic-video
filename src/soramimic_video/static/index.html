@@ -1194,7 +1194,11 @@ function setupPublicMode(conf) {
   publicMode = !!conf.public;
   if (!publicMode) return;
   const limits = [];
-  if (conf.daily_quota) limits.push(`1日に作れるのは${conf.daily_quota}本までです`);
+  if (conf.quota_exempt === true) {
+    limits.push("検証アカウント：1日の回数制限なし");
+  } else if (conf.daily_quota) {
+    limits.push(`1日に作れるのは${conf.daily_quota}本までです`);
+  }
   if (conf.max_song_seconds) {
     limits.push(conf.max_song_seconds >= 60
       ? `曲の長さは約${Math.round(conf.max_song_seconds / 60)}分までです`
