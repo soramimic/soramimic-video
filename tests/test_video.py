@@ -246,9 +246,9 @@ def _multi_word_project(tmp_path: Path):
 
 
 def _ruby_events(ass: str):
-    # ルビイベントは \fs でフォントサイズを上書きしているので本文と区別できる
+    # Name欄をRubyにして本文イベントと区別する。
     return [ln for ln in ass.splitlines()
-            if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" in ln]
+            if ln.startswith("Dialogue:") and ",Parody,Ruby," in ln]
 
 
 def _pos_x(line: str) -> float:
@@ -270,7 +270,7 @@ def test_build_ass_ruby_events(tmp_path: Path):
     assert "しず" in joined and "やま" in joined and "カワ" not in joined and "かわ" not in joined
     # 本文パロディイベント(\fsなし)と同じ開始・終了区間
     body = next(ln for ln in ass.splitlines()
-                if ln.startswith("Dialogue:") and ",Parody," in ln and "\\fs" not in ln)
+                if ln.startswith("Dialogue:") and ",Parody,," in ln)
     bstart, bend = body.split(",")[1], body.split(",")[2]
     for ln in ruby:
         assert ln.split(",")[1] == bstart and ln.split(",")[2] == bend
@@ -286,20 +286,55 @@ def test_build_ass_ruby_positions_monotonic(tmp_path: Path):
     assert xs == sorted(xs) and len(set(xs)) == len(xs)  # 単語順に単調増加
 
 
-def test_build_ass_ruby_positions_match_ass_cell_height(tmp_path: Path, monkeypatch):
-    from PIL import ImageFont
+def test_build_ass_ruby_and_whole_word_share_exact_center(tmp_path: Path):
+    from soramimic_video.layout import load_layout
 
+    project = _multi_word_project(tmp_path)
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    body = [
+        line for line in ass.splitlines()
+        if line.startswith("Dialogue:") and ",Parody,," in line
+    ]
+    ruby = _ruby_events(ass)
+    body_positions = {
+        line.rsplit("}", 1)[-1]: _pos_x(line)
+        for line in body
+    }
+    assert _pos_x(ruby[0]) == body_positions["静"]
+    assert _pos_x(ruby[1]) == body_positions["山"]
+
+
+def test_build_ass_partial_ruby_shares_exact_center_with_body_run(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words = [
+        ParodyWord(
+            surface="ペルシャ湾", kana="ペルシャワン", original="",
+            original_surface="", originalkana="", note_ids=[0],
+        )
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    body_positions = {
+        line.rsplit("}", 1)[-1]: _pos_x(line)
+        for line in ass.splitlines()
+        if line.startswith("Dialogue:") and ",Parody,," in line
+    }
+    ruby = _ruby_events(ass)
+    assert set(body_positions) == {"ペルシャ", "湾"}
+    assert len(ruby) == 1 and "わん" in ruby[0]
+    assert _pos_x(ruby[0]) == body_positions["湾"]
+
+
+def test_build_ass_ruby_positions_use_libass_scale(tmp_path: Path, monkeypatch):
     import soramimic_video.video as video
     from soramimic_video.layout import load_layout
 
     measured_sizes = []
 
-    class _Font(ImageFont.FreeTypeFont):
+    class _Font:
         def __init__(self, size):
             self.size = size
-
-        def getmetrics(self):
-            return self.size, self.size // 2
 
         def getlength(self, text):
             measured_sizes.append(self.size)
@@ -312,8 +347,34 @@ def test_build_ass_ruby_positions_match_ass_cell_height(tmp_path: Path, monkeypa
 
     body_px = int(layout.subtitles[0].size * 720)
     assert measured_sizes
-    expected = round(body_px * body_px / (body_px + body_px // 2))
-    assert set(measured_sizes) == {expected}
+    assert set(measured_sizes) == {body_px * video.ASS_MEASURE_SCALE}
+    # 64倍計測を縮小した結果は、libassが使う本文サイズ(ASSサイズ×0.72)と一致する。
+    assert video._ass_text_width(None, body_px, "字") == pytest.approx(
+        body_px * video.LIBASS_FONT_SIZE_COEFF
+    )
+
+
+def test_build_ass_ruby_shrinks_long_line_to_subtitle_box(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words = [
+        ParodyWord(
+            surface=f"長大語{i}", kana=f"チョウダイゴ{i}", original="",
+            original_surface="", originalkana="", note_ids=[0],
+        )
+        for i in range(20)
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    body = [
+        line for line in ass.splitlines()
+        if line.startswith("Dialogue:") and ",Parody,," in line
+    ]
+    assert len(body) == 20
+    assert all("\\fs" in line for line in body)
+    xs = [_pos_x(line) for line in body]
+    assert min(xs) >= 0.02 * 1280
+    assert max(xs) <= 0.98 * 1280
 
 
 def test_build_ass_ruby_disabled(tmp_path: Path):
@@ -371,6 +432,8 @@ def test_ruby_segments():
     # 記号+漢字の混在では漢字部分にだけ読みが割り当たる
     assert _ruby_segments("アテル＝参", "アテルサン") == [(4, 5, "サン")]
     assert _ruby_segments("参・アテル", "サンアテル") == [(0, 1, "サン")]
+    # 空白だけで区切られた漢字名は読みの境界を決められないため、全体ルビに戻す
+    assert _ruby_segments("柳瀬 泰平", "ヤナセタイヘイ") is None
 
 
 def test_build_ass_ruby_partial(tmp_path: Path):
@@ -447,6 +510,20 @@ def test_build_ass_ruby_fallback_whole_word(tmp_path: Path):
     ruby = _ruby_events(ass)
     assert len(ruby) == 1
     assert "しずけさ" in ruby[0]
+
+
+def test_build_ass_ruby_full_name_fallback(tmp_path: Path):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words = [
+        ParodyWord(surface="柳瀬 泰平", kana="ヤナセタイヘイ", original="",
+                   original_surface="", originalkana="", note_ids=[0]),
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    ruby = _ruby_events(ass)
+    assert len(ruby) == 1
+    assert "やなせたいへい" in ruby[0]
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
