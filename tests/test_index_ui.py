@@ -9,8 +9,13 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import textwrap
 from html.parser import HTMLParser
 from pathlib import Path
+
+import pytest
 
 INDEX = Path(__file__).resolve().parents[1] / "src/soramimic_video/static/index.html"
 
@@ -175,6 +180,104 @@ def test_random_button_is_disabled_until_both_choices_can_change():
     assert '$("lucky").disabled = !samples.length || !alternatives.length;' in availability
     sync = _function_body(_script(), "function syncBuilderValues()")
     assert "syncLuckyAvailability();" in sync
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error():
+    """iOSの一時的な操作権限を、クリック中の動画取得で失わない。
+
+    共有エラーを勝手なdownloadへ変換したのが今回の実機デグレなので、文字列の
+    存在だけでなくイベントを実行して順序とfallbackを固定する。
+    """
+    script = _script()
+    share = script[script.index("function mobilePlatform()") :]
+    share = share[: share.index("// ジョブを投入できない状態か")]
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let elements = {{}};
+        let fetchCalls = 0;
+        let downloads = 0;
+        let messages = [];
+        let shareCalls = [];
+        let activation = false;
+        const navigator = {{
+          platform: "iPhone", userAgent: "CriOS", maxTouchPoints: 1,
+          share(data) {{
+            assert.equal(activation, true, "share must run directly in click activation");
+            shareCalls.push(data);
+            return Promise.resolve();
+          }}
+        }};
+        class File {{
+          constructor(parts, name, options) {{
+            this.parts = parts; this.name = name; this.type = options.type;
+          }}
+        }}
+        const location = {{ origin: "https://video.example" }};
+        const $ = (id) => elements[id] || null;
+        const qs = (value) => value;
+        const headers = () => ({{}});
+        const fetch = async () => {{
+          fetchCalls += 1;
+          return {{ ok: true, blob: async () => ({{ type: "video/mp4" }}) }};
+        }};
+        const document = {{
+          body: {{ appendChild() {{}} }},
+          createElement() {{
+            return {{ click() {{ downloads += 1; }}, remove() {{}} }};
+          }}
+        }};
+        const showBuilderMsg = (message) => messages.push(message);
+        {share}
+
+        function button() {{
+          return {{
+            disabled: false, textContent: "", handlers: {{}},
+            addEventListener(type, fn) {{ this.handlers[type] = fn; }}
+          }};
+        }}
+
+        (async () => {{
+          elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
+          bindShare("/video.mp4");
+          await prepareVideoShare("/video.mp4");
+          assert.equal(fetchCalls, 1);
+          assert.equal(elements["share-save"].textContent, "動画を保存・共有");
+          assert.equal(elements["share-save"].disabled, false);
+
+          activation = true;
+          elements["share-save"].handlers.click();
+          activation = false;
+          await Promise.resolve();
+          assert.equal(fetchCalls, 1, "click must not fetch the video again");
+          assert.equal(shareCalls.length, 1);
+          assert.deepEqual(Object.keys(shareCalls[0]), ["files"]);
+          assert.equal(downloads, 0);
+
+          navigator.share = () => Promise.reject({{ name: "AbortError" }});
+          activation = true;
+          elements["share-save"].handlers.click();
+          activation = false;
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(downloads, 0, "cancel must not start a download");
+          assert.equal(elements["share-save"].textContent, "動画を保存・共有");
+
+          navigator.share = () => Promise.reject({{ name: "NotAllowedError" }});
+          activation = true;
+          elements["share-save"].handlers.click();
+          activation = false;
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(downloads, 0, "share failure must not auto-download");
+          assert.equal(elements["share-save"].textContent, "動画を保存");
+          assert.match(messages.at(-1), /共有メニュー/);
+
+          elements["share-save"].handlers.click();
+          assert.equal(downloads, 1, "the explicit save-mode click downloads");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 def test_editor_opens_from_the_setup_screen():
