@@ -17,6 +17,7 @@ from typing import Any
 import jaconv
 from xfmido import XFMidiFile, extract_xf_karaoke_info
 
+from .kana import normalize_long_vowels, split_moras
 from .project import Line, Note, Project, SongInfo
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,84 @@ def parse_lyric_events(events: list[tuple[int, str]]) -> list[LyricEvent]:
             )
         )
         pending_break = False
+    repaired = _repair_word_internal_breaks(result)
+    if repaired:
+        logger.warning("XFの語中改行を補正しました: %d箇所", repaired)
     return result
+
+
+def _repair_word_internal_breaks(events: list[LyricEvent]) -> int:
+    """XFの明らかに壊れた語中改行を保守的に取り除く。
+
+    実データに ``/止[と]`` ``め`` ``/る`` ``/る[ほ]`` ``ほ`` のような列が
+    ある。単独行 ``/る`` の直後に、同じ表層 ``る`` を別の読み ``ほ`` で
+    再度出すのは正常な歌詞表記ではない。この特徴が全て揃うときだけ、
+    前行・1モーラ行・後行を連結し、後行先頭の重複表層を継続モーラ
+    として空にする。その音符は直前のモーラを伸ばす音符なので、読みは
+    後続表層の重複ではなく長音に直す。
+
+    単に短い行や ``/あ`` ``/あ`` のよう正常な反復は対象にしない。
+    """
+    repaired = 0
+    for i in range(1, len(events) - 2):
+        one = events[i]
+        following = events[i + 1]
+        one_surface = normalize_kana(one.surface)
+        one_kana = normalize_kana(one.kana)
+        following_kana = normalize_kana(following.kana)
+        if not (
+            one.line_break_before
+            and following.line_break_before
+            and one.surface
+            and one.surface == following.surface
+            and one.raw == f"/{one.surface}"
+            and following.raw == f"/{one.surface}[{following.kana}]"
+            and events[i + 2].raw == following.kana
+            and one_surface
+            and one_surface == one_kana
+            and following_kana
+            and following_kana != one_kana
+        ):
+            continue
+        one.line_break_before = False
+        following.line_break_before = False
+        following.surface = ""
+        following.kana = "ー"
+        # この壊れ方では、同じ行の少し後ろで長音モーラが
+        # 次の表層の手前へずれることがある(「い」「意思[い」「し]」)。
+        stop = next(
+            (j for j in range(i + 2, len(events)) if events[j].line_break_before),
+            len(events),
+        )
+        _repair_shifted_long_vowel(events, i + 2, min(stop, i + 10))
+        repaired += 1
+    return repaired
+
+
+def _repair_shifted_long_vowel(events: list[LyricEvent], start: int, stop: int) -> bool:
+    """認識済みの破損行内で、後続語の手前にずれた長音を1件直す。"""
+    vowels = "あいうえおアイウエオ"
+    for j in range(start, min(stop, len(events) - 2)):
+        vowel, word, continuation = events[j:j + 3]
+        if not (
+            not vowel.line_break_before
+            and not word.line_break_before
+            and not continuation.line_break_before
+            and vowel.raw == vowel.surface == vowel.kana
+            and vowel.raw in vowels
+            and word.surface
+            and re.search(r"[\u3400-\u9fff]", word.surface)
+            and word.raw == f"{word.surface}[{vowel.kana}"
+            and word.kana == vowel.kana
+            and continuation.surface == ""
+            and continuation.raw.endswith("]")
+        ):
+            continue
+        vowel.surface = word.surface
+        word.surface = ""
+        word.kana = "ー"
+        return True
+    return False
 
 
 def _absolute_events(track) -> list[tuple[int, Any]]:
@@ -235,6 +313,95 @@ def _fix_particle_kana(lines: list[Line], notes: list[Note]) -> int:
     return fixed
 
 
+def _distribute_moras(moras: list[str], count: int) -> list[str] | None:
+    """モーラ列を空カナ音符へ順序を保って均等配分する。"""
+    if count <= 0:
+        return [] if not moras else None
+    if len(moras) < count:
+        return None
+    width, extra = divmod(len(moras), count)
+    out: list[str] = []
+    pos = 0
+    for i in range(count):
+        size = width + (1 if i < extra else 0)
+        out.append("".join(moras[pos:pos + size]))
+        pos += size
+    return out
+
+
+def _fill_missing_kana(lines: list[Line], notes: list[Note]) -> int:
+    """ルビなし漢字の空カナを、行全体の文脈付き読みから補完する。
+
+    市販XFには ``女`` ``々`` ``し`` ``く`` ``て`` のように、漢字イベントだけ
+    読みを持たないデータがある。空カナのままMusicXMLへ渡すとNEUTRINOが有音程
+    ノートを「あ」と発声するため、既存カナをアンカーに行読みを切り分ける。
+    """
+    try:
+        from .reading import text_to_kana
+    except ImportError:  # pragma: no cover - 読み依存が無い環境
+        return 0
+
+    filled = 0
+    for line in lines:
+        line_notes = [notes[i] for i in line.note_ids]
+        if not any(not n.kana for n in line_notes):
+            continue
+        try:
+            full = split_moras(normalize_long_vowels(text_to_kana(line.xf_surface)))
+        except RuntimeError as exc:
+            logger.warning("ルビなし漢字の読み補完をスキップします: %s", exc)
+            return filled
+        if not full:
+            continue
+
+        assignments: dict[int, str] = {}
+        pending: list[int] = []
+        cursor = 0
+        valid = True
+        for i, note in enumerate(line_notes):
+            if not note.kana:
+                pending.append(i)
+                continue
+            anchor = split_moras(normalize_long_vowels(note.kana))
+            start = cursor + len(pending)
+            # XFは助詞を表記どおり「ヲ」と持つことも発音形「オ」と持つこともある。
+            # 読み補完のアンカー照合では同じ発音として扱う。
+            equivalent = {"ヲ": "オ", "ハ": "ワ", "ヘ": "エ"}
+            found = next(
+                (
+                    p
+                    for p in range(start, len(full) - len(anchor) + 1)
+                    if [equivalent.get(m, m) for m in full[p:p + len(anchor)]]
+                    == [equivalent.get(m, m) for m in anchor]
+                ),
+                None,
+            )
+            if found is None:
+                valid = False
+                break
+            distributed = _distribute_moras(full[cursor:found], len(pending))
+            if distributed is None:
+                valid = False
+                break
+            assignments.update(zip(pending, distributed, strict=True))
+            pending = []
+            cursor = found + len(anchor)
+
+        if valid:
+            distributed = _distribute_moras(full[cursor:], len(pending))
+            if distributed is None:
+                valid = False
+            else:
+                assignments.update(zip(pending, distributed, strict=True))
+        if not valid or not assignments:
+            continue
+        for i, kana in assignments.items():
+            line_notes[i].kana = kana
+            filled += 1
+        line.xf_kana = "".join(n.kana for n in line_notes)
+    return filled
+
+
 def analyze_midi(midi_path: Path) -> Project:
     """XF MIDIを解析してProject(notes/lines/song)を作る。"""
     midi = XFMidiFile(str(midi_path), charset="cp932")
@@ -332,6 +499,9 @@ def analyze_midi(midi_path: Path) -> Project:
     fixed = _fix_particle_kana(lines, notes)
     if fixed:
         logger.info("助詞の読みを発音形に補正しました: %d音符 (は→ワ 等)", fixed)
+    filled = _fill_missing_kana(lines, notes)
+    if filled:
+        logger.info("ルビなし漢字の読みを補完しました: %d音符", filled)
 
     song = SongInfo(
         midi_path=str(midi_path),

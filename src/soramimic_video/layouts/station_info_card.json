@@ -1,0 +1,23 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "image", "box": [0.02, 0.0366, 0.528, 0.7334]},
+    {"type": "text", "text": "{original}", "box": [0.575, 0.075, 0.385, 0.14],
+     "size": 0.075, "color": "white", "align": "left", "wrap": true},
+    {"type": "text", "text": "{prefecture}  {lines}", "box": [0.575, 0.245, 0.385, 0.085],
+     "size": 0.042, "color": "#9ad8ff", "align": "left", "valign": "top", "wrap": true,
+     "require": "prefecture"},
+    {"type": "text", "text": "{description}", "box": [0.575, 0.36, 0.385, 0.31],
+     "size": 0.04, "color": "#e6e6e6", "align": "left", "valign": "top", "wrap": true,
+     "require": "description"},
+    {"type": "subtitle", "source": "parody", "box": [0.02, 0.77, 0.96, 0.1],
+     "size": 0.065, "color": "white", "bold": true, "ruby": true},
+    {"type": "subtitle", "source": "original", "box": [0.02, 0.895, 0.96, 0.05],
+     "size": 0.042, "color": "#b8b8b8"}
+  ],
+  "fallback": [
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08],
+     "size": 0.05, "color": "#aaa"}
+  ]
+}

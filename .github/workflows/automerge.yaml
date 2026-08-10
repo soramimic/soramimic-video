@@ -1,13 +1,14 @@
-# main向けPRの自動マージ。CI(test など、このPRに付く全チェック)が
+# dev向けPRの自動マージ。CI(test など、このPRに付く全チェック)が
 # すべて成功したら、確認したコミットSHAを指定してマージしブランチを削除する。
+# - 開発PRの base は dev。main はリリース時だけ更新する
+# - main 向けの通常PRは retarget-main-pr.yaml が dev へ向け直す
 # - 除外したいPRには `no-automerge` ラベルを付ける(ドラフトPRも対象外)
 # - 新しいpushが来ると古い待機はキャンセルされ、新SHAで待機し直す
-# - privateリポジトリ+GitHub標準のauto-merge(要ブランチ保護)を使わないための自作
 name: automerge
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
-    branches: [main]
+    branches: [dev]
 
 permissions:
   contents: write
@@ -20,7 +21,8 @@ concurrency:
 
 jobs:
   automerge:
-    if: ${{ !github.event.pull_request.draft && !contains(github.event.pull_request.labels.*.name, 'no-automerge') }}
+    # 公開リポジトリのフォークPRは人間の確認なしに自動マージしない。
+    if: ${{ !github.event.pull_request.draft && !contains(github.event.pull_request.labels.*.name, 'no-automerge') && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

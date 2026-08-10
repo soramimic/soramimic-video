@@ -1133,6 +1133,84 @@ def test_song_title_kana_of_without_reading_in_manifest(tmp_path, monkeypatch):
     assert api_mod.song_title_kana_of({"midi_filename": "momiji.mid"}) == ""
 
 
+def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "title_kana": "ケンリキョク",
+                    "original_credit": "作詞・作曲: 作者",
+                    "credit_notice": "指定表記",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {
+        "midi_filename": "licensed.mid",
+        "song_title": "権利曲",
+        "original_credit": "",
+        "credit_notice": "",
+    }
+
+    assert api_mod.original_credit_of(params) == "作詞・作曲: 作者"
+    assert api_mod.credit_notice_of(params) == "指定表記"
+
+
+def test_sample_manifest_credits_cannot_be_omitted_or_overridden(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "original_credit": "正式なクレジット",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+
+    assert api_mod.original_credit_of(
+        {
+            "midi_filename": "licensed.mid",
+            "song_title": "権利曲",
+            "original_credit": "誤ったクレジット",
+        }
+    ) == "正式なクレジット"
+
+
+def test_uploaded_song_keeps_explicit_credits_when_filename_matches_sample(
+    tmp_path, monkeypatch
+):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps(
+            [{"id": "licensed", "title": "権利曲", "original_credit": "サンプル作者"}]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {
+        "midi_filename": "licensed.mid",
+        "song_title": "自作曲",
+        "original_credit": "自作曲の作者",
+        "credit_notice": "自作曲の指定表記",
+    }
+
+    assert api_mod.original_credit_of(params) == "自作曲の作者"
+    assert api_mod.credit_notice_of(params) == "自作曲の指定表記"
+
+
 def test_load_samples_tolerates_missing_or_broken_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(tmp_path / "nope"))
     assert api_mod.load_samples() == []
@@ -1142,6 +1220,20 @@ def test_load_samples_tolerates_missing_or_broken_manifest(tmp_path, monkeypatch
     (d / "samples.json").write_text("{", encoding="utf-8")
     monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
     assert api_mod.load_samples() == []
+
+
+def test_load_samples_adds_local_overlay_manifest(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps([{"id": "pd", "title": "公開曲"}]), encoding="utf-8"
+    )
+    (d / "samples.local.json").write_text(
+        json.dumps([{"id": "local", "title": "ローカル曲"}]), encoding="utf-8"
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+
+    assert [entry["id"] for entry in api_mod.load_samples()] == ["pd", "local"]
 
 
 def test_bundled_samples_all_have_a_reading():
@@ -1645,16 +1737,20 @@ def test_index_html_editor_opens_as_fullscreen_modal():
     assert '$("editor-frame-wrap").scrollIntoView' not in html
 
 
-def test_index_html_editor_modal_close_controls_are_pinned_to_the_head():
-    """閉じる導線(取り込んで閉じる/閉じる)はモーダル上部に固定する。"""
+def test_index_html_editor_modal_uses_the_embedded_back_navigation():
+    """親ヘッダーに閉じるボタンを重複させず、editor内の戻る導線を使う。"""
     html = _index_html()
     head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
-    assert 'id="editor-import"' in head
-    assert 'id="editor-close"' in head
+    assert "<button" not in head
+    assert 'id="editor-import"' not in html
+    assert 'id="editor-close"' not in head
+    assert '$("editor-import")' not in html
+    assert '$("editor-close")' not in html
+    assert '$("editor-frame").focus();' in html
     # ヘッダは縮まず、下のiframeだけがスクロール領域になる
     assert ".editor-modal-head {\n    flex: 0 0 auto;" in html
-    # 閉じても編集は生きている(自動取り込み)ことをその場に書く
-    assert "編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。" in html
+    # 閉じても編集は生きていることと、残した導線をその場に書く
+    assert "「動画作成に戻る」またはEscで閉じられます。" in html
 
 
 def test_index_html_editor_modal_closes_with_escape():
@@ -1679,18 +1775,15 @@ def test_index_html_editor_modal_locks_background_scroll():
 # ---- 替え歌エディタ: 取り込み操作なしで最新の編集を使う(来歴ガード付き) ----
 
 
-def test_index_html_editor_edits_are_used_without_import_click():
-    """「取り込んで閉じる」を押さなくても、編集内容が生成に使われる。"""
+def test_index_html_editor_edits_are_used_without_back_navigation():
+    """戻る操作をしなくても、編集内容が生成に使われる。"""
     html = _index_html()
     # 生成時に出どころを決める(#editor のファイル固定ではない)
     assert "const editorSrc = editorSourceForSubmit();" in html
     assert 'if (editorSrc.file) form.append("editor", editorSrc.file);' in html
     assert 'if ($("editor").files[0]) form.append("editor"' not in html
-    # ボタンは残す(押したときの挙動は従来どおり)
-    assert (
-        '<button type="button" id="editor-import" class="btn-primary btn-sm">'
-        "編集内容を取り込んで閉じる</button>" in html
-    )
+    # 親ヘッダーに重複する閉じるボタンは置かない
+    assert 'id="editor-import"' not in html
 
 
 def test_index_html_editor_auto_import_requires_actual_edit():

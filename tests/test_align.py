@@ -80,9 +80,9 @@ def test_split_lyric_falls_back_to_proportional():
 
 
 def test_resolve_granularity_precedence():
-    # 要素の指定 > override > source既定。既定は替え歌・元歌詞ともフレーズ
-    assert resolve_granularity("original", None, None) == "phrase"
-    assert resolve_granularity("parody", None, None) == "phrase"
+    # 要素の指定 > override > source既定。既定は元歌詞の行境界を尊重する
+    assert resolve_granularity("original", None, None) == "line"
+    assert resolve_granularity("parody", None, None) == "line"
     assert resolve_granularity("original", "line", None) == "line"
     assert resolve_granularity("original", None, {"original": "line"}) == "line"
     assert resolve_granularity("original", "line", {"original": "phrase"}) == "line"  # 要素優先
@@ -139,6 +139,29 @@ def test_build_subtitle_segments_none_never_merges():
     spans = [(0.0, 1.0), (1.0, 2.0)]
     segs = build_subtitle_segments("original", "line", originals, full, ["あ", "い"], spans)
     assert [s.text for s in segs] == ["あ", "い"]
+
+
+def test_default_line_granularity_ignores_broken_xf_word_boundary():
+    """XFの語中改行で「る」だけの字幕を作らない。"""
+    original = "止めるほどの意思の強さ 出来てすぐのボクは持たず"
+    originals = [original, original, original]
+    xf = ["止め", "る", "るほどのい意思の強さ出来すぐのボクは持たず"]
+    spans = [(128.76, 128.96), (128.96, 129.16), (129.16, 130.76)]
+
+    original_segs = build_subtitle_segments(
+        "original", resolve_granularity("original", None), originals, originals, xf, spans
+    )
+    parody_segs = build_subtitle_segments(
+        "parody", resolve_granularity("parody", None), originals,
+        ["止めの替え歌", "球", "後ろの替え歌"], xf, spans,
+    )
+
+    assert [(s.text, s.start, s.end, s.indices) for s in original_segs] == [
+        (original, 128.76, 130.76, [0, 1, 2])
+    ]
+    assert [(s.text, s.start, s.end, s.indices) for s in parody_segs] == [
+        ("止めの替え歌  球  後ろの替え歌", 128.76, 130.76, [0, 1, 2])
+    ]
 
 
 def test_align_skips_unsung_lyric_line():

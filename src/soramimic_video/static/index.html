@@ -770,16 +770,13 @@
 
 <!-- 替え歌エディタ(同梱editor)の全画面モーダル。開くまではDOMにあるだけで空。
      .wrap の外に置いてページ全体を覆う(詳細設定の中に展開すると編集領域が狭い)。
-     閉じる導線は上部に固定し、Escでも閉じる。閉じても編集は生きている
-     (sessionStorageに残り、生成時に自動で使われる: liveEditorEdit)ので、
-     「取り込んで閉じる」を押さなくても編集は失われない。 -->
+     戻る導線は埋め込みeditor内に表示し、Escでも閉じる。Escで閉じても編集は生きている
+     (sessionStorageに残り、生成時に自動で使われる: liveEditorEdit)。 -->
 <div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" aria-modal="true"
   aria-labelledby="editor-modal-title">
   <div class="editor-modal-head">
     <h2 id="editor-modal-title">✏️ 替え歌エディタ</h2>
-    <button type="button" id="editor-import" class="btn-primary btn-sm">編集内容を取り込んで閉じる</button>
-    <button type="button" id="editor-close" class="btn-sm">閉じる</button>
-    <p class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます(Escでも閉じます)。</p>
+    <p class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます。「動画作成に戻る」またはEscで閉じられます。</p>
   </div>
   <iframe id="editor-frame" title="soramimic editor"></iframe>
   <!-- 替え歌JSONの読み書き。エディタと同じ「替え歌そのもの」を扱う操作なので、
@@ -2104,19 +2101,24 @@ function luckyCombo(sampleId, wordlistName) {
   };
 }
 
-// ランダム抽選。曲はサンプル全体から、単語リストは重い辞書を除いた中から選ぶ。
+// ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
+// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
 // 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
 function luckyRandomCombo() {
-  const samples = [...$("sample-select").options].filter((o) => o.value);
-  if (!samples.length) return null;
+  const currentSampleId = $("sample-select").value;
+  const samples = [...$("sample-select").options]
+    .filter((o) => o.value && o.value !== currentSampleId);
   const sel = $("wordlist-select");
   const all = sel.hidden ? [] : [...sel.options].filter((o) => o.value);
   const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
-  const fast = all.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
-  const pool = fast.length ? fast : all;
+  const currentWordlist = currentWordlistName();
+  const alternatives = all.filter((o) => nameOf(o) !== currentWordlist);
+  if (!samples.length || !alternatives.length) return null;
+  const fast = alternatives.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
+  const pool = fast.length ? fast : alternatives;
   const song = pickRandom(samples);
-  const wl = pool.length ? pickRandom(pool) : null;
-  return luckyCombo(song.value, wl ? nameOf(wl) : "");
+  const wl = pickRandom(pool);
+  return luckyCombo(song.value, nameOf(wl));
 }
 
 // ---- カードのプルダウンと詳細設定の双方向同期 ----
@@ -2548,11 +2550,10 @@ async function applyCombo(c) {
   return await trackSample(applySample());
 }
 
-// 🎲ランダム・初期表示の共通処理。失敗はカードの案内に出す。
+// 🎲ランダムの反映。失敗はカードの案内に出す。
 async function pickCombo(c) {
   if (!c) {
-    // 曲の選び直しは詳細設定から無くなったので、カードの「曲」プルダウンへ案内する
-    showBuilderMsg("サンプル曲を読み込めませんでした。上の「曲」から選んでください。");
+    showBuilderMsg("現在と異なる曲と単語リストの候補がありません。");
     return;
   }
   try {
@@ -4479,11 +4480,13 @@ function closeEditor() {
 
 function showEditorFrame() {
   hideEditorResume();   // 選択の役目は終わり(開いたら裏に残さない)
-  $("editor-frame").src = "/editor/editor.html";
+  // 本家editorへ「videoのapp shell内で開いている」と明示する。単体起動時の
+  // Soramimicロゴは従来どおり生成画面へ進むが、埋め込み時は親へ戻る操作になる。
+  $("editor-frame").src = "/editor/editor.html?embed=video";
   $("editor-frame-wrap").hidden = false;
   document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
   // 開いた直後は親側にフォーカスを置く(この時点でEscが効く)
-  $("editor-close").focus();
+  $("editor-frame").focus();
   // 前のセッションの依頼は引き継がない(nonce の衝突と、ファイル選択を
   // 開けないブラウザで応答中のまま固まった場合の取り戻しを兼ねる)
   hostRequestSeen = "";
@@ -4506,6 +4509,18 @@ $("editor-frame").addEventListener("load", () => {
     if (doc) doc.addEventListener("keydown", onEditorModalKeydown);
   } catch { /* 取れなければ親のEscだけで閉じる */ }
 });
+
+// 埋め込みeditorの「動画作成に戻る」を、編集内容を取り込む通常の閉じる操作へ接続する。
+// originだけでなく送信元windowもこのiframeに限定し、同一ページ内の別フレームや
+// 将来追加される別コンポーネントから同名メッセージを受けても反応しない。
+function onEditorHostMessage(ev) {
+  if (ev.origin !== location.origin) return;
+  if (ev.source !== $("editor-frame").contentWindow) return;
+  if (!ev.data || ev.data.type !== "soramimic:request-close") return;
+  if ($("editor-frame-wrap").hidden) return;
+  importEditor();
+}
+window.addEventListener("message", onEditorHostMessage);
 
 // 取り込み済み(または前回から復元した)替え歌JSONをシードにエディタを開き直す。
 // 取り込み時に保存したテキストはEDITOR_KEYの中身そのものなので、書き戻すだけで
@@ -4539,8 +4554,6 @@ document.addEventListener("keydown", (ev) => {
   ev.preventDefault();
   cancelEditorResume();
 });
-$("editor-import").addEventListener("click", importEditor);
-$("editor-close").addEventListener("click", closeEditor);
 // 曲・単語リスト・変換パラメータを変えると、取り込み済み替え歌の扱い(使う/捨てる)
 // が変わることがある。そのときは表示を出し直し、出したままの「保存済みの替え歌が
 // あります」も、前提が変わったら一度引っ込める

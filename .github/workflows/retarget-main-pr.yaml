@@ -1,0 +1,32 @@
+# main 宛ての通常 Pull Request を自動で dev へ向け直す。
+# main は公開中の安定版とし、通常の開発変更は dev に集約する。
+# - dev→main のリリースPRは対象外
+# - main へ直接入れる緊急修正は `emergency` ラベルを付けて reopen する
+# - PRのコードは checkout しないため、pull_request_target でも安全
+name: retarget-main-pr
+on:
+  pull_request_target:
+    types: [opened, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: retarget-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  retarget:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'emergency') && github.event.pull_request.head.ref != 'dev' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: base を dev に付け替えて通知
+        run: |
+          gh pr edit "$PR" --repo "$REPO" --base dev
+          gh pr comment "$PR" --repo "$REPO" --body "🔀 base を \`main\` から \`dev\` に変更しました。開発PRは dev に取り込み、release (dev→main) で安定版に反映します。本当に main へ直接入れる緊急修正は \`emergency\` ラベルを付けて reopen してください。"

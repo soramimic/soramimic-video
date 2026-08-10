@@ -17,7 +17,7 @@ import logging
 import os
 import time
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -355,6 +355,18 @@ class ScoreChunk:
         return {"notes": self.notes}
 
 
+class VoicevoxScoreError(RuntimeError):
+    """VOICEVOXが接続ではなくスコア内容の処理中に返したエラー。"""
+
+    def __init__(self, endpoint: str, status_code: int, detail: str):
+        self.endpoint = endpoint
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(
+            f"VOICEVOXの{endpoint}が失敗しました({status_code}): {detail[:500]}"
+        )
+
+
 def split_score(
     score: dict[str, Any],
     max_sec: float = DEFAULT_CHUNK_SEC,
@@ -516,7 +528,7 @@ def _samples_per_frame(sample_rate: int) -> int:
 
 
 def _concat_chunks(
-    wav_parts: list[bytes | None], chunks: list[ScoreChunk], total_frames: int
+    wav_parts: Sequence[bytes | None], chunks: Sequence[ScoreChunk], total_frames: int
 ) -> bytes:
     """各チャンクのWAVを絶対フレーム位置で連結し、1本のWAVバイト列にする。
 
@@ -561,6 +573,88 @@ def _concat_chunks(
         w.setframerate(sr)
         w.writeframes(bytes(out))
     return buf.getvalue()
+
+
+def _split_failed_score(score: dict[str, Any]) -> list[ScoreChunk] | None:
+    """500になった音符列を、短い先頭休符付きの2チャンクへ分ける。
+
+    VOICEVOX ENGINEの歌唱APIには、個々の音符は有効でも特定の連続音符列で内部の
+    音素数と長さ配列が不一致になる版がある。休符のない区間でも再試行できるよう、
+    後半先頭の音符から最小2フレームを借りて休符にする。通常分割の約0.3秒休符より
+    短いが、障害回避で音符の立ち上がりを大きく削らないことを優先する。
+    合計フレーム数は変えない。
+    """
+    notes = [dict(n) for n in score["notes"]]
+    sung = [i for i, n in enumerate(notes) if n["key"] is not None]
+    if len(sung) < 2:
+        return None
+    middle = sung[len(sung) // 2]
+    candidates = sorted(
+        (
+            i
+            for i in sung[1:]
+            if notes[i]["frame_length"] >= MIN_ELEMENT_FRAMES * 2
+        ),
+        key=lambda i: abs(i - middle),
+    )
+    if not candidates:
+        return None
+    cut = candidates[0]
+    left = notes[:cut]
+    right = notes[cut:]
+    right[0]["frame_length"] -= MIN_ELEMENT_FRAMES
+    right.insert(
+        0,
+        {"key": None, "frame_length": MIN_ELEMENT_FRAMES, "lyric": ""},
+    )
+    left_frames = sum(n["frame_length"] for n in left)
+    return [
+        ScoreChunk(start_frame=0, notes=left),
+        ScoreChunk(start_frame=left_frames, notes=right),
+    ]
+
+
+def _score_summary(score: dict[str, Any]) -> str:
+    sung = [n for n in score["notes"] if n["key"] is not None]
+    lyrics = "".join(str(n.get("lyric") or "") for n in sung)
+    if len(lyrics) > 40:
+        lyrics = f"{lyrics[:20]}…{lyrics[-20:]}"
+    return f"歌詞「{lyrics}」、{len(sung)}音符"
+
+
+def _synthesize_chunk_with_score_fallback(
+    base: str,
+    engine_url: str,
+    teacher: int,
+    style_id: int,
+    score: dict[str, Any],
+) -> bytes:
+    """歌唱APIの内部500時だけ音符列を二分し、再帰的に合成して結合する。"""
+    try:
+        return _synthesize_chunk_resilient(
+            base, engine_url, teacher, style_id, score
+        )
+    except VoicevoxScoreError as exc:
+        if exc.endpoint != "sing_frame_audio_query" or exc.status_code != 500:
+            raise
+        chunks = _split_failed_score(score)
+        if chunks is None:
+            raise RuntimeError(
+                "VOICEVOXが歌唱スコアを処理できませんでした"
+                f"({_score_summary(score)})。該当箇所の単語を変更するか、"
+                "その音符列を休符で分けてください。"
+            ) from exc
+        logger.warning(
+            "VOICEVOXが音符列を処理できなかったため二分して再試行します: %s",
+            _score_summary(score),
+        )
+        parts = [
+            _synthesize_chunk_with_score_fallback(
+                base, engine_url, teacher, style_id, chunk.to_score()
+            )
+            for chunk in chunks
+        ]
+        return _concat_chunks(parts, chunks, sum(c.frame_length for c in chunks))
 
 
 def run_voicevox(
@@ -622,7 +716,7 @@ def run_voicevox(
         runproc.raise_if_cancelled()
         if any(n["key"] is not None for n in chunk.notes):
             wav_parts.append(
-                _synthesize_chunk_resilient(
+                _synthesize_chunk_with_score_fallback(
                     base, engine_url, teacher, style_id, chunk.to_score()
                 )
             )
@@ -706,8 +800,8 @@ def _synthesize_chunk(
     except requests.RequestException as exc:
         raise _request_error(engine_url, exc) from exc
     if r.status_code != 200:
-        raise RuntimeError(
-            f"VOICEVOXのsing_frame_audio_queryが失敗しました({r.status_code}): {r.text[:500]}"
+        raise VoicevoxScoreError(
+            "sing_frame_audio_query", r.status_code, r.text
         )
     query = r.json()
 
@@ -725,7 +819,7 @@ def _synthesize_chunk(
     except requests.RequestException as exc:
         raise _request_error(engine_url, exc) from exc
     if r2.status_code != 200:
-        raise RuntimeError(
-            f"VOICEVOXのframe_synthesisが失敗しました({r2.status_code}): {r2.text[:500]}"
+        raise VoicevoxScoreError(
+            "frame_synthesis", r2.status_code, r2.text
         )
     return r2.content
