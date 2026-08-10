@@ -1,0 +1,68 @@
+# dev に溜まった変更を再検証し、main へリリースする。
+# 開発PRは dev へ入れ、main は公開中の安定版として保つ。
+# 週次リリースのほか、Actions から手動実行できる。
+name: release
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 23 * * 0" # 毎週月曜 08:00 JST 頃
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: dev と main の差分を確認
+        id: diff
+        run: |
+          if ! git fetch origin dev; then
+            echo "dev ブランチが存在しないためスキップします"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          count=$(git rev-list --count main..origin/dev)
+          echo "dev には main にないコミットが ${count} 件"
+          if [ "$count" -eq 0 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: check
+    if: ${{ needs.check.outputs.changed == 'true' }}
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: dev
+
+  merge:
+    needs: [check, test]
+    if: ${{ needs.check.outputs.changed == 'true' && needs.test.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: dev を main へマージして push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin dev
+          git merge --no-ff origin/dev -m "リリース: dev を main へマージ"
+          git push origin main
+      - name: dev を main に揃える
+        run: |
+          git push origin main:dev || echo "dev が先行しているため同期をスキップ(次回リリースで取り込む)"

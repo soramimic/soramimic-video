@@ -277,6 +277,14 @@ Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の�
 
 ## 開発
 
+### ブランチ運用
+
+- `main`: 公開中の安定版。通常の開発PRは直接入れない。
+- `dev`: 開発中の変更を集約する常設ブランチ。feature/fix ブランチのPRは `dev` 宛てにする。
+- CIが成功した `dev` 宛てPRは自動マージされる。自動マージしない場合は `no-automerge` ラベルを付ける。
+- `dev` の合成状態を再テストし、毎週月曜日または手動の `release` workflow で `main` へ反映する。
+- 緊急修正だけは `emergency` ラベル付きで `main` 宛てとし、確認後に手動マージする。
+
 ```sh
 uv run pytest        # テスト(楽曲データは使わず合成フィクスチャで実行)
 uv run ruff check .
