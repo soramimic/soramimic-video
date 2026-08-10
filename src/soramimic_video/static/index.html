@@ -1251,7 +1251,9 @@ function setupPublicMode(conf) {
   } else if (conf.daily_quota) {
     limits.push(`1日に作れるのは${conf.daily_quota}本までです`);
   }
-  if (conf.max_song_seconds) {
+  // Simple UIは上限内の同梱サンプル曲しか選べないため、曲長制限の案内は不要。
+  // 自作MIDIを投入できる通常UIでは、従来どおり上限を明示する。
+  if (conf.max_song_seconds && !simpleMode) {
     limits.push(conf.max_song_seconds >= 60
       ? `曲の長さは約${Math.round(conf.max_song_seconds / 60)}分までです`
       : `曲の長さは約${Math.round(conf.max_song_seconds)}秒までです`);
