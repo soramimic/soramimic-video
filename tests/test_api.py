@@ -1222,6 +1222,20 @@ def test_load_samples_tolerates_missing_or_broken_manifest(tmp_path, monkeypatch
     assert api_mod.load_samples() == []
 
 
+def test_load_samples_adds_local_overlay_manifest(tmp_path, monkeypatch):
+    d = tmp_path / "samples"
+    d.mkdir()
+    (d / "samples.json").write_text(
+        json.dumps([{"id": "pd", "title": "公開曲"}]), encoding="utf-8"
+    )
+    (d / "samples.local.json").write_text(
+        json.dumps([{"id": "local", "title": "ローカル曲"}]), encoding="utf-8"
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+
+    assert [entry["id"] for entry in api_mod.load_samples()] == ["pd", "local"]
+
+
 def test_bundled_samples_all_have_a_reading():
     # サムネの曲名変換は読みを使う。同梱サンプルは全曲ぶん揃っていること
     from soramimic_video.api import STATIC_DIR

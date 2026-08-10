@@ -79,6 +79,11 @@ uv run soramimic-video video --project work/song --layout caption
 uv run soramimic-video serve            # http://127.0.0.1:8300/
 ```
 
+手元だけで使う権利曲などは、`src/soramimic_video/static/sample/samples.local.json` に
+サンプル情報を置くと、公開用の `samples.json` へ混ぜずに一覧へ追加できる。このファイルと
+権利曲のMIDI・歌詞はgitignore対象。既存の `SORAMIMIC_SAMPLES_DIR` を使えば、別ディレクトリの
+`samples.json` と `<id>.mid` / `<id>_lyrics.txt` に差し替えることもできる。
+
 曲と単語リストを選び、その場に出るサムネ枠をタップするだけで生成が始まる。
 カードの右上には **🎲(曲と単語リストをランダムに選ぶ)** と **⚙(替え歌を編集)**。
 単語リストの絞り込みと変換のしかたの調整は、⚙ で開く同梱エディタの⚙モーダル

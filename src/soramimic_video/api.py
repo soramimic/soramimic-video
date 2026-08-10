@@ -71,6 +71,7 @@ DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の
 MAX_SONG_SECONDS_ENV = "SORAMIMIC_MAX_SONG_SECONDS"  # 入力MIDIの演奏時間の上限(秒)
 JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除するまでの時間(0=無効)
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
+LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
 TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
 TURNSTILE_SITE_ENV = "TURNSTILE_SITE_KEY"  # 同・サイトキー(フロントに渡す)
 DEFAULT_QUEUE_LIMIT = 5
@@ -135,18 +136,55 @@ def samples_dir() -> Path:
 
 
 def load_samples() -> list[dict[str, Any]]:
-    """samples.json の中身。読めなければ空リスト(サンプル無しとして扱う)。"""
+    """samples.json とローカル限定の追加manifestを読む。
+
+    ``samples.local.json`` は ``.gitignore`` 対象で、手元の権利曲などを
+    公開manifestへ混ぜずにWeb UI/APIへ追加するためのオーバーレイ。無ければ
+    従来どおり ``samples.json`` だけを返す。
+    """
+    directory = samples_dir()
     try:
-        raw = (samples_dir() / "samples.json").read_text(encoding="utf-8")
+        raw = (directory / "samples.json").read_text(encoding="utf-8")
     except OSError:
-        logger.warning("samples.json を読めません: %s", samples_dir())
+        logger.warning("samples.json を読めません: %s", directory)
         return []
     try:
         entries = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("samples.json が壊れています: %s", samples_dir())
+        logger.warning("samples.json が壊れています: %s", directory)
         return []
-    return [e for e in entries if isinstance(e, dict)]
+    base = [e for e in entries if isinstance(e, dict)]
+
+    local_path = directory / LOCAL_SAMPLES_MANIFEST
+    try:
+        local_raw = local_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return base
+    except OSError:
+        logger.warning("ローカルサンプルmanifestを読めません: %s", local_path)
+        return base
+    try:
+        local_entries = json.loads(local_raw)
+    except json.JSONDecodeError:
+        logger.warning("ローカルサンプルmanifestが壊れています: %s", local_path)
+        return base
+
+    merged = list(base)
+    positions = {
+        str(entry["id"]): i
+        for i, entry in enumerate(merged)
+        if entry.get("id")
+    }
+    for entry in local_entries:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        sample_id = str(entry["id"])
+        if sample_id in positions:
+            merged[positions[sample_id]] = {**merged[positions[sample_id]], **entry}
+        else:
+            positions[sample_id] = len(merged)
+            merged.append(entry)
+    return merged
 
 
 def sample_entry(sample_id: str) -> dict[str, Any] | None:
