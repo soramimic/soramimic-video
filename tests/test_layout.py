@@ -109,6 +109,20 @@ def test_player_card_uses_team_position_and_description_independently():
     assert "選手の説明" in layout.render_texts(common)
 
 
+def test_gimukyoiku_card_combines_school_level_and_subject():
+    layout = load_layout("gimukyoiku_card")
+    middle = layout.render_texts({
+        "original": "アンモニア", "subject": "理科", "level": "中学校",
+    })
+    assert "中学理科" in middle
+    assert "理科" not in middle
+
+    multiple = layout.render_texts({
+        "original": "短歌", "subject": "国語", "level": "小学校/中学校",
+    })
+    assert "小学・中学｜国語" in multiple
+
+
 def test_youtuber_card_uses_org_debut_and_description():
     layout = load_layout("youtuber_card")
     texts = layout.render_texts({
@@ -160,6 +174,31 @@ def test_animal_card_uses_taxonomy_and_description():
     texts = layout.render_texts(animal)
     assert "偶蹄目マイルカ科" in texts
     assert animal["description"] in texts
+
+
+def test_plant_card_uses_taxonomy_description_and_class_fallback():
+    layout = load_layout("plant_card")
+    animal_layout = load_layout("animal_card")
+    assert layout.elements[0].box == animal_layout.elements[0].box
+    assert layout.elements[1].box == animal_layout.elements[1].box
+    assert layout.elements[4].box == animal_layout.elements[3].box
+    plant = {
+        "original": "アイ",
+        "class": "双子葉",
+        "family": "タデ科",
+        "genus": "イヌタデ属",
+        "description": "葉は藍染めの染料に用いられる。",
+    }
+    texts = layout.render_texts(plant)
+    assert "タデ科イヌタデ属" in texts
+    assert "葉は藍染めの染料に用いられる。" in texts
+    assert "双子葉植物" not in texts
+
+    fallback_texts = layout.render_texts({
+        **plant, "family": "", "genus": "", "description": "",
+    })
+    assert "双子葉植物" in fallback_texts
+    assert "葉は藍染めの染料に用いられる。" not in fallback_texts
 
 
 def test_nation_card_uses_structured_facts_without_description():
@@ -410,6 +449,32 @@ def test_scientist_card_field_fallback_for_all_missing_entries():
     assert texts2.count("物理") == 0
     assert any("物理" in text and "生まれ" in text for text in texts2)
     assert "日本" in texts2
+
+    with_death_year = {
+        **nishikawa,
+        "birth_year": "1902",
+        "death_year": "1984",
+        "country": "日本",
+    }
+    texts_with_death = layout.render_texts(with_death_year)
+    assert any("物理" in text and "1902-1984" in text for text in texts_with_death)
+    assert not any("生まれ" in text for text in texts_with_death)
+
+    death_year_only = {**nishikawa, "death_year": "861"}
+    death_only_texts = layout.render_texts(death_year_only)
+    assert any("物理" in text and "861年没" in text for text in death_only_texts)
+    assert not any("-861" in text for text in death_only_texts)
+
+    without_country = {**nishikawa, "birth_year": "1902"}
+    texts3 = layout.render_texts(without_country)
+    assert any("物理" in text and "1902年生まれ" in text for text in texts3)
+    assert texts3.count("物理") == 0
+
+    without_birth_year = {**nishikawa, "country": "日本"}
+    texts4 = layout.render_texts(without_birth_year)
+    assert not any("年生まれ" in text for text in texts4)
+    assert "物理" in texts4
+    assert "日本" in texts4
 
 
 def test_render_frame_fallback(tmp_path):
