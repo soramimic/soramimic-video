@@ -109,6 +109,20 @@ def test_player_card_uses_team_position_and_description_independently():
     assert "選手の説明" in layout.render_texts(common)
 
 
+def test_youtuber_card_uses_org_debut_and_description():
+    layout = load_layout("youtuber_card")
+    texts = layout.render_texts({
+        "original": "配信者",
+        "org": "所属グループ",
+        "debut_year": "2020",
+        "description": "ゲーム実況とライブ配信で活動するYouTuber。",
+    })
+    assert "配信者" in texts
+    assert "所属グループ" in texts
+    assert "2020年デビュー" in texts
+    assert "ゲーム実況とライブ配信で活動するYouTuber。" in texts
+
+
 def test_info_card_uses_description_with_player_and_station_details():
     player_layout = load_layout("info_card")
     station_layout = load_layout("station_info_card")
