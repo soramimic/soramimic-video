@@ -1380,6 +1380,10 @@ def test_thumbnail_show_end_uses_intro(tmp_path: Path):
     project = _two_word_project()  # 最初の歌唱ノートは0.5s(前奏が短い曲)
     assert thumbnail_show_end(project) == 0.0  # 一瞬しか出せないので出さない
 
+    project.notes[0].start_sec = 2.0  # 公開サンプル相当の前奏ならサムネを出す
+    project.notes[1].start_sec = 3.0
+    assert abs(thumbnail_show_end(project) - (2.0 - SUB_PAD_SEC)) < 0.01
+
     project.notes[0].start_sec = 8.0  # 前奏8秒の曲は字幕が出る直前まで
     project.notes[1].start_sec = 9.0
     assert abs(thumbnail_show_end(project) - (8.0 - SUB_PAD_SEC)) < 0.01
