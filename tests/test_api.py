@@ -1319,7 +1319,7 @@ def test_ogp_image_is_public_versioned_png(client):
     from PIL import Image
 
     # v1はimmutable URLとして公開済みなので、既存SNSキャッシュ向けに残す。
-    for version in ("v1", "v2"):
+    for version in ("v1", "v2", "v3"):
         response = client.get(f"/ogp-soramimic-{version}.png")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
@@ -1346,6 +1346,52 @@ def test_brand_logo_is_public_versioned_transparent_png(client):
     with Image.open(api_mod.STATIC_DIR / "logo-soramimic-v1.png") as image:
         assert image.mode == "RGBA"
         assert image.size == (873, 133)
+        assert image.getpixel((0, 0))[3] == 0
+
+
+def test_brand_symbols_are_public_versioned_transparent_png(client):
+    from PIL import Image
+
+    for version in ("v1", "v2"):
+        response = client.get(f"/logo-soramimic-symbol-{version}.png")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["cache-control"] == (
+            "public, max-age=31536000, immutable"
+        )
+        assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+        assert len(response.content) < 1024 * 1024
+        with Image.open(
+            api_mod.STATIC_DIR / f"logo-soramimic-symbol-{version}.png"
+        ) as image:
+            assert image.mode == "RGBA"
+            assert image.size == (512, 512)
+            assert image.getpixel((0, 0))[3] == 0
+
+    with Image.open(api_mod.STATIC_DIR / "logo-soramimic-symbol-v2.png") as image:
+        # 顔なし版の正本。頭中央に目や口の色を混ぜない。
+        face_area = image.crop((230, 420, 282, 470))
+        assert all(
+            face_area.getpixel((x, y)) == (255, 255, 255, 255)
+            for y in range(face_area.height)
+            for x in range(face_area.width)
+        )
+
+
+def test_designer_wordmark_is_public_versioned_transparent_png(client):
+    from PIL import Image
+
+    response = client.get("/logo-soramimic-wordmark-v1.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == (
+        "public, max-age=31536000, immutable"
+    )
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(response.content) < 1024 * 1024
+    with Image.open(api_mod.STATIC_DIR / "logo-soramimic-wordmark-v1.png") as image:
+        assert image.mode == "RGBA"
+        assert image.size == (1397, 199)
         assert image.getpixel((0, 0))[3] == 0
 
 
