@@ -289,10 +289,10 @@ Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の�
 - `dev`: 開発中の変更を集約する常設ブランチ。`dev-video.soramimic.com`で統合状態を確認する。
 - feature/fix PRは`dev`宛てにし、CI成功後に自動マージする。自動マージしない場合は`no-automerge`ラベルを付ける。
 - 公開する変更は最新`preview`から`promote/<内容>`ブランチを作り、対象dev PRのcommitだけをcherry-pickして`preview`へPRを出す。`dev`全体はマージしない。
-- `preview` PRはCIとプレビュー環境で確認し、人間が手動マージする。途中の変更や公開しない変更はpreviewへ入れない。
+- `preview` PRはCIとプレビュー環境で確認し、操作者本人の明示承認後に手動マージする。AIエージェントや自動化は、CI成功や一般的な完了指示を承認とみなしてはならない。途中の変更や公開しない変更はpreviewへ入れない。
 - 毎週月曜日または手動の`release` workflowは、その時点の`preview` SHAを固定して再テストし、成功時はjob summaryに`preview`→`main`のPR作成リンクを表示する。ActionsのtokenではPRを作成せず、`main`へ直接pushもしない。
 - summaryの検証済みSHAと現在の`preview` SHAが一致することを確認してrelease PRを作成する。検証中にpreviewが進んだ場合はworkflowを再実行する。
-- release PRは自動マージしない。最終的にPRの**現在のhead SHA**と`main`とのmerge結果に対する必須チェックが成功していることを確認し、人間がマージする。
+- release PRは自動マージしない。最終的にPRの**現在のhead SHA**と`main`とのmerge結果に対する必須チェックが成功していることを確認し、preview確認後に操作者本人が明示承認してからマージする。AIエージェントによるPR作成・CI監視は承認の代わりにならない。
 - 公開時はrelease PRのマージcommit SHAを本番へデプロイし、health/readinessと主要動線を確認する。問題があれば直前に公開したSHAへロールバックする。
 
 `main` のbranch protectionでは、少なくとも通常CIの `test / test`（`main` とのmerge結果）と
