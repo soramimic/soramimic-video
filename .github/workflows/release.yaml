@@ -1,4 +1,4 @@
-# dev の公開候補を固定した SHA で検証し、手動release PRの案内を出す。
+# preview の公開候補を固定した SHA で検証し、手動release PRの案内を出す。
 # main への反映は、release PR の現在の head SHA の CI を確認して人間が行う。
 name: release
 on:
@@ -22,26 +22,26 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.resolve.outputs.changed }}
-      dev_sha: ${{ steps.resolve.outputs.dev_sha }}
+      preview_sha: ${{ steps.resolve.outputs.preview_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-      - name: 検証する dev SHA を固定
+      - name: 検証する preview SHA を固定
         id: resolve
         run: |
-          dev_sha=$(git ls-remote origin refs/heads/dev | awk '{print $1}')
-          if [ -z "$dev_sha" ]; then
-            echo "dev ブランチが存在しないためスキップします"
+          preview_sha=$(git ls-remote origin refs/heads/preview | awk '{print $1}')
+          if [ -z "$preview_sha" ]; then
+            echo "preview ブランチが存在しないためスキップします"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          git fetch --no-tags origin "$dev_sha"
-          count=$(git rev-list --count "origin/main..$dev_sha")
-          echo "dev ($dev_sha) には main にないコミットが ${count} 件"
-          echo "dev_sha=$dev_sha" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags origin "$preview_sha"
+          count=$(git rev-list --count "origin/main..$preview_sha")
+          echo "preview ($preview_sha) には main にないコミットが ${count} 件"
+          echo "preview_sha=$preview_sha" >> "$GITHUB_OUTPUT"
           if [ "$count" -eq 0 ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -56,7 +56,7 @@ jobs:
     uses: ./.github/workflows/test.yml
     with:
       # ブランチ名ではなく、resolve で取得した不変の commit SHA を検証する。
-      ref: ${{ needs.resolve.outputs.dev_sha }}
+      ref: ${{ needs.resolve.outputs.preview_sha }}
 
   publish-instructions:
     needs: [resolve, test-candidate]
@@ -65,34 +65,34 @@ jobs:
     permissions:
       contents: read
     env:
-      DEV_SHA: ${{ needs.resolve.outputs.dev_sha }}
+      PREVIEW_SHA: ${{ needs.resolve.outputs.preview_sha }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
       - name: 手動release PRの案内を表示
         run: |
-          current_sha=$(gh api "repos/$REPO/git/ref/heads/dev" --jq '.object.sha')
+          current_sha=$(gh api "repos/$REPO/git/ref/heads/preview" --jq '.object.sha')
           {
             echo "## Release candidate の検証完了"
             echo
-            echo "- 検証済み dev SHA: \`$DEV_SHA\`"
-            echo "- 現在の dev SHA: \`$current_sha\`"
+            echo "- 検証済み preview SHA: \`$PREVIEW_SHA\`"
+            echo "- 現在の preview SHA: \`$current_sha\`"
             echo
-            if [ "$current_sha" = "$DEV_SHA" ]; then
-              echo "[dev → main のPRを作成または確認する](https://github.com/$REPO/compare/main...dev?expand=1)"
+            if [ "$current_sha" = "$PREVIEW_SHA" ]; then
+              echo "[preview → main のPRを作成または確認する](https://github.com/$REPO/compare/main...preview?expand=1)"
               echo
-              echo "PRのタイトルは \`release: dev → main\` とし、公開内容を本文に記載してください。"
+              echo "PRのタイトルは \`release: preview → main\` とし、公開内容を本文に記載してください。"
               echo "PR作成後は、PRの現在のhead SHAに対する必須チェックを確認して手動マージしてください。"
             else
-              echo "> dev が検証中に進みました。この結果は \`$DEV_SHA\` だけに対するものです。"
-              echo "> Actionsからreleaseを再実行し、現在のdev SHAを検証してからPRを作成してください。"
+              echo "> preview が検証中に進みました。この結果は \`$PREVIEW_SHA\` だけに対するものです。"
+              echo "> Actionsからreleaseを再実行し、現在のpreview SHAを検証してからPRを作成してください。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$current_sha" = "$DEV_SHA" ]; then
+          if [ "$current_sha" = "$PREVIEW_SHA" ]; then
             echo "検証済みSHAの手動PR作成リンクをjob summaryへ出力しました"
           else
-            echo "devが進んだため再実行が必要です"
+            echo "previewが進んだため再実行が必要です"
           fi
 
   test-release-pr-head:
