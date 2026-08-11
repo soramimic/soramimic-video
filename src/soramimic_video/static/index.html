@@ -1726,8 +1726,7 @@ function mobilePlatform() {
 }
 
 function supportsVideoFileShare() {
-  // 起動時には実動画がまだ無い。ここではAPIの有無だけを見て、完成後に
-  // 先読みした実動画をshareへ直接渡す。
+  // 起動時には実動画がまだ無い。ここではAPIの有無だけを見る。
   return typeof navigator.share === "function" && typeof File !== "undefined";
 }
 
@@ -1746,11 +1745,11 @@ function shareHint(shareable) {
 
 const SHARE_HTML =
   `<p class="share-row">` +
-  `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
-  `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画を保存"}</button>` +
+  `<button type="button" id="share-save" class="btn-sm">` +
+  `${FILE_SHARE_SUPPORTED ? "動画を保存・共有" : "動画を保存"}</button>` +
   `</p>` +
   `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-    ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
+    ? "タップすると動画の共有を準備します。" : shareHint(false)}</p>`;
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
@@ -1770,10 +1769,22 @@ function downloadVideo(videoUrl) {
 
 let sharePreparationSeq = 0;
 let preparedVideoShare = null;
+let sharePreparationAbort = null;
 
 function resetVideoSharePreparation() {
   sharePreparationSeq += 1;
+  if (sharePreparationAbort) sharePreparationAbort.abort();
+  sharePreparationAbort = null;
   preparedVideoShare = null;
+}
+
+function setSharePreparingMode() {
+  const saveBtn = $("share-save");
+  const hint = $("share-hint");
+  if (!saveBtn || !hint) return;
+  saveBtn.disabled = true;
+  saveBtn.textContent = "共有を準備中…";
+  hint.textContent = "動画を取得しています。完了後にもう一度タップしてください。";
 }
 
 function setShareButtonMode(shareable) {
@@ -1782,7 +1793,8 @@ function setShareButtonMode(shareable) {
   if (!saveBtn || !hint) return;
   saveBtn.disabled = false;
   saveBtn.textContent = shareable ? "動画を保存・共有" : "動画を保存";
-  hint.textContent = shareHint(shareable);
+  hint.textContent = shareable ? `準備できました。もう一度タップしてください。${shareHint(true)}`
+    : shareHint(false);
 }
 
 async function prepareVideoShare(videoUrl) {
@@ -1793,8 +1805,10 @@ async function prepareVideoShare(videoUrl) {
     setShareButtonMode(false);
     return;
   }
+  const ctrl = new AbortController();
+  sharePreparationAbort = ctrl;
   try {
-    const res = await fetch(qs(videoUrl), { headers: headers() });
+    const res = await fetch(qs(videoUrl), { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("動画を取得できませんでした");
     const blob = await res.blob();
     const file = new File([blob], videoFileName(videoUrl),
@@ -1809,6 +1823,8 @@ async function prepareVideoShare(videoUrl) {
     if (seq !== sharePreparationSeq) return;
     preparedVideoShare = { videoUrl, file: null, shareable: false };
     setShareButtonMode(false);
+  } finally {
+    if (sharePreparationAbort === ctrl) sharePreparationAbort = null;
   }
 }
 
@@ -1817,8 +1833,16 @@ function bindShare(videoUrl) {
   if (!saveBtn) return;
   saveBtn.addEventListener("click", () => {
     if (!videoUrl) return;
+    if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
     const prepared = preparedVideoShare;
-    if (!prepared || prepared.videoUrl !== videoUrl) return;
+    if (!prepared || prepared.videoUrl !== videoUrl) {
+      // 完成直後にMP4全体を自動取得すると、再生用バッファと共有用Blobが重なり、
+      // とくにiOS Safariでタブがメモリ不足終了しやすい。明示タップ後にだけ取得し、
+      // 準備完了後の次のタップでユーザー操作権限を保ったままshareを呼ぶ。
+      setSharePreparingMode();
+      prepareVideoShare(videoUrl);
+      return;
+    }
     if (!prepared.shareable || !prepared.file) return downloadVideo(videoUrl);
     // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
     // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
@@ -2525,7 +2549,6 @@ function showBuilderVideo(job) {
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
   bindShare(job.video_url);
-  prepareVideoShare(job.video_url);
   setBuilderState("done");
 }
 

@@ -320,11 +320,11 @@ def test_random_button_is_disabled_until_both_choices_can_change():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error():
-    """iOSの一時的な操作権限を失わず、未完了Promiseでもボタンを固めない。
+def test_video_share_is_prepared_on_demand_and_never_auto_downloads_on_error():
+    """動画を自動取得せず、準備後はiOSの一時的な操作権限を失わない。
 
-    iOSでは共有後もPromiseが完了しないことがある。文字列の存在だけでなくイベントを
-    実行し、payload・順序・ボタン状態・fallbackを固定する。
+    iOSでは再生と共有用Blobの同時保持でタブが落ち得るため、最初のタップでだけ取得する。
+    共有後もPromiseが完了しないことがあるので、イベントを実行して状態も固定する。
     """
     script = _script()
     share = script[script.index("const SHARE_TEXT =") :]
@@ -338,6 +338,7 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
         let messages = [];
         let shareCalls = [];
         let activation = false;
+        let fetchSignal = null;
         const navigator = {{
           platform: "iPhone", userAgent: "CriOS", maxTouchPoints: 1,
           share(data) {{
@@ -355,8 +356,9 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
         const $ = (id) => elements[id] || null;
         const qs = (value) => value;
         const headers = () => ({{}});
-        const fetch = async () => {{
+        const fetch = async (_url, options) => {{
           fetchCalls += 1;
+          fetchSignal = options.signal;
           return {{ ok: true, blob: async () => ({{ type: "video/mp4" }}) }};
         }};
         const document = {{
@@ -378,11 +380,20 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
         (async () => {{
           elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
           bindShare("/video.mp4");
-          await prepareVideoShare("/video.mp4");
+          assert.equal(fetchCalls, 0, "rendering the completed video must not fetch its MP4");
+
+          activation = true;
+          elements["share-save"].handlers.click();
+          activation = false;
+          assert.equal(elements["share-save"].disabled, true);
+          assert.equal(elements["share-save"].textContent, "共有を準備中…");
+          await new Promise((resolve) => setImmediate(resolve));
           assert.equal(fetchCalls, 1);
+          assert.ok(fetchSignal, "share preparation must be abortable");
           assert.equal(elements["share-save"].textContent, "動画を保存・共有");
           assert.equal(elements["share-save"].disabled, false);
 
+          // 準備完了後の次のタップではfetchを挟まず、操作権限内でshareする。
           activation = true;
           elements["share-save"].handlers.click();
           activation = false;
@@ -420,6 +431,17 @@ def test_video_share_is_prepared_before_click_and_never_auto_downloads_on_error(
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+def test_completed_video_does_not_eagerly_load_share_file_and_reset_aborts_fetch():
+    """動画表示だけでは全MP4をBlob化せず、離脱時は準備中の取得も止める。"""
+    script = _script()
+    shown = _function_body(script, "function showBuilderVideo(job)")
+    assert "prepareVideoShare" not in shown
+    clicked = _function_body(script, "function bindShare(videoUrl)")
+    assert "prepareVideoShare(videoUrl)" in clicked
+    reset = _function_body(script, "function resetVideoSharePreparation()")
+    assert "sharePreparationAbort.abort()" in reset
 
 
 def test_editor_opens_from_the_setup_screen():

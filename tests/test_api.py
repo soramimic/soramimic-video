@@ -1222,7 +1222,7 @@ def test_index_html_has_one_feature_detected_save_share_button():
     support = html[html.index("function supportsVideoFileShare()") :]
     support = support[: support.index("\n}\n")]
     # iOS系ブラウザはcanShareが無い/誤判定することがある。共有APIとFileが
-    # あれば実ファイルを先に用意し、クリック時にshareを直接試す。
+    # あれば明示タップ後に実ファイルを用意し、次のクリックでshareを直接試す。
     assert "navigator.canShare" not in support and "probe" not in support
     assert 'typeof navigator.share === "function"' in support
     assert 'typeof File !== "undefined"' in support
