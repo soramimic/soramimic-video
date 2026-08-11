@@ -7,13 +7,17 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
   workflow_call:
     inputs:
       ref:
         description: テストするref
         type: string
         required: false
-        default: ''
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
   test:
