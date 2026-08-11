@@ -81,13 +81,6 @@ BEAT_PATTERNS = {
 # 小節内で変えたいときは tuple にする(小節を均等割りするので、要素数は拍子の
 # 分子を割り切れること: 4/4なら1・2・4個、3/4なら1・3個、2/4なら1・2個)。
 # 小節数は score から計算した値と一致していないと build() が落ちる(ずれ検知)。
-
-
-def kana_notes(text: str) -> tuple[str, ...]:
-    """空白区切りの歌唱カナを、1音符ずつの列にする。"""
-    return tuple(text.split())
-
-
 SONGS: dict[str, dict] = {
     "furusato": {
         "title": "ふるさと",
@@ -117,20 +110,6 @@ SONGS: dict[str, dict] = {
             ("ふ", C5, Q), ("る", C5, Q), ("さ", A4, Q),
             ("と", G4, 1440),
         ],
-        "additional_verses": [
-            kana_notes(
-                "い か に い ま す ち ち は は "
-                "つ つ が な し や と も が き "
-                "あ あ め に か あ ぜ に つ う け え て え も "
-                "お も い い ず る ふ る さ と"
-            ),
-            kana_notes(
-                "こ こ ろ ざ し を は た し て "
-                "い つ の ひ に か か え ら ん "
-                "や あ ま は あ あ お き ふ う る う さ あ と "
-                "み ず は き よ き ふ る さ と"
-            ),
-        ],
         # ト長調。前奏1小節 + 16小節(4小節×4行)
         "chords": [
             "G",
@@ -141,8 +120,6 @@ SONGS: dict[str, dict] = {
         ],
         "lyrics": (
             "うさぎ追いし かの山\n小ぶな釣りし かの川\n夢は今も めぐりて\n忘れがたき ふるさと\n"
-            "いかにいます 父母\nつつがなしや 友がき\n雨に風につけても\n思いいずる ふるさと\n"
-            "志を果たして\nいつの日にか 帰らん\n山は青き ふるさと\n水は清き ふるさと\n"
         ),
     },
     "akatombo": {
@@ -165,32 +142,13 @@ SONGS: dict[str, dict] = {
             ("ひ", F4, E8), ("い", DS4, E8),
             ("か", DS4, 1440),
         ],
-        "additional_verses": [
-            kana_notes(
-                "や ま の は た け え の お く わ の み を "
-                "こ か ご に つ ん だ あ は あ ま ぼ ろ お し い か"
-            ),
-            kana_notes(
-                "じゅ う ご で ね え や あ は よ め に ゆ き "
-                "お さ と の た よ り い も お た え は あ て え た"
-            ),
-            kana_notes(
-                "ゆ う や け こ や け え の あ か と ん ぼ "
-                "と ま っ て い る よ お よ お さ お の お さ あ き"
-            ),
-        ],
         # 変ホ長調。前奏1小節 + 8小節
         "chords": [
             "Eb",
             "Eb", "Eb", "Ab", "Eb",
             "Eb", "Cm", ("Eb", "Eb", "Bb7"), "Eb",
         ],
-        "lyrics": (
-            "夕焼小焼の 赤とんぼ\n負われて見たのは いつの日か\n"
-            "山の畑の 桑の実を\n小籠に摘んだは まぼろしか\n"
-            "十五で姐やは 嫁に行き\nお里のたよりも 絶えはてた\n"
-            "夕焼小焼の 赤とんぼ\nとまっているよ 竿の先\n"
-        ),
+        "lyrics": "夕焼小焼の 赤とんぼ\n負われて見たのは いつの日か\n",
     },
     "momotarou": {
         "title": "桃太郎",
@@ -215,46 +173,12 @@ SONGS: dict[str, dict] = {
             ("く", A4, E8), ("だ", A4, E8), ("さ", FS4, E8), ("い", E4, E8),
             ("な", D4, DQ),
         ],
-        "additional_verses": [
-            kana_notes(
-                "や あ り ま しょ う や あ り ま しょ う "
-                "こ れ か ら お に の せ い ば つ に "
-                "つ い て い く な ら や り ま しょ う"
-            ),
-            kana_notes(
-                "い い き ま しょ う い い き ま しょ う "
-                "あ な た に つ い て ど こ ま で も "
-                "け ら い に な っ て い き ま しょ う"
-            ),
-            kana_notes(
-                "そ お りゃ す す め そ お りゃ す す め "
-                "い ち ど に せ め て せ め や ぶ り "
-                "つ ぶ し て し ま え お に が し ま"
-            ),
-            kana_notes(
-                "お お も し ろ い お お も し ろ い "
-                "の こ ら ず お に を せ め ふ せ て "
-                "ぶ ん ど り も の を え ん や ら や"
-            ),
-            kana_notes(
-                "ば ん ば ん ざ い ば ん ば ん ざ い "
-                "お と も の い ぬ や さ る き じ は "
-                "い さ ん で く る ま え ん や ら や"
-            ),
-        ],
         # ニ長調。前奏1小節 + 6小節
         "chords": [
             "D",
             "D", ("D", "A7"), "D", ("D", "A7"), "D", ("A7", "D"),
         ],
-        "lyrics": (
-            "桃太郎さん 桃太郎さん\nお腰につけた きびだんご\n一つわたしに くださいな\n"
-            "やりましょう やりましょう\nこれから鬼の 征伐に\nついて行くなら やりましょう\n"
-            "行きましょう 行きましょう\nあなたについて どこまでも\n家来になって 行きましょう\n"
-            "そりゃ進め そりゃ進め\n一度に攻めて 攻めやぶり\nつぶしてしまえ 鬼ヶ島\n"
-            "おもしろい おもしろい\n残らず鬼を 攻めふせて\nぶんどりものを エンヤラヤ\n"
-            "万々歳 万々歳\nお供の犬や猿キジは\n勇んで車を エンヤラヤ\n"
-        ),
+        "lyrics": "桃太郎さん 桃太郎さん\nお腰につけた きびだんご\n一つわたしに くださいな\n",
     },
     "katatsumuri": {
         "title": "かたつむり",
@@ -279,13 +203,6 @@ SONGS: dict[str, dict] = {
             ("あ", D4, E8), ("た", FS4, E8), ("ま", FS4, DE), ("だ", E4, S16),
             ("せ", D4, Q),
         ],
-        "additional_verses": [
-            kana_notes(
-                "で ん で ん む し む し か た つ む り "
-                "お ま え の め だ ま は ど こ に あ る "
-                "つ の だ せ や り だ せ め だ ま だ せ"
-            ),
-        ],
         # ニ長調。前奏1小節 + 6小節
         "chords": [
             "D",
@@ -293,7 +210,6 @@ SONGS: dict[str, dict] = {
         ],
         "lyrics": (
             "でんでんむしむし かたつむり\nお前のあたまは どこにある\nつの出せ槍出せ あたま出せ\n"
-            "でんでんむしむし かたつむり\nお前のめだまは どこにある\nつの出せ槍出せ めだま出せ\n"
         ),
     },
     "harugakita": {
@@ -314,27 +230,13 @@ SONGS: dict[str, dict] = {
             ("の", G4, Q), ("に", E5, Q), ("も", D5, DQ), ("き", G4, E8),
             ("た", C5, DH),
         ],
-        "additional_verses": [
-            kana_notes(
-                "は な が さ く は な が さ く ど こ に さ く "
-                "や ま に さ く さ と に さ く の に も さ く"
-            ),
-            kana_notes(
-                "と り が な く と り が な く ど こ で な く "
-                "や ま で な く さ と で な く の で も な く"
-            ),
-        ],
         # ハ長調。前奏1小節 + 8小節
         "chords": [
             "C",
             "C", "C", ("Am", "C"), "G7",
             "C", ("C", "F"), ("C", "G7"), "C",
         ],
-        "lyrics": (
-            "春が来た 春が来た どこに来た\n山に来た 里に来た 野にも来た\n"
-            "花が咲く 花が咲く どこに咲く\n山に咲く 里に咲く 野にも咲く\n"
-            "鳥が鳴く 鳥が鳴く どこで鳴く\n山で鳴く 里で鳴く 野でも鳴く\n"
-        ),
+        "lyrics": "春が来た 春が来た どこに来た\n山に来た 里に来た 野にも来た\n",
     },
     "oborodukiyo": {
         "title": "朧月夜",
@@ -370,14 +272,6 @@ SONGS: dict[str, dict] = {
             ("お", B4, DQ), ("い", FS4, E8), ("あ", E4, E8), ("わ", E4, E8),
             ("し", D4, H),
         ],
-        "additional_verses": [
-            kana_notes(
-                "さ と わ の ほ か げ え も も り の い ろ も "
-                "た な か の こ み ち い を た ど る ひ と も "
-                "か わ ず の な く ね え も か あ ね の お と も "
-                "さ な が ら か す め る お ぼ ろ づ き よ お"
-            ),
-        ],
         # ニ長調。前奏1小節 + 弱起の小節 + 16小節(最後の小節は2拍で終わる)
         "chords": [
             "D",
@@ -390,8 +284,6 @@ SONGS: dict[str, dict] = {
         "lyrics": (
             "菜の花畑に 入日薄れ\n見わたす山の端 霞ふかし\n"
             "春風そよふく 空を見れば\n夕月かかりて におい淡し\n"
-            "里わの火影も 森の色も\n田中の小路を たどる人も\n"
-            "蛙のなくねも かねの音も\nさながら霞める 朧月夜\n"
         ),
     },
     "chatsumi": {
@@ -426,14 +318,6 @@ SONGS: dict[str, dict] = {
             ("す", D4, Q), ("げ", G4, Q), ("の", A4, DQ), ("か", B4, E8),
             ("さ", G4, DH),
         ],
-        "additional_verses": [
-            kana_notes(
-                "ひ よ り つ づ き の きょ う こ の ご ろ を "
-                "こ こ ろ の ど か に つ み つ つ う た う "
-                "つ め よ つ め つ め つ ま ね ば な ら ぬ "
-                "つ ま にゃ に ほ ん の ちゃ に な ら ぬ"
-            ),
-        ],
         # ト長調。前奏1小節 + 16小節(4小節×4行)
         "chords": [
             "G",
@@ -445,8 +329,6 @@ SONGS: dict[str, dict] = {
         "lyrics": (
             "夏も近づく 八十八夜\n野にも山にも 若葉が茂る\n"
             "あれに見えるは 茶摘じゃないか\nあかねだすきに 菅の笠\n"
-            "日和つづきの 今日この頃を\n心のどかに 摘みつつ歌う\n"
-            "摘めよ摘め摘め 摘まねばならぬ\n摘まにゃ日本の 茶にならぬ\n"
         ),
     },
     "nanatsunoko": {
@@ -537,14 +419,6 @@ SONGS: dict[str, dict] = {
             ("す", F4, Q), ("そ", E4, E8), ("お", F4, E8), ("も", A4, Q), ("よ", G4, Q),
             ("う", F4, DH),
         ],
-        "additional_verses": [
-            kana_notes(
-                "た に の な が れ に ち り い う く も み い じ "
-                "な み い に ゆ ら れ て は な れ て よ っ て "
-                "あ か や き い ろ の い ろ お さ ま あ ざ ま に "
-                "み ず の う え に も お る う に し き"
-            ),
-        ],
         # ヘ長調。前奏1小節 + 16小節(4小節×4行)
         "chords": [
             "F",
@@ -556,8 +430,6 @@ SONGS: dict[str, dict] = {
         "lyrics": (
             "秋の夕日に 照る山紅葉\n濃いも薄いも 数ある中に\n"
             "松をいろどる 楓や蔦は\n山のふもとの 裾模様\n"
-            "谷の流れに 散り浮く紅葉\n波にゆられて 離れて寄って\n"
-            "赤や黄色の 色さまざまに\n水の上にも 織る錦\n"
         ),
     },
     "shabondama": {
@@ -580,35 +452,13 @@ SONGS: dict[str, dict] = {
             ("こ", B4, E8), ("わ", B4, E8), ("れ", A4, E8), ("て", D4, E8),
             ("き", FS4, E8), ("え", E4, E8), ("た", D4, E8),
         ],
-        "additional_verses": [
-            kana_notes(
-                "しゃ ぼ ん だ ま き え た "
-                "と ば ず に き え た "
-                "う ま れ て す ぐ に "
-                "こ わ れ て き え た"
-            ),
-        ],
-        # 結びの2行は1・2番より短い。後半は「しゃぼん玉飛ばそ」の8モーラを
-        # 収めるため、冒頭の8分音符を16分2つへ分ける。
-        "tail_score": [
-            ("か", A3, E8), ("ぜ", D4, S16), ("か", D4, S16), ("ぜ", D4, E8),
-            ("ふ", E4, E8), ("う", FS4, E8), ("く", A4, E8), ("な", A4, E8),
-            None,
-            ("しゃ", B4, S16), ("ぼ", B4, S16), ("ん", G4, E8), ("だ", D5, E8),
-            ("ま", B4, E8), ("と", A4, E8), ("ば", B4, E8), ("そ", A4, E8),
-        ],
-        "tail_chords": ["D", "D", "G", "A7"],
         # ニ長調。前奏1小節 + 8小節(2小節×4行)
         "chords": [
             "D",
             "D", "D", "G", "A7",
             "D", "A7", ("G", "D"), ("A7", "D"),
         ],
-        "lyrics": (
-            "しゃぼん玉飛んだ\n屋根まで飛んだ\n屋根まで飛んで\nこわれて消えた\n"
-            "しゃぼん玉消えた\n飛ばずに消えた\n生まれてすぐに\nこわれて消えた\n"
-            "風 風 吹くな\nしゃぼん玉 飛ばそ\n"
-        ),
+        "lyrics": "しゃぼん玉飛んだ\n屋根まで飛んだ\n屋根まで飛んで\nこわれて消えた\n",
     },
     "amazinggrace": {
         "title": "Amazing Grace",
@@ -851,41 +701,6 @@ def _track_chunk_bytes(mid: MidiFile) -> bytes:
     return data[start:]
 
 
-def expanded_score(song: dict) -> list:
-    """1番の譜面へ、同じ旋律で歌う2番以降のカナを載せて展開する。"""
-    base = song["score"]
-    additional = song.get("additional_verses", ())
-    note_count = sum(isinstance(item, tuple) for item in base)
-    out = list(base)
-    for verse_no, kana in enumerate(additional, start=2):
-        if len(kana) != note_count:
-            raise ValueError(
-                f"{song['title']} {verse_no}番: 歌唱カナが{len(kana)}個"
-                f"（旋律は{note_count}音）"
-            )
-        # 番の境目は次の小節頭へ進める。弱起の曲は base 冒頭の休符も
-        # そのまま再生されるため、1番と同じ位置から歌い出せる。
-        out.append(None)
-        index = 0
-        for item in base:
-            if isinstance(item, tuple):
-                _, note, dur = item
-                out.append((kana[index], note, dur))
-                index += 1
-            else:
-                out.append(item)
-    if tail := song.get("tail_score"):
-        out.extend([None, *tail])
-    return out
-
-
-def expanded_chords(song: dict) -> list:
-    """前奏は1回だけ残し、歌の伴奏小節を番数ぶん繰り返す。"""
-    chords = song["chords"]
-    verse_count = 1 + len(song.get("additional_verses", ()))
-    return [chords[0], *(chords[1:] * verse_count), *song.get("tail_chords", ())]
-
-
 def build(song: dict) -> bytes:
     num, den = song["time"]
     meas = TPB * num * 4 // den
@@ -894,7 +709,7 @@ def build(song: dict) -> bytes:
     lyric_events: list[tuple[int, str]] = []  # (tick, text)
     tick = lead_in
     line_break = False
-    for item in expanded_score(song):
+    for item in song["score"]:
         if item is None:
             line_break = True
             tick += -tick % meas  # 次の小節頭まで進める(行末の休符)
@@ -923,10 +738,9 @@ def build(song: dict) -> bytes:
     acc_track = MidiTrack()
     mid.tracks.append(acc_track)
     acc_track.append(Message("program_change", channel=ACC_CHANNEL, program=ACC_PROGRAM, time=0))
-    expanded = {**song, "chords": expanded_chords(song)}
     _append_notes(
         acc_track,
-        [(s, d, n, v, ACC_CHANNEL) for s, d, n, v in accompaniment_events(expanded, measures)],
+        [(s, d, n, v, ACC_CHANNEL) for s, d, n, v in accompaniment_events(song, measures)],
     )
 
     # XFIH + XFKM チャンク(tests/helpers.py と同じ合成方法)
