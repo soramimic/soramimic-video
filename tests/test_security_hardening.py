@@ -191,6 +191,8 @@ def test_operational_endpoints_are_hidden_from_proxy_users(tmp_path: Path, monke
         "/ogp-soramimic-v2.png",
         "/logo-soramimic-v1.png",
         "/logo-soramimic-symbol-v1.png",
+        "/logo-soramimic-symbol-v2.png",
+        "/logo-soramimic-wordmark-v1.png",
     ):
         asset = client.get(path, headers=proxy_headers)
         assert asset.status_code == 200
