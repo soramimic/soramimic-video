@@ -68,14 +68,12 @@ def default_where(entry: dict[str, Any] | None) -> str:
     entry = entry or {}
     if not has_facets(entry):
         return str(entry.get("where") or "")
-    clauses = []
-    for facet in entry["facets"]:
-        values = facet.get("values") or []
-        defaults = [value for value in values if value.get("default") is True]
-        # editor の renderFacets は default:true が一つも無いfacetを全選択で描く。
-        selected = defaults or values
-        clauses.append([facet_clause(facet, value) for value in selected])
-    return _compile_where(clauses)
+    return _compile_where(
+        [
+            [facet_clause(f, v) for v in (f.get("values") or []) if v.get("default") is True]
+            for f in entry["facets"]
+        ]
+    )
 
 
 def _contains_fragment(where: str, frag: str) -> bool:

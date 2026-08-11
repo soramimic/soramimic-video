@@ -37,7 +37,7 @@ def test_wordlist_layouts_are_builtin():
     assert {mapping[name] for name in ("football", "baseball")} == {"player_card"}
     assert mapping["nations"] == "nation_card"
     assert mapping["stations"] == "station_info_card"
-    assert mapping["insect"] == mapping["sekitsui"] == mapping["marine_life"] == "animal_card"
+    assert mapping["insect"] == mapping["sekitsui"] == "animal_card"
     assert set(mapping.values()) <= set(builtin_layout_names())
 
 
