@@ -1484,7 +1484,11 @@ def create_app(
             "/healthz",
             "/ogp-soramimic-v1.png",
             "/ogp-soramimic-v2.png",
+            "/ogp-soramimic-v3.png",
             "/logo-soramimic-v1.png",
+            "/logo-soramimic-symbol-v1.png",
+            "/logo-soramimic-symbol-v2.png",
+            "/logo-soramimic-wordmark-v1.png",
         }:
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
@@ -1735,11 +1739,47 @@ def create_app(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/ogp-soramimic-v3.png", include_in_schema=False)
+    def ogp_image_v3() -> FileResponse:
+        """デザイナー提供ロゴを使ったSNSクローラ向けOGP画像。"""
+        return FileResponse(
+            STATIC_DIR / "ogp-soramimic-v3.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @app.get("/logo-soramimic-v1.png", include_in_schema=False)
     def brand_logo_v1() -> FileResponse:
         """画面ヘッダー向けの版付きブランドロゴ。"""
         return FileResponse(
             STATIC_DIR / "logo-soramimic-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-symbol-v1.png", include_in_schema=False)
+    def brand_symbol_v1() -> FileResponse:
+        """画面ヘッダー向けの版付き顔なしブランドシンボル。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-symbol-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-symbol-v2.png", include_in_schema=False)
+    def brand_symbol_v2() -> FileResponse:
+        """デザイナー正本から作成した版付き顔なしシンボル。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-symbol-v2.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-wordmark-v1.png", include_in_schema=False)
+    def brand_wordmark_v1() -> FileResponse:
+        """デザイナー正本から作成した版付き文字ロゴ。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-wordmark-v1.png",
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
