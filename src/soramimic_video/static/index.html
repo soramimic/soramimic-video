@@ -4874,7 +4874,11 @@ function facetDefaultWhere(g) {
   facets.forEach((f) => {
     // 値の述語: where があればそれ、なければ列ごとの col=v の or(複数列は全列ぶん)
     const cols = f.columns || (f.column ? [f.column] : []);
-    const frags = (f.values || []).filter((v) => v.default === true).map(
+    const values = f.values || [];
+    const defaults = values.filter((v) => v.default === true);
+    // editorはdefault:trueが一つも無いfacetを全選択で描くので、同じ値を使う。
+    const selected = defaults.length ? defaults : values;
+    const frags = selected.map(
       (v) => (v.where ? v.where : "(" + cols.map((c) => c + "=" + v.v).join(" or ") + ")"));
     if (frags.length) clauses.push("(" + frags.join(" or ") + ")");
   });
