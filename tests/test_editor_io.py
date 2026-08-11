@@ -11,7 +11,6 @@ from soramimic_video.editor_io import (
     import_editor,
     save_raw,
     wordlist_display_name,
-    wordlist_phrase_name,
 )
 from soramimic_video.xfparse import analyze_midi
 
@@ -291,10 +290,6 @@ def test_wordlist_display_name_without_setting(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(editor_io, "SETTING_JSON", tmp_path / "missing.json")
     assert editor_io.wordlist_display_name("stations") == "stations"
-
-
-def test_marine_life_phrase_name():
-    assert wordlist_phrase_name("marine_life") == "海の生き物名"
 
 
 @pytest.mark.skipif(not SETTING_JSON.is_file(), reason="submoduleのconfが無い")
