@@ -54,6 +54,12 @@ def test_title_kana_is_katakana():
         assert re.fullmatch(r"[ァ-ヶー]+", kana), (entry["id"], kana)
 
 
+def test_akatombo_melisma_is_not_an_extra_syllable():
+    """「小焼」のメリスマを「こやけえ」という余分なふりがなにしない。"""
+    project = analyze_midi(SAMPLE_DIR / "akatombo.mid")
+    assert project.lines[0].xf_kana == "ユウヤケコヤケーノアカトンボ"
+
+
 @pytest.mark.parametrize("sample_id", SAMPLE_IDS)
 def test_sample_midi_roundtrip(sample_id: str):
     song = gen_samples.SONGS[sample_id]
