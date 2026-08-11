@@ -1638,8 +1638,11 @@ function mobilePlatform() {
 }
 
 function supportsVideoFileShare() {
-  // 起動時には実動画がまだ無い。ここではAPIの有無だけを見る。
-  return typeof navigator.share === "function" && typeof File !== "undefined";
+  // 起動時には実動画がまだ無い。ここではAPIの有無だけを見て、完成後に
+  // 再生と共有で共用する実動画を準備する。
+  return typeof navigator.share === "function" && typeof File !== "undefined"
+    && typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
+    && typeof URL.revokeObjectURL === "function";
 }
 
 const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
@@ -1657,11 +1660,11 @@ function shareHint(shareable) {
 
 const SHARE_HTML =
   `<p class="share-row">` +
-  `<button type="button" id="share-save" class="btn-sm">` +
-  `${FILE_SHARE_SUPPORTED ? "動画を保存・共有" : "動画を保存"}</button>` +
+  `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
+  `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画を保存"}</button>` +
   `</p>` +
   `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-    ? "タップすると動画の共有を準備します。" : shareHint(false)}</p>`;
+    ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
@@ -1682,21 +1685,40 @@ function downloadVideo(videoUrl) {
 let sharePreparationSeq = 0;
 let preparedVideoShare = null;
 let sharePreparationAbort = null;
+let sharePlaybackUrl = "";
+let sharePlaybackErrorBinding = null;
+const VIDEO_SHARE_PREPARE_TIMEOUT_MS = 30000;
+
+function clearSharePlaybackErrorBinding() {
+  if (!sharePlaybackErrorBinding) return;
+  const { video, handler } = sharePlaybackErrorBinding;
+  video.removeEventListener("error", handler);
+  sharePlaybackErrorBinding = null;
+}
+
+function revokeSharePlaybackUrl() {
+  clearSharePlaybackErrorBinding();
+  if (sharePlaybackUrl) URL.revokeObjectURL(sharePlaybackUrl);
+  sharePlaybackUrl = "";
+}
+
+function fallbackToDirectVideo(videoUrl, video, expectedObjectUrl = "") {
+  if (expectedObjectUrl && sharePlaybackUrl !== expectedObjectUrl) return;
+  clearSharePlaybackErrorBinding();
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  revokeSharePlaybackUrl();
+  video.src = qs(videoUrl);
+  video.load();
+}
 
 function resetVideoSharePreparation() {
   sharePreparationSeq += 1;
   if (sharePreparationAbort) sharePreparationAbort.abort();
   sharePreparationAbort = null;
+  revokeSharePlaybackUrl();
   preparedVideoShare = null;
-}
-
-function setSharePreparingMode() {
-  const saveBtn = $("share-save");
-  const hint = $("share-hint");
-  if (!saveBtn || !hint) return;
-  saveBtn.disabled = true;
-  saveBtn.textContent = "共有を準備中…";
-  hint.textContent = "動画を取得しています。完了後にもう一度タップしてください。";
 }
 
 function setShareButtonMode(shareable) {
@@ -1705,11 +1727,10 @@ function setShareButtonMode(shareable) {
   if (!saveBtn || !hint) return;
   saveBtn.disabled = false;
   saveBtn.textContent = shareable ? "動画を保存・共有" : "動画を保存";
-  hint.textContent = shareable ? `準備できました。もう一度タップしてください。${shareHint(true)}`
-    : shareHint(false);
+  hint.textContent = shareHint(shareable);
 }
 
-async function prepareVideoShare(videoUrl) {
+async function prepareVideoShare(videoUrl, video) {
   const seq = ++sharePreparationSeq;
   preparedVideoShare = null;
   if (!FILE_SHARE_SUPPORTED) {
@@ -1719,13 +1740,28 @@ async function prepareVideoShare(videoUrl) {
   }
   const ctrl = new AbortController();
   sharePreparationAbort = ctrl;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort();
+  }, VIDEO_SHARE_PREPARE_TIMEOUT_MS);
   try {
     const res = await fetch(qs(videoUrl), { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("動画を取得できませんでした");
     const blob = await res.blob();
+    if (timedOut) throw new Error("動画の取得がタイムアウトしました");
+    if (seq !== sharePreparationSeq) return;
     const file = new File([blob], videoFileName(videoUrl),
       { type: blob.type || "video/mp4" });
-    if (seq !== sharePreparationSeq) return;
+    // 再生側も同じFileのobject URLを使う。動画URLを別途読み込みながら共有用に
+    // MP4全体を保持する二重経路を避け、1タップ共有に必要な先行準備と両立する。
+    sharePlaybackUrl = URL.createObjectURL(file);
+    const objectUrl = sharePlaybackUrl;
+    const playbackError = () => fallbackToDirectVideo(videoUrl, video, objectUrl);
+    sharePlaybackErrorBinding = { video, handler: playbackError };
+    video.addEventListener("error", playbackError, { once: true });
+    video.src = sharePlaybackUrl;
+    video.load();
     // iOSのアプリ内ブラウザにはshareはあってもcanShareが無いものがあり、
     // canShareを門番にすると「共有」表示なのに必ずdownloadへ落ちてしまう。
     // 実Fileを用意できたらshareを直接試し、拒否されたときだけ保存へ切り替える。
@@ -1733,9 +1769,12 @@ async function prepareVideoShare(videoUrl) {
     setShareButtonMode(true);
   } catch (_e) {
     if (seq !== sharePreparationSeq) return;
+    // 共有用Fileを準備できなくても、再生と直接ダウンロードは利用できる。
+    fallbackToDirectVideo(videoUrl, video);
     preparedVideoShare = { videoUrl, file: null, shareable: false };
     setShareButtonMode(false);
   } finally {
+    clearTimeout(timer);
     if (sharePreparationAbort === ctrl) sharePreparationAbort = null;
   }
 }
@@ -1747,14 +1786,7 @@ function bindShare(videoUrl) {
     if (!videoUrl) return;
     if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
     const prepared = preparedVideoShare;
-    if (!prepared || prepared.videoUrl !== videoUrl) {
-      // 完成直後にMP4全体を自動取得すると、再生用バッファと共有用Blobが重なり、
-      // とくにiOS Safariでタブがメモリ不足終了しやすい。明示タップ後にだけ取得し、
-      // 準備完了後の次のタップでユーザー操作権限を保ったままshareを呼ぶ。
-      setSharePreparingMode();
-      prepareVideoShare(videoUrl);
-      return;
-    }
+    if (!prepared || prepared.videoUrl !== videoUrl) return;
     if (!prepared.shareable || !prepared.file) return downloadVideo(videoUrl);
     // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
     // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
@@ -2392,7 +2424,6 @@ function setBuilderState(state) {
     $("builder-image").hidden = true;   // poster に同じ絵が出るので二重に見せない
     video.hidden = false;
   } else {
-    resetVideoSharePreparation();
     // done から戻るときはサムネ画像を出し直す(直後に作り直す場合は上書きされる)
     if ($("builder-image").getAttribute("src")) $("builder-image").hidden = false;
     video.hidden = true;
@@ -2400,6 +2431,8 @@ function setBuilderState(state) {
     video.removeAttribute("src");
     video.removeAttribute("poster");
     video.load();
+    // videoからobject URLを外してメディア資源を解放してからURLとFileを破棄する。
+    resetVideoSharePreparation();
     $("builder-share").hidden = true;
     $("builder-share").innerHTML = "";
   }
@@ -2447,13 +2480,16 @@ for (const type of ["change", "input"]) {
 // 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
 function showBuilderVideo(job) {
   const video = $("builder-video");
-  video.src = qs(job.video_url);
+  // File共有を試せない環境だけはURLを直接再生する。対応候補では、共有用に
+  // 先行取得したFileを再生にも共用し、同じMP4を二経路で読み込まない。
+  if (!FILE_SHARE_SUPPORTED) video.src = qs(job.video_url);
   if (job.thumbnail_url) video.poster = qs(job.thumbnail_url);
   else if (previewUrl) video.poster = previewUrl;
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
   bindShare(job.video_url);
+  prepareVideoShare(job.video_url, video);
   setBuilderState("done");
 }
 
