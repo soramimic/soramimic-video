@@ -12,6 +12,9 @@ EnvironmentFile=/etc/soramimic-video/public.env
 Environment=HOME=/var/lib/soramimic-video-public/work
 Environment=PYTHONUNBUFFERED=1
 Environment=SORAMIMIC_TRUSTED_PROXY_IPS=127.0.0.1/32,::1/128
+# curl from the host may inspect readiness. Requests forwarded by cloudflared carry
+# CF-Connecting-IP and therefore do not satisfy the app's direct-local check.
+Environment=SORAMIMIC_ALLOW_LOCAL_OPS=1
 ExecStart=/opt/soramimic-video-public/current/.venv/bin/soramimic-video serve --host 127.0.0.1 --port 8301 --jobs-dir /var/lib/soramimic-video-public/work/api-jobs --voicevox-url http://127.0.0.1:50021
 Restart=on-failure
 RestartSec=5s
