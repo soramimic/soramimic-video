@@ -105,12 +105,25 @@ wait_json_status() {
 }
 
 smoke_public_surface() {
-  local base_url=$1 tmp_dir tmp_logo tmp_config simple_ui editor_status
+  local base_url=$1 tmp_dir tmp_asset tmp_config simple_ui editor_status asset
   tmp_dir=$(mktemp -d) || return 1
-  tmp_logo="$tmp_dir/logo.png"
   tmp_config="$tmp_dir/config.json"
-  curl -fsS --max-time 5 "$base_url/" | \
-    grep -F '/logo-soramimic-v1.png' >/dev/null || { rm -rf -- "$tmp_dir"; return 1; }
+  curl -fsS --max-time 5 "$base_url/" >"$tmp_dir/index.html" || \
+    { rm -rf -- "$tmp_dir"; return 1; }
+  for asset in \
+    /logo-soramimic-symbol-v2.png \
+    /logo-soramimic-wordmark-v1.png \
+    /ogp-soramimic-v3.png; do
+    grep -F "$asset" "$tmp_dir/index.html" >/dev/null || \
+      { rm -rf -- "$tmp_dir"; return 1; }
+    tmp_asset="$tmp_dir/$(basename "$asset")"
+    curl -fsS --max-time 5 "$base_url$asset" >"$tmp_asset" || \
+      { rm -rf -- "$tmp_dir"; return 1; }
+    if [[ $(od -An -tx1 -N8 "$tmp_asset" | tr -d ' \n') != 89504e470d0a1a0a ]]; then
+      rm -rf -- "$tmp_dir"
+      return 1
+    fi
+  done
   curl -fsS --max-time 5 "$base_url/api/config" >"$tmp_config" || \
     { rm -rf -- "$tmp_dir"; return 1; }
   jq -e '.editor | type == "boolean"' "$tmp_config" >/dev/null || \
@@ -131,12 +144,6 @@ smoke_public_surface() {
   fi
   curl -fsS --max-time 5 "$base_url/editor/wordlists/scientist.csv" | \
     grep -F ',小田,おだ,family,' >/dev/null || { rm -rf -- "$tmp_dir"; return 1; }
-  curl -fsS --max-time 5 "$base_url/logo-soramimic-v1.png" >"$tmp_logo" || \
-    { rm -rf -- "$tmp_dir"; return 1; }
-  if [[ $(od -An -tx1 -N8 "$tmp_logo" | tr -d ' \n') != 89504e470d0a1a0a ]]; then
-    rm -rf -- "$tmp_dir"
-    return 1
-  fi
   rm -rf -- "$tmp_dir"
   return 0
 }

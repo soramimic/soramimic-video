@@ -79,7 +79,7 @@ def test_head_has_complete_public_ogp_metadata():
         if attrs.get("property")
     }
     description = "曲と単語リストを選ぶだけ。空耳で置き換えた替え歌動画を作れます。"
-    image_url = "https://video.soramimic.com/ogp-soramimic-v2.png"
+    image_url = "https://video.soramimic.com/ogp-soramimic-v3.png"
     assert by_name["description"] == description
     assert by_name["twitter:card"] == "summary_large_image"
     assert by_name["twitter:title"] == "Soramimic | 替え歌動画メーカー"
@@ -104,11 +104,16 @@ def test_head_has_complete_public_ogp_metadata():
     )
 
 
-def test_header_uses_versioned_soramimic_logo():
+def test_header_uses_versioned_soramimic_video_logo():
     text = INDEX.read_text(encoding="utf-8")
+    assert 'class="brand-lockup"' in text
+    assert 'class="brand-symbol"' in text
+    assert 'src="/logo-soramimic-symbol-v2.png"' in text
     assert 'class="brand-logo"' in text
-    assert 'src="/logo-soramimic-v1.png"' in text
+    assert 'src="/logo-soramimic-wordmark-v1.png"' in text
     assert 'alt="Soramimic"' in text
+    assert '<span class="brand-product">video</span>' in text
+    assert "brand-play" not in text
     assert "🎤 soramimic-video" not in text
 
 
