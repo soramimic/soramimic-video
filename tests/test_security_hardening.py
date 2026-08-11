@@ -189,6 +189,7 @@ def test_operational_endpoints_are_hidden_from_proxy_users(tmp_path: Path, monke
     for path in (
         "/ogp-soramimic-v1.png",
         "/ogp-soramimic-v2.png",
+        "/ogp-soramimic-v3.png",
         "/logo-soramimic-v1.png",
         "/logo-soramimic-symbol-v1.png",
         "/logo-soramimic-symbol-v2.png",

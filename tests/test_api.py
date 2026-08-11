@@ -1319,7 +1319,7 @@ def test_ogp_image_is_public_versioned_png(client):
     from PIL import Image
 
     # v1はimmutable URLとして公開済みなので、既存SNSキャッシュ向けに残す。
-    for version in ("v1", "v2"):
+    for version in ("v1", "v2", "v3"):
         response = client.get(f"/ogp-soramimic-{version}.png")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"

@@ -1484,6 +1484,7 @@ def create_app(
             "/healthz",
             "/ogp-soramimic-v1.png",
             "/ogp-soramimic-v2.png",
+            "/ogp-soramimic-v3.png",
             "/logo-soramimic-v1.png",
             "/logo-soramimic-symbol-v1.png",
             "/logo-soramimic-symbol-v2.png",
@@ -1734,6 +1735,15 @@ def create_app(
         """SNSクローラ向けの版付きOGP画像。匿名sessionは発行しない。"""
         return FileResponse(
             STATIC_DIR / "ogp-soramimic-v2.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/ogp-soramimic-v3.png", include_in_schema=False)
+    def ogp_image_v3() -> FileResponse:
+        """デザイナー提供ロゴを使ったSNSクローラ向けOGP画像。"""
+        return FileResponse(
+            STATIC_DIR / "ogp-soramimic-v3.png",
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
