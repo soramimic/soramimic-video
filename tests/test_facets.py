@@ -43,10 +43,7 @@ DOM_SHIM = """
 class El {
 	constructor(tag) {
 		this.tag = tag; this.children = []; this.className = ""; this.textContent = "";
-		this.attributes = {};
 	}
-	setAttribute(name, value) { this.attributes[name] = String(value); }
-	addEventListener() {}
 	set innerHTML(v) {
 		if (v !== "") throw new Error("innerHTMLへの代入はクリアだけを想定: " + v);
 		this.children = [];
@@ -54,15 +51,9 @@ class El {
 	appendChild(c) { this.children.push(c); return c; }
 	append(...cs) { this.children.push(...cs); }
 	querySelectorAll(sel) {
-		const hasClass = (e, name) => String(e.className || "").split(" ").includes(name);
 		const hit = (e) => sel === ".facet-group" ? e.className === "facet-group"
 			: sel === "input:checked" ? e.tag === "input" && e.checked
 			: sel === "input[type=checkbox]" ? e.tag === "input" && e.type === "checkbox"
-			: sel === "input.facet-value:checked"
-				? e.tag === "input" && hasClass(e, "facet-value") && e.checked
-			: sel === "input.facet-value" ? e.tag === "input" && hasClass(e, "facet-value")
-			: sel === "input.facet-select-all-input"
-				? e.tag === "input" && hasClass(e, "facet-select-all-input")
 			: (() => { throw new Error("未対応のセレクタ: " + sel); })();
 		const out = [];
 		const walk = (e) => {
@@ -71,7 +62,6 @@ class El {
 		walk(this);
 		return out;
 	}
-	querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
 }
 globalThis.document = {
 	createElement: (tag) => new El(tag),
@@ -201,6 +191,8 @@ def test_server_predicts_the_editor_roundtrip():
         # ``where`` を明示した値は認識されて正規形に戻り、それ以外は消える。
         flat = where.replace("(", "").replace(")", "")
         if flat != where:
+            restored = restored_where(entry, flat)
+            assert restored in ("", where)
             assert not survives_editor_facets(entry, flat)
 
 
@@ -208,13 +200,10 @@ def test_gimukyoiku_defaults_to_elementary_and_middle_school_only():
     """義務教育リストは高校を含めず、小学校・中学校を既定選択にする。"""
     entry = next(e for e in _conf_entries() if e["value"] == "GIMUKYOIKU")
     assert entry["text"] == "義務教育"
-    where = default_where(entry)
-    assert "subject~=国語" in where and "subject~=技術・家庭" in where
-    assert "(level~=小学校 or level~=中学校)" in where
-    assert "level~=高等学校" not in where
+    assert default_where(entry) == "(level~=小学校 or level~=中学校)"
 
     csv_path = WORDLISTS / Path(entry["filepath"]).name
-    selected = _select(csv_path, where)
+    selected = _select(csv_path, default_where(entry))
     header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
     level_index = header.index("level")
     assert selected
@@ -235,11 +224,11 @@ def test_football_defaults_to_jleague_scope_only():
     assert "scope=overseas_japanese" not in where
 
 
-def _flat_default_where(entry: dict[str, Any]) -> str:
-    """現在と同じ選択値を、正規化前の平坦な形で組んだ式。
+def _legacy_default_where(entry: dict[str, Any]) -> str:
+    """変更前の index.html(facetDefaultWhere)が組んでいた式。
 
-    値ごと・ファセットごとの括弧が無いが、editorの「default:trueが無ければ全選択」
-    を含む選択値は同じ。正規形への変換で行集合が変わらないことを確かめるために使う。
+    値ごと・ファセットごとの括弧が無く、全値が既定ONのファセットは節を出さない。
+    行集合が変わっていないことを確かめるためだけに残す(復元はできない形)。
     """
     facets = entry.get("facets") or []
     if not facets:
@@ -248,9 +237,7 @@ def _flat_default_where(entry: dict[str, Any]) -> str:
     for f in facets:
         values = f.get("values") or []
         on = [v for v in values if v.get("default") is True]
-        if not on:
-            on = values
-        if not on:
+        if not on or len(on) == len(values):
             continue
         cols = f.get("columns") or ([f["column"]] if f.get("column") else [])
         preds: list[str] = []
@@ -277,20 +264,21 @@ def _select(csv_path: Path, where: str) -> list[tuple[str, ...]]:
     return [tuple(r) for r in Parser().filter(where, header, rows)]
 
 
-def test_normalized_where_selects_the_same_rows_as_flat_form():
-    """名前付きリスト全19件で、平坦形と正規形の where が同じ行を選ぶ。
+def test_new_where_selects_the_same_rows_as_the_old_one():
+    """名前付きリスト全18件で、変更前後の where が同じ行を選ぶ。
 
-    editorと形をそろえるために括弧を足したことで**出力の中身が変わらない**ことを固定する
+    形をそろえるにあたって、括弧を足したこと・全値ONのファセットも節に
+    することにしたことで**出力の中身が変わっていない**ことを固定する
     (全値ONの節は「列の値がその一覧のどれか」という条件になるので、
     一覧に無い値の行があれば結果が変わりうる)。
     """
     if not (WORDLISTS / "baseball.csv").is_file():
         pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
     entries = _conf_entries()
-    assert len(entries) == 19, f"conf の単語リスト数が変わった: {len(entries)}件"
+    assert len(entries) == 18, f"conf の単語リスト数が変わった: {len(entries)}件"
     for entry in entries:
         csv_path = WORDLISTS / Path(entry["filepath"]).name
-        old, new = _flat_default_where(entry), default_where(entry)
+        old, new = _legacy_default_where(entry), default_where(entry)
         assert _select(csv_path, old) == _select(csv_path, new), (
             f"{entry['value']}: 絞り込みの結果が変わった\n  旧: {old}\n  新: {new}"
         )
