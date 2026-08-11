@@ -1,8 +1,9 @@
 # 公開版のデプロイ
 
 公開版は `main` の明示commit SHAから再現可能なreleaseを作り、staging確認後に
-`/opt/soramimic-video-public/current` を原子的に切り替えます。通常の開発は `dev` に集約し、
-公開可能なまとまりを `dev -> main` のrelease PRとしてマージしてから、この手順を行います。
+`/opt/soramimic-video-public/current` を原子的に切り替えます。通常の開発は`dev`に集約し、
+公開可能な変更だけを`preview`へ昇格して確認し、`preview -> main`のrelease PRをマージしてから
+この手順を行います。
 
 ## 前提
 
@@ -19,7 +20,7 @@
 
 ## リリース手順
 
-GitHub上で `dev -> main` の差分と必須CIを確認してマージし、`main` の40桁SHAを控えます。
+GitHub上で`preview -> main`の差分と必須CIを確認してマージし、`main`の40桁SHAを控えます。
 以下の3段階は意図的に分離されています。`prepare` と `verify` は本番の `current` を変更せず、
 `activate` だけが本番を切り替えます。
 
@@ -113,3 +114,30 @@ sudo SORAMIMIC_ROLLBACK_USER=<old-service-user> \
 ```
 
 本番適用前にstaging環境で、activate失敗時の自動復帰と手動rollbackの両方を演習します。
+
+## dev・preview常設環境
+
+本番とは別に、同じホストで次を常設します。どちらもloopbackだけで待ち受け、外部入口は
+Cloudflare Tunnel + Accessに限定します。
+
+| 環境    | branch    | URL                           | port | app root                       | unit                              |
+| ------- | --------- | ----------------------------- | ---: | ------------------------------ | --------------------------------- |
+| dev     | `dev`     | `dev-video.soramimic.com`     | 8311 | `/opt/soramimic-video-dev`     | `soramimic-video-dev.service`     |
+| preview | `preview` | `preview-video.soramimic.com` | 8312 | `/opt/soramimic-video-preview` | `soramimic-video-preview.service` |
+
+unitを配置し、`/etc/soramimic-video/dev.env`と`preview.env`を0600で用意します。previewは
+本番相当設定、devは必要に応じて詳細UIを有効にします。ジョブ・release・deploy記録・lockは
+環境ごとに分離します。
+
+`deploy-environment.sh`がbranch、パス、port、unit、lockを環境ごとに固定して既存の
+デプロイスクリプトを呼び出します。次はdevの例です（previewは第1引数を`preview`にします）。
+
+```sh
+SHA=$(git rev-parse origin/dev)
+sudo deploy/deploy-environment.sh dev prepare "$SHA" --source "$PWD"
+sudo deploy/deploy-environment.sh dev verify "$SHA"
+sudo deploy/deploy-environment.sh dev activate "$SHA" --confirm "$SHA"
+```
+
+Tunnel ingressの正本例は`deploy/cloudflared/config.yml.example`です。Accessで両hostnameが
+認証要求（未認証HTTP 302）になることを確認してから、ingressを有効化します。

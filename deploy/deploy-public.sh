@@ -16,6 +16,7 @@ service_group=${SORAMIMIC_SERVICE_GROUP:-soramimic-video}
 service_unit=${SORAMIMIC_SERVICE_UNIT:-soramimic-video-public.service}
 repo_url=${SORAMIMIC_REPO_URL:-https://github.com/soramimic/soramimic-video.git}
 source_checkout=${SORAMIMIC_SOURCE_CHECKOUT:-}
+source_ref=${SORAMIMIC_SOURCE_REF:-main}
 uv_bin=${SORAMIMIC_UV_BIN:-}
 staging_port=${SORAMIMIC_STAGING_PORT:-18301}
 production_port=${SORAMIMIC_LISTEN_PORT:-8301}
@@ -26,9 +27,9 @@ dry_run=0
 usage() {
   cat <<'EOF'
 Usage:
-  sudo deploy/deploy-public.sh [--dry-run] prepare  <40-character-main-SHA> [--source <checkout>]
-  sudo deploy/deploy-public.sh [--dry-run] verify   <40-character-main-SHA>
-  sudo deploy/deploy-public.sh [--dry-run] activate <40-character-main-SHA> --confirm <same-SHA>
+  sudo deploy/deploy-public.sh [--dry-run] prepare  <40-character-commit-SHA> [--source <checkout>]
+  sudo deploy/deploy-public.sh [--dry-run] verify   <40-character-commit-SHA>
+  sudo deploy/deploy-public.sh [--dry-run] activate <40-character-commit-SHA> --confirm <same-SHA>
     [--previous-sha <SHA, first migration only>]
 
 prepare builds an immutable release but does not start it. verify starts it only on the
@@ -82,6 +83,7 @@ archive_tree() {
 prepare() {
   local timestamp short release_name release_dir build_home resolved submodules manifest prepared_record
   command -v git >/dev/null || die "gitが必要です"
+  git check-ref-format --branch "$source_ref" >/dev/null 2>&1 || die "不正なsource branchです: $source_ref"
   if [[ -z $uv_bin ]]; then
     uv_bin=$(command -v uv || true)
   fi
@@ -109,11 +111,11 @@ prepare() {
     [[ -d $source_checkout ]] || die "source checkoutがありません: $source_checkout"
     resolved=$(git -C "$source_checkout" rev-parse HEAD)
     [[ $resolved == "$sha" ]] || die "source checkoutのHEADが指定SHAではありません"
-    git -C "$source_checkout" merge-base --is-ancestor "$sha" refs/remotes/origin/main || \
-      die "指定SHAはsource checkoutのorigin/mainに含まれません（先にgit fetchしてください）"
+    git -C "$source_checkout" merge-base --is-ancestor "$sha" "refs/remotes/origin/$source_ref" || \
+      die "指定SHAはsource checkoutのorigin/$source_refに含まれません（先にgit fetchしてください）"
   fi
   if (( dry_run )); then
-    log "main SHAを検証してreleaseを構築: $release_dir"
+    log "$source_ref SHAを検証してreleaseを構築: $release_dir"
     if [[ -n $source_checkout ]]; then
       log "would archive local source: $source_checkout"
     else
@@ -142,12 +144,12 @@ prepare() {
     shopt -u dotglob nullglob
     rmdir "$release_dir/repo"
     runuser -u "$service_user" -- env HOME="$build_home" \
-      git -C "$release_dir" fetch --no-tags origin main
+      git -C "$release_dir" fetch --no-tags origin "$source_ref"
     resolved=$(runuser -u "$service_user" -- git -C "$release_dir" rev-parse "$sha^{commit}") || \
       die "remoteでSHAを取得できません"
     [[ $resolved == "$sha" ]] || die "commit SHAを解決できません"
     runuser -u "$service_user" -- git -C "$release_dir" merge-base --is-ancestor "$sha" FETCH_HEAD || \
-      die "指定SHAはorigin/mainに含まれません"
+      die "指定SHAはorigin/$source_refに含まれません"
     runuser -u "$service_user" -- env HOME="$build_home" git -C "$release_dir" checkout --detach "$sha"
     runuser -u "$service_user" -- env HOME="$build_home" \
       git -C "$release_dir" submodule update --init --recursive --depth 1
@@ -159,7 +161,7 @@ prepare() {
   assert_final_venv_shebang "$release_dir"
   rm -rf -- "$build_home"
   jq -n \
-    --arg commit "$sha" --arg source_ref main --arg repository "$repo_url" \
+    --arg commit "$sha" --arg source_ref "$source_ref" --arg repository "$repo_url" \
     --arg built_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg release_dir "$release_dir" \
     --arg submodules "$submodules" \
     '{schema:1,commit:$commit,source_ref:$source_ref,repository:$repository,
