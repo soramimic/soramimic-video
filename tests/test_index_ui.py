@@ -108,9 +108,9 @@ def test_header_uses_versioned_soramimic_video_logo():
     text = INDEX.read_text(encoding="utf-8")
     assert 'class="brand-lockup"' in text
     assert 'class="brand-symbol"' in text
-    assert 'src="/logo-soramimic-symbol-v1.png"' in text
+    assert 'src="/logo-soramimic-symbol-v2.png"' in text
     assert 'class="brand-logo"' in text
-    assert 'src="/logo-soramimic-v1.png"' in text
+    assert 'src="/logo-soramimic-wordmark-v1.png"' in text
     assert 'alt="Soramimic"' in text
     assert '<span class="brand-product">video</span>' in text
     assert "brand-play" not in text
