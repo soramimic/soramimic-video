@@ -63,8 +63,16 @@
   a { color: var(--link); }
   .site-header { padding: .7rem .2rem .5rem; }
   h1 { font-size: 1.25rem; margin: 0; color: var(--accent); }
-  .brand-logo {
-    display: block; width: min(100%, 16rem); height: auto;
+  .brand-lockup {
+    display: flex; align-items: center; gap: .4rem; width: min(100%, 18rem);
+  }
+  .brand-symbol { display: block; width: 3rem; height: 3rem; flex: 0 0 auto; }
+  .brand-name { display: block; min-width: 0; }
+  .brand-logo { display: block; width: 13rem; max-width: 100%; height: auto; }
+  .brand-product {
+    display: block; margin: -.15rem .1rem 0 0; color: var(--muted);
+    font-size: .78rem; font-weight: 500; line-height: 1; text-align: right;
+    letter-spacing: .01em;
   }
   .lead { margin: .1rem 0 0; font-size: .9rem; color: var(--muted); }
   fieldset, .card {
@@ -486,8 +494,15 @@
 <body>
 <div class="wrap">
 <header class="site-header">
-  <h1><img class="brand-logo" src="/logo-soramimic-v1.png"
-    width="873" height="133" alt="Soramimic"></h1>
+  <h1 class="brand-lockup">
+    <img class="brand-symbol" src="/logo-soramimic-symbol-v1.png"
+      width="512" height="512" alt="">
+    <span class="brand-name">
+      <img class="brand-logo" src="/logo-soramimic-v1.png"
+        width="873" height="133" alt="Soramimic">
+      <span class="brand-product">video</span>
+    </span>
+  </h1>
   <p class="lead">歌詞が空耳で置き換わった替え歌動画を作れます。</p>
   <p class="hint" id="server-info"></p>
 </header>
