@@ -1349,6 +1349,30 @@ def test_brand_logo_is_public_versioned_transparent_png(client):
         assert image.getpixel((0, 0))[3] == 0
 
 
+def test_brand_symbol_is_public_versioned_transparent_png(client):
+    from PIL import Image
+
+    response = client.get("/logo-soramimic-symbol-v1.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == (
+        "public, max-age=31536000, immutable"
+    )
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(response.content) < 1024 * 1024
+    with Image.open(api_mod.STATIC_DIR / "logo-soramimic-symbol-v1.png") as image:
+        assert image.mode == "RGBA"
+        assert image.size == (512, 512)
+        assert image.getpixel((0, 0))[3] == 0
+        # 顔なし版の正本。頭中央に目や口の色を混ぜない。
+        face_area = image.crop((226, 430, 286, 486))
+        assert all(
+            face_area.getpixel((x, y)) == (255, 255, 255, 255)
+            for y in range(face_area.height)
+            for x in range(face_area.width)
+        )
+
+
 def test_index_html_share_hint_matches_platform_capability():
     """共有可否とOSに合わせて、保存・共有の案内を切り替える。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
