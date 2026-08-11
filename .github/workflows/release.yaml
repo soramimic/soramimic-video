@@ -1,68 +1,119 @@
-# dev に溜まった変更を再検証し、main へリリースする。
-# 開発PRは dev へ入れ、main は公開中の安定版として保つ。
-# 週次リリースのほか、Actions から手動実行できる。
+# dev の公開候補を固定した SHA で検証し、手動release PRの案内を出す。
+# main への反映は、release PR の現在の head SHA の CI を確認して人間が行う。
 name: release
 on:
   workflow_dispatch: {}
   schedule:
     - cron: "0 23 * * 0" # 毎週月曜 08:00 JST 頃
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+    branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('release-pr-{0}', github.event.pull_request.number) || 'release-prepare' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
+  resolve:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     outputs:
-      changed: ${{ steps.diff.outputs.changed }}
+      changed: ${{ steps.resolve.outputs.changed }}
+      dev_sha: ${{ steps.resolve.outputs.dev_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
-      - name: dev と main の差分を確認
-        id: diff
+      - name: 検証する dev SHA を固定
+        id: resolve
         run: |
-          if ! git fetch origin dev; then
+          dev_sha=$(git ls-remote origin refs/heads/dev | awk '{print $1}')
+          if [ -z "$dev_sha" ]; then
             echo "dev ブランチが存在しないためスキップします"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          count=$(git rev-list --count main..origin/dev)
-          echo "dev には main にないコミットが ${count} 件"
+
+          git fetch --no-tags origin "$dev_sha"
+          count=$(git rev-list --count "origin/main..$dev_sha")
+          echo "dev ($dev_sha) には main にないコミットが ${count} 件"
+          echo "dev_sha=$dev_sha" >> "$GITHUB_OUTPUT"
           if [ "$count" -eq 0 ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
-    needs: check
-    if: ${{ needs.check.outputs.changed == 'true' }}
+  test-candidate:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.changed == 'true' }}
+    permissions:
+      contents: read
     uses: ./.github/workflows/test.yml
     with:
-      ref: dev
+      # ブランチ名ではなく、resolve で取得した不変の commit SHA を検証する。
+      ref: ${{ needs.resolve.outputs.dev_sha }}
 
-  merge:
-    needs: [check, test]
-    if: ${{ needs.check.outputs.changed == 'true' && needs.test.result == 'success' }}
+  publish-instructions:
+    needs: [resolve, test-candidate]
+    if: ${{ needs.resolve.outputs.changed == 'true' && needs.test-candidate.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DEV_SHA: ${{ needs.resolve.outputs.dev_sha }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-      - name: dev を main へマージして push
+      - name: 手動release PRの案内を表示
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin dev
-          git merge --no-ff origin/dev -m "リリース: dev を main へマージ"
-          git push origin main
-      - name: dev を main に揃える
+          current_sha=$(gh api "repos/$REPO/git/ref/heads/dev" --jq '.object.sha')
+          {
+            echo "## Release candidate の検証完了"
+            echo
+            echo "- 検証済み dev SHA: \`$DEV_SHA\`"
+            echo "- 現在の dev SHA: \`$current_sha\`"
+            echo
+            if [ "$current_sha" = "$DEV_SHA" ]; then
+              echo "[dev → main のPRを作成または確認する](https://github.com/$REPO/compare/main...dev?expand=1)"
+              echo
+              echo "PRのタイトルは \`release: dev → main\` とし、公開内容を本文に記載してください。"
+              echo "PR作成後は、PRの現在のhead SHAに対する必須チェックを確認して手動マージしてください。"
+            else
+              echo "> dev が検証中に進みました。この結果は \`$DEV_SHA\` だけに対するものです。"
+              echo "> Actionsからreleaseを再実行し、現在のdev SHAを検証してからPRを作成してください。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$current_sha" = "$DEV_SHA" ]; then
+            echo "検証済みSHAの手動PR作成リンクをjob summaryへ出力しました"
+          else
+            echo "devが進んだため再実行が必要です"
+          fi
+
+  test-release-pr-head:
+    # main の必須チェックとして安定した名前で使えるよう、release と emergency の
+    # どちらの同一repository PRでもheadそのものを検証する。
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      # 通常の test workflow が検証する merge ref に加え、承認・マージ対象の
+      # head SHA 自体も検証する。
+      ref: ${{ github.event.pull_request.head.sha }}
+
+  reject-fork-main-pr:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: forkからmainへのPRを拒否
         run: |
-          git push origin main:dev || echo "dev が先行しているため同期をスキップ(次回リリースで取り込む)"
+          echo "forkのhead SHAはこのrelease gateでは検証しません。PRのbaseをdevに変更してください。" >&2
+          exit 1

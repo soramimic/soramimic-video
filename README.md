@@ -287,8 +287,29 @@ Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の�
 - `main`: 公開中の安定版。通常の開発PRは直接入れない。
 - `dev`: 開発中の変更を集約する常設ブランチ。feature/fix ブランチのPRは `dev` 宛てにする。
 - CIが成功した `dev` 宛てPRは自動マージされる。自動マージしない場合は `no-automerge` ラベルを付ける。
-- `dev` の合成状態を再テストし、毎週月曜日または手動の `release` workflow で `main` へ反映する。
-- 緊急修正だけは `emergency` ラベル付きで `main` 宛てとし、確認後に手動マージする。
+- 毎週月曜日または手動の `release` workflow は、その時点の `dev` のcommit SHAを固定して再テストし、成功時はjob summaryに `dev` → `main` のPR作成リンクと手順を表示する。ActionsのtokenではPRを作成せず、`main` へ直接pushもしない。
+- summaryに表示された検証済みSHAと現在の `dev` SHAが一致することを確認し、release PRを人間が作成する。検証中に `dev` が進んだ場合はworkflowを再実行する。
+- release PRは自動マージされない。また、headが `dev` なのでレビュー中に内容が増える可能性がある。事前の固定SHAテストは候補選定の記録とし、最終的にはPRの**現在のhead SHA**と `main` とのmerge結果に対する必須チェックがすべて成功していることを確認して人間がマージする。
+- 公開時はrelease PRのマージcommit SHAを本番へデプロイし、health/readinessと主要動線を確認する。問題があれば直前に公開したSHAへロールバックする。
+
+`main` のbranch protectionでは、少なくとも通常CIの `test / test`（`main` とのmerge結果）と
+`release / test-release-pr-head / test`（PRのhead SHAそのもの）を必須にする。この2つは
+意図的に別々に実行し、統合後の状態と公開候補そのものを両方確認する。
+
+このPR方式へ初めて移行するときは、次の順序でbootstrapする。
+
+1. 旧 `release` workflowは実行しない。
+2. 新workflowと文書だけを含むPRをいったん `dev` 宛てで作り、`emergency` ラベルを付けてからbaseを `main` に変更する。
+3. 現在利用できる必須チェックで確認して `main` へ手動マージする。
+4. 最新の `main` から同期用ブランチを作り、そのブランチから `dev` へのPRをマージする。
+5. 新しい2つのcheckが実行できる状態になってからbranch protectionの必須checkを上記の名前に設定し、Actionsの `release` を手動実行する。
+
+緊急修正だけは次の手順で `main` へ直接PRを出す。
+
+1. 修正ブランチのPRをいったん `dev` 宛てで作る。
+2. `emergency` ラベルを付けてから、baseを `main` に変更する（ラベルなしで `main` にすると自動的に `dev` へ戻される）。
+3. 必須チェックと差分を確認して手動マージし、本番へデプロイする。
+4. 公開後すぐに最新の `main` から `sync/emergency-...` ブランチを作り、そのブランチから `dev` への同期PRを作成してマージする（`main` 自体をheadにしない）。これにより次回releaseで緊急修正が欠落せず、自動マージ処理が `main` ブランチの削除を試みることもない。
 
 ```sh
 uv run pytest        # テスト(楽曲データは使わず合成フィクスチャで実行)
