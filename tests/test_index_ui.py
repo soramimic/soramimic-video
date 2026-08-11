@@ -246,10 +246,9 @@ def test_random_button_is_disabled_until_both_choices_can_change():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_video_share_is_prepared_on_demand_and_never_auto_downloads_on_error():
-    """動画を自動取得せず、準備後はiOSの一時的な操作権限を失わない。
+def test_video_share_and_playback_share_one_prepared_file_before_click():
+    """再生と共有でMP4を二重取得せず、iOSの一時的な操作権限を失わない。
 
-    iOSでは再生と共有用Blobの同時保持でタブが落ち得るため、最初のタップでだけ取得する。
     共有後もPromiseが完了しないことがあるので、イベントを実行して状態も固定する。
     """
     script = _script()
@@ -265,6 +264,9 @@ def test_video_share_is_prepared_on_demand_and_never_auto_downloads_on_error():
         let shareCalls = [];
         let activation = false;
         let fetchSignal = null;
+        let fetchOk = true;
+        let revoked = [];
+        let objectUrlFile = null;
         const navigator = {{
           platform: "iPhone", userAgent: "CriOS", maxTouchPoints: 1,
           share(data) {{
@@ -279,13 +281,20 @@ def test_video_share_is_prepared_on_demand_and_never_auto_downloads_on_error():
           }}
         }}
         const location = {{ origin: "https://video.example" }};
+        const URL = {{
+          createObjectURL(file) {{
+            objectUrlFile = file;
+            return "blob:shared-video/" + file.name;
+          }},
+          revokeObjectURL(url) {{ revoked.push(url); }}
+        }};
         const $ = (id) => elements[id] || null;
         const qs = (value) => value;
         const headers = () => ({{}});
         const fetch = async (_url, options) => {{
           fetchCalls += 1;
           fetchSignal = options.signal;
-          return {{ ok: true, blob: async () => ({{ type: "video/mp4" }}) }};
+          return {{ ok: fetchOk, blob: async () => ({{ type: "video/mp4" }}) }};
         }};
         const document = {{
           body: {{ appendChild() {{}} }},
@@ -303,29 +312,41 @@ def test_video_share_is_prepared_on_demand_and_never_auto_downloads_on_error():
           }};
         }}
 
+        function videoElement() {{
+          return {{
+            src: "", loadCalls: 0, pauseCalls: 0, handlers: {{}},
+            load() {{ this.loadCalls += 1; }},
+            pause() {{ this.pauseCalls += 1; }},
+            removeAttribute(name) {{ if (name === "src") this.src = ""; }},
+            addEventListener(type, fn) {{ this.handlers[type] = fn; }},
+            removeEventListener(type, fn) {{
+              if (this.handlers[type] === fn) delete this.handlers[type];
+            }},
+            emit(type) {{ if (this.handlers[type]) this.handlers[type](); }}
+          }};
+        }}
+
         (async () => {{
           elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
           bindShare("/video.mp4");
-          assert.equal(fetchCalls, 0, "rendering the completed video must not fetch its MP4");
-
-          activation = true;
-          elements["share-save"].handlers.click();
-          activation = false;
-          assert.equal(elements["share-save"].disabled, true);
-          assert.equal(elements["share-save"].textContent, "共有を準備中…");
-          await new Promise((resolve) => setImmediate(resolve));
+          const video = videoElement();
+          await prepareVideoShare("/video.mp4", video);
           assert.equal(fetchCalls, 1);
           assert.ok(fetchSignal, "share preparation must be abortable");
+          assert.equal(video.src, "blob:shared-video/video.mp4");
+          assert.equal(video.loadCalls, 1);
           assert.equal(elements["share-save"].textContent, "動画を保存・共有");
           assert.equal(elements["share-save"].disabled, false);
 
-          // 準備完了後の次のタップではfetchを挟まず、操作権限内でshareする。
+          // 最初のタップではfetchを挟まず、操作権限内でshareする。
           activation = true;
           elements["share-save"].handlers.click();
           activation = false;
           await Promise.resolve();
           assert.equal(fetchCalls, 1, "click must not fetch the video again");
           assert.equal(shareCalls.length, 1);
+          assert.equal(shareCalls[0].files[0], objectUrlFile,
+            "playback and share must use the same File");
           assert.deepEqual(Object.keys(shareCalls[0]), ["files", "text"]);
           assert.equal(shareCalls[0].text.includes("#Soramimic\\n"), true);
           assert.equal(shareCalls[0].text.includes("#soramimic"), false);
@@ -353,21 +374,57 @@ def test_video_share_is_prepared_on_demand_and_never_auto_downloads_on_error():
 
           elements["share-save"].handlers.click();
           assert.equal(downloads, 1, "the explicit save-mode click downloads");
+
+          resetVideoSharePreparation();
+          assert.deepEqual(revoked, ["blob:shared-video/video.mp4"]);
+
+          // Blob URLの非同期media errorでは再生だけdirect URLへ戻し、File共有は残す。
+          elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
+          const mediaFallbackVideo = videoElement();
+          fetchOk = true;
+          await prepareVideoShare("/video.mp4", mediaFallbackVideo);
+          const fallbackShareFile = preparedVideoShare.file;
+          mediaFallbackVideo.emit("error");
+          assert.equal(mediaFallbackVideo.src, "/video.mp4");
+          assert.equal(mediaFallbackVideo.handlers.error, undefined,
+            "direct playback must not recursively install the Blob fallback");
+          assert.equal(preparedVideoShare.file, fallbackShareFile,
+            "media fallback must preserve one-tap file sharing");
+          assert.deepEqual(revoked,
+            ["blob:shared-video/video.mp4", "blob:shared-video/video.mp4"]);
+          resetVideoSharePreparation();
+
+          elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
+          fetchOk = false;
+          const fallbackVideo = videoElement();
+          await prepareVideoShare("/video.mp4", fallbackVideo);
+          assert.equal(fallbackVideo.src, "/video.mp4",
+            "failed share preparation must preserve direct playback");
+          assert.equal(fallbackVideo.loadCalls, 2,
+            "fallback detaches a possible Blob source before loading the direct URL");
+          assert.equal(elements["share-save"].textContent, "動画を保存");
+          assert.equal(downloads, 1, "preparation failure must not auto-download");
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_completed_video_does_not_eagerly_load_share_file_and_reset_aborts_fetch():
-    """動画表示だけでは全MP4をBlob化せず、離脱時は準備中の取得も止める。"""
+def test_completed_video_prepares_one_shared_playback_file_and_reset_aborts_fetch():
+    """完成時に共有Fileを準備して再生にも共用し、離脱時は取得を止める。"""
     script = _script()
     shown = _function_body(script, "function showBuilderVideo(job)")
-    assert "prepareVideoShare" not in shown
+    assert "prepareVideoShare(job.video_url, video)" in shown
+    assert "if (!FILE_SHARE_SUPPORTED) video.src = qs(job.video_url);" in shown
     clicked = _function_body(script, "function bindShare(videoUrl)")
-    assert "prepareVideoShare(videoUrl)" in clicked
+    assert "prepareVideoShare" not in clicked
     reset = _function_body(script, "function resetVideoSharePreparation()")
     assert "sharePreparationAbort.abort()" in reset
+    assert "revokeSharePlaybackUrl()" in reset
+    state = _function_body(script, "function setBuilderState(state)")
+    assert state.index('video.removeAttribute("src")') < state.index(
+        "resetVideoSharePreparation()"
+    )
 
 
 def test_editor_opens_from_the_setup_screen():
