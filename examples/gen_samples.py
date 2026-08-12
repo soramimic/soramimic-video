@@ -5,8 +5,8 @@
 1音符=1モーラに正規化してある(合成エンジンが1音符に複数モーラを
 載せられないため。「ももたろうさん」→「ももたろさん」は実際の歌い方)。
 楽譜のメリスマは「け」→「け・え」のように母音のモーラを足して表す。
-英語詞の曲は歌詞をカタカナ読みにし、1音節が複数モーラになる箇所は
-音符を分割して割り付ける(「star」→ ス・タ・ー)。
+英語詞の曲はXFの表記に英語原詞、読みにカタカナを持たせる。1音節が
+複数モーラになる箇所は音符を分割して割り付ける(「star」→ ス・タ・ー)。
 
 メロディ(ch0)のほかに伴奏(ch1)も書き込む。ミックス工程(mix.py)は
 メロディチャンネルのnoteだけを消してfluidsynthに渡すので、伴奏を別チャンネルに
@@ -76,6 +76,8 @@ BEAT_PATTERNS = {
 #   int                              … その長さの休符(フレーズ頭の休符など)
 #   None                             … 行区切り。次の小節頭まで休符を入れる
 #   BR                               … 行区切りのみ(小節の途中で行が変わる曲)
+# 英語曲の "xf_words" は行ごとの (英語表記, 歌唱モーラ数)。score のカタカナと
+# 組み合わせ、XFKMに `Amazing[ア` `メ` ... `グ]` と書き出す。
 #
 # 各曲の "chords": 伴奏のコード進行。1要素=1小節で、先頭は前奏(無音の1小節)ぶん。
 # 小節内で変えたいときは tuple にする(小節を均等割りするので、要素数は拍子の
@@ -670,11 +672,21 @@ SONGS: dict[str, dict] = {
             "G", ("G", "G", "D7"), "G", "G",
         ],
         "lyrics": (
-            "アメイジング グレイス ハウ スイート ザ サウンド\n"
-            "ザット セイブド ア レッチ ライク ミー\n"
-            "アイ ワンス ワズ ロスト バット ナウ アム ファウンド\n"
-            "ワズ ブラインド バット ナウ アイ シー\n"
+            "Amazing grace! How sweet the sound\n"
+            "That saved a wretch like me!\n"
+            "I once was lost, but now am found,\n"
+            "Was blind, but now I see.\n"
         ),
+        "xf_words": [
+            [("Amazing", 6), ("grace!", 4), ("How", 2), ("sweet", 4),
+             ("the", 1), ("sound", 4)],
+            [("That", 3), ("saved", 4), ("a", 2), ("wretch", 3),
+             ("like", 3), ("me!", 2)],
+            [("I", 2), ("once", 3), ("was", 2), ("lost,", 3), ("but", 3),
+             ("now", 2), ("am", 2), ("found,", 5)],
+            [("Was", 2), ("blind,", 5), ("but", 3), ("now", 2), ("I", 2),
+             ("see.", 2)],
+        ],
     },
     "twinkle": {
         "title": "Twinkle Twinkle Little Star",
@@ -748,13 +760,25 @@ SONGS: dict[str, dict] = {
             "C", ("F", "C"), ("F", "C"), ("G7", "C"),
         ],
         "lyrics": (
-            "ツインクル ツインクル リトル スター\n"
-            "ハウ アイ ワンダー ワット ユー アー\n"
-            "アップ アバブ ザ ワールド ソー ハイ\n"
-            "ライク ア ダイヤモンド イン ザ スカイ\n"
-            "ツインクル ツインクル リトル スター\n"
-            "ハウ アイ ワンダー ワット ユー アー\n"
+            "Twinkle, twinkle, little star,\n"
+            "How I wonder what you are!\n"
+            "Up above the world so high,\n"
+            "Like a diamond in the sky.\n"
+            "Twinkle, twinkle, little star,\n"
+            "How I wonder what you are!\n"
         ),
+        "xf_words": [
+            [("Twinkle,", 5), ("twinkle,", 5), ("little", 3), ("star,", 3)],
+            [("How", 2), ("I", 2), ("wonder", 4), ("what", 3), ("you", 2),
+             ("are!", 2)],
+            [("Up", 3), ("above", 3), ("the", 1), ("world", 4), ("so", 2),
+             ("high,", 2)],
+            [("Like", 3), ("a", 1), ("diamond", 6), ("in", 2), ("the", 1),
+             ("sky.", 3)],
+            [("Twinkle,", 5), ("twinkle,", 5), ("little", 3), ("star,", 3)],
+            [("How", 2), ("I", 2), ("wonder", 4), ("what", 3), ("you", 2),
+             ("are!", 2)],
+        ],
     },
 }
 
@@ -886,6 +910,32 @@ def expanded_chords(song: dict) -> list:
     return [chords[0], *(chords[1:] * verse_count), *song.get("tail_chords", ())]
 
 
+def xf_lyric_fragments(song: dict, score: list) -> list[str] | None:
+    """英語表記とscoreのカナをXFの ``表記[読み]`` 断片へ変換する。"""
+    word_lines = song.get("xf_words")
+    if word_lines is None:
+        return None
+
+    words = [word for line in word_lines for word in line]
+    note_count = sum(isinstance(item, tuple) for item in score)
+    mora_count = sum(count for _, count in words)
+    if mora_count != note_count:
+        raise ValueError(
+            f"{song['title']}: xf_words は{mora_count}モーラ"
+            f"（score は{note_count}音）"
+        )
+
+    fragments: list[str] = []
+    for line in word_lines:
+        for word_index, (surface, count) in enumerate(line):
+            display = surface + (" " if word_index < len(line) - 1 else "")
+            for mora_index in range(count):
+                prefix = f"{display}[" if mora_index == 0 else ""
+                suffix = "]" if mora_index == count - 1 else ""
+                fragments.append(prefix + "{kana}" + suffix)
+    return fragments
+
+
 def build(song: dict) -> bytes:
     num, den = song["time"]
     meas = TPB * num * 4 // den
@@ -894,7 +944,10 @@ def build(song: dict) -> bytes:
     lyric_events: list[tuple[int, str]] = []  # (tick, text)
     tick = lead_in
     line_break = False
-    for item in expanded_score(song):
+    score = expanded_score(song)
+    fragments = xf_lyric_fragments(song, score)
+    fragment_iter = iter(fragments or ())
+    for item in score:
         if item is None:
             line_break = True
             tick += -tick % meas  # 次の小節頭まで進める(行末の休符)
@@ -907,7 +960,8 @@ def build(song: dict) -> bytes:
             continue
         kana, note, dur = item
         notes.append((tick, dur, note))
-        lyric_events.append((tick, ("/" if line_break else "") + kana))
+        fragment = next(fragment_iter).format(kana=kana) if fragments is not None else kana
+        lyric_events.append((tick, ("/" if line_break else "") + fragment))
         line_break = False
         tick += dur
 
