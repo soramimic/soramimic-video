@@ -786,6 +786,7 @@ def section_frame_data(
     pages: int = 1,
     synth_credit: str = "",
     original_song: str = "",
+    original_display_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
 ) -> dict:
@@ -805,6 +806,12 @@ def section_frame_data(
       クレジットページで使う。表記が要らない合成では空文字なので、require で
       その行ごと出さない
     """
+    song = (original_song or "").strip()
+    display_credit = (original_display_credit or "").strip()
+    author = (original_credit or "").strip()
+    notice = (credit_notice or "").strip()
+    compact_credit = display_credit or notice or author
+    original_song_credit = " / ".join(part for part in (song, compact_credit) if part)
     data = idle_frame_data(project, app_credit)
     data.update(
         {
@@ -815,9 +822,11 @@ def section_frame_data(
             "pages": str(pages),
             "page_label": f"({page}/{pages})" if pages > 1 else "",
             "synth_credit": synth_credit,
-            "original_song": original_song,
-            "original_credit": original_credit,
-            "credit_notice": credit_notice,
+            "original_song": song,
+            "original_song_credit": original_song_credit,
+            "original_display_credit": display_credit,
+            "original_credit": author,
+            "credit_notice": notice,
         }
     )
     return data
@@ -835,6 +844,7 @@ def build_section_cues(
     credits: list[dict] | None = None,
     synth_credit: str = "",
     original_song: str = "",
+    original_display_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
 ) -> list[ImageCue]:
@@ -872,6 +882,7 @@ def build_section_cues(
                     page_words, credit_text, i + 1, len(pages),
                     synth_credit=synth_credit,
                     original_song=original_song,
+                    original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
                 )
@@ -898,9 +909,10 @@ def build_section_cues(
                 t = end
             if show_credits and t < sec.end:
                 data = section_frame_data(
-                    project, app_credit, "credits", sec.duration,
+                    project, app_credit_text(synth_credit), "credits", sec.duration,
                     image_credits=credit_text, synth_credit=synth_credit,
                     original_song=original_song,
+                    original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
                 )
@@ -926,6 +938,7 @@ def app_credit_text(
     credit_notice: str = "",
     *,
     original_song: str = "",
+    original_display_credit: str = "",
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
@@ -937,13 +950,14 @@ def app_credit_text(
     synth = (synth_credit or "").strip()
     song = (original_song or "").strip()
     notice = (credit_notice or "").strip()
+    display_credit = (original_display_credit or "").strip()
     parts = [APP_CREDIT]
     if synth:
         parts.append(synth)
     if song:
         parts.append(f"Original: {song}")
-    if notice:
-        parts.append(notice)
+    if display_credit or notice:
+        parts.append(display_credit or notice)
     return " / ".join(parts)
 
 
@@ -1739,6 +1753,7 @@ def make_video(
     song_title_kana: str = "",
     fps: int = DEFAULT_VIDEO_FPS,
     original_credit: str = "",
+    original_display_credit: str = "",
     credit_notice: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> Path:
@@ -1750,6 +1765,7 @@ def make_video(
     credit_text = app_credit_text(
         synth_credit=synth_credit,
         original_credit=original_credit,
+        original_display_credit=original_display_credit,
         credit_notice=credit_notice,
         original_song=original_song,
     )
@@ -1810,6 +1826,7 @@ def make_video(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
         original_song=original_song,
+        original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
     )

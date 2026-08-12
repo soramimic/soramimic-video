@@ -1064,6 +1064,7 @@ def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
                     "id": "licensed",
                     "title": "権利曲",
                     "title_kana": "ケンリキョク",
+                    "original_display_credit": "作者",
                     "original_credit": "作詞・作曲: 作者",
                     "credit_notice": "指定表記",
                 }
@@ -1080,6 +1081,7 @@ def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
     }
 
     assert api_mod.original_credit_of(params) == "作詞・作曲: 作者"
+    assert api_mod.original_display_credit_of(params) == "作者"
     assert api_mod.credit_notice_of(params) == "指定表記"
 
 
@@ -1129,6 +1131,7 @@ def test_uploaded_song_keeps_explicit_credits_when_filename_matches_sample(
     }
 
     assert api_mod.original_credit_of(params) == "自作曲の作者"
+    assert api_mod.original_display_credit_of(params) == ""
     assert api_mod.credit_notice_of(params) == "自作曲の指定表記"
 
 
