@@ -1314,6 +1314,97 @@ def test_resolve_total_sec_falls_back_when_audio_duration_unknown():
     assert _resolve_total_sec(10.0, None) == 10.0
 
 
+def test_silent_encode_and_audio_attach_commands(tmp_path: Path, monkeypatch):
+    from soramimic_video import video as video_mod
+
+    concat = tmp_path / "slideshow.txt"
+    ass = tmp_path / "subtitles.ass"
+    concat.write_text("ffconcat version 1.0\n", encoding="utf-8")
+    ass.write_text("[Script Info]\n", encoding="utf-8")
+    prepared = video_mod.PreparedVideo(tmp_path, concat, ass, 12.345, 30)
+    commands = []
+
+    def fake_run(cmd, what):
+        commands.append((cmd, what))
+
+    monkeypatch.setattr(video_mod, "_run", fake_run)
+    silent = video_mod.encode_silent_video(prepared)
+    out = video_mod.attach_audio(silent, tmp_path / "song.wav", 12.0)
+
+    encode, encode_what = commands[0]
+    assert encode_what == "無音動画の生成"
+    assert "-an" in encode
+    assert "-c:a" not in encode
+    assert encode[-1] == str(tmp_path / "video-only.mp4")
+    mux, mux_what = commands[1]
+    assert mux_what == "動画と音声の結合"
+    assert mux[mux.index("-c:v") + 1] == "copy"
+    assert mux[mux.index("-c:a") + 1] == "aac"
+    assert "+faststart" in mux
+    assert out == tmp_path / "out.mp4"
+
+
+def test_prepare_video_carries_compact_original_credit(tmp_path: Path, monkeypatch):
+    from soramimic_video import video as video_mod
+
+    project = _project(tmp_path)
+    captured = {}
+
+    def fake_app_credit_text(**kwargs):
+        captured["credit"] = kwargs
+        return "credit text"
+
+    def fake_build_section_cues(*args, **kwargs):
+        captured["sections"] = kwargs
+        return []
+
+    monkeypatch.setattr(video_mod, "app_credit_text", fake_app_credit_text)
+    monkeypatch.setattr(video_mod, "used_words", lambda project: [])
+    monkeypatch.setattr(video_mod, "build_image_cues", lambda *a, **k: ([], []))
+    monkeypatch.setattr(video_mod, "generate_thumbnail", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "build_section_cues", fake_build_section_cues)
+    monkeypatch.setattr(video_mod, "render_idle_frame", lambda *a, **k: None)
+    monkeypatch.setattr(
+        video_mod,
+        "_write_slideshow_concat",
+        lambda *a, **k: tmp_path / "video" / "slideshow.txt",
+    )
+    monkeypatch.setattr(video_mod, "build_ass", lambda *a, **k: "[Script Info]\n")
+    monkeypatch.setattr(video_mod, "write_credits", lambda *a, **k: None)
+
+    video_mod.prepare_video(
+        project,
+        tmp_path,
+        10.0,
+        song_title="初音ミクの消失",
+        synth_credit="VOICEVOX:四国めたん",
+        original_display_credit="cosMo＠暴走P",
+        original_credit="作詞・作曲・編曲: cosMo＠暴走P",
+    )
+
+    assert captured["credit"]["original_song"] == "初音ミクの消失"
+    assert captured["credit"]["original_display_credit"] == "cosMo＠暴走P"
+    assert captured["sections"]["original_song"] == "初音ミクの消失"
+    assert captured["sections"]["original_display_credit"] == "cosMo＠暴走P"
+
+
+def test_planned_video_total_includes_midi_render_tail(tmp_path: Path, monkeypatch):
+    import mido
+
+    from soramimic_video import video as video_mod
+
+    project = _project(tmp_path)
+    project.song.accompaniment_path = None
+    project.song.midi_path = str(tmp_path / "song.mid")
+
+    class FakeMidi:
+        length = 20.0
+
+    monkeypatch.setattr(mido, "MidiFile", lambda *a, **k: FakeMidi())
+    monkeypatch.setattr(video_mod, "used_words", lambda project: [])
+    assert video_mod.planned_video_total_sec(project) >= 26.0
+
+
 def test_extend_for_endroll_extends_when_no_outro():
     from soramimic_video.video import extend_for_endroll
 

@@ -1,10 +1,11 @@
 """動画生成ステージ: 単語画像+字幕(替え歌/元歌詞)+歌唱音源 → out.mp4。
 
-構成(ffmpeg 1パス):
+構成:
  1. 単語リスト由来の画像をダウンロードし、レイアウト定義(layout.py)に従って
     列情報のテキストと合成した同一サイズのフレームPNGを作る
- 2. concatデマルチプレクサでフレームPNGを直接読み、ASS字幕と音声を一度に合成する
-    (中間動画を作らないので、全編のH.264エンコードは1回だけ)
+2. APIではconcatデマルチプレクサで無音H.264を歌声と並列生成し、最後に
+   H.264をstream copyしてAAC音声だけを追加する。CLIのvideoコマンドは従来どおり
+   ASS字幕と音声を1パスで合成する。どちらもH.264エンコードは1回だけ。
 
 あわせて曲名を空耳変換したサムネ画像(thumbnail.py)をプロジェクトディレクトリに
 作り、前奏区間(t=0〜歌い出し)のフレームとしても差し込む。
@@ -1737,6 +1738,187 @@ def write_credits(credits: list[dict], work: Path) -> Path | None:
 
 
 # ---- 本体 ----
+
+
+@dataclass(frozen=True)
+class PreparedVideo:
+    """エンコード直前まで用意した映像素材。音声側と独立して生成できる。"""
+
+    work: Path
+    concat_path: Path
+    ass_path: Path
+    total_sec: float
+    fps: int
+
+
+def _sung_end_sec(project: Project) -> float:
+    return max((n.end_sec for n in project.notes), default=0.0) + 3.0
+
+
+def actual_video_total_sec(project: Project, audio_path: Path) -> float:
+    """完成音声を基準に、従来のmake_videoと同じ最終尺を返す。"""
+    sung_end = _sung_end_sec(project)
+    total = _resolve_total_sec(sung_end, _audio_duration_sec(audio_path))
+    return extend_for_endroll(total, sung_end, used_words(project))
+
+
+def planned_video_total_sec(project: Project) -> float:
+    """音声完成前に安全側で見積もる無音動画の尺。
+
+    MIDI伴奏はfluidsynthのリバーブ等でイベント終端より数秒長くなる。
+    実機で最大約4.8秒だったため6秒の余裕を持たせる。完成音声がそれでも
+    長かった場合はAPI側が従来の直列生成へフォールバックする。
+    """
+    sung_end = _sung_end_sec(project)
+    expected_audio: float | None = None
+    accompaniment = project.song.accompaniment_path
+    if accompaniment:
+        path = Path(accompaniment)
+        if path.exists():
+            expected_audio = _audio_duration_sec(path)
+    elif project.song.midi_path:
+        try:
+            import mido
+
+            expected_audio = float(mido.MidiFile(project.song.midi_path, clip=True).length) + 6.0
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("MIDIから動画予定尺を取得できませんでした: %s", exc)
+    total = _resolve_total_sec(sung_end, expected_audio)
+    return extend_for_endroll(total, sung_end, used_words(project))
+
+
+def prepare_video(
+    project: Project,
+    project_dir: Path,
+    total_sec: float,
+    width: int = 1280,
+    height: int = 720,
+    font: str = "Hiragino Sans",
+    image_cache: Path | None = None,
+    layout: str | None = None,
+    granularity: dict[str, str] | None = None,
+    song_title: str | None = None,
+    synth_credit: str = "",
+    song_title_kana: str = "",
+    fps: int = DEFAULT_VIDEO_FPS,
+    original_credit: str = "",
+    original_display_credit: str = "",
+    credit_notice: str = "",
+    image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
+) -> PreparedVideo:
+    """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
+    if fps <= 0:
+        raise ValueError("fps は1以上で指定してください")
+    layout_obj = load_layout(layout)
+    original_song = (song_title or Path(project.song.midi_path).stem).strip()
+    credit_text = app_credit_text(
+        synth_credit=synth_credit,
+        original_credit=original_credit,
+        original_display_credit=original_display_credit,
+        credit_notice=credit_notice,
+        original_song=original_song,
+    )
+    work = project_dir / VIDEO_DIR
+    work.mkdir(parents=True, exist_ok=True)
+
+    sung_end = _sung_end_sec(project)
+    minimum = extend_for_endroll(sung_end, sung_end, used_words(project))
+    if total_sec + 1e-6 < minimum:
+        raise ValueError(f"動画予定尺が短すぎます({total_sec:.3f} < {minimum:.3f})")
+    if total_sec > sung_end:
+        logger.info("動画予定尺: %.1f秒 (歌唱終端+余韻 %.1f秒)", total_sec, sung_end)
+
+    prepare_started = time.monotonic()
+    cues, credits = build_image_cues(
+        project, work, width, height, image_cache, layout_obj, credit_text,
+        image_lead_sec=image_lead_sec,
+    )
+    if cues:
+        logger.info("画像キュー: %d件", len(cues))
+    else:
+        logger.warning("画像キューが0件です。動画の背景は全編無地になります")
+    thumbnail = generate_thumbnail(
+        project,
+        project_dir,
+        width,
+        height,
+        image_cache,
+        song_title,
+        credit_text,
+        title_kana=song_title_kana,
+    )
+    if thumbnail is not None:
+        cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
+    section_cues = build_section_cues(
+        project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
+        synth_credit=synth_credit,
+        original_song=original_song,
+        original_display_credit=original_display_credit.strip(),
+        original_credit=original_credit.strip(),
+        credit_notice=credit_notice.strip(),
+    )
+    if section_cues:
+        logger.info("間奏・後奏のフレーム: %d件", len(section_cues))
+        cues = sorted([*cues, *section_cues], key=lambda c: c.start)
+    idle_frame = render_idle_frame(
+        layout_obj, idle_frame_data(project, credit_text), width, height, work / "frames"
+    )
+    concat_path = _write_slideshow_concat(
+        cues, work, width, height, total_sec, idle_frame
+    )
+    ass_path = work / "subtitles.ass"
+    ass_path.write_text(
+        build_ass(project, width, height, font, layout_obj, granularity), encoding="utf-8"
+    )
+    credits_path = write_credits(credits, work)
+    if credits_path:
+        runproc.log_generated_path(logger, "画像クレジットを書き出しました", credits_path)
+    logger.info("動画前処理完了: %.1f秒", time.monotonic() - prepare_started)
+    return PreparedVideo(work, concat_path, ass_path, total_sec, fps)
+
+
+def _ass_filter_arg(path: Path) -> str:
+    return str(path.resolve()).replace("\\", "\\\\").replace(":", "\\:").replace(
+        "'", "\\'"
+    )
+
+
+def encode_silent_video(prepared: PreparedVideo) -> Path:
+    """音声なしのH.264映像を作る。歌声合成・ミックスと並列実行できる。"""
+    out = prepared.work / "video-only.mp4"
+    started = time.monotonic()
+    logger.info("無音動画エンコード開始: 1パス / %dfps", prepared.fps)
+    _run(
+        [_ffmpeg(), "-y",
+         "-f", "concat", "-safe", "0", "-i", str(prepared.concat_path),
+         "-vf", f"fps={prepared.fps},format=yuv420p,subtitles='{_ass_filter_arg(prepared.ass_path)}'",
+         "-an", "-c:v", "libx264", "-preset", "fast",
+         "-t", f"{prepared.total_sec:.3f}", str(out)],
+        "無音動画の生成",
+    )
+    logger.info("無音動画エンコード完了: %.1f秒", time.monotonic() - started)
+    return out
+
+
+def attach_audio(
+    silent_video: Path,
+    audio_path: Path,
+    total_sec: float,
+    out: Path | None = None,
+) -> Path:
+    """H.264を再エンコードせず、AAC音声だけを追加して完成MP4を作る。"""
+    target = out or silent_video.with_name("out.mp4")
+    started = time.monotonic()
+    logger.info("音声結合開始: 映像stream copy / 音声AAC")
+    _run(
+        [_ffmpeg(), "-y", "-i", str(silent_video), "-i", str(audio_path),
+         "-map", "0:v:0", "-map", "1:a:0",
+         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-af", "apad",
+         "-t", f"{total_sec:.3f}", "-movflags", "+faststart", str(target)],
+        "動画と音声の結合",
+    )
+    logger.info("音声結合完了: %.1f秒", time.monotonic() - started)
+    return target
 
 
 def make_video(

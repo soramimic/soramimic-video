@@ -14,8 +14,10 @@ def test_video_image_lead_defaults_and_can_be_disabled():
 
     serve = parser.parse_args(["serve"])
     assert serve.video_image_lead_sec == 0.1
+    assert serve.serial_video is False
     serve_disabled = parser.parse_args(["serve", "--video-image-lead-sec", "0"])
     assert serve_disabled.video_image_lead_sec == 0.0
+    assert parser.parse_args(["serve", "--serial-video"]).serial_video is True
 
 
 def test_serve_preserves_the_immediate_socket_peer(monkeypatch, tmp_path):
