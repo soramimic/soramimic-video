@@ -157,6 +157,30 @@ ETag/Last-Modifiedで再検証します。失敗時は既存のlast-good画像�
 SORAMIMIC_VIDEO_ASSET_STORE=/var/lib/soramimic-video-assets
 ```
 
+### repositoryへ含めない曲プリセット
+
+権利確認済みでもMIDI・歌詞を公開repositoryで再配布しない曲は、環境ごとの
+`/var/lib/soramimic-video-<environment>/work/private-samples` に置きます。releaseを
+切り替えても残り、別環境とは共有しません。`samples.json`には同梱PD曲と同じmanifest、
+`samples.local.json`には外部曲だけを置き、素材ごとの出所・利用条件・取得日・必要な
+クレジットを運用記録に残してください。
+
+Simple UIでは選択肢も環境外へ分離します。同梱`launch_catalog.json`を
+`private-samples/launch_catalog.json`へコピーし、その環境で確認済みのIDだけを
+`samples`へ追加して、env fileに次を設定します。
+
+```sh
+SORAMIMIC_SAMPLES_DIR=/var/lib/soramimic-video-preview/work/private-samples
+SORAMIMIC_LAUNCH_CATALOG=/var/lib/soramimic-video-preview/work/private-samples/launch_catalog.json
+```
+
+`SORAMIMIC_SAMPLES_DIR`はディレクトリを丸ごと差し替えるため、PD曲のmanifest・MIDI・
+歌詞も同じディレクトリへコピーします。配置後はservice userからread可能であること、
+`/api/samples`が意図したIDだけを返すこと、各MIDI・歌詞の取得と代表ジョブの生成が成功
+することを確認します。previewで確認した素材をpublicへ移すときも、public専用ディレクトリ
+へ別途配置し、`public.env`を明示的に変更します。previewの設定だけで本番に露出することは
+ありません。
+
 ## dev・preview常設環境
 
 本番とは別に、同じホストで次を常設します。どちらもloopbackだけで待ち受け、外部入口は
