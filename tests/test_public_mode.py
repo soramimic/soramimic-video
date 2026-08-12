@@ -415,6 +415,41 @@ def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
     assert client.get("/api/sample/twinkle/midi").status_code == 404
 
 
+def test_simple_ui_can_use_environment_launch_catalog(tmp_path, monkeypatch):
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    (samples / "samples.json").write_text(
+        json.dumps([{"id": "pd", "title": "公開曲"}]), encoding="utf-8"
+    )
+    (samples / "samples.local.json").write_text(
+        json.dumps(
+            [
+                {"id": "licensed", "title": "環境限定曲"},
+                {"id": "hidden", "title": "許可していない曲"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (samples / "licensed.mid").write_bytes(FAKE_MIDI)
+    catalog = samples / "launch_catalog.json"
+    catalog.write_text(
+        json.dumps(
+            {"samples": ["pd", "licensed"], "wordlists": [], "voicevox_style": 6000}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(samples))
+    monkeypatch.setenv(api_mod.LAUNCH_CATALOG_ENV, str(catalog))
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    assert [row["id"] for row in client.get("/api/samples").json()] == [
+        "pd", "licensed",
+    ]
+    assert client.get("/api/sample/licensed/midi").content == FAKE_MIDI
+    assert client.get("/api/sample/hidden/midi").status_code == 404
+
+
 def test_simple_ui_fixes_voice_and_wordlist_layout(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
     monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
