@@ -1212,17 +1212,15 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
-def test_index_html_has_one_platform_appropriate_save_share_button():
-    # 完成後の導線はボタン1本。モバイルだけ共有、PCは直接ダウンロードする。
+def test_index_html_has_platform_appropriate_save_share_buttons():
+    # モバイルは保存・共有1ボタン、PCはダウンロードと共有を分ける。
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
     assert 'id="share-save"' in html
-    assert "const FILE_SHARE_SUPPORTED = shouldUseVideoFileShare();" in html
-    use_share = html[html.index("function shouldUseVideoFileShare()") :]
-    use_share = use_share[: use_share.index("\n}\n")]
-    assert 'mobilePlatform() !== "other"' in use_share
-    assert "supportsVideoFileShare()" in use_share
+    assert 'id="download-video"' in html
+    assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
+    assert 'const DESKTOP_SHARE_UI = mobilePlatform() === "other";' in html
     support = html[html.index("function supportsVideoFileShare()") :]
     support = support[: support.index("\n}\n")]
     # iOS系ブラウザはcanShareが無い/誤判定することがある。共有APIとFileが
@@ -1239,6 +1237,7 @@ def test_index_html_has_one_platform_appropriate_save_share_button():
     click = html[html.index("function bindShare(videoUrl)") :]
     click = click[: click.index("\n}\n")]
     assert "fetch(" not in click and "await " not in click
+    assert 'const downloadBtn = $("download-video");' in click
     assert "downloadVideo(videoUrl)" in click
     assert "AbortError" in click
 
@@ -1361,7 +1360,7 @@ def test_canva_horizontal_logos_are_public_transparent_pngs(client):
 
 
 def test_index_html_share_hint_matches_platform_capability():
-    """モバイルでは共有、PCでは直接ダウンロードの案内に切り替える。"""
+    """モバイルは保存・共有、PCはダウンロードと共有の案内に切り替える。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
@@ -1370,6 +1369,7 @@ def test_index_html_share_hint_matches_platform_capability():
     assert '「ビデオを保存」「ファイルに保存」' in html
     assert "ボタンを押すと、動画ファイルをダウンロードします。" in html
     assert '"動画をダウンロード"' in html
+    assert "動画をダウンロードするか、共有メニューから共有先を選べます。" in html
 
 
 def test_index_html_shows_neutrino_configuration_warning():
