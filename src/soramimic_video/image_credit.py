@@ -143,6 +143,11 @@ def fetch_image_credit(
     cached_only=True なら通信せず、キャッシュ済みのぶんだけ返す
     (待てない用途=サムネのプレビュー生成向け)。
     """
+    from .asset_store import local_credit
+
+    managed, prewarmed = local_credit(image_url)
+    if managed:
+        return prewarmed
     title = commons_file_title(image_url, image_page)
     if title is None:
         return None
@@ -174,3 +179,62 @@ def fetch_image_credit(
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
     return info
+
+
+def fetch_image_credits_batch(
+    images: dict[str, str], *, batch_size: int = 50, cancel_check=None
+) -> dict[str, dict | None]:
+    """Fetch Commons extmetadata in batches; values are explicit ``None`` when unknown."""
+    titled = {
+        url: title
+        for url, page in images.items()
+        if (title := commons_file_title(url, page)) is not None
+    }
+    result: dict[str, dict | None] = {url: None for url in titled}
+    items = list(titled.items())
+    for start in range(0, len(items), batch_size):
+        if cancel_check is not None:
+            cancel_check()
+        chunk = items[start : start + batch_size]
+        try:
+            resp = http_get_with_retry(
+                COMMONS_API,
+                params={
+                    "action": "query",
+                    "titles": "|".join(title for _, title in chunk),
+                    "prop": "imageinfo",
+                    "iiprop": "extmetadata",
+                    "redirects": "1",
+                    "format": "json",
+                    "formatversion": "2",
+                },
+                headers={"User-Agent": USER_AGENT},
+                timeout=60,
+            )
+            pages = resp.json()["query"]["pages"]
+        except (requests.RequestException, KeyError, ValueError) as e:
+            logger.warning("画像クレジットの一括取得に失敗: %s", e)
+            continue
+        aliases = {
+            str(item.get("from", "")).replace("_", " ").casefold():
+            str(item.get("to", "")).replace("_", " ").casefold()
+            for kind in ("normalized", "redirects")
+            for item in resp.json().get("query", {}).get(kind, [])
+        }
+        by_title = {
+            str(page.get("title", "")).replace("_", " ").casefold(): page
+            for page in pages
+        }
+        for url, title in chunk:
+            key = title.replace("_", " ").casefold()
+            # MediaWiki may first normalize and then redirect a title.
+            for _ in range(2):
+                key = aliases.get(key, key)
+            page = by_title.get(key)
+            try:
+                meta = page["imageinfo"][0]["extmetadata"] if page else None
+            except (KeyError, IndexError, TypeError):
+                meta = None
+            if isinstance(meta, dict):
+                result[url] = credit_from_extmetadata(meta)
+    return result

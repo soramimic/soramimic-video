@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -249,6 +250,65 @@ def cmd_prewarm_images(args: argparse.Namespace) -> int:
         f"失敗 {summary['failed']} (URL計 {summary['total']}) -> {cache_dir}"
     )
     return 0
+
+
+def cmd_sync_assets(args: argparse.Namespace) -> int:
+    import os
+
+    from .asset_store import ASSET_STORE_ENV
+    from .prewarm import sync_asset_store, wordlist_csv_paths
+
+    store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "")
+    if not store_value:
+        print(f"--asset-store または {ASSET_STORE_ENV} が必要です", file=sys.stderr)
+        return 2
+    wordlists = Path(args.wordlists_dir)
+    csv_paths = wordlist_csv_paths(wordlists)
+    if not csv_paths:
+        print(f"単語リストCSVがありません: {wordlists}", file=sys.stderr)
+        return 2
+    summary = sync_asset_store(
+        csv_paths, Path(store_value), wordlists_dir=wordlists,
+        revalidate=args.revalidate, dry_run=args.dry_run,
+    )
+    prefix = "dry-run" if args.dry_run else "asset sync完了"
+    print(
+        f"{prefix}: 新規 {summary['new']} / 更新 {summary['updated']} / "
+        f"変更なし {summary['unchanged']} / 失敗 {summary['failed']} / "
+        f"クレジット取得失敗 {summary.get('credit_failed', 0)} / "
+        f"クレジット不明 {summary['credit_unknown']} / "
+        f"削除候補 {summary['orphaned']} / "
+        f"active昇格 {bool(summary.get('promoted', 0))} "
+        f"(URL計 {summary['total']}) -> {store_value}"
+    )
+    return 1 if (
+        summary["failed"]
+        or summary.get("credit_failed", 0)
+        or summary["credit_unknown"]
+    ) else 0
+
+
+def cmd_asset_status(args: argparse.Namespace) -> int:
+    import os
+
+    from .asset_store import ASSET_STORE_ENV
+    from .prewarm import asset_store_status
+
+    store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "")
+    if not store_value:
+        print(f"--asset-store または {ASSET_STORE_ENV} が必要です", file=sys.stderr)
+        return 2
+    status = asset_store_status(Path(store_value))
+    print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+    healthy = (
+        status["manifest_version"] == 1
+        and status["active"]
+        and not status["failed"]
+        and not status["credit_unknown"]
+        and not status["missing_files"]
+        and not status["pending"]
+    )
+    return 0 if healthy else 1
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -514,6 +574,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="キャッシュ済み画像もETag/Last-Modifiedで更新確認する",
     )
     p.set_defaults(func=cmd_prewarm_images)
+
+    p = sub.add_parser(
+        "sync-assets",
+        help="全組み込み単語リストの画像とクレジットを永続asset storeへ同期する",
+    )
+    p.add_argument(
+        "--wordlists-dir", default="external/soramimic-wordlists",
+        help="組み込み単語リストのディレクトリ(既定: external/soramimic-wordlists)",
+    )
+    p.add_argument(
+        "--asset-store",
+        help="共有asset store (環境変数 SORAMIMIC_VIDEO_ASSET_STORE でも指定可)",
+    )
+    p.add_argument(
+        "--revalidate", action="store_true",
+        help="既存URLもETag/Last-Modifiedまたはローカル原本で変更確認する",
+    )
+    p.add_argument("--dry-run", action="store_true", help="取得せず差分件数だけ表示する")
+    p.set_defaults(func=cmd_sync_assets)
+
+    p = sub.add_parser("asset-status", help="永続asset storeのmanifest集計を表示する")
+    p.add_argument(
+        "--asset-store",
+        help="共有asset store (環境変数 SORAMIMIC_VIDEO_ASSET_STORE でも指定可)",
+    )
+    p.set_defaults(func=cmd_asset_status)
 
     p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
     p.add_argument("--host", default="127.0.0.1", help="LANに公開するなら 0.0.0.0")
