@@ -40,7 +40,11 @@ def manifest_entry(url: str, store: Path | None = None) -> dict | None:
     if root is None:
         return None
     entry = load_manifest(root).get("assets", {}).get(url)
-    return entry if isinstance(entry, dict) else None
+    # Entries retained only as synchronization history are outside the active
+    # manifest scope and must keep using the ordinary runtime fallback.
+    if not isinstance(entry, dict) or "orphaned_at" in entry:
+        return None
+    return entry
 
 
 def local_asset(url: str, store: Path | None = None) -> tuple[bool, Path | None]:

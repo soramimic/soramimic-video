@@ -10,7 +10,7 @@ Group=soramimic-video
 WorkingDirectory=/opt/soramimic-video-dev/current
 Environment=PYTHONUNBUFFERED=1
 Environment=SORAMIMIC_VIDEO_ASSET_STORE=/var/lib/soramimic-video-assets
-ExecStart=/opt/soramimic-video-dev/current/.venv/bin/soramimic-video sync-assets --revalidate
+ExecStart=/opt/soramimic-video-dev/current/.venv/bin/soramimic-video sync-assets --revalidate --priority-wordlist stations --priority-wordlist nations --priority-wordlist baseball --priority-wordlist scientist --priority-wordlist gimukyoiku
 TimeoutStartSec=infinity
 StateDirectory=soramimic-video-assets
 StateDirectoryMode=0750
