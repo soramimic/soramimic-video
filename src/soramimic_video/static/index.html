@@ -591,7 +591,6 @@
        設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
   <div id="turnstile-wrap" hidden>
     <div id="turnstile-widget"></div>
-    <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
   </div>
   <!-- 曲が未セットのまま枠をタップされたときの案内(投入はしない) -->
   <p class="error" id="submit-msg" hidden></p>
@@ -1294,13 +1293,12 @@ function setupTurnstile(siteKey) {
   $("turnstile-wrap").hidden = false;
   // explicit renderにして、スクリプト読み込み完了後に自分で描画する。
   // appearance: interaction-only で普段は何も表示せず、Cloudflareが人間の
-  // 操作を求めるときだけウィジェット(と説明文)を出す。
+  // 操作を求めるときだけウィジェットを出す。
   window.onTurnstileLoad = () => {
     turnstileWidget = window.turnstile.render("#turnstile-widget", {
       sitekey: siteKey,
       theme: "auto",
       appearance: "interaction-only",
-      "before-interactive-callback": () => { $("turnstile-hint").hidden = false; },
       callback: (token) => { turnstileLastToken = token || ""; },
       "expired-callback": () => { turnstileLastToken = ""; },
       "error-callback": () => { turnstileLastToken = ""; },
