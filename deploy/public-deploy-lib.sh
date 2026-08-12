@@ -111,9 +111,8 @@ smoke_public_surface() {
   curl -fsS --max-time 5 "$base_url/" >"$tmp_dir/index.html" || \
     { rm -rf -- "$tmp_dir"; return 1; }
   for asset in \
-    /logo-soramimic-symbol-v2.png \
-    /logo-soramimic-wordmark-v1.png \
-    /ogp-soramimic-v3.png; do
+    /logo-soramimic-video-v1.png \
+    /ogp-soramimic-v4.png; do
     grep -F "$asset" "$tmp_dir/index.html" >/dev/null || \
       { rm -rf -- "$tmp_dir"; return 1; }
     tmp_asset="$tmp_dir/$(basename "$asset")"
