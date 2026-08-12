@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from soramimic_video.align import align_lines
 from soramimic_video.xfparse import analyze_midi, normalize_kana
 
 SAMPLE_DIR = Path(__file__).parent.parent / "src" / "soramimic_video" / "static" / "sample"
@@ -41,6 +42,38 @@ FULL_JAPANESE_SAMPLE_LINES = {
     "nanatsunoko": 6,
     "momiji": 8,
     "shabondama": 10,
+}
+ENGLISH_SAMPLE_LINES = {
+    "amazinggrace": [
+        "Amazing grace! How sweet the sound",
+        "That saved a wretch like me!",
+        "I once was lost, but now am found,",
+        "Was blind, but now I see.",
+    ],
+    "twinkle": [
+        "Twinkle, twinkle, little star,",
+        "How I wonder what you are!",
+        "Up above the world so high,",
+        "Like a diamond in the sky.",
+        "Twinkle, twinkle, little star,",
+        "How I wonder what you are!",
+    ],
+}
+ENGLISH_SAMPLE_KANA = {
+    "amazinggrace": [
+        "アメイジンググレイスハウスイートザサウンド",
+        "ザットセイブドアアレッチライクミー",
+        "アイワンスワズロストバットナウアムフアウンド",
+        "ワズブラインドバットナウアイシー",
+    ],
+    "twinkle": [
+        "ツインクルツインクルリトルスター",
+        "ハウアイワンダーワットユーアー",
+        "アップアバブザワールドソーハイ",
+        "ライクアダイヤモンドインザスカイ",
+        "ツインクルツインクルリトルスター",
+        "ハウアイワンダーワットユーアー",
+    ],
 }
 
 
@@ -71,6 +104,21 @@ def test_japanese_samples_include_all_verses():
     for sample_id, expected_lines in FULL_JAPANESE_SAMPLE_LINES.items():
         lyrics = (SAMPLE_DIR / f"{sample_id}_lyrics.txt").read_text(encoding="utf-8")
         assert len([line for line in lyrics.splitlines() if line.strip()]) == expected_lines
+
+
+@pytest.mark.parametrize(("sample_id", "expected_lines"), ENGLISH_SAMPLE_LINES.items())
+def test_english_samples_keep_surface_and_reading(sample_id: str, expected_lines: list[str]):
+    """XF表記と字幕は英語、歌唱に使う読みはカタカナに分ける。"""
+    project = analyze_midi(SAMPLE_DIR / f"{sample_id}.mid")
+    assert [line.xf_surface for line in project.lines] == expected_lines
+    assert [line.xf_kana for line in project.lines] == ENGLISH_SAMPLE_KANA[sample_id]
+
+    subtitle_lines = (SAMPLE_DIR / f"{sample_id}_lyrics.txt").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert subtitle_lines == expected_lines
+    align_lines(project, subtitle_lines)
+    assert [line.original_text for line in project.lines] == expected_lines
 
 
 @pytest.mark.parametrize("sample_id", SAMPLE_IDS)
