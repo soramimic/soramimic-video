@@ -693,6 +693,11 @@ def test_app_credit_text_appends_synth_credit():
     assert app_credit_text(
         credit_notice="  音楽：魔王魂  ", original_song="  シャイニングスター  "
     ) == f"{APP_CREDIT} / Original: シャイニングスター / 音楽：魔王魂"
+    assert app_credit_text(
+        original_song="初音ミクの消失",
+        original_display_credit="cosMo＠暴走P",
+        original_credit="作詞・作曲・編曲: cosMo＠暴走P",
+    ) == f"{APP_CREDIT} / Original: 初音ミクの消失 / cosMo＠暴走P"
 
 
 def test_idle_frame_data_carries_app_credit(tmp_path: Path):
@@ -1791,7 +1796,7 @@ def test_build_section_cues_snaps_pages_to_beats(tmp_path: Path):
 
 def test_build_section_cues_appends_credits_page(tmp_path: Path):
     from soramimic_video.layout import load_layout, render_section_frame
-    from soramimic_video.video import build_section_cues, section_frame_data
+    from soramimic_video.video import app_credit_text, build_section_cues, section_frame_data
 
     project = _endroll_project(tmp_path)
     layout = load_layout("default")
@@ -1805,7 +1810,8 @@ def test_build_section_cues_appends_credits_page(tmp_path: Path):
     assert got[-1].start == got[-2].end and got[-1].end == 30.0
     expected = render_section_frame(
         layout,
-        section_frame_data(project, section="credits", duration=20.0,
+        section_frame_data(project, app_credit_text("VOICEVOX:四国めたん"),
+                           section="credits", duration=20.0,
                            synth_credit="VOICEVOX:四国めたん",
                            original_song="赤とんぼ",
                            original_credit="作詞: 三木露風 / 作曲: 山田耕筰",
@@ -1813,6 +1819,45 @@ def test_build_section_cues_appends_credits_page(tmp_path: Path):
         320, 180, work / "frames", "credits",
     )
     assert got[-1].frame == expected
+
+
+def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
+    from soramimic_video.layout import _element_texts, load_layout
+    from soramimic_video.video import section_frame_data
+
+    project = _endroll_project(tmp_path)
+    elements, _raw, tag = load_layout("default").section_elements("credits")
+    assert tag == "credits"
+    data = section_frame_data(
+        project,
+        section="credits",
+        original_song="  シャイニングスター  ",
+        original_credit="作詞・作曲: 森田交一 / 歌: 詩歩 / MIDI: 鶴",
+        credit_notice="  音楽：魔王魂  ",
+    )
+    texts = _element_texts(elements, data)
+    assert "シャイニングスター / 音楽：魔王魂" in texts
+    assert not any("森田交一" in text or "MIDI" in text for text in texts)
+    compact = section_frame_data(
+        project,
+        section="credits",
+        original_song="初音ミクの消失",
+        original_display_credit="cosMo＠暴走P",
+        original_credit="作詞・作曲・編曲: cosMo＠暴走P",
+    )
+    assert compact["original_song_credit"] == "初音ミクの消失 / cosMo＠暴走P"
+
+
+def test_original_song_credit_works_without_notice(tmp_path: Path):
+    from soramimic_video.video import section_frame_data
+
+    data = section_frame_data(
+        _endroll_project(tmp_path),
+        section="credits",
+        original_song="Lemon",
+        original_credit="作詞・作曲・歌: 米津玄師",
+    )
+    assert data["original_song_credit"] == "Lemon / 作詞・作曲・歌: 米津玄師"
 
 
 def test_build_section_cues_without_credits_extends_last_page(tmp_path: Path):
