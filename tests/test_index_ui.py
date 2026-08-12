@@ -208,19 +208,17 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
-def test_turnstile_interaction_has_overlay_and_inline_trial_uis():
-    """追加操作が必要なときは見落とさない案を2通り比較できる。"""
+def test_turnstile_interaction_scrolls_to_inline_prompt():
+    """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()
     script = _script()
     assert 'id="turnstile-title">合成前に確認してください' in markup
-    assert 'id="turnstile-cancel"' in markup
-    assert 'id="turnstile-inline-anchor"' in markup
-    assert 'get("turnstile-ui") === "inline"' in script
+    assert 'class="turnstile-copy" role="status" aria-live="polite"' in markup
+    assert 'id="turnstile-cancel"' not in markup
+    assert 'turnstile-ui' not in script
+    assert 'turnstile-overlay' not in markup
     prompt = _function_body(script, "function showTurnstilePrompt()")
-    assert 'panel.setAttribute("role", turnstileUi === "overlay" ? "dialog" : "region")' in prompt
     assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
-    assert '$("app").inert = true' in prompt
-    assert "turnstileReturnFocus = document.activeElement" in prompt
 
 
 def test_submit_never_posts_without_a_turnstile_token():
@@ -236,15 +234,15 @@ def test_submit_never_posts_without_a_turnstile_token():
         "if (samplePending) await samplePending;"
     )
     ensure = _function_body(_script(), "async function ensureTurnstileToken(")
-    assert "!turnstileWaitCancelled && !turnstileFailed && !!turnstileToken()" in ensure
-    assert "window.turnstile.reset(turnstileWidget)" in ensure
-    assert "if (cancelled) restoreTurnstileFocus();" in submit
-    assert 'turnstileReturnFocus = previewSec === 0 ? $("builder-play")' in submit
+    assert "!turnstileFailed && !!turnstileToken()" in ensure
+    assert "rebuildTurnstileWidget()" in ensure
+    assert "if (turnstileWidget === null && window.turnstile) return false;" in ensure
+    assert "timeoutMs = 120000" in ensure
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_turnstile_cancel_wins_success_race_and_errors_reset_widget():
-    """cancel直後のcallbackで送信せず、失敗したwidgetは次回用にresetする。"""
+def test_turnstile_errors_rebuild_widget():
+    """失敗・2分timeoutのwidgetは世代ごと破棄し、古いcallbackを無効化する。"""
     ensure = _function_body(_script(), "async function ensureTurnstileToken(") + "\n}"
     node = textwrap.dedent(
         f"""
@@ -254,38 +252,47 @@ def test_turnstile_cancel_wins_success_race_and_errors_reset_widget():
         let turnstileWidget = {{}};
         let turnstileNeedsInteraction = false;
         let turnstileWaiting = false;
-        let turnstileWaitCancelled = false;
         let turnstileFailed = false;
-        let resets = 0;
-        let waitMode = "cancel";
-        let window = {{turnstile: {{execute() {{}}, reset() {{ resets += 1; }} }}}};
+        let rebuilds = 0;
+        let now = 0;
+        let waitMode = "error";
+        let window = {{turnstile: {{execute() {{}} }}}};
         function turnstileToken() {{ return token; }}
         function showTurnstilePrompt() {{}}
         function hideTurnstilePrompt() {{}}
+        function rebuildTurnstileWidget() {{ rebuilds += 1; token = ""; }}
+        Date.now = () => now;
         global.setTimeout = (fn) => {{
-          if (waitMode === "cancel") {{
-            turnstileWaitCancelled = true;
-            token = "late-success";
-          }} else {{
-            turnstileFailed = true;
-          }}
+          if (waitMode === "error") turnstileFailed = true;
+          else now += 200;
           fn();
           return 1;
         }};
         {ensure}
         (async () => {{
-          assert.equal(await ensureTurnstileToken(100), false,
-            "an explicit cancel must beat a simultaneous success callback");
-          assert.equal(resets, 0, "cancel should preserve the challenge for an immediate retry");
-          token = "";
-          turnstileWaitCancelled = false;
-          waitMode = "error";
           assert.equal(await ensureTurnstileToken(100), false);
-          assert.equal(resets, 1, "an errored widget must reset before the next attempt");
+          assert.equal(rebuilds, 1, "an errored widget must rebuild before the next attempt");
+          waitMode = "timeout";
+          now = 0;
+          assert.equal(await ensureTurnstileToken(100), false);
+          assert.equal(rebuilds, 2, "a timed-out widget must also rebuild before retry");
         }})().catch((err) => {{ console.error(err); process.exit(1); }});
         """
     )
     subprocess.run(["node", "-e", node], check=True)
+
+
+def test_turnstile_old_widget_callbacks_are_ignored_after_rebuild():
+    """破棄済みwidgetの遅延successが次回投入用tokenとして復活しない。"""
+    script = _script()
+    render = _function_body(script, "function renderTurnstileWidget()")
+    rebuild = _function_body(script, "function rebuildTurnstileWidget()")
+    assert "const epoch = ++turnstileEpoch;" in render
+    assert "if (epoch !== turnstileEpoch) return;" in render
+    assert "turnstileEpoch += 1;" in rebuild
+    assert "window.turnstile.remove(oldWidget)" in rebuild
+    assert '$("turnstile-widget").replaceChildren();' in rebuild
+    assert 'console.warn("Turnstileの再描画に失敗しました", err);' in rebuild
 
 
 def test_random_button_always_changes_both_choices():
