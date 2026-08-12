@@ -115,6 +115,48 @@ sudo SORAMIMIC_ROLLBACK_USER=<old-service-user> \
 
 本番適用前にstaging環境で、activate失敗時の自動復帰と手動rollbackの両方を演習します。
 
+## 共有画像・クレジットasset store
+
+組み込み単語リストの全画像とCommonsクレジットは、release外の
+`/var/lib/soramimic-video-assets`へ事前同期できます。API 3環境は同じmanifestを
+read-onlyで参照するため、同期成功後の動画生成では組み込み画像について外部通信しません。
+カスタム単語リストのURLはmanifestに無いので、従来どおりジョブ共有キャッシュへ取得します。
+
+初回同期と確認:
+
+```sh
+sudo install -o soramimic-video -g soramimic-video -m 0750 -d /var/lib/soramimic-video-assets
+sudo -u soramimic-video /opt/soramimic-video-dev/current/.venv/bin/soramimic-video \
+  sync-assets --wordlists-dir /opt/soramimic-video-dev/current/external/soramimic-wordlists \
+  --asset-store /var/lib/soramimic-video-assets
+sudo -u soramimic-video /opt/soramimic-video-dev/current/.venv/bin/soramimic-video \
+  asset-status --asset-store /var/lib/soramimic-video-assets
+```
+
+`--dry-run`は新規・更新候補・削除候補だけを表示し、`--revalidate`は既存URLを
+ETag/Last-Modifiedで再検証します。失敗時は既存のlast-good画像を維持し、単語リストから
+消えたURLも`orphaned_at`を付けるだけで削除しません。manifestは全同期完了後にatomicに
+切り替わり、並行同期はlockで拒否されます。失敗を含む同期結果は
+`manifest.pending.json`へ保存して次回再開し、正常な既存`manifest.json`は維持します。
+初回同期が不完全ならactive manifestは作りません。`asset-status`はpendingの件数と失敗状態も
+表示し、pending・未取得画像・不明クレジットがあれば終了コード1です。
+`--priority-wordlist NAME`を複数指定すると、そのリスト群だけを先に完全同期してactive化し、
+続けて残りの全リストを同期します。後半の同期中・失敗時も優先リストのactive manifestは
+維持されます。systemd unitは公開カタログの5リストをこの方式で先行処理します。
+`--download-workers`は1または2を指定でき、月次の長時間同期はCommonsの継続的な429を
+避けるため1並列にしています。
+
+定期同期には`deploy/systemd/soramimic-video-assets-sync.{service,timer}`を
+`/etc/systemd/system/`へ設置し、`systemctl enable --now soramimic-video-assets-sync.timer`
+を実行します。同期unitだけがstoreへ書き込み、dev/preview/public unitには同じ
+`SORAMIMIC_VIDEO_ASSET_STORE`と`ReadOnlyPaths`を設定します。同期元をpreview/publicへ
+切り替えず、全組み込みCSVを含むdevの固定releaseを使うことで3環境の共有内容を一意にします。
+`/etc/soramimic-video/{dev,preview,public}.env`にはそれぞれ次の同じ値を追加します。
+
+```sh
+SORAMIMIC_VIDEO_ASSET_STORE=/var/lib/soramimic-video-assets
+```
+
 ## dev・preview常設環境
 
 本番とは別に、同じホストで次を常設します。どちらもloopbackだけで待ち受け、外部入口は
