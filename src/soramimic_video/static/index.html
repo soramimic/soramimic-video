@@ -1710,8 +1710,9 @@ async function poll(id, seq = pollSeq) {
 
 // ---- 完成した動画を保存・共有する ----
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
-// 誤判定しやすい。まずWeb Share APIの有無を見て、完成した実動画を先に取得して
-// ファイル共有の可否を確定する。OS判定は案内文を分かりやすくするためだけに使う。
+// 誤判定しやすい。iPadのデスクトップ表示も含めてモバイルOSかを判定したうえで、
+// Web Share APIの有無を見る。PCでは共有シートに保存先が出ないことがあるため、
+// Web Share APIがあっても分かりやすい直接ダウンロードを優先する。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #Soramimic\n" + location.origin;
 
@@ -1719,7 +1720,7 @@ function mobilePlatform() {
   const platform = (navigator.userAgentData && navigator.userAgentData.platform)
     || navigator.platform || "";
   const ua = navigator.userAgent || "";
-  if (/iPhone|iPad|iPod/i.test(ua)
+  if (/iPhone|iPad|iPod/i.test(ua) || /iPhone|iPad|iPod/i.test(platform)
       || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return "ios";
   if (/Android/i.test(ua) || /Android/i.test(platform)) return "android";
   return "other";
@@ -1733,10 +1734,14 @@ function supportsVideoFileShare() {
     && typeof URL.revokeObjectURL === "function";
 }
 
-const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
+function shouldUseVideoFileShare() {
+  return mobilePlatform() !== "other" && supportsVideoFileShare();
+}
+
+const FILE_SHARE_SUPPORTED = shouldUseVideoFileShare();
 
 function shareHint(shareable) {
-  if (!shareable) return "動画ファイルをダウンロードします。";
+  if (!shareable) return "ボタンを押すと、動画ファイルをダウンロードします。";
   if (mobilePlatform() === "ios") {
     return "iPhone・iPadの共有メニューから「ビデオを保存」「ファイルに保存」、または共有先を選べます。";
   }
@@ -1749,7 +1754,7 @@ function shareHint(shareable) {
 const SHARE_HTML =
   `<p class="share-row">` +
   `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
-  `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画を保存"}</button>` +
+  `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画をダウンロード"}</button>` +
   `</p>` +
   `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
     ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
@@ -1814,7 +1819,7 @@ function setShareButtonMode(shareable) {
   const hint = $("share-hint");
   if (!saveBtn || !hint) return;
   saveBtn.disabled = false;
-  saveBtn.textContent = shareable ? "動画を保存・共有" : "動画を保存";
+  saveBtn.textContent = shareable ? "動画を保存・共有" : "動画をダウンロード";
   hint.textContent = shareHint(shareable);
 }
 
@@ -1889,17 +1894,17 @@ function bindShare(videoUrl) {
       if (!(e && e.name === "AbortError")) {
         preparedVideoShare = { videoUrl, file: null, shareable: false };
         setShareButtonMode(false);
-        showBuilderMsg("共有メニューを開けませんでした。「動画を保存」をお使いください。");
+        showBuilderMsg("共有メニューを開けませんでした。「動画をダウンロード」をお使いください。");
       }
       return;
     }
     Promise.resolve(sharing).catch((e) => {
       // キャンセルや共有エラーを勝手なダウンロードに置き換えない。共有が
-      // 拒否された環境では、次の明示操作用にボタンを「動画を保存」へ変える。
+      // 拒否された環境では、次の明示操作用にボタンをダウンロードへ変える。
       if (!(e && e.name === "AbortError")) {
         preparedVideoShare = { videoUrl, file: null, shareable: false };
         setShareButtonMode(false);
-        showBuilderMsg("共有メニューを開けませんでした。「動画を保存」をお使いください。");
+        showBuilderMsg("共有メニューを開けませんでした。「動画をダウンロード」をお使いください。");
       }
     });
   });

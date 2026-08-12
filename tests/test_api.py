@@ -1212,13 +1212,17 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
-def test_index_html_has_one_feature_detected_save_share_button():
-    # 完成後の導線は保存・共有ボタン1本。
+def test_index_html_has_one_platform_appropriate_save_share_button():
+    # 完成後の導線はボタン1本。モバイルだけ共有、PCは直接ダウンロードする。
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
     assert 'id="share-save"' in html
-    assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
+    assert "const FILE_SHARE_SUPPORTED = shouldUseVideoFileShare();" in html
+    use_share = html[html.index("function shouldUseVideoFileShare()") :]
+    use_share = use_share[: use_share.index("\n}\n")]
+    assert 'mobilePlatform() !== "other"' in use_share
+    assert "supportsVideoFileShare()" in use_share
     support = html[html.index("function supportsVideoFileShare()") :]
     support = support[: support.index("\n}\n")]
     # iOS系ブラウザはcanShareが無い/誤判定することがある。共有APIとFileが
@@ -1357,13 +1361,15 @@ def test_canva_horizontal_logos_are_public_transparent_pngs(client):
 
 
 def test_index_html_share_hint_matches_platform_capability():
-    """共有可否とOSに合わせて、保存・共有の案内を切り替える。"""
+    """モバイルでは共有、PCでは直接ダウンロードの案内に切り替える。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
+    assert '/iPhone|iPad|iPod/i.test(platform)' in html
     assert 'return "ios";' in html and 'return "android";' in html
     assert '「ビデオを保存」「ファイルに保存」' in html
-    assert "動画ファイルをダウンロードします。" in html
+    assert "ボタンを押すと、動画ファイルをダウンロードします。" in html
+    assert '"動画をダウンロード"' in html
 
 
 def test_index_html_shows_neutrino_configuration_warning():
