@@ -80,6 +80,7 @@ MAX_SONG_SECONDS_ENV = "SORAMIMIC_MAX_SONG_SECONDS"  # 入力MIDIの演奏時間
 JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除するまでの時間(0=無効)
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
 LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
+LAUNCH_CATALOG_ENV = "SORAMIMIC_LAUNCH_CATALOG"  # 環境別の公開選択肢(非追跡可)
 TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
 TURNSTILE_SITE_ENV = "TURNSTILE_SITE_KEY"  # 同・サイトキー(フロントに渡す)
 OPS_TOKEN_ENV = "SORAMIMIC_OPS_TOKEN"
@@ -163,11 +164,18 @@ def is_simple_ui() -> bool:
 
 
 def load_launch_catalog() -> dict[str, Any]:
-    """初回公開で見せる曲・単語リストと固定歌声を読む。"""
+    """初回公開で見せる曲・単語リストと固定歌声を読む。
+
+    ``SORAMIMIC_LAUNCH_CATALOG`` を使うと、権利確認済みだが公開repositoryへ
+    再配布しない素材などを環境ごとに選べる。素材本体と同様、release外の永続pathを
+    指定することを想定している。
+    """
+    override = os.environ.get(LAUNCH_CATALOG_ENV, "").strip()
+    path = Path(override).expanduser() if override else LAUNCH_CATALOG_PATH
     try:
-        data = json.loads(LAUNCH_CATALOG_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"初回公開カタログが読めません: {exc}") from exc
+        raise RuntimeError(f"初回公開カタログが読めません ({path}): {exc}") from exc
     if not isinstance(data, dict):
         raise RuntimeError("初回公開カタログはJSON objectで指定してください")
     return data
