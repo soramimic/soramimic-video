@@ -208,6 +208,86 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
+def test_turnstile_interaction_has_overlay_and_inline_trial_uis():
+    """追加操作が必要なときは見落とさない案を2通り比較できる。"""
+    markup = _markup()
+    script = _script()
+    assert 'id="turnstile-title">合成前に確認してください' in markup
+    assert 'id="turnstile-cancel"' in markup
+    assert 'id="turnstile-inline-anchor"' in markup
+    assert 'get("turnstile-ui") === "inline"' in script
+    prompt = _function_body(script, "function showTurnstilePrompt()")
+    assert 'panel.setAttribute("role", turnstileUi === "overlay" ? "dialog" : "region")' in prompt
+    assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
+    assert '$("app").inert = true' in prompt
+    assert "turnstileReturnFocus = document.activeElement" in prompt
+
+
+def test_submit_never_posts_without_a_turnstile_token():
+    """確認待ちの画面を生成進捗に見せず、失敗時は空tokenをAPIへ送らない。"""
+    submit = _function_body(_script(), "async function submitJob(")
+    verification = 'if (!await ensureTurnstileToken()) {'
+    assert verification in submit
+    assert submit.index(verification) < submit.index("const form = new FormData()")
+    guard = submit[submit.index(verification) : submit.index("const form = new FormData()")]
+    assert "return;" in guard
+    assert "showProgress();" not in guard
+    assert submit.index("if (submitBusy) return;") < submit.index(
+        "if (samplePending) await samplePending;"
+    )
+    ensure = _function_body(_script(), "async function ensureTurnstileToken(")
+    assert "!turnstileWaitCancelled && !turnstileFailed && !!turnstileToken()" in ensure
+    assert "window.turnstile.reset(turnstileWidget)" in ensure
+    assert "if (cancelled) restoreTurnstileFocus();" in submit
+    assert 'turnstileReturnFocus = previewSec === 0 ? $("builder-play")' in submit
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_turnstile_cancel_wins_success_race_and_errors_reset_widget():
+    """cancel直後のcallbackで送信せず、失敗したwidgetは次回用にresetする。"""
+    ensure = _function_body(_script(), "async function ensureTurnstileToken(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let token = "";
+        let turnstileSiteKey = "site";
+        let turnstileWidget = {{}};
+        let turnstileNeedsInteraction = false;
+        let turnstileWaiting = false;
+        let turnstileWaitCancelled = false;
+        let turnstileFailed = false;
+        let resets = 0;
+        let waitMode = "cancel";
+        let window = {{turnstile: {{execute() {{}}, reset() {{ resets += 1; }} }}}};
+        function turnstileToken() {{ return token; }}
+        function showTurnstilePrompt() {{}}
+        function hideTurnstilePrompt() {{}}
+        global.setTimeout = (fn) => {{
+          if (waitMode === "cancel") {{
+            turnstileWaitCancelled = true;
+            token = "late-success";
+          }} else {{
+            turnstileFailed = true;
+          }}
+          fn();
+          return 1;
+        }};
+        {ensure}
+        (async () => {{
+          assert.equal(await ensureTurnstileToken(100), false,
+            "an explicit cancel must beat a simultaneous success callback");
+          assert.equal(resets, 0, "cancel should preserve the challenge for an immediate retry");
+          token = "";
+          turnstileWaitCancelled = false;
+          waitMode = "error";
+          assert.equal(await ensureTurnstileToken(100), false);
+          assert.equal(resets, 1, "an errored widget must reset before the next attempt");
+        }})().catch((err) => {{ console.error(err); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True)
+
+
 def test_random_button_always_changes_both_choices():
     """ランダム抽選は現在の曲と現在の単語リストを同時に選び直す。"""
     body = _function_body(_script(), "function luckyRandomCombo()")
