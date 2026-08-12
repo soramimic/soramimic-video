@@ -185,12 +185,24 @@ def fetch_image_credits_batch(
     images: dict[str, str], *, batch_size: int = 50, cancel_check=None
 ) -> dict[str, dict | None]:
     """Fetch Commons extmetadata in batches; values are explicit ``None`` when unknown."""
+    assets = fetch_commons_assets_batch(
+        images, batch_size=batch_size, cancel_check=cancel_check
+    )
+    return {url: value["credit"] for url, value in assets.items()}
+
+
+def fetch_commons_assets_batch(
+    images: dict[str, str], *, batch_size: int = 50, cancel_check=None
+) -> dict[str, dict]:
+    """Fetch Commons credit and direct 1200px image URLs in the same batched query."""
     titled = {
         url: title
         for url, page in images.items()
         if (title := commons_file_title(url, page)) is not None
     }
-    result: dict[str, dict | None] = {url: None for url in titled}
+    result: dict[str, dict] = {
+        url: {"credit": None, "download_url": None} for url in titled
+    }
     items = list(titled.items())
     for start in range(0, len(items), batch_size):
         if cancel_check is not None:
@@ -203,7 +215,8 @@ def fetch_image_credits_batch(
                     "action": "query",
                     "titles": "|".join(title for _, title in chunk),
                     "prop": "imageinfo",
-                    "iiprop": "extmetadata",
+                    "iiprop": "extmetadata|url",
+                    "iiurlwidth": "1200",
                     "redirects": "1",
                     "format": "json",
                     "formatversion": "2",
@@ -232,9 +245,14 @@ def fetch_image_credits_batch(
                 key = aliases.get(key, key)
             page = by_title.get(key)
             try:
-                meta = page["imageinfo"][0]["extmetadata"] if page else None
+                imageinfo = page["imageinfo"][0] if page else None
             except (KeyError, IndexError, TypeError):
-                meta = None
+                imageinfo = None
+            meta = imageinfo.get("extmetadata") if isinstance(imageinfo, dict) else None
             if isinstance(meta, dict):
-                result[url] = credit_from_extmetadata(meta)
+                result[url]["credit"] = credit_from_extmetadata(meta)
+            if isinstance(imageinfo, dict):
+                direct = imageinfo.get("thumburl") or imageinfo.get("url")
+                if isinstance(direct, str) and direct.startswith("https://"):
+                    result[url]["download_url"] = direct
     return result

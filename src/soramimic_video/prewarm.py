@@ -27,8 +27,8 @@ from . import runproc
 from .asset_store import MANIFEST_NAME, PENDING_MANIFEST_NAME, load_manifest
 from .image_credit import (
     commons_file_title,
+    fetch_commons_assets_batch,
     fetch_image_credit,
-    fetch_image_credits_batch,
 )
 from .video import download_image, looks_like_svg, svg_to_png
 
@@ -251,6 +251,22 @@ def sync_asset_store(
         staging = store / ".download-cache"
         new = updated = unchanged = failed = credit_failed = 0
         commons_pending: dict[str, str] = {}
+        commons_requests: dict[str, str] = {}
+        for url, row in rows.items():
+            previous = assets.get(url)
+            skip_revalidate = url in skip_revalidate_urls
+            current = previous and previous.get("status") == "available"
+            needs_image = not current or (revalidate and not skip_revalidate)
+            credit = previous.get("credit", {}) if previous else {}
+            needs_credit = (
+                revalidate and not skip_revalidate
+            ) or credit.get("status") not in {"known", "not_applicable"}
+            page = str(row.get("image_page") or "")
+            if (needs_image or needs_credit) and commons_file_title(url, page):
+                commons_requests[url] = page
+        commons_assets = fetch_commons_assets_batch(
+            commons_requests, cancel_check=runproc.raise_if_cancelled
+        ) if commons_requests else {}
         # Network fetches are independent by URL and dominate cold-sync time. Fetch at
         # most two concurrently (four caused Commons 429s in prior measurements), then
         # validate and publish content sequentially to keep the store mutation atomic.
@@ -274,6 +290,7 @@ def sync_asset_store(
                     staging,
                     revalidate=revalidate,
                     use_asset_store=False,
+                    fetch_url_override=commons_assets.get(url, {}).get("download_url"),
                 )
 
             for index, (url, row) in enumerate(rows.items(), 1):
@@ -362,9 +379,10 @@ def sync_asset_store(
             executor.shutdown(wait=True, cancel_futures=True)
 
         if commons_pending:
-            credit_results = fetch_image_credits_batch(
-                commons_pending, cancel_check=runproc.raise_if_cancelled
-            )
+            credit_results = {
+                url: commons_assets.get(url, {}).get("credit")
+                for url in commons_pending
+            }
             for url, info in credit_results.items():
                 runproc.raise_if_cancelled()
                 previous_credit = assets[url].get("credit", {})
