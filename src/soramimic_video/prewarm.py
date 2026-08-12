@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -217,6 +218,7 @@ def sync_asset_store(
     dry_run: bool = False,
     max_bytes: int = MAX_ASSET_BYTES,
     skip_revalidate_urls: set[str] | None = None,
+    download_workers: int = 2,
 ) -> dict[str, int]:
     """Synchronize all built-in wordlist assets into an atomic persistent manifest."""
     rows = _collect_rows(csv_paths)
@@ -249,85 +251,115 @@ def sync_asset_store(
         staging = store / ".download-cache"
         new = updated = unchanged = failed = credit_failed = 0
         commons_pending: dict[str, str] = {}
-        for index, (url, row) in enumerate(rows.items(), 1):
-            runproc.raise_if_cancelled()
-            previous = assets.get(url)
-            skip_revalidate = url in skip_revalidate_urls
-            if previous and previous.get("status") == "available" and (
-                not revalidate or skip_revalidate
-            ):
-                unchanged += 1
-            else:
-                try:
-                    local = _local_wordlist_image(url, wordlists_dir)
-                    before_meta = _metadata_for(url, staging)
-                    image: Path | None
-                    if local is not None:
-                        image = _prepare_local_image(local, staging)
-                        meta = {}
-                    else:
-                        image = download_image(
-                            url, staging, revalidate=revalidate, use_asset_store=False
-                        )
-                        meta = _metadata_for(url, staging)
-                        if (
-                            revalidate
-                            and previous is not None
-                            and meta.get("checked_at") == before_meta.get("checked_at")
-                        ):
-                            raise ValueError("画像の更新確認に失敗しました(last-goodを維持)")
-                    if image is None:
-                        raise ValueError("画像を取得できません")
-                    _validate_image(image, max_bytes)
-                    relative, digest = _store_content(image, store)
-                    entry = {
-                        "source_url": url,
-                        "local_path": relative,
-                        "sha256": digest,
-                        "etag": meta.get("etag", ""),
-                        "last_modified": meta.get("last_modified", ""),
-                        "checked_at": _now(),
-                        "status": "available",
-                    }
-                    if previous and "credit" in previous:
-                        entry["credit"] = previous["credit"]
-                    assets[url] = entry
-                    if previous:
-                        updated += 1
-                    else:
-                        new += 1
-                except (OSError, ValueError) as e:
-                    logger.warning("[%d/%d] asset取得失敗: %s (%s)", index, len(rows), url, e)
-                    failed += 1
-                    if previous and previous.get("status") == "available":
-                        previous["last_error"] = str(e)
-                        previous["last_error_at"] = _now()
-                    else:
-                        assets[url] = {
-                            "source_url": url, "status": "failed", "checked_at": _now(),
-                            "last_error": str(e),
-                        }
+        # Network fetches are independent by URL and dominate cold-sync time. Fetch at
+        # most two concurrently (four caused Commons 429s in prior measurements), then
+        # validate and publish content sequentially to keep the store mutation atomic.
+        workers = max(1, download_workers)
+        executor = ThreadPoolExecutor(max_workers=workers)
+        futures: dict[str, Future[Path | None]] = {}
+        before_metadata: dict[str, dict] = {}
+        try:
+            for url in rows:
+                previous = assets.get(url)
+                skip_revalidate = url in skip_revalidate_urls
+                current = previous and previous.get("status") == "available"
+                if current and (not revalidate or skip_revalidate):
+                    continue
+                if _local_wordlist_image(url, wordlists_dir) is not None:
+                    continue
+                before_metadata[url] = _metadata_for(url, staging)
+                futures[url] = executor.submit(
+                    download_image,
+                    url,
+                    staging,
+                    revalidate=revalidate,
+                    use_asset_store=False,
+                )
 
-            explicit = str(row.get("image_credit") or "").strip()
-            if explicit:
-                assets[url]["credit"] = {
-                    "status": "known", "artist": "", "license": "",
-                    "attribution_required": True, "credit_text": explicit,
-                }
-            elif commons_file_title(url, str(row.get("image_page") or "")):
-                if (
-                    (revalidate and not skip_revalidate)
-                    or "credit" not in assets[url]
-                    or assets[url]["credit"].get("status") == "unknown"
+            for index, (url, row) in enumerate(rows.items(), 1):
+                runproc.raise_if_cancelled()
+                previous = assets.get(url)
+                skip_revalidate = url in skip_revalidate_urls
+                if previous and previous.get("status") == "available" and (
+                    not revalidate or skip_revalidate
                 ):
-                    commons_pending[url] = str(row.get("image_page") or "")
-            elif "credit" not in assets[url]:
-                # Commons metadata is not applicable. This is distinct from a Commons
-                # lookup failure (unknown), and matches the legacy non-Commons behavior.
-                assets[url]["credit"] = {
-                    "status": "not_applicable", "attribution_required": False,
-                    "credit_text": "",
-                }
+                    unchanged += 1
+                else:
+                    try:
+                        local = _local_wordlist_image(url, wordlists_dir)
+                        image: Path | None
+                        if local is not None:
+                            image = _prepare_local_image(local, staging)
+                            meta = {}
+                        else:
+                            image = futures[url].result()
+                            meta = _metadata_for(url, staging)
+                            if (
+                                revalidate
+                                and previous is not None
+                                and meta.get("checked_at")
+                                == before_metadata[url].get("checked_at")
+                            ):
+                                raise ValueError(
+                                    "画像の更新確認に失敗しました(last-goodを維持)"
+                                )
+                        if image is None:
+                            raise ValueError("画像を取得できません")
+                        _validate_image(image, max_bytes)
+                        relative, digest = _store_content(image, store)
+                        entry = {
+                            "source_url": url,
+                            "local_path": relative,
+                            "sha256": digest,
+                            "etag": meta.get("etag", ""),
+                            "last_modified": meta.get("last_modified", ""),
+                            "checked_at": _now(),
+                            "status": "available",
+                        }
+                        if previous and "credit" in previous:
+                            entry["credit"] = previous["credit"]
+                        assets[url] = entry
+                        if previous:
+                            updated += 1
+                        else:
+                            new += 1
+                    except (OSError, ValueError) as e:
+                        logger.warning(
+                            "[%d/%d] asset取得失敗: %s (%s)",
+                            index, len(rows), url, e,
+                        )
+                        failed += 1
+                        if previous and previous.get("status") == "available":
+                            previous["last_error"] = str(e)
+                            previous["last_error_at"] = _now()
+                        else:
+                            assets[url] = {
+                                "source_url": url, "status": "failed",
+                                "checked_at": _now(), "last_error": str(e),
+                            }
+
+                explicit = str(row.get("image_credit") or "").strip()
+                if explicit:
+                    assets[url]["credit"] = {
+                        "status": "known", "artist": "", "license": "",
+                        "attribution_required": True, "credit_text": explicit,
+                    }
+                elif commons_file_title(url, str(row.get("image_page") or "")):
+                    if (
+                        (revalidate and not skip_revalidate)
+                        or "credit" not in assets[url]
+                        or assets[url]["credit"].get("status") == "unknown"
+                    ):
+                        commons_pending[url] = str(row.get("image_page") or "")
+                elif "credit" not in assets[url]:
+                    # Commons metadata is not applicable. This is distinct from a Commons
+                    # lookup failure (unknown), and matches the legacy non-Commons behavior.
+                    assets[url]["credit"] = {
+                        "status": "not_applicable", "attribution_required": False,
+                        "credit_text": "",
+                    }
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
 
         if commons_pending:
             credit_results = fetch_image_credits_batch(
