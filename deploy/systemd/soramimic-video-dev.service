@@ -22,6 +22,7 @@ UMask=0077
 StateDirectory=soramimic-video-dev/work
 StateDirectoryMode=0700
 ProtectSystem=strict
+ReadOnlyPaths=/var/lib/soramimic-video-assets
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

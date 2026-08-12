@@ -348,12 +348,21 @@ def cached_image(url: str, cache_dir: Path) -> Path | None:
     キーは download_image と同じ URL のsha1先頭16桁。
     キャッシュがSVGだったときだけ、その場でPNGへ焼き直して返す(通信はしない)。
     """
+    from .asset_store import local_asset
+
+    managed, asset = local_asset(url)
+    if managed:
+        return _rasterized(asset) if asset is not None else None
     raw = _cached_raw(url, cache_dir)
     return _rasterized(raw) if raw is not None else None
 
 
 def download_image(
-    url: str, cache_dir: Path, *, revalidate: bool = False
+    url: str,
+    cache_dir: Path,
+    *,
+    revalidate: bool = False,
+    use_asset_store: bool = True,
 ) -> Path | None:
     """画像を取得し、同じURLは一定期間ごとにHTTP validatorsで更新確認する。
 
@@ -362,6 +371,12 @@ def download_image(
     validatorが無い配信元でも内容hashが同じなら書き換えないため、行や説明だけが
     変わった単語リストで画像キャッシュを削除する必要はない。
     """
+    from .asset_store import local_asset
+
+    if use_asset_store:
+        managed, asset = local_asset(url)
+        if managed:
+            return _rasterized(asset) if asset is not None else None
     cache_dir.mkdir(parents=True, exist_ok=True)
     raw = _cached_raw(url, cache_dir)
     # ローカルパス / file:// はコピーで取り込む(生成・ローカル単語リストの画像用)
