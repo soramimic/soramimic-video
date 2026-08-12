@@ -678,10 +678,18 @@ def test_app_credit_text_appends_synth_credit():
         "VOICEVOX:四国めたん",
         "作詞・作曲: 作者",
         "権利者指定表記",
+        original_song="権利曲",
     ) == (
         f"{APP_CREDIT} / VOICEVOX:四国めたん / "
-        "Original: 作詞・作曲: 作者 / 権利者指定表記"
+        "Original: 権利曲 / 権利者指定表記"
     )
+    # 著作者等の詳細はエンドロールへ出し、常時表示を長文化させない。
+    assert "作者" not in app_credit_text(
+        "", "作詞・作曲: 作者", "", original_song="権利曲"
+    )
+    assert app_credit_text(
+        credit_notice="  音楽：魔王魂  ", original_song="  シャイニングスター  "
+    ) == f"{APP_CREDIT} / Original: シャイニングスター / 音楽：魔王魂"
 
 
 def test_idle_frame_data_carries_app_credit(tmp_path: Path):
