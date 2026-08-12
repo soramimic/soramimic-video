@@ -319,6 +319,64 @@ def test_random_button_is_disabled_until_both_choices_can_change():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_desktop_video_button_downloads_directly_without_opening_share_sheet():
+    """MacなどPCではWeb Share APIがあっても、ボタン1回で直接保存する。"""
+    script = _script()
+    share = script[script.index("const SHARE_TEXT =") :]
+    share = share[: share.index("// ジョブを投入できない状態か")]
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let elements = {{}};
+        let downloads = 0;
+        let shareCalls = 0;
+        let fetchCalls = 0;
+        const navigator = {{
+          platform: "MacIntel", userAgent: "Chrome", maxTouchPoints: 0,
+          share() {{ shareCalls += 1; }}
+        }};
+        class File {{}}
+        const location = {{ origin: "https://video.example" }};
+        const URL = {{ createObjectURL() {{}}, revokeObjectURL() {{}} }};
+        const $ = (id) => elements[id] || null;
+        const qs = (value) => value;
+        const fetch = async () => {{ fetchCalls += 1; }};
+        const document = {{
+          body: {{ appendChild() {{}} }},
+          createElement() {{
+            return {{ click() {{ downloads += 1; }}, remove() {{}} }};
+          }}
+        }};
+        const showBuilderMsg = () => {{}};
+        {share}
+
+        function button() {{
+          return {{
+            disabled: false, textContent: "", handlers: {{}},
+            addEventListener(type, fn) {{ this.handlers[type] = fn; }}
+          }};
+        }}
+
+        (async () => {{
+          assert.equal(supportsVideoFileShare(), true,
+            "the desktop fixture intentionally supports Web Share");
+          assert.equal(FILE_SHARE_SUPPORTED, false,
+            "desktop must still choose direct download mode");
+          elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
+          await prepareVideoShare("/video.mp4", {{}});
+          assert.equal(fetchCalls, 0, "desktop must not prefetch a share File");
+          assert.equal(elements["share-save"].textContent, "動画をダウンロード");
+          bindShare("/video.mp4");
+          elements["share-save"].handlers.click();
+          assert.equal(downloads, 1);
+          assert.equal(shareCalls, 0, "desktop button must not open the share sheet");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_video_share_and_playback_share_one_prepared_file_before_click():
     """再生と共有でMP4を二重取得せず、iOSの一時的な操作権限を失わない。
 
@@ -400,6 +458,16 @@ def test_video_share_and_playback_share_one_prepared_file_before_click():
         }}
 
         (async () => {{
+          assert.equal(FILE_SHARE_SUPPORTED, true, "iPhone keeps native file sharing");
+          navigator.platform = "MacIntel";
+          navigator.userAgent = "Chrome";
+          navigator.maxTouchPoints = 0;
+          assert.equal(shouldUseVideoFileShare(), false,
+            "desktop must prefer a direct download even when navigator.share exists");
+          navigator.platform = "iPhone";
+          navigator.userAgent = "CriOS";
+          navigator.maxTouchPoints = 1;
+
           elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
           bindShare("/video.mp4");
           const video = videoElement();
@@ -442,7 +510,7 @@ def test_video_share_and_playback_share_one_prepared_file_before_click():
           activation = false;
           await new Promise((resolve) => setImmediate(resolve));
           assert.equal(downloads, 0, "share failure must not auto-download");
-          assert.equal(elements["share-save"].textContent, "動画を保存");
+          assert.equal(elements["share-save"].textContent, "動画をダウンロード");
           assert.match(messages.at(-1), /共有メニュー/);
 
           elements["share-save"].handlers.click();
@@ -475,7 +543,7 @@ def test_video_share_and_playback_share_one_prepared_file_before_click():
             "failed share preparation must preserve direct playback");
           assert.equal(fallbackVideo.loadCalls, 2,
             "fallback detaches a possible Blob source before loading the direct URL");
-          assert.equal(elements["share-save"].textContent, "動画を保存");
+          assert.equal(elements["share-save"].textContent, "動画をダウンロード");
           assert.equal(downloads, 1, "preparation failure must not auto-download");
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
