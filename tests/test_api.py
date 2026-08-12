@@ -844,6 +844,158 @@ def test_runproc_kill_current():
     assert result["proc"].returncode != 0
 
 
+def test_runproc_kill_current_stops_parallel_processes():
+    import threading
+    import time as _time
+
+    from soramimic_video import runproc
+
+    results = []
+
+    def target():
+        results.append(runproc.run(["sleep", "5"], capture_output=True))
+
+    threads = [threading.Thread(target=target) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    _time.sleep(0.2)
+    assert runproc.kill_current()
+    for thread in threads:
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+    assert len(results) == 2
+    assert all(proc.returncode != 0 for proc in results)
+
+
+def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
+    import threading
+
+    from soramimic_video import editor_io, xfparse
+    from soramimic_video import mix as mix_mod
+    from soramimic_video import video as video_mod
+    from soramimic_video.project import Note, Project, SongInfo
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "input.mid").write_bytes(FAKE_MIDI)
+    (job_dir / "editor.json").write_text("{}", encoding="utf-8")
+    project = Project(
+        song=SongInfo(midi_path=str(job_dir / "input.mid"), ticks_per_beat=480),
+        notes=[Note(0, 60, 0, 480, 0.0, 1.0, 0, "ラ", "ラ", "ラ")],
+    )
+    job = api_mod.Job(
+        id="parallel", dir=job_dir,
+        params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations"},
+    )
+    audio_started = threading.Event()
+    visual_started = threading.Event()
+
+    monkeypatch.setattr(xfparse, "analyze_midi", lambda path: project)
+    monkeypatch.setattr(editor_io, "import_editor", lambda *a, **k: None)
+
+    def fake_synthesize(job, config, project, synthesize, octave_keys=None):
+        with api_mod._stage(job, "synthesize"):
+            audio_started.set()
+            assert visual_started.wait(1)
+
+    def fake_prepare(*args, **kwargs):
+        visual_started.set()
+        assert audio_started.wait(1)
+        return object()
+
+    def fake_encode(prepared):
+        path = job_dir / "video" / "video-only.mp4"
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"silent")
+        return path
+
+    def fake_mix(*args, **kwargs):
+        path = job_dir / "mix" / "song.wav"
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"wav")
+        return path
+
+    def fake_attach(silent, audio, total, out=None):
+        assert silent.read_bytes() == b"silent"
+        assert audio.read_bytes() == b"wav"
+        assert total == 9.0
+        out.write_bytes(b"mp4")
+        return out
+
+    monkeypatch.setattr(api_mod, "_run_synthesize", fake_synthesize)
+    monkeypatch.setattr(mix_mod, "mix", fake_mix)
+    monkeypatch.setattr(video_mod, "planned_video_total_sec", lambda project: 10.0)
+    monkeypatch.setattr(video_mod, "actual_video_total_sec", lambda project, audio: 9.0)
+    monkeypatch.setattr(video_mod, "prepare_video", fake_prepare)
+    monkeypatch.setattr(video_mod, "encode_silent_video", fake_encode)
+    monkeypatch.setattr(video_mod, "attach_audio", fake_attach)
+    monkeypatch.setattr(
+        video_mod, "make_video",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("serial fallback")),
+    )
+
+    out = api_mod.run_pipeline(job, {"parallel_video": True, "video_fps": 30})
+    assert out.read_bytes() == b"mp4"
+    assert not (job_dir / "video" / "video-only.mp4").exists()
+    assert [stage["name"] for stage in job.stages] == [
+        "analyze", "import-editor", "synthesize", "mix", "video",
+    ]
+
+
+def test_run_pipeline_cleans_silent_video_when_audio_fails(tmp_path, monkeypatch):
+    import threading
+
+    from soramimic_video import (
+        editor_io,
+        xfparse,
+    )
+    from soramimic_video import (
+        mix as mix_mod,
+    )
+    from soramimic_video import (
+        video as video_mod,
+    )
+    from soramimic_video.project import Note, Project, SongInfo
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "input.mid").write_bytes(FAKE_MIDI)
+    (job_dir / "editor.json").write_text("{}", encoding="utf-8")
+    project = Project(
+        song=SongInfo(midi_path=str(job_dir / "input.mid"), ticks_per_beat=480),
+        notes=[Note(0, 60, 0, 480, 0.0, 1.0, 0, "ラ", "ラ", "ラ")],
+    )
+    job = api_mod.Job(
+        id="parallel-fail", dir=job_dir,
+        params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations"},
+    )
+    encoded = threading.Event()
+
+    monkeypatch.setattr(xfparse, "analyze_midi", lambda path: project)
+    monkeypatch.setattr(editor_io, "import_editor", lambda *a, **k: None)
+    monkeypatch.setattr(api_mod, "_run_synthesize", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "planned_video_total_sec", lambda project: 10.0)
+    monkeypatch.setattr(video_mod, "prepare_video", lambda *a, **k: object())
+
+    def fake_encode(prepared):
+        path = job_dir / "video" / "video-only.mp4"
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b"silent")
+        encoded.set()
+        return path
+
+    def failing_mix(*args, **kwargs):
+        assert encoded.wait(1)
+        raise RuntimeError("mix failed")
+
+    monkeypatch.setattr(video_mod, "encode_silent_video", fake_encode)
+    monkeypatch.setattr(mix_mod, "mix", failing_mix)
+
+    with pytest.raises(RuntimeError, match="mix failed"):
+        api_mod.run_pipeline(job, {"parallel_video": True, "video_fps": 30})
+    assert not (job_dir / "video" / "video-only.mp4").exists()
+
+
 def test_rejects_non_midi(client):
     res = client.post("/api/jobs", files={"midi": ("x.mid", b"not midi", "audio/midi")})
     assert res.status_code == 400

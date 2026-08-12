@@ -1301,6 +1301,53 @@ def test_resolve_total_sec_falls_back_when_audio_duration_unknown():
     assert _resolve_total_sec(10.0, None) == 10.0
 
 
+def test_silent_encode_and_audio_attach_commands(tmp_path: Path, monkeypatch):
+    from soramimic_video import video as video_mod
+
+    concat = tmp_path / "slideshow.txt"
+    ass = tmp_path / "subtitles.ass"
+    concat.write_text("ffconcat version 1.0\n", encoding="utf-8")
+    ass.write_text("[Script Info]\n", encoding="utf-8")
+    prepared = video_mod.PreparedVideo(tmp_path, concat, ass, 12.345, 30)
+    commands = []
+
+    def fake_run(cmd, what):
+        commands.append((cmd, what))
+
+    monkeypatch.setattr(video_mod, "_run", fake_run)
+    silent = video_mod.encode_silent_video(prepared)
+    out = video_mod.attach_audio(silent, tmp_path / "song.wav", 12.0)
+
+    encode, encode_what = commands[0]
+    assert encode_what == "無音動画の生成"
+    assert "-an" in encode
+    assert "-c:a" not in encode
+    assert encode[-1] == str(tmp_path / "video-only.mp4")
+    mux, mux_what = commands[1]
+    assert mux_what == "動画と音声の結合"
+    assert mux[mux.index("-c:v") + 1] == "copy"
+    assert mux[mux.index("-c:a") + 1] == "aac"
+    assert "+faststart" in mux
+    assert out == tmp_path / "out.mp4"
+
+
+def test_planned_video_total_includes_midi_render_tail(tmp_path: Path, monkeypatch):
+    import mido
+
+    from soramimic_video import video as video_mod
+
+    project = _project(tmp_path)
+    project.song.accompaniment_path = None
+    project.song.midi_path = str(tmp_path / "song.mid")
+
+    class FakeMidi:
+        length = 20.0
+
+    monkeypatch.setattr(mido, "MidiFile", lambda *a, **k: FakeMidi())
+    monkeypatch.setattr(video_mod, "used_words", lambda project: [])
+    assert video_mod.planned_video_total_sec(project) >= 26.0
+
+
 def test_extend_for_endroll_extends_when_no_outro():
     from soramimic_video.video import extend_for_endroll
 
