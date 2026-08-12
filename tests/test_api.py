@@ -1909,7 +1909,8 @@ def test_index_html_editor_modal_closes_with_escape():
     html = _index_html()
     assert "function onEditorModalKeydown(ev) {" in html
     assert (
-        'if (ev.key !== "Escape" || $("editor-frame-wrap").hidden) return;' in html
+        'if (ev.key !== "Escape" || ev.defaultPrevented'
+        ' || $("editor-frame-wrap").hidden) return;' in html
     )
     assert 'document.addEventListener("keydown", onEditorModalKeydown);' in html
     assert 'doc.addEventListener("keydown", onEditorModalKeydown);' in html
