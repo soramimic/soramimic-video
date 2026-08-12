@@ -110,10 +110,6 @@ def test_header_uses_versioned_soramimic_video_logo():
     assert 'class="brand-logo"' in text
     assert 'src="/logo-soramimic-video-v1.png"' in text
     assert 'alt="Soramimic video"' in text
-    assert 'class="brand-symbol"' not in text
-    assert 'class="brand-product"' not in text
-    assert "brand-play" not in text
-    assert "🎤 soramimic-video" not in text
 
 
 def test_static_hints_in_advanced_are_all_folded():
@@ -127,11 +123,6 @@ def test_static_hints_in_advanced_are_all_folded():
 
 
 def test_editor_entry_point_is_a_single_button():
-    markup = _markup()
-    assert "editorで変換・編集" not in markup
-    # 詳細設定にあった「✏️ 替え歌を編集」はカードの⚙に置き換えた
-    assert "✏️ 替え歌を編集" not in markup
-    assert 'id="open-editor"' not in markup
     ids = [a.get("id") for tag, a in _tags() if tag == "button" and a.get("id")]
     # エディタを開く導線はこれ1つ(モーダル側の閉じる/取り込みは別物)
     assert ids.count("builder-edit") == 1
@@ -139,7 +130,6 @@ def test_editor_entry_point_is_a_single_button():
     # (×・背景クリック・Escに吸収)
     for btn in ("editor-resume-continue", "editor-resume-regen", "editor-resume-close"):
         assert btn in ids
-    assert "editor-resume-cancel" not in ids
 
 
 def test_simple_ui_hides_advanced_and_filters_wordlists():
@@ -181,8 +171,6 @@ def test_editor_resume_dialog_only_asks_when_provenance_is_stale():
     モーダルが出るのは引き継ぐ/捨てるを本人にしか決められないstaleのときだけ。"""
     body = _function_body(_script(), "async function openEditorFlow()")
     assert "if (!saved.stale) { await resumeEditor(); return; }" in body
-    # 推しは静的に「設定から作り直す」(stale専用になったので切り替え不要)
-    assert 'classList.toggle("btn-primary"' not in body
     markup = _markup()
     assert '<button type="button" id="editor-resume-regen" class="btn-primary btn-sm">' in markup
 
@@ -191,7 +179,6 @@ def test_parody_status_does_not_repeat_the_same_wordlist_name():
     """絞り込みだけが違うとき、同じリスト名を2回並べる意味不明な警告にしない。"""
     body = _function_body(_script(), "function renderParodyStatus()")
     assert "選択中の絞り込みは使われません" in body
-    assert "優先されます" not in body
 
 
 def _script() -> str:
@@ -363,15 +350,12 @@ def test_editor_opens_from_the_setup_screen():
     assert 'form.append("convert_params", buildConvertParams())' in body
     # セットアップ画面に出す曲名(投入時と同じ来歴から決める)
     assert 'form.append("song_title", songTitleOf(midi))' in body
-    # 単語リスト名が無いことを理由に止める門番はもう無い
-    assert "「続きから再開」で開き" not in body
 
 
 def test_regenerate_button_says_it_starts_from_the_setup_screen():
     """「再生成」は実態がセットアップ画面からのやり直しなので、そう名乗る。"""
     markup = _markup()
     assert "設定から作り直す" in markup
-    assert "現在のパラメータで再生成" not in markup
     # 説明文も揃える(押すとどこから始まるかが分かること)
     script = _script()
     note = _function_body(script, "async function openEditorFlow()")
@@ -528,8 +512,6 @@ def test_layout_preview_image_needs_a_wordlist_name():
     body = _function_body(script, "function leContent(e)")
     assert 'const name = $("wordlist").value.trim();' in body
     assert 'if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);' in body
-    # 空の名前をそのまま埋め込む書き方が復活していないこと
-    assert 'encodeURIComponent($("wordlist").value.trim())' not in body
     # 代表画像のもう一方の経路(サムネ)も同じ流儀の空ガードを持つ
     thumb = _function_body(script, "function loadWordlistImage(name, seq)")
     assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in thumb

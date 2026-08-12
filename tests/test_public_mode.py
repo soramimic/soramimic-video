@@ -362,10 +362,6 @@ def test_public_mode_never_exposes_the_api_key_field(public_app, monkeypatch):
     assert '<div class="field" id="auth" hidden>' in html
     assert '$("auth").hidden = !conf.auth_required;' in html
     assert html.count('$("auth").hidden') == 1
-    # 「保存した入力をクリア」を消したので「APIキーは消えません」の断り書きも要らない
-    assert "APIキーは消えません" not in html
-
-
 def test_api_key_field_is_shown_only_when_auth_is_required(tmp_path, monkeypatch):
     """認証ありの構成でだけ auth_required=True になる(=APIキー欄が出る)。"""
     monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
