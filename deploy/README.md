@@ -143,6 +143,8 @@ ETag/Last-Modifiedで再検証します。失敗時は既存のlast-good画像�
 `--priority-wordlist NAME`を複数指定すると、そのリスト群だけを先に完全同期してactive化し、
 続けて残りの全リストを同期します。後半の同期中・失敗時も優先リストのactive manifestは
 維持されます。systemd unitは公開カタログの5リストをこの方式で先行処理します。
+`--download-workers`は1または2を指定でき、月次の長時間同期はCommonsの継続的な429を
+避けるため1並列にしています。
 
 定期同期には`deploy/systemd/soramimic-video-assets-sync.{service,timer}`を
 `/etc/systemd/system/`へ設置し、`systemctl enable --now soramimic-video-assets-sync.timer`
