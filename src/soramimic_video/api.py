@@ -1755,11 +1755,21 @@ def create_app(
     @app.get("/readyz", include_in_schema=False)
     def readyz(request: Request) -> JSONResponse:
         _require_ops(request)
+        try:
+            # XFの表記カナを発音形へ直す処理は、欠けても変換を止めずに
+            # フォールバックする。そのままではデプロイ検証を通過しつつ選択語が
+            # 変わるため、実際の解析器まで動かして必須依存を確認する。
+            from .reading import particle_pronunciations
+
+            particle_reading = particle_pronunciations("僕は花") == [(1, "ワ")]
+        except (RuntimeError, ValueError):
+            particle_reading = False
         checks: dict[str, bool] = {
             "jobs_dir_writable": jobs_dir.is_dir() and os.access(jobs_dir, os.W_OK),
             "persistent_ip_hash": (
                 not is_public_mode() or bool(config["ip_hash_persistent"])
             ),
+            "particle_reading": particle_reading,
         }
         if _quota_exemption_allowlist():
             checks["access"] = _access_config_valid()
