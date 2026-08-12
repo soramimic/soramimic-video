@@ -363,6 +363,7 @@ def download_image(
     *,
     revalidate: bool = False,
     use_asset_store: bool = True,
+    fetch_url_override: str | None = None,
 ) -> Path | None:
     """画像を取得し、同じURLは一定期間ごとにHTTP validatorsで更新確認する。
 
@@ -413,8 +414,8 @@ def download_image(
         if time.time() - checked_at < IMAGE_CACHE_REVALIDATE_SEC:
             return _rasterized(raw)
 
-    fetch_url = url
-    if "Special:FilePath" in url and "?" not in url:
+    fetch_url = fetch_url_override or url
+    if fetch_url_override is None and "Special:FilePath" in url and "?" not in url:
         fetch_url = url + "?width=1200"  # フル解像度は不要なのでサムネイルをもらう
     headers = {"User-Agent": USER_AGENT}
     # 内容hashがメタデータと一致しない場合は、並行更新でvalidatorと画像が

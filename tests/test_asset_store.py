@@ -83,12 +83,15 @@ def test_sync_batches_commons_and_distinguishes_no_attribution(tmp_path, monkeyp
         calls.append(images)
         return {
             url: {
-                "artist": "", "license": "CC0", "attribution_required": False,
-                "credit_text": "",
+                "credit": {
+                    "artist": "", "license": "CC0", "attribution_required": False,
+                    "credit_text": "",
+                },
+                "download_url": "https://upload.wikimedia.org/a.png",
             }
         }
 
-    monkeypatch.setattr(prewarm, "fetch_image_credits_batch", fake_batch)
+    monkeypatch.setattr(prewarm, "fetch_commons_assets_batch", fake_batch)
     store = tmp_path / "assets"
     prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
     entry = json.loads((store / "manifest.json").read_text())["assets"][url]
@@ -233,13 +236,13 @@ def test_credit_refresh_failure_keeps_last_good(tmp_path, monkeypatch):
         "credit_text": "A, CC BY",
     }
     monkeypatch.setattr(
-        prewarm, "fetch_image_credits_batch",
-        lambda images, **kwargs: {url: known},
+        prewarm, "fetch_commons_assets_batch",
+        lambda images, **kwargs: {url: {"credit": known, "download_url": None}},
     )
     prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
     monkeypatch.setattr(
-        prewarm, "fetch_image_credits_batch",
-        lambda images, **kwargs: {url: None},
+        prewarm, "fetch_commons_assets_batch",
+        lambda images, **kwargs: {url: {"credit": None, "download_url": None}},
     )
     prewarm.sync_asset_store(
         [csv_path], store, wordlists_dir=wordlists, revalidate=True,
@@ -291,10 +294,13 @@ def test_fetch_image_credits_batch_uses_one_request(monkeypatch):
         def json(self):
             return {"query": {"pages": [{
                 "title": "File:A.png",
-                "imageinfo": [{"extmetadata": {
-                    "LicenseShortName": {"value": "CC0"},
-                    "AttributionRequired": {"value": "false"},
-                }}],
+                "imageinfo": [{
+                    "thumburl": "https://upload.wikimedia.org/thumb/a.png",
+                    "extmetadata": {
+                        "LicenseShortName": {"value": "CC0"},
+                        "AttributionRequired": {"value": "false"},
+                    },
+                }],
             }]}}
 
     calls = []
@@ -306,3 +312,7 @@ def test_fetch_image_credits_batch_uses_one_request(monkeypatch):
     result = image_credit.fetch_image_credits_batch({a: ""})
     assert len(calls) == 1
     assert result[a]["attribution_required"] is False
+    assets = image_credit.fetch_commons_assets_batch({a: ""})
+    assert assets[a]["download_url"] == "https://upload.wikimedia.org/thumb/a.png"
+    assert calls[-1]["iiprop"] == "extmetadata|url"
+    assert calls[-1]["iiurlwidth"] == "1200"
