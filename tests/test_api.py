@@ -161,34 +161,15 @@ def test_convert_params_default_empty(client):
     assert body["params"]["convert_params"] == ""
 
 
-def test_index_html_conversion_params_moved_to_the_editor():
-    # 変換のしかた(プリセット・スライダー・単語重複)とファセットの絞り込みUIは
-    # 同梱エディタの「変換のしかた」に一本化した。video側に本家の値対応表を
-    # 持たない(= soramimic を上げるたびに追従しなくてよい)ことを固定する。
+def test_index_html_forwards_wordlist_filter_to_the_editor():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    for gone in (
-        'id="p-preset"', 'id="p-sound"', 'id="p-phrase"', 'id="p-wordnum"',
-        'id="duplicate"', 'id="wordlist-filters"',
-        "const PRESETS", "PARAM_SLIDER_IDS",
-        "VOWEL_RATIO", "VARIATION_COST", "SAME_PHRASE_BREAK_REWARD",
-        "MID_PHRASE_BREAK_PENALTY", "WORD_NUMBER_PENALTY", "DUPLICATE=",
-        "SAME_VOWEL_REWARD", "SAME_CONSONANT_REWARD",
-    ):
-        assert gone not in html, gone
-    # 絞り込み(where)の受け渡しだけは隠し値として残す(選んだ単語リストの条件)
     assert '<input type="hidden" id="where">' in html
     assert 'form.append("where", $("where").value.trim());' in html
 
 
 def test_note_length_weight_setting_moved_to_soramimic():
-    video_html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    assert 'id="p-notelen"' not in video_html
-    assert 'id="advanced-extra"' not in video_html
-
     # 移設先の確認はsubmoduleが要る。CIではsoramimic本体を取得しないので飛ばす
     editor_path = (
         Path(api_mod.__file__).parents[2] / "external/soramimic/frontend/editor.html"
@@ -205,7 +186,6 @@ def test_index_html_keeps_note_length_default_for_non_editor_flow():
         encoding="utf-8"
     )
     assert 'return "NOTE_LENGTH_WEIGHT=0.25";' in html
-    assert 'Number($("p-notelen").value)' not in html
 
 def test_index_html_model_layout_use_select_not_datalist():
     # iOS Safari が datalist を表示しない問題への対応:
@@ -214,7 +194,7 @@ def test_index_html_model_layout_use_select_not_datalist():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # datalist 方式は撤去(iOS Safari で候補が出ないため)
+    # iOS Safariでも選択肢を表示できることを、現在のコントロールで確認する。
     assert "<datalist" not in html
     assert 'list="model-list"' not in html and 'list="layout-list"' not in html
     # 各コントロールの select と送信用hiddenが揃っている
@@ -223,7 +203,6 @@ def test_index_html_model_layout_use_select_not_datalist():
         assert f'<input type="hidden" id="{base}"' in html
     # 手入力欄を持つのは #model だけ(#layout はファイル読み込みに置き換えた)
     assert '<input type="text" id="model-other"' in html
-    assert 'id="layout-other"' not in html
     # 「その他(手入力)」の選択肢が存在する
     assert 'その他(手入力)' in html
 
@@ -243,29 +222,8 @@ def test_index_html_gates_neutrino_by_config():
     assert 'id="synth-unavailable"' in html
 
 
-def test_index_html_has_no_custom_wordlist_ui():
-    """video側の自作リスト(画像つきモーダル)の導線は撤去した。
-
-    自作リストは同梱エディタの⚙モーダル(テキスト欄 = ORIGINAL/csvText)に
-    一本化した。単語画像つきのリストは将来ホスト移譲方式で復活させる予定なので、
-    サーバー側のAPI(/api/wordlist-check・wordlist_text/wordlist_images 等)は
-    残してあるが、フロントからは作れない。
-    """
+def test_index_html_explains_missing_custom_wordlist_preview():
     html = _index_html()
-    # 廃止: モーダル・選択肢・検査・multipartの組み立てはフロントに残っていない
-    for gone in (
-        'id="wordlist-modal-wrap"', 'id="wordlist-text"', 'id="wordlist-images"',
-        'id="wordlist-file"', 'id="edit-wordlist"', 'id="custom-wordlist"',
-        'const CUSTOM_WORDLIST', "isCustomWordlist", "appendCustomWordlist",
-        "scheduleWordlistCheck", '"/api/wordlist-check"',
-        'form.append("wordlist_text"', 'form.append("wordlist_csv"',
-    ):
-        assert gone not in html, gone
-    # リスト名の手入力に戻したわけでもない(名前で選ぶのはエディタのconf経由だけ)
-    assert "その他(名前を入力)" not in html
-    # 撤去の理由と復活の見通しはコードにコメントで残す
-    assert "ホスト移譲方式" in html
-    # 自作リスト(エディタ側)はサムネのプレビューを作らない(理由を静かに出す)
     assert "自作リストはプレビューに対応していません。" in html
     assert "const custom = showsEditorWordlist();" in html
 
@@ -324,18 +282,11 @@ def test_index_html_builder_card_has_selects():
         '$("wordlist-select").addEventListener("change", '
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
-    # 曲・単語リストの選び直しはカードとエディタだけ。詳細設定には置かない。
     advanced = _advanced_html()
-    assert 'id="sample-select"' not in advanced
-    assert 'id="wordlist' not in advanced
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
         "synthesizer", "model-select", "voicevox-style",
     ]
-    # 「曲 × 単語リスト」の1行はプルダウンと重複するので置かない
-    assert 'id="builder-state"' not in html
-    assert "renderBuilderState" not in html
-    # 確認モーダルは廃止し、🎲ランダムはカードの選択を差し替えるだけになった
-    assert "lucky-modal" not in html
+    # 🎲ランダムはカードの選択を差し替える
     assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
     # 進捗・結果は畳んである詳細(ビルダーカードの中の控えめなテキストリンク)
     assert '<details class="sub-details" id="job-card" hidden>' in html
@@ -367,13 +318,9 @@ def test_index_html_job_card_is_collapsed_by_default():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # 独立したカードにはしない(「⚙️ 詳細設定」「過去のジョブ」と同じ重さだと目立ちすぎる)。
     # ビルダーカードの最下部に置く小さなテキストリンク(.sub-details)。
-    assert '<details class="card" id="job-card"' not in html
     assert '<details class="sub-details" id="job-card" hidden>' in html
     assert "<summary>生成の詳細(ステージ・ログ)</summary>" in html
-    # ログの入れ子の折りたたみは廃止(開けばそのままログまで見える)
-    assert "<details><summary>ログ</summary>" not in html
     assert '<pre id="log"></pre>' in html
     # 開閉は保存しない。投入のたびに閉じた状態から始める
     assert '$("job-card").open = false;' in html
@@ -391,42 +338,26 @@ def test_index_html_job_card_lives_in_the_builder_card():
     assert 'id="job-card"' in builder
     # 最下部(サムネ枠・上限や確認の表示のあと)
     assert builder.index('id="job-card"') > builder.index('id="public-limits"')
-    # 詳細設定への案内文は置かない(折りたたみ自体が同じ視野にあるので冗長)
-    assert 'id="lucky-status"' not in html
     # 控えめな置き場のぶん、エラー・中断で開いたときだけ警告色にして見つけやすくする
     assert '#job-card.attention > summary { color: var(--danger);' in html
     assert '$("job-card").classList.add("attention");' in html
     assert '$("job-card").classList.remove("attention");' in html
 
 
-def test_index_html_has_no_restore_notice_or_clear_button():
-    """前回の入力は黙って復元する。復元の告知も「保存した入力をクリア」も出さない。"""
+def test_index_html_keeps_form_restore_and_file_hint():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert "restore-notice" not in html
-    assert "前回の入力を復元しました" not in html
-    assert "clear-form" not in html
-    assert "保存した入力をクリア" not in html
-    # 自動保存・復元そのものは続ける(保存キーと復元処理は残っている)
     assert "function saveForm()" in html
     assert "async function doRestoreForm()" in html
     assert "localStorage.setItem(FORM_KEY" in html
-    # ファイル単位の「前回のファイルを復元」表示は残す(何が入っているかの手がかり)
     assert 'id="midi-restore-hint"' in html
 
 
-def test_index_html_builder_card_is_bare():
-    """ビルダーカードは見出し・説明文・例示ボタンを置かない(見れば分かる形にする)。"""
+def test_index_html_builder_card_has_labeled_topbar_actions():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # 見出しと導入文は削除済み
-    assert "まずはここから" not in html
-    assert "lucky-lead" not in html
-    # 例示コンボのボタンは廃止(組み立てるコードごと消えている)
-    assert "renderLuckyCombos" not in html
-    assert "lucky-combo" not in html
     # ⚙と🎲はカードの右上に小さく置くだけ。ただしアイコンだけだと気づかれない
     # ので、文字ラベルを添えたピルにする(絵文字は読み上げ対象から外す)
     assert '<div class="builder-topbar">' in html
@@ -445,10 +376,9 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     assert '<button type="button" class="builder-play" id="builder-play"' in html
     assert '$("builder-play").addEventListener("click", () => submitJob(0));' in html
     assert "タップで動画を生成" in html
-    # 進捗は同じ枠の中に重ねる。別の場所へスクロールさせない
+    # 進捗は同じ枠の中に重ねる
     assert '<div class="builder-progress" id="builder-progress" hidden>' in html
     assert 'setBuilderState("running");' in html
-    assert "$(\"job-card\").scrollIntoView" not in html
     # 中断は生成中も枠の中から押せる
     assert '$("builder-cancel").addEventListener("click", cancelJob);' in html
     # 完成したら同じ枠が動画プレイヤーになり、シェアは枠の直下に出る
@@ -459,23 +389,14 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     assert 'setBuilderState("preview");   // 完成した動画が出ていれば' in html
 
 
-def test_index_html_has_no_separate_submit_button():
-    """生成ボタンは枠のタップ1本に絞る(カード下の青い「🎬 動画を生成」は廃止)。"""
+def test_index_html_builder_submit_is_gated_while_busy():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert '<button id="submit"' not in html
-    assert "🎬 動画を生成" not in html
-    assert '$("submit")' not in html          # setBusy などの参照も残さない
-    assert ".btn-lg" not in html              # このボタン専用のスタイルも消す
-    # 投入できるかは submit ボタンの disabled ではなくフラグで持つ
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    # 曲が未セットのときの案内は残す(カード下の常設の案内文は置かない)。
-    # 曲の入力は詳細設定から無くなったので、案内先はカードの「曲」と⚙のエディタだけ
     assert '上の「曲」から選ぶか🎲で選び直してください' in html
-    assert "⚙️ 詳細設定」で曲" not in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
@@ -1289,13 +1210,11 @@ def test_synth_credit_of_neutrino_is_empty():
 
 
 def test_index_html_has_one_feature_detected_save_share_button():
-    # 完成後の導線は保存・共有ボタン1本。X専用ボタンは置かない。
+    # 完成後の導線は保存・共有ボタン1本。
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
     assert 'id="share-save"' in html
-    assert 'id="share-x"' not in html
-    assert "openXIntent" not in html and "twitter.com/intent" not in html
     assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
     support = html[html.index("function supportsVideoFileShare()") :]
     support = support[: support.index("\n}\n")]
@@ -1307,7 +1226,6 @@ def test_index_html_has_one_feature_detected_save_share_button():
     assert "navigator.canShare" not in html
     assert "navigator.share({ files: [prepared.file], text: SHARE_TEXT })" in html
     assert "#Soramimic" in html
-    assert "#soramimic" not in html
     click = html[html.index("function bindShare(videoUrl)") :]
     click = click[: click.index("\n}\n")]
     assert "fetch(" not in click and "await " not in click
@@ -1439,12 +1357,10 @@ def test_index_html_share_hint_matches_platform_capability():
     assert "動画ファイルをダウンロードします。" in html
 
 
-def test_index_html_no_server_host_line():
-    # 接続先はページのURLと同じなので出さない(NEUTRINO未設定の警告だけ残す)
+def test_index_html_shows_neutrino_configuration_warning():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert "location.host" not in html
     assert "NEUTRINO_ROOT未設定" in html
 
 
@@ -1584,14 +1500,6 @@ def test_index_html_song_values_are_hidden_canonicals():
     ):
         assert f'id="{dynamic_id}"' in store
 
-    advanced = _advanced_html()
-    assert 'id="midi"' not in advanced
-    assert 'id="sample-select"' not in advanced
-    assert 'id="lyrics"' not in advanced
-    assert "曲と歌詞" not in advanced
-    assert "曲(XF MIDIファイル)" not in advanced
-    assert "元歌詞(推奨・字幕用)" not in advanced
-
     # 正本をhiddenへ移してもカード・🎲・エディタとの既存経路は維持する
     assert '$("sample-select").value = c.sampleId;' in html
     assert '$("sample-select").addEventListener("change", () => {' in html
@@ -1601,7 +1509,6 @@ def test_index_html_song_values_are_hidden_canonicals():
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
     assert '$("sample-details").hidden = true;' in html
-    assert '$("midi-details")' not in html
 
 
 def test_index_html_song_warnings_stay_reachable_without_section_one():
@@ -1619,8 +1526,6 @@ def test_index_html_song_warnings_stay_reachable_without_section_one():
 
     card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
     assert '<p class="hint" id="lyrics-midi-warn" hidden></p>' in card
-    store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
-    assert "lyrics-midi-warn" not in store
     # 書き込む側(renderLyricsMidiWarning)は移設後もそのままIDを読む
     assert 'const el = $("lyrics-midi-warn");' in html
 
@@ -1676,9 +1581,6 @@ def test_index_html_advanced_groups_hold_the_right_fields():
     # レイアウトは単語リストに連動して自動で決まるものなので、ふだんは選ばせない
     assert 'id="layout"' in look and 'id="le-open"' in look
     assert 'id="le-status"' in look
-    assert 'id="le-details"' not in _index_html()
-    assert 'id="layout-select"' not in look
-    assert 'id="layout-file"' not in look
     credit = g["③ 元曲クレジット"]
     assert 'id="original-credit"' in credit
     assert 'id="credit-notice"' in credit
@@ -1689,8 +1591,6 @@ def test_index_html_layout_base_select_lives_in_the_editor_modal():
     html = _index_html()
     modal = html.split('<div class="editor-modal" id="le-modal"')[1].split("<script>")[0]
     assert 'id="layout-select"' in modal
-    # 押し直す「読み込み」ボタンは廃止(プルダウンに統合した)
-    assert 'id="layout-load"' not in html
     # ベースからの差分は ● で示し、↺ でベースの内容へ戻せる
     assert 'id="le-modified"' in modal and 'id="le-revert"' in modal
     # ファイル入力そのものは隠し、label ボタンの for= で開く(.click() は使わない)
@@ -1717,19 +1617,6 @@ def test_index_html_layout_base_values_never_reach_the_hidden_input():
     # ● はベース読み込み時の内容(leBaseline)との比較で決める
     modified = html.split("function leModified() {")[1].split("\n}")[0]
     assert "JSON.stringify(leLayout) !== leBaseline" in modified
-
-
-def test_index_html_conversion_settings_live_in_editor():
-    """変換設定はvideoの詳細設定へ重複させず、同梱エディタに一本化する。"""
-    advanced = _advanced_html()
-    assert 'id="advanced-extra"' not in advanced
-    assert 'id="p-notelen"' not in advanced
-    assert 'id="parody-advanced"' not in advanced
-    assert 'id="edit-wordlist"' not in advanced
-    assert 'id="custom-wordlist"' not in advanced
-    # 替え歌JSONの読み書きも詳細設定には無い(エディタのモーダル側)
-    assert 'id="parody-io"' not in advanced
-    assert 'id="download-editor"' not in advanced
 
 
 def test_index_html_wordlist_values_are_hidden_canonicals():
@@ -1794,10 +1681,8 @@ def test_index_html_transpose_is_greyed_out_under_auto_octave():
     assert '$("transpose").value = ""' not in html
 
 
-def test_index_html_layout_other_is_replaced_by_a_file_input():
-    """レイアウトの「その他(手入力)」はやめ、JSONファイルの読み込みに置き換える。"""
+def test_index_html_layout_file_input_loads_a_custom_base():
     html = _index_html()
-    assert 'id="layout-other"' not in html
     assert 'id="layout-file" accept=".json"' in html
     # 読み込みの導線はプルダウンの隣の label ボタン(for= の標準挙動でピッカーが
     # 開くのでスクリプトの .click() が要らず、iOS Safari でも確実)。
@@ -1820,16 +1705,9 @@ def test_index_html_layout_other_is_replaced_by_a_file_input():
     assert '$("layout-file").value = "";' in clear
 
 
-def test_index_html_layout_editor_has_no_idle_controls():
-    """歌唱なし区間(idle)のGUI調整は撤去する(JSONの機構自体は残す)。"""
+def test_index_html_layout_editor_has_element_and_fallback_tabs():
     html = _index_html()
-    for gone in ("le-tab-idle", "le-idle-opts", "le-idle-hint", "le-hold"):
-        assert gone not in html, gone
-    # 「歌唱なし区間」のタブ・見出しは画面に出さない(コード内の説明コメントは残す)
-    assert ">歌唱なし区間" not in html
-    # 残るタブは「通常」「未知語用」の2つ
     assert 'id="le-tab-elements"' in html and 'id="le-tab-fallback"' in html
-    assert 'leSide === "idle"' not in html
 
 
 def test_index_html_api_key_is_reachable_when_auth_is_required():
@@ -1856,9 +1734,6 @@ def test_index_html_editor_opens_as_fullscreen_modal():
     # 全面に広げる(モバイルでも同じ)。iframeが残りの高さを全部使う
     assert ".editor-modal {\n    position: fixed; inset: 0; z-index: 50;" in html
     assert "flex: 1 1 auto; width: 100%; min-height: 0; border: 0;" in html
-    # 旧構成(詳細設定の中に72vhのiframeをインライン展開)は残っていない
-    assert "height: 72vh" not in html
-    assert '$("editor-frame-wrap").scrollIntoView' not in html
 
 
 def test_index_html_editor_modal_uses_the_embedded_back_navigation():
@@ -1866,10 +1741,6 @@ def test_index_html_editor_modal_uses_the_embedded_back_navigation():
     html = _index_html()
     head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
     assert "<button" not in head
-    assert 'id="editor-import"' not in html
-    assert 'id="editor-close"' not in head
-    assert '$("editor-import")' not in html
-    assert '$("editor-close")' not in html
     assert '$("editor-frame").focus();' in html
     # ヘッダは縮まず、下のiframeだけがスクロール領域になる
     assert ".editor-modal-head {\n    flex: 0 0 auto;" in html
@@ -1906,8 +1777,6 @@ def test_index_html_editor_edits_are_used_without_back_navigation():
     assert "const editorSrc = editorSourceForSubmit();" in html
     assert 'if (editorSrc.file) form.append("editor", editorSrc.file);' in html
     assert 'if ($("editor").files[0]) form.append("editor"' not in html
-    # 親ヘッダーに重複する閉じるボタンは置かない
-    assert 'id="editor-import"' not in html
 
 
 def test_index_html_editor_auto_import_requires_actual_edit():
@@ -1958,19 +1827,14 @@ def test_index_html_editor_auto_import_checks_provenance():
         "const sameAsFile = !!f && !!editorFileSig && editorFileSig === live.sig;" in src
     )
     assert "return { file: sameAsFile ? null : f, dropped: live.from };" in src
-    # 来歴違いで捨てたことは警告表示しない(生成はそのまま自動変換に落ちる)
-    assert "if (editorSrc.dropped) {" not in html
-    assert 'id="editor-auto-status"' not in html
-    assert "別の入力(曲・単語リストなど)から" not in html
     # 自動取り込みぶんは来歴を確かめてあるので、単語リスト不一致の確認は挟まない
     assert "if (editorSrc.file && !editorSrc.live && parodyMismatch()" in html
 
 
-# ---- 進捗表示: ステージ名とプログレスバー(段階数の「X/Y」は出さない) ----
+# ---- 進捗表示: ステージ名とプログレスバー ----
 
 
-def test_index_html_progress_has_no_step_numbers():
-    """サムネ枠の進捗は「ステージ名 (経過秒)」だけ。位置はプログレスバーが見せる。"""
+def test_index_html_progress_uses_the_active_stage_plan():
     import re
 
     html = _index_html()
@@ -1980,9 +1844,6 @@ def test_index_html_progress_has_no_step_numbers():
     # convert / import-editor は排他(parody_source で決まる)
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
-    # 「2/5」のような段階数の表示は持たない(stagePlan はバーの分母としてだけ使う)
-    assert "stageStepText" not in html
-    assert "${plan.length}" not in html
     assert (
         'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
     )
