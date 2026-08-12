@@ -925,22 +925,24 @@ def app_credit_text(
     synth_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
+    *,
+    original_song: str = "",
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
     既定は「lyrics & video by Soramimic」。歌声合成側にもクレジット表記が要るとき
     (VOICEVOXのキャラ名など)や、元曲・権利者の表記があるときは後ろに足す。
-    元曲情報はエンドロールにも詳しく出すが、必要な表記が動画から切り離されないよう
-    全フレームの署名にも焼き込む。
+    常時表示には元曲名と必須表記だけを簡潔に載せ、作詞・作曲・歌唱者などの
+    ``original_credit`` 詳細はエンドロールだけに載せる。
     """
     synth = (synth_credit or "").strip()
-    original = (original_credit or "").strip()
+    song = (original_song or "").strip()
     notice = (credit_notice or "").strip()
     parts = [APP_CREDIT]
     if synth:
         parts.append(synth)
-    if original:
-        parts.append(f"Original: {original}")
+    if song:
+        parts.append(f"Original: {song}")
     if notice:
         parts.append(notice)
     return " / ".join(parts)
@@ -1792,7 +1794,13 @@ def prepare_video(
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
     layout_obj = load_layout(layout)
-    credit_text = app_credit_text(synth_credit, original_credit, credit_notice)
+    original_song = (song_title or Path(project.song.midi_path).stem).strip()
+    credit_text = app_credit_text(
+        synth_credit=synth_credit,
+        original_credit=original_credit,
+        credit_notice=credit_notice,
+        original_song=original_song,
+    )
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 
@@ -1827,7 +1835,7 @@ def prepare_video(
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
-        original_song=(song_title or Path(project.song.midi_path).stem).strip(),
+        original_song=original_song,
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
     )
@@ -1917,7 +1925,13 @@ def make_video(
         raise ValueError("fps は1以上で指定してください")
     layout_obj = load_layout(layout)
     # 動画に焼き込むクレジット(サムネ・単語フレーム・idleで共通)
-    credit_text = app_credit_text(synth_credit, original_credit, credit_notice)
+    original_song = (song_title or Path(project.song.midi_path).stem).strip()
+    credit_text = app_credit_text(
+        synth_credit=synth_credit,
+        original_credit=original_credit,
+        credit_notice=credit_notice,
+        original_song=original_song,
+    )
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 
@@ -1974,7 +1988,7 @@ def make_video(
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
-        original_song=(song_title or Path(project.song.midi_path).stem).strip(),
+        original_song=original_song,
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
     )
