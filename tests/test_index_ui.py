@@ -319,8 +319,8 @@ def test_random_button_is_disabled_until_both_choices_can_change():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_desktop_video_button_downloads_directly_without_opening_share_sheet():
-    """MacなどPCではWeb Share APIがあっても、ボタン1回で直接保存する。"""
+def test_desktop_video_has_separate_download_and_share_buttons():
+    """MacなどPCでは直接保存と共有シートを別の明示操作にする。"""
     script = _script()
     share = script[script.index("const SHARE_TEXT =") :]
     share = share[: share.index("// ジョブを投入できない状態か")]
@@ -329,18 +329,29 @@ def test_desktop_video_button_downloads_directly_without_opening_share_sheet():
         const assert = require("node:assert/strict");
         let elements = {{}};
         let downloads = 0;
-        let shareCalls = 0;
+        let shareCalls = [];
         let fetchCalls = 0;
         const navigator = {{
           platform: "MacIntel", userAgent: "Chrome", maxTouchPoints: 0,
-          share() {{ shareCalls += 1; }}
+          share(data) {{ shareCalls.push(data); return Promise.resolve(); }}
         }};
-        class File {{}}
+        class File {{
+          constructor(parts, name, options) {{
+            this.parts = parts; this.name = name; this.type = options.type;
+          }}
+        }}
         const location = {{ origin: "https://video.example" }};
-        const URL = {{ createObjectURL() {{}}, revokeObjectURL() {{}} }};
+        const URL = {{
+          createObjectURL(file) {{ return "blob:desktop/" + file.name; }},
+          revokeObjectURL() {{}}
+        }};
         const $ = (id) => elements[id] || null;
         const qs = (value) => value;
-        const fetch = async () => {{ fetchCalls += 1; }};
+        const headers = () => ({{}});
+        const fetch = async () => {{
+          fetchCalls += 1;
+          return {{ ok: true, blob: async () => ({{ type: "video/mp4" }}) }};
+        }};
         const document = {{
           body: {{ appendChild() {{}} }},
           createElement() {{
@@ -352,24 +363,56 @@ def test_desktop_video_button_downloads_directly_without_opening_share_sheet():
 
         function button() {{
           return {{
-            disabled: false, textContent: "", handlers: {{}},
+            disabled: false, hidden: false, textContent: "", handlers: {{}},
             addEventListener(type, fn) {{ this.handlers[type] = fn; }}
+          }};
+        }}
+
+        function videoElement() {{
+          return {{
+            src: "", handlers: {{}}, load() {{}}, pause() {{}},
+            removeAttribute() {{}},
+            addEventListener(type, fn) {{ this.handlers[type] = fn; }},
+            removeEventListener(type, fn) {{
+              if (this.handlers[type] === fn) delete this.handlers[type];
+            }}
           }};
         }}
 
         (async () => {{
           assert.equal(supportsVideoFileShare(), true,
             "the desktop fixture intentionally supports Web Share");
-          assert.equal(FILE_SHARE_SUPPORTED, false,
-            "desktop must still choose direct download mode");
-          elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
-          await prepareVideoShare("/video.mp4", {{}});
-          assert.equal(fetchCalls, 0, "desktop must not prefetch a share File");
-          assert.equal(elements["share-save"].textContent, "動画をダウンロード");
+          assert.equal(FILE_SHARE_SUPPORTED, true);
+          assert.equal(DESKTOP_SHARE_UI, true);
+          assert.match(SHARE_HTML, /id="download-video"/);
+          assert.match(SHARE_HTML, /id="share-save"/);
+          elements = {{
+            "download-video": button(), "share-save": button(),
+            "share-hint": {{ textContent: "" }}
+          }};
           bindShare("/video.mp4");
-          elements["share-save"].handlers.click();
+          await prepareVideoShare("/video.mp4", videoElement());
+          assert.equal(fetchCalls, 1, "desktop prepares the File before one-click sharing");
+          assert.equal(elements["share-save"].textContent, "共有");
+          assert.equal(elements["share-save"].hidden, false);
+
+          elements["download-video"].handlers.click();
           assert.equal(downloads, 1);
-          assert.equal(shareCalls, 0, "desktop button must not open the share sheet");
+          assert.equal(shareCalls.length, 0, "download must not open the share sheet");
+
+          elements["share-save"].handlers.click();
+          await Promise.resolve();
+          assert.equal(downloads, 1, "share must not start a download");
+          assert.equal(shareCalls.length, 1);
+          assert.equal(shareCalls[0].files[0].name, "video.mp4");
+          assert.equal(shareCalls[0].text.includes("#Soramimic"), true);
+
+          navigator.share = () => Promise.reject({{ name: "NotAllowedError" }});
+          elements["share-save"].handlers.click();
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(elements["share-save"].hidden, true,
+            "a rejected desktop share leaves the separate download available");
+          assert.equal(downloads, 1);
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
     )
@@ -459,14 +502,10 @@ def test_video_share_and_playback_share_one_prepared_file_before_click():
 
         (async () => {{
           assert.equal(FILE_SHARE_SUPPORTED, true, "iPhone keeps native file sharing");
-          navigator.platform = "MacIntel";
-          navigator.userAgent = "Chrome";
-          navigator.maxTouchPoints = 0;
-          assert.equal(shouldUseVideoFileShare(), false,
-            "desktop must prefer a direct download even when navigator.share exists");
-          navigator.platform = "iPhone";
-          navigator.userAgent = "CriOS";
-          navigator.maxTouchPoints = 1;
+          assert.equal(DESKTOP_SHARE_UI, false,
+            "iPhone keeps the combined save and share button");
+          assert.doesNotMatch(SHARE_HTML, /id="download-video"/,
+            "mobile must not add a second download button");
 
           elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
           bindShare("/video.mp4");

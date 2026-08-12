@@ -494,7 +494,7 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
-  /* 完成後の「動画を保存」「Xでポスト」を横並びに(狭い画面では折り返す) */
+  /* 完成後のダウンロード・共有ボタンを横並びに(狭い画面では折り返す) */
   .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 </style>
 </head>
@@ -1713,8 +1713,8 @@ async function poll(id, seq = pollSeq) {
 // ---- 完成した動画を保存・共有する ----
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
 // 誤判定しやすい。iPadのデスクトップ表示も含めてモバイルOSかを判定したうえで、
-// Web Share APIの有無を見る。PCでは共有シートに保存先が出ないことがあるため、
-// Web Share APIがあっても分かりやすい直接ダウンロードを優先する。
+// Web Share APIの有無を見る。PCでは共有シートを保存導線にせず、直接ダウンロードと
+// 共有を別ボタンにする。モバイルではOS標準の保存・共有を1ボタンにまとめる。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #Soramimic\n" + location.origin;
 
@@ -1736,13 +1736,15 @@ function supportsVideoFileShare() {
     && typeof URL.revokeObjectURL === "function";
 }
 
-function shouldUseVideoFileShare() {
-  return mobilePlatform() !== "other" && supportsVideoFileShare();
-}
-
-const FILE_SHARE_SUPPORTED = shouldUseVideoFileShare();
+const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
+const DESKTOP_SHARE_UI = mobilePlatform() === "other";
 
 function shareHint(shareable) {
+  if (DESKTOP_SHARE_UI) {
+    return shareable
+      ? "動画をダウンロードするか、共有メニューから共有先を選べます。"
+      : "「動画をダウンロード」を押すと、動画ファイルを保存できます。";
+  }
   if (!shareable) return "ボタンを押すと、動画ファイルをダウンロードします。";
   if (mobilePlatform() === "ios") {
     return "iPhone・iPadの共有メニューから「ビデオを保存」「ファイルに保存」、または共有先を選べます。";
@@ -1753,13 +1755,22 @@ function shareHint(shareable) {
   return "端末の共有メニューから保存先または共有先を選べます。";
 }
 
-const SHARE_HTML =
-  `<p class="share-row">` +
-  `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
-  `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画をダウンロード"}</button>` +
-  `</p>` +
-  `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-    ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
+const SHARE_HTML = DESKTOP_SHARE_UI
+  ? `<p class="share-row">` +
+    `<button type="button" id="download-video" class="btn-sm">動画をダウンロード</button>` +
+    (FILE_SHARE_SUPPORTED
+      ? `<button type="button" id="share-save" class="btn-sm" disabled>共有を準備中…</button>`
+      : "") +
+    `</p>` +
+    `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
+      ? "共有用の動画を準備しています。ダウンロードはすぐにできます。"
+      : shareHint(false)}</p>`
+  : `<p class="share-row">` +
+    `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
+    `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画をダウンロード"}</button>` +
+    `</p>` +
+    `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
+      ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
@@ -1819,7 +1830,17 @@ function resetVideoSharePreparation() {
 function setShareButtonMode(shareable) {
   const saveBtn = $("share-save");
   const hint = $("share-hint");
-  if (!saveBtn || !hint) return;
+  if (!hint) return;
+  if (DESKTOP_SHARE_UI) {
+    if (saveBtn) {
+      saveBtn.hidden = !shareable;
+      saveBtn.disabled = false;
+      saveBtn.textContent = "共有";
+    }
+    hint.textContent = shareHint(shareable);
+    return;
+  }
+  if (!saveBtn) return;
   saveBtn.disabled = false;
   saveBtn.textContent = shareable ? "動画を保存・共有" : "動画をダウンロード";
   hint.textContent = shareHint(shareable);
@@ -1875,6 +1896,12 @@ async function prepareVideoShare(videoUrl, video) {
 }
 
 function bindShare(videoUrl) {
+  const downloadBtn = $("download-video");
+  if (downloadBtn) {
+    downloadBtn.addEventListener("click", () => {
+      if (videoUrl) downloadVideo(videoUrl);
+    });
+  }
   const saveBtn = $("share-save");
   if (!saveBtn) return;
   saveBtn.addEventListener("click", () => {
@@ -1882,7 +1909,10 @@ function bindShare(videoUrl) {
     if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
     const prepared = preparedVideoShare;
     if (!prepared || prepared.videoUrl !== videoUrl) return;
-    if (!prepared.shareable || !prepared.file) return downloadVideo(videoUrl);
+    if (!prepared.shareable || !prepared.file) {
+      if (!DESKTOP_SHARE_UI) downloadVideo(videoUrl);
+      return;
+    }
     // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
     // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
     // 動画と投稿用本文を同じ共有シートへ渡す。共有API自体はこのクリック内で
