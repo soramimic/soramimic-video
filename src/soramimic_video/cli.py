@@ -283,6 +283,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
         priority = sync_asset_store(
             priority_paths, Path(store_value), wordlists_dir=wordlists,
             revalidate=args.revalidate, dry_run=args.dry_run,
+            download_workers=args.download_workers,
         )
         print(
             f"優先asset sync完了: 失敗 {priority['failed']} / "
@@ -303,6 +304,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
         csv_paths, Path(store_value), wordlists_dir=wordlists,
         revalidate=args.revalidate, dry_run=args.dry_run,
         skip_revalidate_urls=priority_urls,
+        download_workers=args.download_workers,
     )
     prefix = "dry-run" if args.dry_run else "asset sync完了"
     print(
@@ -627,6 +629,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--priority-wordlist", action="append", default=[], metavar="NAME",
         help="指定リストを先に完全同期・active化してから全件同期する(複数指定可)",
+    )
+    p.add_argument(
+        "--download-workers", type=int, choices=range(1, 3), default=2,
+        help="画像取得の並列数(1または2、既定2。長時間のCommons一括取得は1を推奨)",
     )
     p.add_argument("--dry-run", action="store_true", help="取得せず差分件数だけ表示する")
     p.set_defaults(func=cmd_sync_assets)
