@@ -1,8 +1,8 @@
 """動画生成APIサーバー(ローカル/自宅サーバー向け)。
 
 POST /api/jobs にXF MIDI(+soramimic editorの書き出しJSON、元歌詞)を投げると
-analyze → import-editor(またはconvert) → synthesize → mix → video を
-バックグラウンドで順に実行する。進捗は GET /api/jobs/{id}、完成動画は
+analyze → import-editor(またはconvert) の後、歌声合成+mixと無音動画生成を
+並列実行し、最後に音声を結合する。進捗は GET /api/jobs/{id}、完成動画は
 GET /api/jobs/{id}/video で取得する。GET / に簡易Web UIを同梱。
 
 環境変数 SORAMIMIC_VIDEO_API_KEY を設定すると全APIで X-API-Key ヘッダ
@@ -18,6 +18,7 @@ SORAMIMIC_PUBLIC=1 を設定すると「公開モード」になり、匿名セ�
 
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import hmac
@@ -35,6 +36,7 @@ import time
 import traceback
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -882,7 +884,14 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     from .editor_io import import_editor, save_raw
     from .mix import mix
     from .synthesize import synthesize
-    from .video import make_video
+    from .video import (
+        actual_video_total_sec,
+        attach_audio,
+        encode_silent_video,
+        make_video,
+        planned_video_total_sec,
+        prepare_video,
+    )
     from .xfparse import analyze_midi
 
     d = job.dir
@@ -942,31 +951,102 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             save_raw(raw, d)
             project.save(d)
 
-    _run_synthesize(job, config, project, synthesize)
-    # 自動調整が決めたキー変更(song.key_shift)を project.json に残す。
-    # 続く mix はこの値だけ伴奏を移調して歌と調を合わせる
-    project.save(d)
-    with _stage(job, "mix"):
-        mix(project, d, soundfont=config.get("soundfont"))
-    with _stage(job, "video"):
-        layout, job.layout_source = resolve_layout(job, config)
-        from .align import parse_granularity_override
+    layout, job.layout_source = resolve_layout(job, config)
+    from .align import parse_granularity_override
 
-        return make_video(
-            project,
-            d,
-            font=config.get("font") or default_font(),
-            image_cache=config.get("image_cache"),
-            layout=layout,
-            granularity=parse_granularity_override(job.params.get("subtitle_granularity")),
-            song_title=song_title_of(job.params),
-            song_title_kana=song_title_kana_of(job.params),
-            synth_credit=synth_credit_of(job.params, config),
-            fps=config.get("video_fps", 30),
-            image_lead_sec=config.get("video_image_lead_sec", 0.1),
-            original_credit=original_credit_of(job.params),
-            credit_notice=credit_notice_of(job.params),
-        )
+    video_options: dict[str, Any] = {
+        "font": config.get("font") or default_font(),
+        "image_cache": config.get("image_cache"),
+        "layout": layout,
+        "granularity": parse_granularity_override(
+            job.params.get("subtitle_granularity")
+        ),
+        "song_title": song_title_of(job.params),
+        "song_title_kana": song_title_kana_of(job.params),
+        "synth_credit": synth_credit_of(job.params, config),
+        "fps": config.get("video_fps", 30),
+        "image_lead_sec": config.get("video_image_lead_sec", 0.1),
+        "original_credit": original_credit_of(job.params),
+        "credit_notice": credit_notice_of(job.params),
+    }
+
+    if not config.get("parallel_video", True):
+        _run_synthesize(job, config, project, synthesize)
+        project.save(d)
+        with _stage(job, "mix"):
+            mix(project, d, soundfont=config.get("soundfont"))
+        with _stage(job, "video"):
+            return make_video(project, d, **video_options)
+
+    # 映像側はキー変更(song.key_shift)を参照しない。合成側がprojectを更新しても
+    # 競合しないよう、変換直後のsnapshotを別スレッドへ渡す。
+    visual_project = copy.deepcopy(project)
+    planned_total = planned_video_total_sec(visual_project)
+    abort = threading.Event()
+    visual_failure: list[Exception] = []
+    silent_video: Path | None = None
+    silent_video_path = d / "video" / "video-only.mp4"
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video")
+    runproc.set_cancel_check(lambda: job.cancel_event.is_set() or abort.is_set())
+
+    def build_silent_video() -> Path:
+        try:
+            prepared = prepare_video(
+                visual_project, d, planned_total, **video_options
+            )
+            return encode_silent_video(prepared)
+        except Exception as exc:
+            if not abort.is_set() and not job.cancel_event.is_set():
+                visual_failure.append(exc)
+            abort.set()
+            runproc.kill_current()
+            raise
+
+    future = executor.submit(build_silent_video)
+    try:
+        try:
+            _run_synthesize(job, config, project, synthesize)
+            # 自動調整が決めたキー変更を保存し、伴奏も同じだけ移調する。
+            project.save(d)
+            with _stage(job, "mix"):
+                audio_path = mix(project, d, soundfont=config.get("soundfont"))
+        except Exception as audio_error:
+            abort.set()
+            runproc.kill_current()
+            try:
+                future.result()
+            except Exception:
+                pass
+            if visual_failure:
+                raise visual_failure[0] from audio_error
+            raise
+
+        with _stage(job, "video"):
+            silent_video = future.result()
+            actual_total = actual_video_total_sec(project, audio_path)
+            frame_sec = 1.0 / int(video_options["fps"])
+            if actual_total > planned_total + frame_sec:
+                # 予定より長い音声をstream copyで延ばすことはできない。品質を
+                # 優先し、この稀なケースだけ従来の1パス生成へ戻す。
+                logger.warning(
+                    "完成音声が動画予定尺を%.3f秒超えたため直列生成へ戻します",
+                    actual_total - planned_total,
+                )
+                silent_video.unlink(missing_ok=True)
+                silent_video = None
+                return make_video(project, d, audio=str(audio_path), **video_options)
+            return attach_audio(
+                silent_video,
+                audio_path,
+                actual_total,
+                out=d / "video" / "out.mp4",
+            )
+    finally:
+        abort.set()
+        runproc.kill_current()
+        executor.shutdown(wait=True, cancel_futures=True)
+        runproc.set_cancel_check(job.cancel_event.is_set)
+        silent_video_path.unlink(missing_ok=True)
 
 
 LAYOUT_FILENAME = "layout.json"
@@ -1363,6 +1443,7 @@ def create_app(
     voicevox_url: str = "http://127.0.0.1:50021",
     video_fps: int = 30,
     video_image_lead_sec: float = 0.1,
+    parallel_video: bool = True,
 ) -> FastAPI:
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     from .editor_io import editor_sessions_dir
@@ -1386,6 +1467,7 @@ def create_app(
         "voicevox_url": voicevox_url,
         "video_fps": video_fps,
         "video_image_lead_sec": video_image_lead_sec,
+        "parallel_video": parallel_video,
         # 合成の所要時間の目安(曲秒あたりの実処理秒)を実行ごとに記録して次回に使う
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
         # Missing configuration still enforces an in-process IP backstop, but
