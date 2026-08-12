@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from PIL import Image
@@ -182,6 +183,41 @@ def test_sync_skips_second_revalidation_for_priority_urls(tmp_path, monkeypatch)
     assert result["unchanged"] == 1
     assert result["new"] == 1
     assert result["promoted"] == 1
+
+
+def test_sync_fetches_network_images_with_two_workers(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    urls = [f"https://example.com/{index}.png" for index in range(3)]
+    csv_path = _wordlist(
+        wordlists,
+        "".join(f"{url},,credit {index}\n" for index, url in enumerate(urls)),
+    )
+    downloaded = tmp_path / "download.png"
+    _png(downloaded)
+    lock = threading.Lock()
+    release = threading.Event()
+    active = peak = started = 0
+
+    def download(*args, **kwargs):
+        nonlocal active, peak, started
+        with lock:
+            active += 1
+            started += 1
+            peak = max(peak, active)
+            if started >= 2:
+                release.set()
+        assert release.wait(timeout=2)
+        with lock:
+            active -= 1
+        return downloaded
+
+    monkeypatch.setattr(prewarm, "download_image", download)
+    result = prewarm.sync_asset_store(
+        [csv_path], tmp_path / "assets", wordlists_dir=wordlists,
+        download_workers=2,
+    )
+    assert result["promoted"] == 1
+    assert peak == 2
 
 
 def test_credit_refresh_failure_keeps_last_good(tmp_path, monkeypatch):
