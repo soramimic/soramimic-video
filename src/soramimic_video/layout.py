@@ -217,9 +217,6 @@ def _display_value(column: str, value: object) -> object:
     """CSVの保存形式を変えず、カード表示向けに値を整える。"""
     if column == "team":
         return re.sub(r"(?<=[^\x00-\x7f])-(?=[^\x00-\x7f])", "・", str(value))
-    if column == "level":
-        short = {"小学校": "小学", "中学校": "中学", "高等学校": "高校"}
-        return "・".join(short.get(part, part) for part in str(value).split("/"))
     return value
 
 
@@ -338,11 +335,6 @@ def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> li
         values["lifespan"] = f"{birth_year}年生まれ"
     elif death_year:
         values["lifespan"] = f"{death_year}年没"
-    if not is_missing(data.get("level")) and not is_missing(data.get("subject")):
-        level = str(_display_value("level", data["level"]))
-        subject = str(data["subject"]).replace("/", "・")
-        separator = "｜" if "/" in str(data["level"]) or "/" in str(data["subject"]) else ""
-        values["school_subject"] = f"{level}{separator}{subject}"
     out = []
     for el in elements:
         if isinstance(el, TextElement):
