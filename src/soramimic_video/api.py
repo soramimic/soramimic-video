@@ -760,6 +760,14 @@ def original_credit_of(params: dict[str, Any]) -> str:
     return str(params.get("original_credit") or "").strip()
 
 
+def original_display_credit_of(params: dict[str, Any]) -> str:
+    """既知プリセット用の簡潔な表示。権利情報の詳細と分離する。"""
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("original_display_credit"):
+        return str(entry["original_display_credit"]).strip()
+    return ""
+
+
 def credit_notice_of(params: dict[str, Any]) -> str:
     """権利者・ライセンス指定表記。既知のサンプル曲はmanifestを優先する。"""
     entry = _sample_entry_of(params)
@@ -975,6 +983,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         "fps": config.get("video_fps", 30),
         "image_lead_sec": config.get("video_image_lead_sec", 0.1),
         "original_credit": original_credit_of(job.params),
+        "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
     }
 
