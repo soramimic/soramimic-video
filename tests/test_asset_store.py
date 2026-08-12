@@ -24,6 +24,17 @@ def test_manifest_cache_is_bounded():
     assert asset_store._read_manifest.cache_info().maxsize == 2
 
 
+def test_orphaned_manifest_entry_uses_runtime_fallback(tmp_path):
+    url = "https://example.com/old.png"
+    store = tmp_path / "assets"
+    store.mkdir()
+    (store / "manifest.json").write_text(json.dumps({"assets": {url: {
+        "status": "available", "local_path": "images/old.png", "orphaned_at": "now",
+    }}}))
+    assert asset_store.manifest_entry(url, store) is None
+    assert asset_store.local_asset(url, store) == (False, None)
+
+
 def test_sync_uses_local_raw_github_image_and_runtime_is_offline(tmp_path, monkeypatch):
     wordlists = tmp_path / "wordlists"
     local = wordlists / "images" / "cards" / "a.png"
@@ -138,6 +149,39 @@ def test_sync_bypasses_configured_store_and_detects_stale_revalidate(tmp_path, m
     assert calls[-1]["use_asset_store"] is False
     assert result["failed"] == 1  # metadata checked_at did not advance: stale fallback
     assert result["promoted"] == 0
+
+
+def test_sync_skips_second_revalidation_for_priority_urls(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    first = "https://example.com/priority.png"
+    second = "https://example.com/rest.png"
+    priority_csv = _wordlist(wordlists, f"{first},,priority credit\n")
+    store = tmp_path / "assets"
+    downloaded = tmp_path / "download.png"
+    _png(downloaded)
+    calls: list[str] = []
+
+    def download(url, *args, **kwargs):
+        calls.append(url)
+        return downloaded
+
+    monkeypatch.setattr(prewarm, "download_image", download)
+    prewarm.sync_asset_store([priority_csv], store, wordlists_dir=wordlists)
+    all_csv = wordlists / "all.csv"
+    all_csv.write_text(
+        "image,image_page,image_credit\n"
+        f"{first},,priority credit\n{second},,rest credit\n",
+        encoding="utf-8",
+    )
+    calls.clear()
+    result = prewarm.sync_asset_store(
+        [all_csv], store, wordlists_dir=wordlists, revalidate=True,
+        skip_revalidate_urls={first},
+    )
+    assert calls == [second]
+    assert result["unchanged"] == 1
+    assert result["new"] == 1
+    assert result["promoted"] == 1
 
 
 def test_credit_refresh_failure_keeps_last_good(tmp_path, monkeypatch):
