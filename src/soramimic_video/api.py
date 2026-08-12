@@ -1485,10 +1485,15 @@ def create_app(
             "/ogp-soramimic-v1.png",
             "/ogp-soramimic-v2.png",
             "/ogp-soramimic-v3.png",
+            "/ogp-soramimic-v4.png",
             "/logo-soramimic-v1.png",
             "/logo-soramimic-symbol-v1.png",
             "/logo-soramimic-symbol-v2.png",
+            "/logo-soramimic-symbol-v3.png",
             "/logo-soramimic-wordmark-v1.png",
+            "/logo-soramimic-wordmark-v2.png",
+            "/logo-soramimic-horizontal-v1.png",
+            "/logo-soramimic-video-v1.png",
         }:
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
@@ -1748,6 +1753,15 @@ def create_app(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/ogp-soramimic-v4.png", include_in_schema=False)
+    def ogp_image_v4() -> FileResponse:
+        """Canva提供ロゴを使ったSNSクローラ向けOGP画像。"""
+        return FileResponse(
+            STATIC_DIR / "ogp-soramimic-v4.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @app.get("/logo-soramimic-v1.png", include_in_schema=False)
     def brand_logo_v1() -> FileResponse:
         """画面ヘッダー向けの版付きブランドロゴ。"""
@@ -1775,11 +1789,47 @@ def create_app(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/logo-soramimic-symbol-v3.png", include_in_schema=False)
+    def brand_symbol_v3() -> FileResponse:
+        """Canva提供の円周に沿ったシンボル。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-symbol-v3.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @app.get("/logo-soramimic-wordmark-v1.png", include_in_schema=False)
     def brand_wordmark_v1() -> FileResponse:
         """デザイナー正本から作成した版付き文字ロゴ。"""
         return FileResponse(
             STATIC_DIR / "logo-soramimic-wordmark-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-wordmark-v2.png", include_in_schema=False)
+    def brand_wordmark_v2() -> FileResponse:
+        """Canva提供の文字ロゴ。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-wordmark-v2.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-horizontal-v1.png", include_in_schema=False)
+    def brand_horizontal_v1() -> FileResponse:
+        """Canva提供のマーク・文字ロゴ横並び版。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-horizontal-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-video-v1.png", include_in_schema=False)
+    def brand_video_v1() -> FileResponse:
+        """Canva提供のSoramimic video完成ロゴ。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-video-v1.png",
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )

@@ -1319,7 +1319,7 @@ def test_ogp_image_is_public_versioned_png(client):
     from PIL import Image
 
     # v1はimmutable URLとして公開済みなので、既存SNSキャッシュ向けに残す。
-    for version in ("v1", "v2", "v3"):
+    for version in ("v1", "v2", "v3", "v4"):
         response = client.get(f"/ogp-soramimic-{version}.png")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
@@ -1332,6 +1332,15 @@ def test_ogp_image_is_public_versioned_png(client):
             api_mod.STATIC_DIR / f"ogp-soramimic-{version}.png"
         ) as image:
             assert image.size == (1200, 630)
+
+    with Image.open(api_mod.STATIC_DIR / "ogp-soramimic-v4.png") as image:
+        # 旧ロゴを隠していた単色矩形の境界を、新版へ持ち込まない。
+        image = image.convert("RGB")
+        for y in (55, 294):
+            for x in (160, 1040):
+                before = image.getpixel((x - 1, y))
+                after = image.getpixel((x, y))
+                assert max(abs(a - b) for a, b in zip(before, after, strict=True)) <= 1
 
 
 def test_brand_logo_is_public_versioned_transparent_png(client):
@@ -1352,7 +1361,7 @@ def test_brand_logo_is_public_versioned_transparent_png(client):
 def test_brand_symbols_are_public_versioned_transparent_png(client):
     from PIL import Image
 
-    for version in ("v1", "v2"):
+    for version in ("v1", "v2", "v3"):
         response = client.get(f"/logo-soramimic-symbol-{version}.png")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
@@ -1378,21 +1387,46 @@ def test_brand_symbols_are_public_versioned_transparent_png(client):
         )
 
 
-def test_designer_wordmark_is_public_versioned_transparent_png(client):
+def test_designer_wordmarks_are_public_versioned_transparent_png(client):
     from PIL import Image
 
-    response = client.get("/logo-soramimic-wordmark-v1.png")
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "image/png"
-    assert response.headers["cache-control"] == (
-        "public, max-age=31536000, immutable"
-    )
-    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
-    assert len(response.content) < 1024 * 1024
-    with Image.open(api_mod.STATIC_DIR / "logo-soramimic-wordmark-v1.png") as image:
-        assert image.mode == "RGBA"
-        assert image.size == (1397, 199)
-        assert image.getpixel((0, 0))[3] == 0
+    for version, expected_size in (("v1", (1397, 199)), ("v2", (1929, 276))):
+        response = client.get(f"/logo-soramimic-wordmark-{version}.png")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["cache-control"] == (
+            "public, max-age=31536000, immutable"
+        )
+        assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+        assert len(response.content) < 1024 * 1024
+        with Image.open(
+            api_mod.STATIC_DIR / f"logo-soramimic-wordmark-{version}.png"
+        ) as image:
+            assert image.mode == "RGBA"
+            assert image.size == expected_size
+            assert image.getpixel((0, 0))[3] == 0
+
+
+def test_canva_horizontal_logos_are_public_transparent_pngs(client):
+    from PIL import Image
+
+    expected = {
+        "logo-soramimic-horizontal-v1.png": (1937, 350),
+        "logo-soramimic-video-v1.png": (1937, 373),
+    }
+    for filename, expected_size in expected.items():
+        response = client.get(f"/{filename}")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["cache-control"] == (
+            "public, max-age=31536000, immutable"
+        )
+        assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+        assert len(response.content) < 1024 * 1024
+        with Image.open(api_mod.STATIC_DIR / filename) as image:
+            assert image.mode == "RGBA"
+            assert image.size == expected_size
+            assert image.getpixel((0, 0))[3] == 0
 
 
 def test_index_html_share_hint_matches_platform_capability():
