@@ -216,13 +216,18 @@ def sync_asset_store(
     revalidate: bool = False,
     dry_run: bool = False,
     max_bytes: int = MAX_ASSET_BYTES,
+    skip_revalidate_urls: set[str] | None = None,
 ) -> dict[str, int]:
     """Synchronize all built-in wordlist assets into an atomic persistent manifest."""
     rows = _collect_rows(csv_paths)
+    skip_revalidate_urls = skip_revalidate_urls or set()
     old = _candidate_manifest(store)
     old_assets = old.get("assets", {}) if isinstance(old.get("assets"), dict) else {}
     new_count = sum(url not in old_assets for url in rows)
-    changed_candidates = sum(url in old_assets for url in rows) if revalidate else 0
+    changed_candidates = (
+        sum(url in old_assets and url not in skip_revalidate_urls for url in rows)
+        if revalidate else 0
+    )
     orphaned = sum(url not in rows for url in old_assets)
     if dry_run:
         unknown = sum(
@@ -247,7 +252,10 @@ def sync_asset_store(
         for index, (url, row) in enumerate(rows.items(), 1):
             runproc.raise_if_cancelled()
             previous = assets.get(url)
-            if previous and previous.get("status") == "available" and not revalidate:
+            skip_revalidate = url in skip_revalidate_urls
+            if previous and previous.get("status") == "available" and (
+                not revalidate or skip_revalidate
+            ):
                 unchanged += 1
             else:
                 try:
@@ -308,7 +316,7 @@ def sync_asset_store(
                 }
             elif commons_file_title(url, str(row.get("image_page") or "")):
                 if (
-                    revalidate
+                    (revalidate and not skip_revalidate)
                     or "credit" not in assets[url]
                     or assets[url]["credit"].get("status") == "unknown"
                 ):

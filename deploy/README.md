@@ -140,6 +140,9 @@ ETag/Last-Modifiedで再検証します。失敗時は既存のlast-good画像�
 `manifest.pending.json`へ保存して次回再開し、正常な既存`manifest.json`は維持します。
 初回同期が不完全ならactive manifestは作りません。`asset-status`はpendingの件数と失敗状態も
 表示し、pending・未取得画像・不明クレジットがあれば終了コード1です。
+`--priority-wordlist NAME`を複数指定すると、そのリスト群だけを先に完全同期してactive化し、
+続けて残りの全リストを同期します。後半の同期中・失敗時も優先リストのactive manifestは
+維持されます。systemd unitは公開カタログの5リストをこの方式で先行処理します。
 
 定期同期には`deploy/systemd/soramimic-video-assets-sync.{service,timer}`を
 `/etc/systemd/system/`へ設置し、`systemctl enable --now soramimic-video-assets-sync.timer`

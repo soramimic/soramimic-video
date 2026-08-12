@@ -256,7 +256,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
     import os
 
     from .asset_store import ASSET_STORE_ENV
-    from .prewarm import sync_asset_store, wordlist_csv_paths
+    from .prewarm import _collect_rows, sync_asset_store, wordlist_csv_paths
 
     store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "")
     if not store_value:
@@ -267,9 +267,42 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
     if not csv_paths:
         print(f"単語リストCSVがありません: {wordlists}", file=sys.stderr)
         return 2
+    priority_paths: list[Path] = []
+    for name in args.priority_wordlist:
+        if Path(name).name != name or not name:
+            print(f"不正な優先単語リスト名です: {name}", file=sys.stderr)
+            return 2
+        path = wordlists / f"{name}.csv"
+        if not path.is_file():
+            print(f"優先単語リストCSVがありません: {path}", file=sys.stderr)
+            return 2
+        priority_paths.append(path)
+    priority_urls: set[str] = set()
+    if priority_paths:
+        priority_urls = set(_collect_rows(priority_paths))
+        priority = sync_asset_store(
+            priority_paths, Path(store_value), wordlists_dir=wordlists,
+            revalidate=args.revalidate, dry_run=args.dry_run,
+        )
+        print(
+            f"優先asset sync完了: 失敗 {priority['failed']} / "
+            f"クレジット取得失敗 {priority.get('credit_failed', 0)} / "
+            f"クレジット不明 {priority['credit_unknown']} / "
+            f"active昇格 {bool(priority.get('promoted', 0))} "
+            f"(URL計 {priority['total']})"
+        )
+        if not args.dry_run and (
+            priority["failed"]
+            or priority.get("credit_failed", 0)
+            or priority["credit_unknown"]
+            or not priority.get("promoted", 0)
+        ):
+            print("優先assetが不完全なため、全件同期は次回再試行します", file=sys.stderr)
+            return 1
     summary = sync_asset_store(
         csv_paths, Path(store_value), wordlists_dir=wordlists,
         revalidate=args.revalidate, dry_run=args.dry_run,
+        skip_revalidate_urls=priority_urls,
     )
     prefix = "dry-run" if args.dry_run else "asset sync完了"
     print(
@@ -590,6 +623,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--revalidate", action="store_true",
         help="既存URLもETag/Last-Modifiedまたはローカル原本で変更確認する",
+    )
+    p.add_argument(
+        "--priority-wordlist", action="append", default=[], metavar="NAME",
+        help="指定リストを先に完全同期・active化してから全件同期する(複数指定可)",
     )
     p.add_argument("--dry-run", action="store_true", help="取得せず差分件数だけ表示する")
     p.set_defaults(func=cmd_sync_assets)
