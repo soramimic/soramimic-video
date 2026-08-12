@@ -534,10 +534,27 @@ def test_setup_seed_has_no_results_so_viewing_alone_is_not_an_edit():
     assert "sig === meta.sig" in live and 'state: "none"' in live
 
 
-def test_restored_sample_midi_is_refetched_at_startup():
-    """復元したMIDIがサンプル曲なら、保存時点の中身を使わず取り直す。"""
+def test_restored_sample_data_is_refetched_unless_lyrics_were_edited():
+    """復元サンプルのMIDIと未編集歌詞は取り直し、手編集歌詞だけ残す。"""
     init = _function_body(_script(), "async function initBuilder()")
-    assert "applySample({ midiOnly: true })" in init
+    assert "sampleLyricsId === restoredId" in init
+    assert "sampleLyricsBaseline !== null" in init
+    assert '$("lyrics").value !== sampleLyricsBaseline' in init
+    assert "applySample({ midiOnly: editedLyrics })" in init
+
+
+def test_sample_lyrics_baseline_is_saved_and_restored():
+    """標準歌詞の更新と手編集の保護はリロードを跨いで判定できる。"""
+    script = _script()
+    apply_sample = _function_body(script, "async function applySample(")
+    assert "sampleLyricsId = sid;" in apply_sample
+    assert "sampleLyricsBaseline = sampleLyrics;" in apply_sample
+    save = _function_body(script, "function saveForm()")
+    assert "sampleLyricsId," in save
+    assert "sampleLyricsBaseline," in save
+    restore = _function_body(script, "async function doRestoreForm()")
+    assert 'sampleLyricsId = state.sampleLyricsId || "";' in restore
+    assert 'typeof state.sampleLyricsBaseline === "string"' in restore
 
 
 def test_sample_midi_fetch_bypasses_the_browser_cache():

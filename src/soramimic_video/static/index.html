@@ -2146,6 +2146,10 @@ const samplesReady = loadSamples();
 // localStorageから復元したMIDIは「出どころ不明」なので空文字。
 // 投入前に選択中の曲と突き合わせ、食い違っていたら取り直す(ensureSelectedSampleMidi)。
 let midiSampleId = "";
+// #lyrics がどのサンプルの配信値かと、その時点の未編集値。リロード時に
+// 「前回の標準歌詞」だけ最新版へ更新し、ユーザーが手で直した歌詞は残すために使う。
+// null はこの情報を保存する前の旧版状態で、標準歌詞とみなし一度最新版へ移行する。
+let sampleLyricsId = "", sampleLyricsBaseline = null;
 // applySample による注入のあいだだけ true。#midi の change で来歴を消さないための番人
 let midiFromSample = false;
 // 自分で選んだファイル・復元・拒否によるクリアでは来歴が失われる(=サンプル曲の
@@ -2183,7 +2187,10 @@ async function applySample(opts = {}) {
     midiSampleId = sid;   // この曲のMIDIが入っている(投入時の突き合わせに使う)
     $("midi-restore-hint").hidden = true;
     if (lyricsRes) {
-      $("lyrics").value = await lyricsRes.text();
+      const sampleLyrics = await lyricsRes.text();
+      sampleLyricsId = sid;
+      sampleLyricsBaseline = sampleLyrics;
+      $("lyrics").value = sampleLyrics;
       $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
     }
     // クレジット表記: プリセットがある曲は選曲時に自動で入れる(権利者指定の
@@ -2964,12 +2971,15 @@ async function initBuilder() {
   const def = DEFAULT_COMBO;
   // 1. 曲: 復元されたMIDIがサンプル曲なら、その選択に戻し、MIDIは取り直す。
   //    復元したMIDI(localStorageのdataURL)は保存した時点の中身なので、同梱
-  //    サンプルが作り直されると古い版のまま何日も使われ続けてしまう。元歌詞は
-  //    手で直しているかもしれないので触らない(midiOnly)。
+  //    サンプルが作り直されると古い版のまま何日も使われ続けてしまう。元歌詞も
+  //    前回の標準値のままなら取り直す。標準値から手で直されているときだけ残す。
   const restoredId = (($("midi").files[0] || {}).name || "").replace(/\.[^.]+$/, "");
   if (!$("sample-select").value && known.has(restoredId)) {
     $("sample-select").value = restoredId;
-    trackSample(applySample({ midiOnly: true }));
+    const editedLyrics = sampleLyricsId === restoredId
+      && sampleLyricsBaseline !== null
+      && $("lyrics").value !== sampleLyricsBaseline;
+    trackSample(applySample({ midiOnly: editedLyrics }));
   }
   // 2. 単語リストが未設定なら既定の組み合わせのものにする
   //    (エディタで書いた自作リストを使っているときは名前が空でも「未設定」ではない)
@@ -5229,6 +5239,9 @@ function saveForm() {
   try {
     localStorage.setItem(FORM_KEY, JSON.stringify({
       lyrics: $("lyrics").value,
+      // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
+      sampleLyricsId,
+      sampleLyricsBaseline,
       wordlist: $("wordlist").value,
       // 選んだ単語リスト(confエントリ)の絞り込み。画面には出さないが、同名で
       // 絞り込み違いのグループを復元時に選び分けるために持ち回る
@@ -5434,6 +5447,9 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
+    sampleLyricsId = state.sampleLyricsId || "";
+    sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
+      ? state.sampleLyricsBaseline : null;
     $("original-credit").value = state.originalCredit || "";
     $("credit-notice").value = state.creditNotice || "";
     // 旧版の保存(duplicate / preset / convertSliders)はもう画面に対応する項目が
