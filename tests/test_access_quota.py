@@ -395,10 +395,27 @@ def test_readiness_reports_only_boolean_security_checks(tmp_path, monkeypatch):
     assert response.json()["checks"] == {
         "jobs_dir_writable": True,
         "persistent_ip_hash": True,
+        "particle_reading": True,
         "access": True,
     }
     assert "team.cloudflareaccess.com" not in response.text
     assert "member@example.com" not in response.text
+
+
+def test_readiness_rejects_missing_particle_reader(tmp_path, monkeypatch):
+    from soramimic_video import reading as reading_mod
+
+    monkeypatch.setenv(api_mod.ALLOW_LOCAL_OPS_ENV, "1")
+
+    def unavailable(_text):
+        raise RuntimeError("missing MeCab")
+
+    monkeypatch.setattr(reading_mod, "particle_pronunciations", unavailable)
+    client = TestClient(api_mod.create_app(tmp_path / "jobs"), client=("127.0.0.1", 1))
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["particle_reading"] is False
 
 
 def test_ui_has_exact_unlimited_quota_message():
