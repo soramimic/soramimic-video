@@ -4,7 +4,7 @@
     {"type": "image", "box": [0.02, 0.0366, 0.528, 0.7334]},
     {"type": "text", "text": "{original}", "box": [0.5554, 0.1433, 0.4246, 0.1667],
      "size": 0.115, "color": "white", "align": "center"},
-    {"type": "text", "text": "{school_subject}", "box": [0.5554, 0.3667, 0.4246, 0.0732],
+    {"type": "text", "text": "{subject}", "box": [0.5554, 0.3667, 0.4246, 0.0732],
      "size": 0.045, "color": "#9ad8ff", "align": "center", "require": "subject"},
     {"type": "text", "text": "{description}", "box": [0.5554, 0.5, 0.4246, 0.2404],
      "size": 0.045, "color": "#e6e6e6", "align": "center", "valign": "top", "wrap": true,
