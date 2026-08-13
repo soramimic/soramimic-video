@@ -95,7 +95,20 @@ case $url in
   *) exit 22 ;;
 esac
 EOF
-chmod +x "$tmp/bin/systemctl" "$tmp/bin/systemd-run" "$tmp/bin/ss" "$tmp/bin/curl"
+cat >"$tmp/bin/runuser" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == -u ]]
+shift 2
+[[ $1 == -- ]]
+shift
+exec "$@"
+EOF
+cat >"$tmp/bin/uv-fail" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$tmp/bin/systemctl" "$tmp/bin/systemd-run" "$tmp/bin/ss" "$tmp/bin/curl" \
+  "$tmp/bin/runuser" "$tmp/bin/uv-fail"
 
 sha1=1111111111111111111111111111111111111111
 sha2=2222222222222222222222222222222222222222
@@ -142,6 +155,31 @@ common_env=(
   SORAMIMIC_PROC_ROOT="$tmp/proc"
 )
 : >"$tmp/public.env"
+
+# A remote --no-checkout clone initially contains only .git. Prepare must move it
+# without an empty-glob mv failure, and any later failure must clean paths using
+# globals that remain valid when the EXIT trap runs.
+git init --quiet "$tmp/prepare-source"
+git -C "$tmp/prepare-source" config user.email test@example.invalid
+git -C "$tmp/prepare-source" config user.name test
+echo fixture >"$tmp/prepare-source/file"
+git -C "$tmp/prepare-source" add file
+git -C "$tmp/prepare-source" commit --quiet -m fixture
+git -C "$tmp/prepare-source" branch -M main
+git clone --quiet --bare "$tmp/prepare-source" "$tmp/prepare-remote.git"
+prepare_sha=$(git -C "$tmp/prepare-source" rev-parse HEAD)
+mkdir -p "$tmp/prepare-app/releases" "$tmp/prepare-app/deployments"
+if env "${common_env[@]}" SORAMIMIC_APP_ROOT="$tmp/prepare-app" \
+  SORAMIMIC_CURRENT_LINK="$tmp/prepare-app/current" \
+  SORAMIMIC_REPO_URL="$tmp/prepare-remote.git" SORAMIMIC_SOURCE_REF=main \
+  SORAMIMIC_UV_BIN="$tmp/bin/uv-fail" "$deploy" prepare "$prepare_sha" \
+  >"$tmp/prepare.out" 2>"$tmp/prepare.err"; then
+  echo "prepare unexpectedly ignored the injected uv failure" >&2
+  exit 1
+fi
+! grep -E 'missing destination|unbound variable' "$tmp/prepare.err" >/dev/null
+[[ -z $(find "$tmp/prepare-app/releases" -mindepth 1 -print -quit) ]]
+[[ -z $(find "$tmp/prepare-app/deployments" -mindepth 1 -print -quit) ]]
 
 # Deploy and rollback share one non-blocking host lock.
 exec 8>"$tmp/deploy.lock"

@@ -10,10 +10,40 @@ trap 'rm -rf -- "$tmp"' EXIT
 # GITHUB_TOKEN merges suppress push workflows, so automerge must publish the
 # already-verified PR result as an exact merge-SHA check for the host controller.
 grep -Fx '  checks: write' "$automerge_workflow" >/dev/null
+grep -Fx '  pull_request_target:' "$automerge_workflow" >/dev/null
+! grep -Fx '  pull_request:' "$automerge_workflow" >/dev/null
+! grep -F 'actions/checkout' "$automerge_workflow" >/dev/null
 grep -F 'merge_sha=$(echo "$merge" | jq -r .sha)' "$automerge_workflow" >/dev/null
 grep -F 'gh api -X POST "repos/$REPO/check-runs"' "$automerge_workflow" >/dev/null
 grep -F -- '-f name=test -f head_sha="$merge_sha" -f status=completed' \
   "$automerge_workflow" >/dev/null
+grep -F 'and .app.slug == "github-actions"' "$automerge_workflow" >/dev/null
+grep -F 'and .conclusion != "success")] | length' "$automerge_workflow" >/dev/null
+grep -F '"$test_total" -gt 0' "$automerge_workflow" >/dev/null
+grep -F 'if [ "$tested_shape" != "$actual_shape" ]' "$automerge_workflow" >/dev/null
+
+automerge_gate() {
+  local runs=$1 total incomplete failed tests test_total test_incomplete test_unsuccessful
+  total=$(jq 'length' <<<"$runs")
+  incomplete=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+  failed=$(jq '[.[] | select(.status == "completed" and .conclusion != "success" and
+    .conclusion != "neutral" and .conclusion != "skipped")] | length' <<<"$runs")
+  tests=$(jq '[.[] | select(.name == "test" and .app.slug == "github-actions")]' <<<"$runs")
+  test_total=$(jq 'length' <<<"$tests")
+  test_incomplete=$(jq '[.[] | select(.status != "completed")] | length' <<<"$tests")
+  test_unsuccessful=$(jq '[.[] | select(.status == "completed" and
+    .conclusion != "success")] | length' <<<"$tests")
+  (( total > 0 && incomplete == 0 && failed == 0 && test_total > 0 &&
+    test_incomplete == 0 && test_unsuccessful == 0 ))
+}
+success_test='{"name":"test","app":{"slug":"github-actions"},"status":"completed","conclusion":"success"}'
+skipped_test='{"name":"test","app":{"slug":"github-actions"},"status":"completed","conclusion":"skipped"}'
+irrelevant='{"name":"Dependency review","app":{"slug":"github-actions"},"status":"completed","conclusion":"skipped"}'
+failed_other='{"name":"lint","app":{"slug":"github-actions"},"status":"completed","conclusion":"failure"}'
+! automerge_gate "[$irrelevant]"
+! automerge_gate "[$skipped_test]"
+automerge_gate "[$success_test,$irrelevant]"
+! automerge_gate "[$success_test,$failed_other]"
 
 git init --bare --quiet "$tmp/remote.git"
 git init --quiet "$tmp/source"
