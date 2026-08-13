@@ -259,7 +259,8 @@ installerは次も同時に行います。
 
 - controllerが受け入れるbranchと環境の対応は上表の3通りだけ
 - 各branchの先端SHAに対するGitHubの`test` check成功後だけbuild・activate。devのauto-mergeは
-  PRの全check成功を確認してからmergeし、その検証結果をmerge SHAの`test` checkとして記録
+  GitHub Actions `test`を含むPRの全check成功と、検証済みmerge-refと実mergeのtree/parents一致を
+  確認してから、その検証結果をmerge SHAの`test` checkとして記録
 - 40桁SHA、remote branch head、現在版からのfast-forwardを検証
 - build中にbranchが進んだ場合は古いSHAをactivateせず、次回timerで最新を処理
 - manifest・staging PID/port・health/readiness・公開surfaceを検証後にatomic切替
