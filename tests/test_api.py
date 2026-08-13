@@ -1240,7 +1240,7 @@ def test_ogp_image_is_public_versioned_png(client):
     from PIL import Image
 
     # v1はimmutable URLとして公開済みなので、既存SNSキャッシュ向けに残す。
-    for version in ("v1", "v2", "v3", "v4"):
+    for version in ("v1", "v2", "v3", "v4", "v5"):
         response = client.get(f"/ogp-soramimic-{version}.png")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
@@ -1254,14 +1254,15 @@ def test_ogp_image_is_public_versioned_png(client):
         ) as image:
             assert image.size == (1200, 630)
 
-    with Image.open(api_mod.STATIC_DIR / "ogp-soramimic-v4.png") as image:
-        # 旧ロゴを隠していた単色矩形の境界を、新版へ持ち込まない。
-        image = image.convert("RGB")
-        for y in (55, 294):
-            for x in (160, 1040):
-                before = image.getpixel((x - 1, y))
-                after = image.getpixel((x, y))
-                assert max(abs(a - b) for a, b in zip(before, after, strict=True)) <= 1
+    for version in ("v4", "v5"):
+        with Image.open(api_mod.STATIC_DIR / f"ogp-soramimic-{version}.png") as image:
+            # 旧ロゴを隠していた単色矩形の境界を、新版へ持ち込まない。
+            image = image.convert("RGB")
+            for y in (55, 294):
+                for x in (160, 1040):
+                    before = image.getpixel((x - 1, y))
+                    after = image.getpixel((x, y))
+                    assert max(abs(a - b) for a, b in zip(before, after, strict=True)) <= 1
 
 
 def test_brand_logo_is_public_versioned_transparent_png(client):
@@ -1333,7 +1334,9 @@ def test_canva_horizontal_logos_are_public_transparent_pngs(client):
 
     expected = {
         "logo-soramimic-horizontal-v1.png": (1937, 350),
+        "logo-soramimic-horizontal-v2.png": (1859, 394),
         "logo-soramimic-video-v1.png": (1937, 373),
+        "logo-soramimic-video-v2.png": (1900, 467),
     }
     for filename, expected_size in expected.items():
         response = client.get(f"/{filename}")

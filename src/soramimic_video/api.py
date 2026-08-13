@@ -1503,6 +1503,7 @@ def create_app(
             "/ogp-soramimic-v2.png",
             "/ogp-soramimic-v3.png",
             "/ogp-soramimic-v4.png",
+            "/ogp-soramimic-v5.png",
             "/logo-soramimic-v1.png",
             "/logo-soramimic-symbol-v1.png",
             "/logo-soramimic-symbol-v2.png",
@@ -1510,7 +1511,9 @@ def create_app(
             "/logo-soramimic-wordmark-v1.png",
             "/logo-soramimic-wordmark-v2.png",
             "/logo-soramimic-horizontal-v1.png",
+            "/logo-soramimic-horizontal-v2.png",
             "/logo-soramimic-video-v1.png",
+            "/logo-soramimic-video-v2.png",
         }:
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
@@ -1789,6 +1792,15 @@ def create_app(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/ogp-soramimic-v5.png", include_in_schema=False)
+    def ogp_image_v5() -> FileResponse:
+        """更新版ロゴを使ったSNSクローラ向けOGP画像。"""
+        return FileResponse(
+            STATIC_DIR / "ogp-soramimic-v5.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @app.get("/logo-soramimic-v1.png", include_in_schema=False)
     def brand_logo_v1() -> FileResponse:
         """画面ヘッダー向けの版付きブランドロゴ。"""
@@ -1852,11 +1864,29 @@ def create_app(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/logo-soramimic-horizontal-v2.png", include_in_schema=False)
+    def brand_horizontal_v2() -> FileResponse:
+        """更新版のマーク・文字ロゴ横並び版。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-horizontal-v2.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @app.get("/logo-soramimic-video-v1.png", include_in_schema=False)
     def brand_video_v1() -> FileResponse:
         """Canva提供のSoramimic video完成ロゴ。"""
         return FileResponse(
             STATIC_DIR / "logo-soramimic-video-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-video-v2.png", include_in_schema=False)
+    def brand_video_v2() -> FileResponse:
+        """更新版のSoramimicビデオ完成ロゴ。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-video-v2.png",
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )

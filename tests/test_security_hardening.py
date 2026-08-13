@@ -191,6 +191,7 @@ def test_operational_endpoints_are_hidden_from_proxy_users(tmp_path: Path, monke
         "/ogp-soramimic-v2.png",
         "/ogp-soramimic-v3.png",
         "/ogp-soramimic-v4.png",
+        "/ogp-soramimic-v5.png",
         "/logo-soramimic-v1.png",
         "/logo-soramimic-symbol-v1.png",
         "/logo-soramimic-symbol-v2.png",
@@ -198,7 +199,9 @@ def test_operational_endpoints_are_hidden_from_proxy_users(tmp_path: Path, monke
         "/logo-soramimic-wordmark-v1.png",
         "/logo-soramimic-wordmark-v2.png",
         "/logo-soramimic-horizontal-v1.png",
+        "/logo-soramimic-horizontal-v2.png",
         "/logo-soramimic-video-v1.png",
+        "/logo-soramimic-video-v2.png",
     ):
         asset = client.get(path, headers=proxy_headers)
         assert asset.status_code == 200
