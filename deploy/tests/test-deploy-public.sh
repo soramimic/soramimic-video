@@ -61,7 +61,7 @@ case $url in
       printf '335,小田稔,小田,おだ,family,物理\n'
     fi
     ;;
-  */logo-soramimic-video-v1.png|*/ogp-soramimic-v4.png)
+  */logo-soramimic-video-v2.png|*/ogp-soramimic-v5.png)
     if [[ ${FAIL_PNG:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
       printf 'not-png'
     else
@@ -83,8 +83,8 @@ case $url in
     if [[ ${FAIL_INDEX:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
       printf '<html>missing brand</html>\n'
     else
-      printf '<meta property="og:image" content="/ogp-soramimic-v4.png">\n'
-      printf '<img src="/logo-soramimic-video-v1.png">\n'
+      printf '<meta property="og:image" content="/ogp-soramimic-v5.png">\n'
+      printf '<img src="/logo-soramimic-video-v2.png">\n'
     fi
     ;;
   *) exit 22 ;;
