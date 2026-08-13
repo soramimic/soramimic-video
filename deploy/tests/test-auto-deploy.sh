@@ -10,6 +10,9 @@ trap 'rm -rf -- "$tmp"' EXIT
 # GITHUB_TOKEN merges suppress push workflows, so automerge must publish the
 # already-verified PR result as an exact merge-SHA check for the host controller.
 grep -Fx '  checks: write' "$automerge_workflow" >/dev/null
+grep -Fx '  pull_request_target:' "$automerge_workflow" >/dev/null
+! grep -Fx '  pull_request:' "$automerge_workflow" >/dev/null
+! grep -F 'actions/checkout' "$automerge_workflow" >/dev/null
 grep -F 'merge_sha=$(echo "$merge" | jq -r .sha)' "$automerge_workflow" >/dev/null
 grep -F 'gh api -X POST "repos/$REPO/check-runs"' "$automerge_workflow" >/dev/null
 grep -F -- '-f name=test -f head_sha="$merge_sha" -f status=completed' \
