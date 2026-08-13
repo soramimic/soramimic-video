@@ -110,6 +110,7 @@ def test_header_uses_versioned_soramimic_video_logo():
     assert 'class="brand-logo"' in text
     assert 'src="/logo-soramimic-video-v1.png"' in text
     assert 'alt="Soramimic video"' in text
+    assert "歌詞が空耳で置き換わった替え歌動画を作れます。" not in text
 
 
 def test_static_hints_in_advanced_are_all_folded():
