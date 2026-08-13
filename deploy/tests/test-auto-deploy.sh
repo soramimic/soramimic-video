@@ -3,8 +3,17 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 controller="$repo_root/deploy/auto-deploy-branches.sh"
+automerge_workflow="$repo_root/.github/workflows/automerge.yaml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+
+# GITHUB_TOKEN merges suppress push workflows, so automerge must publish the
+# already-verified PR result as an exact merge-SHA check for the host controller.
+grep -Fx '  checks: write' "$automerge_workflow" >/dev/null
+grep -F 'merge_sha=$(echo "$merge" | jq -r .sha)' "$automerge_workflow" >/dev/null
+grep -F 'gh api -X POST "repos/$REPO/check-runs"' "$automerge_workflow" >/dev/null
+grep -F -- '-f name=test -f head_sha="$merge_sha" -f status=completed' \
+  "$automerge_workflow" >/dev/null
 
 git init --bare --quiet "$tmp/remote.git"
 git init --quiet "$tmp/source"
