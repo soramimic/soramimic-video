@@ -106,15 +106,19 @@ wait_json_status() {
 
 smoke_public_surface() {
   local base_url=$1 tmp_dir tmp_asset tmp_config simple_ui editor_status asset
+  local -a logos ogps assets
   tmp_dir=$(mktemp -d) || return 1
   tmp_config="$tmp_dir/config.json"
   curl -fsS --max-time 5 "$base_url/" >"$tmp_dir/index.html" || \
     { rm -rf -- "$tmp_dir"; return 1; }
-  for asset in \
-    /logo-soramimic-video-v2.png \
-    /ogp-soramimic-v5.png; do
-    grep -F "$asset" "$tmp_dir/index.html" >/dev/null || \
-      { rm -rf -- "$tmp_dir"; return 1; }
+  mapfile -t logos < <(grep -Eo '/logo-soramimic-video-v[0-9]+\.png' \
+    "$tmp_dir/index.html" | sort -u)
+  mapfile -t ogps < <(grep -Eo '/ogp-soramimic-v[0-9]+\.png' \
+    "$tmp_dir/index.html" | sort -u)
+  [[ ${#logos[@]} -eq 1 && ${#ogps[@]} -eq 1 ]] || \
+    { rm -rf -- "$tmp_dir"; return 1; }
+  assets=("${logos[0]}" "${ogps[0]}")
+  for asset in "${assets[@]}"; do
     tmp_asset="$tmp_dir/$(basename "$asset")"
     curl -fsS --max-time 5 "$base_url$asset" >"$tmp_asset" || \
       { rm -rf -- "$tmp_dir"; return 1; }

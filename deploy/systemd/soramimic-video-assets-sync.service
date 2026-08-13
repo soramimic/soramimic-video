@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=oneshot
 User=soramimic-video
 Group=soramimic-video
+SupplementaryGroups=soramimic-video-dev
 WorkingDirectory=/opt/soramimic-video-dev/current
 Environment=PYTHONUNBUFFERED=1
 Environment=SORAMIMIC_VIDEO_ASSET_STORE=/var/lib/soramimic-video-assets
