@@ -61,7 +61,7 @@ case $url in
       printf '335,小田稔,小田,おだ,family,物理\n'
     fi
     ;;
-  */logo-soramimic-video-v1.png|*/ogp-soramimic-v4.png)
+  */logo-soramimic-video-v*.png|*/ogp-soramimic-v*.png)
     if [[ ${FAIL_PNG:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
       printf 'not-png'
     else
@@ -83,14 +83,44 @@ case $url in
     if [[ ${FAIL_INDEX:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
       printf '<html>missing brand</html>\n'
     else
-      printf '<meta property="og:image" content="/ogp-soramimic-v4.png">\n'
-      printf '<img src="/logo-soramimic-video-v1.png">\n'
+      if [[ ${WRONG_BRAND_ASSETS:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
+        printf '<img src="/logo-soramimic-video-v1.png">\n'
+        printf '<img src="/logo-soramimic-video-v2.png">\n'
+      else
+        printf '<meta property="og:image" content="/ogp-soramimic-v5.png">\n'
+        printf '<img src="/logo-soramimic-video-v2.png">\n'
+      fi
     fi
     ;;
   *) exit 22 ;;
 esac
 EOF
-chmod +x "$tmp/bin/systemctl" "$tmp/bin/systemd-run" "$tmp/bin/ss" "$tmp/bin/curl"
+cat >"$tmp/bin/runuser" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == -u ]]
+shift 2
+[[ $1 == -- ]]
+shift
+if [[ ${REQUIRE_RUNUSER_GIT:-0} == 1 && $1 == git ]]; then
+  export GIT_RAN_AS_SERVICE_USER=1
+fi
+exec "$@"
+EOF
+cat >"$tmp/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ $* == *'submodule status --recursive'* && ${GIT_RAN_AS_SERVICE_USER:-0} != 1 ]]; then
+  echo 'submodule status did not run as service user' >&2
+  exit 1
+fi
+exec "$SORAMIMIC_TEST_REAL_GIT" "$@"
+EOF
+cat >"$tmp/bin/uv-fail" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$tmp/bin/systemctl" "$tmp/bin/systemd-run" "$tmp/bin/ss" "$tmp/bin/curl" \
+  "$tmp/bin/runuser" "$tmp/bin/uv-fail"
+chmod +x "$tmp/bin/git"
 
 sha1=1111111111111111111111111111111111111111
 sha2=2222222222222222222222222222222222222222
@@ -135,8 +165,35 @@ common_env=(
   SORAMIMIC_STATE_ROOT="$tmp/state"
   SORAMIMIC_ENV_FILE="$tmp/public.env"
   SORAMIMIC_PROC_ROOT="$tmp/proc"
+  SORAMIMIC_TEST_REAL_GIT="$(command -v git)"
 )
 : >"$tmp/public.env"
+
+# A remote --no-checkout clone initially contains only .git. Prepare must move it
+# without an empty-glob mv failure, and any later failure must clean paths using
+# globals that remain valid when the EXIT trap runs.
+git init --quiet "$tmp/prepare-source"
+git -C "$tmp/prepare-source" config user.email test@example.invalid
+git -C "$tmp/prepare-source" config user.name test
+echo fixture >"$tmp/prepare-source/file"
+git -C "$tmp/prepare-source" add file
+git -C "$tmp/prepare-source" commit --quiet -m fixture
+git -C "$tmp/prepare-source" branch -M main
+git clone --quiet --bare "$tmp/prepare-source" "$tmp/prepare-remote.git"
+prepare_sha=$(git -C "$tmp/prepare-source" rev-parse HEAD)
+mkdir -p "$tmp/prepare-app/releases" "$tmp/prepare-app/deployments"
+if env "${common_env[@]}" SORAMIMIC_APP_ROOT="$tmp/prepare-app" \
+  SORAMIMIC_CURRENT_LINK="$tmp/prepare-app/current" \
+  SORAMIMIC_REPO_URL="$tmp/prepare-remote.git" SORAMIMIC_SOURCE_REF=main \
+  SORAMIMIC_UV_BIN="$tmp/bin/uv-fail" REQUIRE_RUNUSER_GIT=1 \
+  "$deploy" prepare "$prepare_sha" \
+  >"$tmp/prepare.out" 2>"$tmp/prepare.err"; then
+  echo "prepare unexpectedly ignored the injected uv failure" >&2
+  exit 1
+fi
+! grep -E 'missing destination|unbound variable' "$tmp/prepare.err" >/dev/null
+[[ -z $(find "$tmp/prepare-app/releases" -mindepth 1 -print -quit) ]]
+[[ -z $(find "$tmp/prepare-app/deployments" -mindepth 1 -print -quit) ]]
 
 # Deploy and rollback share one non-blocking host lock.
 exec 8>"$tmp/deploy.lock"
@@ -199,7 +256,7 @@ env "${common_env[@]}" "$deploy" verify "$sha2" >/dev/null
 [[ -e $tmp/app/deployments/verified-$sha2.json ]]
 
 # Every surface assertion must enter activate's rollback path, not exit from inside smoke.
-for failure in FAIL_INDEX FAIL_ODA FAIL_PNG; do
+for failure in FAIL_INDEX FAIL_ODA FAIL_PNG WRONG_BRAND_ASSETS; do
   ln -sfn "$tmp/app/releases/legacy-${sha1:0:12}" "$tmp/app/current"
   if env "${common_env[@]}" "$failure=1" \
     "$deploy" activate "$sha2" --confirm "$sha2" >/dev/null 2>&1; then
