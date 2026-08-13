@@ -101,7 +101,18 @@ cat >"$tmp/bin/runuser" <<'EOF'
 shift 2
 [[ $1 == -- ]]
 shift
+if [[ ${REQUIRE_RUNUSER_GIT:-0} == 1 && $1 == git ]]; then
+  export GIT_RAN_AS_SERVICE_USER=1
+fi
 exec "$@"
+EOF
+cat >"$tmp/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ $* == *'submodule status --recursive'* && ${GIT_RAN_AS_SERVICE_USER:-0} != 1 ]]; then
+  echo 'submodule status did not run as service user' >&2
+  exit 1
+fi
+exec "$SORAMIMIC_TEST_REAL_GIT" "$@"
 EOF
 cat >"$tmp/bin/uv-fail" <<'EOF'
 #!/usr/bin/env bash
@@ -109,6 +120,7 @@ exit 1
 EOF
 chmod +x "$tmp/bin/systemctl" "$tmp/bin/systemd-run" "$tmp/bin/ss" "$tmp/bin/curl" \
   "$tmp/bin/runuser" "$tmp/bin/uv-fail"
+chmod +x "$tmp/bin/git"
 
 sha1=1111111111111111111111111111111111111111
 sha2=2222222222222222222222222222222222222222
@@ -153,6 +165,7 @@ common_env=(
   SORAMIMIC_STATE_ROOT="$tmp/state"
   SORAMIMIC_ENV_FILE="$tmp/public.env"
   SORAMIMIC_PROC_ROOT="$tmp/proc"
+  SORAMIMIC_TEST_REAL_GIT="$(command -v git)"
 )
 : >"$tmp/public.env"
 
@@ -172,7 +185,8 @@ mkdir -p "$tmp/prepare-app/releases" "$tmp/prepare-app/deployments"
 if env "${common_env[@]}" SORAMIMIC_APP_ROOT="$tmp/prepare-app" \
   SORAMIMIC_CURRENT_LINK="$tmp/prepare-app/current" \
   SORAMIMIC_REPO_URL="$tmp/prepare-remote.git" SORAMIMIC_SOURCE_REF=main \
-  SORAMIMIC_UV_BIN="$tmp/bin/uv-fail" "$deploy" prepare "$prepare_sha" \
+  SORAMIMIC_UV_BIN="$tmp/bin/uv-fail" REQUIRE_RUNUSER_GIT=1 \
+  "$deploy" prepare "$prepare_sha" \
   >"$tmp/prepare.out" 2>"$tmp/prepare.err"; then
   echo "prepare unexpectedly ignored the injected uv failure" >&2
   exit 1
