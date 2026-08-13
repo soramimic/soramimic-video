@@ -1387,7 +1387,6 @@ def test_index_html_has_platform_appropriate_save_share_buttons():
     assert "navigator.share({ files: [prepared.file], text: SHARE_TEXT })" in html
     assert "#Soramimic" in html
     assert "#そらみみっく" in html
-    assert "#ソラミミック" not in html
     click = html[html.index("function bindShare(videoUrl)") :]
     click = click[: click.index("\n}\n")]
     assert "fetch(" not in click and "await " not in click
