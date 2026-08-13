@@ -24,6 +24,18 @@ health_attempts=${SORAMIMIC_HEALTH_ATTEMPTS:-45}
 proc_root=${SORAMIMIC_PROC_ROOT:-/proc}
 dry_run=0
 require_remote_head=${SORAMIMIC_REQUIRE_REMOTE_HEAD:-0}
+cleanup_release_dir=''
+cleanup_manifest=''
+cleanup_prepared_record=''
+
+cleanup_prepare() {
+  if [[ -n $cleanup_release_dir ]]; then
+    chmod -R u+w "$cleanup_release_dir" >/dev/null 2>&1 || true
+    rm -rf -- "$cleanup_release_dir"
+  fi
+  [[ -z $cleanup_manifest ]] || rm -f -- "$cleanup_manifest"
+  [[ -z $cleanup_prepared_record ]] || rm -f -- "$cleanup_prepared_record"
+}
 
 usage() {
   cat <<'EOF'
@@ -129,7 +141,10 @@ prepare() {
 
   # venv console scripts contain absolute shebangs. Build at the final path and
   # delete it on every failure; current is only touched by the separate activate command.
-  trap 'chmod -R u+w "$release_dir" >/dev/null 2>&1 || true; rm -rf -- "$release_dir"; rm -f -- "$manifest" "$prepared_record"' EXIT
+  cleanup_release_dir=$release_dir
+  cleanup_manifest=$manifest
+  cleanup_prepared_record=$prepared_record
+  trap cleanup_prepare EXIT
   install -d -m 0750 -o "$service_user" -g "$service_group" "$release_dir"
   install -d -m 0700 -o "$service_user" -g "$service_group" "$build_home"
   if [[ -n $source_checkout ]]; then
@@ -140,9 +155,6 @@ prepare() {
     runuser -u "$service_user" -- env HOME="$build_home" \
       git clone --no-checkout --filter=blob:none "$repo_url" "$release_dir/repo"
     mv "$release_dir/repo"/.git "$release_dir/.git"
-    shopt -s dotglob nullglob
-    mv "$release_dir/repo"/* "$release_dir/"
-    shopt -u dotglob nullglob
     rmdir "$release_dir/repo"
     runuser -u "$service_user" -- env HOME="$build_home" \
       git -C "$release_dir" fetch --no-tags origin "$source_ref"
@@ -181,6 +193,9 @@ prepare() {
     >"$prepared_record"
   chmod 0600 "$prepared_record"
   trap - EXIT
+  cleanup_release_dir=''
+  cleanup_manifest=''
+  cleanup_prepared_record=''
   log "prepared: $release_dir"
 }
 
