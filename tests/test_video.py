@@ -681,7 +681,7 @@ def test_app_credit_text_appends_synth_credit():
         original_song="権利曲",
     ) == (
         f"{APP_CREDIT} / VOICEVOX:四国めたん / "
-        "Original: 権利曲 / 権利者指定表記"
+        "Original: 権利曲 — 権利者指定表記"
     )
     # 著作者等の詳細はエンドロールへ出し、常時表示を長文化させない。
     assert "作者" not in app_credit_text(
@@ -692,12 +692,12 @@ def test_app_credit_text_appends_synth_credit():
     )
     assert app_credit_text(
         credit_notice="  音楽：魔王魂  ", original_song="  シャイニングスター  "
-    ) == f"{APP_CREDIT} / Original: シャイニングスター / 音楽：魔王魂"
+    ) == f"{APP_CREDIT} / Original: シャイニングスター — 音楽：魔王魂"
     assert app_credit_text(
         original_song="初音ミクの消失",
         original_display_credit="cosMo＠暴走P",
         original_credit="作詞・作曲・編曲: cosMo＠暴走P",
-    ) == f"{APP_CREDIT} / Original: 初音ミクの消失 / cosMo＠暴走P"
+    ) == f"{APP_CREDIT} / Original: 初音ミクの消失 — cosMo＠暴走P"
 
 
 def test_idle_frame_data_carries_app_credit(tmp_path: Path):
@@ -1836,7 +1836,7 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         credit_notice="  音楽：魔王魂  ",
     )
     texts = _element_texts(elements, data)
-    assert "シャイニングスター / 音楽：魔王魂" in texts
+    assert "シャイニングスター — 音楽：魔王魂" in texts
     assert not any("森田交一" in text or "MIDI" in text for text in texts)
     compact = section_frame_data(
         project,
@@ -1845,7 +1845,7 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         original_display_credit="cosMo＠暴走P",
         original_credit="作詞・作曲・編曲: cosMo＠暴走P",
     )
-    assert compact["original_song_credit"] == "初音ミクの消失 / cosMo＠暴走P"
+    assert compact["original_song_credit"] == "初音ミクの消失 — cosMo＠暴走P"
 
 
 def test_original_song_credit_works_without_notice(tmp_path: Path):
@@ -1857,7 +1857,7 @@ def test_original_song_credit_works_without_notice(tmp_path: Path):
         original_song="Lemon",
         original_credit="作詞・作曲・歌: 米津玄師",
     )
-    assert data["original_song_credit"] == "Lemon / 作詞・作曲・歌: 米津玄師"
+    assert data["original_song_credit"] == "Lemon — 作詞・作曲・歌: 米津玄師"
 
 
 def test_build_section_cues_without_credits_extends_last_page(tmp_path: Path):
