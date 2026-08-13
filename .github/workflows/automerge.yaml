@@ -4,9 +4,11 @@
 # - main 向けの通常PRは retarget-main-pr.yaml が dev へ向け直す
 # - 除外したいPRには `no-automerge` ラベルを付ける(ドラフトPRも対象外)
 # - 新しいpushが来ると古い待機はキャンセルされ、新SHAで待機し直す
+# write権限を持つため、必ずbase側の監査済み定義を使うpull_request_targetで動かす。
+# head codeのcheckout・source・実行は追加しない。
 name: automerge
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
     branches: [dev]
 
