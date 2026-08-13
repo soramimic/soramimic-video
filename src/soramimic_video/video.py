@@ -800,6 +800,8 @@ def section_frame_data(
     - page / pages / page_label: エンドロールが複数枚に分かれたときのページ表示
       (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
     - original_song: 元曲名
+    - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
+    - original_song_credit: 元曲名と表記を「 — 」でつないた簡潔な表示
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
@@ -811,7 +813,7 @@ def section_frame_data(
     author = (original_credit or "").strip()
     notice = (credit_notice or "").strip()
     compact_credit = display_credit or notice or author
-    original_song_credit = " / ".join(part for part in (song, compact_credit) if part)
+    original_song_credit = " — ".join(part for part in (song, compact_credit) if part)
     data = idle_frame_data(project, app_credit)
     data.update(
         {
@@ -954,10 +956,9 @@ def app_credit_text(
     parts = [APP_CREDIT]
     if synth:
         parts.append(synth)
-    if song:
-        parts.append(f"Original: {song}")
-    if display_credit or notice:
-        parts.append(display_credit or notice)
+    original = " — ".join(part for part in (song, display_credit or notice) if part)
+    if original:
+        parts.append(f"Original: {original}" if song else original)
     return " / ".join(parts)
 
 
