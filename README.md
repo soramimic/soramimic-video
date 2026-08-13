@@ -287,6 +287,11 @@ Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の�
 - `main`: 本番へデプロイ可能な確定版。通常の開発PRは直接入れない。
 - `preview`: 公開候補だけを載せる常設ブランチ。`preview-video.soramimic.com`で確認する。
 - `dev`: 開発中の変更を集約する常設ブランチ。`dev-video.soramimic.com`で統合状態を確認する。
+
+各ブランチの先端はホスト側のroot所有timerが監視し、`dev`→dev、`preview`→preview、
+`main`→publicへ自動デプロイする。ブランチへの昇格は自動化せず、preview/mainの既存の
+明示承認ゲートを通過してマージされた後だけ対応環境が更新される。導入・監視・安全設計は
+[`deploy/README.md`](deploy/README.md#ブランチ先端の自動デプロイ)を参照。
 - feature/fix PRは`dev`宛てにし、CI成功後に自動マージする。自動マージしない場合は`no-automerge`ラベルを付ける。
 - 公開する変更は最新`preview`から`promote/<内容>`ブランチを作り、対象dev PRのcommitだけをcherry-pickして`preview`へPRを出す。`dev`全体はマージしない。
 - `preview` PRはCIとプレビュー環境で確認し、人間が手動マージする。途中の変更や公開しない変更はpreviewへ入れない。

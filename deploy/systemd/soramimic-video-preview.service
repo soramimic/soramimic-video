@@ -5,8 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=soramimic-video
-Group=soramimic-video
+User=soramimic-video-preview
+Group=soramimic-video-preview
+SupplementaryGroups=soramimic-video
 WorkingDirectory=/opt/soramimic-video-preview/current
 EnvironmentFile=/etc/soramimic-video/preview.env
 Environment=HOME=/var/lib/soramimic-video-preview/work

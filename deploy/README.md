@@ -205,5 +205,63 @@ sudo deploy/deploy-environment.sh dev verify "$SHA"
 sudo deploy/deploy-environment.sh dev activate "$SHA" --confirm "$SHA"
 ```
 
+`main`も同じ入口を使用でき、`main`はpublic環境（port 8301、
+`/opt/soramimic-video-public`）へ固定で対応します。
+
 Tunnel ingressの正本例は`deploy/cloudflared/config.yml.example`です。Accessで両hostnameが
 認証要求（未認証HTTP 302）になることを確認してから、ingressを有効化します。
+
+## ブランチ先端の自動デプロイ
+
+ホストの`systemd` timerが1分ごとにGitHubの3ブランチを確認し、先端SHAが変わった環境だけを
+`prepare → verify → activate`します。
+
+| branch | environment | URL |
+| --- | --- | --- |
+| `dev` | dev | `dev-video.soramimic.com` |
+| `preview` | preview | `preview-video.soramimic.com` |
+| `main` | public | `video.soramimic.com` |
+
+GitHub Actionsのself-hosted runnerは使用しません。ブランチ上で変更できるworkflowやcheckoutを
+ホスト上で実行すると、特にdevブランチのコードがホスト権限を得るためです。代わりに、監査した
+デプロイコントローラーとエンジンをroot所有の`/usr/local`へ固定して実行します。アプリの
+checkout・依存導入・ビルドは環境別の非rootユーザーで行われます。
+
+初回導入は、CIを通過してdevへマージされた監査済みcheckoutで次を実行します。
+
+```sh
+SHA=$(git rev-parse HEAD)
+sudo deploy/install-auto-deploy.sh --confirm "$SHA"
+systemctl status soramimic-video-auto-deploy.timer
+journalctl -u soramimic-video-auto-deploy.service
+```
+
+installerは次も同時に行います。
+
+- `soramimic-video-dev`、`soramimic-video-preview`、`soramimic-video-public`へservice UIDを分離
+- 既存stateの所有者を対応UIDへ移行
+- 共有の画像asset・NEUTRINOを読むためだけに従来の`soramimic-video` groupを補助groupとして維持
+- root所有の固定controller/deploy engineとtimer unitを配置
+
+固定controller/deploy engineは意図的に自動更新しません。デプロイ権限を持つコードの変更は、
+該当PRのCI・レビュー完了後に、このinstallerを監査済みcheckoutから再実行して反映します。
+
+安全上の約束は以下です。
+
+- controllerが受け入れるbranchと環境の対応は上表の3通りだけ
+- 各branchの先端SHAに対するGitHubの`test` check成功後だけbuild・activate
+- 40桁SHA、remote branch head、現在版からのfast-forwardを検証
+- build中にbranchが進んだ場合は古いSHAをactivateせず、次回timerで最新を処理
+- manifest・staging PID/port・health/readiness・公開surfaceを検証後にatomic切替
+- activate後の検証失敗時は既存のprevious releaseへ自動復帰
+- 失敗SHAは`/var/lib/soramimic-video-deployer/failed/`へ隔離し、毎分の再起動ループを防止
+- `preview`と`main`へのマージ承認は従来どおり。timerはマージ後の配信だけを自動化
+
+timerを止める場合は次を使用します。停止中も現在releaseは動き続けます。
+
+```sh
+sudo systemctl disable --now soramimic-video-auto-deploy.timer
+```
+
+修正を加えずに同じSHAを再試行するときは、原因を直してから該当markerを明示的に削除します。
+手動rollbackを維持するときは、先にtimerを停止してください。

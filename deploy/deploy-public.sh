@@ -11,8 +11,8 @@ deployments_dir=${SORAMIMIC_DEPLOYMENTS_DIR:-$app_root/deployments}
 current_link=${SORAMIMIC_CURRENT_LINK:-$app_root/current}
 state_root=${SORAMIMIC_STATE_ROOT:-/var/lib/soramimic-video-public/work}
 env_file=${SORAMIMIC_ENV_FILE:-/etc/soramimic-video/public.env}
-service_user=${SORAMIMIC_SERVICE_USER:-soramimic-video}
-service_group=${SORAMIMIC_SERVICE_GROUP:-soramimic-video}
+service_user=${SORAMIMIC_SERVICE_USER:-soramimic-video-public}
+service_group=${SORAMIMIC_SERVICE_GROUP:-soramimic-video-public}
 service_unit=${SORAMIMIC_SERVICE_UNIT:-soramimic-video-public.service}
 repo_url=${SORAMIMIC_REPO_URL:-https://github.com/soramimic/soramimic-video.git}
 source_checkout=${SORAMIMIC_SOURCE_CHECKOUT:-}
@@ -23,6 +23,7 @@ production_port=${SORAMIMIC_LISTEN_PORT:-8301}
 health_attempts=${SORAMIMIC_HEALTH_ATTEMPTS:-45}
 proc_root=${SORAMIMIC_PROC_ROOT:-/proc}
 dry_run=0
+require_remote_head=${SORAMIMIC_REQUIRE_REMOTE_HEAD:-0}
 
 usage() {
   cat <<'EOF'
@@ -257,6 +258,7 @@ verify() {
 
 activate() {
   local release_dir verified confirmed='' previous='' previous_sha='' activated_at record failed=0
+  local remote_head=''
   while (( $# )); do
     case $1 in
       --confirm) confirmed=${2:-}; shift 2 ;;
@@ -273,6 +275,13 @@ activate() {
   [[ $(jq -er .manifest_sha256 "$verified") == \
     "$(jq -er .manifest_sha256 "$deployments_dir/prepared-$sha.json")" ]] || \
     die "verify後にrelease manifest identityが変わっています"
+  if [[ $require_remote_head == 1 ]]; then
+    remote_head=$(git ls-remote "$repo_url" "refs/heads/$source_ref" | awk '{print $1}')
+    [[ $remote_head == "$sha" ]] || \
+      die "source branch advanced before activation: $sha != ${remote_head:-missing}"
+  elif [[ $require_remote_head != 0 ]]; then
+    die "SORAMIMIC_REQUIRE_REMOTE_HEAD must be 0 or 1"
+  fi
   systemctl show "$service_unit" --property=Environment --value | \
     tr ' ' '\n' | grep -qx 'SORAMIMIC_ALLOW_LOCAL_OPS=1' || \
     die "installed unitにSORAMIMIC_ALLOW_LOCAL_OPS=1がありません。unit配置とdaemon-reloadを先に実行してください"
