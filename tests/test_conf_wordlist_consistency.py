@@ -91,6 +91,12 @@ def test_conf_wordlists_exist_and_facet_columns_match():
     for w in entries:
         name = Path(w["filepath"]).stem
         header = [h.strip() for h in _csv_header(name)]
+        fixed_where_column = _where_column(w.get("where", ""))
+        if fixed_where_column:
+            assert fixed_where_column in header, (
+                f"conf({w.get('text') or name})の固定条件列 "
+                f"{fixed_where_column!r} が {name}.csv のヘッダ {header} にありません"
+            )
         for facet in w.get("facets") or []:
             # 単数column / 複数columns(例: ポケモンのタイプ=type1,type2)に加え、
             # facet値の where 述語(例: field~=物理)からも列名を集める
@@ -101,3 +107,10 @@ def test_conf_wordlists_exist_and_facet_columns_match():
                     f"conf({w.get('text') or name})のfacet列 {col!r} が "
                     f"{name}.csv のヘッダ {header} にありません"
                 )
+
+
+def test_myoji_is_fixed_to_verified_readings_without_a_facet():
+    """名字は未確認読みを利用者が選べない固定条件で配信する。"""
+    entry = next(w for w in _conf_entries() if w["value"] == "MYOJI")
+    assert entry.get("where") == "verified=yes"
+    assert not entry.get("facets")
