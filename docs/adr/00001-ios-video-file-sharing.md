@@ -55,7 +55,7 @@ iOS系ブラウザの Web Share API には、次の制約と実機上の挙動�
 3. 取得した `Blob` から共有用 `File` を作り、その `File` のobject URLを動画要素の唯一の
    sourceにする。準備完了後に共有ボタンを有効にする
 4. 準備後の最初のタップでは、通信や非同期処理を先に挟まず、準備済み `File` と共有本文を
-   `navigator.share()` へ渡す。共有本文には `#Soramimic` と現在のサイトのoriginを含める
+   `navigator.share()` へ渡す。共有本文には `#Soramimic`、`#そらみみっく` と現在のサイトのoriginを含める
 5. 完成状態から離れるときは、取得を中断し、動画要素を停止してsourceを外してから
    object URLをrevokeし、`File` への参照を外す
 
