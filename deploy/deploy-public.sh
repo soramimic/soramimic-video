@@ -166,7 +166,8 @@ prepare() {
     runuser -u "$service_user" -- env HOME="$build_home" git -C "$release_dir" checkout --detach "$sha"
     runuser -u "$service_user" -- env HOME="$build_home" \
       git -C "$release_dir" submodule update --init --recursive --depth 1
-    submodules=$(git -C "$release_dir" submodule status --recursive)
+    submodules=$(runuser -u "$service_user" -- \
+      git -C "$release_dir" submodule status --recursive)
   fi
   runuser -u "$service_user" -- env HOME="$build_home" UV_PROJECT_ENVIRONMENT="$release_dir/.venv" \
     "$uv_bin" sync --directory "$release_dir" --frozen --extra api --no-dev
