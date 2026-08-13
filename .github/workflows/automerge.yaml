@@ -13,7 +13,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  checks: read
+  checks: write
 
 concurrency:
   group: automerge-${{ github.event.pull_request.number }}
@@ -52,8 +52,26 @@ jobs:
             fi
             if [ "$total" -gt 0 ] && [ "$incomplete" -eq 0 ]; then
               echo "全チェック成功。マージします"
-              gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
-                -f merge_method=merge -f sha="$SHA"
+              merge=$(gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
+                -f merge_method=merge -f sha="$SHA")
+              if [ "$(echo "$merge" | jq -r .merged)" != true ]; then
+                echo "$merge" | jq . >&2
+                echo "マージAPIが成功を返しませんでした" >&2
+                exit 1
+              fi
+              merge_sha=$(echo "$merge" | jq -r .sha)
+              if ! [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "不正なmerge SHA: $merge_sha" >&2
+                exit 1
+              fi
+              # GITHUB_TOKENで作ったmergeはpush workflowを再起動しない。直前に
+              # 確認した全PR checkの成功をmerge SHAへ記録し、host controllerが
+              # exact-SHAのCI gateとして検証できるようにする。
+              gh api -X POST "repos/$REPO/check-runs" \
+                -f name=test -f head_sha="$merge_sha" -f status=completed \
+                -f conclusion=success \
+                -f 'output[title]=PR checks passed before merge' \
+                -f "output[summary]=PR #$PR ($SHA) の全check成功後に作成したmergeです。"
               gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" || true
               exit 0
             fi
