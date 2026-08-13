@@ -407,6 +407,8 @@ def test_desktop_video_has_separate_download_and_share_buttons():
           assert.equal(shareCalls.length, 1);
           assert.equal(shareCalls[0].files[0].name, "video.mp4");
           assert.equal(shareCalls[0].text.includes("#Soramimic"), true);
+          assert.equal(shareCalls[0].text.includes("#そらみみっく"), true);
+          assert.equal(shareCalls[0].text.includes("#ソラミミック"), false);
 
           navigator.share = () => Promise.reject({{ name: "NotAllowedError" }});
           elements["share-save"].handlers.click();
@@ -529,7 +531,8 @@ def test_video_share_and_playback_share_one_prepared_file_before_click():
           assert.equal(shareCalls[0].files[0], objectUrlFile,
             "playback and share must use the same File");
           assert.deepEqual(Object.keys(shareCalls[0]), ["files", "text"]);
-          assert.equal(shareCalls[0].text.includes("#Soramimic\\n"), true);
+          assert.equal(shareCalls[0].text.includes("#Soramimic #そらみみっく\\n"), true);
+          assert.equal(shareCalls[0].text.includes("#ソラミミック"), false);
           assert.equal(shareCalls[0].text.includes("#soramimic"), false);
           assert.equal(shareCalls[0].text.endsWith("https://video.example"), true);
           assert.equal(elements["share-save"].disabled, false,
