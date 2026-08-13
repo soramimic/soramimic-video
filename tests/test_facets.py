@@ -29,7 +29,12 @@ from typing import Any
 
 import pytest
 
-from soramimic_video.facets import default_where, restored_where, survives_editor_facets
+from soramimic_video.facets import (
+    default_where,
+    has_facets,
+    restored_where,
+    survives_editor_facets,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 CONF = ROOT / "external" / "soramimic" / "conf" / "setting.json"
@@ -194,7 +199,12 @@ def test_server_predicts_the_editor_roundtrip():
     for entry in _conf_entries():
         where = default_where(entry)
         assert restored_where(entry, where) == where
-        assert survives_editor_facets(entry, where)
+        if has_facets(entry):
+            assert survives_editor_facets(entry, where)
+        else:
+            # facets がない固定条件は editor が entry.where から直接適用するため、
+            # シードのトップレベル where として重ねて渡さない。
+            assert not survives_editor_facets(entry, where)
         # 絞り込み無し(None)は載せるものが無いので渡さない
         assert not survives_editor_facets(entry, None)
         # 旧video形(括弧なし)は正規形と一致しないのでそのままでは渡さない。
