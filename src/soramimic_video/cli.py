@@ -52,6 +52,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate_samples(args: argparse.Namespace) -> int:
+    from .sample_validation import validate_sample_directory
+
+    results = validate_sample_directory(Path(args.samples_dir), local_only=args.local_only)
+    for result in results:
+        print(
+            f"{result.sample_id}: {result.notes}モーラ / {result.lines}行 / "
+            f"元歌詞 {result.matched_lines}/{result.lines}行対応"
+        )
+    print(f"サンプル検査完了: {len(results)}曲")
+    return 0
+
+
 def cmd_analyze_audio(args: argparse.Namespace) -> int:
     from .analyze_audio import ANALYZE_DIR, analyze_audio
 
@@ -389,6 +402,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lyrics", help="元歌詞テキスト(1行1フレーズ)")
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
     p.set_defaults(func=cmd_analyze)
+
+    p = sub.add_parser(
+        "validate-samples", help="配置済みサンプルのXF歌詞と元歌詞を一括検査する"
+    )
+    p.add_argument("--samples-dir", required=True, help="samples.jsonを含むディレクトリ")
+    p.add_argument(
+        "--local-only",
+        action="store_true",
+        help="samples.local.jsonの追加曲だけを検査する",
+    )
+    p.set_defaults(func=cmd_validate_samples)
 
     p = sub.add_parser(
         "analyze-audio", help="歌唱音源(wav/mp3)を解析しモーラタイミングを抽出する"
