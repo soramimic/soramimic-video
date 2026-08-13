@@ -5,8 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=soramimic-video
-Group=soramimic-video
+User=soramimic-video-dev
+Group=soramimic-video-dev
+SupplementaryGroups=soramimic-video
 WorkingDirectory=/opt/soramimic-video-dev/current
 EnvironmentFile=/etc/soramimic-video/dev.env
 Environment=HOME=/var/lib/soramimic-video-dev/work

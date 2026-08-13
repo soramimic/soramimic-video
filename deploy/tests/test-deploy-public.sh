@@ -83,8 +83,13 @@ case $url in
     if [[ ${FAIL_INDEX:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
       printf '<html>missing brand</html>\n'
     else
-      printf '<meta property="og:image" content="/ogp-soramimic-v5.png">\n'
-      printf '<img src="/logo-soramimic-video-v2.png">\n'
+      if [[ ${WRONG_BRAND_ASSETS:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
+        printf '<img src="/logo-soramimic-video-v1.png">\n'
+        printf '<img src="/logo-soramimic-video-v2.png">\n'
+      else
+        printf '<meta property="og:image" content="/ogp-soramimic-v5.png">\n'
+        printf '<img src="/logo-soramimic-video-v2.png">\n'
+      fi
     fi
     ;;
   *) exit 22 ;;
@@ -199,7 +204,7 @@ env "${common_env[@]}" "$deploy" verify "$sha2" >/dev/null
 [[ -e $tmp/app/deployments/verified-$sha2.json ]]
 
 # Every surface assertion must enter activate's rollback path, not exit from inside smoke.
-for failure in FAIL_INDEX FAIL_ODA FAIL_PNG; do
+for failure in FAIL_INDEX FAIL_ODA FAIL_PNG WRONG_BRAND_ASSETS; do
   ln -sfn "$tmp/app/releases/legacy-${sha1:0:12}" "$tmp/app/current"
   if env "${common_env[@]}" "$failure=1" \
     "$deploy" activate "$sha2" --confirm "$sha2" >/dev/null 2>&1; then
