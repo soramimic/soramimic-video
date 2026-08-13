@@ -181,6 +181,15 @@ SORAMIMIC_LAUNCH_CATALOG=/var/lib/soramimic-video-preview/work/private-samples/l
 へ別途配置し、`public.env`を明示的に変更します。previewの設定だけで本番に露出することは
 ありません。
 
+配置した外部曲のファイル存在、XF読み、元歌詞との全行対応は次で一括検査できます。
+
+```sh
+sudo -u soramimic-video /opt/soramimic-video-dev/current/.venv/bin/soramimic-video \
+  validate-samples \
+  --samples-dir /var/lib/soramimic-video-dev/work/private-samples \
+  --local-only
+```
+
 ## dev・preview常設環境
 
 本番とは別に、同じホストで次を常設します。どちらもloopbackだけで待ち受け、外部入口は
