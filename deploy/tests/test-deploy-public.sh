@@ -61,7 +61,7 @@ case $url in
       printf '335,小田稔,小田,おだ,family,物理\n'
     fi
     ;;
-  */logo-soramimic-video-v1.png|*/ogp-soramimic-v4.png)
+  */logo-soramimic-video-v*.png|*/ogp-soramimic-v*.png)
     if [[ ${FAIL_PNG:-0} == 1 && $(readlink -f "$CURRENT_LINK") == *bad* ]]; then
       printf 'not-png'
     else
