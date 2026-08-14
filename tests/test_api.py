@@ -382,7 +382,7 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     # 中断は生成中も枠の中から押せる
     assert '$("builder-cancel").addEventListener("click", cancelJob);' in html
     # 完成したら同じ枠が動画プレイヤーになり、シェアは枠の直下に出る
-    assert '<video id="builder-video" controls playsinline hidden></video>' in html
+    assert '<video id="builder-video" controls playsinline preload="none" hidden></video>' in html
     assert "video.poster = qs(job.thumbnail_url);" in html
     assert '$("builder-share").innerHTML = SHARE_HTML;' in html
     # 選び直したら枠は新しいプレビューに戻る

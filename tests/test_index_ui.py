@@ -209,6 +209,132 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_superseded_midi_check_keeps_submit_waiter_live():
+    """復元中に検証予約が重なっても、先のPromiseを待つ生成操作を置き去りにしない。"""
+    schedule = _function_body(_script(), "function scheduleMidiCheck()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let midiRejecting = false;
+        let midiCheckTimer = null;
+        let midiChecking = null;
+        let midiCheckResolve = null;
+        let timerSeq = 0;
+        const timers = new Map();
+        global.setTimeout = (fn) => {{
+          const id = ++timerSeq;
+          timers.set(id, fn);
+          return id;
+        }};
+        global.clearTimeout = (id) => timers.delete(id);
+        let checks = 0;
+        async function runScheduledMidiCheck() {{ checks += 1; }}
+        {schedule}
+        (async () => {{
+          scheduleMidiCheck();
+          const firstWaiter = midiChecking;
+          scheduleMidiCheck();
+          const latestWaiter = midiChecking;
+          assert.notEqual(firstWaiter, latestWaiter);
+          assert.equal(timers.size, 1, "debounce must leave only the latest check scheduled");
+          const runLatest = [...timers.values()][0];
+          timers.clear();
+          runLatest();
+          await Promise.all([firstWaiter, latestWaiter]);
+          assert.equal(checks, 1);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_duplicate_sample_midi_check_reuses_in_flight_request():
+    """同じサンプルの検証が実行中なら、復元処理が重なっても二重解析しない。"""
+    script = _script()
+    key_fn = _function_body(script, "function currentMidiCheckKey()") + "\n}"
+    run_fn = _function_body(script, "function runScheduledMidiCheck()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const midiFile = {{ name: "yorunikakeru.mid", size: 12345 }};
+        const elements = {{
+          midi: {{ files: [midiFile] }},
+          lyrics: {{ value: "夜に駆ける" }}
+        }};
+        const $ = (id) => elements[id];
+        let midiSampleId = "yorunikakeru";
+        let midiCheckInFlight = null;
+        let midiCheckInFlightKey = "";
+        let midiCheckInFlightFile = null;
+        let midiCheckInFlightLyrics = "";
+        let checks = 0;
+        let finishCheck;
+        function checkMidi() {{
+          checks += 1;
+          return new Promise((resolve) => {{ finishCheck = resolve; }});
+        }}
+        {key_fn}
+        {run_fn}
+        (async () => {{
+          const first = runScheduledMidiCheck();
+          const second = runScheduledMidiCheck();
+          assert.equal(first, second);
+          assert.equal(checks, 1, "same sample validation must share the active request");
+          finishCheck();
+          await Promise.all([first, second]);
+          assert.equal(midiCheckInFlight, null);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+def test_restored_bundled_midi_waits_for_fresh_sample_check():
+    """保存版と再取得版の長いMIDIを復元直後に二重検証しない。"""
+    restored = _function_body(_script(), "async function doRestoreForm()")
+    assert "await samplesReady;" in restored
+    assert "if (!restoredSample) scheduleMidiCheck();" in restored
+    initialized = _function_body(_script(), "async function initBuilder()")
+    assert "trackSample(applySample({ midiOnly: editedLyrics }))" in initialized
+
+
+def test_completed_video_requests_no_preload_hint():
+    """共有Fileは維持しつつ、完成直後の自動デコードを抑えるhintを指定する。"""
+    video = next(a for tag, a in _tags() if a.get("id") == "builder-video")
+    assert video.get("preload") == "none"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_job_post_retries_one_server_rejected_turnstile_token():
+    """tokenがサーバーで拒否されたとき、新しいtokenで同じ投入を一度だけ再送する。"""
+    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let calls = 0;
+        let resets = 0;
+        let turnstileSiteKey = "site";
+        const form = {{ values: {{}}, set(key, value) {{ this.values[key] = value; }} }};
+        const headers = () => ({{}});
+        const fetch = async () => {{ calls += 1; return {{ status: calls === 1 ? 403 : 200 }}; }};
+        function resetTurnstile() {{ resets += 1; }}
+        async function ensureTurnstileToken() {{ return true; }}
+        function turnstileToken() {{ return "fresh-token"; }}
+        {post}
+        (async () => {{
+          const response = await postJobWithTurnstileRetry(form);
+          assert.equal(response.status, 200);
+          assert.equal(calls, 2);
+          assert.equal(resets, 1);
+          assert.equal(form.values.turnstile_token, "fresh-token");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()
@@ -235,15 +361,16 @@ def test_submit_never_posts_without_a_turnstile_token():
         "if (samplePending) await samplePending;"
     )
     ensure = _function_body(_script(), "async function ensureTurnstileToken(")
-    assert "!turnstileFailed && !!turnstileToken()" in ensure
+    assert "const verified = !failed && !!turnstileToken()" in ensure
     assert "rebuildTurnstileWidget()" in ensure
     assert "if (turnstileWidget === null && window.turnstile) return false;" in ensure
     assert "timeoutMs = 120000" in ensure
+    assert "for (let attempt = 0; attempt < 2; attempt += 1)" in ensure
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_turnstile_errors_rebuild_widget():
-    """失敗・2分timeoutのwidgetは世代ごと破棄し、古いcallbackを無効化する。"""
+def test_turnstile_errors_rebuild_and_retry_widget():
+    """一時エラーは同じ操作で再試行し、timeoutは待ち時間を延長しない。"""
     ensure = _function_body(_script(), "async function ensureTurnstileToken(") + "\n}"
     node = textwrap.dedent(
         f"""
@@ -256,24 +383,30 @@ def test_turnstile_errors_rebuild_widget():
         let turnstileFailed = false;
         let rebuilds = 0;
         let now = 0;
-        let waitMode = "error";
+        let waitMode = "error-then-success";
         let window = {{turnstile: {{execute() {{}} }}}};
         function turnstileToken() {{ return token; }}
         function showTurnstilePrompt() {{}}
         function hideTurnstilePrompt() {{}}
-        function rebuildTurnstileWidget() {{ rebuilds += 1; token = ""; }}
+        function rebuildTurnstileWidget() {{
+          rebuilds += 1;
+          token = "";
+          if (waitMode === "error-then-success") waitMode = "success";
+        }}
         Date.now = () => now;
         global.setTimeout = (fn) => {{
-          if (waitMode === "error") turnstileFailed = true;
+          if (waitMode === "error-then-success") turnstileFailed = true;
+          else if (waitMode === "success") token = "fresh-token";
           else now += 200;
           fn();
           return 1;
         }};
         {ensure}
         (async () => {{
-          assert.equal(await ensureTurnstileToken(100), false);
-          assert.equal(rebuilds, 1, "an errored widget must rebuild before the next attempt");
+          assert.equal(await ensureTurnstileToken(100), true);
+          assert.equal(rebuilds, 1, "an errored widget must rebuild and retry immediately");
           waitMode = "timeout";
+          token = "";
           now = 0;
           assert.equal(await ensureTurnstileToken(100), false);
           assert.equal(rebuilds, 2, "a timed-out widget must also rebuild before retry");
