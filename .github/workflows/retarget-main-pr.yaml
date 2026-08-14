@@ -1,12 +1,10 @@
-# main 宛ての通常 Pull Request を自動で dev へ向け直す。
-# main は公開中の安定版とし、通常の開発変更は dev に集約する。
-# - preview→main のリリースPRは対象外
-# - main へ直接入れる緊急修正は、先に `emergency` ラベルを付けてから base を main にする
+# main宛ては同一repositoryのpreviewブランチからのPull Requestだけを許可する。
+# それ以外はdevへ向け直し、通常の開発・検証フローへ戻す。
 # - PRのコードは checkout しないため、pull_request_target でも安全
 name: retarget-main-pr
 on:
   pull_request_target:
-    types: [opened, reopened, edited, labeled, unlabeled]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
     branches: [main]
 
 permissions:
@@ -19,7 +17,7 @@ concurrency:
 
 jobs:
   retarget:
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'emergency') && (github.event.pull_request.head.ref != 'preview' || github.event.pull_request.head.repo.full_name != github.repository) }}
+    if: ${{ github.event.pull_request.head.ref != 'preview' || github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -30,4 +28,4 @@ jobs:
       - name: base を dev に付け替えて通知
         run: |
           gh pr edit "$PR" --repo "$REPO" --base dev
-          gh pr comment "$PR" --repo "$REPO" --body "🔀 base を \`main\` から \`dev\` に変更しました。開発PRは dev に集約し、公開可能な変更だけを preview に昇格してから release PR (preview→main) で安定版に反映します。本当に main へ直接入れる緊急修正は、先に \`emergency\` ラベルを付けてから base を \`main\` に変更してください。"
+          gh pr comment "$PR" --repo "$REPO" --body "🔀 baseを\`main\`から\`dev\`へ変更しました。\`main\`へマージできるのは、同一repositoryの\`preview\`ブランチからのrelease PRだけです。"

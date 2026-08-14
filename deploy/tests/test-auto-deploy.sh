@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 controller="$repo_root/deploy/auto-deploy-branches.sh"
 automerge_workflow="$repo_root/.github/workflows/automerge.yaml"
+release_workflow="$repo_root/.github/workflows/release.yaml"
+main_source_workflow="$repo_root/.github/workflows/retarget-main-pr.yaml"
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
@@ -12,7 +14,13 @@ trap 'rm -rf -- "$tmp"' EXIT
 grep -Fx '  checks: write' "$automerge_workflow" >/dev/null
 grep -Fx '  pull_request_target:' "$automerge_workflow" >/dev/null
 ! grep -Fx '  pull_request:' "$automerge_workflow" >/dev/null
+grep -Fx '    branches: [dev, preview, main]' "$automerge_workflow" >/dev/null
 ! grep -F 'actions/checkout' "$automerge_workflow" >/dev/null
+grep -F "github.event.pull_request.head.ref == 'preview'" "$automerge_workflow" >/dev/null
+grep -F "live_base=\$(echo \"\$live\" | jq -r .base.ref)" "$automerge_workflow" >/dev/null
+grep -F 'select(. == "no-automerge")' "$automerge_workflow" >/dev/null
+grep -F 'if [ "$BRANCH" != dev ] && [ "$BRANCH" != preview ]; then' \
+  "$automerge_workflow" >/dev/null
 grep -F 'merge_sha=$(echo "$merge" | jq -r .sha)' "$automerge_workflow" >/dev/null
 grep -F 'gh api -X POST "repos/$REPO/check-runs"' "$automerge_workflow" >/dev/null
 grep -F -- '-f name=test -f head_sha="$merge_sha" -f status=completed' \
@@ -21,6 +29,11 @@ grep -F 'and .app.slug == "github-actions"' "$automerge_workflow" >/dev/null
 grep -F 'and .conclusion != "success")] | length' "$automerge_workflow" >/dev/null
 grep -F '"$test_total" -gt 0' "$automerge_workflow" >/dev/null
 grep -F 'if [ "$tested_shape" != "$actual_shape" ]' "$automerge_workflow" >/dev/null
+grep -F 'types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, labeled, unlabeled]' \
+  "$automerge_workflow" >/dev/null
+grep -F "github.event.pull_request.head.ref == 'preview'" "$release_workflow" >/dev/null
+grep -F 'github.event.pull_request.head.ref != '\''preview'\''' "$main_source_workflow" >/dev/null
+! grep -F 'emergency' "$main_source_workflow" >/dev/null
 
 automerge_gate() {
   local runs=$1 total incomplete failed tests test_total test_incomplete test_unsuccessful

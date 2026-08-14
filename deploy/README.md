@@ -20,7 +20,8 @@
 
 ## リリース手順
 
-GitHub上で`preview -> main`の差分と必須CIを確認してマージし、`main`の40桁SHAを控えます。
+GitHub上で`preview -> main`のrelease PRを作成します。`no-automerge`ラベルがなければ、
+必須CI成功後に自動マージされます。マージされた`main`の40桁SHAを控えます。
 以下の3段階は意図的に分離されています。`prepare` と `verify` は本番の `current` を変更せず、
 `activate` だけが本番を切り替えます。
 
@@ -249,7 +250,7 @@ installerは次も同時に行います。
 安全上の約束は以下です。
 
 - controllerが受け入れるbranchと環境の対応は上表の3通りだけ
-- 各branchの先端SHAに対するGitHubの`test` check成功後だけbuild・activate。devのauto-mergeは
+- 各branchの先端SHAに対するGitHubの`test` check成功後だけbuild・activate。auto-mergeは
   GitHub Actions `test`を含むPRの全check成功と、検証済みmerge-refと実mergeのtree/parents一致を
   確認してから、その検証結果をmerge SHAの`test` checkとして記録
 - 40桁SHA、remote branch head、現在版からのfast-forwardを検証
@@ -257,7 +258,9 @@ installerは次も同時に行います。
 - manifest・staging PID/port・health/readiness・公開surfaceを検証後にatomic切替
 - activate後の検証失敗時は既存のprevious releaseへ自動復帰
 - 失敗SHAは`/var/lib/soramimic-video-deployer/failed/`へ隔離し、毎分の再起動ループを防止
-- `preview`と`main`へのマージ承認は従来どおり。timerはマージ後の配信だけを自動化
+- `dev`・`preview`・`main`向けPRは既定で自動マージ。止める場合だけ`no-automerge`を付ける
+- `main`へマージできるのは同一repositoryの`preview`ブランチからのrelease PRだけ
+- timerはマージ後の配信を自動化
 
 timerを止める場合は次を使用します。停止中も現在releaseは動き続けます。
 
