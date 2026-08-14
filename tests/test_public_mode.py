@@ -362,10 +362,6 @@ def test_public_mode_never_exposes_the_api_key_field(public_app, monkeypatch):
     assert '<div class="field" id="auth" hidden>' in html
     assert '$("auth").hidden = !conf.auth_required;' in html
     assert html.count('$("auth").hidden') == 1
-    # 「保存した入力をクリア」を消したので「APIキーは消えません」の断り書きも要らない
-    assert "APIキーは消えません" not in html
-
-
 def test_api_key_field_is_shown_only_when_auth_is_required(tmp_path, monkeypatch):
     """認証ありの構成でだけ auth_required=True になる(=APIキー欄が出る)。"""
     monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
@@ -417,6 +413,41 @@ def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
     ]
     # manifestに存在しても初回公開カタログ外の曲は直接取得できない
     assert client.get("/api/sample/twinkle/midi").status_code == 404
+
+
+def test_simple_ui_can_use_environment_launch_catalog(tmp_path, monkeypatch):
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    (samples / "samples.json").write_text(
+        json.dumps([{"id": "pd", "title": "公開曲"}]), encoding="utf-8"
+    )
+    (samples / "samples.local.json").write_text(
+        json.dumps(
+            [
+                {"id": "licensed", "title": "環境限定曲"},
+                {"id": "hidden", "title": "許可していない曲"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (samples / "licensed.mid").write_bytes(FAKE_MIDI)
+    catalog = samples / "launch_catalog.json"
+    catalog.write_text(
+        json.dumps(
+            {"samples": ["pd", "licensed"], "wordlists": [], "voicevox_style": 6000}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(samples))
+    monkeypatch.setenv(api_mod.LAUNCH_CATALOG_ENV, str(catalog))
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    assert [row["id"] for row in client.get("/api/samples").json()] == [
+        "pd", "licensed",
+    ]
+    assert client.get("/api/sample/licensed/midi").content == FAKE_MIDI
+    assert client.get("/api/sample/hidden/midi").status_code == 404
 
 
 def test_simple_ui_fixes_voice_and_wordlist_layout(tmp_path, monkeypatch):

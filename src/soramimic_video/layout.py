@@ -118,6 +118,8 @@
       使っていない(各単語フレームの右下に個別のクレジットを焼いているため)
     - page / pages: 後奏が複数枚に分かれたときのページ番号と総ページ数
     - original_song: 元曲名
+    - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
+    - original_song_credit: 元曲名と指定クレジットを「 / 」でつないた簡潔な表示
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
@@ -217,9 +219,6 @@ def _display_value(column: str, value: object) -> object:
     """CSVの保存形式を変えず、カード表示向けに値を整える。"""
     if column == "team":
         return re.sub(r"(?<=[^\x00-\x7f])-(?=[^\x00-\x7f])", "・", str(value))
-    if column == "level":
-        short = {"小学校": "小学", "中学校": "中学", "高等学校": "高校"}
-        return "・".join(short.get(part, part) for part in str(value).split("/"))
     return value
 
 
@@ -338,11 +337,6 @@ def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> li
         values["lifespan"] = f"{birth_year}年生まれ"
     elif death_year:
         values["lifespan"] = f"{death_year}年没"
-    if not is_missing(data.get("level")) and not is_missing(data.get("subject")):
-        level = str(_display_value("level", data["level"]))
-        subject = str(data["subject"]).replace("/", "・")
-        separator = "｜" if "/" in str(data["level"]) or "/" in str(data["subject"]) else ""
-        values["school_subject"] = f"{level}{separator}{subject}"
     out = []
     for el in elements:
         if isinstance(el, TextElement):

@@ -28,6 +28,7 @@ uv run soramimic-video serve --host 0.0.0.0
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420 | 入力MIDIの演奏時間の上限(秒)。超過は400 |
 | `SORAMIMIC_JOB_TTL_HOURS` | 0(無効) | 完了・失敗・中断から何時間でジョブを消すか。同じ期間使われていない自作リストのeditorセッションも対象。正の値で1時間ごとに掃除する |
 | `SORAMIMIC_SAMPLES_DIR` | 未設定 | 同梱サンプル曲(`static/sample`)の差し替え先ディレクトリ。`samples.json` と `<id>.mid` / `<id>_lyrics.txt` を置く |
+| `SORAMIMIC_LAUNCH_CATALOG` | 未設定 | Simple UIで見せる曲・単語リスト・固定歌声の環境別JSON。未設定時は同梱`launch_catalog.json`。権利確認済みの外部素材を環境別に選ぶ場合はrelease外の絶対pathを指定する |
 | `SORAMIMIC_WARMUP_WORDLISTS` | 未設定 | カンマ区切りの単語リスト名。起動時にバックグラウンドで前処理(parse_tidy)を済ませ、キャッシュに載せておく |
 | `SORAMIMIC_PREVIEW_RATE_LIMIT` | 10 | サムネプレビュー(`/api/thumbnail-preview`)をセッションごとに何回まで作るか。`0` 以下で無効 |
 | `SORAMIMIC_PREVIEW_RATE_WINDOW` | 60 | 上のレート制限の窓(秒) |

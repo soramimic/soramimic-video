@@ -348,12 +348,22 @@ def cached_image(url: str, cache_dir: Path) -> Path | None:
     キーは download_image と同じ URL のsha1先頭16桁。
     キャッシュがSVGだったときだけ、その場でPNGへ焼き直して返す(通信はしない)。
     """
+    from .asset_store import local_asset
+
+    managed, asset = local_asset(url)
+    if managed:
+        return _rasterized(asset) if asset is not None else None
     raw = _cached_raw(url, cache_dir)
     return _rasterized(raw) if raw is not None else None
 
 
 def download_image(
-    url: str, cache_dir: Path, *, revalidate: bool = False
+    url: str,
+    cache_dir: Path,
+    *,
+    revalidate: bool = False,
+    use_asset_store: bool = True,
+    fetch_url_override: str | None = None,
 ) -> Path | None:
     """画像を取得し、同じURLは一定期間ごとにHTTP validatorsで更新確認する。
 
@@ -362,6 +372,12 @@ def download_image(
     validatorが無い配信元でも内容hashが同じなら書き換えないため、行や説明だけが
     変わった単語リストで画像キャッシュを削除する必要はない。
     """
+    from .asset_store import local_asset
+
+    if use_asset_store:
+        managed, asset = local_asset(url)
+        if managed:
+            return _rasterized(asset) if asset is not None else None
     cache_dir.mkdir(parents=True, exist_ok=True)
     raw = _cached_raw(url, cache_dir)
     # ローカルパス / file:// はコピーで取り込む(生成・ローカル単語リストの画像用)
@@ -398,8 +414,8 @@ def download_image(
         if time.time() - checked_at < IMAGE_CACHE_REVALIDATE_SEC:
             return _rasterized(raw)
 
-    fetch_url = url
-    if "Special:FilePath" in url and "?" not in url:
+    fetch_url = fetch_url_override or url
+    if fetch_url_override is None and "Special:FilePath" in url and "?" not in url:
         fetch_url = url + "?width=1200"  # フル解像度は不要なのでサムネイルをもらう
     headers = {"User-Agent": USER_AGENT}
     # 内容hashがメタデータと一致しない場合は、並行更新でvalidatorと画像が
@@ -770,6 +786,7 @@ def section_frame_data(
     pages: int = 1,
     synth_credit: str = "",
     original_song: str = "",
+    original_display_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
 ) -> dict:
@@ -789,6 +806,12 @@ def section_frame_data(
       クレジットページで使う。表記が要らない合成では空文字なので、require で
       その行ごと出さない
     """
+    song = (original_song or "").strip()
+    display_credit = (original_display_credit or "").strip()
+    author = (original_credit or "").strip()
+    notice = (credit_notice or "").strip()
+    compact_credit = display_credit or notice or author
+    original_song_credit = " / ".join(part for part in (song, compact_credit) if part)
     data = idle_frame_data(project, app_credit)
     data.update(
         {
@@ -799,9 +822,11 @@ def section_frame_data(
             "pages": str(pages),
             "page_label": f"({page}/{pages})" if pages > 1 else "",
             "synth_credit": synth_credit,
-            "original_song": original_song,
-            "original_credit": original_credit,
-            "credit_notice": credit_notice,
+            "original_song": song,
+            "original_song_credit": original_song_credit,
+            "original_display_credit": display_credit,
+            "original_credit": author,
+            "credit_notice": notice,
         }
     )
     return data
@@ -819,6 +844,7 @@ def build_section_cues(
     credits: list[dict] | None = None,
     synth_credit: str = "",
     original_song: str = "",
+    original_display_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
 ) -> list[ImageCue]:
@@ -856,6 +882,7 @@ def build_section_cues(
                     page_words, credit_text, i + 1, len(pages),
                     synth_credit=synth_credit,
                     original_song=original_song,
+                    original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
                 )
@@ -882,9 +909,10 @@ def build_section_cues(
                 t = end
             if show_credits and t < sec.end:
                 data = section_frame_data(
-                    project, app_credit, "credits", sec.duration,
+                    project, app_credit_text(synth_credit), "credits", sec.duration,
                     image_credits=credit_text, synth_credit=synth_credit,
                     original_song=original_song,
+                    original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
                 )
@@ -908,24 +936,28 @@ def app_credit_text(
     synth_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
+    *,
+    original_song: str = "",
+    original_display_credit: str = "",
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
     既定は「lyrics & video by Soramimic」。歌声合成側にもクレジット表記が要るとき
     (VOICEVOXのキャラ名など)や、元曲・権利者の表記があるときは後ろに足す。
-    元曲情報はエンドロールにも詳しく出すが、必要な表記が動画から切り離されないよう
-    全フレームの署名にも焼き込む。
+    常時表示には元曲名と必須表記だけを簡潔に載せ、作詞・作曲・歌唱者などの
+    ``original_credit`` 詳細はエンドロールだけに載せる。
     """
     synth = (synth_credit or "").strip()
-    original = (original_credit or "").strip()
+    song = (original_song or "").strip()
     notice = (credit_notice or "").strip()
+    display_credit = (original_display_credit or "").strip()
     parts = [APP_CREDIT]
     if synth:
         parts.append(synth)
-    if original:
-        parts.append(f"Original: {original}")
-    if notice:
-        parts.append(notice)
+    if song:
+        parts.append(f"Original: {song}")
+    if display_credit or notice:
+        parts.append(display_credit or notice)
     return " / ".join(parts)
 
 
@@ -1721,6 +1753,7 @@ def make_video(
     song_title_kana: str = "",
     fps: int = DEFAULT_VIDEO_FPS,
     original_credit: str = "",
+    original_display_credit: str = "",
     credit_notice: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> Path:
@@ -1728,7 +1761,14 @@ def make_video(
         raise ValueError("fps は1以上で指定してください")
     layout_obj = load_layout(layout)
     # 動画に焼き込むクレジット(サムネ・単語フレーム・idleで共通)
-    credit_text = app_credit_text(synth_credit, original_credit, credit_notice)
+    original_song = (song_title or Path(project.song.midi_path).stem).strip()
+    credit_text = app_credit_text(
+        synth_credit=synth_credit,
+        original_credit=original_credit,
+        original_display_credit=original_display_credit,
+        credit_notice=credit_notice,
+        original_song=original_song,
+    )
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
 
@@ -1785,7 +1825,8 @@ def make_video(
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
-        original_song=(song_title or Path(project.song.midi_path).stem).strip(),
+        original_song=original_song,
+        original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
     )

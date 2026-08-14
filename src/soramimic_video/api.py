@@ -80,6 +80,7 @@ MAX_SONG_SECONDS_ENV = "SORAMIMIC_MAX_SONG_SECONDS"  # 入力MIDIの演奏時間
 JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除するまでの時間(0=無効)
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
 LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
+LAUNCH_CATALOG_ENV = "SORAMIMIC_LAUNCH_CATALOG"  # 環境別の公開選択肢(非追跡可)
 TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
 TURNSTILE_SITE_ENV = "TURNSTILE_SITE_KEY"  # 同・サイトキー(フロントに渡す)
 OPS_TOKEN_ENV = "SORAMIMIC_OPS_TOKEN"
@@ -163,11 +164,18 @@ def is_simple_ui() -> bool:
 
 
 def load_launch_catalog() -> dict[str, Any]:
-    """初回公開で見せる曲・単語リストと固定歌声を読む。"""
+    """初回公開で見せる曲・単語リストと固定歌声を読む。
+
+    ``SORAMIMIC_LAUNCH_CATALOG`` を使うと、権利確認済みだが公開repositoryへ
+    再配布しない素材などを環境ごとに選べる。素材本体と同様、release外の永続pathを
+    指定することを想定している。
+    """
+    override = os.environ.get(LAUNCH_CATALOG_ENV, "").strip()
+    path = Path(override).expanduser() if override else LAUNCH_CATALOG_PATH
     try:
-        data = json.loads(LAUNCH_CATALOG_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"初回公開カタログが読めません: {exc}") from exc
+        raise RuntimeError(f"初回公開カタログが読めません ({path}): {exc}") from exc
     if not isinstance(data, dict):
         raise RuntimeError("初回公開カタログはJSON objectで指定してください")
     return data
@@ -750,6 +758,14 @@ def original_credit_of(params: dict[str, Any]) -> str:
     return str(params.get("original_credit") or "").strip()
 
 
+def original_display_credit_of(params: dict[str, Any]) -> str:
+    """既知プリセット用の簡潔な表示。権利情報の詳細と分離する。"""
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("original_display_credit"):
+        return str(entry["original_display_credit"]).strip()
+    return ""
+
+
 def credit_notice_of(params: dict[str, Any]) -> str:
     """権利者・ライセンス指定表記。既知のサンプル曲はmanifestを優先する。"""
     entry = _sample_entry_of(params)
@@ -965,6 +981,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             fps=config.get("video_fps", 30),
             image_lead_sec=config.get("video_image_lead_sec", 0.1),
             original_credit=original_credit_of(job.params),
+            original_display_credit=original_display_credit_of(job.params),
             credit_notice=credit_notice_of(job.params),
         )
 
@@ -1486,6 +1503,7 @@ def create_app(
             "/ogp-soramimic-v2.png",
             "/ogp-soramimic-v3.png",
             "/ogp-soramimic-v4.png",
+            "/ogp-soramimic-v5.png",
             "/logo-soramimic-v1.png",
             "/logo-soramimic-symbol-v1.png",
             "/logo-soramimic-symbol-v2.png",
@@ -1493,7 +1511,9 @@ def create_app(
             "/logo-soramimic-wordmark-v1.png",
             "/logo-soramimic-wordmark-v2.png",
             "/logo-soramimic-horizontal-v1.png",
+            "/logo-soramimic-horizontal-v2.png",
             "/logo-soramimic-video-v1.png",
+            "/logo-soramimic-video-v2.png",
         }:
             return await call_next(request)
         session = request.cookies.get(SESSION_COOKIE) or ""
@@ -1673,11 +1693,21 @@ def create_app(
     @app.get("/readyz", include_in_schema=False)
     def readyz(request: Request) -> JSONResponse:
         _require_ops(request)
+        try:
+            # XFの表記カナを発音形へ直す処理は、欠けても変換を止めずに
+            # フォールバックする。そのままではデプロイ検証を通過しつつ選択語が
+            # 変わるため、実際の解析器まで動かして必須依存を確認する。
+            from .reading import particle_pronunciations
+
+            particle_reading = particle_pronunciations("僕は花") == [(1, "ワ")]
+        except (RuntimeError, ValueError):
+            particle_reading = False
         checks: dict[str, bool] = {
             "jobs_dir_writable": jobs_dir.is_dir() and os.access(jobs_dir, os.W_OK),
             "persistent_ip_hash": (
                 not is_public_mode() or bool(config["ip_hash_persistent"])
             ),
+            "particle_reading": particle_reading,
         }
         if _quota_exemption_allowlist():
             checks["access"] = _access_config_valid()
@@ -1762,6 +1792,15 @@ def create_app(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/ogp-soramimic-v5.png", include_in_schema=False)
+    def ogp_image_v5() -> FileResponse:
+        """更新版ロゴを使ったSNSクローラ向けOGP画像。"""
+        return FileResponse(
+            STATIC_DIR / "ogp-soramimic-v5.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @app.get("/logo-soramimic-v1.png", include_in_schema=False)
     def brand_logo_v1() -> FileResponse:
         """画面ヘッダー向けの版付きブランドロゴ。"""
@@ -1825,11 +1864,29 @@ def create_app(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/logo-soramimic-horizontal-v2.png", include_in_schema=False)
+    def brand_horizontal_v2() -> FileResponse:
+        """更新版のマーク・文字ロゴ横並び版。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-horizontal-v2.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @app.get("/logo-soramimic-video-v1.png", include_in_schema=False)
     def brand_video_v1() -> FileResponse:
         """Canva提供のSoramimic video完成ロゴ。"""
         return FileResponse(
             STATIC_DIR / "logo-soramimic-video-v1.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/logo-soramimic-video-v2.png", include_in_schema=False)
+    def brand_video_v2() -> FileResponse:
+        """更新版のSoramimicビデオ完成ロゴ。"""
+        return FileResponse(
+            STATIC_DIR / "logo-soramimic-video-v2.png",
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )

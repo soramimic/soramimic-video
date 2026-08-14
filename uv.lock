@@ -2578,11 +2578,13 @@ dependencies = [
     { name = "cairosvg" },
     { name = "jaconv" },
     { name = "jphrase" },
+    { name = "mecab-python3" },
     { name = "mido" },
     { name = "pillow" },
     { name = "requests" },
     { name = "soramimic", extra = ["mecab"] },
     { name = "soramimic-yomi" },
+    { name = "unidic-lite" },
     { name = "xfmido" },
 ]
 
@@ -2597,14 +2599,12 @@ audio = [
     { name = "demucs" },
     { name = "faster-whisper" },
     { name = "librosa" },
-    { name = "mecab-python3" },
     { name = "numpy" },
     { name = "soramimic-yomi" },
     { name = "torch" },
     { name = "torchaudio" },
     { name = "torchcodec" },
     { name = "transformers" },
-    { name = "unidic-lite" },
 ]
 
 [package.dev-dependencies]
@@ -2628,7 +2628,7 @@ requires-dist = [
     { name = "jaconv", specifier = ">=0.3" },
     { name = "jphrase", specifier = ">=0.0.3" },
     { name = "librosa", marker = "extra == 'audio'", specifier = ">=0.10" },
-    { name = "mecab-python3", marker = "extra == 'audio'", specifier = ">=1.0" },
+    { name = "mecab-python3", specifier = ">=1.0" },
     { name = "mido", specifier = ">=1.3" },
     { name = "numpy", marker = "extra == 'audio'", specifier = ">=1.24" },
     { name = "pillow", specifier = ">=10.1" },
@@ -2642,7 +2642,7 @@ requires-dist = [
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.1" },
     { name = "torchcodec", marker = "extra == 'audio'", specifier = ">=0.2" },
     { name = "transformers", marker = "extra == 'audio'", specifier = ">=4.40" },
-    { name = "unidic-lite", marker = "extra == 'audio'", specifier = ">=1.0" },
+    { name = "unidic-lite", specifier = ">=1.0" },
     { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.29" },
     { name = "xfmido", specifier = ">=0.0.2" },
 ]

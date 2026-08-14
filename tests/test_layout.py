@@ -110,18 +110,18 @@ def test_player_card_uses_team_position_and_description_independently():
     assert "選手の説明" in layout.render_texts(common)
 
 
-def test_gimukyoiku_card_combines_school_level_and_subject():
+def test_gimukyoiku_card_displays_subject_without_school_level():
     layout = load_layout("gimukyoiku_card")
     middle = layout.render_texts({
         "original": "アンモニア", "subject": "理科", "level": "中学校",
     })
-    assert "中学理科" in middle
-    assert "理科" not in middle
+    assert "理科" in middle
+    assert "中学理科" not in middle
 
     multiple = layout.render_texts({
         "original": "短歌", "subject": "国語", "level": "小学校/中学校",
     })
-    assert "小学・中学｜国語" in multiple
+    assert "国語" in multiple
 
 
 def test_youtuber_card_uses_org_debut_and_description():

@@ -1,19 +1,21 @@
-# dev向けPRの自動マージ。CI(test など、このPRに付く全チェック)が
+# dev / preview / main向けPRの自動マージ。CI(test など、このPRに付く全チェック)が
 # すべて成功したら、確認したコミットSHAを指定してマージしブランチを削除する。
-# - 開発PRの base は dev。main はリリース時だけ更新する
-# - main 向けの通常PRは retarget-main-pr.yaml が dev へ向け直す
+# - main向けは同一repositoryのpreviewブランチからのrelease PRだけを対象にする
+# - main向けのそれ以外のPRはretarget-main-pr.yamlがdevへ向け直す
 # - 除外したいPRには `no-automerge` ラベルを付ける(ドラフトPRも対象外)
 # - 新しいpushが来ると古い待機はキャンセルされ、新SHAで待機し直す
+# write権限を持つため、必ずbase側の監査済み定義を使うpull_request_targetで動かす。
+# head codeのcheckout・source・実行は追加しない。
 name: automerge
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
-    branches: [dev]
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited, labeled, unlabeled]
+    branches: [dev, preview, main]
 
 permissions:
   contents: write
   pull-requests: write
-  checks: read
+  checks: write
 
 concurrency:
   group: automerge-${{ github.event.pull_request.number }}
@@ -22,7 +24,15 @@ concurrency:
 jobs:
   automerge:
     # 公開リポジトリのフォークPRは人間の確認なしに自動マージしない。
-    if: ${{ !github.event.pull_request.draft && !contains(github.event.pull_request.labels.*.name, 'no-automerge') && github.event.pull_request.head.repo.full_name == github.repository }}
+    # mainは同一repositoryのpreviewブランチからのPRだけを許可する。
+    if: >-
+      ${{
+        !github.event.pull_request.draft &&
+        !contains(github.event.pull_request.labels.*.name, 'no-automerge') &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        (github.event.pull_request.base.ref != 'main' ||
+          github.event.pull_request.head.ref == 'preview')
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -30,6 +40,7 @@ jobs:
       PR: ${{ github.event.pull_request.number }}
       SHA: ${{ github.event.pull_request.head.sha }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
+      BASE: ${{ github.event.pull_request.base.ref }}
       REPO: ${{ github.repository }}
     steps:
       - name: 他のチェックの完了を待って自動マージ
@@ -44,17 +55,78 @@ jobs:
             failed=$(echo "$runs" | jq '[.[] | select(.status == "completed"
               and .conclusion != "success" and .conclusion != "neutral"
               and .conclusion != "skipped")] | length')
-            echo "checks: total=$total incomplete=$incomplete failed=$failed"
-            if [ "$failed" -gt 0 ]; then
+            tests=$(echo "$runs" | jq '[.[] | select(.name == "test"
+              and .app.slug == "github-actions")]')
+            test_total=$(echo "$tests" | jq 'length')
+            test_incomplete=$(echo "$tests" | jq '[.[] | select(.status != "completed")] | length')
+            test_unsuccessful=$(echo "$tests" | jq '[.[] | select(.status == "completed"
+              and .conclusion != "success")] | length')
+            echo "checks: total=$total incomplete=$incomplete failed=$failed test_total=$test_total test_incomplete=$test_incomplete test_unsuccessful=$test_unsuccessful"
+            if [ "$failed" -gt 0 ] || [ "$test_unsuccessful" -gt 0 ]; then
               echo "$runs" | jq -r '.[] | select(.conclusion != null) | "\(.name): \(.conclusion)"'
               echo "失敗したチェックがあるためマージしません"
               exit 0
             fi
-            if [ "$total" -gt 0 ] && [ "$incomplete" -eq 0 ]; then
+            if [ "$test_total" -gt 0 ] && [ "$test_incomplete" -eq 0 ] && [ "$incomplete" -eq 0 ]; then
+              # 待機中のpush、ドラフト化、base/head変更、no-automerge追加を
+              # event payloadだけでは検知できないため、マージ直前にlive状態を再検証する。
+              live=$(gh api "repos/$REPO/pulls/$PR")
+              live_state=$(echo "$live" | jq -r .state)
+              live_draft=$(echo "$live" | jq -r .draft)
+              live_base=$(echo "$live" | jq -r .base.ref)
+              live_branch=$(echo "$live" | jq -r .head.ref)
+              live_repo=$(echo "$live" | jq -r .head.repo.full_name)
+              live_sha=$(echo "$live" | jq -r .head.sha)
+              stopped=$(echo "$live" | jq '[.labels[].name | select(. == "no-automerge")] | length')
+              if [ "$live_state" != open ] || [ "$live_draft" != false ] || \
+                 [ "$live_base" != "$BASE" ] || [ "$live_branch" != "$BRANCH" ] || \
+                 [ "$live_repo" != "$REPO" ] || [ "$live_sha" != "$SHA" ] || \
+                 [ "$stopped" -ne 0 ]; then
+                echo "PRの状態が待機開始時から変わったためマージしません"
+                exit 0
+              fi
+              if [ "$BASE" = main ] && [ "$BRANCH" != preview ]; then
+                echo "mainへマージできるのはpreviewブランチからのPRだけです" >&2
+                exit 1
+              fi
               echo "全チェック成功。マージします"
-              gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
-                -f merge_method=merge -f sha="$SHA"
-              gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" || true
+              tested_merge_sha=$(gh api "repos/$REPO/git/ref/pull/$PR/merge" -q .object.sha)
+              tested_merge=$(gh api "repos/$REPO/git/commits/$tested_merge_sha")
+              merge=$(gh api -X PUT "repos/$REPO/pulls/$PR/merge" \
+                -f merge_method=merge -f sha="$SHA")
+              if [ "$(echo "$merge" | jq -r .merged)" != true ]; then
+                echo "$merge" | jq . >&2
+                echo "マージAPIが成功を返しませんでした" >&2
+                exit 1
+              fi
+              merge_sha=$(echo "$merge" | jq -r .sha)
+              if ! [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "不正なmerge SHA: $merge_sha" >&2
+                exit 1
+              fi
+              actual_merge=$(gh api "repos/$REPO/git/commits/$merge_sha")
+              tested_shape=$(echo "$tested_merge" | jq -c \
+                '{tree:.tree.sha,parents:[.parents[].sha]}')
+              actual_shape=$(echo "$actual_merge" | jq -c \
+                '{tree:.tree.sha,parents:[.parents[].sha]}')
+              if [ "$tested_shape" != "$actual_shape" ]; then
+                echo "CI検証済みmerge-refと実mergeのtree/parentsが一致しません" >&2
+                echo "tested=$tested_shape" >&2
+                echo "actual=$actual_shape" >&2
+                exit 1
+              fi
+              # GITHUB_TOKENで作ったmergeはpush workflowを再起動しない。直前に
+              # 確認した全PR checkの成功をmerge SHAへ記録し、host controllerが
+              # exact-SHAのCI gateとして検証できるようにする。
+              gh api -X POST "repos/$REPO/check-runs" \
+                -f name=test -f head_sha="$merge_sha" -f status=completed \
+                -f conclusion=success \
+                -f 'output[title]=PR checks passed before merge' \
+                -f "output[summary]=PR #$PR ($SHA) のGitHub Actions testを含む全check成功と、検証済みmerge-ref ($tested_merge_sha) のtree/parents一致を確認しました。"
+              # 常設ブランチdev/previewは削除しない。その他の作業ブランチだけ削除する。
+              if [ "$BRANCH" != dev ] && [ "$BRANCH" != preview ]; then
+                gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" || true
+              fi
               exit 0
             fi
           done

@@ -13,7 +13,7 @@
 <meta property="og:description" content="曲と単語リストを選ぶだけ。空耳で置き換えた替え歌動画を作れます。">
 <meta property="og:url" content="https://video.soramimic.com/">
 <meta property="og:locale" content="ja_JP">
-<meta property="og:image" content="https://video.soramimic.com/ogp-soramimic-v4.png">
+<meta property="og:image" content="https://video.soramimic.com/ogp-soramimic-v5.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -21,7 +21,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Soramimic | 替え歌動画メーカー">
 <meta name="twitter:description" content="曲と単語リストを選ぶだけ。空耳で置き換えた替え歌動画を作れます。">
-<meta name="twitter:image" content="https://video.soramimic.com/ogp-soramimic-v4.png">
+<meta name="twitter:image" content="https://video.soramimic.com/ogp-soramimic-v5.png">
 <meta name="twitter:image:alt" content="Soramimic — 曲と単語リストから替え歌動画を作成">
 <style>
   /* デザイントークンは本家 soramimic(external/soramimic frontend/src/style.css)から移植。
@@ -67,7 +67,6 @@
     width: min(100%, 18rem);
   }
   .brand-logo { display: block; width: 100%; height: auto; }
-  .lead { margin: .1rem 0 0; font-size: .9rem; color: var(--muted); }
   fieldset, .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
     padding: .8rem; margin: 0 0 .6rem;
@@ -392,7 +391,21 @@
   .le-modified { color: var(--accent); font-size: .7rem; line-height: 1; }
   /* 読み込み結果のメッセージは他のボタンと同じ行に並ばせず、次の行に出す */
   #layout-file-msg { flex: 1 0 100%; }
-  #turnstile-widget:not(:empty) { margin: .6rem 0; }
+  /* Turnstileは通常のバックグラウンド判定では場所を取らず、Cloudflareが人の操作を
+     求めたときだけカード内に案内を出し、そこまで自動スクロールする。 */
+  #turnstile-wrap { scroll-margin: 1rem; }
+  #turnstile-wrap.turnstile-active .turnstile-panel {
+    max-width: 26rem; margin: .7rem 0; padding: .9rem; border: 1px solid var(--accent);
+    border-radius: 10px; background: var(--panel); text-align: center;
+    box-shadow: 0 0 0 2px #1296f022;
+  }
+  #turnstile-wrap:not(.turnstile-active) .turnstile-panel {
+    max-width: 26rem; padding: 0; border: 0; background: transparent;
+  }
+  #turnstile-wrap:not(.turnstile-active) .turnstile-copy { display: none; }
+  .turnstile-title { margin: 0; font-weight: 700; }
+  .turnstile-copy .hint { margin: .2rem 0 .5rem; }
+  #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー + ⚙と🎲 ---- */
   /* ⚙(替え歌を編集)と🎲(ランダム)はプルダウンの隣人。主役はサムネ枠なので
      右上に小さく置く。ただしアイコンだけだと気づかれないので、文字ラベルを添えた
@@ -488,10 +501,9 @@
 <div class="wrap">
 <header class="site-header">
   <h1 class="brand-lockup">
-    <img class="brand-logo" src="/logo-soramimic-video-v1.png"
-      width="1937" height="373" alt="Soramimic video">
+    <img class="brand-logo" src="/logo-soramimic-video-v2.png"
+      width="1900" height="467" alt="Soramimic video">
   </h1>
-  <p class="lead">歌詞が空耳で置き換わった替え歌動画を作れます。</p>
   <p class="hint" id="server-info"></p>
 </header>
 
@@ -587,11 +599,16 @@
   <p class="hint" id="builder-note" hidden></p>
   <p class="error" id="builder-msg" hidden></p>
 
-  <!-- Cloudflare Turnstile。サーバーで TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY を
-       設定したときだけ /api/config 経由でサイトキーが来て、ウィジェットを出す。 -->
+  <!-- Cloudflare Turnstile。通常はバックグラウンドで確認し、人の操作が必要なときだけ
+       案内とウィジェットを出してここまで自動スクロールする。 -->
   <div id="turnstile-wrap" hidden>
-    <div id="turnstile-widget"></div>
-    <p class="hint" id="turnstile-hint" hidden>自動投稿でないことの確認です(Cloudflare Turnstile)。</p>
+    <div class="turnstile-panel">
+      <div class="turnstile-copy" role="status" aria-live="polite">
+        <p class="turnstile-title" id="turnstile-title">合成前に確認してください</p>
+        <p class="hint">「私はロボットではありません」をチェックすると、そのまま合成を始めます。</p>
+      </div>
+      <div id="turnstile-widget"></div>
+    </div>
   </div>
   <!-- 曲が未セットのまま枠をタップされたときの案内(投入はしない) -->
   <p class="error" id="submit-msg" hidden></p>
@@ -781,7 +798,7 @@
       <label for="credit-notice">権利者から指定された表記</label>
       <textarea id="credit-notice" rows="3" maxlength="1000"
         placeholder="例: ©表記、ライセンス名、許諾番号など"></textarea>
-      <p class="hint" data-info>入力文を改変せずエンドクレジットに載せます。</p>
+      <p class="hint" data-info>入力文を改変せず、元曲名と並べてエンドクレジットに載せます。</p>
     </div>
   </section>
 
@@ -1284,27 +1301,87 @@ function updatePublicCredit() {
 
 let turnstileSiteKey = "";
 let turnstileWidget = null;
+let turnstileEpoch = 0;
 // callbackで受け取った最新トークン。ページを開いた直後はまだ発行されていないことが
 // あるので、投入前に ensureTurnstileToken() で少しだけ待てるようにこれを見る。
 let turnstileLastToken = "";
+let turnstileNeedsInteraction = false;
+let turnstileWaiting = false;
+let turnstileFailed = false;
+
+function showTurnstilePrompt() {
+  const wrap = $("turnstile-wrap");
+  if (wrap.classList.contains("turnstile-active")) return;
+  wrap.classList.add("turnstile-active");
+  requestAnimationFrame(() => wrap.scrollIntoView({ behavior: "smooth", block: "center" }));
+}
+
+function hideTurnstilePrompt() {
+  $("turnstile-wrap").classList.remove("turnstile-active");
+}
+
+function renderTurnstileWidget() {
+  const epoch = ++turnstileEpoch;
+  turnstileWidget = window.turnstile.render("#turnstile-widget", {
+    sitekey: turnstileSiteKey,
+    theme: "auto",
+    appearance: "interaction-only",
+    "before-interactive-callback": () => {
+      if (epoch !== turnstileEpoch) return;
+      turnstileNeedsInteraction = true;
+      if (turnstileWaiting) showTurnstilePrompt();
+    },
+    callback: (token) => {
+      if (epoch !== turnstileEpoch) return;
+      turnstileLastToken = token || "";
+      turnstileNeedsInteraction = false;
+      if (turnstileLastToken) hideTurnstilePrompt();
+    },
+    "expired-callback": () => {
+      if (epoch === turnstileEpoch) turnstileLastToken = "";
+    },
+    "error-callback": () => {
+      if (epoch !== turnstileEpoch) return;
+      turnstileLastToken = "";
+      turnstileFailed = true;
+    },
+    "timeout-callback": () => {
+      if (epoch !== turnstileEpoch) return;
+      turnstileLastToken = "";
+      turnstileFailed = true;
+    },
+  });
+}
+
+function rebuildTurnstileWidget() {
+  const oldWidget = turnstileWidget;
+  // 先に世代を進め、remove中にも届き得る旧callbackを無効化する。
+  turnstileEpoch += 1;
+  turnstileWidget = null;
+  turnstileLastToken = "";
+  if (oldWidget !== null && window.turnstile) {
+    try { window.turnstile.remove(oldWidget); } catch { /* 既に消えていればそのまま再描画 */ }
+  }
+  $("turnstile-widget").replaceChildren();
+  try {
+    renderTurnstileWidget();
+  } catch (err) {
+    // 回復用の再描画まで失敗してもsubmitJobをrejectしてbusyのままにしない。
+    // 次の投入ではページ再読み込みを促す通常の確認失敗として扱う。
+    console.warn("Turnstileの再描画に失敗しました", err);
+  }
+}
 
 function setupTurnstile(siteKey) {
   if (!siteKey || turnstileSiteKey) return;  // 未設定、または読み込み済み
   turnstileSiteKey = siteKey;
-  $("turnstile-wrap").hidden = false;
+  const wrap = $("turnstile-wrap");
+  wrap.hidden = false;
   // explicit renderにして、スクリプト読み込み完了後に自分で描画する。
   // appearance: interaction-only で普段は何も表示せず、Cloudflareが人間の
-  // 操作を求めるときだけウィジェット(と説明文)を出す。
+  // 操作を求めるときだけウィジェットを出す。
   window.onTurnstileLoad = () => {
-    turnstileWidget = window.turnstile.render("#turnstile-widget", {
-      sitekey: siteKey,
-      theme: "auto",
-      appearance: "interaction-only",
-      "before-interactive-callback": () => { $("turnstile-hint").hidden = false; },
-      callback: (token) => { turnstileLastToken = token || ""; },
-      "expired-callback": () => { turnstileLastToken = ""; },
-      "error-callback": () => { turnstileLastToken = ""; },
-    });
+    renderTurnstileWidget();
   };
   const s = document.createElement("script");
   s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js"
@@ -1322,6 +1399,10 @@ function turnstileToken() {
 
 function resetTurnstile() {
   turnstileLastToken = "";
+  turnstileNeedsInteraction = false;
+  turnstileWaiting = false;
+  turnstileFailed = false;
+  hideTurnstilePrompt();
   if (turnstileWidget !== null && window.turnstile) window.turnstile.reset(turnstileWidget);
 }
 
@@ -1329,19 +1410,38 @@ function resetTurnstile() {
 // 「おまかせ」のように即投入するときは、まだトークンが無いことがあるため。
 // トークンが必須なのはサーバーに TURNSTILE_SECRET_KEY があるとき(=サイトキーが
 // 配られたとき)だけなので、無効な構成では何もしない。
-async function ensureTurnstileToken(timeoutMs = 8000) {
+async function ensureTurnstileToken(timeoutMs = 120000) {
   if (!turnstileSiteKey) return true;
+  // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
+  // それでも作れなければ2分待たせず確認失敗として戻す。
+  if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
+  if (turnstileWidget === null && window.turnstile) return false;
+  if (turnstileToken()) return true;
   const t0 = Date.now();
   let executed = false;
-  while (!turnstileToken() && Date.now() - t0 < timeoutMs) {
+  turnstileWaiting = true;
+  turnstileFailed = false;
+  if (turnstileNeedsInteraction) showTurnstilePrompt();
+  while (!turnstileToken() && !turnstileFailed && Date.now() - t0 < timeoutMs) {
     // ウィジェットが描画済みなのに待っても出ないときは一度だけ明示実行する
     if (!executed && turnstileWidget !== null && Date.now() - t0 > 1500) {
       executed = true;
       try { window.turnstile.execute(turnstileWidget); } catch { /* 実行中なら無視 */ }
     }
+    // callbackが来ない通信中も、待っている理由を隠さない。
+    if (Date.now() - t0 > 3000) showTurnstilePrompt();
     await new Promise((r) => setTimeout(r, 200));
   }
-  return !!turnstileToken();
+  turnstileWaiting = false;
+  const verified = !turnstileFailed && !!turnstileToken();
+  if (verified) hideTurnstilePrompt();
+  else if (turnstileWidget !== null && window.turnstile) {
+    // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
+    // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
+    rebuildTurnstileWidget();
+    turnstileNeedsInteraction = false;
+  }
+  return verified;
 }
 
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
@@ -1807,6 +1907,10 @@ function showSubmitMsg(text) {
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
 // 本番生成は previewSec=0 で呼ばれ、モードは使われない。
 async function submitJob(previewSec, previewMode) {
+  // サンプル取得待ちやTurnstile待ちも投入処理の一部。二重タップで同じtokenを使う
+  // submitJobが複数走らないよう、最初のawaitより前にロックする。
+  if (submitBusy) return;
+  setBusy(true);
   // 曲を選んだ直後に押されたときは、MIDIの取得と歌詞チェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
   if (midiChecking) await midiChecking;
@@ -1845,12 +1949,15 @@ async function submitJob(previewSec, previewMode) {
     return;
   }
   if (apiKey()) localStorage.setItem("apiKey", apiKey());
-  // Turnstileが有効なら、トークンが出るまで少し待ってから組み立てる
+  // Turnstileが有効なら、トークンが出るまで待ってから組み立てる。人の操作が
+  // 必要なときは確認欄まで自動スクロールし、未確認のリクエストは送らない。
   if (turnstileSiteKey) {
-    setBusy(true);
-    showProgress();
-    setJobStatus("確認中…");
-    await ensureTurnstileToken();
+    if (!await ensureTurnstileToken()) {
+      setBusy(false);
+      showSubmitMsg("人間かどうかの確認を完了できませんでした。もう一度お試しください。");
+      hideTurnstilePrompt();
+      return;
+    }
   }
   const form = new FormData();
   form.append("midi", midi);
@@ -4673,7 +4780,7 @@ function showEditorFrame() {
 // 飛んでこないので、同一オリジンの利点を使ってiframe側のdocumentにも同じ
 // ハンドラを付ける(付けられなければ親のEscだけになる)。
 function onEditorModalKeydown(ev) {
-  if (ev.key !== "Escape" || $("editor-frame-wrap").hidden) return;
+  if (ev.key !== "Escape" || ev.defaultPrevented || $("editor-frame-wrap").hidden) return;
   ev.preventDefault();
   closeEditor();
 }

@@ -11,8 +11,8 @@ deployments_dir=${SORAMIMIC_DEPLOYMENTS_DIR:-$app_root/deployments}
 current_link=${SORAMIMIC_CURRENT_LINK:-$app_root/current}
 state_root=${SORAMIMIC_STATE_ROOT:-/var/lib/soramimic-video-public/work}
 env_file=${SORAMIMIC_ENV_FILE:-/etc/soramimic-video/public.env}
-service_user=${SORAMIMIC_SERVICE_USER:-soramimic-video}
-service_group=${SORAMIMIC_SERVICE_GROUP:-soramimic-video}
+service_user=${SORAMIMIC_SERVICE_USER:-soramimic-video-public}
+service_group=${SORAMIMIC_SERVICE_GROUP:-soramimic-video-public}
 service_unit=${SORAMIMIC_SERVICE_UNIT:-soramimic-video-public.service}
 repo_url=${SORAMIMIC_REPO_URL:-https://github.com/soramimic/soramimic-video.git}
 source_checkout=${SORAMIMIC_SOURCE_CHECKOUT:-}
@@ -23,6 +23,19 @@ production_port=${SORAMIMIC_LISTEN_PORT:-8301}
 health_attempts=${SORAMIMIC_HEALTH_ATTEMPTS:-45}
 proc_root=${SORAMIMIC_PROC_ROOT:-/proc}
 dry_run=0
+require_remote_head=${SORAMIMIC_REQUIRE_REMOTE_HEAD:-0}
+cleanup_release_dir=''
+cleanup_manifest=''
+cleanup_prepared_record=''
+
+cleanup_prepare() {
+  if [[ -n $cleanup_release_dir ]]; then
+    chmod -R u+w "$cleanup_release_dir" >/dev/null 2>&1 || true
+    rm -rf -- "$cleanup_release_dir"
+  fi
+  [[ -z $cleanup_manifest ]] || rm -f -- "$cleanup_manifest"
+  [[ -z $cleanup_prepared_record ]] || rm -f -- "$cleanup_prepared_record"
+}
 
 usage() {
   cat <<'EOF'
@@ -128,7 +141,10 @@ prepare() {
 
   # venv console scripts contain absolute shebangs. Build at the final path and
   # delete it on every failure; current is only touched by the separate activate command.
-  trap 'chmod -R u+w "$release_dir" >/dev/null 2>&1 || true; rm -rf -- "$release_dir"; rm -f -- "$manifest" "$prepared_record"' EXIT
+  cleanup_release_dir=$release_dir
+  cleanup_manifest=$manifest
+  cleanup_prepared_record=$prepared_record
+  trap cleanup_prepare EXIT
   install -d -m 0750 -o "$service_user" -g "$service_group" "$release_dir"
   install -d -m 0700 -o "$service_user" -g "$service_group" "$build_home"
   if [[ -n $source_checkout ]]; then
@@ -139,9 +155,6 @@ prepare() {
     runuser -u "$service_user" -- env HOME="$build_home" \
       git clone --no-checkout --filter=blob:none "$repo_url" "$release_dir/repo"
     mv "$release_dir/repo"/.git "$release_dir/.git"
-    shopt -s dotglob nullglob
-    mv "$release_dir/repo"/* "$release_dir/"
-    shopt -u dotglob nullglob
     rmdir "$release_dir/repo"
     runuser -u "$service_user" -- env HOME="$build_home" \
       git -C "$release_dir" fetch --no-tags origin "$source_ref"
@@ -153,7 +166,8 @@ prepare() {
     runuser -u "$service_user" -- env HOME="$build_home" git -C "$release_dir" checkout --detach "$sha"
     runuser -u "$service_user" -- env HOME="$build_home" \
       git -C "$release_dir" submodule update --init --recursive --depth 1
-    submodules=$(git -C "$release_dir" submodule status --recursive)
+    submodules=$(runuser -u "$service_user" -- \
+      git -C "$release_dir" submodule status --recursive)
   fi
   runuser -u "$service_user" -- env HOME="$build_home" UV_PROJECT_ENVIRONMENT="$release_dir/.venv" \
     "$uv_bin" sync --directory "$release_dir" --frozen --extra api --no-dev
@@ -180,6 +194,9 @@ prepare() {
     >"$prepared_record"
   chmod 0600 "$prepared_record"
   trap - EXIT
+  cleanup_release_dir=''
+  cleanup_manifest=''
+  cleanup_prepared_record=''
   log "prepared: $release_dir"
 }
 
@@ -257,6 +274,7 @@ verify() {
 
 activate() {
   local release_dir verified confirmed='' previous='' previous_sha='' activated_at record failed=0
+  local remote_head=''
   while (( $# )); do
     case $1 in
       --confirm) confirmed=${2:-}; shift 2 ;;
@@ -273,6 +291,13 @@ activate() {
   [[ $(jq -er .manifest_sha256 "$verified") == \
     "$(jq -er .manifest_sha256 "$deployments_dir/prepared-$sha.json")" ]] || \
     die "verify後にrelease manifest identityが変わっています"
+  if [[ $require_remote_head == 1 ]]; then
+    remote_head=$(git ls-remote "$repo_url" "refs/heads/$source_ref" | awk '{print $1}')
+    [[ $remote_head == "$sha" ]] || \
+      die "source branch advanced before activation: $sha != ${remote_head:-missing}"
+  elif [[ $require_remote_head != 0 ]]; then
+    die "SORAMIMIC_REQUIRE_REMOTE_HEAD must be 0 or 1"
+  fi
   systemctl show "$service_unit" --property=Environment --value | \
     tr ' ' '\n' | grep -qx 'SORAMIMIC_ALLOW_LOCAL_OPS=1' || \
     die "installed unitにSORAMIMIC_ALLOW_LOCAL_OPS=1がありません。unit配置とdaemon-reloadを先に実行してください"

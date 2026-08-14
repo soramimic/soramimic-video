@@ -21,6 +21,10 @@ dependencies = [
     "cairosvg>=2.7",
     "soramimic-yomi",
     "jphrase>=0.0.3",
+    # XF歌詞の助詞「は/へ/を」を発音形へ直す変換前処理に必須。
+    # 欠けると処理自体は継続するが、同じMIDI・変換パラメータでも選択語が変わる。
+    "mecab-python3>=1.0",
+    "unidic-lite>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -40,8 +44,6 @@ audio = [
     "transformers>=4.40",
     "librosa>=0.10",
     "faster-whisper>=1.0",
-    "mecab-python3>=1.0",
-    "unidic-lite>=1.0",
     "soramimic-yomi",
     "numpy>=1.24",
 ]
