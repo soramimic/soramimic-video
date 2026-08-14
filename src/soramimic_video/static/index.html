@@ -563,7 +563,7 @@
     <video id="builder-video" controls playsinline hidden></video>
     <div class="builder-figure-loading" id="builder-loading" hidden>
       <span class="spinner" aria-hidden="true"></span>
-      <span id="builder-loading-label">プレビューを作成中…</span>
+      <span>プレビューを作成中…</span>
     </div>
     <button type="button" class="builder-play" id="builder-play" hidden
       aria-label="この組み合わせで動画を生成">
@@ -2411,7 +2411,7 @@ $("lyrics").addEventListener("change", scheduleMidiCheck);
 const DEFAULT_COMBO = { sample: "furusato", wordlist: "baseball" };
 
 // 空耳変換に時間がかかる単語リスト。ランダム抽選の対象から外し、
-// それでも選ばれているときは空耳変換中の枠内だけに時間の注意を出す。
+// それでも選ばれているときは本編の空耳変換中だけ枠内に時間の注意を出す。
 // (sekitsuiは不正データ3行が原因で数分かかる。上流のデータ修正が入ったら外してよい)
 const SLOW_WORDLISTS = ["sekitsui"];
 
@@ -2448,13 +2448,12 @@ function wordlistOptionByName(name) {
   return [...sel.options].find((o) => o.value === String(i)) || null;
 }
 
-// 選択肢から1つの「組み合わせ」を組む。戻り値は { sampleId, wordlistName, slow }。
+// 選択肢から1つの「組み合わせ」を組む。戻り値は { sampleId, wordlistName }。
 // wordlistName が空なら単語リストは触らない(現在の設定のまま生成する)。
 function luckyCombo(sampleId, wordlistName) {
   return {
     sampleId,
     wordlistName: wordlistName || "",
-    slow: SLOW_WORDLISTS.includes(wordlistName),
   };
 }
 
@@ -2747,9 +2746,6 @@ function loadThumbnailPreview(combo) {
     return;
   }
   fig.hidden = false;
-  $("builder-loading-label").textContent = combo.slow
-    ? "空耳変換中…（数分かかることがあります）"
-    : "プレビューを作成中…";
   $("builder-loading").hidden = false;
 
   const ctrl = new AbortController();
