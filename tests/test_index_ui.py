@@ -314,12 +314,16 @@ def test_job_post_retries_one_server_rejected_turnstile_token():
         f"""
         const assert = require("node:assert/strict");
         let calls = 0;
-        let resets = 0;
+        let rebuilds = 0;
         let turnstileSiteKey = "site";
+        let turnstileNeedsInteraction = true;
+        let turnstileWaiting = true;
+        let turnstileFailed = true;
         const form = {{ values: {{}}, set(key, value) {{ this.values[key] = value; }} }};
         const headers = () => ({{}});
         const fetch = async () => {{ calls += 1; return {{ status: calls === 1 ? 403 : 200 }}; }};
-        function resetTurnstile() {{ resets += 1; }}
+        function hideTurnstilePrompt() {{}}
+        function rebuildTurnstileWidget() {{ rebuilds += 1; }}
         async function ensureTurnstileToken() {{ return true; }}
         function turnstileToken() {{ return "fresh-token"; }}
         {post}
@@ -327,7 +331,7 @@ def test_job_post_retries_one_server_rejected_turnstile_token():
           const response = await postJobWithTurnstileRetry(form);
           assert.equal(response.status, 200);
           assert.equal(calls, 2);
-          assert.equal(resets, 1);
+          assert.equal(rebuilds, 1);
           assert.equal(form.values.turnstile_token, "fresh-token");
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
@@ -339,13 +343,59 @@ def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()
     script = _script()
-    assert 'id="turnstile-title">合成前に確認してください' in markup
+    assert 'id="turnstile-title">人間かどうかの確認が必要です' in markup
     assert 'class="turnstile-copy" role="status" aria-live="polite"' in markup
+    assert 'class="turnstile-panel" tabindex="-1"' in markup
     assert 'id="turnstile-cancel"' not in markup
     assert 'turnstile-ui' not in script
     assert 'turnstile-overlay' not in markup
-    prompt = _function_body(script, "function showTurnstilePrompt()")
+    prompt = _function_body(script, "function showTurnstilePrompt(")
     assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
+    assert "if (!alreadyActive || forceScroll)" in prompt
+    render = _function_body(script, "function renderTurnstileWidget()")
+    assert 'execution: "execute"' in render
+    assert render.count("showTurnstilePrompt(true)") >= 4
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_turnstile_prompt_can_rescroll_after_retry():
+    """表示済みでも再試行時は再スクロールでき、通常pollでは繰り返さない。"""
+    prompt = _function_body(_script(), "function showTurnstilePrompt(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let active = false;
+        let scrolls = 0;
+        let focuses = 0;
+        const frames = [];
+        const wrap = {{
+          classList: {{
+            contains() {{ return active; }},
+            add() {{ active = true; }},
+          }},
+          scrollIntoView() {{ scrolls += 1; }},
+          querySelector() {{ return {{ focus() {{ focuses += 1; }} }}; }},
+        }};
+        const $ = () => wrap;
+        const requestAnimationFrame = (fn) => frames.push(fn);
+        {prompt}
+        // 成功callbackが次のframeより先に案内を隠した場合は、画面を戻さない。
+        showTurnstilePrompt();
+        active = false;
+        frames.shift()();
+        assert.equal(scrolls, 0);
+
+        showTurnstilePrompt();
+        frames.shift()();
+        showTurnstilePrompt();
+        assert.equal(frames.length, 0);
+        showTurnstilePrompt(true);
+        frames.shift()();
+        assert.equal(scrolls, 2);
+        assert.equal(focuses, 2);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True)
 
 
 def test_submit_never_posts_without_a_turnstile_token():
@@ -363,9 +413,14 @@ def test_submit_never_posts_without_a_turnstile_token():
     ensure = _function_body(_script(), "async function ensureTurnstileToken(")
     assert "const verified = !failed && !!turnstileToken()" in ensure
     assert "rebuildTurnstileWidget()" in ensure
-    assert "if (turnstileWidget === null && window.turnstile) return false;" in ensure
+    assert "const loadDeadline = Math.min(deadline, Date.now() + 10000);" in ensure
+    assert "if (turnstileWidget === null || turnstileScriptFailed)" in ensure
+    assert "window.turnstile.execute(turnstileWidget)" in ensure
     assert "timeoutMs = 120000" in ensure
     assert "for (let attempt = 0; attempt < 2; attempt += 1)" in ensure
+    assert "showTurnstileFailure(turnstileScriptFailed);" in guard
+    assert "hideTurnstilePrompt();" not in guard
+    assert "resetTurnstile(!keepTurnstilePrompt);" in submit
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -381,13 +436,17 @@ def test_turnstile_errors_rebuild_and_retry_widget():
         let turnstileNeedsInteraction = false;
         let turnstileWaiting = false;
         let turnstileFailed = false;
+        let turnstileScriptFailed = false;
         let rebuilds = 0;
         let now = 0;
         let waitMode = "error-then-success";
         let window = {{turnstile: {{execute() {{}} }}}};
         function turnstileToken() {{ return token; }}
         function showTurnstilePrompt() {{}}
+        function showTurnstileFailure() {{}}
+        function setTurnstilePromptCopy() {{}}
         function hideTurnstilePrompt() {{}}
+        const $ = () => ({{classList: {{contains() {{ return false; }}}}}});
         function rebuildTurnstileWidget() {{
           rebuilds += 1;
           token = "";
