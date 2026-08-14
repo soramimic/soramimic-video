@@ -723,7 +723,8 @@ def test_completed_video_prepares_one_shared_playback_file_and_reset_aborts_fetc
     script = _script()
     shown = _function_body(script, "function showBuilderVideo(job)")
     assert "prepareVideoShare(job.video_url, video)" in shown
-    assert "if (!FILE_SHARE_SUPPORTED) video.src = qs(job.video_url);" in shown
+    assert "if (!FILE_SHARE_SUPPORTED) {" in shown
+    assert "video.src = qs(job.video_url);" in shown
     clicked = _function_body(script, "function bindShare(videoUrl)")
     assert "prepareVideoShare" not in clicked
     reset = _function_body(script, "function resetVideoSharePreparation()")
@@ -732,6 +733,57 @@ def test_completed_video_prepares_one_shared_playback_file_and_reset_aborts_fetc
     state = _function_body(script, "function setBuilderState(state)")
     assert state.index('video.removeAttribute("src")') < state.index(
         "resetVideoSharePreparation()"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_each_completed_video_gets_fresh_paused_native_controls():
+    """2回目の完成動画が前回の停止アイコンを引き継がない。"""
+    fresh = _function_body(_script(), "function freshBuilderVideo()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+
+        function videoElement(generation) {{
+          return {{
+            generation, paused: generation === 0 ? false : true,
+            pauseCalls: 0, loadCalls: 0,
+            pause() {{ this.pauseCalls += 1; this.paused = true; }},
+            load() {{ this.loadCalls += 1; this.paused = true; }},
+            removeAttribute() {{}},
+            cloneNode() {{ return videoElement(this.generation + 1); }},
+            replaceWith(next) {{ currentVideo = next; }},
+          }};
+        }}
+
+        let currentVideo = videoElement(0);
+        let shareResets = 0;
+        const $ = () => currentVideo;
+        const resetVideoSharePreparation = () => {{ shareResets += 1; }};
+        {fresh}
+
+        const first = freshBuilderVideo();
+        assert.notEqual(first.generation, 0);
+        assert.equal(first.paused, true);
+        const second = freshBuilderVideo();
+        assert.notEqual(second, first,
+          "a repeated generation must not reuse native media controls");
+        assert.equal(second.paused, true,
+          "the second completed video must initially show the play control");
+        assert.equal(shareResets, 2);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+def test_completed_video_refreshes_controls_before_loading_its_source():
+    """直接URL・共有Blobのどちらも新しいvideo要素へ読み込む。"""
+    shown = _function_body(_script(), "function showBuilderVideo(job)")
+    assert shown.index("freshBuilderVideo()") < shown.index("video.src")
+    assert 'if (!FILE_SHARE_SUPPORTED) {' in shown
+    assert shown.index("video.src = qs(job.video_url)") < shown.index("video.load()")
+    assert shown.index("freshBuilderVideo()") < shown.index(
+        "prepareVideoShare(job.video_url, video)"
     )
 
 
