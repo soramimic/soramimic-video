@@ -3,61 +3,71 @@
   "id": "furusato",
   "title": "ふるさと",
   "title_kana": "フルサト",
-  "description": "唱歌・PD"
+  "description": "唱歌・PD",
+  "edition": "full"
  },
  {
   "id": "akatombo",
   "title": "赤とんぼ",
   "title_kana": "アカトンボ",
-  "description": "童謡・PD"
+  "description": "童謡・PD",
+  "edition": "full"
  },
  {
   "id": "momotarou",
   "title": "桃太郎",
   "title_kana": "モモタロー",
-  "description": "文部省唱歌・PD"
+  "description": "文部省唱歌・PD",
+  "edition": "full"
  },
  {
   "id": "katatsumuri",
   "title": "かたつむり",
   "title_kana": "カタツムリ",
-  "description": "文部省唱歌・PD"
+  "description": "文部省唱歌・PD",
+  "edition": "full"
  },
  {
   "id": "harugakita",
   "title": "春が来た",
   "title_kana": "ハルガキタ",
-  "description": "唱歌・PD"
+  "description": "唱歌・PD",
+  "edition": "full"
  },
  {
   "id": "oborodukiyo",
   "title": "朧月夜",
   "title_kana": "オボロヅキヨ",
-  "description": "唱歌・PD"
+  "description": "唱歌・PD",
+  "edition": "full"
  },
  {
   "id": "chatsumi",
   "title": "茶摘",
   "title_kana": "チャツミ",
-  "description": "文部省唱歌・PD"
+  "description": "文部省唱歌・PD",
+  "edition": "full"
  },
  {
   "id": "nanatsunoko",
   "title": "七つの子",
   "title_kana": "ナナツノコ",
-  "description": "童謡・PD"
+  "description": "童謡・PD",
+  "edition": "full"
  },
  {
   "id": "momiji",
   "title": "紅葉",
   "title_kana": "モミジ",
-  "description": "唱歌・PD"
+  "description": "唱歌・PD",
+  "edition": "full"
  },
  {
   "id": "shabondama",
   "title": "しゃぼん玉",
   "title_kana": "シャボンダマ",
-  "description": "童謡・PD"
+  "description": "童謡・PD",
+  "edition": "full"
  },
  {
   "id": "amazinggrace",
