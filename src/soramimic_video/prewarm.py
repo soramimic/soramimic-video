@@ -19,8 +19,16 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import (
+    parse_qsl,
+    unquote,
+    urlencode,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
+import requests
 from PIL import Image, UnidentifiedImageError
 
 from . import runproc
@@ -36,6 +44,20 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_VERSION = 1
 MAX_ASSET_BYTES = 50 * 1024 * 1024
+MAX_SOURCE_MANIFEST_BYTES = 5 * 1024 * 1024
+SOURCE_MANIFEST_URL = (
+    "https://github.com/soramimic/soramimic-wordlists/releases/download/"
+    "release-image-source-manifest-v1/source-manifest.json"
+)
+SOURCE_MANIFEST_SCHEMA = "soramimic.release-image-source-manifest"
+SOURCE_MANIFEST_REPOSITORY = "soramimic/soramimic-wordlists"
+SOURCE_MANIFEST_JSON_SCHEMA = (
+    "https://github.com/soramimic/soramimic-wordlists/blob/main/"
+    "assets/release-image-source-manifest-v1.schema.json"
+)
+SOURCE_RELEASE_URL_PREFIX = (
+    "https://github.com/soramimic/soramimic-wordlists/releases/download/"
+)
 
 
 def _now() -> str:
@@ -141,7 +163,13 @@ def _store_content(source: Path, store: Path) -> tuple[str, str]:
     suffix = source.suffix.lower() if source.suffix else ".img"
     relative = Path("images") / digest[:2] / f"{digest}{suffix}"
     destination = store / relative
-    if not destination.exists():
+    destination_ok = False
+    if destination.exists():
+        try:
+            destination_ok = hashlib.sha256(destination.read_bytes()).hexdigest() == digest
+        except OSError:
+            pass
+    if not destination_ok:
         destination.parent.mkdir(parents=True, exist_ok=True)
         tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
         shutil.copyfile(source, tmp)
@@ -182,8 +210,145 @@ def _load_json_manifest(path: Path) -> dict:
 
 
 def _candidate_manifest(store: Path) -> dict:
-    pending = _load_json_manifest(store / PENDING_MANIFEST_NAME)
-    return pending or load_manifest(store)
+    # A failed candidate must never become the comparison base.  In particular, a
+    # partially downloaded source-manifest revision is retried in full next time.
+    return load_manifest(store)
+
+
+def _iso_datetime(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"source manifestの{field}が不正です")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(f"source manifestの{field}が不正です") from e
+    if parsed.tzinfo is None:
+        raise ValueError(f"source manifestの{field}にtimezoneがありません")
+    return value
+
+
+def _validate_source_manifest(value: object) -> dict:
+    """Validate the intentionally small, closed v1 publisher contract."""
+    if not isinstance(value, dict):
+        raise ValueError("source manifestはJSON objectである必要があります")
+    required = {
+        "$schema", "schema", "version", "revision", "generated_at", "repository",
+        "assets",
+    }
+    if set(value) != required:
+        raise ValueError("source manifestのtop-level fieldがv1 schemaと一致しません")
+    if value["$schema"] != SOURCE_MANIFEST_JSON_SCHEMA:
+        raise ValueError("source manifestの$schemaが不正です")
+    if value["schema"] != SOURCE_MANIFEST_SCHEMA or value["version"] != 1:
+        raise ValueError("未対応のsource manifest schema/versionです")
+    if value["repository"] != SOURCE_MANIFEST_REPOSITORY:
+        raise ValueError("source manifestのrepositoryが不正です")
+    if not isinstance(value["revision"], int) or isinstance(value["revision"], bool) \
+            or value["revision"] < 1:
+        raise ValueError("source manifestのrevisionが不正です")
+    _iso_datetime(value["generated_at"], "generated_at")
+    if not isinstance(value["assets"], dict):
+        raise ValueError("source manifestのassetsが不正です")
+    allowed_asset = {"revision", "updated_at", "sha256", "size", "note"}
+    required_asset = {"revision", "updated_at", "sha256", "size"}
+    for url, entry in value["assets"].items():
+        if not isinstance(url, str) or not url.startswith(SOURCE_RELEASE_URL_PREFIX):
+            raise ValueError(f"source manifestのcanonical URLが不正です: {url!r}")
+        if not isinstance(entry, dict) or not required_asset <= set(entry) \
+                or not set(entry) <= allowed_asset:
+            raise ValueError(f"source manifest entryが不正です: {url}")
+        revision = entry["revision"]
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError(f"source revisionが不正です: {url}")
+        _iso_datetime(entry["updated_at"], f"updated_at ({url})")
+        digest = entry["sha256"]
+        if not isinstance(digest, str) or len(digest) != 64 \
+                or any(ch not in "0123456789abcdef" for ch in digest):
+            raise ValueError(f"source sha256が不正です: {url}")
+        size = entry["size"]
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise ValueError(f"source sizeが不正です: {url}")
+        if "note" in entry and not isinstance(entry["note"], str):
+            raise ValueError(f"source noteが不正です: {url}")
+    return value
+
+
+def _cache_busted_url(url: str, **values: object) -> str:
+    parsed = urlsplit(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update({key: str(value) for key, value in values.items()})
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
+
+
+def _bounded_response_bytes(response: requests.Response, max_bytes: int) -> bytes:
+    length = response.headers.get("Content-Length")
+    if length:
+        try:
+            if int(length) > max_bytes:
+                raise ValueError(f"response sizeが上限を超えています: {length} bytes")
+        except ValueError as e:
+            if "上限" in str(e):
+                raise
+            raise ValueError("Content-Lengthが不正です") from e
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"response sizeが上限を超えています: >{max_bytes} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def fetch_source_manifest(url: str = SOURCE_MANIFEST_URL) -> tuple[dict, str]:
+    try:
+        response = requests.get(
+            _cache_busted_url(url, sync_nonce=time.time_ns()),
+            headers={"Accept": "application/json", "Cache-Control": "no-cache"},
+            timeout=30, stream=True,
+        )
+        response.raise_for_status()
+        raw = _bounded_response_bytes(response, MAX_SOURCE_MANIFEST_BYTES)
+        value = json.loads(raw)
+    except (requests.RequestException, ValueError) as e:
+        raise ValueError(f"source manifestを取得できません: {e}") from e
+    return _validate_source_manifest(value), hashlib.sha256(raw).hexdigest()
+
+
+def _fetch_verified_source_image(
+    url: str, source: dict, staging: Path, max_bytes: int,
+) -> tuple[Path, str]:
+    expected_size = source["size"]
+    if expected_size > max_bytes:
+        raise ValueError(f"source sizeが上限を超えています: {expected_size} bytes")
+    try:
+        response = requests.get(
+            _cache_busted_url(
+                url, source_revision=source["revision"], source_sha256=source["sha256"],
+            ),
+            headers={"Cache-Control": "no-cache"}, timeout=30, stream=True,
+        )
+        response.raise_for_status()
+    except requests.RequestException as e:
+        raise ValueError(f"Release assetを取得できません: {e}") from e
+    raw = _bounded_response_bytes(response, min(max_bytes, expected_size + 1))
+    digest = hashlib.sha256(raw).hexdigest()
+    if len(raw) != expected_size:
+        raise ValueError(f"source size不一致: expected={expected_size} actual={len(raw)}")
+    if digest != source["sha256"]:
+        raise ValueError(f"source sha256不一致: expected={source['sha256']} actual={digest}")
+    suffix = Path(urlparse(url).path).suffix.lower() or ".img"
+    destination = staging / ".source-raw" / f"{digest}{suffix}"
+    if not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        tmp.write_bytes(raw)
+        os.replace(tmp, destination)
+    return destination, digest
 
 
 def _manifest_health(manifest: dict, store: Path) -> dict[str, int]:
@@ -209,6 +374,20 @@ def _manifest_health(manifest: dict, store: Path) -> dict[str, int]:
     }
 
 
+def _entry_available(entry: dict | None, store: Path) -> bool:
+    if not entry or entry.get("status") != "available":
+        return False
+    relative = entry.get("local_path")
+    if not isinstance(relative, str):
+        return False
+    try:
+        path = (store / relative).resolve()
+        path.relative_to(store.resolve())
+    except (OSError, ValueError):
+        return False
+    return path.is_file()
+
+
 def sync_asset_store(
     csv_paths: list[Path],
     store: Path,
@@ -219,16 +398,55 @@ def sync_asset_store(
     max_bytes: int = MAX_ASSET_BYTES,
     skip_revalidate_urls: set[str] | None = None,
     download_workers: int = 2,
+    mode: str = "manifest",
+    source_manifest_url: str = SOURCE_MANIFEST_URL,
 ) -> dict[str, int]:
     """Synchronize all built-in wordlist assets into an atomic persistent manifest."""
+    if mode not in {"manifest", "full"}:
+        raise ValueError(f"不正なasset sync modeです: {mode}")
+    if revalidate:
+        mode = "full"
     rows = _collect_rows(csv_paths)
     skip_revalidate_urls = skip_revalidate_urls or set()
+    source_manifest: dict | None = None
+    source_manifest_sha256 = ""
+    source_assets: dict[str, dict] = {}
+    if any(url.startswith(SOURCE_RELEASE_URL_PREFIX) for url in rows):
+        source_manifest, source_manifest_sha256 = fetch_source_manifest(source_manifest_url)
+        source_assets = source_manifest["assets"]
+    checked_at = _now()
     old = _candidate_manifest(store)
     old_assets = old.get("assets", {}) if isinstance(old.get("assets"), dict) else {}
+    old_source = old.get("source_manifest", {})
+    if source_manifest is not None and isinstance(old_source, dict) \
+            and old_source.get("revision") is not None:
+        if source_manifest["revision"] < old_source["revision"]:
+            raise ValueError("source manifest revisionがactiveより古いため拒否しました")
+        if source_manifest["revision"] == old_source["revision"] \
+                and old_source.get("sha256") not in {None, source_manifest_sha256}:
+            raise ValueError("同じsource manifest revisionで内容が変化しています")
+    for url, declared in source_assets.items():
+        previous = old_assets.get(url, {})
+        previous_revision = previous.get("source_revision") if isinstance(previous, dict) else None
+        previous_hash = previous.get("source_sha256") if isinstance(previous, dict) else None
+        if isinstance(previous_revision, int):
+            if declared["revision"] < previous_revision:
+                raise ValueError(f"source revisionがactiveより古いため拒否しました: {url}")
+            if declared["revision"] == previous_revision \
+                    and isinstance(previous_hash, str) and previous_hash != declared["sha256"]:
+                raise ValueError(f"同じsource revisionでsha256が変化しています: {url}")
     new_count = sum(url not in old_assets for url in rows)
-    changed_candidates = (
-        sum(url in old_assets and url not in skip_revalidate_urls for url in rows)
-        if revalidate else 0
+    changed_candidates = sum(
+        url in old_assets
+        and url not in skip_revalidate_urls
+        and (
+            mode == "full"
+            or (
+                url in source_assets
+                and old_assets[url].get("source_sha256") != source_assets[url]["sha256"]
+            )
+        )
+        for url in rows
     )
     orphaned = sum(url not in rows for url in old_assets)
     if dry_run:
@@ -255,11 +473,18 @@ def sync_asset_store(
         for url, row in rows.items():
             previous = assets.get(url)
             skip_revalidate = url in skip_revalidate_urls
-            current = previous and previous.get("status") == "available"
-            needs_image = not current or (revalidate and not skip_revalidate)
+            current = _entry_available(previous, store)
+            source_entry = source_assets.get(url)
+            source_changed = bool(
+                source_entry
+                and (not previous or previous.get("source_sha256") != source_entry["sha256"])
+            )
+            needs_image = not current or (
+                not skip_revalidate and (mode == "full" or source_changed)
+            )
             credit = previous.get("credit", {}) if previous else {}
             needs_credit = (
-                revalidate and not skip_revalidate
+                mode == "full" and not skip_revalidate
             ) or credit.get("status") not in {"known", "not_applicable"}
             page = str(row.get("image_page") or "")
             if (needs_image or needs_credit) and commons_file_title(url, page):
@@ -273,22 +498,33 @@ def sync_asset_store(
         workers = max(1, download_workers)
         executor = ThreadPoolExecutor(max_workers=workers)
         futures: dict[str, Future[Path | None]] = {}
+        source_futures: dict[str, Future[tuple[Path, str]]] = {}
         before_metadata: dict[str, dict] = {}
         try:
             for url in rows:
                 previous = assets.get(url)
                 skip_revalidate = url in skip_revalidate_urls
-                current = previous and previous.get("status") == "available"
-                if current and (not revalidate or skip_revalidate):
+                current = _entry_available(previous, store)
+                source_entry = source_assets.get(url)
+                source_changed = bool(
+                    source_entry
+                    and (not previous or previous.get("source_sha256") != source_entry["sha256"])
+                )
+                if current and (skip_revalidate or (mode != "full" and not source_changed)):
                     continue
                 if _local_wordlist_image(url, wordlists_dir) is not None:
+                    continue
+                if source_entry is not None:
+                    source_futures[url] = executor.submit(
+                        _fetch_verified_source_image, url, source_entry, staging, max_bytes,
+                    )
                     continue
                 before_metadata[url] = _metadata_for(url, staging)
                 futures[url] = executor.submit(
                     download_image,
                     url,
                     staging,
-                    revalidate=revalidate,
+                    revalidate=mode == "full",
                     use_asset_store=False,
                     fetch_url_override=commons_assets.get(url, {}).get("download_url"),
                 )
@@ -297,22 +533,45 @@ def sync_asset_store(
                 runproc.raise_if_cancelled()
                 previous = assets.get(url)
                 skip_revalidate = url in skip_revalidate_urls
-                if previous and previous.get("status") == "available" and (
-                    not revalidate or skip_revalidate
+                source_entry = source_assets.get(url)
+                source_changed = bool(
+                    source_entry
+                    and (not previous or previous.get("source_sha256") != source_entry["sha256"])
+                )
+                if _entry_available(previous, store) and (
+                    skip_revalidate or (mode != "full" and not source_changed)
                 ):
+                    assert previous is not None
+                    if source_entry is not None:
+                        previous.update({
+                            "source_revision": source_entry["revision"],
+                            "source_sha256": source_entry["sha256"],
+                            "source_size": source_entry["size"],
+                            "source_updated_at": source_entry["updated_at"],
+                            "source_checked_at": checked_at,
+                        })
+                        if "note" in source_entry:
+                            previous["source_note"] = source_entry["note"]
+                        else:
+                            previous.pop("source_note", None)
                     unchanged += 1
                 else:
                     try:
                         local = _local_wordlist_image(url, wordlists_dir)
                         image: Path | None
+                        meta: dict
                         if local is not None:
                             image = _prepare_local_image(local, staging)
+                            meta = {}
+                        elif source_entry is not None:
+                            raw_image, _ = source_futures[url].result()
+                            image = _prepare_local_image(raw_image, staging)
                             meta = {}
                         else:
                             image = futures[url].result()
                             meta = _metadata_for(url, staging)
                             if (
-                                revalidate
+                                mode == "full"
                                 and previous is not None
                                 and meta.get("checked_at")
                                 == before_metadata[url].get("checked_at")
@@ -333,6 +592,17 @@ def sync_asset_store(
                             "checked_at": _now(),
                             "status": "available",
                         }
+                        if source_entry is not None:
+                            entry.update({
+                                "source_revision": source_entry["revision"],
+                                "source_sha256": source_entry["sha256"],
+                                "source_size": source_entry["size"],
+                                "source_updated_at": source_entry["updated_at"],
+                                "source_checked_at": checked_at,
+                                "blob_sha256": digest,
+                            })
+                            if "note" in source_entry:
+                                entry["source_note"] = source_entry["note"]
                         if previous and "credit" in previous:
                             entry["credit"] = previous["credit"]
                         assets[url] = entry
@@ -363,7 +633,7 @@ def sync_asset_store(
                     }
                 elif commons_file_title(url, str(row.get("image_page") or "")):
                     if (
-                        (revalidate and not skip_revalidate)
+                        (mode == "full" and not skip_revalidate)
                         or "credit" not in assets[url]
                         or assets[url]["credit"].get("status") == "unknown"
                     ):
@@ -407,6 +677,16 @@ def sync_asset_store(
             "source": str(wordlists_dir.resolve()),
             "assets": assets,
         }
+        if source_manifest is not None:
+            manifest["source_manifest"] = {
+                "url": source_manifest_url,
+                "schema": source_manifest["schema"],
+                "version": source_manifest["version"],
+                "revision": source_manifest["revision"],
+                "generated_at": source_manifest["generated_at"],
+                "sha256": source_manifest_sha256,
+                "checked_at": checked_at,
+            }
         health = _manifest_health(manifest, store)
         manifest["sync"] = {
             "image_failed": failed,
