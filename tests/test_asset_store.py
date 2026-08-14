@@ -5,6 +5,7 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from soramimic_video import asset_store, image_credit, prewarm, video
@@ -423,6 +424,55 @@ def test_source_hash_mismatch_and_manifest_fetch_failure_keep_active(tmp_path, m
     else:
         raise AssertionError("manifest fetch failure was ignored")
     assert (store / "manifest.json").read_bytes() == active_before
+
+
+def test_source_manifest_missing_csv_release_url_fails_before_download(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    url = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/missing.png"
+    csv_path = _wordlist(wordlists, f"{url},,credit\n")
+    current = _source_manifest({})
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda value: (current, "1" * 64))
+    monkeypatch.setattr(
+        prewarm, "download_image",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not download")),
+    )
+    with pytest.raises(ValueError, match="source manifestにCSV参照URLがありません"):
+        prewarm.sync_asset_store(
+            [csv_path], tmp_path / "assets", wordlists_dir=wordlists,
+        )
+
+
+def test_source_progress_is_rechecked_after_lock(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    url = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/a.png"
+    csv_path = _wordlist(wordlists, f"{url},,credit\n")
+    image = tmp_path / "a.png"
+    _png(image)
+    fetched = _source_manifest({url: (1, image)}, revision=1)
+    newer = _source_manifest({url: (2, image)}, revision=2)
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda value: (fetched, "1" * 64))
+    calls = 0
+
+    def candidate(store):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {}
+        return {
+            "source_manifest": {"revision": 2, "sha256": "2" * 64},
+            "assets": {
+                url: {
+                    "source_revision": newer["assets"][url]["revision"],
+                    "source_sha256": newer["assets"][url]["sha256"],
+                },
+            },
+        }
+
+    monkeypatch.setattr(prewarm, "_candidate_manifest", candidate)
+    with pytest.raises(ValueError, match="source manifest revisionがactiveより古い"):
+        prewarm.sync_asset_store(
+            [csv_path], tmp_path / "assets", wordlists_dir=wordlists,
+        )
 
 
 def test_source_manifest_entry_deletion_does_not_gc_blob(tmp_path, monkeypatch):

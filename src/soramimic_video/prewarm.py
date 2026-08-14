@@ -58,6 +58,7 @@ SOURCE_MANIFEST_JSON_SCHEMA = (
 SOURCE_RELEASE_URL_PREFIX = (
     "https://github.com/soramimic/soramimic-wordlists/releases/download/"
 )
+SOURCE_RELEASE_PATH_PREFIX = "/soramimic/soramimic-wordlists/releases/download/"
 
 
 def _now() -> str:
@@ -252,7 +253,7 @@ def _validate_source_manifest(value: object) -> dict:
     allowed_asset = {"revision", "updated_at", "sha256", "size", "note"}
     required_asset = {"revision", "updated_at", "sha256", "size"}
     for url, entry in value["assets"].items():
-        if not isinstance(url, str) or not url.startswith(SOURCE_RELEASE_URL_PREFIX):
+        if not isinstance(url, str) or not _is_canonical_source_release_url(url):
             raise ValueError(f"source manifestのcanonical URLが不正です: {url!r}")
         if not isinstance(entry, dict) or not required_asset <= set(entry) \
                 or not set(entry) <= allowed_asset:
@@ -271,6 +272,44 @@ def _validate_source_manifest(value: object) -> dict:
         if "note" in entry and not isinstance(entry["note"], str):
             raise ValueError(f"source noteが不正です: {url}")
     return value
+
+
+def _is_canonical_source_release_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "github.com" \
+            or parsed.query or parsed.fragment:
+        return False
+    if not parsed.path.startswith(SOURCE_RELEASE_PATH_PREFIX):
+        return False
+    tail = parsed.path[len(SOURCE_RELEASE_PATH_PREFIX):]
+    return len(tail.split("/")) == 2 and all(tail.split("/"))
+
+
+def _validate_source_progress(
+    source_manifest: dict, source_manifest_sha256: str, active: dict,
+) -> None:
+    """Reject rollback or mutation relative to the active last-good state."""
+    old_source = active.get("source_manifest", {})
+    if isinstance(old_source, dict) and old_source.get("revision") is not None:
+        if source_manifest["revision"] < old_source["revision"]:
+            raise ValueError("source manifest revisionがactiveより古いため拒否しました")
+        if source_manifest["revision"] == old_source["revision"] \
+                and old_source.get("sha256") not in {None, source_manifest_sha256}:
+            raise ValueError("同じsource manifest revisionで内容が変化しています")
+    old_assets = active.get("assets", {}) if isinstance(active.get("assets"), dict) else {}
+    for url, declared in source_manifest["assets"].items():
+        previous = old_assets.get(url, {})
+        previous_revision = previous.get("source_revision") \
+            if isinstance(previous, dict) else None
+        previous_hash = previous.get("source_sha256") \
+            if isinstance(previous, dict) else None
+        if isinstance(previous_revision, int):
+            if declared["revision"] < previous_revision:
+                raise ValueError(f"source revisionがactiveより古いため拒否しました: {url}")
+            if declared["revision"] == previous_revision \
+                    and isinstance(previous_hash, str) \
+                    and previous_hash != declared["sha256"]:
+                raise ValueError(f"同じsource revisionでsha256が変化しています: {url}")
 
 
 def _cache_busted_url(url: str, **values: object) -> str:
@@ -408,33 +447,32 @@ def sync_asset_store(
         mode = "full"
     rows = _collect_rows(csv_paths)
     skip_revalidate_urls = skip_revalidate_urls or set()
+    controlled_urls = {
+        url for url in rows if url.startswith(SOURCE_RELEASE_URL_PREFIX)
+    }
+    invalid_controlled_urls = sorted(
+        url for url in controlled_urls if not _is_canonical_source_release_url(url)
+    )
+    if invalid_controlled_urls:
+        raise ValueError(
+            f"canonicalでないwordlists Release URLです: {invalid_controlled_urls[0]}"
+        )
     source_manifest: dict | None = None
     source_manifest_sha256 = ""
     source_assets: dict[str, dict] = {}
-    if any(url.startswith(SOURCE_RELEASE_URL_PREFIX) for url in rows):
+    if controlled_urls:
         source_manifest, source_manifest_sha256 = fetch_source_manifest(source_manifest_url)
         source_assets = source_manifest["assets"]
+        missing_sources = sorted(controlled_urls - set(source_assets))
+        if missing_sources:
+            raise ValueError(
+                f"source manifestにCSV参照URLがありません: {missing_sources[0]}"
+            )
     checked_at = _now()
     old = _candidate_manifest(store)
     old_assets = old.get("assets", {}) if isinstance(old.get("assets"), dict) else {}
-    old_source = old.get("source_manifest", {})
-    if source_manifest is not None and isinstance(old_source, dict) \
-            and old_source.get("revision") is not None:
-        if source_manifest["revision"] < old_source["revision"]:
-            raise ValueError("source manifest revisionがactiveより古いため拒否しました")
-        if source_manifest["revision"] == old_source["revision"] \
-                and old_source.get("sha256") not in {None, source_manifest_sha256}:
-            raise ValueError("同じsource manifest revisionで内容が変化しています")
-    for url, declared in source_assets.items():
-        previous = old_assets.get(url, {})
-        previous_revision = previous.get("source_revision") if isinstance(previous, dict) else None
-        previous_hash = previous.get("source_sha256") if isinstance(previous, dict) else None
-        if isinstance(previous_revision, int):
-            if declared["revision"] < previous_revision:
-                raise ValueError(f"source revisionがactiveより古いため拒否しました: {url}")
-            if declared["revision"] == previous_revision \
-                    and isinstance(previous_hash, str) and previous_hash != declared["sha256"]:
-                raise ValueError(f"同じsource revisionでsha256が変化しています: {url}")
+    if source_manifest is not None:
+        _validate_source_progress(source_manifest, source_manifest_sha256, old)
     new_count = sum(url not in old_assets for url in rows)
     changed_candidates = sum(
         url in old_assets
@@ -465,6 +503,10 @@ def sync_asset_store(
         # Re-read after acquiring the lock so no successful concurrent generation is lost.
         old = _candidate_manifest(store)
         old_assets = old.get("assets", {}) if isinstance(old.get("assets"), dict) else {}
+        if source_manifest is not None:
+            # Another synchronizer may have promoted while this process fetched the
+            # marker. Compare again under the store lock before deriving any diff.
+            _validate_source_progress(source_manifest, source_manifest_sha256, old)
         assets = {url: dict(entry) for url, entry in old_assets.items() if isinstance(entry, dict)}
         staging = store / ".download-cache"
         new = updated = unchanged = failed = credit_failed = 0
