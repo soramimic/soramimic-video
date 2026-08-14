@@ -182,22 +182,12 @@ def test_parody_status_does_not_repeat_the_same_wordlist_name():
     assert "選択中の絞り込みは使われません" in body
 
 
-def test_slow_wordlist_notice_only_appears_during_full_generation_conversion():
-    """数分の注意はサムネ作成や結果下には出さず、本編の空耳変換中だけ出す。"""
+def test_generation_progress_has_no_wordlist_specific_duration_notice():
+    """生成時間の要因を単語リストだけに帰属する注意や判定を持たない。"""
     script = _script()
-    render = _function_body(script, "function renderBuilder()")
-    preview = _function_body(script, "function loadThumbnailPreview(combo)")
-    status = _function_body(script, "function builderStageStatus(job, label, elapsed)")
-
-    assert "数分かかります" not in render
-    assert "数分かか" not in preview
-    assert "builder-loading-label" not in _markup()
-    assert 'job.stage === "convert"' in status
-    assert "SLOW_WORDLISTS.includes(wordlist)" in status
-    assert "空耳変換中（数分かかります）" in status
-    assert "builderStageStatus(job, label, elapsed)" in _function_body(
-        script, "async function poll("
-    )
+    assert "数分かかります" not in script
+    assert "SLOW_WORDLISTS" not in script
+    assert "builderStageStatus" not in script
 
 
 def _script() -> str:
@@ -321,7 +311,8 @@ def test_random_button_always_changes_both_choices():
     # 片方でも別候補がなければ、現在値を再選択して条件を破らない
     assert 'if (!samples.length || !alternatives.length) return null;' in body
     assert 'pickRandom(samples)' in body
-    assert 'pickRandom(pool)' in body
+    assert 'pickRandom(alternatives)' in body
+    assert "SLOW_WORDLISTS" not in body
 
 
 def test_random_button_is_disabled_until_both_choices_can_change():
