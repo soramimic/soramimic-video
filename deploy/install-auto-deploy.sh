@@ -116,6 +116,11 @@ install -o root -g root -m 0644 \
 install -o root -g root -m 0644 \
   "$source_dir/deploy/systemd/soramimic-video-assets-sync.service" \
   /etc/systemd/system/soramimic-video-assets-sync.service
+for unit in soramimic-video-assets-sync.timer \
+  soramimic-video-assets-manifest-sync.service \
+  soramimic-video-assets-manifest-sync.timer; do
+  install -o root -g root -m 0644 "$source_dir/deploy/systemd/$unit" "/etc/systemd/system/$unit"
+done
 
 migration_started=1
 for environment in "${environments[@]}"; do
@@ -162,6 +167,8 @@ printf '%s  %s\n' "$confirmed" "$(sha256sum /usr/local/sbin/soramimic-video-auto
   >/var/lib/soramimic-video-deployer/installed-version
 chmod 0644 /var/lib/soramimic-video-deployer/installed-version
 systemctl enable --now soramimic-video-auto-deploy.timer
+systemctl enable --now soramimic-video-assets-sync.timer \
+  soramimic-video-assets-manifest-sync.timer
 flock -u 9
 systemctl start soramimic-video-auto-deploy.service
 echo "installed automatic deployment controller and isolated service users at $confirmed"
