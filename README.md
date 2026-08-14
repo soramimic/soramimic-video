@@ -181,9 +181,8 @@ JSONは画面でも従来どおり「自作リスト」として読める。
 カードのサムネプレビューが作れないとき(変換待ち・失敗)は単語リストの代表画像に
 落ちるが、
 昆虫のように「不意に見たくない」人がいるリストは初期非表示にできる。対象は
-`src/soramimic_video/static/index.html` の `HIDDEN_PREVIEW_WORDLISTS` 定数
-(`SLOW_WORDLISTS` と同じ流儀)で、`{単語リスト名: "隠している理由の文言"}` を
-1行足すだけで増やせる。
+`src/soramimic_video/static/index.html` の `HIDDEN_PREVIEW_WORDLISTS` 定数に、
+`{単語リスト名: "隠している理由の文言"}` を1行足すだけで増やせる。
 
 ```js
 const HIDDEN_PREVIEW_WORDLISTS = {

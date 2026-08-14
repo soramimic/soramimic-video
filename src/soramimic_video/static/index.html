@@ -1692,16 +1692,6 @@ function setJobStatus(text, builderText) {
   $("builder-status").textContent = builderText || text;
 }
 
-// 「数分かかる」のは動画生成全体ではなく、この単語リストの空耳変換だけ。
-// 完成後や別ステージで注意が残らないよう、枠内の進捗文言を組み立てる時だけ判定する。
-function builderStageStatus(job, label, elapsed) {
-  const wordlist = ((job && job.params && job.params.wordlist) || "").replace(/\.csv$/, "");
-  if (job && job.stage === "convert" && SLOW_WORDLISTS.includes(wordlist)) {
-    return `空耳変換中（数分かかります）${elapsed}`;
-  }
-  return `${label}${elapsed}`;
-}
-
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
 // 分母は「このジョブで実際に走るステージ数」(stagePlan)。
 function renderBuilderBar(job) {
@@ -1777,8 +1767,7 @@ async function poll(id, seq = pollSeq) {
       setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`,
-        builderStageStatus(job, label, elapsed));
+      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
@@ -2582,11 +2571,6 @@ $("lyrics").addEventListener("change", scheduleMidiCheck);
 // 空耳変換が待ちなしになる。
 const DEFAULT_COMBO = { sample: "furusato", wordlist: "baseball" };
 
-// 空耳変換に時間がかかる単語リスト。ランダム抽選の対象から外し、
-// それでも選ばれているときは本編の空耳変換中だけ枠内に時間の注意を出す。
-// (sekitsuiは不正データ3行が原因で数分かかる。上流のデータ修正が入ったら外してよい)
-const SLOW_WORDLISTS = ["sekitsui"];
-
 // カードのサムネプレビューで、単語画像を初期非表示にする単語リスト。
 // 「自分では選んでいないのに苦手な画像に出会う」のを防ぐのが目的なので、対象は
 // このプレビューだけ(動画・サムネの画像は変えない)。
@@ -2649,15 +2633,12 @@ function syncLuckyAvailability() {
 }
 
 // ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
-// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
-// 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
+// 必ず両方を変える。
 function luckyRandomCombo() {
   const { samples, alternatives, nameOf } = luckyCandidatePools();
   if (!samples.length || !alternatives.length) return null;
-  const fast = alternatives.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
-  const pool = fast.length ? fast : alternatives;
   const song = pickRandom(samples);
-  const wl = pickRandom(pool);
+  const wl = pickRandom(alternatives);
   return luckyCombo(song.value, nameOf(wl));
 }
 
