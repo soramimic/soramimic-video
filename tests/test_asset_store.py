@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from soramimic_video import asset_store, image_credit, prewarm, video
@@ -19,6 +21,26 @@ def _wordlist(root: Path, rows: str) -> Path:
     path = root / "words.csv"
     path.write_text("image,image_page,image_credit\n" + rows, encoding="utf-8")
     return path
+
+
+def _source_manifest(entries: dict[str, tuple[int, Path]], revision: int = 1) -> dict:
+    return {
+        "$schema": prewarm.SOURCE_MANIFEST_JSON_SCHEMA,
+        "schema": prewarm.SOURCE_MANIFEST_SCHEMA,
+        "version": 1,
+        "revision": revision,
+        "generated_at": "2026-08-15T00:00:00Z",
+        "repository": prewarm.SOURCE_MANIFEST_REPOSITORY,
+        "assets": {
+            url: {
+                "revision": asset_revision,
+                "updated_at": "2026-08-15T00:00:00Z",
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "size": path.stat().st_size,
+            }
+            for url, (asset_revision, path) in entries.items()
+        },
+    }
 
 
 def test_manifest_cache_is_bounded():
@@ -281,6 +303,199 @@ def test_dry_run_does_not_create_store(tmp_path):
     )
     assert result["new"] == 1
     assert not store.exists()
+
+
+def test_source_manifest_downloads_only_changed_hash(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    base = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/"
+    urls = [base + "a.png", base + "b.png"]
+    csv_path = _wordlist(
+        wordlists, "".join(f"{url},,credit\n" for url in urls),
+    )
+    files = [tmp_path / "a.png", tmp_path / "b.png"]
+    _png(files[0], "red")
+    _png(files[1], "blue")
+    current = _source_manifest(dict(zip(urls, ((1, files[0]), (1, files[1])), strict=True)))
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda url: (current, "1" * 64))
+    calls: list[str] = []
+
+    def fetch(url, source, staging, max_bytes):
+        calls.append(url)
+        path = files[urls.index(url)]
+        return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(prewarm, "_fetch_verified_source_image", fetch)
+    store = tmp_path / "assets"
+    prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
+    assert calls == urls
+
+    calls.clear()
+    result = prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
+    assert calls == []
+    assert result["unchanged"] == 2
+
+    _png(files[1], "green")
+    current = _source_manifest(
+        dict(zip(urls, ((1, files[0]), (2, files[1])), strict=True)), revision=2,
+    )
+    result = prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
+    assert calls == [urls[1]]
+    assert result["updated"] == 1
+    active = json.loads((store / "manifest.json").read_text())
+    assert active["assets"][urls[1]]["source_revision"] == 2
+    assert active["assets"][urls[1]]["blob_sha256"] == active["assets"][urls[1]]["sha256"]
+
+
+def test_source_partial_failure_retries_from_active_and_keeps_last_good(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    base = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/"
+    urls = [base + "a.png", base + "b.png"]
+    csv_path = _wordlist(wordlists, "".join(f"{url},,credit\n" for url in urls))
+    files = [tmp_path / "a.png", tmp_path / "b.png"]
+    _png(files[0], "red")
+    _png(files[1], "blue")
+    current = _source_manifest(dict(zip(urls, ((1, files[0]), (1, files[1])), strict=True)))
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda url: (current, "1" * 64))
+    fail: set[str] = set()
+    calls: list[str] = []
+
+    def fetch(url, source, staging, max_bytes):
+        calls.append(url)
+        if url in fail:
+            raise ValueError("injected")
+        path = files[urls.index(url)]
+        return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(prewarm, "_fetch_verified_source_image", fetch)
+    store = tmp_path / "assets"
+    prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
+    active_before = (store / "manifest.json").read_bytes()
+    _png(files[0], "yellow")
+    _png(files[1], "green")
+    current = _source_manifest(
+        dict(zip(urls, ((2, files[0]), (2, files[1])), strict=True)), revision=2,
+    )
+    fail.add(urls[1])
+    assert prewarm.sync_asset_store(
+        [csv_path], store, wordlists_dir=wordlists,
+    )["promoted"] == 0
+    assert (store / "manifest.json").read_bytes() == active_before
+    calls.clear()
+    fail.clear()
+    assert prewarm.sync_asset_store(
+        [csv_path], store, wordlists_dir=wordlists,
+    )["promoted"] == 1
+    assert calls == urls
+
+
+def test_source_hash_mismatch_and_manifest_fetch_failure_keep_active(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    url = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/a.png"
+    csv_path = _wordlist(wordlists, f"{url},,credit\n")
+    image = tmp_path / "a.png"
+    _png(image)
+    current = _source_manifest({url: (1, image)})
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda value: (current, "1" * 64))
+    monkeypatch.setattr(
+        prewarm, "_fetch_verified_source_image",
+        lambda *args: (image, hashlib.sha256(image.read_bytes()).hexdigest()),
+    )
+    store = tmp_path / "assets"
+    prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
+    active_before = (store / "manifest.json").read_bytes()
+    _png(image, "blue")
+    current = _source_manifest({url: (2, image)}, revision=2)
+    monkeypatch.setattr(
+        prewarm, "_fetch_verified_source_image",
+        lambda *args: (_ for _ in ()).throw(ValueError("source sha256不一致")),
+    )
+    assert prewarm.sync_asset_store(
+        [csv_path], store, wordlists_dir=wordlists,
+    )["promoted"] == 0
+    assert (store / "manifest.json").read_bytes() == active_before
+    monkeypatch.setattr(
+        prewarm, "fetch_source_manifest",
+        lambda value: (_ for _ in ()).throw(ValueError("manifest unavailable")),
+    )
+    try:
+        prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
+    except ValueError as exc:
+        assert "manifest unavailable" in str(exc)
+    else:
+        raise AssertionError("manifest fetch failure was ignored")
+    assert (store / "manifest.json").read_bytes() == active_before
+
+
+def test_source_manifest_missing_csv_release_url_fails_before_download(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    url = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/missing.png"
+    csv_path = _wordlist(wordlists, f"{url},,credit\n")
+    current = _source_manifest({})
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda value: (current, "1" * 64))
+    monkeypatch.setattr(
+        prewarm, "download_image",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not download")),
+    )
+    with pytest.raises(ValueError, match="source manifestにCSV参照URLがありません"):
+        prewarm.sync_asset_store(
+            [csv_path], tmp_path / "assets", wordlists_dir=wordlists,
+        )
+
+
+def test_source_progress_is_rechecked_after_lock(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    url = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/a.png"
+    csv_path = _wordlist(wordlists, f"{url},,credit\n")
+    image = tmp_path / "a.png"
+    _png(image)
+    fetched = _source_manifest({url: (1, image)}, revision=1)
+    newer = _source_manifest({url: (2, image)}, revision=2)
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda value: (fetched, "1" * 64))
+    calls = 0
+
+    def candidate(store):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {}
+        return {
+            "source_manifest": {"revision": 2, "sha256": "2" * 64},
+            "assets": {
+                url: {
+                    "source_revision": newer["assets"][url]["revision"],
+                    "source_sha256": newer["assets"][url]["sha256"],
+                },
+            },
+        }
+
+    monkeypatch.setattr(prewarm, "_candidate_manifest", candidate)
+    with pytest.raises(ValueError, match="source manifest revisionがactiveより古い"):
+        prewarm.sync_asset_store(
+            [csv_path], tmp_path / "assets", wordlists_dir=wordlists,
+        )
+
+
+def test_source_manifest_entry_deletion_does_not_gc_blob(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    url = prewarm.SOURCE_RELEASE_URL_PREFIX + "test-v1/a.png"
+    csv_path = _wordlist(wordlists, f"{url},,credit\n")
+    image = tmp_path / "a.png"
+    _png(image)
+    current = _source_manifest({url: (1, image)})
+    monkeypatch.setattr(prewarm, "fetch_source_manifest", lambda value: (current, "1" * 64))
+    monkeypatch.setattr(prewarm, "_fetch_verified_source_image", lambda *args: (image, "x"))
+    store = tmp_path / "assets"
+    prewarm.sync_asset_store([csv_path], store, wordlists_dir=wordlists)
+    entry = json.loads((store / "manifest.json").read_text())["assets"][url]
+    blob = store / entry["local_path"]
+    current = _source_manifest({}, revision=2)
+    empty = _wordlist(wordlists, "")
+    # No Release URL remains in the catalog, so the source marker need not be fetched;
+    # the old reference is orphaned and the content-addressed blob is left for later GC.
+    prewarm.sync_asset_store([empty], store, wordlists_dir=wordlists)
+    orphan = json.loads((store / "manifest.pending.json").read_text())["assets"][url]
+    assert "orphaned_at" in orphan
+    assert blob.is_file()
 
 
 def test_fetch_image_credits_batch_uses_one_request(monkeypatch):

@@ -129,27 +129,50 @@ read-onlyで参照するため、同期成功後の動画生成では組み込�
 sudo install -o soramimic-video -g soramimic-video -m 0750 -d /var/lib/soramimic-video-assets
 sudo -u soramimic-video /opt/soramimic-video-dev/current/.venv/bin/soramimic-video \
   sync-assets --wordlists-dir /opt/soramimic-video-dev/current/external/soramimic-wordlists \
-  --asset-store /var/lib/soramimic-video-assets
+  --asset-store /var/lib/soramimic-video-assets --mode manifest
 sudo -u soramimic-video /opt/soramimic-video-dev/current/.venv/bin/soramimic-video \
   asset-status --asset-store /var/lib/soramimic-video-assets
 ```
 
-`--dry-run`は新規・更新候補・削除候補だけを表示し、`--revalidate`は既存URLを
-ETag/Last-Modifiedで再検証します。失敗時は既存のlast-good画像を維持し、単語リストから
+通常の`--mode manifest`はwordlistsが固定Release assetとして公開する
+`source-manifest.json` (schema `soramimic.release-image-source-manifest`, version 1)を取得します。
+各canonical URLの`revision`、`updated_at`、`sha256`、`size`をactive manifestの
+`source_revision`/`source_sha256`と比較し、sha256が変わった画像だけを無条件GETします。
+取得したraw bytesのsizeとsha256を検証してから画像を正規化し、正規化後の
+`blob_sha256`でcontent-addressed保存します。source manifestのrevision、生成日時、manifest
+自体のsha256、checked_atもglobal manifestへ記録します。同じ内容のrevision更新は参照blobを
+切り替えません。source manifestは画像upload・検証後に最後に更新される公開完了markerです。
+
+`--dry-run`は新規・更新候補・削除候補だけを表示します。`--mode full`はRelease画像を
+source manifestのhashで監査し、Commonsその他のURLを従来どおりETag/Last-Modifiedで全件
+再検証します。`--revalidate`は`--mode full`の互換aliasです。失敗時は既存のlast-good画像を維持し、単語リストから
 消えたURLも`orphaned_at`を付けるだけで削除しません。manifestは全同期完了後にatomicに
 切り替わり、並行同期はlockで拒否されます。失敗を含む同期結果は
-`manifest.pending.json`へ保存して次回再開し、正常な既存`manifest.json`は維持します。
+`manifest.pending.json`へ診断用に保存し、次回も必ず正常な既存`manifest.json`を差分基準に
+再試行します。
 初回同期が不完全ならactive manifestは作りません。`asset-status`はpendingの件数と失敗状態も
 表示し、pending・未取得画像・不明クレジットがあれば終了コード1です。
-`--priority-wordlist NAME`を複数指定すると、そのリスト群だけを先に完全同期してactive化し、
-続けて残りの全リストを同期します。後半の同期中・失敗時も優先リストのactive manifestは
-維持されます。systemd unitは公開カタログの5リストをこの方式で先行処理します。
+`--priority-wordlist NAME`を複数指定すると、単一のglobal transaction内でそのリスト群を
+先に取得します。途中状態は公開せず、対象URLがすべて成功した場合だけ一括でactive化します。
+source manifestやentryが削除されてもblobは即時削除しません。CSVから外れた参照の
+`orphaned_at`付与と、将来の明示的なGCを分離します。
 `--download-workers`は1または2を指定でき、月次の長時間同期はCommonsの継続的な429を
 避けるため1並列にしています。
 
-定期同期には`deploy/systemd/soramimic-video-assets-sync.{service,timer}`を
-`/etc/systemd/system/`へ設置し、`systemctl enable --now soramimic-video-assets-sync.timer`
-を実行します。同期unitだけがstoreへ書き込み、dev/preview/public unitには同じ
+日次差分同期には`deploy/systemd/soramimic-video-assets-manifest-sync.{service,timer}`、
+月次full監査には`deploy/systemd/soramimic-video-assets-sync.{service,timer}`を使います。
+手動実行と障害復旧は次のとおりです。hash不一致、manifest取得失敗、Releaseアクセス失敗では
+activeは変わらないため、公開元を修復して同じコマンドを再実行します。
+
+```sh
+sudo systemctl start soramimic-video-assets-manifest-sync.service # 通常差分
+sudo systemctl start soramimic-video-assets-sync.service          # 全件監査
+sudo journalctl -u soramimic-video-assets-manifest-sync.service -n 100
+sudo -u soramimic-video /opt/soramimic-video-dev/current/.venv/bin/soramimic-video \
+  asset-status --asset-store /var/lib/soramimic-video-assets
+```
+
+両timerを`systemctl enable --now`で有効化します。同期unitだけがstoreへ書き込み、dev/preview/public unitには同じ
 `SORAMIMIC_VIDEO_ASSET_STORE`と`ReadOnlyPaths`を設定します。同期元をpreview/publicへ
 切り替えず、全組み込みCSVを含むdevの固定releaseを使うことで3環境の共有内容を一意にします。
 `/etc/soramimic-video/{dev,preview,public}.env`にはそれぞれ次の同じ値を追加します。

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Soramimic Release image source-manifest synchronization
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+Unit=soramimic-video-assets-manifest-sync.service
+
+[Install]
+WantedBy=timers.target
