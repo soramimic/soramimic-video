@@ -209,6 +209,93 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
+def test_turnstile_interaction_scrolls_to_inline_prompt():
+    """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
+    markup = _markup()
+    script = _script()
+    assert 'id="turnstile-title">合成前に確認してください' in markup
+    assert 'class="turnstile-copy" role="status" aria-live="polite"' in markup
+    assert 'id="turnstile-cancel"' not in markup
+    assert 'turnstile-ui' not in script
+    assert 'turnstile-overlay' not in markup
+    prompt = _function_body(script, "function showTurnstilePrompt()")
+    assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
+
+
+def test_submit_never_posts_without_a_turnstile_token():
+    """確認待ちの画面を生成進捗に見せず、失敗時は空tokenをAPIへ送らない。"""
+    submit = _function_body(_script(), "async function submitJob(")
+    verification = 'if (!await ensureTurnstileToken()) {'
+    assert verification in submit
+    assert submit.index(verification) < submit.index("const form = new FormData()")
+    guard = submit[submit.index(verification) : submit.index("const form = new FormData()")]
+    assert "return;" in guard
+    assert "showProgress();" not in guard
+    assert submit.index("if (submitBusy) return;") < submit.index(
+        "if (samplePending) await samplePending;"
+    )
+    ensure = _function_body(_script(), "async function ensureTurnstileToken(")
+    assert "!turnstileFailed && !!turnstileToken()" in ensure
+    assert "rebuildTurnstileWidget()" in ensure
+    assert "if (turnstileWidget === null && window.turnstile) return false;" in ensure
+    assert "timeoutMs = 120000" in ensure
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_turnstile_errors_rebuild_widget():
+    """失敗・2分timeoutのwidgetは世代ごと破棄し、古いcallbackを無効化する。"""
+    ensure = _function_body(_script(), "async function ensureTurnstileToken(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let token = "";
+        let turnstileSiteKey = "site";
+        let turnstileWidget = {{}};
+        let turnstileNeedsInteraction = false;
+        let turnstileWaiting = false;
+        let turnstileFailed = false;
+        let rebuilds = 0;
+        let now = 0;
+        let waitMode = "error";
+        let window = {{turnstile: {{execute() {{}} }}}};
+        function turnstileToken() {{ return token; }}
+        function showTurnstilePrompt() {{}}
+        function hideTurnstilePrompt() {{}}
+        function rebuildTurnstileWidget() {{ rebuilds += 1; token = ""; }}
+        Date.now = () => now;
+        global.setTimeout = (fn) => {{
+          if (waitMode === "error") turnstileFailed = true;
+          else now += 200;
+          fn();
+          return 1;
+        }};
+        {ensure}
+        (async () => {{
+          assert.equal(await ensureTurnstileToken(100), false);
+          assert.equal(rebuilds, 1, "an errored widget must rebuild before the next attempt");
+          waitMode = "timeout";
+          now = 0;
+          assert.equal(await ensureTurnstileToken(100), false);
+          assert.equal(rebuilds, 2, "a timed-out widget must also rebuild before retry");
+        }})().catch((err) => {{ console.error(err); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True)
+
+
+def test_turnstile_old_widget_callbacks_are_ignored_after_rebuild():
+    """破棄済みwidgetの遅延successが次回投入用tokenとして復活しない。"""
+    script = _script()
+    render = _function_body(script, "function renderTurnstileWidget()")
+    rebuild = _function_body(script, "function rebuildTurnstileWidget()")
+    assert "const epoch = ++turnstileEpoch;" in render
+    assert "if (epoch !== turnstileEpoch) return;" in render
+    assert "turnstileEpoch += 1;" in rebuild
+    assert "window.turnstile.remove(oldWidget)" in rebuild
+    assert '$("turnstile-widget").replaceChildren();' in rebuild
+    assert 'console.warn("Turnstileの再描画に失敗しました", err);' in rebuild
+
+
 def test_random_button_always_changes_both_choices():
     """ランダム抽選は現在の曲と現在の単語リストを同時に選び直す。"""
     body = _function_body(_script(), "function luckyRandomCombo()")
