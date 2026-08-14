@@ -2014,7 +2014,9 @@ def test_index_html_progress_uses_the_active_stage_plan():
     # convert / import-editor は排他(parody_source で決まる)
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
-    assert 'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
+    assert (
+        'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
+    )
     assert "setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);" in html
 
 
