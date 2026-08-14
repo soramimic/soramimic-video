@@ -289,15 +289,15 @@ Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の�
 - `dev`: 開発中の変更を集約する常設ブランチ。`dev-video.soramimic.com`で統合状態を確認する。
 
 各ブランチの先端はホスト側のroot所有timerが監視し、`dev`→dev、`preview`→preview、
-`main`→publicへ自動デプロイする。ブランチへの昇格は自動化せず、preview/mainの既存の
-明示承認ゲートを通過してマージされた後だけ対応環境が更新される。導入・監視・安全設計は
+`main`→publicへ自動デプロイする。PRは3ブランチとも必須チェック成功後に自動マージし、
+止める必要があるPRだけ`no-automerge`ラベルを付ける。導入・監視・安全設計は
 [`deploy/README.md`](deploy/README.md#ブランチ先端の自動デプロイ)を参照。
-- feature/fix PRは`dev`宛てにし、CI成功後に自動マージする。自動マージしない場合は`no-automerge`ラベルを付ける。
-- 公開する変更は最新`preview`から`promote/<内容>`ブランチを作り、対象dev PRのcommitだけをcherry-pickして`preview`へPRを出す。`dev`全体はマージしない。
-- `preview` PRはCIとプレビュー環境で確認し、人間が手動マージする。途中の変更や公開しない変更はpreviewへ入れない。
+- feature/fix PRは`dev`宛てにし、CI成功後に自動マージする。
+- 公開する変更は最新`preview`から`promote/<内容>`ブランチを作り、対象dev PRのcommitだけをcherry-pickして`preview`へPRを出す。`dev`全体はマージしない。readyなPRはCI成功後に自動マージ・自動デプロイされる。
+- `preview`で別途確認してからマージしたいPRには、readyにする前に`no-automerge`ラベルを付ける。
 - 毎週月曜日または手動の`release` workflowは、その時点の`preview` SHAを固定して再テストし、成功時はjob summaryに`preview`→`main`のPR作成リンクを表示する。ActionsのtokenではPRを作成せず、`main`へ直接pushもしない。
 - summaryの検証済みSHAと現在の`preview` SHAが一致することを確認してrelease PRを作成する。検証中にpreviewが進んだ場合はworkflowを再実行する。
-- release PRは自動マージしない。最終的にPRの**現在のhead SHA**と`main`とのmerge結果に対する必須チェックが成功していることを確認し、人間がマージする。
+- `main`宛てPRは同一repositoryの`preview`ブランチからだけ作成できる。release PRは必須チェック成功後に自動マージし、止める場合だけ`no-automerge`ラベルを付ける。
 - 公開時はrelease PRのマージcommit SHAを本番へデプロイし、health/readinessと主要動線を確認する。問題があれば直前に公開したSHAへロールバックする。
 
 `main` のbranch protectionでは、少なくとも通常CIの `test / test`（`main` とのmerge結果）と
@@ -309,15 +309,11 @@ Colab側の事前準備(NEUTRINOをGoogle Driveに置く等)はノート内の�
 1. 旧 `release` workflowは実行しない。
 2. `main`から`preview`を作成し、branch protectionを設定する。
 3. 新workflowと文書を通常どおり`dev`へ入れ、promotion PRで`preview`へ移す。
-4. bootstrap時だけ`preview`→`main` PRへ`emergency`ラベルを付け、旧retarget workflowを回避して手動マージする。
-5. main上で新workflowが有効になったら`emergency`ラベルは通常releaseでは使わず、Actionsの`release`を手動実行する。
+4. `preview`→`main` PRを作成し、旧main側のworkflowでは自動化されない初回だけ必須チェック後に手動マージする。
+5. main上で新workflowが有効になったら、以後のrelease PRはCI成功後に自動マージされる。
 
-緊急修正だけは次の手順で `main` へ直接PRを出す。
-
-1. 修正ブランチのPRをいったん `dev` 宛てで作る。
-2. `emergency` ラベルを付けてから、baseを `main` に変更する（ラベルなしで `main` にすると自動的に `dev` へ戻される）。
-3. 必須チェックと差分を確認して手動マージし、本番へデプロイする。
-4. 公開後すぐに最新の`main`から同期ブランチを作り、まず`preview`、続いて`dev`への同期PRを作成してマージする（`main`自体をheadにしない）。これにより緊急修正が次の公開候補や開発版から欠落しない。
+緊急修正もまず`dev`へ入れ、必要な変更だけを`preview`へ昇格してから`preview`→`main`で公開する。
+`main`へ直接PRを出す例外経路は設けない。
 
 promotion例:
 
