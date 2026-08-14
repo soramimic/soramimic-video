@@ -853,6 +853,16 @@ def test_card_selects_mirror_the_canonical_form():
     assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
 
 
+def test_full_sample_edition_is_only_added_to_the_picker_label():
+    """フル版は一覧で区別し、動画内の正式な曲名には版注記を混ぜない。"""
+    script = _script()
+    load = _function_body(script, "async function loadSamples()")
+    assert 's.edition === "full" ? "（フル）" : ""' in load
+    assert "sampleCanonicalTitles[s.id] = s.title;" in load
+    title = _function_body(script, "function songTitleOf(file)")
+    assert "sampleCanonicalTitles[midiSampleId] || midiSampleId" in title
+
+
 def test_card_wordlist_select_shows_the_editor_own_list():
     """エディタの中で自作リストを使っているあいだは、合成の選択肢で選択済みに見せる。
 

@@ -95,6 +95,7 @@ SONGS: dict[str, dict] = {
         "title": "ふるさと",
         "title_kana": "フルサト",
         "description": "唱歌・PD",
+        "edition": "full",
         "tempo": 600_000,  # ♩=100
         "time": (3, 4),
         # ト長調。「ゆ→ゆ・う」などの2音は楽譜どおりのメリスマ
@@ -151,6 +152,7 @@ SONGS: dict[str, dict] = {
         "title": "赤とんぼ",
         "title_kana": "アカトンボ",
         "description": "童謡・PD",
+        "edition": "full",
         "tempo": 666_000,  # ♩≒90
         "time": (3, 4),
         # 変ホ長調。「けぇ」「のぉ」などは楽譜どおりのメリスマ(小書きは大書きに正規化)
@@ -198,6 +200,7 @@ SONGS: dict[str, dict] = {
         "title": "桃太郎",
         "title_kana": "モモタロー",
         "description": "文部省唱歌・PD",
+        "edition": "full",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
         # ニ長調。「ももたろさん」は歌唱慣行どおり(元歌詞は「桃太郎さん」)
@@ -262,6 +265,7 @@ SONGS: dict[str, dict] = {
         "title": "かたつむり",
         "title_kana": "カタツムリ",
         "description": "文部省唱歌・PD",
+        "edition": "full",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
         # ニ長調・付点のはずむリズム
@@ -302,6 +306,7 @@ SONGS: dict[str, dict] = {
         "title": "春が来た",
         "title_kana": "ハルガキタ",
         "description": "唱歌・PD",
+        "edition": "full",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
         # ハ長調(初出調)。メリスマ無し・1音符=1モーラの素直な曲
@@ -342,6 +347,7 @@ SONGS: dict[str, dict] = {
         "title": "朧月夜",
         "title_kana": "オボロヅキヨ",
         "description": "唱歌・PD",
+        "edition": "full",
         "tempo": 750_000,  # ♩=80
         "time": (3, 4),
         # ニ長調(初出調)。8分2つの弱起で始まり、行は小節の途中で変わる(BR)。
@@ -400,6 +406,7 @@ SONGS: dict[str, dict] = {
         "title": "茶摘",
         "title_kana": "チャツミ",
         "description": "文部省唱歌・PD",
+        "edition": "full",
         "tempo": 576_923,  # ♩=104
         "time": (4, 4),
         # ト長調・ヨナ抜き長音階。各行は4分休符から歌い出す。メリスマ無し
@@ -455,6 +462,7 @@ SONGS: dict[str, dict] = {
         "title": "七つの子",
         "title_kana": "ナナツノコ",
         "description": "童謡・PD",
+        "edition": "full",
         "tempo": 750_000,  # ♩=80
         "time": (4, 4),
         # ト長調。「ら→ら・あ」などの2音は楽譜どおりのメリスマ
@@ -512,6 +520,7 @@ SONGS: dict[str, dict] = {
         "title": "紅葉",
         "title_kana": "モミジ",
         "description": "唱歌・PD",
+        "edition": "full",
         "tempo": 652_174,  # ♩=92(うたごえサークルおけらの譜面・mu-techのXF MIDIともに♩=92)
         "time": (4, 4),
         # ヘ長調・4/4・全16小節。「る→る・う」などの2音は楽譜どおりのメリスマ。
@@ -566,6 +575,7 @@ SONGS: dict[str, dict] = {
         "title": "しゃぼん玉",
         "title_kana": "シャボンダマ",
         "description": "童謡・PD",
+        "edition": "full",
         "tempo": 833_333,  # ♩=72
         "time": (2, 4),
         # ニ長調(初出調)。メリスマ無し・1音符=1モーラ
@@ -1021,6 +1031,7 @@ if __name__ == "__main__":
                 "title": song["title"],
                 "title_kana": song["title_kana"],
                 "description": song["description"],
+                **({"edition": song["edition"]} if song.get("edition") else {}),
             }
         )
         print(f"wrote {sid}.mid ({len(data)} bytes)")

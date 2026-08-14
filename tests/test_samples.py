@@ -43,6 +43,7 @@ FULL_JAPANESE_SAMPLE_LINES = {
     "momiji": 8,
     "shabondama": 10,
 }
+FULL_JAPANESE_SAMPLE_IDS = set(FULL_JAPANESE_SAMPLE_LINES)
 ENGLISH_SAMPLE_LINES = {
     "amazinggrace": [
         "Amazing grace! How sweet the sound",
@@ -90,6 +91,10 @@ def test_manifest_matches_generator():
         # 使わずに済ませるためのものなので、空だと意味が無い)
         assert entry["title_kana"] == song["title_kana"]
         assert entry["title_kana"]
+        if entry["id"] in FULL_JAPANESE_SAMPLE_IDS:
+            assert entry["edition"] == song["edition"] == "full"
+        else:
+            assert "edition" not in entry
 
 
 def test_title_kana_is_katakana():
