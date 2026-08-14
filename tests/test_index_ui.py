@@ -182,16 +182,16 @@ def test_parody_status_does_not_repeat_the_same_wordlist_name():
     assert "選択中の絞り込みは使われません" in body
 
 
-def test_slow_wordlist_notice_only_appears_during_conversion_in_thumbnail():
-    """数分の注意は結果下に残さず、該当する空耳変換中だけ枠内に出す。"""
+def test_slow_wordlist_notice_only_appears_during_full_generation_conversion():
+    """数分の注意はサムネ作成や結果下には出さず、本編の空耳変換中だけ出す。"""
     script = _script()
     render = _function_body(script, "function renderBuilder()")
     preview = _function_body(script, "function loadThumbnailPreview(combo)")
     status = _function_body(script, "function builderStageStatus(job, label, elapsed)")
 
     assert "数分かかります" not in render
-    assert '$("builder-loading-label").textContent = combo.slow' in preview
-    assert "数分かかることがあります" in preview
+    assert "数分かか" not in preview
+    assert "builder-loading-label" not in _markup()
     assert 'job.stage === "convert"' in status
     assert "SLOW_WORDLISTS.includes(wordlist)" in status
     assert "空耳変換中（数分かかります）" in status
