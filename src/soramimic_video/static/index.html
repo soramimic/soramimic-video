@@ -560,7 +560,7 @@
        - #builder-video: 完成した動画。poster にサムネを敷くので絵が途切れない -->
   <div class="builder-figure" id="builder-figure" hidden>
     <img id="builder-image" alt="この組み合わせのサムネイル" hidden>
-    <video id="builder-video" controls playsinline hidden></video>
+    <video id="builder-video" controls playsinline preload="none" hidden></video>
     <div class="builder-figure-loading" id="builder-loading" hidden>
       <span class="spinner" aria-hidden="true"></span>
       <span>プレビューを作成中…</span>
@@ -1412,36 +1412,46 @@ function resetTurnstile() {
 // 配られたとき)だけなので、無効な構成では何もしない。
 async function ensureTurnstileToken(timeoutMs = 120000) {
   if (!turnstileSiteKey) return true;
-  // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
-  // それでも作れなければ2分待たせず確認失敗として戻す。
-  if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
-  if (turnstileWidget === null && window.turnstile) return false;
-  if (turnstileToken()) return true;
-  const t0 = Date.now();
-  let executed = false;
-  turnstileWaiting = true;
-  turnstileFailed = false;
-  if (turnstileNeedsInteraction) showTurnstilePrompt();
-  while (!turnstileToken() && !turnstileFailed && Date.now() - t0 < timeoutMs) {
-    // ウィジェットが描画済みなのに待っても出ないときは一度だけ明示実行する
-    if (!executed && turnstileWidget !== null && Date.now() - t0 > 1500) {
-      executed = true;
-      try { window.turnstile.execute(turnstileWidget); } catch { /* 実行中なら無視 */ }
+  const deadline = Date.now() + timeoutMs;
+  // 一時的なerror/timeout callbackは、widgetを作り直すだけで次のタップでは通ることが
+  // ある。最初のerrorだけは同じタップのまま新しいwidgetで一度再試行する。
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
+    if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
+    if (turnstileWidget === null && window.turnstile) return false;
+    if (turnstileToken()) return true;
+    const t0 = Date.now();
+    let executed = false;
+    turnstileWaiting = true;
+    turnstileFailed = false;
+    if (turnstileNeedsInteraction) showTurnstilePrompt();
+    while (!turnstileToken() && !turnstileFailed && Date.now() < deadline) {
+      // ウィジェットが描画済みなのに待っても出ないときは一度だけ明示実行する
+      if (!executed && turnstileWidget !== null && Date.now() - t0 > 1500) {
+        executed = true;
+        try { window.turnstile.execute(turnstileWidget); } catch { /* 実行中なら無視 */ }
+      }
+      // callbackが来ない通信中も、待っている理由を隠さない。
+      if (Date.now() - t0 > 3000) showTurnstilePrompt();
+      await new Promise((r) => setTimeout(r, 200));
     }
-    // callbackが来ない通信中も、待っている理由を隠さない。
-    if (Date.now() - t0 > 3000) showTurnstilePrompt();
-    await new Promise((r) => setTimeout(r, 200));
+    turnstileWaiting = false;
+    const failed = turnstileFailed;
+    const verified = !failed && !!turnstileToken();
+    if (verified) {
+      hideTurnstilePrompt();
+      return true;
+    }
+    if (turnstileWidget !== null && window.turnstile) {
+      // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
+      // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
+      rebuildTurnstileWidget();
+      turnstileNeedsInteraction = false;
+    }
+    // 期限切れは再試行しても待ち時間を延ばすだけなので、即時errorのときだけ再試行する。
+    if (!failed || Date.now() >= deadline) return false;
   }
-  turnstileWaiting = false;
-  const verified = !turnstileFailed && !!turnstileToken();
-  if (verified) hideTurnstilePrompt();
-  else if (turnstileWidget !== null && window.turnstile) {
-    // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
-    // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
-    rebuildTurnstileWidget();
-    turnstileNeedsInteraction = false;
-  }
-  return verified;
+  return false;
 }
 
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
@@ -2003,6 +2013,17 @@ function showSubmitMsg(text) {
   el.hidden = !text;
 }
 
+// Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
+// Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
+async function postJobWithTurnstileRetry(form) {
+  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+  if (res.status !== 403 || !turnstileSiteKey) return res;
+  resetTurnstile();
+  if (!await ensureTurnstileToken()) return res;
+  form.set("turnstile_token", turnstileToken());
+  return fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+}
+
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
 // 本番生成は previewSec=0 で呼ばれ、モードは使われない。
 async function submitJob(previewSec, previewMode) {
@@ -2093,7 +2114,7 @@ async function submitJob(previewSec, previewMode) {
   showProgress();
   setJobStatus("送信中…");
   try {
-    const res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+    const res = await postJobWithTurnstileRetry(form);
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
     watch(body.id);
@@ -2290,18 +2311,65 @@ async function ensureSelectedSampleMidi(onFail) {
 let midiCheckSeq = 0;       // 応答の追い越しを捨てるための世代番号
 let midiCheckTimer = null;
 let midiChecking = null;    // 検証中のPromise(投入・編集の前に待つ)
+let midiCheckResolve = null; // debounceで置き換えたPromiseの待機者を次の検証へ引き継ぐ
+let midiCheckInFlight = null;
+let midiCheckInFlightKey = "";
+let midiCheckInFlightFile = null;
+let midiCheckInFlightLyrics = "";
 let midiRejecting = false;  // 拒否のクリアで自分自身を呼び直さないための番人
 // 最後に通った検証結果。File の同一性も持ち、別のファイルに前回の
 // midi_lines を流用しない。自分のMIDIモーダルの元歌詞欄の下敷きに使う。
 let lastMidiCheck = null;
 
+function currentMidiCheckKey() {
+  const f = $("midi").files[0];
+  // 同梱サンプルだけは来歴で同一性を保証できる。持ち込みFileは同名・同サイズでも
+  // 内容が違い得るためcoalesceせず、Fileオブジェクトごとに検証する。
+  if (!f || !midiSampleId) return "";
+  return `${midiSampleId}\u0000${f.name}\u0000${f.size}\u0000${$("lyrics").value}`;
+}
+
+function runScheduledMidiCheck() {
+  const file = $("midi").files[0] || null;
+  const lyrics = $("lyrics").value;
+  const key = currentMidiCheckKey();
+  const sameInput = key
+    ? midiCheckInFlightKey === key
+    : midiCheckInFlightFile === file && midiCheckInFlightLyrics === lyrics;
+  if (midiCheckInFlight && sameInput) return midiCheckInFlight;
+  const run = checkMidi();
+  midiCheckInFlight = run;
+  midiCheckInFlightKey = key;
+  midiCheckInFlightFile = file;
+  midiCheckInFlightLyrics = lyrics;
+  const clear = () => {
+    if (midiCheckInFlight !== run) return;
+    midiCheckInFlight = null;
+    midiCheckInFlightKey = "";
+    midiCheckInFlightFile = null;
+    midiCheckInFlightLyrics = "";
+  };
+  run.then(clear, clear);
+  return run;
+}
+
 function scheduleMidiCheck() {
   if (midiRejecting) return;
   if (midiCheckTimer) clearTimeout(midiCheckTimer);
+  const supersededResolve = midiCheckResolve;
   // サンプル選択はMIDIの注入と元歌詞の反映が別のイベントで来るので、少し待って束ねる
-  midiChecking = new Promise((resolve) => {
-    midiCheckTimer = setTimeout(() => { checkMidi().then(resolve, resolve); }, 250);
+  const nextCheck = new Promise((resolve) => {
+    midiCheckResolve = resolve;
+    midiCheckTimer = setTimeout(() => {
+      midiCheckTimer = null;
+      if (midiCheckResolve === resolve) midiCheckResolve = null;
+      runScheduledMidiCheck().then(resolve, resolve);
+    }, 250);
   });
+  midiChecking = nextCheck;
+  // clearTimeoutした古いPromiseを未解決のまま残すと、その瞬間に生成を押して
+  // awaitしていたsubmitJobが永久に止まる。古い待機者も最新の検証完了まで待たせる。
+  if (supersededResolve) supersededResolve(nextCheck);
 }
 
 function clearMidiNotices() {
@@ -5553,8 +5621,14 @@ async function doRestoreForm() {
       injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), false);
       $("midi-restore-hint").textContent = "前回のファイルを復元: " + m.name;
       $("midi-restore-hint").hidden = false;
-      // 復元したMIDIも(歌詞なしのまま持ち越さないよう)一度は検証する
-      scheduleMidiCheck();
+      // 同梱サンプルは直後のinitBuilderで最新版を取り直し、そのchange経路で検証する。
+      // 古い復元版まで先に解析すると、長い曲では同じMIDI検証が二重に走る。
+      await samplesReady;
+      const restoredId = m.name.replace(/\.[^.]+$/, "");
+      const restoredSample = [...$("sample-select").options]
+        .some((option) => option.value === restoredId);
+      // 持ち込みMIDIだけは復元した実体が唯一の入力なので、ここで検証する。
+      if (!restoredSample) scheduleMidiCheck();
     }
   } catch { /* 復元失敗は無視 */ }
 
