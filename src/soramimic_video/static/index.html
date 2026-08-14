@@ -2114,7 +2114,7 @@ async function submitJob(previewSec, previewMode) {
 // 来歴(midiSampleId)があるときはそれを正とする——MIDIと曲名を同じ出どころから
 // 決めることで、「別の曲のMIDI + 選んだ曲の曲名」のような食い違いを作らない。
 function songTitleOf(file) {
-  if (midiSampleId) return sampleCanonicalTitles[midiSampleId] || midiSampleId;
+  if (midiSampleId) return sampleTitleOf(midiSampleId);
   const base = ((file && file.name) || "").replace(/\.[^.]+$/, "");
   const opt = [...$("sample-select").options].find((o) => o.value && o.value === base);
   return opt ? opt.textContent : base;
@@ -2122,9 +2122,6 @@ function songTitleOf(file) {
 
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
 let sampleDescriptions = {};
-// 一覧の版注記と、動画内で使う正式な曲名を分けて持つ。
-// フル版を「（フル）」付きで選べるようにしても、クレジットやサムネの曲名は変えない。
-let sampleCanonicalTitles = {};
 // サンプルID → クレジットプリセット({originalCredit, creditNotice})。
 // 権利者から表記が指定されている曲(初音ミクの消失・魔王魂など)だけを持つ。
 // 選曲時に ③元曲クレジット へ自動で入れて、表記漏れを防ぐ。
@@ -2136,10 +2133,8 @@ async function loadSamples() {
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
     sampleDescriptions = {};
-    sampleCanonicalTitles = {};
     sampleCredits = {};
     samples.forEach((s) => {
-      sampleCanonicalTitles[s.id] = s.title;
       if (s.description) sampleDescriptions[s.id] = s.description;
       const credit = {};
       if (s.original_credit) credit.originalCredit = s.original_credit;
@@ -2147,7 +2142,7 @@ async function loadSamples() {
       if (credit.originalCredit || credit.creditNotice) sampleCredits[s.id] = credit;
     });
     $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
-      samples.map((s) => `<option value="${s.id}">${s.title}${s.edition === "full" ? "（フル）" : ""}</option>`).join("");
+      samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
     syncBuilderOptions();  // カードの曲プルダウンへ写す
   } catch {
     // 正本の選択肢とカード側の曲プルダウンだけを隠す。カード自体は残し、

@@ -16,7 +16,8 @@
 曲を足すときは同じ表にも1行足すこと。
 
 実行: uv run python examples/gen_samples.py
-出力: src/soramimic_video/static/sample/<id>.mid / <id>_lyrics.txt / samples.json
+出力: src/soramimic_video/static/sample/<id>[_full].mid /
+      <id>[_full]_lyrics.txt / samples.json
 (Web UIの「サンプル曲をセット」とAPIの /api/samples, /api/sample/* が配信する)
 """
 
@@ -95,7 +96,6 @@ SONGS: dict[str, dict] = {
         "title": "ふるさと",
         "title_kana": "フルサト",
         "description": "唱歌・PD",
-        "edition": "full",
         "tempo": 600_000,  # ♩=100
         "time": (3, 4),
         # ト長調。「ゆ→ゆ・う」などの2音は楽譜どおりのメリスマ
@@ -152,7 +152,6 @@ SONGS: dict[str, dict] = {
         "title": "赤とんぼ",
         "title_kana": "アカトンボ",
         "description": "童謡・PD",
-        "edition": "full",
         "tempo": 666_000,  # ♩≒90
         "time": (3, 4),
         # 変ホ長調。「けぇ」「のぉ」などは楽譜どおりのメリスマ(小書きは大書きに正規化)
@@ -200,7 +199,6 @@ SONGS: dict[str, dict] = {
         "title": "桃太郎",
         "title_kana": "モモタロー",
         "description": "文部省唱歌・PD",
-        "edition": "full",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
         # ニ長調。「ももたろさん」は歌唱慣行どおり(元歌詞は「桃太郎さん」)
@@ -265,7 +263,6 @@ SONGS: dict[str, dict] = {
         "title": "かたつむり",
         "title_kana": "カタツムリ",
         "description": "文部省唱歌・PD",
-        "edition": "full",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
         # ニ長調・付点のはずむリズム
@@ -306,7 +303,6 @@ SONGS: dict[str, dict] = {
         "title": "春が来た",
         "title_kana": "ハルガキタ",
         "description": "唱歌・PD",
-        "edition": "full",
         "tempo": 500_000,  # ♩=120
         "time": (4, 4),
         # ハ長調(初出調)。メリスマ無し・1音符=1モーラの素直な曲
@@ -347,7 +343,6 @@ SONGS: dict[str, dict] = {
         "title": "朧月夜",
         "title_kana": "オボロヅキヨ",
         "description": "唱歌・PD",
-        "edition": "full",
         "tempo": 750_000,  # ♩=80
         "time": (3, 4),
         # ニ長調(初出調)。8分2つの弱起で始まり、行は小節の途中で変わる(BR)。
@@ -406,7 +401,6 @@ SONGS: dict[str, dict] = {
         "title": "茶摘",
         "title_kana": "チャツミ",
         "description": "文部省唱歌・PD",
-        "edition": "full",
         "tempo": 576_923,  # ♩=104
         "time": (4, 4),
         # ト長調・ヨナ抜き長音階。各行は4分休符から歌い出す。メリスマ無し
@@ -462,7 +456,6 @@ SONGS: dict[str, dict] = {
         "title": "七つの子",
         "title_kana": "ナナツノコ",
         "description": "童謡・PD",
-        "edition": "full",
         "tempo": 750_000,  # ♩=80
         "time": (4, 4),
         # ト長調。「ら→ら・あ」などの2音は楽譜どおりのメリスマ
@@ -520,7 +513,6 @@ SONGS: dict[str, dict] = {
         "title": "紅葉",
         "title_kana": "モミジ",
         "description": "唱歌・PD",
-        "edition": "full",
         "tempo": 652_174,  # ♩=92(うたごえサークルおけらの譜面・mu-techのXF MIDIともに♩=92)
         "time": (4, 4),
         # ヘ長調・4/4・全16小節。「る→る・う」などの2音は楽譜どおりのメリスマ。
@@ -575,7 +567,6 @@ SONGS: dict[str, dict] = {
         "title": "しゃぼん玉",
         "title_kana": "シャボンダマ",
         "description": "童謡・PD",
-        "edition": "full",
         "tempo": 833_333,  # ♩=72
         "time": (2, 4),
         # ニ長調(初出調)。メリスマ無し・1音符=1モーラ
@@ -946,7 +937,7 @@ def xf_lyric_fragments(song: dict, score: list) -> list[str] | None:
     return fragments
 
 
-def build(song: dict) -> bytes:
+def build(song: dict, *, full: bool = True) -> bytes:
     num, den = song["time"]
     meas = TPB * num * 4 // den
     lead_in = meas  # 1小節ぶんの前奏(無音)
@@ -954,7 +945,7 @@ def build(song: dict) -> bytes:
     lyric_events: list[tuple[int, str]] = []  # (tick, text)
     tick = lead_in
     line_break = False
-    score = expanded_score(song)
+    score = expanded_score(song) if full else list(song["score"])
     fragments = xf_lyric_fragments(song, score)
     fragment_iter = iter(fragments or ())
     for item in score:
@@ -987,7 +978,7 @@ def build(song: dict) -> bytes:
     acc_track = MidiTrack()
     mid.tracks.append(acc_track)
     acc_track.append(Message("program_change", channel=ACC_CHANNEL, program=ACC_PROGRAM, time=0))
-    expanded = {**song, "chords": expanded_chords(song)}
+    expanded = {**song, "chords": expanded_chords(song) if full else song["chords"]}
     _append_notes(
         acc_track,
         [(s, d, n, v, ACC_CHANNEL) for s, d, n, v in accompaniment_events(expanded, measures)],
@@ -1017,21 +1008,58 @@ def build(song: dict) -> bytes:
     return buf.getvalue() + xfih + xfkm
 
 
+def first_verse_lyrics(song: dict) -> str:
+    """基本譜面（追加番・結びを除く）に対応する先頭の歌詞だけ返す。"""
+    line_count = 1 + sum(item is None or item == BR for item in song["score"])
+    lines = song["lyrics"].splitlines()
+    if len(lines) < line_count:
+        raise ValueError(f"{song['title']}: 1番の譜面は{line_count}行（歌詞は{len(lines)}行）")
+    return "\n".join(lines[:line_count]) + "\n"
+
+
+def generated_samples() -> list[dict]:
+    """通常版とフル版を、manifestへ並べる順序で展開する。"""
+    samples = []
+    for sid, song in SONGS.items():
+        has_full_variant = bool(song.get("additional_verses") or song.get("tail_score"))
+        samples.append(
+            {
+                "id": sid,
+                "song": song,
+                "full": not has_full_variant,
+                "title": song["title"],
+                "lyrics": first_verse_lyrics(song) if has_full_variant else song["lyrics"],
+            }
+        )
+        if has_full_variant:
+            samples.append(
+                {
+                    "id": f"{sid}_full",
+                    "song": song,
+                    "full": True,
+                    "title": f"{song['title']}（フル）",
+                    "lyrics": song["lyrics"],
+                }
+            )
+    return samples
+
+
 if __name__ == "__main__":
     out_dir = Path(__file__).parent.parent / "src" / "soramimic_video" / "static" / "sample"
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = []
-    for sid, song in SONGS.items():
-        data = build(song)
+    for sample in generated_samples():
+        sid = sample["id"]
+        song = sample["song"]
+        data = build(song, full=sample["full"])
         (out_dir / f"{sid}.mid").write_bytes(data)
-        (out_dir / f"{sid}_lyrics.txt").write_text(song["lyrics"], encoding="utf-8")
+        (out_dir / f"{sid}_lyrics.txt").write_text(sample["lyrics"], encoding="utf-8")
         manifest.append(
             {
                 "id": sid,
-                "title": song["title"],
+                "title": sample["title"],
                 "title_kana": song["title_kana"],
                 "description": song["description"],
-                **({"edition": song["edition"]} if song.get("edition") else {}),
             }
         )
         print(f"wrote {sid}.mid ({len(data)} bytes)")

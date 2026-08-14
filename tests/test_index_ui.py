@@ -853,14 +853,11 @@ def test_card_selects_mirror_the_canonical_form():
     assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
 
 
-def test_full_sample_edition_is_only_added_to_the_picker_label():
-    """フル版は一覧で区別し、動画内の正式な曲名には版注記を混ぜない。"""
-    script = _script()
-    load = _function_body(script, "async function loadSamples()")
-    assert 's.edition === "full" ? "（フル）" : ""' in load
-    assert "sampleCanonicalTitles[s.id] = s.title;" in load
-    title = _function_body(script, "function songTitleOf(file)")
-    assert "sampleCanonicalTitles[midiSampleId] || midiSampleId" in title
+def test_sample_picker_uses_each_manifest_title_as_is():
+    """一番版とフル版の別項目名をsamples.jsonどおりプルダウンへ出す。"""
+    load = _function_body(_script(), "async function loadSamples()")
+    assert '<option value="${s.id}">${s.title}</option>' in load
+    assert "s.edition" not in load
 
 
 def test_card_wordlist_select_shows_the_editor_own_list():

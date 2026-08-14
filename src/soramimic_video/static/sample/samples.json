@@ -3,71 +3,115 @@
   "id": "furusato",
   "title": "ふるさと",
   "title_kana": "フルサト",
-  "description": "唱歌・PD",
-  "edition": "full"
+  "description": "唱歌・PD"
+ },
+ {
+  "id": "furusato_full",
+  "title": "ふるさと（フル）",
+  "title_kana": "フルサト",
+  "description": "唱歌・PD"
  },
  {
   "id": "akatombo",
   "title": "赤とんぼ",
   "title_kana": "アカトンボ",
-  "description": "童謡・PD",
-  "edition": "full"
+  "description": "童謡・PD"
+ },
+ {
+  "id": "akatombo_full",
+  "title": "赤とんぼ（フル）",
+  "title_kana": "アカトンボ",
+  "description": "童謡・PD"
  },
  {
   "id": "momotarou",
   "title": "桃太郎",
   "title_kana": "モモタロー",
-  "description": "文部省唱歌・PD",
-  "edition": "full"
+  "description": "文部省唱歌・PD"
+ },
+ {
+  "id": "momotarou_full",
+  "title": "桃太郎（フル）",
+  "title_kana": "モモタロー",
+  "description": "文部省唱歌・PD"
  },
  {
   "id": "katatsumuri",
   "title": "かたつむり",
   "title_kana": "カタツムリ",
-  "description": "文部省唱歌・PD",
-  "edition": "full"
+  "description": "文部省唱歌・PD"
+ },
+ {
+  "id": "katatsumuri_full",
+  "title": "かたつむり（フル）",
+  "title_kana": "カタツムリ",
+  "description": "文部省唱歌・PD"
  },
  {
   "id": "harugakita",
   "title": "春が来た",
   "title_kana": "ハルガキタ",
-  "description": "唱歌・PD",
-  "edition": "full"
+  "description": "唱歌・PD"
+ },
+ {
+  "id": "harugakita_full",
+  "title": "春が来た（フル）",
+  "title_kana": "ハルガキタ",
+  "description": "唱歌・PD"
  },
  {
   "id": "oborodukiyo",
   "title": "朧月夜",
   "title_kana": "オボロヅキヨ",
-  "description": "唱歌・PD",
-  "edition": "full"
+  "description": "唱歌・PD"
+ },
+ {
+  "id": "oborodukiyo_full",
+  "title": "朧月夜（フル）",
+  "title_kana": "オボロヅキヨ",
+  "description": "唱歌・PD"
  },
  {
   "id": "chatsumi",
   "title": "茶摘",
   "title_kana": "チャツミ",
-  "description": "文部省唱歌・PD",
-  "edition": "full"
+  "description": "文部省唱歌・PD"
+ },
+ {
+  "id": "chatsumi_full",
+  "title": "茶摘（フル）",
+  "title_kana": "チャツミ",
+  "description": "文部省唱歌・PD"
  },
  {
   "id": "nanatsunoko",
   "title": "七つの子",
   "title_kana": "ナナツノコ",
-  "description": "童謡・PD",
-  "edition": "full"
+  "description": "童謡・PD"
  },
  {
   "id": "momiji",
   "title": "紅葉",
   "title_kana": "モミジ",
-  "description": "唱歌・PD",
-  "edition": "full"
+  "description": "唱歌・PD"
+ },
+ {
+  "id": "momiji_full",
+  "title": "紅葉（フル）",
+  "title_kana": "モミジ",
+  "description": "唱歌・PD"
  },
  {
   "id": "shabondama",
   "title": "しゃぼん玉",
   "title_kana": "シャボンダマ",
-  "description": "童謡・PD",
-  "edition": "full"
+  "description": "童謡・PD"
+ },
+ {
+  "id": "shabondama_full",
+  "title": "しゃぼん玉（フル）",
+  "title_kana": "シャボンダマ",
+  "description": "童謡・PD"
  },
  {
   "id": "amazinggrace",
