@@ -19,15 +19,15 @@
 
 ## Branch promotion safety
 
-- Automatic merging is allowed only for pull requests whose base branch is `dev`.
-- An agent may prepare and monitor a selective promotion pull request to `preview`, but
-  must not merge it unless the user explicitly approves promoting the named changes in
-  the current conversation.
-- An agent may prepare and monitor a `preview` to `main` release pull request, but must
-  not merge it or deploy production until the user explicitly approves the release after
-  reviewing `preview` in the current conversation.
-- A passing CI run, a schedule, a generic instruction such as "finish", or the default
-  delivery goal does not count as release approval.
-- Do not add or use the `emergency` label unless the user explicitly requests an
-  emergency release. Corrective rollback work must remain limited to undoing the
-  unintended production change.
+- Same-repository, non-draft pull requests targeting `dev`, `preview`, or `main` are
+  automatically merged after all mandatory checks pass unless they carry the
+  `no-automerge` label.
+- Creating or marking ready a pull request to `preview` authorizes the repository
+  workflow to merge and deploy that named promotion automatically. Add `no-automerge`
+  before marking it ready when a separate review or approval stop is required.
+- `main` accepts pull requests only from the same repository's `preview` branch. A
+  `preview` to `main` release pull request is automatically merged and deployed after
+  all mandatory checks pass unless it carries `no-automerge`.
+- Creating or marking ready the `preview` to `main` release pull request is the release
+  instruction. Add `no-automerge` before marking it ready when production must remain
+  paused after CI.
