@@ -269,7 +269,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
     import os
 
     from .asset_store import ASSET_STORE_ENV
-    from .prewarm import _collect_rows, sync_asset_store, wordlist_csv_paths
+    from .prewarm import sync_asset_store, wordlist_csv_paths
 
     store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "")
     if not store_value:
@@ -290,35 +290,20 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
             print(f"優先単語リストCSVがありません: {path}", file=sys.stderr)
             return 2
         priority_paths.append(path)
-    priority_urls: set[str] = set()
     if priority_paths:
-        priority_urls = set(_collect_rows(priority_paths))
-        priority = sync_asset_store(
-            priority_paths, Path(store_value), wordlists_dir=wordlists,
-            revalidate=args.revalidate, dry_run=args.dry_run,
+        priority_set = set(priority_paths)
+        csv_paths = priority_paths + [path for path in csv_paths if path not in priority_set]
+    mode = "full" if args.revalidate else args.mode
+    try:
+        summary = sync_asset_store(
+            csv_paths, Path(store_value), wordlists_dir=wordlists,
+            mode=mode, dry_run=args.dry_run,
             download_workers=args.download_workers,
+            source_manifest_url=args.source_manifest_url,
         )
-        print(
-            f"優先asset sync完了: 失敗 {priority['failed']} / "
-            f"クレジット取得失敗 {priority.get('credit_failed', 0)} / "
-            f"クレジット不明 {priority['credit_unknown']} / "
-            f"active昇格 {bool(priority.get('promoted', 0))} "
-            f"(URL計 {priority['total']})"
-        )
-        if not args.dry_run and (
-            priority["failed"]
-            or priority.get("credit_failed", 0)
-            or priority["credit_unknown"]
-            or not priority.get("promoted", 0)
-        ):
-            print("優先assetが不完全なため、全件同期は次回再試行します", file=sys.stderr)
-            return 1
-    summary = sync_asset_store(
-        csv_paths, Path(store_value), wordlists_dir=wordlists,
-        revalidate=args.revalidate, dry_run=args.dry_run,
-        skip_revalidate_urls=priority_urls,
-        download_workers=args.download_workers,
-    )
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"asset sync失敗(last-goodを維持): {e}", file=sys.stderr)
+        return 1
     prefix = "dry-run" if args.dry_run else "asset sync完了"
     print(
         f"{prefix}: 新規 {summary['new']} / 更新 {summary['updated']} / "
@@ -333,6 +318,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
         summary["failed"]
         or summary.get("credit_failed", 0)
         or summary["credit_unknown"]
+        or (not args.dry_run and not summary.get("promoted", 0))
     ) else 0
 
 
@@ -649,11 +635,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--revalidate", action="store_true",
-        help="既存URLもETag/Last-Modifiedまたはローカル原本で変更確認する",
+        help="--mode full の互換alias",
+    )
+    p.add_argument(
+        "--mode", choices=("manifest", "full"), default="manifest",
+        help="manifest=Release差分同期、full=全URL再検証(既定: manifest)",
+    )
+    p.add_argument(
+        "--source-manifest-url",
+        default=(
+            "https://github.com/soramimic/soramimic-wordlists/releases/download/"
+            "release-image-source-manifest-v1/source-manifest.json"
+        ),
+        help="wordlists Release画像source manifest URL",
     )
     p.add_argument(
         "--priority-wordlist", action="append", default=[], metavar="NAME",
-        help="指定リストを先に完全同期・active化してから全件同期する(複数指定可)",
+        help="単一transaction内で先に取得するリスト(複数指定可)",
     )
     p.add_argument(
         "--download-workers", type=int, choices=range(1, 3), default=2,
