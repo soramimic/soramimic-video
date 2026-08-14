@@ -269,6 +269,6 @@ def test_run_pipeline_prefers_the_uploaded_wordlist(client, tmp_path, monkeypatc
     monkeypatch.setattr(mix_mod, "mix", lambda *a, **k: None)
     monkeypatch.setattr(video_mod, "make_video", lambda *a, **k: out)
 
-    assert REAL_RUN_PIPELINE(job, {}) == out
+    assert REAL_RUN_PIPELINE(job, {"parallel_video": False}) == out
     assert calls["wordlist"] == str(job.dir / api_mod.WORDLIST_DIRNAME / "mine.csv")
     assert calls["cache_db"] is False

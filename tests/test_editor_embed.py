@@ -637,7 +637,7 @@ def test_job_pipeline_keeps_the_align_lines_originals(job_client, tmp_path, monk
     monkeypatch.setattr(video_mod, "make_video", fake_make_video)
 
     # フォームの元歌詞(lyrics.txt)を align_lines にかけた結果がそのまま残る
-    assert REAL_RUN_PIPELINE(job, {}) == out
+    assert REAL_RUN_PIPELINE(job, {"parallel_video": False}) == out
     assert seen["originals"] == ["しずむ"]
     assert seen["image_leads"] == [0.1]
 
@@ -645,7 +645,9 @@ def test_job_pipeline_keeps_the_align_lines_originals(job_client, tmp_path, monk
     (job.dir / "lyrics.txt").unlink()
     session["lyrics"] = "しずむ夜"
     (job.dir / "editor.json").write_text(json.dumps(session), encoding="utf-8")
-    assert REAL_RUN_PIPELINE(job, {"video_image_lead_sec": 0}) == out
+    assert REAL_RUN_PIPELINE(
+        job, {"video_image_lead_sec": 0, "parallel_video": False}
+    ) == out
     assert seen["originals"] == ["しずむ夜"]
     assert seen["image_leads"][-1] == 0
 

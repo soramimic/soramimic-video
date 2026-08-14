@@ -3,7 +3,7 @@
 パイプラインの重い処理(NEUTRINO・ffmpeg・fluidsynth など)はすべて
 ここを通して起動する。実行中のプロセスを登録しておき、APIの中断
 リクエストから kill_current() でプロセスグループごと止められる。
-ワーカーは1本なので「現在のプロセス」は同時に1つしかない。
+動画と音声の並列生成中は複数プロセスが走るため、実行中の全プロセスを追跡する。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 PUBLIC_ENV = "SORAMIMIC_PUBLIC"
 
 _lock = threading.Lock()
-_current: subprocess.Popen | None = None
+_current: set[subprocess.Popen] = set()
 _cancel_check: Callable[[], bool] | None = None
 _native_output_lock = threading.Lock()
 
@@ -98,7 +98,6 @@ def run(
     その都度コールバックする(NEUTRINOの進捗表示のような、途中経過を取り出す用途)。
     このときの読み取りはバイト単位で行い、こちらでUTF-8にデコードする。
     """
-    global _current
     if kwargs.pop("capture_output", False):
         kwargs.setdefault("stdout", subprocess.PIPE)
         kwargs.setdefault("stderr", subprocess.PIPE)
@@ -124,7 +123,7 @@ def run(
     # 子(NEUTRINOが起動するプロセス等)も巻き添えにできる
     proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
     with _lock:
-        _current = proc
+        _current.add(proc)
     try:
         if on_stdout is not None:
             stdout, stderr = _communicate_streaming(proc, on_stdout, input_data)
@@ -132,7 +131,7 @@ def run(
             stdout, stderr = proc.communicate(input=input_data)
     finally:
         with _lock:
-            _current = None
+            _current.discard(proc)
     result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
     if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd, stdout, stderr)
@@ -205,13 +204,16 @@ def _communicate_streaming(
 
 
 def kill_current() -> bool:
-    """実行中のプロセス(グループ)を止める。止めたらTrue。"""
+    """実行中の全プロセス(グループ)を止める。1つでも止めたらTrue。"""
     with _lock:
-        proc = _current
-    if proc is None or proc.poll() is not None:
-        return False
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        return False
-    return True
+        processes = list(_current)
+    killed = False
+    for proc in processes:
+        if proc.poll() is not None:
+            continue
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            killed = True
+        except (ProcessLookupError, PermissionError):
+            continue
+    return killed
