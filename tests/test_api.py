@@ -1312,6 +1312,60 @@ def test_load_samples_adds_local_overlay_manifest(tmp_path, monkeypatch):
     assert [entry["id"] for entry in api_mod.load_samples()] == ["pd", "local"]
 
 
+def test_load_samples_inherits_edition_only_for_identical_bundled_assets(
+    tmp_path, monkeypatch
+):
+    static_dir = tmp_path / "static"
+    bundled = static_dir / "sample"
+    external = tmp_path / "external"
+    bundled.mkdir(parents=True)
+    external.mkdir()
+    (bundled / "samples.json").write_text(
+        json.dumps(
+            [
+                {"id": "same", "title": "同じ曲", "edition": "full"},
+                {"id": "different", "title": "違う曲", "edition": "full"},
+                {"id": "lyrics-different", "title": "歌詞違い", "edition": "full"},
+                {"id": "explicit", "title": "明示曲", "edition": "full"},
+                {"id": "missing", "title": "欠落曲", "edition": "full"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (external / "samples.json").write_text(
+        json.dumps(
+            [
+                {"id": "same", "title": "同じ曲"},
+                {"id": "different", "title": "違う曲"},
+                {"id": "lyrics-different", "title": "歌詞違い"},
+                {"id": "explicit", "title": "明示曲", "edition": None},
+                {"id": "missing", "title": "欠落曲"},
+                {"id": "external-only", "title": "外部曲"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for sample_id in ("same", "different", "lyrics-different", "explicit", "missing"):
+        (bundled / f"{sample_id}.mid").write_bytes(b"midi")
+        (bundled / f"{sample_id}_lyrics.txt").write_text("歌詞", encoding="utf-8")
+    for sample_id in ("same", "explicit"):
+        (external / f"{sample_id}.mid").write_bytes(b"midi")
+        (external / f"{sample_id}_lyrics.txt").write_text("歌詞", encoding="utf-8")
+    (external / "different.mid").write_bytes(b"first verse")
+    (external / "different_lyrics.txt").write_text("歌詞", encoding="utf-8")
+    (external / "lyrics-different.mid").write_bytes(b"midi")
+    (external / "lyrics-different_lyrics.txt").write_text("一番だけ", encoding="utf-8")
+
+    monkeypatch.setattr(api_mod, "STATIC_DIR", static_dir)
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(external))
+
+    entries = {entry["id"]: entry for entry in api_mod.load_samples()}
+    assert entries["same"]["edition"] == "full"
+    assert entries["explicit"]["edition"] is None
+    for sample_id in ("different", "lyrics-different", "missing", "external-only"):
+        assert "edition" not in entries[sample_id]
+
+
 def test_bundled_samples_all_have_a_reading():
     # サムネの曲名変換は読みを使う。同梱サンプルは全曲ぶん揃っていること
     from soramimic_video.api import STATIC_DIR

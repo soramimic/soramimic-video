@@ -288,6 +288,43 @@ def samples_dir() -> Path:
     return Path(override).expanduser() if override else STATIC_DIR / "sample"
 
 
+def _inherit_bundled_sample_editions(
+    entries: list[dict[str, Any]], directory: Path
+) -> list[dict[str, Any]]:
+    """外部配置が同梱版と完全一致するときだけ、欠けた版情報を補う。"""
+    bundled_dir = STATIC_DIR / "sample"
+    if directory == bundled_dir:
+        return entries
+    try:
+        bundled_raw = (bundled_dir / "samples.json").read_text(encoding="utf-8")
+        bundled_entries = json.loads(bundled_raw)
+    except (OSError, json.JSONDecodeError):
+        logger.warning("同梱samples.jsonから版情報を読めません: %s", bundled_dir)
+        return entries
+
+    bundled_by_id = {
+        str(entry["id"]): entry
+        for entry in bundled_entries
+        if isinstance(entry, dict) and entry.get("id") and "edition" in entry
+    }
+    enriched: list[dict[str, Any]] = []
+    for entry in entries:
+        sample_id = str(entry.get("id") or "")
+        bundled = bundled_by_id.get(sample_id)
+        if "edition" in entry or bundled is None or not re.fullmatch(r"[A-Za-z0-9_-]+", sample_id):
+            enriched.append(entry)
+            continue
+        try:
+            same_assets = all(
+                (directory / name).read_bytes() == (bundled_dir / name).read_bytes()
+                for name in (f"{sample_id}.mid", f"{sample_id}_lyrics.txt")
+            )
+        except OSError:
+            same_assets = False
+        enriched.append({**entry, "edition": bundled["edition"]} if same_assets else entry)
+    return enriched
+
+
 def load_samples() -> list[dict[str, Any]]:
     """samples.json とローカル限定の追加manifestを読む。
 
@@ -312,15 +349,15 @@ def load_samples() -> list[dict[str, Any]]:
     try:
         local_raw = local_path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return base
+        return _inherit_bundled_sample_editions(base, directory)
     except OSError:
         logger.warning("ローカルサンプルmanifestを読めません: %s", local_path)
-        return base
+        return _inherit_bundled_sample_editions(base, directory)
     try:
         local_entries = json.loads(local_raw)
     except json.JSONDecodeError:
         logger.warning("ローカルサンプルmanifestが壊れています: %s", local_path)
-        return base
+        return _inherit_bundled_sample_editions(base, directory)
 
     merged = list(base)
     positions = {
@@ -337,7 +374,7 @@ def load_samples() -> list[dict[str, Any]]:
         else:
             positions[sample_id] = len(merged)
             merged.append(entry)
-    return merged
+    return _inherit_bundled_sample_editions(merged, directory)
 
 
 def sample_entry(sample_id: str) -> dict[str, Any] | None:
