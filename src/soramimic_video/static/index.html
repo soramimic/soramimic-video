@@ -2724,6 +2724,23 @@ function showBuilderMsg(text) {
 // 「中断・失敗したとき」(poll)、「設定を触ったとき」(releaseBuilderDone)。
 let builderState = "preview";
 
+// WebKit系では同じvideo要素のsrcを生成のたびに差し替えると、pause/load済みでも
+// ネイティブコントロールだけが前の再生状態を引き継ぎ、未再生なのに停止アイコンを
+// 出すことがある。完成動画ごとに新しい要素へ交換し、再生状態もコントロールの表示も
+// 必ず初期状態から始める。videoには静的なJSイベントを結び付けていないため、必要な
+// errorハンドラはprepareVideoShareが新しい要素へ改めて設定する。
+function freshBuilderVideo() {
+  const previous = $("builder-video");
+  previous.pause();
+  previous.removeAttribute("src");
+  previous.removeAttribute("poster");
+  previous.load();
+  resetVideoSharePreparation();
+  const video = previous.cloneNode(false);
+  previous.replaceWith(video);
+  return video;
+}
+
 function setBuilderState(state) {
   builderState = state;
   $("builder-progress").hidden = state !== "running";
@@ -2789,10 +2806,13 @@ for (const type of ["change", "input"]) {
 
 // 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
 function showBuilderVideo(job) {
-  const video = $("builder-video");
+  const video = freshBuilderVideo();
   // File共有を試せない環境だけはURLを直接再生する。対応候補では、共有用に
   // 先行取得したFileを再生にも共用し、同じMP4を二経路で読み込まない。
-  if (!FILE_SHARE_SUPPORTED) video.src = qs(job.video_url);
+  if (!FILE_SHARE_SUPPORTED) {
+    video.src = qs(job.video_url);
+    video.load();
+  }
   if (job.thumbnail_url) video.poster = qs(job.thumbnail_url);
   else if (previewUrl) video.poster = previewUrl;
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
