@@ -1496,6 +1496,7 @@ async function loadHistory() {
 }
 
 let currentJob = null;
+let cancelPendingJob = null;
 
 // ---- 進捗ポーリング ----
 // iOSでアプリを切り替えるとタイマーが凍り、通信も切られる。復帰したときに
@@ -1543,6 +1544,8 @@ function restartPolling(id) {
 
 function watch(id) {
   currentJob = id;
+  cancelPendingJob = null;
+  setCancelPending(false);
   $("cancel").hidden = false;
   restartPolling(id);
 }
@@ -1666,7 +1669,9 @@ async function poll(id, seq = pollSeq) {
   const label = STAGE_LABELS[job.stage] || job.stage || "…";
   // 「何段階目か」の数字は出さない。どこまで進んだかはプログレスバーが見せている
   if (job.status === "running") {
-    if (job.stage === "synthesize" && job.stage_progress != null) {
+    if (cancelPendingJob === id) {
+      setJobStatus("中断しています…");
+    } else if (job.stage === "synthesize" && job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
@@ -1677,7 +1682,7 @@ async function poll(id, seq = pollSeq) {
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
-    setJobStatus("順番待ち…");
+    setJobStatus(cancelPendingJob === id ? "中断しています…" : "順番待ち…");
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "done") {
     setJobStatus(`完成!(合計 ${Math.round(job.total_seconds)}秒)`);
@@ -1947,6 +1952,8 @@ let submitBusy = false;
 function finish() {
   stopPolling();
   $("cancel").hidden = true;
+  cancelPendingJob = null;
+  setCancelPending(false);
   currentJob = null;
   setBusy(false);
   loadHistory();
@@ -1973,6 +1980,7 @@ function setBusy(busy) {
 // 開閉は保存しないので、投入のたびに閉じた状態へ戻す(前のジョブのエラーで
 // 自動的に開いて警告色になっていた場合もここでリセットされる)。
 function showProgress() {
+  showBuilderMsg("");
   $("job-card").hidden = false;
   $("job-card").open = false;
   $("job-card").classList.remove("attention");
@@ -3015,16 +3023,37 @@ $("synthesizer").addEventListener("change", () => {
 });
 $("voicevox-style").addEventListener("change", updateVoicevoxCredit);
 // 中断はサムネ枠の中(#builder-cancel)と詳細の進捗(#cancel)の両方から押せる
-async function cancelJob() {
-  if (!currentJob) return;
-  const btns = [$("cancel"), $("builder-cancel")];
-  btns.forEach((b) => { b.disabled = true; });
-  try {
-    await fetch(`/api/jobs/${currentJob}/cancel`, { method: "POST", headers: headers() });
-  } finally {
-    btns.forEach((b) => { b.disabled = false; });
+function setCancelPending(pending) {
+  for (const btn of [$("cancel"), $("builder-cancel")]) {
+    btn.disabled = pending;
+    btn.textContent = pending ? "中断中…" : "中断";
   }
-  // 状態遷移はpollが拾う
+}
+
+async function cancelJob() {
+  const id = currentJob;
+  if (!id || cancelPendingJob === id) return;
+  cancelPendingJob = id;
+  setCancelPending(true);
+  setJobStatus("中断しています…");
+  showBuilderMsg("");
+  try {
+    const res = await fetch(`/api/jobs/${id}/cancel`, {
+      method: "POST", headers: headers(),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    // 応答までに数秒かかっても表示はpendingのまま保つ。応答後は次の定期
+    // pollを待たず、完了状態をすぐ取りに行く。
+    if (currentJob === id) restartPolling(id);
+  } catch (e) {
+    if (currentJob !== id) return;
+    cancelPendingJob = null;
+    setCancelPending(false);
+    setJobStatus("中断要求を送れませんでした");
+    showBuilderMsg(
+      "中断要求を送れませんでした。通信状態を確認して、もう一度お試しください。"
+    );
+  }
 }
 $("cancel").addEventListener("click", cancelJob);
 $("builder-cancel").addEventListener("click", cancelJob);
