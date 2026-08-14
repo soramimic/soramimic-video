@@ -611,6 +611,85 @@ def test_completed_video_prepares_one_shared_playback_file_and_reset_aborts_fetc
     )
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_cancel_job_shows_pending_feedback_and_recovers_from_request_failure():
+    """中断POSTの応答待ちでも即座に反応し、失敗時だけ再操作可能に戻す。"""
+    script = _script()
+    set_pending = _function_body(script, "function setCancelPending(pending)") + "\n}"
+    cancel = _function_body(script, "async function cancelJob()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const elements = {{
+          cancel: {{ disabled: false, textContent: "中断" }},
+          "builder-cancel": {{ disabled: false, textContent: "中断" }},
+        }};
+        const $ = (id) => elements[id];
+        const headers = () => ({{}});
+        const statuses = [];
+        const messages = [];
+        const restarted = [];
+        const setJobStatus = (text) => statuses.push(text);
+        const showBuilderMsg = (text) => messages.push(text);
+        const restartPolling = (id) => restarted.push(id);
+        let currentJob = "job-1";
+        let cancelPendingJob = null;
+        let fetchCalls = 0;
+        let resolveFetch;
+        let fetch = () => {{
+          fetchCalls += 1;
+          return new Promise((resolve) => {{ resolveFetch = resolve; }});
+        }};
+        {set_pending}
+        {cancel}
+
+        (async () => {{
+          const pending = cancelJob();
+          assert.equal(fetchCalls, 1);
+          assert.equal(statuses.at(-1), "中断しています…");
+          for (const button of Object.values(elements)) {{
+            assert.equal(button.disabled, true);
+            assert.equal(button.textContent, "中断中…");
+          }}
+          await cancelJob();
+          assert.equal(fetchCalls, 1, "pending cancellation must ignore a second click");
+
+          resolveFetch({{ ok: true, status: 200 }});
+          await pending;
+          assert.deepEqual(restarted, ["job-1"]);
+          assert.equal(elements.cancel.disabled, true,
+            "successful request stays disabled until polling reaches a terminal state");
+
+          currentJob = "job-2";
+          cancelPendingJob = null;
+          setCancelPending(false);
+          fetch = async () => ({{ ok: false, status: 503 }});
+          await cancelJob();
+          assert.equal(statuses.at(-1), "中断要求を送れませんでした");
+          assert.match(messages.at(-1), /もう一度お試しください/);
+          for (const button of Object.values(elements)) {{
+            assert.equal(button.disabled, false);
+            assert.equal(button.textContent, "中断");
+          }}
+
+          fetch = async () => ({{ ok: true, status: 200 }});
+          await cancelJob();
+          assert.equal(messages.at(-1), "",
+            "retry must clear the previous cancellation request error");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+    poll = _function_body(script, "async function poll(")
+    assert 'cancelPendingJob === id' in poll
+    assert 'setJobStatus("中断しています…")' in poll
+    finish = _function_body(script, "function finish()")
+    assert "cancelPendingJob = null;" in finish
+    assert "setCancelPending(false);" in finish
+    assert 'showBuilderMsg("");' in _function_body(script, "function showProgress()")
+
+
 def test_editor_opens_from_the_setup_screen():
     """⚙はサーバーに変換させず(convert=0)、セットアップ画面から開く。
 

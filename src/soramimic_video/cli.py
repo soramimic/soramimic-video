@@ -369,6 +369,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         voicevox_url=args.voicevox_url,
         video_fps=args.video_fps,
         video_image_lead_sec=args.video_image_lead_sec,
+        parallel_video=not args.serial_video,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
@@ -655,6 +656,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--video-image-lead-sec", type=float, default=0.1,
         help="生成カードを音声より先に表示する秒数(既定: 0.1、無効化: 0)",
+    )
+    p.add_argument(
+        "--serial-video", action="store_true",
+        help="歌声・ミックス完了後に従来の1パス動画生成を行う(並列化の無効化)",
     )
     p.add_argument(
         "--voicevox-url",
