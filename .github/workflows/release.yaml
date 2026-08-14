@@ -1,5 +1,5 @@
-# preview の公開候補を固定した SHA で検証し、手動release PRの案内を出す。
-# main への反映は、release PR の現在の head SHA の CI を確認して人間が行う。
+# previewの公開候補を固定したSHAで検証し、release PRの案内を出す。
+# 同一repositoryのpreview→main PRは、no-automergeラベルがない限りCI成功後に自動マージする。
 name: release
 on:
   workflow_dispatch: {}
@@ -82,7 +82,7 @@ jobs:
               echo "[preview → main のPRを作成または確認する](https://github.com/$REPO/compare/main...preview?expand=1)"
               echo
               echo "PRのタイトルは \`release: preview → main\` とし、公開内容を本文に記載してください。"
-              echo "PR作成後は、PRの現在のhead SHAに対する必須チェックを確認して手動マージしてください。"
+              echo "PR作成後は、no-automergeラベルがなければ必須チェック成功後に自動マージされます。"
             else
               echo "> preview が検証中に進みました。この結果は \`$PREVIEW_SHA\` だけに対するものです。"
               echo "> Actionsからreleaseを再実行し、現在のpreview SHAを検証してからPRを作成してください。"
@@ -90,15 +90,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$current_sha" = "$PREVIEW_SHA" ]; then
-            echo "検証済みSHAの手動PR作成リンクをjob summaryへ出力しました"
+            echo "検証済みSHAのPR作成リンクをjob summaryへ出力しました"
           else
             echo "previewが進んだため再実行が必要です"
           fi
 
   test-release-pr-head:
-    # main の必須チェックとして安定した名前で使えるよう、release と emergency の
-    # どちらの同一repository PRでもheadそのものを検証する。
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    # mainの必須チェックとして、同一repositoryのpreview headそのものを検証する。
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'preview' }}
     permissions:
       contents: read
     uses: ./.github/workflows/test.yml
@@ -107,13 +106,13 @@ jobs:
       # head SHA 自体も検証する。
       ref: ${{ github.event.pull_request.head.sha }}
 
-  reject-fork-main-pr:
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+  reject-invalid-main-pr:
+    if: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.head.ref != 'preview') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: forkからmainへのPRを拒否
+      - name: preview以外からmainへのPRを拒否
         run: |
-          echo "forkのhead SHAはこのrelease gateでは検証しません。PRのbaseをdevに変更してください。" >&2
+          echo "mainへマージできるのは同一repositoryのpreviewブランチからのPRだけです。" >&2
           exit 1
