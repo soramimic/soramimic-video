@@ -563,7 +563,7 @@
     <video id="builder-video" controls playsinline hidden></video>
     <div class="builder-figure-loading" id="builder-loading" hidden>
       <span class="spinner" aria-hidden="true"></span>
-      <span>プレビューを作成中…</span>
+      <span id="builder-loading-label">プレビューを作成中…</span>
     </div>
     <button type="button" class="builder-play" id="builder-play" hidden
       aria-label="この組み合わせで動画を生成">
@@ -1603,6 +1603,16 @@ function setJobStatus(text, builderText) {
   $("builder-status").textContent = builderText || text;
 }
 
+// 「数分かかる」のは動画生成全体ではなく、この単語リストの空耳変換だけ。
+// 完成後や別ステージで注意が残らないよう、枠内の進捗文言を組み立てる時だけ判定する。
+function builderStageStatus(job, label, elapsed) {
+  const wordlist = ((job && job.params && job.params.wordlist) || "").replace(/\.csv$/, "");
+  if (job && job.stage === "convert" && SLOW_WORDLISTS.includes(wordlist)) {
+    return `空耳変換中（数分かかります）${elapsed}`;
+  }
+  return `${label}${elapsed}`;
+}
+
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
 // 分母は「このジョブで実際に走るステージ数」(stagePlan)。
 function renderBuilderBar(job) {
@@ -1678,7 +1688,8 @@ async function poll(id, seq = pollSeq) {
       setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
+      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`,
+        builderStageStatus(job, label, elapsed));
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
@@ -2400,7 +2411,7 @@ $("lyrics").addEventListener("change", scheduleMidiCheck);
 const DEFAULT_COMBO = { sample: "furusato", wordlist: "baseball" };
 
 // 空耳変換に時間がかかる単語リスト。ランダム抽選の対象から外し、
-// それでも選ばれているときはカードに時間の注意を出す。
+// それでも選ばれているときは空耳変換中の枠内だけに時間の注意を出す。
 // (sekitsuiは不正データ3行が原因で数分かかる。上流のデータ修正が入ったら外してよい)
 const SLOW_WORDLISTS = ["sekitsui"];
 
@@ -2736,6 +2747,9 @@ function loadThumbnailPreview(combo) {
     return;
   }
   fig.hidden = false;
+  $("builder-loading-label").textContent = combo.slow
+    ? "空耳変換中…（数分かかることがあります）"
+    : "プレビューを作成中…";
   $("builder-loading").hidden = false;
 
   const ctrl = new AbortController();
@@ -2839,7 +2853,7 @@ function retryThumbnailPreview(url, seq) {
 // releaseBuilderDone から renderBuilder へ戻ってくる)
 let previewDeferred = false;
 
-// いまの選択でカードの表示(時間の注意 + プレビュー)を作り直す。
+// いまの選択でカードの表示(自作リストの注意 + プレビュー)を作り直す。
 function renderBuilder() {
   // 生成中はサムネ枠を進捗表示が使っている。ここで作り直すと state が preview に
   // 戻って進捗が消えるので、選択だけ受けて作り直しは終わるまで先送りする
@@ -2851,8 +2865,7 @@ function renderBuilder() {
   const custom = showsEditorWordlist();
   const note = custom
     ? "自作リストはプレビューに対応していません。そのまま生成できます。"
-    : (c.slow
-      ? "⏳ この組み合わせは単語リストが大きいため、空耳変換に数分かかります。" : "");
+    : "";
   $("builder-note").hidden = !note;
   $("builder-note").textContent = note;
   loadThumbnailPreview(c);
