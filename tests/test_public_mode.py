@@ -291,11 +291,16 @@ def test_samples_dir_override(tmp_path, monkeypatch):
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
 
     assert client.get("/api/samples").json() == [{"id": "mysong", "title": "自作サンプル"}]
-    assert client.get("/api/sample/mysong/midi").status_code == 404
-    assert client.head("/api/sample/mysong/midi").status_code == 404
-    assert client.get(
+    midi_get = client.get("/api/sample/mysong/midi")
+    midi_head = client.head("/api/sample/mysong/midi")
+    midi_range = client.get(
         "/api/sample/mysong/midi", headers={"Range": "bytes=0-3"}
-    ).status_code == 404
+    )
+    for response in (midi_get, midi_head, midi_range):
+        assert response.status_code == 404
+        assert response.headers["cache-control"] == "no-store"
+        assert "etag" not in response.headers
+        assert "last-modified" not in response.headers
     assert client.get("/api/sample/mysong/lyrics").text == "あいうえお"
     # 差し替え先に無いIDは404(同梱サンプルも見に行かない)
     assert client.get("/api/sample/akatombo/midi").status_code == 404
