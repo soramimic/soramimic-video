@@ -2281,7 +2281,7 @@ async function submitJob(previewSec, previewMode) {
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
   if (submitBusy) return;
   setBusy(true);
-  // 曲を選んだ直後に押されたときは、MIDIの取得と歌詞チェックが終わるのを待ってから見る
+  // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
   if (midiChecking) await midiChecking;
   // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
@@ -2291,7 +2291,8 @@ async function submitJob(previewSec, previewMode) {
     return;
   }
   const midi = $("midi").files[0];
-  if (!midi) {
+  const sampleId = midiSampleId;
+  if (!sampleId && !midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
     // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
     // サンプル曲はカードの「曲」プルダウン(🎲でも選び直せる)、自分のMIDIは⚙のエディタ。
@@ -2330,7 +2331,9 @@ async function submitJob(previewSec, previewMode) {
     }
   }
   const form = new FormData();
-  form.append("midi", midi);
+  // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
+  if (sampleId) form.append("sample_id", sampleId);
+  else form.append("midi", midi);
   if (editorSrc.file) form.append("editor", editorSrc.file);
   form.append("lyrics", $("lyrics").value);
   form.append("model", $("model").value);
@@ -2429,6 +2432,8 @@ const samplesReady = loadSamples();
 // いま #midi に入っているMIDIの出どころ(サンプルID)。自分で選んだMIDIや
 // localStorageから復元したMIDIは「出どころ不明」なので空文字。
 // 投入前に選択中の曲と突き合わせ、食い違っていたら取り直す(ensureSelectedSampleMidi)。
+// サーバー内のMIDIを使うサンプルID。持ち込みMIDIでは空文字。
+// サンプルのMIDIバイナリはブラウザへ取得・保存しない。
 let midiSampleId = "";
 // applySample による注入のあいだだけ true。#midi の change で来歴を消さないための番人
 let midiFromSample = false;
@@ -2440,31 +2445,27 @@ $("midi").addEventListener("change", () => {
 
 // 選択中のサンプル曲をフォームに反映する(MIDI・元歌詞)。
 // おまかせからも使うので、changeハンドラ本体をawaitできる関数に切り出してある。
-// opts.midiOnly: 元歌詞は触らずMIDIだけ取り直す(復元したMIDIの作り直し用。
-// 手で直した元歌詞をリロードのたびに巻き戻さないため)。
+// opts.keepLyrics: 手で直した元歌詞を残し、IDだけ選び直す。
 async function applySample(opts = {}) {
   const sid = $("sample-select").value;
   if (!sid) return false;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
-    const [midiRes, lyricsRes] = await Promise.all([
-      // 同梱サンプルは作り直されることがある。ブラウザのキャッシュに残った
-      // 古い版で生成しないよう、MIDIは毎回サーバーに確かめる
-      fetch(`/api/sample/${sid}/midi`, { cache: "no-store" }),
-      opts.midiOnly ? null : fetch(`/api/sample/${sid}/lyrics`),
-    ]);
-    if (!midiRes.ok || (lyricsRes && !lyricsRes.ok)) {
+    const lyricsRes = opts.keepLyrics ? null : await fetch(`/api/sample/${sid}/lyrics`);
+    if (lyricsRes && !lyricsRes.ok) {
       throw new Error("サンプルの取得に失敗しました");
     }
-    const file = new File([await midiRes.blob()], `${sid}.mid`, { type: "audio/midi" });
-    // changeを発火してlocalStorage保存(リロード後の復元)にも乗せる
+    // 取得中に別の曲が選ばれたら、遅く返った古い応答は反映しない。
+    if ($("sample-select").value !== sid) return false;
+    // 前の持ち込みMIDIとlocalStorageの保存版は残さない。
+    midiSampleId = sid;
     midiFromSample = true;
     try {
-      injectFile($("midi"), file, true);
+      $("midi").value = "";
+      $("midi").dispatchEvent(new Event("change", { bubbles: true }));
     } finally {
       midiFromSample = false;
     }
-    midiSampleId = sid;   // この曲のMIDIが入っている(投入時の突き合わせに使う)
     $("midi-restore-hint").hidden = true;
     if (lyricsRes) {
       $("lyrics").value = await lyricsRes.text();
@@ -2472,8 +2473,8 @@ async function applySample(opts = {}) {
     }
     // クレジット表記: プリセットがある曲は選曲時に自動で入れる(権利者指定の
     // 表記を漏らさない)。プリセットの無い曲へ切り替えたら、前の曲の表記が
-    // 残らないよう消す。midiOnly(復元)では触らない(復元値に任せる)
-    if (!opts.midiOnly) {
+    // 残らないよう消す。keepLyrics(復元)では触らない(復元値に任せる)
+    if (!opts.keepLyrics) {
       const credit = sampleCredits[sid] || {};
       $("original-credit").value = credit.originalCredit || "";
       $("credit-notice").value = credit.creditNotice || "";
@@ -2482,12 +2483,13 @@ async function applySample(opts = {}) {
     }
     // 単語リスト: 曲を選ぶ操作でリストの選択は変えない。confが取れない構成
     // (リスト名を直接指定する)で未指定のときだけ、既定のリスト名を入れておく
-    if (!opts.midiOnly && $("wordlist-select").hidden && !$("wordlist").value.trim()) {
+    if (!opts.keepLyrics && $("wordlist-select").hidden && !$("wordlist").value.trim()) {
       $("wordlist").value = "stations";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
     }
     const desc = sampleDescriptions[sid] || "";
     $("sample-status").textContent = `✓ ${title}${desc ? `(${desc})` : ""}をセットしました`;
+    if (!restoring) saveForm();
     return true;
   } catch (err) {
     $("sample-status").textContent = err.message;
@@ -2506,6 +2508,11 @@ function trackSample(p) {
 // 別の曲で生成されるのを防ぐのは ensureSelectedSampleMidi)。
 $("sample-select").addEventListener("change", () => {
   const sid = $("sample-select").value;
+  if (!sid) {
+    midiSampleId = "";
+    if (!restoring) saveForm();
+    return;
+  }
   trackSample(applySample()).then((ok) => {
     if (ok || !sid || sid !== $("sample-select").value) return;
     showBuilderMsg(`⚠ 「${sampleTitleOf(sid)}」の曲データを取得できませんでした。`
@@ -2528,13 +2535,13 @@ function sampleTitleOf(sid) {
 async function ensureSelectedSampleMidi(onFail) {
   const sid = $("sample-select").value;
   if (!sid) return true;                 // 自分のMIDIを使う人はそのまま
-  const matched = () => midiSampleId === $("sample-select").value && !!$("midi").files[0];
+  const matched = () => midiSampleId === $("sample-select").value && !$("midi").files[0];
   if (matched()) return true;
   const ok = await trackSample(applySample()).catch(() => false);
   if (midiChecking) await midiChecking;   // 取り直したMIDIの検証(歌詞なしの拒否)を待つ
   if (matched()) return true;
   // 歌詞なしMIDIとして取り消された(=曲が空)ときは rejectMidi の説明が出ている
-  if (!ok || $("midi").files[0]) {
+  if (!ok || !matched()) {
     const msg = `⚠ 「${sampleTitleOf(sid)}」の曲データを取得できませんでした。`
       + "選んだ曲と違う曲で生成しないよう、生成を止めました。"
       + "別の曲を選ぶか、しばらくしてからもう一度お試しください。";
@@ -2579,6 +2586,11 @@ function clearMidiNotices() {
 function rejectMidi(detail, notMidi = false) {
   midiRejecting = true;
   try {
+    if (midiSampleId) {
+      midiSampleId = "";
+      $("sample-select").value = "";
+      $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+    }
     $("midi").value = "";
     $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   } finally {
@@ -2625,12 +2637,14 @@ function renderLyricsMidiWarning(info) {
 async function checkMidi() {
   const seq = ++midiCheckSeq;
   const f = $("midi").files[0];
-  if (!f) { clearMidiNotices(); return; }
+  const sampleId = midiSampleId;
+  if (!sampleId && !f) { clearMidiNotices(); return; }
   let body;
   let notMidi = false;
   try {
     const form = new FormData();
-    form.append("midi", f);
+    if (sampleId) form.append("sample_id", sampleId);
+    else form.append("midi", f);
     form.append("lyrics", $("lyrics").value);
     const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
     body = await res.json();
@@ -2647,7 +2661,7 @@ async function checkMidi() {
   if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
   clearMidiNotices();
   if (notMidi || !body.has_lyrics) { rejectMidi(body.detail, notMidi); return; }
-  lastMidiCheck = { file: f, lines: body.midi_lines || [] };
+  lastMidiCheck = f ? { file: f, lines: body.midi_lines || [] } : null;
   renderLyricsMidiWarning(body);
 }
 
@@ -3258,14 +3272,11 @@ async function initBuilder() {
   syncBuilderOptions();
   const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
   const def = DEFAULT_COMBO;
-  // 1. 曲: 復元されたMIDIがサンプル曲なら、その選択に戻し、MIDIは取り直す。
-  //    復元したMIDI(localStorageのdataURL)は保存した時点の中身なので、同梱
-  //    サンプルが作り直されると古い版のまま何日も使われ続けてしまう。元歌詞は
-  //    手で直しているかもしれないので触らない(midiOnly)。
-  const restoredId = (($("midi").files[0] || {}).name || "").replace(/\.[^.]+$/, "");
+  // 1. 曲: 保存されたサンプルIDへ戻し、保存済みの編集歌詞は残す。
+  const restoredId = restoredSampleId;
   if (!$("sample-select").value && known.has(restoredId)) {
     $("sample-select").value = restoredId;
-    trackSample(applySample({ midiOnly: true }));
+    trackSample(applySample({ keepLyrics: true }));
   }
   // 2. 単語リストが未設定なら既定の組み合わせのものにする
   //    (エディタで書いた自作リストを使っているときは名前が空でも「未設定」ではない)
@@ -4619,7 +4630,7 @@ const EDITOR_SEED_KEY = "soramimic-video-editor-seed";
 function editorProvenance() {
   const midi = $("midi").files[0];
   return {
-    song: midi ? `${midi.name}:${midi.size}` : "",
+    song: midiSampleId ? `sample:${midiSampleId}` : (midi ? `${midi.name}:${midi.size}` : ""),
     wordlist: $("wordlist").value.trim(),
     where: $("where").value.trim(),
     params: buildConvertParams(),
@@ -4945,9 +4956,10 @@ function pickMidiFile() {
 // エディタは「この設定で変換」からやり直せる。
 async function reseedEditorSong() {
   const midi = $("midi").files[0];
-  if (!midi) throw new Error("MIDIファイルがありません");
+  if (!midiSampleId && !midi) throw new Error("MIDIファイルがありません");
   const form = new FormData();
-  form.append("midi", midi);
+  if (midiSampleId) form.append("sample_id", midiSampleId);
+  else form.append("midi", midi);
   form.append("lyrics", $("lyrics").value);
   form.append("wordlist", $("wordlist").value.trim());
   form.append("where", $("where").value.trim());
@@ -5106,9 +5118,13 @@ async function convertAndOpenEditor() {
   const midi = $("midi").files[0];
   const msg = $("open-editor-msg");
   msg.textContent = "";
-  if (!midi) { msg.textContent = "MIDIファイルを選んでください"; return; }
+  if (!midiSampleId && !midi) {
+    msg.textContent = "MIDIファイルを選んでください";
+    return;
+  }
   const form = new FormData();
-  form.append("midi", midi);
+  if (midiSampleId) form.append("sample_id", midiSampleId);
+  else form.append("midi", midi);
   form.append("lyrics", $("lyrics").value);
   form.append("wordlist", $("wordlist").value.trim());
   form.append("where", $("where").value.trim());
@@ -5524,6 +5540,7 @@ $("download-editor").addEventListener("click", async () => {
 // テキスト・選択系は formState にまとめ、ファイルは midiFile / editorFile に別保存する。
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
+let restoredSampleId = "";
 
 // 変換の詳細設定は同梱soramimicへ一本化した。エディタを経由しない従来フローも
 // これまでの画面既定と同じ結果になるよう、ノート長α=0.25だけを既定値として送る。
@@ -5538,6 +5555,7 @@ function saveForm() {
   try {
     localStorage.setItem(FORM_KEY, JSON.stringify({
       lyrics: $("lyrics").value,
+      sampleId: midiSampleId,
       wordlist: $("wordlist").value,
       // 選んだ単語リスト(confエントリ)の絞り込み。画面には出さないが、同名で
       // 絞り込み違いのグループを復元時に選び分けるために持ち回る
@@ -5706,6 +5724,7 @@ async function doRestoreForm() {
   try { state = JSON.parse(localStorage.getItem(FORM_KEY) || "null"); } catch { /* 壊れた値は無視 */ }
 
   if (state) {
+    restoredSampleId = String(state.sampleId || "");
     // UIから一時的に外したリストは保存済みでも復元せず、現在の先頭選択を使う。
     if (HIDDEN_UI_WORDLISTS.has(state.wordlist || "")) {
       state.wordlist = $("wordlist").value;
@@ -5821,16 +5840,25 @@ async function doRestoreForm() {
     }
   }
 
-  // 6. MIDIファイル: dataURLからFile復元して注入(changeは不要・復元表示を出す)
+  // 6. 持ち込みMIDIだけをdataURLから復元する。旧版が保存した
+  // サンプルMIDIはIDだけ移行し、バイナリをブラウザに残さない。
   try {
     const m = JSON.parse(localStorage.getItem(MIDI_KEY) || "null");
     if (m && m.dataUrl) {
-      const blob = await (await fetch(m.dataUrl)).blob();
-      injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), false);
-      $("midi-restore-hint").textContent = "前回のファイルを復元: " + m.name;
-      $("midi-restore-hint").hidden = false;
-      // 復元したMIDIも(歌詞なしのまま持ち越さないよう)一度は検証する
-      scheduleMidiCheck();
+      await samplesReady;
+      const restoredId = m.name.replace(/\.[^.]+$/, "");
+      const restoredSample = [...$("sample-select").options]
+        .some((option) => option.value === restoredId);
+      if (restoredSample) {
+        if (!restoredSampleId) restoredSampleId = restoredId;
+        localStorage.removeItem(MIDI_KEY);
+      } else {
+        const blob = await (await fetch(m.dataUrl)).blob();
+        injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), false);
+        $("midi-restore-hint").textContent = "前回のファイルを復元: " + m.name;
+        $("midi-restore-hint").hidden = false;
+        scheduleMidiCheck();
+      }
     }
   } catch { /* 復元失敗は無視 */ }
 

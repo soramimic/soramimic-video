@@ -34,9 +34,10 @@ def submit(client: TestClient, **fields):
 
 
 def submit_launch(client: TestClient, **fields):
-    midi = (api_mod.STATIC_DIR / "sample" / "furusato.mid").read_bytes()
-    files = {"midi": ("furusato.mid", midi, "audio/midi")}
-    return client.post("/api/jobs", files=files, data={"wordlist": "stations", **fields})
+    return client.post(
+        "/api/jobs",
+        data={"sample_id": "furusato", "wordlist": "stations", **fields},
+    )
 
 
 def wait_done(client: TestClient, job_id: str) -> dict:
@@ -279,7 +280,10 @@ def test_samples_dir_override(tmp_path, monkeypatch):
     sample_dir = tmp_path / "samples"
     sample_dir.mkdir()
     (sample_dir / "samples.json").write_text(
-        json.dumps([{"id": "mysong", "title": "自作サンプル"}]), encoding="utf-8"
+        json.dumps(
+            [{"id": "mysong", "title": "自作サンプル", "midi_end_credit": "MIDI: 制作者"}]
+        ),
+        encoding="utf-8",
     )
     (sample_dir / "mysong.mid").write_bytes(FAKE_MIDI)
     (sample_dir / "mysong_lyrics.txt").write_text("あいうえお", encoding="utf-8")
@@ -287,12 +291,20 @@ def test_samples_dir_override(tmp_path, monkeypatch):
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
 
     assert client.get("/api/samples").json() == [{"id": "mysong", "title": "自作サンプル"}]
-    assert client.get("/api/sample/mysong/midi").content == FAKE_MIDI
+    midi_get = client.get("/api/sample/mysong/midi")
+    midi_head = client.head("/api/sample/mysong/midi")
+    midi_range = client.get(
+        "/api/sample/mysong/midi", headers={"Range": "bytes=0-3"}
+    )
+    for response in (midi_get, midi_head, midi_range):
+        assert response.status_code == 404
+        assert response.headers["cache-control"] == "no-store"
+        assert "etag" not in response.headers
+        assert "last-modified" not in response.headers
     assert client.get("/api/sample/mysong/lyrics").text == "あいうえお"
     # 差し替え先に無いIDは404(同梱サンプルも見に行かない)
     assert client.get("/api/sample/akatombo/midi").status_code == 404
     # サンプル曲は作り直されることがあるので、ブラウザに使い回させない
-    assert client.get("/api/sample/mysong/midi").headers["cache-control"] == "no-cache"
     assert client.get("/api/sample/mysong/lyrics").headers["cache-control"] == "no-cache"
 
 
@@ -312,7 +324,7 @@ def test_sample_with_missing_file_is_404(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(sample_dir))
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
 
-    assert client.get("/api/sample/nolyrics/midi").status_code == 200
+    assert client.get("/api/sample/nolyrics/midi").status_code == 404
     res = client.get("/api/sample/nolyrics/lyrics")
     assert res.status_code == 404
     assert "nolyrics_lyrics.txt" in res.json()["detail"]
@@ -409,13 +421,27 @@ def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
     assert conf["wordlist_config"] is True
     assert client.get("/editor/conf/setting.json").status_code == 200
     assert conf["launch_wordlists"] == [
-        "stations", "nations", "baseball", "scientist", "gimukyoiku", "marine_life",
+        "stations",
+        "nations",
+        "baseball",
+        "scientist",
+        "gimukyoiku",
+        "sekitsui",
+        "plant",
+        "marine_life",
     ]
     assert conf["fixed_voicevox_style"] == 6000
     assert [row["id"] for row in client.get("/api/samples").json()] == [
-        "furusato", "momotarou", "katatsumuri", "shabondama", "akatombo",
+        "furusato",
+        "momotarou",
+        "katatsumuri",
+        "shabondama",
+        "akatombo",
     ]
-    # manifestに存在しても初回公開カタログ外の曲は直接取得できない
+    catalog = json.loads(api_mod.LAUNCH_CATALOG_PATH.read_text(encoding="utf-8"))
+    assert catalog["samples"][-1] == "maoudamashii_shiningstar"
+    # 環境限定素材が未配置の環境ではallowlistにあっても選択肢へ出さない
+    assert client.get("/api/sample/maoudamashii_shiningstar/midi").status_code == 404
     assert client.get("/api/sample/twinkle/midi").status_code == 404
 
 
@@ -450,7 +476,7 @@ def test_simple_ui_can_use_environment_launch_catalog(tmp_path, monkeypatch):
     assert [row["id"] for row in client.get("/api/samples").json()] == [
         "pd", "licensed",
     ]
-    assert client.get("/api/sample/licensed/midi").content == FAKE_MIDI
+    assert client.get("/api/sample/licensed/midi").status_code == 404
     assert client.get("/api/sample/hidden/midi").status_code == 404
 
 
@@ -482,18 +508,17 @@ def test_simple_ui_rejects_unreleased_wordlists_and_editor(tmp_path, monkeypatch
     monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
     monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
-    midi = (api_mod.STATIC_DIR / "sample" / "furusato.mid").read_bytes()
-    files = {"midi": ("furusato.mid", midi, "audio/midi")}
-
-    hidden = client.post("/api/jobs", files=files, data={"wordlist": "plant"})
+    hidden = client.post(
+        "/api/jobs", data={"sample_id": "furusato", "wordlist": "football"}
+    )
     assert hidden.status_code == 422
     assert hidden.json()["detail"] == "この単語リストは現在利用できません"
     editor = client.post(
         "/api/jobs",
         files={
-            **files,
             "editor": ("editor.json", b'{"format":"soramimic-editor/1"}', "application/json"),
         },
+        data={"sample_id": "furusato", "wordlist": "stations"},
     )
     assert editor.status_code == 422
     assert editor.json()["detail"] == "この入力形式は現在利用できません"

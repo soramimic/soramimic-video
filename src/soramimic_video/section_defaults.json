@@ -28,6 +28,8 @@
      "size": 0.042, "color": "#a8a8a8", "align": "center"},
     {"type": "text", "text": "{original_song_credit}", "box": [0.08, 0.23, 0.84, 0.10],
      "size": 0.052, "color": "white", "align": "center", "require": "original_song_credit"},
+    {"type": "text", "text": "{midi_end_credit}", "box": [0.08, 0.37, 0.84, 0.08],
+     "size": 0.036, "color": "white", "align": "center", "require": "midi_end_credit"},
     {"type": "text", "text": "Parody Lyrics & Video　Soramimic", "box": [0.1, 0.56, 0.8, 0.08],
      "size": 0.05, "color": "white", "align": "center"},
     {"type": "text", "text": "Vocal Synthesis　{synth_credit}", "box": [0.1, 0.65, 0.8, 0.07],
