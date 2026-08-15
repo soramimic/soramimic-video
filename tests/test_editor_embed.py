@@ -1020,7 +1020,7 @@ def test_index_treats_original_wordlist_as_custom():
 
 
 def test_setting_json_from_source_conf(client):
-    """配信用confはソースを正本とし、非公開リストだけUIから除外する。"""
+    """配信用confはソースを正本とし、植物を含む公開候補を返す。"""
     from soramimic_video.editor_io import SETTING_JSON
 
     if not SETTING_JSON.is_file():
@@ -1042,9 +1042,8 @@ def test_setting_json_from_source_conf(client):
         return found
 
     assert "plant" in names(source["wordlist"])
-    assert names(served["wordlist"]) == [
-        name for name in names(source["wordlist"]) if name != "plant"
-    ]
+    assert names(served["wordlist"]) == names(source["wordlist"])
+    assert "plant" in names(served["wordlist"])
     assert json.loads(SETTING_JSON.read_text(encoding="utf-8")) == source
 
 
