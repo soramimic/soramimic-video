@@ -409,13 +409,27 @@ def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
     assert conf["wordlist_config"] is True
     assert client.get("/editor/conf/setting.json").status_code == 200
     assert conf["launch_wordlists"] == [
-        "stations", "nations", "baseball", "scientist", "gimukyoiku",
+        "stations",
+        "nations",
+        "baseball",
+        "scientist",
+        "gimukyoiku",
+        "sekitsui",
+        "plant",
+        "marine_life",
     ]
     assert conf["fixed_voicevox_style"] == 6000
     assert [row["id"] for row in client.get("/api/samples").json()] == [
-        "furusato", "momotarou", "katatsumuri", "shabondama", "akatombo",
+        "furusato",
+        "momotarou",
+        "katatsumuri",
+        "shabondama",
+        "akatombo",
     ]
-    # manifestに存在しても初回公開カタログ外の曲は直接取得できない
+    catalog = json.loads(api_mod.LAUNCH_CATALOG_PATH.read_text(encoding="utf-8"))
+    assert catalog["samples"][-1] == "maoudamashii_shiningstar"
+    # 環境限定素材が未配置の環境ではallowlistにあっても選択肢へ出さない
+    assert client.get("/api/sample/maoudamashii_shiningstar/midi").status_code == 404
     assert client.get("/api/sample/twinkle/midi").status_code == 404
 
 
@@ -485,7 +499,7 @@ def test_simple_ui_rejects_unreleased_wordlists_and_editor(tmp_path, monkeypatch
     midi = (api_mod.STATIC_DIR / "sample" / "furusato.mid").read_bytes()
     files = {"midi": ("furusato.mid", midi, "audio/midi")}
 
-    hidden = client.post("/api/jobs", files=files, data={"wordlist": "plant"})
+    hidden = client.post("/api/jobs", files=files, data={"wordlist": "football"})
     assert hidden.status_code == 422
     assert hidden.json()["detail"] == "この単語リストは現在利用できません"
     editor = client.post(

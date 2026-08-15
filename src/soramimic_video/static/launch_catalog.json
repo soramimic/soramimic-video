@@ -4,14 +4,18 @@
     "momotarou",
     "katatsumuri",
     "shabondama",
-    "akatombo"
+    "akatombo",
+    "maoudamashii_shiningstar"
   ],
   "wordlists": [
     "stations",
     "nations",
     "baseball",
     "scientist",
-    "gimukyoiku"
+    "gimukyoiku",
+    "sekitsui",
+    "plant",
+    "marine_life"
   ],
   "voicevox_style": 6000
 }
