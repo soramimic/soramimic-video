@@ -2028,14 +2028,14 @@ const SHARE_HTML = DESKTOP_SHARE_UI
       : "") +
     `</p>` +
     `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "共有用の動画を準備しています。ダウンロードはすぐにできます。"
+      ? "動画を再生・共有できるよう準備しています。ダウンロードはすぐにできます。"
       : shareHint(false)}</p>`
   : `<p class="share-row">` +
     `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
     `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画をダウンロード"}</button>` +
     `</p>` +
     `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
+      ? "動画を再生・共有できるよう準備しています。" : shareHint(false)}</p>`;
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
@@ -2082,6 +2082,8 @@ function fallbackToDirectVideo(videoUrl, video, expectedObjectUrl = "") {
   revokeSharePlaybackUrl();
   video.src = qs(videoUrl);
   video.load();
+  video.controls = true;
+  video.removeAttribute("aria-busy");
 }
 
 function resetVideoSharePreparation() {
@@ -2119,6 +2121,11 @@ async function prepareVideoShare(videoUrl, video) {
     setShareButtonMode(false);
     return;
   }
+  // srcが無い準備中にnative controlsを操作できると、後続のsrc設定/loadが
+  // 先行した再生操作をリセットし、WebKitでは再生・停止表示が逆転することがある。
+  // 実際に再生できるsourceを設定するまでcontrolsを出さない。
+  video.controls = false;
+  video.setAttribute("aria-busy", "true");
   const ctrl = new AbortController();
   sharePreparationAbort = ctrl;
   let timedOut = false;
@@ -2143,6 +2150,8 @@ async function prepareVideoShare(videoUrl, video) {
     video.addEventListener("error", playbackError, { once: true });
     video.src = sharePlaybackUrl;
     video.load();
+    video.controls = true;
+    video.removeAttribute("aria-busy");
     // iOSのアプリ内ブラウザにはshareはあってもcanShareが無いものがあり、
     // canShareを門番にすると「共有」表示なのに必ずdownloadへ落ちてしまう。
     // 実Fileを用意できたらshareを直接試し、拒否されたときだけ保存へ切り替える。
@@ -2839,6 +2848,8 @@ function setBuilderState(state) {
     video.removeAttribute("src");
     video.removeAttribute("poster");
     video.load();
+    video.controls = true;
+    video.removeAttribute("aria-busy");
     // videoからobject URLを外してメディア資源を解放してからURLとFileを破棄する。
     resetVideoSharePreparation();
     $("builder-share").hidden = true;
