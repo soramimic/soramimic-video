@@ -2072,7 +2072,8 @@ def test_index_html_editor_auto_import_checks_provenance():
 
     html = _index_html()
     prov = re.search(r"function editorProvenance\(\) \{.*?\n\}", html, re.S).group(0)
-    assert "song: midi ? `${midi.name}:${midi.size}` : \"\"," in prov
+    assert "midiSampleId ? `sample:${midiSampleId}`" in prov
+    assert "(midi ? `${midi.name}:${midi.size}` : \"\")" in prov
     assert 'wordlist: $("wordlist").value.trim(),' in prov
     assert 'where: $("where").value.trim(),' in prov
     assert "params: buildConvertParams()," in prov

@@ -343,6 +343,55 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
+def test_legacy_saved_sample_midi_is_migrated_to_id_only():
+    """旧版が保存したサンプルMIDIは、バイナリを復元せずIDだけに移行する。"""
+    restored = _function_body(_script(), "async function doRestoreForm()")
+    assert "await samplesReady;" in restored
+    assert "if (!restoredSampleId) restoredSampleId = restoredId;" in restored
+    assert "localStorage.removeItem(MIDI_KEY);" in restored
+    initialized = _function_body(_script(), "async function initBuilder()")
+    assert "trackSample(applySample({ keepLyrics: true }))" in initialized
+
+
+def test_completed_video_requests_no_preload_hint():
+    """共有Fileは維持しつつ、完成直後の自動デコードを抑えるhintを指定する。"""
+    video = next(a for tag, a in _tags() if a.get("id") == "builder-video")
+    assert video.get("preload") == "none"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_job_post_retries_one_server_rejected_turnstile_token():
+    """tokenがサーバーで拒否されたとき、新しいtokenで同じ投入を一度だけ再送する。"""
+    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let calls = 0;
+        let rebuilds = 0;
+        let turnstileSiteKey = "site";
+        let turnstileNeedsInteraction = true;
+        let turnstileWaiting = true;
+        let turnstileFailed = true;
+        const form = {{ values: {{}}, set(key, value) {{ this.values[key] = value; }} }};
+        const headers = () => ({{}});
+        const fetch = async () => {{ calls += 1; return {{ status: calls === 1 ? 403 : 200 }}; }};
+        function hideTurnstilePrompt() {{}}
+        function rebuildTurnstileWidget() {{ rebuilds += 1; }}
+        async function ensureTurnstileToken() {{ return true; }}
+        function turnstileToken() {{ return "fresh-token"; }}
+        {post}
+        (async () => {{
+          const response = await postJobWithTurnstileRetry(form);
+          assert.equal(response.status, 200);
+          assert.equal(calls, 2);
+          assert.equal(rebuilds, 1);
+          assert.equal(form.values.turnstile_token, "fresh-token");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()
@@ -948,16 +997,45 @@ def test_setup_seed_has_no_results_so_viewing_alone_is_not_an_edit():
     assert "sig === meta.sig" in live and 'state: "none"' in live
 
 
-def test_restored_sample_midi_is_refetched_at_startup():
-    """復元したMIDIがサンプル曲なら、保存時点の中身を使わず取り直す。"""
+def test_restored_sample_id_keeps_saved_lyrics_without_midi_binary():
+    """復元したサンプルIDを選び直し、保存済みの編集歌詞を残す。"""
     init = _function_body(_script(), "async function initBuilder()")
-    assert "applySample({ midiOnly: true })" in init
+    assert "const restoredId = restoredSampleId;" in init
+    assert "applySample({ keepLyrics: true })" in init
 
 
-def test_sample_midi_fetch_bypasses_the_browser_cache():
-    """同梱サンプルは作り直されるので、キャッシュ済みの古い版を使わない。"""
+def test_sample_selection_never_fetches_or_injects_midi():
+    """同梱サンプルはIDだけ保持し、MIDIバイナリをブラウザへ配らない。"""
     apply_sample = _function_body(_script(), "async function applySample(")
-    assert 'cache: "no-store"' in apply_sample
+    assert "/midi" not in apply_sample
+    assert "midiSampleId = sid;" in apply_sample
+    assert '$("midi").value = "";' in apply_sample
+    assert "injectFile" not in apply_sample
+
+
+def test_sample_requests_send_id_while_uploads_send_midi():
+    """生成・検証・エディタはサンプルIDと持ち込みMIDIを排他的に送る。"""
+    script = _script()
+    submit = _function_body(script, "async function submitJob(")
+    check = _function_body(script, "async function checkMidi()")
+    editor = _function_body(script, "async function convertAndOpenEditor()")
+    reseed = _function_body(script, "async function reseedEditorSong()")
+    for body in (submit, editor, reseed):
+        assert 'if (midiSampleId) form.append("sample_id", midiSampleId);' in body or (
+            'if (sampleId) form.append("sample_id", sampleId);' in body
+        )
+        assert 'else form.append("midi", midi);' in body
+    assert 'if (sampleId) form.append("sample_id", sampleId);' in check
+    assert 'else form.append("midi", f);' in check
+
+
+def test_sample_id_is_saved_without_sample_midi_binary():
+    script = _script()
+    save = _function_body(script, "function saveForm()")
+    apply_sample = _function_body(script, "async function applySample(")
+    assert "sampleId: midiSampleId," in save
+    assert "saveForm();" in apply_sample
+    assert 'localStorage.setItem(MIDI_KEY' not in apply_sample
 
 
 def test_info_toggle_sets_aria_state():
@@ -1199,7 +1277,7 @@ def test_midi_check_rejects_a_non_midi_400_response():
     body = _function_body(_script(), "async function checkMidi()")
     assert "notMidi = res.status === 400 && !!body.detail;" in body
     assert "rejectMidi(body.detail, notMidi)" in body
-    assert "lastMidiCheck = { file: f, lines: body.midi_lines || [] };" in body
+    assert "lastMidiCheck = f ? { file: f, lines: body.midi_lines || [] } : null;" in body
 
 
 def test_host_song_request_keeps_the_wordlist_and_drops_the_results():

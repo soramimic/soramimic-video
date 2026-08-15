@@ -1405,6 +1405,25 @@ def test_planned_video_total_includes_midi_render_tail(tmp_path: Path, monkeypat
     assert video_mod.planned_video_total_sec(project) >= 26.0
 
 
+def test_parallel_video_totals_reserve_midi_end_credit_page_without_words(
+    tmp_path: Path, monkeypatch
+):
+    from soramimic_video import video as video_mod
+
+    project = _project(tmp_path)
+    sung_end = video_mod._sung_end_sec(project)
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"audio")
+    project.song.accompaniment_path = str(audio)
+    monkeypatch.setattr(video_mod, "_audio_duration_sec", lambda path: sung_end)
+    monkeypatch.setattr(video_mod, "used_words", lambda project: [])
+
+    assert video_mod.planned_video_total_sec(project) == sung_end
+    assert video_mod.actual_video_total_sec(project, audio) == sung_end
+    assert video_mod.planned_video_total_sec(project, "MIDI：制作者") == sung_end + 6.0
+    assert video_mod.actual_video_total_sec(project, audio, "MIDI：制作者") == sung_end + 6.0
+
+
 def test_extend_for_endroll_extends_when_no_outro():
     from soramimic_video.video import extend_for_endroll
 
@@ -1875,10 +1894,12 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         original_song="  シャイニングスター  ",
         original_credit="作詞・作曲: 森田交一 / 歌: 詩歩 / MIDI: 鶴",
         credit_notice="  音楽：魔王魂  ",
+        midi_end_credit="MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）",
     )
     texts = _element_texts(elements, data)
     assert "シャイニングスター — 音楽：魔王魂" in texts
-    assert not any("森田交一" in text or "MIDI" in text for text in texts)
+    assert not any("森田交一" in text for text in texts)
+    assert "MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）" in texts
     compact = section_frame_data(
         project,
         section="credits",
@@ -1887,6 +1908,40 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         original_credit="作詞・作曲・編曲: cosMo＠暴走P",
     )
     assert compact["original_song_credit"] == "初音ミクの消失 — cosMo＠暴走P"
+
+
+def test_midi_credit_is_available_only_to_final_credit_section(tmp_path: Path):
+    from soramimic_video.video import app_credit_text, section_frame_data
+
+    midi_credit = "MIDI：制作者"
+    data = section_frame_data(
+        _endroll_project(tmp_path), section="credits", midi_end_credit=midi_credit
+    )
+    assert data["midi_end_credit"] == midi_credit
+    # 通常フレームの常時署名にはMIDI表記を混ぜない。
+    assert midi_credit not in app_credit_text(original_song="曲")
+
+
+def test_midi_end_credit_gets_final_page_even_without_used_words(
+    tmp_path: Path, monkeypatch
+):
+    from soramimic_video import video as video_mod
+    from soramimic_video.layout import load_layout
+
+    monkeypatch.setattr(video_mod, "used_words", lambda project: [])
+    project = _endroll_project(tmp_path)
+    got = video_mod.build_section_cues(
+        project,
+        [_cue(0.0, 10.0)],
+        20.0,
+        load_layout("default"),
+        tmp_path / "v",
+        320,
+        180,
+        midi_end_credit="MIDI：制作者",
+    )
+    assert len(got) == 1
+    assert got[0].start == 10.0 and got[0].end == 20.0
 
 
 def test_original_song_credit_works_without_notice(tmp_path: Path):
