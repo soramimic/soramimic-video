@@ -33,30 +33,30 @@ def _catalog_midi() -> bytes:
     return (api_mod.STATIC_DIR / "sample" / "furusato.mid").read_bytes()
 
 
-def _post_job(client: TestClient, midi: bytes, name: str = "furusato.mid", **data):
+def _post_job(client: TestClient, midi: bytes | None = None, name: str = "furusato.mid", **data):
+    files = {"midi": (name, midi, "audio/midi")} if midi is not None else None
     return client.post(
         "/api/jobs",
-        files={"midi": (name, midi, "audio/midi")},
-        data={"wordlist": "stations", **data},
+        files=files,
+        data={"sample_id": "furusato", "wordlist": "stations", **data},
     )
 
 
-def test_simple_jobs_require_catalog_filename_and_sha256(simple_client: TestClient):
+def test_simple_jobs_resolve_catalog_midi_without_upload(simple_client: TestClient):
     midi = _catalog_midi()
-    assert _post_job(simple_client, midi).status_code == 200
-    assert _post_job(simple_client, midi, name="renamed.mid").status_code == 422
-    tampered = midi[:-1] + bytes([midi[-1] ^ 1])
-    assert _post_job(simple_client, tampered).status_code == 422
+    assert _post_job(simple_client).status_code == 200
+    assert _post_job(simple_client, midi).status_code == 422
+    assert _post_job(simple_client, sample_id="not-published").status_code == 422
+    assert _post_job(simple_client, sample_id="../furusato").status_code == 422
 
 
-def test_simple_midi_check_uses_the_same_catalog_match(simple_client: TestClient):
-    midi = _catalog_midi()
+def test_simple_midi_check_uses_the_same_catalog_id(simple_client: TestClient):
     good = simple_client.post(
-        "/api/midi-check", files={"midi": ("furusato.mid", midi, "audio/midi")}
+        "/api/midi-check", data={"sample_id": "furusato"}
     )
     assert good.status_code == 200
     bad = simple_client.post(
-        "/api/midi-check", files={"midi": ("other.mid", midi, "audio/midi")}
+        "/api/midi-check", data={"sample_id": "other"}
     )
     assert bad.status_code == 422
 
@@ -67,29 +67,27 @@ def test_simple_uses_bundled_lyrics_and_rejects_custom_inputs(
     bundled = (api_mod.STATIC_DIR / "sample" / "furusato_lyrics.txt").read_text(
         encoding="utf-8"
     )
-    assert _post_job(simple_client, _catalog_midi(), lyrics=bundled).status_code == 200
+    assert _post_job(simple_client, lyrics=bundled).status_code == 200
     # Simple UIの隠し入力に古い値や改行差が残っていても、
     # 照合済みMIDIに付属する歌詞へサーバー側で一意に戻す。
-    normalized = _post_job(simple_client, _catalog_midi(), lyrics="任意の歌詞")
+    normalized = _post_job(simple_client, lyrics="任意の歌詞")
     assert normalized.status_code == 200
     saved = tmp_path / "jobs" / normalized.json()["id"] / "lyrics.txt"
     assert saved.read_text(encoding="utf-8") == bundled
     custom = simple_client.post(
         "/api/jobs",
         files={
-            "midi": ("furusato.mid", _catalog_midi(), "audio/midi"),
             "wordlist_csv": ("mine.csv", b"id,surface\n1,test\n", "text/csv"),
         },
-        data={"wordlist": "stations"},
+        data={"sample_id": "furusato", "wordlist": "stations"},
     )
     assert custom.status_code == 422
     editor = simple_client.post(
         "/api/jobs",
         files={
-            "midi": ("furusato.mid", _catalog_midi(), "audio/midi"),
             "editor": ("editor.json", b"{}", "application/json"),
         },
-        data={"wordlist": "stations"},
+        data={"sample_id": "furusato", "wordlist": "stations"},
     )
     assert editor.status_code == 422
 
@@ -133,14 +131,14 @@ def test_simple_rejects_filesystem_csv_before_resolution(
 
 
 def test_simple_preview_job_cannot_bypass_wordlist_allowlist(simple_client: TestClient):
-    res = _post_job(simple_client, _catalog_midi(), wordlist="not-published", preview="10")
+    res = _post_job(simple_client, wordlist="not-published", preview="10")
     assert res.status_code == 422
 
 
 def test_simple_initial_catalog_allows_baseball_with_player_layout(
     simple_client: TestClient
 ):
-    res = _post_job(simple_client, _catalog_midi(), wordlist="baseball")
+    res = _post_job(simple_client, wordlist="baseball")
     assert res.status_code == 200
     job_id = res.json()["id"]
     for _ in range(100):

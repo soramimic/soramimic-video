@@ -1314,6 +1314,7 @@ def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
                     "original_display_credit": "作者",
                     "original_credit": "作詞・作曲: 作者",
                     "credit_notice": "指定表記",
+                    "midi_end_credit": "MIDI: 制作者",
                 }
             ]
         ),
@@ -1330,6 +1331,10 @@ def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
     assert api_mod.original_credit_of(params) == "作詞・作曲: 作者"
     assert api_mod.original_display_credit_of(params) == "作者"
     assert api_mod.credit_notice_of(params) == "指定表記"
+    assert api_mod.midi_end_credit_of(params) == "MIDI: 制作者"
+    assert api_mod.midi_end_credit_of(
+        {"midi_filename": "uploaded.mid", "midi_end_credit": "偽の指定"}
+    ) == ""
 
 
 def test_sample_manifest_credits_cannot_be_omitted_or_overridden(tmp_path, monkeypatch):
