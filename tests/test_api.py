@@ -66,6 +66,13 @@ def test_job_flow_with_editor(client):
     res = client.get(body["video_url"])
     assert res.status_code == 200
     assert res.content == FAKE_MP4
+    assert res.headers["content-disposition"].startswith("attachment;")
+    playback = client.get(body["playback_url"])
+    assert playback.status_code == 200
+    assert playback.content == FAKE_MP4
+    assert playback.headers["content-type"] == "video/mp4"
+    assert playback.headers["content-disposition"].startswith("inline;")
+    assert playback.headers["cache-control"] == "private, no-store"
 
 
 def test_requires_editor_or_wordlist(client):
@@ -516,6 +523,10 @@ def test_preview_returns_audio(tmp_path, monkeypatch):
     assert body["result_kind"] == "audio"
     video = client.get(body["video_url"])
     assert video.headers["content-type"] == "audio/wav"
+    assert video.headers["content-disposition"].startswith("attachment;")
+    playback = client.get(body["playback_url"])
+    assert playback.headers["content-type"] == "audio/wav"
+    assert playback.headers["content-disposition"].startswith("inline;")
 
 
 def test_preview_mode_is_validated_and_stored(tmp_path, monkeypatch):
@@ -1153,8 +1164,92 @@ def test_song_title_is_stored(client):
     )
     body = wait_done(client, job_id)
     assert body["params"]["song_title"] == "うっせぇわ(確認用)"
+    assert body["params"]["song_label"] == "アップロードした曲"
+    assert body["song_label"] == "アップロードした曲"
     assert body["params"]["original_credit"] == "作詞: ○○"
     assert body["params"]["credit_notice"] == "© 2026 権利者"
+
+
+def test_history_display_labels_are_saved_and_listed(
+    client, tmp_path, monkeypatch
+):
+    from soramimic_video import editor_io
+
+    setting = tmp_path / "setting.json"
+    setting.write_text(
+        json.dumps({
+            "wordlist": [{
+                "value": "STATIONS", "text": "駅名",
+                "filepath": "wordlists/stations.csv",
+            }]
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(editor_io, "SETTING_JSON", setting)
+    files = {"midi": ("furusato.mid", FAKE_MIDI, "audio/midi")}
+    response = client.post(
+        "/api/jobs", files=files,
+        data={"wordlist": "stations", "song_title": "ふるさと"},
+    )
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    body = wait_done(client, job_id)
+    assert body["song_label"] == "ふるさと"
+    assert body["wordlist_label"] == "駅名"
+    assert body["params"]["song_label"] == "ふるさと"
+    assert body["params"]["wordlist_label"] == "駅名"
+    listed = client.get("/api/jobs").json()[0]
+    assert listed["song_label"] == "ふるさと"
+    assert listed["wordlist_label"] == "駅名"
+    status = json.loads(
+        (client.app.state.manager.jobs[job_id].dir / api_mod.STATUS_FILENAME)
+        .read_text(encoding="utf-8")
+    )
+    assert status["params"]["song_label"] == "ふるさと"
+    assert status["params"]["wordlist_label"] == "駅名"
+
+
+def test_old_job_display_labels_use_safe_fallbacks(tmp_path, monkeypatch):
+    from soramimic_video import editor_io
+
+    setting = tmp_path / "setting.json"
+    setting.write_text(
+        json.dumps({
+            "wordlist": [{
+                "value": "STATIONS", "text": "駅名",
+                "filepath": "wordlists/stations.csv",
+            }]
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(editor_io, "SETTING_JSON", setting)
+    known = api_mod.Job(
+        id="old-known", dir=tmp_path,
+        params={"midi_filename": "furusato.mid", "wordlist": "stations"},
+    ).to_dict(with_log=False)
+    assert known["song_label"] == "ふるさと"
+    assert known["wordlist_label"] == "駅名"
+
+    unknown = api_mod.Job(
+        id="old-unknown", dir=tmp_path,
+        params={
+            "midi_filename": "個人名_発表会.mid",
+            "song_title": "個人名_発表会",
+            "wordlist": "private_raw_filename",
+            "where": "secret = true",
+        },
+    ).to_dict(with_log=False)
+    assert unknown["song_label"] == "曲"
+    assert unknown["wordlist_label"] == "単語リスト"
+    assert "個人名" not in unknown["song_label"]
+    assert "private_raw_filename" not in unknown["wordlist_label"]
+
+
+def test_preview_and_custom_wordlist_have_safe_display_labels():
+    assert api_mod.job_wordlist_label({"preview": 20}) == "歌声プレビュー"
+    assert api_mod.job_wordlist_label({
+        "wordlist": "someone_private_list", "wordlist_csv": "someone_private_list.csv"
+    }) == "自作リスト"
 
 
 def test_song_title_falls_back_to_midi_filename():
