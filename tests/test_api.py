@@ -856,8 +856,12 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_mod, "_run_synthesize", fake_synthesize)
     monkeypatch.setattr(mix_mod, "mix", fake_mix)
-    monkeypatch.setattr(video_mod, "planned_video_total_sec", lambda project: 10.0)
-    monkeypatch.setattr(video_mod, "actual_video_total_sec", lambda project, audio: 9.0)
+    monkeypatch.setattr(
+        video_mod, "planned_video_total_sec", lambda project, *args: 10.0
+    )
+    monkeypatch.setattr(
+        video_mod, "actual_video_total_sec", lambda project, audio, *args: 9.0
+    )
     monkeypatch.setattr(video_mod, "prepare_video", fake_prepare)
     monkeypatch.setattr(video_mod, "encode_silent_video", fake_encode)
     monkeypatch.setattr(video_mod, "attach_audio", fake_attach)
@@ -906,7 +910,9 @@ def test_run_pipeline_cleans_silent_video_when_audio_fails(tmp_path, monkeypatch
     monkeypatch.setattr(xfparse, "analyze_midi", lambda path: project)
     monkeypatch.setattr(editor_io, "import_editor", lambda *a, **k: None)
     monkeypatch.setattr(api_mod, "_run_synthesize", lambda *a, **k: None)
-    monkeypatch.setattr(video_mod, "planned_video_total_sec", lambda project: 10.0)
+    monkeypatch.setattr(
+        video_mod, "planned_video_total_sec", lambda project, *args: 10.0
+    )
     monkeypatch.setattr(video_mod, "prepare_video", lambda *a, **k: object())
 
     def fake_encode(prepared):
@@ -1314,6 +1320,7 @@ def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
                     "original_display_credit": "作者",
                     "original_credit": "作詞・作曲: 作者",
                     "credit_notice": "指定表記",
+                    "midi_end_credit": "MIDI: 制作者",
                 }
             ]
         ),
@@ -1330,6 +1337,41 @@ def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
     assert api_mod.original_credit_of(params) == "作詞・作曲: 作者"
     assert api_mod.original_display_credit_of(params) == "作者"
     assert api_mod.credit_notice_of(params) == "指定表記"
+    assert api_mod.midi_end_credit_of(params) == "MIDI: 制作者"
+    assert api_mod.midi_end_credit_of(
+        {"midi_filename": "uploaded.mid", "midi_end_credit": "偽の指定"}
+    ) == ""
+
+
+def test_sample_midi_credit_uses_server_snapshot_after_manifest_changes(
+    tmp_path, monkeypatch
+):
+    d = tmp_path / "samples"
+    d.mkdir()
+    manifest = d / "samples.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "midi_end_credit": "MIDI: 制作者",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {"sample_id": "licensed"}
+    params["sample_midi_end_credit"] = api_mod.midi_end_credit_of(params)
+
+    # 受付後にmanifestが更新されても、処理中ジョブの必須表記は変わらない。
+    manifest.write_text("[]", encoding="utf-8")
+    assert api_mod.midi_end_credit_of(params) == "MIDI: 制作者"
+    # 持ち込みMIDIが同名キーを紛れ込ませても帰属表記としては採用しない。
+    assert api_mod.midi_end_credit_of(
+        {"midi_filename": "uploaded.mid", "sample_midi_end_credit": "偽の指定"}
+    ) == ""
 
 
 def test_sample_manifest_credits_cannot_be_omitted_or_overridden(tmp_path, monkeypatch):
@@ -2067,7 +2109,8 @@ def test_index_html_editor_auto_import_checks_provenance():
 
     html = _index_html()
     prov = re.search(r"function editorProvenance\(\) \{.*?\n\}", html, re.S).group(0)
-    assert "song: midi ? `${midi.name}:${midi.size}` : \"\"," in prov
+    assert "midiSampleId ? `sample:${midiSampleId}`" in prov
+    assert "(midi ? `${midi.name}:${midi.size}` : \"\")" in prov
     assert 'wordlist: $("wordlist").value.trim(),' in prov
     assert 'where: $("where").value.trim(),' in prov
     assert "params: buildConvertParams()," in prov

@@ -213,40 +213,54 @@ def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
     return name
 
 
-def require_launch_midi(filename: str | None, data: bytes) -> str | None:
-    """Simple UIのMIDIをカタログ同梱ファイルの名前とSHA-256で照合する。"""
-    if not is_simple_ui():
-        return None
-    supplied_name = filename or ""
-    supplied_digest = hashlib.sha256(data).digest()
-    for sample_id in sorted(launch_sample_ids()):
-        expected_name = f"{sample_id}.mid"
-        if supplied_name != expected_name:
-            continue
-        path = samples_dir() / expected_name
-        try:
-            expected_digest = hashlib.sha256(path.read_bytes()).digest()
-        except OSError:
-            break
-        if secrets.compare_digest(supplied_digest, expected_digest):
-            return sample_id
-    raise HTTPException(
-        status_code=422,
-        detail="このMIDIファイルは現在利用できません",
-    )
-
-
 async def read_midi_upload(midi: UploadFile) -> bytes:
-    """Simple UIでは最大の同梱MIDIを超えた時点で読み止め、巨大入力を保持しない。"""
-    if not is_simple_ui():
-        return await midi.read()
-    sizes: list[int] = []
-    for sample_id in launch_sample_ids():
-        try:
-            sizes.append((samples_dir() / f"{sample_id}.mid").stat().st_size)
-        except OSError:
-            continue
-    return await midi.read(max(sizes, default=0) + 1)
+    """アップロードされたMIDIを読む。Simple UIでは持ち込み自体を受け付けない。"""
+    return await midi.read()
+
+
+def resolve_sample_midi(sample_id: str) -> tuple[str, bytes]:
+    """表示中のmanifestからサンプルMIDIを安全に解決する。"""
+    normalized = sample_id.strip()
+    visible_ids = {
+        str(entry["id"])
+        for entry in visible_samples()
+        if entry.get("id")
+    }
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_-]+", normalized)
+        or normalized not in visible_ids
+    ):
+        raise HTTPException(status_code=422, detail="このサンプル曲は現在利用できません")
+    path = samples_dir() / f"{normalized}.mid"
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        logger.warning("サンプルMIDIがありません: %s", path)
+        raise HTTPException(
+            status_code=422, detail="選択した曲のMIDIが見つかりません"
+        ) from exc
+    return normalized, data
+
+
+async def resolve_midi_input(
+    midi: UploadFile | None, sample_id: str
+) -> tuple[bytes, str | None, str]:
+    """サンプルIDまたは持ち込みファイルの、どちらか一方をMIDIへ解決する。"""
+    normalized = sample_id.strip()
+    has_upload = midi is not None and bool(midi.filename)
+    if normalized and has_upload:
+        raise HTTPException(
+            status_code=422,
+            detail="サンプル曲とMIDIファイルは同時に指定できません",
+        )
+    if normalized:
+        resolved_id, data = resolve_sample_midi(normalized)
+        return data, resolved_id, f"{resolved_id}.mid"
+    if is_simple_ui():
+        raise HTTPException(status_code=422, detail="サンプル曲を選んでください")
+    if not has_upload or midi is None:
+        raise HTTPException(status_code=422, detail="MIDIファイルがありません")
+    return await read_midi_upload(midi), None, midi.filename or "input.mid"
 
 
 def require_launch_lyrics(sample_id: str | None, lyrics: str) -> str:
@@ -735,6 +749,9 @@ def song_title_of(params: dict[str, Any]) -> str:
 
 def _sample_entry_of(params: dict[str, Any]) -> dict[str, Any] | None:
     """ジョブが同梱サンプル曲ならmanifestの1件。自作MIDIならNone。"""
+    resolved_id = str(params.get("sample_id") or "").strip()
+    if resolved_id:
+        return sample_entry(resolved_id)
     stem = re.sub(r"\.[^.]*$", "", str(params.get("midi_filename") or "")).strip()
     entry = sample_entry(stem) if stem else None
     if entry is None:
@@ -827,6 +844,21 @@ def credit_notice_of(params: dict[str, Any]) -> str:
     if entry is not None and entry.get("credit_notice"):
         return str(entry["credit_notice"]).strip()
     return str(params.get("credit_notice") or "").strip()
+
+
+def midi_end_credit_of(params: dict[str, Any]) -> str:
+    """サンプルMIDI制作者のクレジット。manifest以外からは受け付けない。"""
+    # ジョブ受付時にサーバーが確定した値は、その後のmanifest更新やワーカー側の
+    # 読み直しに左右されないよう優先する。sample_id はフォーム値をそのまま保存せず
+    # resolve_sample_midi() で解決したIDだけが入るため、持ち込みMIDIからは使えない。
+    if str(params.get("sample_id") or "").strip():
+        saved = str(params.get("sample_midi_end_credit") or "").strip()
+        if saved:
+            return saved
+    entry = _sample_entry_of(params)
+    if entry is None:
+        return ""
+    return str(entry.get("midi_end_credit") or "").strip()
 
 
 def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
@@ -1038,6 +1070,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         "original_credit": original_credit_of(job.params),
         "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
+        "midi_end_credit": midi_end_credit_of(job.params),
     }
 
     if not config.get("parallel_video", True):
@@ -1051,7 +1084,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     # 映像側はキー変更(song.key_shift)を参照しない。合成側がprojectを更新しても
     # 競合しないよう、変換直後のsnapshotを別スレッドへ渡す。
     visual_project = copy.deepcopy(project)
-    planned_total = planned_video_total_sec(visual_project)
+    planned_total = planned_video_total_sec(
+        visual_project, video_options["midi_end_credit"]
+    )
     abort = threading.Event()
     visual_failure: list[Exception] = []
     silent_video: Path | None = None
@@ -1093,7 +1128,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
         with _stage(job, "video"):
             silent_video = future.result()
-            actual_total = actual_video_total_sec(project, audio_path)
+            actual_total = actual_video_total_sec(
+                project, audio_path, video_options["midi_end_credit"]
+            )
             frame_sec = 1.0 / int(video_options["fps"])
             if actual_total > planned_total + frame_sec:
                 # 予定より長い音声をstream copyで延ばすことはできない。品質を
@@ -2033,10 +2070,13 @@ def create_app(
 
     @app.get("/api/samples")
     def list_samples() -> list[dict[str, Any]]:
-        return visible_samples()
+        # エンドロール専用の内部指定はブラウザへ渡さず、生成時にmanifestから解決する。
+        return [
+            {key: value for key, value in entry.items() if key != "midi_end_credit"}
+            for entry in visible_samples()
+        ]
 
-    # サンプル曲は作り直されることがある(同じURLで中身が変わる)。ブラウザが
-    # 古い版を使い回して「更新前の曲」で生成してしまわないよう、毎回問い合わせさせる。
+    # サンプル歌詞は作り直されることがあるため、ブラウザに古い版を使い回させない。
     SAMPLE_CACHE_HEADERS = {"Cache-Control": "no-cache"}
 
     def _sample_file(sample_id: str, name: str) -> Path:
@@ -2053,14 +2093,15 @@ def create_app(
             )
         return path
 
-    @app.get("/api/sample/{sample_id}/midi")
-    def sample_midi(sample_id: str) -> FileResponse:
-        return FileResponse(
-            _sample_file(sample_id, f"{sample_id}.mid"),
-            media_type="audio/midi",
-            filename=f"{sample_id}.mid",
-            headers=SAMPLE_CACHE_HEADERS,
-        )
+    @app.api_route(
+        "/api/sample/{sample_id}/midi",
+        methods=["GET", "HEAD"],
+        include_in_schema=False,
+    )
+    def unavailable_sample_midi(sample_id: str) -> Response:
+        """サンプルMIDIは常にサーバー内で処理し、HTTPでは配信しない。"""
+        del sample_id
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/sample/{sample_id}/lyrics")
     def sample_lyrics(sample_id: str) -> FileResponse:
@@ -2481,7 +2522,8 @@ def create_app(
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])
     async def create_job(
         request: Request,
-        midi: UploadFile,
+        midi: UploadFile | None = File(None),
+        sample_id: str = Form(""),
         editor: UploadFile | None = None,
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
         wordlist_csv: UploadFile | None = None,
@@ -2521,11 +2563,15 @@ def create_app(
     ) -> dict[str, Any]:
         _check_turnstile(request, turnstile_token)
         quota_exempt = await _quota_exempt(request)
-        midi_bytes = await read_midi_upload(midi)
+        midi_bytes, launch_sample_id, midi_filename = await resolve_midi_input(
+            midi, sample_id
+        )
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
-        launch_sample_id = require_launch_midi(midi.filename, midi_bytes)
         lyrics = require_launch_lyrics(launch_sample_id, lyrics)
+        if launch_sample_id:
+            entry = sample_entry(launch_sample_id) or {}
+            song_title = str(entry.get("title") or launch_sample_id)
         if is_simple_ui() and (
             (editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
@@ -2703,7 +2749,8 @@ def create_app(
             "layout": layout,
             "subtitle_granularity": subtitle_granularity.strip(),
             "parody_source": "editor" if editor_bytes else "convert",
-            "midi_filename": midi.filename,
+            "midi_filename": midi_filename,
+            "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),
             "original_credit": original_credit.strip(),
             "credit_notice": credit_notice.strip(),
@@ -2728,6 +2775,10 @@ def create_app(
         # status.json の params に保存されるので、カタログ更新後も表示が変わらない。
         params["song_label"] = new_job_song_label(params)
         params["wordlist_label"] = job_wordlist_label(params)
+        # レンダリング必須のサンプル帰属表記も受付時に確定する。ワーカー開始後に
+        # ローカルmanifestを読み直して空になると、完成動画から表記が欠落するため。
+        if params["sample_id"]:
+            params["sample_midi_end_credit"] = midi_end_credit_of(params)
         with quota_submit_lock:
             _check_public_limits(
                 owner,
@@ -2928,7 +2979,11 @@ def create_app(
         )
 
     @app.post("/api/midi-check", dependencies=[Depends(_require_api_key)])
-    async def midi_check(midi: UploadFile, lyrics: str = Form("")) -> dict[str, Any]:
+    async def midi_check(
+        midi: UploadFile | None = File(None),
+        sample_id: str = Form(""),
+        lyrics: str = Form(""),
+    ) -> dict[str, Any]:
         """選ばれたMIDIに歌詞が入っているかを、生成に進む前にその場で調べる。
 
         この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱・空耳変換の
@@ -2952,10 +3007,11 @@ def create_app(
         from .align import align_lines
         from .xfparse import analyze_midi
 
-        midi_bytes = await read_midi_upload(midi)
+        midi_bytes, launch_sample_id, _midi_filename = await resolve_midi_input(
+            midi, sample_id
+        )
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
-        launch_sample_id = require_launch_midi(midi.filename, midi_bytes)
         lyrics = require_launch_lyrics(launch_sample_id, lyrics)
         lyric_lines = [ln.strip() for ln in lyrics.splitlines()]
         lyric_lines = [ln for ln in lyric_lines if ln]
@@ -2990,7 +3046,8 @@ def create_app(
 
     @app.post("/api/editor-session", dependencies=[Depends(_require_api_key)])
     async def editor_session(
-        midi: UploadFile,
+        midi: UploadFile | None = File(None),
+        sample_id: str = Form(""),
         lyrics: str = Form(""),
         wordlist: str = Form(""),
         where: str = Form(""),
@@ -3051,7 +3108,9 @@ def create_app(
         )
         from .xfparse import analyze_midi
 
-        midi_bytes = await midi.read()
+        midi_bytes, _resolved_sample_id, _midi_filename = await resolve_midi_input(
+            midi, sample_id
+        )
         if not midi_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
         custom: wordlist_zip_mod.WordlistZip | None = None
