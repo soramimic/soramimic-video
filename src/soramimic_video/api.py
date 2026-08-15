@@ -13,7 +13,7 @@ GET /api/jobs/{id}/video で取得する。GET / に簡易Web UIを同梱。
 SORAMIMIC_PUBLIC=1 を設定すると「公開モード」になり、匿名セッション
 (HttpOnly cookie)ごとにジョブを分離し、キュー上限・日次クォータ・
 曲長上限で投入を制限する。環境変数を何も設定しなければ従来と同じ挙動
-(全ジョブが全員から見え、制限なし)。詳細は docs/public-mode.md を参照。
+(全ジョブが全員から見え、制限なし)。
 """
 
 from __future__ import annotations
