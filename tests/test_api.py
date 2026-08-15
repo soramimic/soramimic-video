@@ -1343,6 +1343,37 @@ def test_sample_credits_are_resolved_from_manifest(tmp_path, monkeypatch):
     ) == ""
 
 
+def test_sample_midi_credit_uses_server_snapshot_after_manifest_changes(
+    tmp_path, monkeypatch
+):
+    d = tmp_path / "samples"
+    d.mkdir()
+    manifest = d / "samples.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "licensed",
+                    "title": "権利曲",
+                    "midi_end_credit": "MIDI: 制作者",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(d))
+    params = {"sample_id": "licensed"}
+    params["sample_midi_end_credit"] = api_mod.midi_end_credit_of(params)
+
+    # 受付後にmanifestが更新されても、処理中ジョブの必須表記は変わらない。
+    manifest.write_text("[]", encoding="utf-8")
+    assert api_mod.midi_end_credit_of(params) == "MIDI: 制作者"
+    # 持ち込みMIDIが同名キーを紛れ込ませても帰属表記としては採用しない。
+    assert api_mod.midi_end_credit_of(
+        {"midi_filename": "uploaded.mid", "sample_midi_end_credit": "偽の指定"}
+    ) == ""
+
+
 def test_sample_manifest_credits_cannot_be_omitted_or_overridden(tmp_path, monkeypatch):
     d = tmp_path / "samples"
     d.mkdir()
