@@ -219,6 +219,28 @@ def _display_value(column: str, value: object) -> object:
     """CSVの保存形式を変えず、カード表示向けに値を整える。"""
     if column == "team":
         return re.sub(r"(?<=[^\x00-\x7f])-(?=[^\x00-\x7f])", "・", str(value))
+    if column == "subscribers":
+        try:
+            count = int(str(value).replace(",", ""))
+        except ValueError:
+            return value
+        if count < 0:
+            return value
+        if count < 10_000:
+            return f"{count:,}人"
+        divisor, suffix = (100_000_000, "億人") if count >= 100_000_000 else (10_000, "万人")
+        scaled = count / divisor
+        decimals = 0 if scaled >= 100 else 1 if scaled >= 10 else 2
+        number = f"{scaled:.{decimals}f}"
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        return f"{number}{suffix}"
+    if column == "subscribers_as_of":
+        match = re.fullmatch(r"(\d{4})-(\d{2})(?:-(\d{2}))?", str(value))
+        if match:
+            year, month, day = match.groups()
+            result = f"{int(year)}年{int(month)}月"
+            return f"{result}{int(day)}日" if day else result
     return value
 
 

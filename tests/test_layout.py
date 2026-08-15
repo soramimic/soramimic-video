@@ -124,18 +124,50 @@ def test_gimukyoiku_card_displays_subject_without_school_level():
     assert "国語" in multiple
 
 
-def test_youtuber_card_uses_org_debut_and_description():
+def test_youtuber_card_groups_channel_activity_and_subscribers():
     layout = load_layout("youtuber_card")
     texts = layout.render_texts({
         "original": "配信者",
-        "org": "所属グループ",
+        "channel": "配信者チャンネル",
         "debut_year": "2020",
+        "subscribers": "1210000",
+        "subscribers_as_of": "2026-07-30",
         "description": "ゲーム実況とライブ配信で活動するYouTuber。",
     })
     assert "配信者" in texts
-    assert "所属グループ" in texts
-    assert "2020年デビュー" in texts
+    assert "YOUTUBE CHANNEL" in texts
+    assert "配信者チャンネル" in texts
+    assert "活動開始　2020年" in texts
+    assert "登録者　121万人" in texts
+    assert "2026年7月30日時点" in texts
     assert "ゲーム実況とライブ配信で活動するYouTuber。" in texts
+
+
+def test_youtuber_card_formats_subscriber_count_by_japanese_units():
+    layout = load_layout("youtuber_card")
+    cases = {
+        "901000": "登録者　90.1万人",
+        "45400": "登録者　4.54万人",
+        "19800000": "登録者　1980万人",
+        "1234": "登録者　1,234人",
+        "121000000": "登録者　1.21億人",
+    }
+    for raw, expected in cases.items():
+        texts = layout.render_texts({"original": "配信者", "subscribers": raw})
+        assert expected in texts
+
+
+def test_youtuber_card_hides_missing_channel_snapshot_fields():
+    layout = load_layout("youtuber_card")
+    texts = layout.render_texts({
+        "original": "配信者",
+        "channel": "NA",
+        "debut_year": "NA",
+        "subscribers": "NA",
+        "subscribers_as_of": "NA",
+        "description": "活動内容。",
+    })
+    assert texts == ["配信者", "", "", "", "", "", "活動内容。"]
 
 
 def test_info_card_uses_description_with_player_and_station_details():
