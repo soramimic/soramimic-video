@@ -790,6 +790,7 @@ def section_frame_data(
     original_display_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
+    midi_end_credit: str = "",
 ) -> dict:
     """区間フレームのテンプレートに渡す値(idle_frame_data に区間固有の列を足す)。
 
@@ -805,6 +806,7 @@ def section_frame_data(
     - original_song_credit: 元曲名と表記を「 — 」でつないた簡潔な表示
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
+    - midi_end_credit: 最終クレジットにだけ載せるMIDI制作者表記
     - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
       クレジットページで使う。表記が要らない合成では空文字なので、require で
       その行ごと出さない
@@ -813,6 +815,7 @@ def section_frame_data(
     display_credit = (original_display_credit or "").strip()
     author = (original_credit or "").strip()
     notice = (credit_notice or "").strip()
+    midi_credit = (midi_end_credit or "").strip()
     # 権利者指定表記があるプリセットはそれを優先し、作者詳細との
     # 二重表示を避ける。指定がないアップロード曲は従来どおり著作者表記を残す。
     compact_credit = display_credit or notice or author
@@ -832,6 +835,7 @@ def section_frame_data(
             "original_display_credit": display_credit,
             "original_credit": author,
             "credit_notice": notice,
+            "midi_end_credit": midi_credit,
         }
     )
     return data
@@ -852,6 +856,7 @@ def build_section_cues(
     original_display_credit: str = "",
     original_credit: str = "",
     credit_notice: str = "",
+    midi_end_credit: str = "",
 ) -> list[ImageCue]:
     """前奏・間奏・後奏の専用フレームをキューにする(専用定義が無い区間は空)。
 
@@ -872,8 +877,9 @@ def build_section_cues(
         if sec.kind == "interlude" and sec.duration < INTERLUDE_MIN_SEC:
             continue
         if sec.kind == "outro":
-            # 後奏が短い曲・使用単語が取れない曲ではエンドロールを出さない
-            if sec.duration < OUTRO_MIN_SEC or not words:
+            # 後奏が短い曲ではエンドロールを出さない。使用単語が無くても
+            # MIDI表記があれば最終クレジットページだけは出す。
+            if sec.duration < OUTRO_MIN_SEC or (not words and not midi_end_credit.strip()):
                 continue
             show_credits = layout.has_section("credits")
             # クレジットページに最低1枚ぶんを残し、残りを単語ページに割り振る
@@ -890,6 +896,7 @@ def build_section_cues(
                     original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
+                    midi_end_credit=midi_end_credit,
                 )
                 frame = render_section_frame(
                     layout, data, width, height, frames_dir, "outro"
@@ -920,6 +927,7 @@ def build_section_cues(
                     original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
+                    midi_end_credit=midi_end_credit,
                 )
                 frame = render_section_frame(
                     layout, data, width, height, frames_dir, "credits"
@@ -1757,14 +1765,19 @@ def _sung_end_sec(project: Project) -> float:
     return max((n.end_sec for n in project.notes), default=0.0) + 3.0
 
 
-def actual_video_total_sec(project: Project, audio_path: Path) -> float:
+def actual_video_total_sec(
+    project: Project, audio_path: Path, midi_end_credit: str = ""
+) -> float:
     """完成音声を基準に、従来のmake_videoと同じ最終尺を返す。"""
     sung_end = _sung_end_sec(project)
     total = _resolve_total_sec(sung_end, _audio_duration_sec(audio_path))
-    return extend_for_endroll(total, sung_end, used_words(project))
+    words = used_words(project)
+    return extend_for_endroll(
+        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+    )
 
 
-def planned_video_total_sec(project: Project) -> float:
+def planned_video_total_sec(project: Project, midi_end_credit: str = "") -> float:
     """音声完成前に安全側で見積もる無音動画の尺。
 
     MIDI伴奏はfluidsynthのリバーブ等でイベント終端より数秒長くなる。
@@ -1786,7 +1799,10 @@ def planned_video_total_sec(project: Project) -> float:
         except (OSError, ValueError, TypeError) as exc:
             logger.warning("MIDIから動画予定尺を取得できませんでした: %s", exc)
     total = _resolve_total_sec(sung_end, expected_audio)
-    return extend_for_endroll(total, sung_end, used_words(project))
+    words = used_words(project)
+    return extend_for_endroll(
+        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+    )
 
 
 def prepare_video(
@@ -1806,6 +1822,7 @@ def prepare_video(
     original_credit: str = "",
     original_display_credit: str = "",
     credit_notice: str = "",
+    midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> PreparedVideo:
     """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
@@ -1824,7 +1841,14 @@ def prepare_video(
     work.mkdir(parents=True, exist_ok=True)
 
     sung_end = _sung_end_sec(project)
-    minimum = extend_for_endroll(sung_end, sung_end, used_words(project))
+    endroll_words = used_words(project)
+    minimum = extend_for_endroll(
+        sung_end,
+        sung_end,
+        endroll_words or ([""] if midi_end_credit.strip() else []),
+    )
+    if midi_end_credit.strip():
+        total_sec = max(total_sec, minimum)
     if total_sec + 1e-6 < minimum:
         raise ValueError(f"動画予定尺が短すぎます({total_sec:.3f} < {minimum:.3f})")
     if total_sec > sung_end:
@@ -1858,6 +1882,7 @@ def prepare_video(
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
+        midi_end_credit=midi_end_credit.strip(),
     )
     if section_cues:
         logger.info("間奏・後奏のフレーム: %d件", len(section_cues))
@@ -1940,6 +1965,7 @@ def make_video(
     original_credit: str = "",
     original_display_credit: str = "",
     credit_notice: str = "",
+    midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
 ) -> Path:
     if fps <= 0:
@@ -1972,7 +1998,12 @@ def make_video(
     sung_end_sec = max(n.end_sec for n in project.notes) + 3.0
     total_sec = _resolve_total_sec(sung_end_sec, _audio_duration_sec(audio_path))
     # 後奏が短い曲は末尾に時間を足してエンドロール枠を作る(足したぶんは無音)
-    extended_sec = extend_for_endroll(total_sec, sung_end_sec, used_words(project))
+    endroll_words = used_words(project)
+    extended_sec = extend_for_endroll(
+        total_sec,
+        sung_end_sec,
+        endroll_words or ([""] if midi_end_credit.strip() else []),
+    )
     if extended_sec > total_sec:
         logger.info(
             "後奏が短いため動画を%.1f秒延長してエンドロールを出します",
@@ -2014,6 +2045,7 @@ def make_video(
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
+        midi_end_credit=midi_end_credit.strip(),
     )
     if section_cues:
         logger.info("間奏・後奏のフレーム: %d件", len(section_cues))
