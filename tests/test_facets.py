@@ -265,7 +265,7 @@ def _select(csv_path: Path, where: str) -> list[tuple[str, ...]]:
 
 
 def test_new_where_selects_the_same_rows_as_the_old_one():
-    """名前付きリスト全18件で、変更前後の where が同じ行を選ぶ。
+    """名前付きリスト全19件で、変更前後の where が同じ行を選ぶ。
 
     形をそろえるにあたって、括弧を足したこと・全値ONのファセットも節に
     することにしたことで**出力の中身が変わっていない**ことを固定する
@@ -275,7 +275,7 @@ def test_new_where_selects_the_same_rows_as_the_old_one():
     if not (WORDLISTS / "baseball.csv").is_file():
         pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
     entries = _conf_entries()
-    assert len(entries) == 18, f"conf の単語リスト数が変わった: {len(entries)}件"
+    assert len(entries) == 19, f"conf の単語リスト数が変わった: {len(entries)}件"
     for entry in entries:
         csv_path = WORDLISTS / Path(entry["filepath"]).name
         old, new = _legacy_default_where(entry), default_where(entry)
