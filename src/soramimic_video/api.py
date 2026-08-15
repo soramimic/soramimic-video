@@ -1077,7 +1077,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     # 映像側はキー変更(song.key_shift)を参照しない。合成側がprojectを更新しても
     # 競合しないよう、変換直後のsnapshotを別スレッドへ渡す。
     visual_project = copy.deepcopy(project)
-    planned_total = planned_video_total_sec(visual_project)
+    planned_total = planned_video_total_sec(
+        visual_project, video_options["midi_end_credit"]
+    )
     abort = threading.Event()
     visual_failure: list[Exception] = []
     silent_video: Path | None = None
@@ -1119,7 +1121,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
         with _stage(job, "video"):
             silent_video = future.result()
-            actual_total = actual_video_total_sec(project, audio_path)
+            actual_total = actual_video_total_sec(
+                project, audio_path, video_options["midi_end_credit"]
+            )
             frame_sec = 1.0 / int(video_options["fps"])
             if actual_total > planned_total + frame_sec:
                 # 予定より長い音声をstream copyで延ばすことはできない。品質を

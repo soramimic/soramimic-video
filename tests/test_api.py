@@ -856,8 +856,12 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_mod, "_run_synthesize", fake_synthesize)
     monkeypatch.setattr(mix_mod, "mix", fake_mix)
-    monkeypatch.setattr(video_mod, "planned_video_total_sec", lambda project: 10.0)
-    monkeypatch.setattr(video_mod, "actual_video_total_sec", lambda project, audio: 9.0)
+    monkeypatch.setattr(
+        video_mod, "planned_video_total_sec", lambda project, *args: 10.0
+    )
+    monkeypatch.setattr(
+        video_mod, "actual_video_total_sec", lambda project, audio, *args: 9.0
+    )
     monkeypatch.setattr(video_mod, "prepare_video", fake_prepare)
     monkeypatch.setattr(video_mod, "encode_silent_video", fake_encode)
     monkeypatch.setattr(video_mod, "attach_audio", fake_attach)
@@ -906,7 +910,9 @@ def test_run_pipeline_cleans_silent_video_when_audio_fails(tmp_path, monkeypatch
     monkeypatch.setattr(xfparse, "analyze_midi", lambda path: project)
     monkeypatch.setattr(editor_io, "import_editor", lambda *a, **k: None)
     monkeypatch.setattr(api_mod, "_run_synthesize", lambda *a, **k: None)
-    monkeypatch.setattr(video_mod, "planned_video_total_sec", lambda project: 10.0)
+    monkeypatch.setattr(
+        video_mod, "planned_video_total_sec", lambda project, *args: 10.0
+    )
     monkeypatch.setattr(video_mod, "prepare_video", lambda *a, **k: object())
 
     def fake_encode(prepared):
