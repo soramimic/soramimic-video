@@ -122,6 +122,7 @@
     - original_song_credit: 元曲名と指定クレジットを「 — 」でつないた簡潔な表示
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
+    - midi_end_credit: MIDI制作者の表記。最終creditsページでのみ使う
     - synth_credit: 歌声合成側のクレジット表記(「VOICEVOX:四国めたん」など)。
       クレジットページで使う。表記が要らない合成では空なので、その行の要素には
       "require": "synth_credit" を付けて丸ごと出さないようにする
