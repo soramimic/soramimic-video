@@ -167,6 +167,8 @@ def test_history_uses_cards_and_only_safe_display_fields():
     card = _function_body(script, "function historyCard(job, index)")
     assert 'document.createElement("div")' in load
     assert 'list.className = "history-list"' in load
+    assert 'mediaSlot.className = "history-media"' in card
+    assert "history-player" not in card
     assert "<table" not in load
     assert "job.params" not in card
     assert "job.id" not in card
@@ -218,11 +220,14 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
           textContent: "閉じる", classList: {{ contains: (name) => name === "history-play" }},
           setAttribute(name, value) {{ calls.push(`button:${{name}}=${{value}}`); }},
         }};
-        const host = {{ hidden: false, replaceChildren() {{ calls.push("clear-host"); }} }};
+        const thumb = {{ name: "thumbnail" }};
+        const slot = {{
+          replaceChildren(child) {{ calls.push("restore:" + child.name); }},
+        }};
         const URL = {{ revokeObjectURL(url) {{ calls.push("revoke:" + url); }} }};
         let aborted = 0;
         let activeHistoryPlayback = {{
-          media, host, triggers: [play], objectUrl: "blob:history",
+          media, slot, thumb, triggers: [play], objectUrl: "blob:history",
           abort: {{ abort() {{ aborted += 1; }} }},
         }};
         {dispose}
@@ -231,8 +236,8 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
         assert.deepEqual(calls.slice(0, 5),
           ["pause", "remove:src", "remove:poster", "load", "remove-element"]);
         assert.ok(calls.indexOf("revoke:blob:history") > calls.indexOf("remove-element"));
+        assert.ok(calls.indexOf("restore:thumbnail") > calls.indexOf("revoke:blob:history"));
         assert.equal(play.textContent, "再生");
-        assert.equal(host.hidden, true);
         assert.equal(activeHistoryPlayback, null);
         """
     )
@@ -248,6 +253,18 @@ def test_history_switch_disposes_before_making_a_fresh_media_element():
     assert "prepareVideoShare" not in playback
     assert "resetVideoSharePreparation" not in playback
     assert "sharePlaybackUrl" not in playback
+    assert 'slot.replaceChildren(media)' in playback
+    dispose = _function_body(_script(), "function disposeHistoryPlayback()")
+    assert 'active.slot.replaceChildren(active.thumb)' in dispose
+
+
+def test_history_player_replaces_the_thumbnail_in_the_same_aspect_ratio_slot():
+    css = _markup()
+    assert ".history-media {" in css
+    assert "aspect-ratio: 16 / 9" in css
+    assert ".history-media video {" in css
+    assert ".history-media audio {" in css
+    assert ".history-player {" not in css
 
 
 def test_completed_audio_uses_the_inline_playback_endpoint():
