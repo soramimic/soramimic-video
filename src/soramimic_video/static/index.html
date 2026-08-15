@@ -305,13 +305,21 @@
     background: var(--panel-2);
   }
   .history-main { display: grid; grid-template-columns: minmax(8rem, 36%) 1fr; min-width: 0; }
+  .history-media {
+    position: relative; display: flex; min-width: 0; aspect-ratio: 16 / 9;
+    align-items: center; justify-content: center; overflow: hidden; background: #111827;
+  }
   .history-thumb {
-    display: flex; width: 100%; min-width: 0; aspect-ratio: 16 / 9; margin: 0; padding: 0;
+    display: flex; width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0;
     align-items: center; justify-content: center; overflow: hidden; border: 0; border-radius: 0;
     background: #111827; color: #cbd5e1; font-weight: 600;
   }
   button.history-thumb { cursor: pointer; }
   .history-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .history-media video {
+    display: block; width: 100%; height: 100%; object-fit: contain; background: #000;
+  }
+  .history-media audio { display: block; width: calc(100% - 1rem); height: 3.5rem; }
   .history-copy { min-width: 0; padding: .7rem; }
   .history-copy h3 { margin: 0 0 .25rem; font-size: 1rem; overflow-wrap: anywhere; }
   .history-meta { margin: .18rem 0; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
@@ -322,12 +330,12 @@
   .history-status-done { color: var(--accent); }
   .history-status-error { color: var(--danger); }
   .history-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .55rem; }
-  .history-player { padding: 0 .7rem .7rem; }
-  .history-player video, .history-player audio { display: block; width: 100%; max-height: 70vh; }
-  .history-player-msg { margin: .3rem 0 0; color: var(--danger); font-size: .82rem; }
+  .history-player-msg {
+    position: absolute; right: .5rem; bottom: .5rem; left: .5rem; margin: 0; padding: .35rem;
+    border-radius: 6px; background: #111827dd; color: #fff; font-size: .78rem; text-align: center;
+  }
   @media (max-width: 30rem) {
     .history-main { grid-template-columns: 1fr; }
-    .history-thumb { aspect-ratio: 16 / 9; }
     .history-actions > button { flex: 1 1 auto; }
   }
   /* ---- 替え歌エディタの全画面モーダル ---- */
@@ -1552,6 +1560,8 @@ function historyCard(job, index) {
   card.className = "history-item";
   const main = document.createElement("div");
   main.className = "history-main";
+  const mediaSlot = document.createElement("div");
+  mediaSlot.className = "history-media";
   const complete = job.status === "done" && !!job.playback_url;
   const thumb = document.createElement(complete ? "button" : "div");
   thumb.className = "history-thumb";
@@ -1603,11 +1613,9 @@ function historyCard(job, index) {
     actions.appendChild(download);
     copy.appendChild(actions);
   }
-  const player = document.createElement("div");
-  player.className = "history-player";
-  player.hidden = true;
-  card.append(main, player);
-  main.append(thumb, copy);
+  mediaSlot.appendChild(thumb);
+  main.append(mediaSlot, copy);
+  card.appendChild(main);
   return card;
 }
 
@@ -1621,8 +1629,7 @@ function disposeHistoryPlayback() {
   active.media.load();
   active.media.remove();
   if (active.objectUrl) URL.revokeObjectURL(active.objectUrl);
-  active.host.hidden = true;
-  active.host.replaceChildren();
+  active.slot.replaceChildren(active.thumb);
   active.triggers.forEach((button) => {
     button.setAttribute("aria-expanded", "false");
     if (button.classList.contains("history-play")) button.textContent = "再生";
@@ -1641,7 +1648,8 @@ async function toggleHistoryPlayback(index, trigger) {
   const job = historyJobs[index];
   if (!job || !job.playback_url) return;
   const card = trigger.closest(".history-item");
-  const host = card.querySelector(".history-player");
+  const slot = card.querySelector(".history-media");
+  const thumb = slot.querySelector(".history-thumb");
   const media = document.createElement(job.result_kind === "audio" ? "audio" : "video");
   media.controls = true;
   media.preload = "none";
@@ -1655,9 +1663,8 @@ async function toggleHistoryPlayback(index, trigger) {
     button.setAttribute("aria-expanded", "true");
     if (button.classList.contains("history-play")) button.textContent = "閉じる";
   });
-  host.hidden = false;
-  host.replaceChildren(media);
-  const active = { index, media, host, triggers, abort: null, objectUrl: "" };
+  slot.replaceChildren(media);
+  const active = { index, media, slot, thumb, triggers, abort: null, objectUrl: "" };
   activeHistoryPlayback = active;
   try {
     if (apiKey()) {
@@ -1679,7 +1686,7 @@ async function toggleHistoryPlayback(index, trigger) {
     const msg = document.createElement("p");
     msg.className = "history-player-msg";
     msg.textContent = "この端末では再生を開始できませんでした。ダウンロードをお試しください。";
-    host.appendChild(msg);
+    slot.appendChild(msg);
   }
 }
 
