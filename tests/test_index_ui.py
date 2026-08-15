@@ -147,6 +147,17 @@ def test_simple_ui_hides_advanced_and_filters_wordlists():
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
 
 
+def test_plant_wordlist_is_hidden_from_every_selection_ui():
+    """植物データ/APIは残し、品質確認中はUIの候補だけから除外する。"""
+    script = _script()
+    assert 'const HIDDEN_UI_WORDLISTS = new Set(["plant"]);' in script
+    body = _function_body(script, "async function loadWordlistSelect(editorAvailable)")
+    assert "return !HIDDEN_UI_WORDLISTS.has(name);" in body
+    restore = _function_body(script, "async function doRestoreForm()")
+    assert 'HIDDEN_UI_WORDLISTS.has(state.wordlist || "")' in restore
+    assert 'state.wordlist = $("wordlist").value;' in restore
+
+
 def test_simple_ui_hides_the_irrelevant_song_length_limit():
     """同梱曲しか選べない初回公開版では、持ち込みMIDI向けの曲長案内を出さない。"""
     body = _function_body(_script(), "function setupPublicMode(conf)")
