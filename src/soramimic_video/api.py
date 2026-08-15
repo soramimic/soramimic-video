@@ -2086,6 +2086,16 @@ def create_app(
             )
         return path
 
+    @app.api_route(
+        "/api/sample/{sample_id}/midi",
+        methods=["GET", "HEAD"],
+        include_in_schema=False,
+    )
+    def unavailable_sample_midi(sample_id: str) -> Response:
+        """サンプルMIDIは常にサーバー内で処理し、HTTPでは配信しない。"""
+        del sample_id
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
+
     @app.get("/api/sample/{sample_id}/lyrics")
     def sample_lyrics(sample_id: str) -> FileResponse:
         return FileResponse(
