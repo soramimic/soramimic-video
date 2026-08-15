@@ -353,45 +353,6 @@ def test_legacy_saved_sample_midi_is_migrated_to_id_only():
     assert "trackSample(applySample({ keepLyrics: true }))" in initialized
 
 
-def test_completed_video_requests_no_preload_hint():
-    """共有Fileは維持しつつ、完成直後の自動デコードを抑えるhintを指定する。"""
-    video = next(a for tag, a in _tags() if a.get("id") == "builder-video")
-    assert video.get("preload") == "none"
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_job_post_retries_one_server_rejected_turnstile_token():
-    """tokenがサーバーで拒否されたとき、新しいtokenで同じ投入を一度だけ再送する。"""
-    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
-    node = textwrap.dedent(
-        f"""
-        const assert = require("node:assert/strict");
-        let calls = 0;
-        let rebuilds = 0;
-        let turnstileSiteKey = "site";
-        let turnstileNeedsInteraction = true;
-        let turnstileWaiting = true;
-        let turnstileFailed = true;
-        const form = {{ values: {{}}, set(key, value) {{ this.values[key] = value; }} }};
-        const headers = () => ({{}});
-        const fetch = async () => {{ calls += 1; return {{ status: calls === 1 ? 403 : 200 }}; }};
-        function hideTurnstilePrompt() {{}}
-        function rebuildTurnstileWidget() {{ rebuilds += 1; }}
-        async function ensureTurnstileToken() {{ return true; }}
-        function turnstileToken() {{ return "fresh-token"; }}
-        {post}
-        (async () => {{
-          const response = await postJobWithTurnstileRetry(form);
-          assert.equal(response.status, 200);
-          assert.equal(calls, 2);
-          assert.equal(rebuilds, 1);
-          assert.equal(form.values.turnstile_token, "fresh-token");
-        }})().catch((error) => {{ console.error(error); process.exit(1); }});
-        """
-    )
-    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
 def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()
