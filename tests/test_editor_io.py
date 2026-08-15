@@ -11,6 +11,7 @@ from soramimic_video.editor_io import (
     import_editor,
     save_raw,
     wordlist_display_name,
+    wordlist_phrase_name,
 )
 from soramimic_video.xfparse import analyze_midi
 
@@ -264,7 +265,7 @@ _SETTING = {
         {"value": "STATION", "text": "駅名", "filepath": "wordlists/stations.csv"},
         # editorの選択肢は見出し(label)でグループ化されることがある
         {"label": "生物", "items": [
-            {"value": "SEKITSUI", "text": "動物", "filepath": "wordlists/sekitsui.csv"},
+            {"value": "SEKITSUI", "text": "脊椎動物", "filepath": "wordlists/sekitsui.csv"},
             {"value": "PLANT", "text": "植物"},  # filepathが無ければvalueで引く
         ]},
     ]
@@ -279,7 +280,7 @@ def test_wordlist_display_name_from_group(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(editor_io, "SETTING_JSON", setting)
 
     assert editor_io.wordlist_display_name("stations") == "駅名"
-    assert editor_io.wordlist_display_name("sekitsui") == "動物"  # グループ内のリスト
+    assert editor_io.wordlist_display_name("sekitsui") == "脊椎動物"  # グループ内のリスト
     assert editor_io.wordlist_display_name("plant") == "植物"  # value(大小無視)で照合
     assert editor_io.wordlist_display_name("unknown") == "unknown"  # 設定に無ければstem
     assert editor_io.wordlist_display_name("") == ""
@@ -292,11 +293,19 @@ def test_wordlist_display_name_without_setting(tmp_path: Path, monkeypatch):
     assert editor_io.wordlist_display_name("stations") == "stations"
 
 
+def test_marine_life_phrase_name():
+    assert wordlist_phrase_name("marine_life") == "海の動物名"
+
+
+def test_vertebrate_phrase_name():
+    assert wordlist_phrase_name("sekitsui") == "脊椎動物名"
+
+
 @pytest.mark.skipif(not SETTING_JSON.is_file(), reason="submoduleのconfが無い")
 @pytest.mark.parametrize(
     ("stem", "text"),
     [
-        ("sekitsui", "動物"),
+        ("sekitsui", "脊椎動物"),
         ("baseball", "野球選手"),
         ("stations", "駅名"),
         ("fictional_anime_character", "ファンタジー"),
