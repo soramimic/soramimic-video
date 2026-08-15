@@ -98,16 +98,30 @@ def test_simple_uses_bundled_lyrics_and_rejects_custom_inputs(
     "path",
     [
         "/api/wordlist-columns?wordlist=youtuber",
-        "/api/wordlist-columns?wordlist=plant",
+        "/api/wordlist-columns?wordlist=not-published",
         "/api/wordlist-image?wordlist=football",
-        "/api/wordlist-image?wordlist=plant",
-        "/api/thumbnail-preview?sample=furusato&wordlist=plant",
+        "/api/wordlist-image?wordlist=not-published",
         "/editor/wordlists/youtuber.csv",
-        "/editor/wordlists/plant.csv",
+        "/editor/wordlists/not-published.csv",
     ],
 )
 def test_simple_get_routes_share_wordlist_allowlist(simple_client: TestClient, path: str):
     assert simple_client.get(path).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/wordlist-columns?wordlist=plant",
+        "/api/wordlist-image?wordlist=plant",
+        "/editor/wordlists/plant.csv",
+        "/editor/wordlists/marine_life.csv",
+    ],
+)
+def test_simple_get_routes_allow_published_wordlists(
+    simple_client: TestClient, path: str
+):
+    assert simple_client.get(path).status_code == 200
 
 
 def test_simple_rejects_filesystem_csv_before_resolution(
@@ -126,7 +140,7 @@ def test_simple_rejects_filesystem_csv_before_resolution(
 
 
 def test_simple_preview_job_cannot_bypass_wordlist_allowlist(simple_client: TestClient):
-    res = _post_job(simple_client, _catalog_midi(), wordlist="football", preview="10")
+    res = _post_job(simple_client, _catalog_midi(), wordlist="not-published", preview="10")
     assert res.status_code == 422
 
 
