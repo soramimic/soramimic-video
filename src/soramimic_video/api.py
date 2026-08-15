@@ -848,6 +848,13 @@ def credit_notice_of(params: dict[str, Any]) -> str:
 
 def midi_end_credit_of(params: dict[str, Any]) -> str:
     """サンプルMIDI制作者のクレジット。manifest以外からは受け付けない。"""
+    # ジョブ受付時にサーバーが確定した値は、その後のmanifest更新やワーカー側の
+    # 読み直しに左右されないよう優先する。sample_id はフォーム値をそのまま保存せず
+    # resolve_sample_midi() で解決したIDだけが入るため、持ち込みMIDIからは使えない。
+    if str(params.get("sample_id") or "").strip():
+        saved = str(params.get("sample_midi_end_credit") or "").strip()
+        if saved:
+            return saved
     entry = _sample_entry_of(params)
     if entry is None:
         return ""
@@ -2768,6 +2775,10 @@ def create_app(
         # status.json の params に保存されるので、カタログ更新後も表示が変わらない。
         params["song_label"] = new_job_song_label(params)
         params["wordlist_label"] = job_wordlist_label(params)
+        # レンダリング必須のサンプル帰属表記も受付時に確定する。ワーカー開始後に
+        # ローカルmanifestを読み直して空になると、完成動画から表記が欠落するため。
+        if params["sample_id"]:
+            params["sample_midi_end_credit"] = midi_end_credit_of(params)
         with quota_submit_lock:
             _check_public_limits(
                 owner,

@@ -288,6 +288,8 @@ def test_samples_dir_override(tmp_path, monkeypatch):
     (sample_dir / "mysong.mid").write_bytes(FAKE_MIDI)
     (sample_dir / "mysong_lyrics.txt").write_text("あいうえお", encoding="utf-8")
     monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(sample_dir))
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
 
     assert client.get("/api/samples").json() == [{"id": "mysong", "title": "自作サンプル"}]
@@ -306,6 +308,13 @@ def test_samples_dir_override(tmp_path, monkeypatch):
     assert client.get("/api/sample/akatombo/midi").status_code == 404
     # サンプル曲は作り直されることがあるので、ブラウザに使い回させない
     assert client.get("/api/sample/mysong/lyrics").headers["cache-control"] == "no-cache"
+
+    submitted = client.post(
+        "/api/jobs", data={"sample_id": "mysong", "wordlist": "stations"}
+    )
+    assert submitted.status_code == 200
+    body = wait_done(client, submitted.json()["id"])
+    assert body["params"]["sample_midi_end_credit"] == "MIDI: 制作者"
 
 
 def test_sample_with_missing_file_is_404(tmp_path, monkeypatch):
