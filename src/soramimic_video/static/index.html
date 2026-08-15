@@ -2399,11 +2399,6 @@ $("lyrics").addEventListener("change", scheduleMidiCheck);
 // 空耳変換が待ちなしになる。
 const DEFAULT_COMBO = { sample: "furusato", wordlist: "baseball" };
 
-// 空耳変換に時間がかかる単語リスト。ランダム抽選の対象から外し、
-// それでも選ばれているときはカードに時間の注意を出す。
-// (sekitsuiは不正データ3行が原因で数分かかる。上流のデータ修正が入ったら外してよい)
-const SLOW_WORDLISTS = ["sekitsui"];
-
 // カードのサムネプレビューで、単語画像を初期非表示にする単語リスト。
 // 「自分では選んでいないのに苦手な画像に出会う」のを防ぐのが目的なので、対象は
 // このプレビューだけ(動画・サムネの画像は変えない)。
@@ -2437,13 +2432,12 @@ function wordlistOptionByName(name) {
   return [...sel.options].find((o) => o.value === String(i)) || null;
 }
 
-// 選択肢から1つの「組み合わせ」を組む。戻り値は { sampleId, wordlistName, slow }。
+// 選択肢から1つの「組み合わせ」を組む。戻り値は { sampleId, wordlistName }。
 // wordlistName が空なら単語リストは触らない(現在の設定のまま生成する)。
 function luckyCombo(sampleId, wordlistName) {
   return {
     sampleId,
     wordlistName: wordlistName || "",
-    slow: SLOW_WORDLISTS.includes(wordlistName),
   };
 }
 
@@ -2467,15 +2461,12 @@ function syncLuckyAvailability() {
 }
 
 // ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
-// 必ず両方を変える。単語リストはさらに重い辞書を除いた中から選ぶが、
-// 除いた結果が空になる構成では重い辞書も対象に含める(カードで注意を出す)。
+// 必ず両方を変える。
 function luckyRandomCombo() {
   const { samples, alternatives, nameOf } = luckyCandidatePools();
   if (!samples.length || !alternatives.length) return null;
-  const fast = alternatives.filter((o) => !SLOW_WORDLISTS.includes(nameOf(o)));
-  const pool = fast.length ? fast : alternatives;
   const song = pickRandom(samples);
-  const wl = pickRandom(pool);
+  const wl = pickRandom(alternatives);
   return luckyCombo(song.value, nameOf(wl));
 }
 
@@ -2839,7 +2830,7 @@ function retryThumbnailPreview(url, seq) {
 // releaseBuilderDone から renderBuilder へ戻ってくる)
 let previewDeferred = false;
 
-// いまの選択でカードの表示(時間の注意 + プレビュー)を作り直す。
+// いまの選択でカードの表示(自作リストの注意 + プレビュー)を作り直す。
 function renderBuilder() {
   // 生成中はサムネ枠を進捗表示が使っている。ここで作り直すと state が preview に
   // 戻って進捗が消えるので、選択だけ受けて作り直しは終わるまで先送りする
@@ -2851,8 +2842,7 @@ function renderBuilder() {
   const custom = showsEditorWordlist();
   const note = custom
     ? "自作リストはプレビューに対応していません。そのまま生成できます。"
-    : (c.slow
-      ? "⏳ この組み合わせは単語リストが大きいため、空耳変換に数分かかります。" : "");
+    : "";
   $("builder-note").hidden = !note;
   $("builder-note").textContent = note;
   loadThumbnailPreview(c);
