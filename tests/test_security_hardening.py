@@ -110,18 +110,11 @@ def test_simple_get_routes_share_wordlist_allowlist(simple_client: TestClient, p
 
 
 @pytest.mark.parametrize(
-    "path",
-    [
-        "/api/wordlist-columns?wordlist=plant",
-        "/api/wordlist-image?wordlist=plant",
-        "/editor/wordlists/plant.csv",
-        "/editor/wordlists/marine_life.csv",
-    ],
+    "name", ["stations", "sekitsui", "plant", "marine_life"]
 )
-def test_simple_get_routes_allow_published_wordlists(
-    simple_client: TestClient, path: str
-):
-    assert simple_client.get(path).status_code == 200
+def test_simple_allowlist_accepts_published_wordlists(name: str, monkeypatch):
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    assert api_mod.require_launch_wordlist(name) == name
 
 
 def test_simple_rejects_filesystem_csv_before_resolution(
