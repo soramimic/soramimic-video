@@ -158,6 +158,104 @@ def test_simple_ui_hides_the_irrelevant_song_length_limit():
     assert "updatePublicCredit();" in body
 
 
+def test_history_uses_cards_and_only_safe_display_fields():
+    markup = _markup()
+    assert 'id="history-body"' in markup
+    assert "#history table" not in markup
+    script = _script()
+    load = _function_body(script, "async function loadHistory()")
+    card = _function_body(script, "function historyCard(job, index)")
+    assert 'document.createElement("div")' in load
+    assert 'list.className = "history-list"' in load
+    assert "<table" not in load
+    assert "job.params" not in card
+    assert "job.id" not in card
+    for private_name in ("midi_filename", "where", "convert_params"):
+        assert private_name not in card
+    assert "job.song_label" in card
+    assert "job.wordlist_label" in card
+    assert 'title.textContent = job.song_label || "曲"' in card
+    assert "historyStatusLabel(job)" in card
+    for status, label in {
+        "queued": "待機中", "running": "作成中", "done": "完成",
+        "error": "失敗", "canceled": "中止",
+    }.items():
+        assert f'{status}: "{label}"' in script
+
+
+def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
+    script = _script()
+    load = _function_body(script, "async function loadHistory()")
+    card = _function_body(script, "function historyCard(job, index)")
+    assert 'createElement("video")' not in load + card
+    assert 'createElement("audio")' not in load + card
+    assert "fetch(job.video_url" not in load + card
+    playback = _function_body(script, "async function toggleHistoryPlayback(")
+    assert 'document.createElement(job.result_kind === "audio" ? "audio" : "video")' in playback
+    assert 'media.controls = true' in playback
+    assert 'media.preload = "none"' in playback
+    assert 'media.setAttribute("playsinline", "")' in playback
+    assert "media.src = job.playback_url" in playback
+    sharing = _function_body(script, "async function shareHistoryResult(")
+    assert "fetch(job.video_url" in sharing
+    assert sharing.index("fetch(job.video_url") > sharing.index("resetHistoryShare()")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_history_player_disposal_stops_detaches_and_releases_media():
+    dispose = _function_body(_script(), "function disposeHistoryPlayback()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const calls = [];
+        const media = {{
+          pause() {{ calls.push("pause"); }},
+          removeAttribute(name) {{ calls.push("remove:" + name); }},
+          load() {{ calls.push("load"); }},
+          remove() {{ calls.push("remove-element"); }},
+        }};
+        const play = {{
+          textContent: "閉じる", classList: {{ contains: (name) => name === "history-play" }},
+          setAttribute(name, value) {{ calls.push(`button:${{name}}=${{value}}`); }},
+        }};
+        const host = {{ hidden: false, replaceChildren() {{ calls.push("clear-host"); }} }};
+        const URL = {{ revokeObjectURL(url) {{ calls.push("revoke:" + url); }} }};
+        let aborted = 0;
+        let activeHistoryPlayback = {{
+          media, host, triggers: [play], objectUrl: "blob:history",
+          abort: {{ abort() {{ aborted += 1; }} }},
+        }};
+        {dispose}
+        disposeHistoryPlayback();
+        assert.equal(aborted, 1);
+        assert.deepEqual(calls.slice(0, 5),
+          ["pause", "remove:src", "remove:poster", "load", "remove-element"]);
+        assert.ok(calls.indexOf("revoke:blob:history") > calls.indexOf("remove-element"));
+        assert.equal(play.textContent, "再生");
+        assert.equal(host.hidden, true);
+        assert.equal(activeHistoryPlayback, null);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+def test_history_switch_disposes_before_making_a_fresh_media_element():
+    playback = _function_body(_script(), "async function toggleHistoryPlayback(")
+    assert playback.index("disposeHistoryPlayback();") < playback.index(
+        'document.createElement(job.result_kind === "audio" ? "audio" : "video")'
+    )
+    assert "freshBuilderVideo" not in playback
+    assert "prepareVideoShare" not in playback
+    assert "resetVideoSharePreparation" not in playback
+    assert "sharePlaybackUrl" not in playback
+
+
+def test_completed_audio_uses_the_inline_playback_endpoint():
+    poll = _function_body(_script(), "async function poll(")
+    assert 'src="${qs(job.playback_url)}"' in poll
+    assert 'src="${qs(job.video_url)}"' not in poll
+
+
 def test_editor_resume_panel_is_hidden_by_default():
     # カード内のパネルからモーダルに変えた(インライン展開だとサムネ枠が押し下がる)
     panel = next(a for tag, a in _tags() if a.get("id") == "editor-resume")

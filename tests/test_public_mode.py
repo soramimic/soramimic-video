@@ -83,9 +83,13 @@ def test_jobs_are_isolated_per_session(public_app):
     # 他人のジョブは存在しないものとして扱う(詳細・動画・中断すべて404)
     assert alice.get(f"/api/jobs/{b_id}").status_code == 404
     assert alice.get(f"/api/jobs/{b_id}/video").status_code == 404
+    assert alice.get(f"/api/jobs/{b_id}/playback").status_code == 404
     assert alice.post(f"/api/jobs/{b_id}/cancel").status_code == 404
     # 自分のジョブは従来どおり取れる
     assert alice.get(f"/api/jobs/{a_id}/video").content == FAKE_MP4
+    playback = alice.get(f"/api/jobs/{a_id}/playback")
+    assert playback.content == FAKE_MP4
+    assert playback.headers["content-disposition"].startswith("inline;")
 
 
 def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):

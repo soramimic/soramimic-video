@@ -473,6 +473,10 @@ class Job:
             "stage": self.stage,
             "stages": self.stages,
             "params": self.params,
+            # 履歴UIは params の内部値やファイル名を読まず、表示専用ラベルだけを使う。
+            # 古いジョブも helper 側で既知IDから解決し、安全な文言へ落とす。
+            "song_label": job_song_label(self.params),
+            "wordlist_label": job_wordlist_label(self.params),
             # 公開APIへ例外本文を返すとparser/ffmpeg由来の内部pathやコマンドが漏れる。
             "error": "生成に失敗しました" if is_public_mode() and self.error else self.error,
             "created_at": datetime.fromtimestamp(self.created_at).isoformat(
@@ -494,6 +498,7 @@ class Job:
             d["total_seconds"] = round(self.finished_at - self.started_at, 1)
         if self.status == "done" and self.video:
             d["video_url"] = f"/api/jobs/{self.id}/video"
+            d["playback_url"] = f"/api/jobs/{self.id}/playback"
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
             if self.thumbnail.exists():
                 d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
@@ -737,6 +742,53 @@ def _sample_entry_of(params: dict[str, Any]) -> dict[str, Any] | None:
     if title and title != str(entry.get("title") or ""):
         return None
     return entry
+
+
+def job_song_label(params: dict[str, Any]) -> str:
+    """履歴に出せる曲名。持ち込みMIDIの生ファイル名は公開しない。"""
+    saved = str(params.get("song_label") or "").strip()
+    if saved:
+        return saved
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("title"):
+        return str(entry["title"]).strip()
+    # 表示名を保存する前のジョブは、未知のファイル名を推測表示しない。
+    return "曲"
+
+
+def job_wordlist_label(params: dict[str, Any]) -> str:
+    """履歴に出せる単語リスト名。whereや未知の内部IDは公開しない。"""
+    saved = str(params.get("wordlist_label") or "").strip()
+    if saved:
+        return saved
+    if float(params.get("preview") or 0) > 0:
+        return "歌声プレビュー"
+    if params.get("wordlist_csv"):
+        return "自作リスト"
+    name = str(params.get("wordlist") or "").strip()
+    if not name:
+        return "単語リスト"
+    from .editor_io import (
+        CUSTOM_WORDLIST_TEXT,
+        wordlist_display_name,
+        wordlist_phrase_name,
+    )
+
+    if name == CUSTOM_WORDLIST_TEXT:
+        return "自作リスト"
+    display = wordlist_display_name(name).strip()
+    if not display or display == name:
+        display = wordlist_phrase_name(name).strip()
+    # 設定に無い場合は helper が内部IDをそのまま返すため、それは表示しない。
+    return display if display and display != name else "単語リスト"
+
+
+def new_job_song_label(params: dict[str, Any]) -> str:
+    """投入時に固定保存する曲名。持ち込み曲は一律の安全な表現にする。"""
+    entry = _sample_entry_of(params)
+    if entry is not None and entry.get("title"):
+        return str(entry["title"]).strip()
+    return "アップロードした曲"
 
 
 def song_title_kana_of(params: dict[str, Any]) -> str:
@@ -2671,6 +2723,10 @@ def create_app(
                 params["wordlist_images"] = custom.image_count
             # 自作リストは絞り込み(where)の対象になる列が無いので付けない
             params["where"] = ""
+        # 一般向け履歴は内部paramsを解釈せず、この時点で確定した表示専用名を使う。
+        # status.json の params に保存されるので、カタログ更新後も表示が変わらない。
+        params["song_label"] = new_job_song_label(params)
+        params["wordlist_label"] = job_wordlist_label(params)
         with quota_submit_lock:
             _check_public_limits(
                 owner,
@@ -2756,6 +2812,21 @@ def create_app(
             )
         return FileResponse(
             job.video, media_type="video/mp4", filename=_download_filename(job)
+        )
+
+    @app.get("/api/jobs/{job_id}/playback", dependencies=[Depends(_require_api_key)])
+    def get_playback(job_id: str, request: Request) -> FileResponse:
+        """video/audio要素用。従来のattachmentダウンロードURLとは分離する。"""
+        job = manager.get(job_id, owner_of(request))
+        if job.status != "done" or not job.video or not job.video.exists():
+            raise HTTPException(status_code=409, detail="動画はまだできていません")
+        media_type = "audio/wav" if job.video.suffix == ".wav" else "video/mp4"
+        return FileResponse(
+            job.video,
+            media_type=media_type,
+            filename=_download_filename(job),
+            content_disposition_type="inline",
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get("/api/jobs/{job_id}/thumbnail", dependencies=[Depends(_require_api_key)])

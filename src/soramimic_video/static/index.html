@@ -299,8 +299,37 @@
   /* 色ピッカー(背景帯・縁取り)は見本の四角なので、押しやすい大きさに固定する */
   #le-props input[type="color"] { width: 3rem; height: 1.8rem; padding: 0 .1rem; }
   #le-props input:disabled { opacity: .4; }
-  #history table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-  #history td, #history th { padding: .3rem .5rem; border-bottom: 1px solid var(--border); text-align: left; }
+  .history-list { display: grid; gap: .75rem; margin-top: .75rem; }
+  .history-item {
+    overflow: hidden; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--panel-2);
+  }
+  .history-main { display: grid; grid-template-columns: minmax(8rem, 36%) 1fr; min-width: 0; }
+  .history-thumb {
+    display: flex; width: 100%; min-width: 0; aspect-ratio: 16 / 9; margin: 0; padding: 0;
+    align-items: center; justify-content: center; overflow: hidden; border: 0; border-radius: 0;
+    background: #111827; color: #cbd5e1; font-weight: 600;
+  }
+  button.history-thumb { cursor: pointer; }
+  .history-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .history-copy { min-width: 0; padding: .7rem; }
+  .history-copy h3 { margin: 0 0 .25rem; font-size: 1rem; overflow-wrap: anywhere; }
+  .history-meta { margin: .18rem 0; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+  .history-status {
+    display: inline-block; margin-top: .2rem; padding: .12rem .45rem; border-radius: 999px;
+    background: var(--panel); color: var(--muted); font-size: .78rem; font-weight: 600;
+  }
+  .history-status-done { color: var(--accent); }
+  .history-status-error { color: var(--danger); }
+  .history-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .55rem; }
+  .history-player { padding: 0 .7rem .7rem; }
+  .history-player video, .history-player audio { display: block; width: 100%; max-height: 70vh; }
+  .history-player-msg { margin: .3rem 0 0; color: var(--danger); font-size: .82rem; }
+  @media (max-width: 30rem) {
+    .history-main { grid-template-columns: 1fr; }
+    .history-thumb { aspect-ratio: 16 / 9; }
+    .history-actions > button { flex: 1 1 auto; }
+  }
   /* ---- 替え歌エディタの全画面モーダル ---- */
   /* 詳細設定の中にiframeを展開すると編集領域が狭く、周りのフォームに埋もれて
      操作しづらい。開いたら画面いっぱい(モバイルでも全面)に出し、閉じる導線だけを
@@ -1478,22 +1507,248 @@ async function loadHistory() {
   const res = await fetch("/api/jobs", { headers: headers() });
   if (!res.ok) return [];
   const jobs = await res.json();
-  if (!jobs.length) { $("history-body").textContent = "まだありません"; return jobs; }
-  $("history-body").innerHTML = "<table><tr><th>ID</th><th>日時</th><th>曲</th><th>単語リスト</th><th>状態</th><th></th></tr>" +
-    jobs.map((j) => {
-      const p = j.params || {};
-      const song = (p.midi_filename || "").replace(/\.midi?$/i, "");
-      // プレビューは元歌詞のまま歌わせるので単語リストは使われない
-      const wordlist = p.preview > 0 ? "(プレビュー)"
-        : (p.wordlist || "") + (p.where ? ` (${p.where})` : "");
-      return `<tr><td>${j.id}</td><td>${j.created_at.replace("T", " ")}</td>` +
-        `<td>${escapeHtml(song)}</td><td>${escapeHtml(wordlist)}</td>` +
-        `<td>${j.status}${j.total_seconds ? ` (${Math.round(j.total_seconds)}秒)` : ""}</td>` +
-        `<td>${j.video_url ? `<a href="${qs(j.video_url)}">${j.result_kind === "audio" ? "音声" : "動画"}</a>` : ""}</td></tr>`;
-    }).join("") +
-    "</table>";
+  disposeHistoryPlayback();
+  resetHistoryShare();
+  historyJobs = jobs;
+  const body = $("history-body");
+  body.replaceChildren();
+  if (!jobs.length) { body.textContent = "まだありません"; return jobs; }
+  const list = document.createElement("div");
+  list.className = "history-list";
+  jobs.forEach((job, index) => list.appendChild(historyCard(job, index)));
+  body.appendChild(list);
   return jobs;
 }
+
+let historyJobs = [];
+let activeHistoryPlayback = null;
+let preparedHistoryShare = null;
+
+const HISTORY_STATUS_LABELS = {
+  queued: "待機中", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
+};
+
+function historyStatusLabel(job) {
+  const base = HISTORY_STATUS_LABELS[job.status] || "状態を確認中";
+  return job.status === "done" && job.total_seconds
+    ? `${base}（${Math.round(job.total_seconds)}秒）` : base;
+}
+
+function historyCreatedLabel(value) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? "作成日時不明" : date.toLocaleString("ja-JP");
+}
+
+function historyButton(label, className = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `btn-sm ${className}`.trim();
+  button.textContent = label;
+  return button;
+}
+
+function historyCard(job, index) {
+  const card = document.createElement("article");
+  card.className = "history-item";
+  const main = document.createElement("div");
+  main.className = "history-main";
+  const complete = job.status === "done" && !!job.playback_url;
+  const thumb = document.createElement(complete ? "button" : "div");
+  thumb.className = "history-thumb";
+  if (complete) {
+    thumb.type = "button";
+    thumb.setAttribute("aria-label", `${job.song_label || "曲"}を再生`);
+    thumb.setAttribute("aria-expanded", "false");
+    thumb.addEventListener("click", () => toggleHistoryPlayback(index, thumb));
+  }
+  if (job.thumbnail_url && job.result_kind !== "audio") {
+    const image = document.createElement("img");
+    image.loading = "lazy";
+    image.alt = "";
+    image.src = qs(job.thumbnail_url);
+    thumb.appendChild(image);
+  } else {
+    thumb.textContent = job.result_kind === "audio" ? "音声" : historyStatusLabel(job);
+  }
+  const copy = document.createElement("div");
+  copy.className = "history-copy";
+  const title = document.createElement("h3");
+  title.textContent = job.song_label || "曲";
+  const wordlist = document.createElement("p");
+  wordlist.className = "history-meta";
+  wordlist.textContent = job.result_kind === "audio"
+    ? (job.wordlist_label || "歌声プレビュー")
+    : `単語リスト: ${job.wordlist_label || "単語リスト"}`;
+  const created = document.createElement("p");
+  created.className = "history-meta";
+  created.textContent = historyCreatedLabel(job.created_at);
+  const status = document.createElement("span");
+  status.className = `history-status history-status-${job.status || "unknown"}`;
+  status.textContent = historyStatusLabel(job);
+  copy.append(title, wordlist, created, status);
+  if (complete) {
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const play = historyButton("再生", "history-play");
+    play.setAttribute("aria-expanded", "false");
+    play.addEventListener("click", () => toggleHistoryPlayback(index, play));
+    actions.appendChild(play);
+    if (typeof navigator.share === "function" && typeof File !== "undefined") {
+      const share = historyButton("共有", "history-share");
+      share.addEventListener("click", () => shareHistoryResult(index, share));
+      actions.appendChild(share);
+    }
+    const download = historyButton("ダウンロード", "history-download");
+    download.addEventListener("click", () => downloadHistoryResult(job));
+    actions.appendChild(download);
+    copy.appendChild(actions);
+  }
+  const player = document.createElement("div");
+  player.className = "history-player";
+  player.hidden = true;
+  card.append(main, player);
+  main.append(thumb, copy);
+  return card;
+}
+
+function disposeHistoryPlayback() {
+  const active = activeHistoryPlayback;
+  if (!active) return;
+  if (active.abort) active.abort.abort();
+  active.media.pause();
+  active.media.removeAttribute("src");
+  active.media.removeAttribute("poster");
+  active.media.load();
+  active.media.remove();
+  if (active.objectUrl) URL.revokeObjectURL(active.objectUrl);
+  active.host.hidden = true;
+  active.host.replaceChildren();
+  active.triggers.forEach((button) => {
+    button.setAttribute("aria-expanded", "false");
+    if (button.classList.contains("history-play")) button.textContent = "再生";
+  });
+  activeHistoryPlayback = null;
+}
+
+async function toggleHistoryPlayback(index, trigger) {
+  if (activeHistoryPlayback && activeHistoryPlayback.index === index) {
+    disposeHistoryPlayback();
+    resetHistoryShare();
+    return;
+  }
+  disposeHistoryPlayback();
+  resetHistoryShare();
+  const job = historyJobs[index];
+  if (!job || !job.playback_url) return;
+  const card = trigger.closest(".history-item");
+  const host = card.querySelector(".history-player");
+  const media = document.createElement(job.result_kind === "audio" ? "audio" : "video");
+  media.controls = true;
+  media.preload = "none";
+  if (media.tagName === "VIDEO") {
+    media.playsInline = true;
+    media.setAttribute("playsinline", "");
+    if (job.thumbnail_url) media.poster = qs(job.thumbnail_url);
+  }
+  const triggers = [...card.querySelectorAll(".history-play, .history-thumb")];
+  triggers.forEach((button) => {
+    button.setAttribute("aria-expanded", "true");
+    if (button.classList.contains("history-play")) button.textContent = "閉じる";
+  });
+  host.hidden = false;
+  host.replaceChildren(media);
+  const active = { index, media, host, triggers, abort: null, objectUrl: "" };
+  activeHistoryPlayback = active;
+  try {
+    if (apiKey()) {
+      const ctrl = new AbortController();
+      active.abort = ctrl;
+      const res = await fetch(job.playback_url, { headers: headers(), signal: ctrl.signal });
+      if (!res.ok) throw new Error("再生データを取得できませんでした");
+      const blob = await res.blob();
+      if (activeHistoryPlayback !== active) return;
+      active.objectUrl = URL.createObjectURL(blob);
+      media.src = active.objectUrl;
+    } else {
+      media.src = job.playback_url;
+    }
+    media.load();
+    media.play().catch(() => { /* controlsから再生できるので自動再生拒否は無視 */ });
+  } catch (error) {
+    if (activeHistoryPlayback !== active || (error && error.name === "AbortError")) return;
+    const msg = document.createElement("p");
+    msg.className = "history-player-msg";
+    msg.textContent = "この端末では再生を開始できませんでした。ダウンロードをお試しください。";
+    host.appendChild(msg);
+  }
+}
+
+function downloadHistoryResult(job) {
+  const link = document.createElement("a");
+  link.href = qs(job.video_url);
+  link.download = job.result_kind === "audio" ? "soramimic.wav" : "soramimic.mp4";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function resetHistoryShare() {
+  const prepared = preparedHistoryShare;
+  if (!prepared) return;
+  if (prepared.abort) prepared.abort.abort();
+  if (prepared.button && prepared.button.isConnected) {
+    prepared.button.disabled = false;
+    prepared.button.textContent = "共有";
+  }
+  preparedHistoryShare = null;
+}
+
+async function shareHistoryResult(index, button) {
+  const job = historyJobs[index];
+  if (!job || !job.video_url || typeof navigator.share !== "function") return;
+  const prepared = preparedHistoryShare;
+  if (prepared && prepared.index === index && prepared.file) {
+    try {
+      const sharing = navigator.share({ files: [prepared.file], text: SHARE_TEXT });
+      resetHistoryShare();
+      Promise.resolve(sharing).catch(() => { /* キャンセル時にダウンロードは始めない */ });
+    } catch {
+      resetHistoryShare();
+    }
+    return;
+  }
+  resetHistoryShare();
+  const ctrl = new AbortController();
+  const state = { index, button, abort: ctrl, file: null };
+  preparedHistoryShare = state;
+  button.disabled = true;
+  button.textContent = "共有を準備中…";
+  try {
+    const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
+    if (!res.ok) throw new Error("共有データを取得できませんでした");
+    const blob = await res.blob();
+    if (preparedHistoryShare !== state) return;
+    const filename = job.result_kind === "audio" ? "soramimic.wav" : "soramimic.mp4";
+    state.file = new File([blob], filename, { type: blob.type });
+    button.disabled = false;
+    button.textContent = "共有を開く";
+  } catch (error) {
+    if (preparedHistoryShare !== state || (error && error.name === "AbortError")) return;
+    resetHistoryShare();
+    button.textContent = "共有できません";
+  }
+}
+
+$("history").addEventListener("toggle", () => {
+  if (!$("history").open) {
+    disposeHistoryPlayback();
+    resetHistoryShare();
+  }
+});
+window.addEventListener("pagehide", () => {
+  disposeHistoryPlayback();
+  resetHistoryShare();
+});
 
 let currentJob = null;
 let cancelPendingJob = null;
@@ -1689,7 +1944,7 @@ async function poll(id, seq = pollSeq) {
     // 動画はサムネ枠がそのままプレイヤーに変わる。詳細側にはサムネ画像のリンクだけ
     // 残す(同じ動画を2か所に出さない)。声プレビューは音声なので従来どおりここで鳴らす。
     $("result").innerHTML = job.result_kind === "audio"
-      ? `<audio controls autoplay style="width:100%" src="${qs(job.video_url)}"></audio>`
+      ? `<audio controls autoplay style="width:100%" src="${qs(job.playback_url)}"></audio>`
       : (job.thumbnail_url
           ? `<p><a href="${qs(job.thumbnail_url)}" target="_blank" rel="noopener">サムネ画像</a></p>`
           : "");
