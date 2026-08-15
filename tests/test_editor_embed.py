@@ -1020,7 +1020,7 @@ def test_index_treats_original_wordlist_as_custom():
 
 
 def test_setting_json_from_source_conf(client):
-    """/editor/conf/setting.json は dist ではなくソース側の conf を返す。"""
+    """配信用confはソースを正本とし、非公開リストだけUIから除外する。"""
     from soramimic_video.editor_io import SETTING_JSON
 
     if not SETTING_JSON.is_file():
@@ -1029,7 +1029,23 @@ def test_setting_json_from_source_conf(client):
     res = client.get("/editor/conf/setting.json")
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("application/json")
-    assert res.json() == json.loads(SETTING_JSON.read_text(encoding="utf-8"))
+    source = json.loads(SETTING_JSON.read_text(encoding="utf-8"))
+    served = res.json()
+
+    def names(items):
+        found = []
+        for item in items:
+            if "items" in item:
+                found.extend(names(item["items"]))
+            elif item.get("filepath"):
+                found.append(Path(item["filepath"]).stem)
+        return found
+
+    assert "plant" in names(source["wordlist"])
+    assert names(served["wordlist"]) == [
+        name for name in names(source["wordlist"]) if name != "plant"
+    ]
+    assert json.loads(SETTING_JSON.read_text(encoding="utf-8")) == source
 
 
 def test_config_editor_flag_true(tmp_path):
