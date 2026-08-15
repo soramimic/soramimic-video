@@ -2028,14 +2028,14 @@ const SHARE_HTML = DESKTOP_SHARE_UI
       : "") +
     `</p>` +
     `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "共有用の動画を準備しています。ダウンロードはすぐにできます。"
+      ? "動画を再生・共有できるよう準備しています。ダウンロードはすぐにできます。"
       : shareHint(false)}</p>`
   : `<p class="share-row">` +
     `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
     `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画をダウンロード"}</button>` +
     `</p>` +
     `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "動画を共有できるよう準備しています。" : shareHint(false)}</p>`;
+      ? "動画を再生・共有できるよう準備しています。" : shareHint(false)}</p>`;
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
@@ -2082,6 +2082,8 @@ function fallbackToDirectVideo(videoUrl, video, expectedObjectUrl = "") {
   revokeSharePlaybackUrl();
   video.src = qs(videoUrl);
   video.load();
+  video.controls = true;
+  video.removeAttribute("aria-busy");
 }
 
 function resetVideoSharePreparation() {
@@ -2119,6 +2121,11 @@ async function prepareVideoShare(videoUrl, video) {
     setShareButtonMode(false);
     return;
   }
+  // srcが無い準備中にnative controlsを操作できると、後続のsrc設定/loadが
+  // 先行した再生操作をリセットし、WebKitでは再生・停止表示が逆転することがある。
+  // 実際に再生できるsourceを設定するまでcontrolsを出さない。
+  video.controls = false;
+  video.setAttribute("aria-busy", "true");
   const ctrl = new AbortController();
   sharePreparationAbort = ctrl;
   let timedOut = false;
@@ -2143,6 +2150,8 @@ async function prepareVideoShare(videoUrl, video) {
     video.addEventListener("error", playbackError, { once: true });
     video.src = sharePlaybackUrl;
     video.load();
+    video.controls = true;
+    video.removeAttribute("aria-busy");
     // iOSのアプリ内ブラウザにはshareはあってもcanShareが無いものがあり、
     // canShareを門番にすると「共有」表示なのに必ずdownloadへ落ちてしまう。
     // 実Fileを用意できたらshareを直接試し、拒否されたときだけ保存へ切り替える。
@@ -2839,6 +2848,8 @@ function setBuilderState(state) {
     video.removeAttribute("src");
     video.removeAttribute("poster");
     video.load();
+    video.controls = true;
+    video.removeAttribute("aria-busy");
     // videoからobject URLを外してメディア資源を解放してからURLとFileを破棄する。
     resetVideoSharePreparation();
     $("builder-share").hidden = true;
@@ -5250,6 +5261,10 @@ document.addEventListener("keydown", (ev) => {
 // 絞り込み違いエントリを1グループにまとめる。 { name, text, entries: [conf順] }
 let wordlistGroups = [];
 
+// データやAPIは残したまま、選択UIにまだ公開しない単語リスト。
+// 品質確認が済んだら名前を外すだけで再公開できる。
+const HIDDEN_UI_WORDLISTS = new Set(["plant"]);
+
 // conf の wordlist は従来のentry(filepathを持つ)に加えて {label, items:[entry,...]}
 // のグループが混在しうる。グループを再帰的に均し、各entryに所属グループのラベルを
 // _group として付けて返す(トップレベルのentryは _group なし)。
@@ -5286,6 +5301,10 @@ async function loadWordlistSelect(editorAvailable) {
     // active === false のエントリも除外(旧confにactiveは無いので影響なし)
     entries = flattenWordlist(conf.wordlist).filter(
       (w) => w && w.filepath && w.value !== "ORIGINAL" && w.active !== false);
+    entries = entries.filter((w) => {
+      const name = w.filepath.replace(/.*\//, "").replace(/\.csv$/, "");
+      return !HIDDEN_UI_WORDLISTS.has(name);
+    });
     if (simpleMode) {
       const allowed = new Set(launchWordlists);
       entries = entries.filter((w) => {
@@ -5687,6 +5706,11 @@ async function doRestoreForm() {
   try { state = JSON.parse(localStorage.getItem(FORM_KEY) || "null"); } catch { /* 壊れた値は無視 */ }
 
   if (state) {
+    // UIから一時的に外したリストは保存済みでも復元せず、現在の先頭選択を使う。
+    if (HIDDEN_UI_WORDLISTS.has(state.wordlist || "")) {
+      state.wordlist = $("wordlist").value;
+      state.where = $("where").value;
+    }
     // 1. 単語リスト: 選択肢があれば name/where 一致のoptionを選ぶ
     const sel = $("wordlist-select");
     if (!sel.hidden && sel.options.length) {

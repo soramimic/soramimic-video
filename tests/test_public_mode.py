@@ -409,7 +409,7 @@ def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
     assert conf["wordlist_config"] is True
     assert client.get("/editor/conf/setting.json").status_code == 200
     assert conf["launch_wordlists"] == [
-        "stations", "nations", "baseball", "scientist", "gimukyoiku",
+        "stations", "nations", "baseball", "scientist", "gimukyoiku", "marine_life",
     ]
     assert conf["fixed_voicevox_style"] == 6000
     assert [row["id"] for row in client.get("/api/samples").json()] == [

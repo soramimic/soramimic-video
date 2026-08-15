@@ -83,6 +83,7 @@ JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除する�
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
 LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
 LAUNCH_CATALOG_ENV = "SORAMIMIC_LAUNCH_CATALOG"  # 環境別の公開選択肢(非追跡可)
+HIDDEN_UI_WORDLISTS = {"plant"}  # データ/APIを残して選択UIだけから外す
 TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
 TURNSTILE_SITE_ENV = "TURNSTILE_SITE_KEY"  # 同・サイトキー(フロントに渡す)
 OPS_TOKEN_ENV = "SORAMIMIC_OPS_TOKEN"
@@ -2867,7 +2868,7 @@ def create_app(
         return FileResponse(path, media_type="text/csv")
 
     @app.get("/editor/conf/setting.json")
-    def editor_setting_json() -> FileResponse:
+    def editor_setting_json() -> JSONResponse:
         """editorのconf(setting.json)をソース側の正データから返す。
 
         dist側の conf はビルド時にコピーされたスナップショットで古いことが
@@ -2882,7 +2883,30 @@ def create_app(
             path = editor_root / "conf" / "setting.json"
         if not path.is_file():
             raise HTTPException(status_code=404, detail="設定が見つかりません")
-        return FileResponse(path, media_type="application/json")
+        config = json.loads(path.read_text(encoding="utf-8"))
+
+        def visible_wordlists(items: Any) -> Any:
+            if not isinstance(items, list):
+                return items
+            visible = []
+            for item in items:
+                if not isinstance(item, dict):
+                    visible.append(item)
+                    continue
+                entry = copy.deepcopy(item)
+                if isinstance(entry.get("items"), list):
+                    entry["items"] = visible_wordlists(entry["items"])
+                    if entry["items"]:
+                        visible.append(entry)
+                    continue
+                filepath = str(entry.get("filepath") or "")
+                name = Path(filepath).stem
+                if name not in HIDDEN_UI_WORDLISTS:
+                    visible.append(entry)
+            return visible
+
+        config["wordlist"] = visible_wordlists(config.get("wordlist"))
+        return JSONResponse(config, headers={"Cache-Control": "no-store"})
 
     @app.get("/editor/kuromoji/dict/{name}")
     def editor_kuromoji_dict(name: str) -> FileResponse:
