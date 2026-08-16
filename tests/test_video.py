@@ -2020,11 +2020,15 @@ def test_build_section_cues_reports_sung_gap(tmp_path: Path):
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORDLISTS_DIR = REPO_ROOT / "external" / "soramimic-wordlists"
-WORDLIST_LAYOUTS = json.loads(
-    (
-        Path(soramimic_video.__file__).parent / "wordlist_layouts.json"
-    ).read_text(encoding="utf-8")
-)
+WORDLIST_LAYOUTS = {
+    name: entry["layout"]
+    for name, entry in json.loads(
+        (Path(soramimic_video.__file__).parent / "wordlist_catalog.json").read_text(
+            encoding="utf-8"
+        )
+    ).items()
+    if "layout" in entry
+}
 
 
 # 画像そのものに名前などの文字が焼き込まれていて、レイアウト側では文字を

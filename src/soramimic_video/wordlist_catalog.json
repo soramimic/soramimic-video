@@ -1,0 +1,19 @@
+{
+  "stations": {"layout": "station_info_card", "phrase": "駅名", "launch": true},
+  "nations": {"layout": "nation_card", "phrase": "国名", "launch": true},
+  "baseball": {"layout": "player_card", "phrase": "野球選手名", "launch": true},
+  "scientist": {"layout": "scientist_card", "phrase": "科学者名", "launch": true},
+  "gimukyoiku": {"layout": "gimukyoiku_card", "phrase": "義務教育", "launch": true},
+  "sekitsui": {"layout": "animal_card", "phrase": "脊椎動物名", "launch": true},
+  "plant": {"layout": "plant_card", "phrase": "植物名", "launch": true},
+  "marine_life": {"layout": "animal_card", "phrase": "海の動物名", "launch": true},
+  "fictional_anime_character": {"layout": "fictional_anime_card", "phrase": "架空のファンタジーキャラ名"},
+  "fictional_daily_anime_character": {"layout": "fictional_anime_card", "phrase": "架空の日常系アニメキャラ名"},
+  "fictional_scientist": {"layout": "scientist_card", "phrase": "架空の科学者名"},
+  "football": {"layout": "player_card", "phrase": "サッカー選手名"},
+  "insect": {"layout": "animal_card"},
+  "municipality": {"layout": "municipality_card"},
+  "pokemon": {"layout": "pokemon_card", "phrase": "ポケモン名"},
+  "school": {"layout": "school_card"},
+  "youtuber": {"layout": "youtuber_card", "phrase": "YouTuber名"}
+}
