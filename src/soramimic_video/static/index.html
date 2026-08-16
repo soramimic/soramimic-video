@@ -440,6 +440,13 @@
     max-width: 26rem; padding: 0; border: 0; background: transparent;
   }
   #turnstile-wrap:not(.turnstile-active) .turnstile-copy { display: none; }
+  /* 案内を閉じた後にCloudflareのiframeだけが残ったり、自動確認で一瞬だけ見えたり
+     しないよう、ウィジェットも案内と同じ表示状態にする。完了表示中も確認欄は隠す。 */
+  #turnstile-wrap:not(.turnstile-active) #turnstile-widget,
+  #turnstile-wrap.turnstile-complete #turnstile-widget {
+    position: absolute; inset-inline-start: -10000px; visibility: hidden;
+    opacity: 0; pointer-events: none;
+  }
   .turnstile-title { margin: 0; font-weight: 700; }
   .turnstile-copy .hint { margin: .2rem 0 .5rem; }
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
@@ -1346,11 +1353,18 @@ let turnstileNeedsInteraction = false;
 let turnstileWaiting = false;
 let turnstileFailed = false;
 let turnstileScriptFailed = false;
+const TURNSTILE_PROMPT_MIN_MS = 1400;
+let turnstilePromptShownAt = 0;
+let turnstilePromptCompletionTimer = null;
 
 function showTurnstilePrompt(forceScroll = false) {
   const wrap = $("turnstile-wrap");
   const alreadyActive = wrap.classList.contains("turnstile-active");
-  if (!alreadyActive) wrap.classList.add("turnstile-active");
+  if (!alreadyActive) {
+    wrap.classList.remove("turnstile-complete");
+    wrap.classList.add("turnstile-active");
+    turnstilePromptShownAt = Date.now();
+  }
   if (!alreadyActive || forceScroll) {
     requestAnimationFrame(() => {
       // 予約後すぐ自動確認が完了した場合は、生成開始後に画面やフォーカスを戻さない。
@@ -1367,6 +1381,8 @@ function setTurnstilePromptCopy(title, hint) {
 }
 
 function showTurnstileFailure(reloadPage = false) {
+  // 直前の成功表示タイマーが、サーバー拒否など後から判明した失敗案内を消さないようにする。
+  hideTurnstilePrompt();
   setTurnstilePromptCopy(
     reloadPage ? "確認を読み込めませんでした" : "人間かどうかの確認をやり直してください",
     reloadPage
@@ -1377,7 +1393,28 @@ function showTurnstileFailure(reloadPage = false) {
 }
 
 function hideTurnstilePrompt() {
-  $("turnstile-wrap").classList.remove("turnstile-active");
+  if (turnstilePromptCompletionTimer !== null) {
+    clearTimeout(turnstilePromptCompletionTimer);
+    turnstilePromptCompletionTimer = null;
+  }
+  const wrap = $("turnstile-wrap");
+  wrap.classList.remove("turnstile-active", "turnstile-complete");
+  turnstilePromptShownAt = 0;
+}
+
+function completeTurnstilePrompt() {
+  const wrap = $("turnstile-wrap");
+  if (!wrap.classList.contains("turnstile-active")) return;
+  const remaining = TURNSTILE_PROMPT_MIN_MS - (Date.now() - turnstilePromptShownAt);
+  if (remaining <= 0) {
+    hideTurnstilePrompt();
+    return;
+  }
+  // 自動確認が一瞬で終わったときは、謎の点滅にせず結果が読める時間だけ残す。
+  // 確認欄自体はすぐ隠すので、手動でチェックした後にチェック欄が残り続けない。
+  setTurnstilePromptCopy("確認できました", "動画生成を始めます。");
+  wrap.classList.add("turnstile-complete");
+  turnstilePromptCompletionTimer = setTimeout(hideTurnstilePrompt, remaining);
 }
 
 function renderTurnstileWidget() {
@@ -1390,13 +1427,19 @@ function renderTurnstileWidget() {
     "before-interactive-callback": () => {
       if (epoch !== turnstileEpoch) return;
       turnstileNeedsInteraction = true;
-      if (turnstileWaiting) showTurnstilePrompt(true);
+      if (turnstileWaiting) {
+        setTurnstilePromptCopy(
+          "人間かどうかの確認が必要です",
+          "確認欄をチェックしてください。完了すると、そのまま動画生成を始めます。",
+        );
+        showTurnstilePrompt(true);
+      }
     },
     callback: (token) => {
       if (epoch !== turnstileEpoch) return;
       turnstileLastToken = token || "";
       turnstileNeedsInteraction = false;
-      if (turnstileLastToken) hideTurnstilePrompt();
+      if (turnstileLastToken) completeTurnstilePrompt();
     },
     "expired-callback": () => {
       if (epoch === turnstileEpoch) turnstileLastToken = "";
@@ -1482,7 +1525,8 @@ function resetTurnstile(hidePrompt = true) {
   turnstileNeedsInteraction = false;
   turnstileWaiting = false;
   turnstileFailed = false;
-  if (hidePrompt) hideTurnstilePrompt();
+  // 自動確認が速かった場合の短い完了表示は、投入完了直後のresetでも打ち切らない。
+  if (hidePrompt && turnstilePromptCompletionTimer === null) hideTurnstilePrompt();
   if (turnstileWidget !== null && window.turnstile) {
     try { window.turnstile.reset(turnstileWidget); } catch { /* 次の生成時に再描画する */ }
   }
@@ -1495,8 +1539,8 @@ function resetTurnstile(hidePrompt = true) {
 async function ensureTurnstileToken(timeoutMs = 120000) {
   if (!turnstileSiteKey) return true;
   setTurnstilePromptCopy(
-    "人間かどうかの確認が必要です",
-    "確認欄が表示されたらチェックしてください。完了すると、そのまま合成を始めます。",
+    "ロボットではないことを確認しています",
+    "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
   );
   const deadline = Date.now() + timeoutMs;
   // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
@@ -2490,6 +2534,9 @@ async function submitJob(previewSec, previewMode) {
     }
     watch(body.id);
   } catch (err) {
+    // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
+    // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
+    if (!keepTurnstilePrompt) hideTurnstilePrompt();
     $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
     setBuilderState("preview");
     showBuilderMsg("生成を開始できませんでした: " + err.message);
