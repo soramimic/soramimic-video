@@ -489,7 +489,8 @@ def test_turnstile_interaction_scrolls_to_inline_prompt():
     assert "if (!alreadyActive || forceScroll)" in prompt
     render = _function_body(script, "function renderTurnstileWidget()")
     assert 'execution: "execute"' in render
-    assert render.count("showTurnstilePrompt(true)") >= 4
+    assert "scheduleTurnstileInteractionPrompt(epoch)" in render
+    assert "cancelTurnstileInteractionReveal();" in render
     failure = _function_body(script, "function showTurnstileFailure(")
     assert failure.index("hideTurnstilePrompt();") < failure.index("setTurnstilePromptCopy(")
 
@@ -501,6 +502,52 @@ def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
     assert "#turnstile-wrap.turnstile-complete #turnstile-widget" in markup
     assert "inset-inline-start: -10000px" in markup
     assert "visibility: hidden" in markup
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_turnstile_interaction_prompt_is_delayed_and_cancelable():
+    """操作UIの準備直後に自動成功した場合は、一度も確認欄を表示しない。"""
+    script = _script()
+    schedule = _function_body(script, "function scheduleTurnstileInteractionPrompt(") + "\n}"
+    cancel = _function_body(script, "function cancelTurnstileInteractionReveal()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const TURNSTILE_INTERACTION_REVEAL_MS = 700;
+        let turnstileInteractionRevealTimer = null;
+        let turnstileEpoch = 3;
+        let turnstileWaiting = true;
+        let turnstileNeedsInteraction = true;
+        let token = "";
+        let timerCallback = null;
+        let timerDelay = null;
+        let shows = 0;
+        let clears = 0;
+        const setTimeout = (fn, delay) => {{ timerCallback = fn; timerDelay = delay; return 1; }};
+        const clearTimeout = () => {{ clears += 1; }};
+        const turnstileToken = () => token;
+        const setTurnstilePromptCopy = () => {{}};
+        const showTurnstilePrompt = () => {{ shows += 1; }};
+        {cancel}
+        {schedule}
+
+        scheduleTurnstileInteractionPrompt(3);
+        assert.equal(timerDelay, 700);
+        token = "auto-token";
+        turnstileNeedsInteraction = false;
+        cancelTurnstileInteractionReveal();
+        timerCallback();
+        assert.equal(clears, 1);
+        assert.equal(shows, 0);
+
+        token = "";
+        turnstileNeedsInteraction = true;
+        scheduleTurnstileInteractionPrompt(3);
+        timerCallback();
+        assert.equal(shows, 1);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -520,6 +567,7 @@ def test_fast_turnstile_completion_stays_readable_then_disappears():
         let active = true;
         let completeClass = false;
         let timerDelay = null;
+        let timerCalls = 0;
         let clears = 0;
         let copy = null;
         const wrap = {{
@@ -536,7 +584,8 @@ def test_fast_turnstile_completion_stays_readable_then_disappears():
         Date.now = () => now;
         const setTurnstilePromptCopy = (title, hint) => {{ copy = [title, hint]; }};
         const showTurnstilePrompt = () => {{ active = true; }};
-        const setTimeout = (_fn, delay) => {{ timerDelay = delay; return 1; }};
+        const cancelTurnstileInteractionReveal = () => {{}};
+        const setTimeout = (_fn, delay) => {{ timerCalls += 1; timerDelay = delay; return 1; }};
         const clearTimeout = () => {{ clears += 1; }};
         {hide}
         {complete}
@@ -550,6 +599,9 @@ def test_fast_turnstile_completion_stays_readable_then_disappears():
         assert.equal(completeClass, true);
         assert.equal(active, true);
         assert.equal(timerDelay, 1200);
+        assert.equal(timerCalls, 1);
+        completeTurnstilePrompt();
+        assert.equal(timerCalls, 1);
 
         showTurnstileFailure(false);
         assert.equal(clears, 1);
@@ -631,10 +683,13 @@ def test_submit_never_posts_without_a_turnstile_token():
     assert "const verified = !failed && !!turnstileToken()" in ensure
     assert "rebuildTurnstileWidget()" in ensure
     assert "const loadDeadline = Math.min(deadline, Date.now() + 10000);" in ensure
+    assert "Date.now() - loadStarted > 800" not in ensure
+    assert "Date.now() - t0 > 800" not in ensure
     assert "if (turnstileWidget === null || turnstileScriptFailed)" in ensure
     assert "window.turnstile.execute(turnstileWidget)" in ensure
     assert "timeoutMs = 120000" in ensure
     assert "for (let attempt = 0; attempt < 2; attempt += 1)" in ensure
+    assert "if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();" in ensure
     assert "showTurnstileFailure(turnstileScriptFailed);" in guard
     assert "hideTurnstilePrompt();" not in guard
     assert "resetTurnstile(!keepTurnstilePrompt);" in submit
@@ -655,6 +710,7 @@ def test_turnstile_errors_rebuild_and_retry_widget():
         let turnstileWaiting = false;
         let turnstileFailed = false;
         let turnstileScriptFailed = false;
+        let turnstilePromptCompletionTimer = null;
         let rebuilds = 0;
         let now = 0;
         let waitMode = "error-then-success";
@@ -664,6 +720,8 @@ def test_turnstile_errors_rebuild_and_retry_widget():
         function showTurnstileFailure() {{}}
         function setTurnstilePromptCopy() {{}}
         function hideTurnstilePrompt() {{}}
+        function completeTurnstilePrompt() {{}}
+        function scheduleTurnstileInteractionPrompt() {{}}
         const $ = () => ({{classList: {{contains() {{ return false; }}}}}});
         function rebuildTurnstileWidget() {{
           rebuilds += 1;
