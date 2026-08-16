@@ -854,6 +854,14 @@
         placeholder="例: ©表記、ライセンス名、許諾番号など"></textarea>
       <p class="hint" data-info>入力文を改変せず、元曲名と並べてエンドクレジットに載せます。</p>
     </div>
+
+    <div class="field">
+      <label>
+        <input type="checkbox" id="noncommercial-fanwork">
+        この動画は非営利のファン活動として公開する
+      </label>
+      <p class="hint" data-info>この確認を入れた場合だけ、非営利利用に限定されたファンワーク画像を使用します。画像ごとの利用条件とクレジットは生成後の credits.md でも確認してください。</p>
+    </div>
   </section>
 
 </details>
@@ -2529,6 +2537,8 @@ async function submitJob(previewSec, previewMode) {
   form.append("song_title", songTitleOf(midi));
   form.append("original_credit", $("original-credit").value.trim());
   form.append("credit_notice", $("credit-notice").value.trim());
+  form.append("allow_noncommercial_fanwork",
+    $("noncommercial-fanwork").checked ? "true" : "false");
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
@@ -3240,6 +3250,7 @@ function loadWordlistImage(name, seq) {
   };
   if (!name || hiddenPreviewReason(name)) { hide(); return; }
   const url = "/api/wordlist-image?wordlist=" + encodeURIComponent(name)
+    + ($("noncommercial-fanwork").checked ? "&noncommercial_fanwork=true" : "")
     + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
   const probe = new Image();
@@ -3289,6 +3300,7 @@ function loadThumbnailPreview(combo) {
   previewAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), PREVIEW_TIMEOUT_MS);
   const params = { sample: combo.sampleId, wordlist: combo.wordlistName };
+  if ($("noncommercial-fanwork").checked) params.noncommercial_fanwork = "true";
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
   let pending = false;
@@ -3986,13 +3998,16 @@ function leContent(e) {
     if (leCue) {
       // image_urlは同一オリジンのパス。認証ありのときはapi_keyを付ける(既にクエリ有り)
       if (leCue.image_url) {
-        src = leCue.image_url + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
+        src = leCue.image_url
+          + ($("noncommercial-fanwork").checked ? "&noncommercial_fanwork=true" : "")
+          + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
       }
     } else if (leSide === "elements" && leSample && leSample.image) {
       // 自作リストのときは #wordlist が空。空の名前で頼むと404になるので、
       // loadWordlistImage と同じく名前が無ければ引かない(プレースホルダに落ちる)
       const name = $("wordlist").value.trim();
       if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);
+      if (src && $("noncommercial-fanwork").checked) src += "&noncommercial_fanwork=true";
     }
     if (src) {
       const img = document.createElement("img");
