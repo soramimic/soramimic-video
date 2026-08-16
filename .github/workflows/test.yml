@@ -1,7 +1,5 @@
-# submoduleはcheckoutしない(soramimic本体はprivateのためGITHUB_TOKENで取れない)。
-# 替え歌変換は soramimic ライブラリ(uv syncで導入)でPython完結するため、
-# convert/editor 連携のテストもCIで実行される(editor_io の conf/setting.json 参照は
-# submodule未取得でもフォールバックする)。
+# デプロイ時と同じpin済みsubmoduleを再帰取得し、editor設定・単語リスト・Video側設定の
+# 組み合わせをCIで検証する。branchの系譜ではなく、実際に配る構成を正とする。
 name: test
 on:
   push:
@@ -12,11 +10,6 @@ on:
     inputs:
       ref:
         description: テストするref
-        type: string
-        required: false
-        default: ""
-      target_branch:
-        description: submoduleの昇格先branch
         type: string
         required: false
         default: ""
@@ -31,6 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || '' }}
+          submodules: recursive
       - uses: astral-sh/setup-uv@v5
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -45,5 +39,3 @@ jobs:
           bash deploy/tests/test-auto-deploy.sh
           bash deploy/tests/test-install-auto-deploy.sh
           bash deploy/tests/test-deploy-public.sh
-      - name: Check submodule promotion ancestry
-        run: scripts/check-submodule-branch-ancestry.sh "${{ inputs.target_branch || github.base_ref || github.ref_name }}"
