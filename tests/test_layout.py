@@ -269,28 +269,28 @@ def test_nation_card_uses_structured_facts_without_description():
 
 
 def test_load_wordlist_layouts_skips_unknown(tmp_path, monkeypatch, caplog):
-    p = tmp_path / "wordlist_layouts.json"
+    p = tmp_path / "wordlist_catalog.json"
     p.write_text(json.dumps({
-        "scientist": "caption",
-        "stations": "no-such-layout",  # 組み込みに無いので捨てられる
-        "plant": 123,                   # 文字列でないので捨てられる
+        "scientist": {"layout": "caption"},
+        "stations": {"layout": "no-such-layout"},  # 組み込みに無いので捨てられる
+        "plant": {"layout": 123},                    # 文字列でないので捨てられる
     }), encoding="utf-8")
-    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", p)
+    monkeypatch.setattr(layout_mod, "WORDLIST_CATALOG_PATH", p)
     with caplog.at_level("WARNING"):
         assert load_wordlist_layouts() == {"scientist": "caption"}
     assert "no-such-layout" in caplog.text
 
 
 def test_load_wordlist_layouts_missing_or_broken(tmp_path, monkeypatch):
-    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", tmp_path / "none.json")
+    monkeypatch.setattr(layout_mod, "WORDLIST_CATALOG_PATH", tmp_path / "none.json")
     assert load_wordlist_layouts() == {}
     broken = tmp_path / "broken.json"
     broken.write_text("[not json", encoding="utf-8")
-    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", broken)
+    monkeypatch.setattr(layout_mod, "WORDLIST_CATALOG_PATH", broken)
     assert load_wordlist_layouts() == {}
     listed = tmp_path / "list.json"
     listed.write_text("[]", encoding="utf-8")
-    monkeypatch.setattr(layout_mod, "WORDLIST_LAYOUTS_PATH", listed)
+    monkeypatch.setattr(layout_mod, "WORDLIST_CATALOG_PATH", listed)
     assert load_wordlist_layouts() == {}
 
 

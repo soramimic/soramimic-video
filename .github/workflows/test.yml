@@ -15,6 +15,11 @@ on:
         type: string
         required: false
         default: ""
+      target_branch:
+        description: submoduleの昇格先branch
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -33,5 +38,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy src
       - run: uv run pytest -q
-      - name: Test deployment safety scripts
-        run: |
+      - name: Check submodule promotion ancestry
+        run: scripts/check-submodule-branch-ancestry.sh "${{ inputs.target_branch || github.base_ref || github.ref_name }}"
