@@ -5278,8 +5278,7 @@ document.addEventListener("keydown", (ev) => {
 let wordlistGroups = [];
 
 // データやAPIは残したまま、選択UIにまだ公開しない単語リスト。
-// 品質確認が済んだら名前を外すだけで再公開できる。
-const HIDDEN_UI_WORDLISTS = new Set(["plant"]);
+const HIDDEN_UI_WORDLISTS = new Set();
 
 // conf の wordlist は従来のentry(filepathを持つ)に加えて {label, items:[entry,...]}
 // のグループが混在しうる。グループを再帰的に均し、各entryに所属グループのラベルを
