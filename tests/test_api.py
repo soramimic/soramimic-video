@@ -182,7 +182,7 @@ def test_note_length_weight_setting_moved_to_soramimic():
         Path(api_mod.__file__).parents[2] / "external/soramimic/frontend/editor.html"
     )
     if not editor_path.is_file():
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     editor_html = editor_path.read_text(encoding="utf-8")
     assert 'id="editor-note-length-alpha"' in editor_html
     assert 'min="0" max="2" step="0.05" value="0.25"' in editor_html
