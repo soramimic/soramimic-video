@@ -57,6 +57,7 @@ jobs:
     with:
       # ブランチ名ではなく、resolve で取得した不変の commit SHA を検証する。
       ref: ${{ needs.resolve.outputs.preview_sha }}
+      target_branch: preview
 
   publish-instructions:
     needs: [resolve, test-candidate]
@@ -105,6 +106,7 @@ jobs:
       # 通常の test workflow が検証する merge ref に加え、承認・マージ対象の
       # head SHA 自体も検証する。
       ref: ${{ github.event.pull_request.head.sha }}
+      target_branch: main
 
   reject-invalid-main-pr:
     if: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.head.ref != 'preview') }}
