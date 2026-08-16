@@ -490,6 +490,86 @@ def test_turnstile_interaction_scrolls_to_inline_prompt():
     render = _function_body(script, "function renderTurnstileWidget()")
     assert 'execution: "execute"' in render
     assert render.count("showTurnstilePrompt(true)") >= 4
+    failure = _function_body(script, "function showTurnstileFailure(")
+    assert failure.index("hideTurnstilePrompt();") < failure.index("setTurnstilePromptCopy(")
+
+
+def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
+    """自動確認のiframeだけを点滅させず、完了後もチェック欄を残さない。"""
+    markup = _markup()
+    assert "#turnstile-wrap:not(.turnstile-active) #turnstile-widget" in markup
+    assert "#turnstile-wrap.turnstile-complete #turnstile-widget" in markup
+    assert "inset-inline-start: -10000px" in markup
+    assert "visibility: hidden" in markup
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_fast_turnstile_completion_stays_readable_then_disappears():
+    """短時間の自動確認は完了文を残し、長い手動確認は完了直後に閉じる。"""
+    script = _script()
+    hide = _function_body(script, "function hideTurnstilePrompt()") + "\n}"
+    complete = _function_body(script, "function completeTurnstilePrompt()") + "\n}"
+    failure = _function_body(script, "function showTurnstileFailure(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const TURNSTILE_PROMPT_MIN_MS = 1400;
+        let turnstilePromptShownAt = 0;
+        let turnstilePromptCompletionTimer = null;
+        let now = 0;
+        let active = true;
+        let completeClass = false;
+        let timerDelay = null;
+        let clears = 0;
+        let copy = null;
+        const wrap = {{
+          classList: {{
+            contains(name) {{ return name === "turnstile-active" ? active : completeClass; }},
+            add(name) {{ if (name === "turnstile-complete") completeClass = true; }},
+            remove(...names) {{
+              if (names.includes("turnstile-active")) active = false;
+              if (names.includes("turnstile-complete")) completeClass = false;
+            }},
+          }},
+        }};
+        const $ = () => wrap;
+        Date.now = () => now;
+        const setTurnstilePromptCopy = (title, hint) => {{ copy = [title, hint]; }};
+        const showTurnstilePrompt = () => {{ active = true; }};
+        const setTimeout = (_fn, delay) => {{ timerDelay = delay; return 1; }};
+        const clearTimeout = () => {{ clears += 1; }};
+        {hide}
+        {complete}
+        {failure}
+
+        turnstilePromptShownAt = 0;
+        now = 200;
+        completeTurnstilePrompt();
+        assert.equal(copy[0], "確認できました");
+        assert.equal(copy[1], "動画生成を始めます。");
+        assert.equal(completeClass, true);
+        assert.equal(active, true);
+        assert.equal(timerDelay, 1200);
+
+        showTurnstileFailure(false);
+        assert.equal(clears, 1);
+        assert.equal(turnstilePromptCompletionTimer, null);
+        assert.equal(completeClass, false);
+        assert.equal(active, true);
+        assert.equal(copy[0], "人間かどうかの確認をやり直してください");
+
+        turnstilePromptCompletionTimer = null;
+        completeClass = false;
+        active = true;
+        timerDelay = null;
+        turnstilePromptShownAt = 0;
+        now = 1500;
+        completeTurnstilePrompt();
+        assert.equal(active, false);
+        assert.equal(timerDelay, null);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -502,11 +582,13 @@ def test_turnstile_prompt_can_rescroll_after_retry():
         let active = false;
         let scrolls = 0;
         let focuses = 0;
+        let turnstilePromptShownAt = 0;
         const frames = [];
         const wrap = {{
           classList: {{
             contains() {{ return active; }},
             add() {{ active = true; }},
+            remove() {{}},
           }},
           scrollIntoView() {{ scrolls += 1; }},
           querySelector() {{ return {{ focus() {{ focuses += 1; }} }}; }},
@@ -556,6 +638,7 @@ def test_submit_never_posts_without_a_turnstile_token():
     assert "showTurnstileFailure(turnstileScriptFailed);" in guard
     assert "hideTurnstilePrompt();" not in guard
     assert "resetTurnstile(!keepTurnstilePrompt);" in submit
+    assert "if (!keepTurnstilePrompt) hideTurnstilePrompt();" in submit
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
