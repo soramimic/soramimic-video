@@ -2445,6 +2445,9 @@ async function submitJob(previewSec, previewMode) {
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
   if (submitBusy) return;
   setBusy(true);
+  // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
+  // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
+  if (previewSec === 0) $("builder-image-hidden").hidden = true;
   // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
   if (samplePending) await samplePending;
   if (midiChecking) await midiChecking;

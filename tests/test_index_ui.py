@@ -441,6 +441,14 @@ def test_completed_video_requests_no_preload_hint():
     assert video.get("preload") == "none"
 
 
+def test_video_generation_hides_the_sensitive_image_notice_immediately():
+    """昆虫画像への配慮は、声プレビューでなく動画生成を選んだ時点で閉じる。"""
+    submit = _function_body(_script(), "async function submitJob(")
+    hide = 'if (previewSec === 0) $("builder-image-hidden").hidden = true;'
+    assert hide in submit
+    assert submit.index(hide) < submit.index("if (samplePending) await samplePending;")
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_job_post_retries_one_server_rejected_turnstile_token():
     """tokenがサーバーで拒否されたとき、新しいtokenで同じ投入を一度だけ再送する。"""
