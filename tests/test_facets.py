@@ -87,7 +87,7 @@ globalThis.document = {
 
 def _conf_entries() -> list[dict[str, Any]]:
     if not CONF.is_file() or not CONVERT_CONTROLS.is_file():
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
 
     def flatten(items: list) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -295,7 +295,7 @@ def test_normalized_where_selects_the_same_rows_as_flat_form():
     一覧に無い値の行があれば結果が変わりうる)。
     """
     if not (WORDLISTS / "baseball.csv").is_file():
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     entries = _conf_entries()
     assert len(entries) == 19, f"conf の単語リスト数が変わった: {len(entries)}件"
     for entry in entries:

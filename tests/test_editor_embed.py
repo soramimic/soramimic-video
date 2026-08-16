@@ -438,7 +438,7 @@ def test_setup_seed_passes_a_restorable_filter_at_the_top_level(client, tmp_path
     if not (root / "soramimic-wordlists" / "baseball.csv").is_file() or not (
         root / "soramimic" / "conf" / "setting.json"
     ).is_file():
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     from soramimic_video.facets import default_where
 
     # 既定の絞り込み(video が何も指定しないときに使う条件)

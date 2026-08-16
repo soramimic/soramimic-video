@@ -2,8 +2,7 @@
 
 confのfacetsはCSVの列を絞り込みに使うため、片方のsubmoduleだけ更新すると
 「列が無くて絞り込みが空振り」「CSVが無くて404」が起きる(実際に危うかった事故)。
-submoduleはCIでは取得されない(soramimic本体がprivate)ため、このテストは
-ローカルの全テスト実行時=submodule更新をpushする前に効く。
+CIでもpin済みsubmoduleを再帰取得し、デプロイ対象と同じ組み合わせを検査する。
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ def _flatten_wordlist(items: list) -> list[dict]:
 
 def _conf_entries() -> list[dict]:
     if not CONF.is_file() or not WORDLISTS.is_dir():
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     conf = json.loads(CONF.read_text(encoding="utf-8"))
     return [
         w
@@ -80,7 +79,7 @@ def test_wordlist_layouts_point_to_existing_wordlists():
 
     stems = {p.stem for p in WORDLISTS.glob("*.csv")}
     if not stems:
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     for name in load_wordlist_layouts():
         assert name in stems, f"wordlist_catalog.jsonの {name} が単語リストにありません"
 
