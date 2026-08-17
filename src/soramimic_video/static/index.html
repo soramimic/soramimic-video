@@ -497,6 +497,9 @@
     margin-top: .25rem; font-size: .8rem; line-height: 1.45;
   }
   .fanwork-terms a { overflow-wrap: anywhere; }
+  .fanwork-error {
+    margin: .35rem 0 0; color: var(--danger); font-size: .8rem; font-weight: 600;
+  }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -622,12 +625,14 @@
        詳細設定の奥に置くとモバイルでは存在に気づかず、本生成まで進んで失敗する。 -->
   <div class="fanwork-confirmation" id="builder-fanwork-confirmation" hidden tabindex="-1">
     <label>
-      <input type="checkbox" id="noncommercial-fanwork">
+      <input type="checkbox" id="noncommercial-fanwork"
+        aria-describedby="fanwork-guidance builder-fanwork-error">
       <span>以下の二次創作ガイドラインを確認し、遵守します</span>
     </label>
     <div class="fanwork-details">
-      <p class="hint">この単語リストには、非営利のファン活動に限って利用できる公式画像が含まれます。</p>
+      <p class="hint" id="fanwork-guidance">この単語リストには、非営利のファン活動に限って利用できる公式画像が含まれます。</p>
       <div class="fanwork-terms" id="builder-fanwork-terms"></div>
+      <p class="fanwork-error" id="builder-fanwork-error" role="alert" hidden></p>
     </div>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
@@ -2493,16 +2498,16 @@ async function submitJob(previewSec, previewMode) {
   // 音声だけのプレビューには画像を使わないので確認不要。
   if (previewSec === 0 && requiresNoncommercialFanwork()
       && !$("noncommercial-fanwork").checked) {
-    const msg = "この単語リストの画像を使うには、二次創作ガイドラインを確認し、"
-      + "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。";
     setBusy(false);
-    showSubmitMsg(msg);
-    showBuilderMsg(msg);
+    showSubmitMsg("");
+    showBuilderMsg("");
+    showFanworkError("生成するには、ガイドラインを確認してチェックを入れてください。");
     const panel = $("builder-fanwork-confirmation");
     panel.scrollIntoView({ block: "center", behavior: "smooth" });
-    panel.focus({ preventScroll: true });
+    $("noncommercial-fanwork").focus({ preventScroll: true });
     return;
   }
+  showFanworkError("");
   // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
   // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
   if (previewSec === 0) $("builder-image-hidden").hidden = true;
@@ -3122,6 +3127,7 @@ function updateNoncommercialFanworkPrompt() {
   const panel = $("builder-fanwork-confirmation");
   const policy = currentImagePolicy();
   panel.hidden = !requiresNoncommercialFanwork();
+  if (panel.hidden) showFanworkError("");
   const rawTerms = policy && (policy.terms_pages || policy.terms);
   const terms = Array.isArray(rawTerms)
     ? rawTerms
@@ -3136,6 +3142,15 @@ function updateNoncommercialFanworkPrompt() {
     return [link];
   });
   $("builder-fanwork-terms").replaceChildren(...links);
+}
+
+function showFanworkError(text) {
+  const error = $("builder-fanwork-error");
+  const checkbox = $("noncommercial-fanwork");
+  error.textContent = text || "";
+  error.hidden = !text;
+  if (text) checkbox.setAttribute("aria-invalid", "true");
+  else checkbox.removeAttribute("aria-invalid");
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -3578,10 +3593,19 @@ $("builder-wordlist").addEventListener("change", () => {
 // 正本(詳細設定の曲・隠しの単語リスト)が変わったらカードのプルダウンと
 // プレビューを追従させる
 $("sample-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
-$("wordlist-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+$("wordlist-select").addEventListener("change", () => {
+  showFanworkError("");
+  syncBuilderValues();
+  schedulePreview();
+});
 // セレクトが無い構成・エディタからの書き戻し(自作リストで空になる)でも追従する
-$("wordlist").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+$("wordlist").addEventListener("change", () => {
+  showFanworkError("");
+  syncBuilderValues();
+  schedulePreview();
+});
 $("noncommercial-fanwork").addEventListener("change", () => {
+  showFanworkError("");
   showSubmitMsg("");
   showBuilderMsg("");
   schedulePreview(true);

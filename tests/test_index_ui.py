@@ -1497,14 +1497,31 @@ def test_noncommercial_fanwork_requires_explicit_checkbox():
     assert "function requiresNoncommercialFanwork()" in html
     assert "previewSec === 0 && requiresNoncommercialFanwork()" in html
     assert "以下の二次創作ガイドラインを確認し、遵守します" in html
-    assert "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。" in html
+    assert "生成するには、ガイドラインを確認してチェックを入れてください。" in html
+    assert "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。" not in html
     assert "非営利のファン活動に限って利用できる公式画像" in html
     assert "fanwork-details" in html
     assert "fanwork-terms" in html
     assert ".fanwork-confirmation label > span { min-width: 0; }" in html
     assert "margin-top: .25rem; font-size: .8rem; line-height: 1.45;" in html
     assert ".fanwork-terms a { overflow-wrap: anywhere; }" in html
+    assert 'id="builder-fanwork-error" role="alert" hidden' in html
+    assert 'aria-describedby="fanwork-guidance builder-fanwork-error"' in html
+    assert ".fanwork-error" in html
+    submit = _function_body(html, "async function submitJob(previewSec, previewMode)")
+    assert (
+        'showFanworkError("生成するには、ガイドラインを確認してチェックを入れてください。")'
+        in submit
+    )
+    assert '$("noncommercial-fanwork").focus({ preventScroll: true });' in submit
+    assert "showSubmitMsg(msg);" not in submit
+    assert "showBuilderMsg(msg);" not in submit
+    fanwork_error = _function_body(html, "function showFanworkError(text)")
+    assert 'checkbox.setAttribute("aria-invalid", "true")' in fanwork_error
+    assert 'checkbox.removeAttribute("aria-invalid")' in fanwork_error
+    assert html.count('showFanworkError("");') >= 5
     prompt = _function_body(html, "function updateNoncommercialFanworkPrompt()")
+    assert 'if (panel.hidden) showFanworkError("");' in prompt
     assert "policy.terms_pages || policy.terms" in prompt
     assert "Array.isArray(rawTerms)" in prompt
     assert 'link.target = "_blank";' in prompt

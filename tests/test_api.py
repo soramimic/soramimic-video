@@ -298,8 +298,11 @@ def test_index_html_builder_card_has_selects():
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
     assert (
-        '$("wordlist-select").addEventListener("change", '
-        "() => { syncBuilderValues(); schedulePreview(); });" in html
+        '$("wordlist-select").addEventListener("change", () => {\n'
+        '  showFanworkError("");\n'
+        "  syncBuilderValues();\n"
+        "  schedulePreview();\n"
+        "});" in html
     )
     advanced = _advanced_html()
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
