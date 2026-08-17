@@ -3773,8 +3773,6 @@ async function leFetchCue(index) {
   form.append("wordlist", $("wordlist").value.trim());
   form.append("cue", Math.max(0, index | 0));
   form.append("lyrics", $("lyrics").value);
-  form.append("allow_noncommercial_fanwork",
-    $("noncommercial-fanwork").checked ? "true" : "false");
   if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
   try {
     const res = await fetch("/api/editor-preview", { method: "POST", body: form, headers: headers() });

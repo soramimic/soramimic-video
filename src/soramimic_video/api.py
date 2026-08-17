@@ -208,35 +208,14 @@ def launch_wordlist_names() -> set[str]:
 
 
 def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
-    """Public/Simple APIではカタログ名だけを許可しpath解決前に拒否する。"""
+    """Simple UIではカタログ名だけを許可し、filesystem pathを解決前に拒否する。"""
     name = wordlist.strip()
-    if (is_simple_ui() or is_public_mode()) and name not in launch_wordlist_names():
+    if is_simple_ui() and name not in launch_wordlist_names():
         raise HTTPException(
             status_code=status_code,
             detail="この単語リストは現在利用できません",
         )
     return name
-
-
-def require_private_wordlist_ack(
-    wordlist: str,
-    allow_noncommercial_fanwork: bool,
-    *,
-    status_code: int = 403,
-) -> None:
-    """Private overlays require an explicit acknowledgement before any image flow."""
-    if not wordlist or allow_noncommercial_fanwork:
-        return
-    from .private_wordlists import resolve as resolve_private_wordlist
-
-    if resolve_private_wordlist(wordlist) is not None:
-        raise HTTPException(
-            status_code=status_code,
-            detail=(
-                "この単語リストは非営利ファン活動向けの非公開画像を含みます。"
-                "利用条件を確認して明示的に有効にしてください"
-            ),
-        )
 
 
 async def read_midi_upload(midi: UploadFile) -> bytes:
@@ -2285,16 +2264,11 @@ def create_app(
             resolved.relative_to(root)
             if resolved.parent != root or not resolved.is_file():
                 raise OSError("not a packaged wordlist")
-            return resolved
-        except (OSError, ValueError):
-            from .private_wordlists import resolve as resolve_private_wordlist
-
-            private = resolve_private_wordlist(name)
-            if private is not None:
-                return private
+        except (OSError, ValueError) as exc:
             raise HTTPException(
                 status_code=404, detail="単語リストが見つかりません"
-            ) from None
+            ) from exc
+        return resolved
 
     def _asset_preview_row(wordlist: str, url: str) -> dict[str, str] | None:
         """指定URLまたは代表画像の、名前付きCSVに実在する行だけを返す。"""
@@ -2326,7 +2300,7 @@ def create_app(
         指定した名前付き単語リストのimage列に実在するURLだけを対象にする。
         url未指定時は代表行(単語リストの最初の画像あり行)の画像。
         """
-        from .asset_store import is_private_asset_id, verified_preview_asset
+        from .asset_store import verified_preview_asset
         from .image_usage import require_image_usage
         from .video import cached_image
 
@@ -2346,9 +2320,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         parsed = urlsplit(target)
-        if not is_private_asset_id(target) and (
-            parsed.scheme not in {"http", "https"} or not parsed.netloc
-        ):
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise HTTPException(status_code=404, detail="画像が見つかりません")
 
         managed, path, revision, source_sha256 = verified_preview_asset(target)
@@ -2435,8 +2407,6 @@ def create_app(
         wordlist = require_launch_wordlist(wordlist)
         if not wordlist:
             raise HTTPException(status_code=400, detail="単語リスト名(wordlist)が必要です")
-        if images:
-            require_private_wordlist_ack(wordlist, noncommercial_fanwork)
         # PreviewSpecの作成自体がCSV内容hash等を読むため、cache判定より前にも広い枠を置く。
         if not _allow_expensive_get(request, cache_hit=True):
             raise HTTPException(status_code=429, detail="プレビューの取得が続いています")
@@ -2490,7 +2460,7 @@ def create_app(
                 # 毎回サーバーに聞く(キャッシュヒットなら数ミリ秒で304/即応答)。
                 # 画像の裏読みが間に合って作り直されたとき、ブラウザが古い
                 # 「絵なし」プレビューを握り続けないようにする
-                "Cache-Control": "private, no-store",
+                "Cache-Control": "private, no-cache",
                 "X-Preview-Cache": "hit" if cached else "miss",
                 # 単語画像が間に合わず文字だけで返したときは pending。UIはこれを見て
                 # 数秒後に1回だけ取り直す(裏で絵入りに作り直されているのでヒットする)
@@ -2506,7 +2476,6 @@ def create_app(
         layout_json: str = Form(""),
         lyrics: str = Form(""),
         subtitle_granularity: str = Form(""),
-        allow_noncommercial_fanwork: bool = Form(False),
     ) -> dict[str, Any]:
         """editor書き出しJSONの変換結果に基づく、キュー1枚ぶんのプレビューデータ。
 
@@ -2540,9 +2509,6 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        require_private_wordlist_ack(
-            str(result.get("wordlist") or ""), allow_noncommercial_fanwork
-        )
         cues = result["cues"]
         total = len(cues)
         if total == 0:
@@ -2551,12 +2517,9 @@ def create_app(
         item = cues[index]
         image_url = ""
         if item["image"]:
-            query: dict[str, Any] = {
-                "wordlist": result["wordlist"], "url": item["image"]
-            }
-            if allow_noncommercial_fanwork:
-                query["noncommercial_fanwork"] = "true"
-            image_url = "/api/asset-preview?" + urlencode(query)
+            image_url = "/api/asset-preview?" + urlencode(
+                {"wordlist": result["wordlist"], "url": item["image"]}
+            )
         return {
             "total": total,
             "index": index,
@@ -2777,7 +2740,7 @@ def create_app(
                 voicevox_auto_octave if voicevox_auto_octave is not None else True
             )
         wordlist = wordlist.strip()
-        if (is_simple_ui() or is_public_mode()) and wordlist:
+        if is_simple_ui() and wordlist:
             wordlist = require_launch_wordlist(wordlist, status_code=422)
         # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
         # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
@@ -2846,10 +2809,6 @@ def create_app(
             # レイアウトは単一の共通デザインではなく、選んだリストに
             # 対応する検証済みの既定デザインにサーバー側で固定する。
             layout = load_wordlist_layouts().get(wordlist, "")
-        if custom is None:
-            require_private_wordlist_ack(
-                wordlist, allow_noncommercial_fanwork, status_code=422
-            )
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
@@ -2978,12 +2937,10 @@ def create_app(
             raise HTTPException(status_code=409, detail="動画はまだできていません")
         if job.video.suffix == ".wav":  # プレビュー(歌声のみ)
             return FileResponse(
-                job.video, media_type="audio/wav", filename=_download_filename(job),
-                headers={"Cache-Control": "private, no-store"},
+                job.video, media_type="audio/wav", filename=_download_filename(job)
             )
         return FileResponse(
-            job.video, media_type="video/mp4", filename=_download_filename(job),
-            headers={"Cache-Control": "private, no-store"},
+            job.video, media_type="video/mp4", filename=_download_filename(job)
         )
 
     @app.get("/api/jobs/{job_id}/playback", dependencies=[Depends(_require_api_key)])
@@ -3008,8 +2965,7 @@ def create_app(
         if not job.thumbnail.exists():
             raise HTTPException(status_code=404, detail="サムネ画像がありません")
         return FileResponse(
-            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job),
-            headers={"Cache-Control": "private, no-store"},
+            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job)
         )
 
     # ---- 同梱editor(/editor/)向けの配信・シード(A-2) ----
@@ -3037,10 +2993,7 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="単語リストが見つかりません"
             ) from exc
-        return FileResponse(
-            path, media_type="text/csv",
-            headers={"Cache-Control": "private, no-store"},
-        )
+        return FileResponse(path, media_type="text/csv")
 
     @app.get("/editor/conf/setting.json")
     def editor_setting_json() -> JSONResponse:
@@ -3081,13 +3034,6 @@ def create_app(
             return visible
 
         config["wordlist"] = visible_wordlists(config.get("wordlist"))
-        from .private_wordlists import editor_entries as private_editor_entries
-
-        private_entries = private_editor_entries()
-        if private_entries:
-            config.setdefault("wordlist", []).append(
-                {"label": "非公開", "items": private_entries}
-            )
         return JSONResponse(config, headers={"Cache-Control": "no-store"})
 
     @app.get("/editor/kuromoji/dict/{name}")

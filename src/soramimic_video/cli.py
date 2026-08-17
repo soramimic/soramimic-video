@@ -348,31 +348,6 @@ def cmd_asset_status(args: argparse.Namespace) -> int:
     return 0 if healthy else 1
 
 
-def cmd_import_private_assets(args: argparse.Namespace) -> int:
-    import os
-
-    from .asset_store import PRIVATE_ASSET_STORE_ENV
-    from .private_assets import PrivateAssetError, import_private_assets
-
-    store_value = args.asset_store or os.environ.get(PRIVATE_ASSET_STORE_ENV, "")
-    if not store_value:
-        print(
-            f"--asset-store または {PRIVATE_ASSET_STORE_ENV} が必要です",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        summary = import_private_assets(Path(args.manifest), Path(store_value))
-    except (OSError, PrivateAssetError) as exc:
-        print(f"private asset import失敗: {exc}", file=sys.stderr)
-        return 1
-    print(
-        f"private asset import完了: {summary['total']}件 "
-        f"(新規 {summary['copied']} / 再利用 {summary['reused']}) -> {store_value}"
-    )
-    return 0
-
-
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -709,20 +684,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="共有asset store (環境変数 SORAMIMIC_VIDEO_ASSET_STORE でも指定可)",
     )
     p.set_defaults(func=cmd_asset_status)
-
-    p = sub.add_parser(
-        "import-private-assets",
-        help="ローカル台帳の画像を外部非公開asset storeへ取り込む",
-    )
-    p.add_argument("manifest", help="source_fileと出典・hashを記録した非公開JSON台帳")
-    p.add_argument(
-        "--asset-store",
-        help=(
-            "非公開asset store "
-            "(環境変数 SORAMIMIC_VIDEO_PRIVATE_ASSET_STORE でも指定可)"
-        ),
-    )
-    p.set_defaults(func=cmd_import_private_assets)
 
     p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
     p.add_argument("--host", default="127.0.0.1", help="LANに公開するなら 0.0.0.0")

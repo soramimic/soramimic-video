@@ -79,15 +79,6 @@ def get_preview(client: TestClient, **params):
     })
 
 
-def _allow_test_wordlist_public(tmp_path: Path, monkeypatch) -> None:
-    catalog = tmp_path / "launch-catalog.json"
-    catalog.write_text(
-        json.dumps({"samples": [SAMPLE_ID], "wordlists": ["mylist"]}),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(api_mod.LAUNCH_CATALOG_ENV, str(catalog))
-
-
 # ---- 正常系・キャッシュ ----
 
 
@@ -232,7 +223,6 @@ def test_rate_limit_disabled_by_zero(client: TestClient, monkeypatch):
 @pytest.fixture
 def public_client(tmp_path, monkeypatch, wordlist_dir, samples) -> TestClient:
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
-    _allow_test_wordlist_public(tmp_path, monkeypatch)
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
     monkeypatch.setattr(api_mod, "run_pipeline", lambda job, config: job.dir / "x.mp4")
     return TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
@@ -249,7 +239,6 @@ def test_public_mode_rate_limit_is_per_session(
     tmp_path, monkeypatch, wordlist_dir, samples
 ):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
-    _allow_test_wordlist_public(tmp_path, monkeypatch)
     monkeypatch.setenv(preview_mod.RATE_LIMIT_ENV, "1")
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
     app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
@@ -264,7 +253,6 @@ def test_ip_backstop_survives_cookie_deletion(
     tmp_path, monkeypatch, wordlist_dir, samples
 ):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
-    _allow_test_wordlist_public(tmp_path, monkeypatch)
     monkeypatch.setenv(preview_mod.RATE_LIMIT_ENV, "100")
     monkeypatch.setenv(api_mod.GET_IP_RATE_LIMIT_ENV, "1")
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
