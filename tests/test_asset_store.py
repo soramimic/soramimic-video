@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from soramimic_video import asset_store, image_credit, prewarm, video
+from soramimic_video import asset_store, image_credit, prewarm, private_assets, video
+from soramimic_video.image_usage import PrivateAssetPolicyError, require_image_usage
 
 
 def _png(path: Path, color: str = "red") -> None:
@@ -45,6 +46,128 @@ def _source_manifest(entries: dict[str, tuple[int, Path]], revision: int = 1) ->
 
 def test_manifest_cache_is_bounded():
     assert asset_store._read_manifest.cache_info().maxsize == 2
+
+
+def test_private_asset_id_is_managed_missing_without_private_store(tmp_path, monkeypatch):
+    monkeypatch.delenv(asset_store.PRIVATE_ASSET_STORE_ENV, raising=False)
+    asset_id = "asset://private/fanwork/example"
+    assert asset_store.local_asset(asset_id) == (True, None)
+    assert asset_store.local_credit(asset_id) == (True, None)
+    assert video.cached_image(asset_id, tmp_path / "cache") is None
+    assert video.download_image(asset_id, tmp_path / "cache") is None
+
+
+def test_public_mode_ignores_private_store_even_if_env_leaks(tmp_path, monkeypatch):
+    store = tmp_path / "private-store"
+    store.mkdir()
+    asset_id = "asset://private/fanwork/example"
+    (store / "manifest.json").write_text(json.dumps({"assets": {asset_id: {
+        "status": "available", "local_path": "objects/example.png",
+    }}}), encoding="utf-8")
+    monkeypatch.setenv(asset_store.PRIVATE_ASSET_STORE_ENV, str(store))
+    monkeypatch.setenv(asset_store.PUBLIC_ENV, "1")
+    assert asset_store.configured_private_asset_store() is None
+    assert asset_store.local_asset(asset_id) == (True, None)
+    assert asset_store.local_asset(asset_id, store) == (True, None)
+    assert asset_store.manifest_entry(asset_id, store) is None
+
+
+def test_private_import_refuses_incompatible_existing_manifest(tmp_path):
+    store = tmp_path / "private-store"
+    store.mkdir()
+    (store / "manifest.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(private_assets.PrivateAssetError, match="互換性"):
+        private_assets._existing_assets(store)
+
+
+def test_import_private_asset_and_resolve_offline(tmp_path, monkeypatch):
+    source = tmp_path / "source.png"
+    _png(source)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    asset_id = "asset://private/fanwork/example"
+    input_manifest = tmp_path / "input.json"
+    input_manifest.write_text(json.dumps({"assets": [{
+        "id": asset_id,
+        "source_file": str(source),
+        "source_url": "https://assets.rights.example/example.png",
+        "source_page": "https://rights.example/works/example",
+        "sha256": digest,
+        "credit": "© Example Creator",
+        "usage": "noncommercial_fanwork",
+        "terms_page": "https://rights.example/terms/",
+        "acquired_at": "2026-08-17",
+        "terms_reviewed_at": "2026-08-17",
+    }]}), encoding="utf-8")
+    store = tmp_path / "private-store"
+    assert private_assets.import_private_assets(input_manifest, store) == {
+        "total": 1, "copied": 1, "reused": 0,
+    }
+    monkeypatch.setenv(asset_store.PRIVATE_ASSET_STORE_ENV, str(store))
+    managed, path = asset_store.local_asset(asset_id)
+    assert managed is True
+    assert path is not None and path.read_bytes() == source.read_bytes()
+    managed, credit = asset_store.local_credit(asset_id)
+    assert managed is True
+    assert credit is not None and credit["credit_text"] == "© Example Creator"
+    assert private_assets.import_private_assets(input_manifest, store) == {
+        "total": 1, "copied": 0, "reused": 1,
+    }
+    stored_manifest = json.loads((store / "manifest.json").read_text(encoding="utf-8"))
+    stored_manifest["assets"]["asset://private/other/preserved"] = dict(
+        stored_manifest["assets"][asset_id]
+    )
+    (store / "manifest.json").write_text(
+        json.dumps(stored_manifest), encoding="utf-8"
+    )
+    assert private_assets.import_private_assets(input_manifest, store) == {
+        "total": 1, "copied": 0, "reused": 1,
+    }
+    merged = json.loads((store / "manifest.json").read_text(encoding="utf-8"))
+    assert "asset://private/other/preserved" in merged["assets"]
+    row = {
+        "image": asset_id,
+        "image_usage": "noncommercial_fanwork",
+        "image_terms_page": "https://rights.example/terms/",
+    }
+    require_image_usage(row, allow_noncommercial_fanwork=True)
+    with pytest.raises(PrivateAssetPolicyError, match="一致しません"):
+        require_image_usage(
+            {**row, "image_terms_page": "https://example.com/wrong"},
+            allow_noncommercial_fanwork=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"id": "asset://private/fanwork/../escape"}, "idが不正"),
+        ({"sha256": "0" * 64}, "sha256が一致"),
+        ({"source_url": "http://example.com/a.png"}, "HTTPS URL"),
+        ({"terms_reviewed_at": "not-a-date"}, "YYYY-MM-DD"),
+    ],
+)
+def test_private_asset_import_rejects_invalid_manifest(
+    tmp_path, change, message,
+):
+    source = tmp_path / "source.png"
+    _png(source)
+    record = {
+        "id": "asset://private/fanwork/example",
+        "source_file": str(source),
+        "source_url": "https://example.com/a.png",
+        "source_page": "https://example.com/profile",
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "credit": "© Example",
+        "usage": "noncommercial_fanwork",
+        "terms_page": "https://example.com/terms",
+        "acquired_at": "2026-08-17",
+        "terms_reviewed_at": "2026-08-17",
+    }
+    record.update(change)
+    manifest = tmp_path / "input.json"
+    manifest.write_text(json.dumps({"assets": [record]}), encoding="utf-8")
+    with pytest.raises(private_assets.PrivateAssetError, match=message):
+        private_assets.import_private_assets(manifest, tmp_path / "store")
 
 
 def test_orphaned_manifest_entry_uses_runtime_fallback(tmp_path):

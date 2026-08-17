@@ -10,6 +10,9 @@ from functools import lru_cache
 from pathlib import Path
 
 ASSET_STORE_ENV = "SORAMIMIC_VIDEO_ASSET_STORE"
+PRIVATE_ASSET_STORE_ENV = "SORAMIMIC_VIDEO_PRIVATE_ASSET_STORE"
+PRIVATE_ASSET_PREFIX = "asset://private/"
+PUBLIC_ENV = "SORAMIMIC_PUBLIC"
 MANIFEST_NAME = "manifest.json"
 PENDING_MANIFEST_NAME = "manifest.pending.json"
 MAX_PREVIEW_SOURCE_BYTES = 32 * 1024 * 1024
@@ -18,6 +21,24 @@ MAX_PREVIEW_SOURCE_BYTES = 32 * 1024 * 1024
 def configured_asset_store() -> Path | None:
     value = os.environ.get(ASSET_STORE_ENV, "").strip()
     return Path(value) if value else None
+
+
+def configured_private_asset_store() -> Path | None:
+    """Return the release-independent store that exists only on private hosts."""
+    if is_public_runtime():
+        return None
+    value = os.environ.get(PRIVATE_ASSET_STORE_ENV, "").strip()
+    return Path(value) if value else None
+
+
+def is_private_asset_id(value: str) -> bool:
+    return value.startswith(PRIVATE_ASSET_PREFIX)
+
+
+def is_public_runtime() -> bool:
+    return os.environ.get(PUBLIC_ENV, "").strip().lower() not in (
+        "", "0", "false", "no",
+    )
 
 
 @lru_cache(maxsize=2)
@@ -39,7 +60,13 @@ def load_manifest(store: Path) -> dict:
 
 
 def manifest_entry(url: str, store: Path | None = None) -> dict | None:
-    root = store or configured_asset_store()
+    if is_private_asset_id(url) and is_public_runtime():
+        return None
+    root = store or (
+        configured_private_asset_store()
+        if is_private_asset_id(url)
+        else configured_asset_store()
+    )
     if root is None:
         return None
     entry = load_manifest(root).get("assets", {}).get(url)
@@ -52,12 +79,19 @@ def manifest_entry(url: str, store: Path | None = None) -> dict | None:
 
 def local_asset(url: str, store: Path | None = None) -> tuple[bool, Path | None]:
     """Return (managed, local path). A managed failed entry must not hit the network."""
-    root = store or configured_asset_store()
+    private = is_private_asset_id(url)
+    if private and is_public_runtime():
+        return True, None
+    root = store or (
+        configured_private_asset_store() if private else configured_asset_store()
+    )
     if root is None:
-        return False, None
+        # A private logical id must never fall through to requests, file handling, or
+        # another runtime fallback merely because this environment lacks its store.
+        return (True, None) if private else (False, None)
     entry = manifest_entry(url, root)
     if entry is None:
-        return False, None
+        return (True, None) if private else (False, None)
     relative = entry.get("local_path")
     if entry.get("status") != "available" or not isinstance(relative, str):
         return True, None
@@ -82,7 +116,12 @@ def verified_preview_asset(
     フォールバックさせない。動画生成向けの :func:`local_asset` は従来どおり
     原本pathを返すため、この検証はHTTP派生画像の境界だけで使う。
     """
-    root = store or configured_asset_store()
+    private = is_private_asset_id(url)
+    if private and is_public_runtime():
+        return True, None, "", ""
+    root = store or (
+        configured_private_asset_store() if private else configured_asset_store()
+    )
     if root is None:
         return False, None, "", ""
     entry = load_manifest(root).get("assets", {}).get(url)
@@ -131,9 +170,17 @@ def verified_preview_asset(
 
 def local_credit(url: str, store: Path | None = None) -> tuple[bool, dict | None]:
     """Return (managed, credit), preserving known-no-attribution vs unknown."""
-    entry = manifest_entry(url, store or configured_asset_store())
+    private = is_private_asset_id(url)
+    if private and is_public_runtime():
+        return True, None
+    root = store or (
+        configured_private_asset_store() if private else configured_asset_store()
+    )
+    if root is None:
+        return (True, None) if private else (False, None)
+    entry = manifest_entry(url, root)
     if entry is None:
-        return False, None
+        return (True, None) if private else (False, None)
     credit = entry.get("credit")
     if not isinstance(credit, dict) or credit.get("status") == "unknown":
         return True, None

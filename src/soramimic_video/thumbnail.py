@@ -706,6 +706,11 @@ def _word_image(
     page = str((row or {}).get("image_page") or "")
     path = download_image(url, cache) if download else cached_image(url, cache)
     if path is None:
+        from .asset_store import is_private_asset_id
+        from .image_usage import PrivateAssetPolicyError
+
+        if is_private_asset_id(url):
+            raise PrivateAssetPolicyError("非公開画像の実体を読み込めません")
         if missing is not None:
             missing.append((url, page))
         return None, ""
@@ -812,17 +817,26 @@ def resolve_headline(
     image_paths: list[Path] = []
     image_credits: list[str] = []
     if found and image_cache is not None:
-        from .image_usage import image_usage_allowed
+        from .image_usage import PrivateAssetPolicyError, require_image_usage
 
         try:
+            allowed_rows: list[dict[str, str] | None] = []
+            for _word, row in found:
+                try:
+                    require_image_usage(
+                        row or {},
+                        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+                    )
+                except PrivateAssetPolicyError:
+                    raise
+                except ValueError:
+                    continue
+                allowed_rows.append(row)
             if not download_images and image_wait_sec > 0:
                 # 待てないなりに少しだけ待つ(初見の1回目から絵入りにするため)
-                wait_for_images([row for _word, row in found], image_cache, image_wait_sec)
+                wait_for_images(allowed_rows, image_cache, image_wait_sec)
             for _word, row in found:
-                if not image_usage_allowed(
-                    row,
-                    allow_noncommercial_fanwork=allow_noncommercial_fanwork,
-                ):
+                if row not in allowed_rows:
                     continue
                 path, credit = _word_image(
                     row, image_cache, download_images, missing_images
@@ -831,6 +845,8 @@ def resolve_headline(
                     image_paths.append(path)
                     image_credits.append(credit)
         except runproc.Cancelled:
+            raise
+        except PrivateAssetPolicyError:
             raise
         except Exception as e:  # noqa: BLE001 - 画像なしのサムネにフォールバック
             logger.warning("サムネ用の画像を取得できませんでした: %s", e)
