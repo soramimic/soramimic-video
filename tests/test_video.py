@@ -404,9 +404,12 @@ def test_needs_ruby():
     assert not _needs_ruby("ウィキ", "ウイキ")  # 全カナ表記は発音とゆれてもルビ不要
     assert not _needs_ruby("こんにちは", "コンニチワ")  # ひらがな表記も同様
     assert not _needs_ruby("", "シズ")  # 表記が空ならルビなし
-    # 読みを持たない記号(中黒・イコール・空白)は判定から外す=実質全カナならルビ不要
+    # 読みを持たない記号(中黒・イコール・コロン・空白)は判定から外す
+    # =実質全カナならルビ不要
     assert not _needs_ruby("バリッシュ・コノル", "バリッシュコノル")
     assert not _needs_ruby("ジャン=ピエール", "ジャンピエール")
+    assert not _needs_ruby("タイプ:ヌル", "タイプヌル")
+    assert not _needs_ruby("タイプ：ヌル", "タイプヌル")
     assert not _needs_ruby("ドン キホーテ", "ドンキホーテ")
     assert _needs_ruby("アテル＝参", "アテルサン")  # 記号を除いても漢字が残ればルビ対象
 
@@ -430,6 +433,8 @@ def test_ruby_segments():
     assert _ruby_segments("", "シズ") is None
     # 読みを持たない記号(中黒等)はカナ扱い。全部カナ+記号ならルビを振る範囲は無い
     assert _ruby_segments("バリッシュ・コノル", "バリッシュコノル") == []
+    assert _ruby_segments("タイプ:ヌル", "タイプヌル") == []
+    assert _ruby_segments("タイプ：ヌル", "タイプヌル") == []
     # 記号+漢字の混在では漢字部分にだけ読みが割り当たる
     assert _ruby_segments("アテル＝参", "アテルサン") == [(4, 5, "サン")]
     assert _ruby_segments("参・アテル", "サンアテル") == [(0, 1, "サン")]
@@ -461,6 +466,19 @@ def test_build_ass_ruby_silent_symbol_word(tmp_path: Path):
     project.parody.lines[0].words = [
         ParodyWord(surface="バリッシュ・コノル", kana="バリッシュコノル", original="",
                    original_surface="", originalkana="", note_ids=[0]),
+    ]
+    ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
+    assert _ruby_events(ass) == []
+
+
+@pytest.mark.parametrize("surface", ["タイプ:ヌル", "タイプ：ヌル"])
+def test_build_ass_ruby_colon_word(tmp_path: Path, surface: str):
+    from soramimic_video.layout import load_layout
+
+    project = _project(tmp_path)
+    project.parody.lines[0].words = [
+        ParodyWord(surface=surface, kana="タイプヌル", original="", original_surface="",
+                   originalkana="", note_ids=[0]),
     ]
     ass = build_ass(project, 1280, 720, "Font", load_layout(_ruby_layout(tmp_path)))
     assert _ruby_events(ass) == []
