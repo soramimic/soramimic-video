@@ -488,8 +488,15 @@
     border-radius: 10px; background: #f59e0b14;
   }
   .fanwork-confirmation label { display: flex; align-items: flex-start; gap: .5rem; margin: 0; }
+  .fanwork-confirmation label > span { min-width: 0; }
   .fanwork-confirmation input { flex: 0 0 auto; margin-top: .2rem; }
-  .fanwork-confirmation .hint { margin: .35rem 0 0 1.65rem; }
+  .fanwork-details { margin: .35rem 0 0 1.65rem; }
+  .fanwork-confirmation .hint { margin: 0; }
+  .fanwork-terms {
+    display: flex; flex-direction: column; align-items: flex-start; gap: .15rem;
+    margin-top: .25rem;
+  }
+  .fanwork-terms a { overflow-wrap: anywhere; }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -618,9 +625,10 @@
       <input type="checkbox" id="noncommercial-fanwork">
       <span>以下の二次創作ガイドラインを確認し、遵守します</span>
     </label>
-    <p class="hint">この単語リストには、非営利のファン活動に限って利用できる公式画像が含まれます。
-      <a id="builder-fanwork-terms" href="https://hololivepro.com/terms/"
-        target="_blank" rel="noopener noreferrer">ホロライブプロダクション二次創作ガイドライン</a></p>
+    <div class="fanwork-details">
+      <p class="hint">この単語リストには、非営利のファン活動に限って利用できる公式画像が含まれます。</p>
+      <div class="fanwork-terms" id="builder-fanwork-terms"></div>
+    </div>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
@@ -3114,8 +3122,20 @@ function updateNoncommercialFanworkPrompt() {
   const panel = $("builder-fanwork-confirmation");
   const policy = currentImagePolicy();
   panel.hidden = !requiresNoncommercialFanwork();
-  const terms = policy && policy.terms;
-  if (terms) $("builder-fanwork-terms").href = terms;
+  const rawTerms = policy && (policy.terms_pages || policy.terms);
+  const terms = Array.isArray(rawTerms)
+    ? rawTerms
+    : (rawTerms ? [{ url: rawTerms, label: "二次創作ガイドライン" }] : []);
+  const links = terms.flatMap((term) => {
+    if (!term || typeof term.url !== "string" || !term.url) return [];
+    const link = document.createElement("a");
+    link.href = term.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = term.label || term.url;
+    return [link];
+  });
+  $("builder-fanwork-terms").replaceChildren(...links);
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。

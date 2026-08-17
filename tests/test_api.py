@@ -969,6 +969,20 @@ def test_config_has_youtuber_image_policy(client):
     assert conf["wordlist_image_policies"]["youtuber"] == {
         "usage": "noncommercial_fanwork",
         "terms": "https://hololivepro.com/terms/",
+        "terms_pages": [
+            {
+                "url": "https://hololivepro.com/terms/",
+                "label": "ホロライブプロダクション二次創作ガイドライン",
+            },
+            {
+                "url": "https://www.anycolor.co.jp/guidelines/",
+                "label": "ANYCOLOR二次創作ガイドライン",
+            },
+            {
+                "url": "https://vhs-city.com/aogirihighschool/guidelines/fanfic",
+                "label": "あおぎり高校二次創作ガイドライン",
+            },
+        ],
     }
 
 
