@@ -616,11 +616,11 @@
   <div class="fanwork-confirmation" id="builder-fanwork-confirmation" hidden tabindex="-1">
     <label>
       <input type="checkbox" id="noncommercial-fanwork">
-      <span>この動画は非営利のファン活動として公開する</span>
+      <span>以下の二次創作ガイドラインを確認し、遵守します</span>
     </label>
-    <p class="hint">この単語リストには利用条件付きの公式画像が含まれます。
+    <p class="hint">この単語リストには、非営利のファン活動に限って利用できる公式画像が含まれます。
       <a id="builder-fanwork-terms" href="https://hololivepro.com/terms/"
-        target="_blank" rel="noopener noreferrer">利用条件を確認</a>してからチェックしてください。</p>
+        target="_blank" rel="noopener noreferrer">ホロライブプロダクション二次創作ガイドライン</a></p>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
@@ -2485,8 +2485,8 @@ async function submitJob(previewSec, previewMode) {
   // 音声だけのプレビューには画像を使わないので確認不要。
   if (previewSec === 0 && requiresNoncommercialFanwork()
       && !$("noncommercial-fanwork").checked) {
-    const msg = "この単語リストの画像を使うには、利用条件を確認し、"
-      + "「非営利のファン活動として公開する」にチェックしてください。";
+    const msg = "この単語リストの画像を使うには、二次創作ガイドラインを確認し、"
+      + "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。";
     setBusy(false);
     showSubmitMsg(msg);
     showBuilderMsg(msg);

@@ -1496,7 +1496,10 @@ def test_noncommercial_fanwork_requires_explicit_checkbox():
     assert 'id="builder-fanwork-confirmation" hidden' in html
     assert "function requiresNoncommercialFanwork()" in html
     assert "previewSec === 0 && requiresNoncommercialFanwork()" in html
-    assert "利用条件を確認し" in html
+    assert "以下の二次創作ガイドラインを確認し、遵守します" in html
+    assert "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。" in html
+    assert "非営利のファン活動に限って利用できる公式画像" in html
+    assert "非営利のファン活動として公開する" not in html
     assert "画像クレジットは生成物の credits.md に記録されます。" not in html
     assert 'form.append("allow_noncommercial_fanwork"' in html
     assert '$("noncommercial-fanwork").checked ? "true" : "false"' in html
