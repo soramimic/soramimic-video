@@ -1477,13 +1477,14 @@ def test_layout_preview_image_needs_a_wordlist_name():
     """レイアウトプレビューの代表画像は、単語リスト名が空なら取りに行かない。
 
     自作リスト(ORIGINAL/csvText)のあいだは正本 #wordlist が空。空の名前で
-    /api/wordlist-image を叩くと404になるので、loadWordlistImage と同じ空ガードを
+    /api/asset-preview を叩くと404になるので、loadWordlistImage と同じ空ガードを
     置いてプレースホルダに落とす。
     """
     script = _script()
     body = _function_body(script, "function leContent(e)")
     assert 'const name = $("wordlist").value.trim();' in body
-    assert 'if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);' in body
+    assert 'if (name) src = "/api/asset-preview?wordlist=" + encodeURIComponent(name);' in body
+    assert "/api/wordlist-image?" not in script
     # 代表画像のもう一方の経路(サムネ)も同じ流儀の空ガードを持つ
     thumb = _function_body(script, "function loadWordlistImage(name, seq)")
     assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in thumb

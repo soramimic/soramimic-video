@@ -99,6 +99,8 @@ def test_simple_uses_bundled_lyrics_and_rejects_custom_inputs(
         "/api/wordlist-columns?wordlist=not-published",
         "/api/wordlist-image?wordlist=football",
         "/api/wordlist-image?wordlist=not-published",
+        "/api/asset-preview?wordlist=football",
+        "/api/asset-preview?wordlist=not-published",
         "/editor/wordlists/youtuber.csv",
         "/editor/wordlists/not-published.csv",
     ],
@@ -126,6 +128,10 @@ def test_simple_rejects_filesystem_csv_before_resolution(
     )
     assert (
         simple_client.get("/api/wordlist-image", params={"wordlist": str(csv_path)}).status_code
+        == 404
+    )
+    assert (
+        simple_client.get("/api/asset-preview", params={"wordlist": str(csv_path)}).status_code
         == 404
     )
 
