@@ -497,6 +497,7 @@ def test_turnstile_interaction_scrolls_to_inline_prompt():
     assert "if (!alreadyActive || forceScroll)" in prompt
     assert "if (focusPanel)" in prompt
     challenge = _function_body(script, "function showTurnstileChallenge()")
+    assert 'setTurnstilePromptCopy("チェックして動画生成を続ける", "")' in challenge
     assert 'classList.add("turnstile-challenge")' in challenge
     assert "showTurnstilePrompt(true, false)" in challenge
     render = _function_body(script, "function renderTurnstileWidget()")
@@ -514,7 +515,8 @@ def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
     assert "#turnstile-wrap.turnstile-complete #turnstile-widget" in markup
     assert "inset-inline-start: -10000px" in markup
     assert "visibility: hidden" in markup
-    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy { display: none; }" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy { display: block; }" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy .hint { display: none; }" in markup
     assert "#turnstile-wrap.turnstile-challenge .turnstile-panel" in markup
 
 

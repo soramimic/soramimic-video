@@ -436,12 +436,16 @@
     border-radius: 10px; background: var(--panel); text-align: center;
     box-shadow: 0 0 0 2px #1296f022;
   }
-  /* 通常の手動確認はCloudflare本体だけで意味が通る。独自の見出し・補足・外枠を
-     重ねず、失敗案内と短い完了表示のときだけ上のカード装飾を使う。 */
+  /* 通常の手動確認は、操作が必要だと分かる短い見出しとCloudflare本体だけを出す。
+     詳しい補足・外枠は重ねず、失敗案内と短い完了表示だけ上のカード装飾を使う。 */
   #turnstile-wrap.turnstile-challenge .turnstile-panel {
     padding: 0; border: 0; background: transparent; box-shadow: none;
   }
-  #turnstile-wrap.turnstile-challenge .turnstile-copy { display: none; }
+  #turnstile-wrap.turnstile-challenge .turnstile-copy { display: block; }
+  #turnstile-wrap.turnstile-challenge .turnstile-copy .hint { display: none; }
+  #turnstile-wrap.turnstile-challenge .turnstile-title {
+    margin: 0 0 .35rem; font-size: .95rem; line-height: 1.4;
+  }
   #turnstile-wrap:not(.turnstile-active) .turnstile-panel {
     max-width: 26rem; padding: 0; border: 0; background: transparent;
   }
@@ -1402,6 +1406,7 @@ function showTurnstilePrompt(forceScroll = false, focusPanel = true) {
 }
 
 function showTurnstileChallenge() {
+  setTurnstilePromptCopy("チェックして動画生成を続ける", "");
   $("turnstile-wrap").classList.add("turnstile-challenge");
   showTurnstilePrompt(true, false);
 }
