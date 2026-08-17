@@ -361,6 +361,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 1
     import os
 
+    from .asset_store import ASSET_STORE_ENV, load_manifest
+
+    store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "").strip()
+    asset_store_summary = "asset storeなし"
+    if store_value:
+        store = Path(store_value).resolve()
+        manifest = store / "manifest.json"
+        if not manifest.is_file():
+            print(f"asset store manifestがありません: {manifest}", file=sys.stderr)
+            return 2
+        manifest_data = load_manifest(store)
+        assets = manifest_data.get("assets")
+        if manifest_data.get("version") != 1 or not isinstance(assets, dict) or not assets:
+            print(f"asset store manifestが有効ではありません: {manifest}", file=sys.stderr)
+            return 2
+        os.environ[ASSET_STORE_ENV] = str(store)
+        asset_store_summary = f"asset store {len(assets):,}件"
+
     app = create_app(
         jobs_dir=Path(args.jobs_dir),
         soundfont=args.soundfont,
@@ -374,7 +392,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         parallel_video=not args.serial_video,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
-    print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
+    print(f"http://{args.host}:{args.port}/ で待ち受けます({auth}, {asset_store_summary})")
     # Access exemption decisions must see the actual socket peer. Do not let
     # uvicorn rewrite request.client from user-controlled forwarding headers.
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
@@ -707,6 +725,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="VOICEVOXエンジンのURL(合成エンジンにVOICEVOXを選んだとき使う)",
     )
     p.add_argument("--layout", help="フレームレイアウト(組み込み名かJSONパス)")
+    p.add_argument(
+        "--asset-store",
+        help="組み込み単語画像を読むasset store。指定時はmanifestが無ければ起動しない",
+    )
     p.add_argument(
         "--editor-dist",
         help="同梱editorの静的ビルド出力(既定は external/soramimic/frontend/dist)。"

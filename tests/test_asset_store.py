@@ -58,6 +58,37 @@ def test_orphaned_manifest_entry_uses_runtime_fallback(tmp_path):
     assert asset_store.local_asset(url, store) == (False, None)
 
 
+def test_builtin_manifest_miss_is_offline_when_store_is_configured(
+    tmp_path, monkeypatch,
+):
+    store = tmp_path / "assets"
+    store.mkdir()
+    (store / "manifest.json").write_text(json.dumps({"assets": {}}))
+    monkeypatch.setenv(asset_store.ASSET_STORE_ENV, str(store))
+    url = (
+        "https://raw.githubusercontent.com/soramimic/soramimic-wordlists/"
+        "main/images/youtuber/new.svg"
+    )
+    monkeypatch.setattr(
+        video,
+        "http_get_with_retry",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("network fallback")),
+    )
+
+    assert asset_store.local_asset(url) == (True, None)
+    assert video.download_image(url, tmp_path / "job-cache") is None
+    assert image_credit.fetch_image_credit(url, "", tmp_path / "job-cache") is None
+
+
+def test_custom_manifest_miss_keeps_runtime_fallback(tmp_path, monkeypatch):
+    store = tmp_path / "assets"
+    store.mkdir()
+    (store / "manifest.json").write_text(json.dumps({"assets": {}}))
+    monkeypatch.setenv(asset_store.ASSET_STORE_ENV, str(store))
+
+    assert asset_store.local_asset("https://example.com/custom.png") == (False, None)
+
+
 def test_sync_uses_local_raw_github_image_and_runtime_is_offline(tmp_path, monkeypatch):
     wordlists = tmp_path / "wordlists"
     local = wordlists / "images" / "cards" / "a.png"

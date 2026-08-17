@@ -13,11 +13,20 @@ ASSET_STORE_ENV = "SORAMIMIC_VIDEO_ASSET_STORE"
 MANIFEST_NAME = "manifest.json"
 PENDING_MANIFEST_NAME = "manifest.pending.json"
 MAX_PREVIEW_SOURCE_BYTES = 32 * 1024 * 1024
+BUILTIN_ASSET_URL_PREFIXES = (
+    "https://raw.githubusercontent.com/soramimic/soramimic-wordlists/main/images/",
+    "https://github.com/soramimic/soramimic-wordlists/releases/download/",
+)
 
 
 def configured_asset_store() -> Path | None:
     value = os.environ.get(ASSET_STORE_ENV, "").strip()
     return Path(value) if value else None
+
+
+def is_builtin_asset_url(url: str) -> bool:
+    """Return whether a URL belongs to the built-in word-list asset namespace."""
+    return any(url.startswith(prefix) for prefix in BUILTIN_ASSET_URL_PREFIXES)
 
 
 @lru_cache(maxsize=2)
@@ -57,7 +66,11 @@ def local_asset(url: str, store: Path | None = None) -> tuple[bool, Path | None]
         return False, None
     entry = manifest_entry(url, root)
     if entry is None:
-        return False, None
+        # A configured store is authoritative for built-in assets.  A manifest
+        # miss means synchronization is lagging; going to the public source at
+        # request time defeats prewarming and can amplify upstream rate limits.
+        # Custom word-list URLs remain eligible for the ordinary runtime cache.
+        return is_builtin_asset_url(url), None
     relative = entry.get("local_path")
     if entry.get("status") != "available" or not isinstance(relative, str):
         return True, None
@@ -131,9 +144,10 @@ def verified_preview_asset(
 
 def local_credit(url: str, store: Path | None = None) -> tuple[bool, dict | None]:
     """Return (managed, credit), preserving known-no-attribution vs unknown."""
-    entry = manifest_entry(url, store or configured_asset_store())
+    root = store or configured_asset_store()
+    entry = manifest_entry(url, root)
     if entry is None:
-        return False, None
+        return bool(root) and is_builtin_asset_url(url), None
     credit = entry.get("credit")
     if not isinstance(credit, dict) or credit.get("status") == "unknown":
         return True, None
