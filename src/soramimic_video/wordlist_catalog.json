@@ -13,7 +13,7 @@
   "football": {"layout": "player_card", "phrase": "サッカー選手名"},
   "insect": {"layout": "animal_card"},
   "municipality": {"layout": "municipality_card"},
-  "pokemon": {"layout": "pokemon_card", "phrase": "ポケモン名"},
+  "pokemon": {"layout": "pokemon_card", "phrase": "ポケモン名", "launch": true},
   "school": {"layout": "school_card"},
   "youtuber": {"layout": "youtuber_card", "phrase": "YouTuber名"}
 }
