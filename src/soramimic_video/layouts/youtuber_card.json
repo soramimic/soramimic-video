@@ -25,7 +25,22 @@
      "size": 0.042, "color": "#b8b8b8"}
   ],
   "fallback": [
-    {"type": "text", "text": "{surface}", "box": [0.1, 0.25, 0.8, 0.25], "size": 0.12},
-    {"type": "text", "text": "({original})", "box": [0.1, 0.52, 0.8, 0.08], "size": 0.05, "color": "#aaa"}
+    {"type": "text", "text": "{surface}", "box": [0.1, 0.06, 0.8, 0.12],
+     "size": 0.085, "wrap": true},
+    {"type": "text", "text": "YOUTUBE CHANNEL", "box": [0.1, 0.205, 0.8, 0.025],
+     "size": 0.019, "color": "#7e8490", "require": "channel"},
+    {"type": "text", "text": "{channel}", "box": [0.1, 0.235, 0.8, 0.065],
+     "size": 0.038, "wrap": true, "require": "channel"},
+    {"type": "text", "text": "活動開始　{debut_year}年", "box": [0.1, 0.315, 0.8, 0.04],
+     "size": 0.029, "color": "#8ed8ff", "require": "debut_year"},
+    {"type": "text", "text": "登録者　{subscribers}", "box": [0.1, 0.365, 0.8, 0.045],
+     "size": 0.032, "color": "#ff7394", "require": "subscribers"},
+    {"type": "text", "text": "{subscribers_as_of}時点", "box": [0.1, 0.41, 0.8, 0.028],
+     "size": 0.02, "color": "#858b96", "require": "subscribers_as_of"},
+    {"type": "text", "text": "{description}", "box": [0.1, 0.465, 0.8, 0.19],
+     "size": 0.03, "color": "#d4d7dd", "valign": "top", "wrap": true,
+     "require": "description"},
+    {"type": "text", "text": "({original})", "box": [0.1, 0.67, 0.8, 0.05],
+     "size": 0.03, "color": "#777"}
   ]
 }

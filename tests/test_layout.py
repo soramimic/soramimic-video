@@ -143,6 +143,22 @@ def test_youtuber_card_groups_channel_activity_and_subscribers():
     assert "ゲーム実況とライブ配信で活動するYouTuber。" in texts
 
 
+def test_youtuber_fallback_keeps_metadata_when_image_is_unavailable():
+    layout = load_layout("youtuber_card")
+    texts = layout.render_texts({
+        "surface": "カンタ",
+        "original": "カンタ",
+        "channel": "カンタの大冒険",
+        "debut_year": "2015",
+        "description": "水溜りボンドのメンバーとして企画動画を発信するYouTuber。",
+    }, use_fallback=True)
+
+    assert "カンタ" in texts
+    assert "カンタの大冒険" in texts
+    assert "活動開始　2015年" in texts
+    assert "水溜りボンドのメンバーとして企画動画を発信するYouTuber。" in texts
+
+
 def test_youtuber_card_formats_subscriber_count_by_japanese_units():
     layout = load_layout("youtuber_card")
     cases = {
