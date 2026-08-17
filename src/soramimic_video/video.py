@@ -1190,6 +1190,12 @@ def build_image_cues(
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
+        if raw is None and url:
+            from .asset_store import is_private_asset_id
+            from .image_usage import PrivateAssetPolicyError
+
+            if is_private_asset_id(url):
+                raise PrivateAssetPolicyError("非公開画像の実体を読み込めません")
         if raw is not None and not image_is_visible(raw):
             # 黒背景カード上で実質見えない画像(黒線+透明SVGなど)は無いものとして
             # 扱い、文字フレーム(fallback)へ落とす(真っ黒の画像枠を残さない)

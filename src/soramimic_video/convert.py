@@ -90,9 +90,15 @@ def resolve_wordlist(name_or_path: str) -> Path:
     candidate = WORDLISTS_DIR / f"{name_or_path}.csv"
     if candidate.exists():
         return candidate
+    if re.fullmatch(r"[A-Za-z0-9_-]+", name_or_path):
+        from .private_wordlists import resolve as resolve_private_wordlist
+
+        private = resolve_private_wordlist(name_or_path)
+        if private is not None:
+            return private
     raise FileNotFoundError(
         f"単語リストが見つかりません: {name_or_path} "
-        f"(external/soramimic-wordlists のリスト名かCSVパスを指定してください)"
+        "(同梱/非公開単語リスト名かCSVパスを指定してください)"
     )
 
 
