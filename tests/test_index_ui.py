@@ -1499,6 +1499,16 @@ def test_noncommercial_fanwork_requires_explicit_checkbox():
     assert "以下の二次創作ガイドラインを確認し、遵守します" in html
     assert "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。" in html
     assert "非営利のファン活動に限って利用できる公式画像" in html
+    assert "fanwork-details" in html
+    assert "fanwork-terms" in html
+    assert ".fanwork-confirmation label > span { min-width: 0; }" in html
+    assert ".fanwork-terms a { overflow-wrap: anywhere; }" in html
+    prompt = _function_body(html, "function updateNoncommercialFanworkPrompt()")
+    assert "policy.terms_pages || policy.terms" in prompt
+    assert "Array.isArray(rawTerms)" in prompt
+    assert 'link.target = "_blank";' in prompt
+    assert 'link.rel = "noopener noreferrer";' in prompt
+    assert '$("builder-fanwork-terms").replaceChildren(...links);' in prompt
     assert "非営利のファン活動として公開する" not in html
     assert "画像クレジットは生成物の credits.md に記録されます。" not in html
     assert 'form.append("allow_noncommercial_fanwork"' in html

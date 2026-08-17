@@ -65,7 +65,10 @@ from .layout import (
 )
 from .soramimic_engine import start_warmup_thread
 from .thumbnail_preview import RateLimiter, preview_cache_dir
-from .wordlist_catalog import default_launch_wordlists, load_wordlist_catalog
+from .wordlist_catalog import (
+    default_launch_wordlists,
+    load_wordlist_image_policies,
+)
 
 if TYPE_CHECKING:  # 型注釈だけ。実行時のimportはハンドラの中で行う(起動を軽く保つ)
     from .project import Project
@@ -2123,6 +2126,8 @@ def create_app(
 
     @app.get("/api/config")
     async def get_config(request: Request, response: Response) -> dict[str, Any]:
+        from .convert import WORDLISTS_DIR
+
         response.headers["Cache-Control"] = "no-store"
         auth_required = bool(os.environ.get(API_KEY_ENV))
         try:
@@ -2139,11 +2144,7 @@ def create_app(
             "wordlist_layouts": load_wordlist_layouts(),
             # 制限付き画像を含みうる単語リストでは、生成ボタンのそばに
             # 利用条件の確認を出す。実際の強制は各CSV行のimage_usageが正本。
-            "wordlist_image_policies": {
-                name: policy
-                for name, entry in load_wordlist_catalog().items()
-                if isinstance((policy := entry.get("image_policy")), dict)
-            },
+            "wordlist_image_policies": load_wordlist_image_policies(WORDLISTS_DIR),
             "editor": editor_available,
             # 簡易UIでeditorボタンを隠しても、同梱のsetting.jsonから
             # 単語リスト選択肢は読むために別の能力値として返す。
