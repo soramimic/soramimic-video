@@ -1502,6 +1502,7 @@ def test_noncommercial_fanwork_requires_explicit_checkbox():
     assert "fanwork-details" in html
     assert "fanwork-terms" in html
     assert ".fanwork-confirmation label > span { min-width: 0; }" in html
+    assert "margin-top: .25rem; font-size: .8rem; line-height: 1.45;" in html
     assert ".fanwork-terms a { overflow-wrap: anywhere; }" in html
     prompt = _function_body(html, "function updateNoncommercialFanworkPrompt()")
     assert "policy.terms_pages || policy.terms" in prompt
