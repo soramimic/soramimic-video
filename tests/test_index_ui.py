@@ -1497,6 +1497,7 @@ def test_noncommercial_fanwork_requires_explicit_checkbox():
     assert "function requiresNoncommercialFanwork()" in html
     assert "previewSec === 0 && requiresNoncommercialFanwork()" in html
     assert "利用条件を確認し" in html
+    assert "画像クレジットは生成物の credits.md に記録されます。" not in html
     assert 'form.append("allow_noncommercial_fanwork"' in html
     assert '$("noncommercial-fanwork").checked ? "true" : "false"' in html
     assert 'failure === "生成に失敗しました"' in html
