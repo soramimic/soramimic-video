@@ -495,6 +495,10 @@ def test_turnstile_interaction_scrolls_to_inline_prompt():
     prompt = _function_body(script, "function showTurnstilePrompt(")
     assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
     assert "if (!alreadyActive || forceScroll)" in prompt
+    assert "if (focusPanel)" in prompt
+    challenge = _function_body(script, "function showTurnstileChallenge()")
+    assert 'classList.add("turnstile-challenge")' in challenge
+    assert "showTurnstilePrompt(true, false)" in challenge
     render = _function_body(script, "function renderTurnstileWidget()")
     assert 'execution: "execute"' in render
     assert "scheduleTurnstileInteractionPrompt(epoch)" in render
@@ -510,6 +514,8 @@ def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
     assert "#turnstile-wrap.turnstile-complete #turnstile-widget" in markup
     assert "inset-inline-start: -10000px" in markup
     assert "visibility: hidden" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy { display: none; }" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-panel" in markup
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -534,8 +540,7 @@ def test_turnstile_interaction_prompt_is_delayed_and_cancelable():
         const setTimeout = (fn, delay) => {{ timerCallback = fn; timerDelay = delay; return 1; }};
         const clearTimeout = () => {{ clears += 1; }};
         const turnstileToken = () => token;
-        const setTurnstilePromptCopy = () => {{}};
-        const showTurnstilePrompt = () => {{ shows += 1; }};
+        const showTurnstileChallenge = () => {{ shows += 1; }};
         {cancel}
         {schedule}
 
