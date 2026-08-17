@@ -47,7 +47,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PIL import Image, ImageEnhance
 
@@ -566,21 +566,33 @@ def compose_background(
     """
     d = resolve_design(design)
     dim = d.background_dim if dim is None else dim
-    images: list[Image.Image] = []
+    images: list[tuple[Image.Image, bool]] = []
     for path in image_paths:
         try:
             with Image.open(path) as img:
-                images.append(img.convert("RGB"))
+                rgba = img.convert("RGBA")
+                alpha_extrema = cast(tuple[int, int], rgba.getchannel("A").getextrema())
+                has_transparency = alpha_extrema[0] < 255
+                opaque = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+                opaque.alpha_composite(rgba)
+                images.append((opaque.convert("RGB"), has_transparency))
         except Exception as e:  # noqa: BLE001 - 読めない画像は無いものとして続ける
             logger.warning("サムネ背景に使えない画像です: %s (%s)", path, e)
     if not images:
         return None
     canvas = Image.new("RGB", (width, height), "black")
     slot_w = width // len(images)
-    for i, source in enumerate(images):
+    for i, (source, has_transparency) in enumerate(images):
         # 最後の枠は端数ぶんまで受け持つ(1pxの黒すじを残さない)
         w = width - slot_w * i if i == len(images) - 1 else slot_w
-        canvas.paste(_cover(source, w, height), (slot_w * i, 0))
+        if has_transparency:
+            fitted = source.copy()
+            fitted.thumbnail((w, height), Image.Resampling.LANCZOS)
+            slot = Image.new("RGB", (w, height), "black")
+            slot.paste(fitted, ((w - fitted.width) // 2, (height - fitted.height) // 2))
+        else:
+            slot = _cover(source, w, height)
+        canvas.paste(slot, (slot_w * i, 0))
     return apply_scrim(ImageEnhance.Brightness(canvas).enhance(dim), d.scrim)
 
 
@@ -812,17 +824,24 @@ def resolve_headline(
     image_paths: list[Path] = []
     image_credits: list[str] = []
     if found and image_cache is not None:
-        from .image_usage import image_usage_allowed
+        from .image_usage import require_image_usage
 
         try:
+            allowed_rows: list[dict[str, str] | None] = []
+            for _word, row in found:
+                try:
+                    require_image_usage(
+                        row or {},
+                        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+                    )
+                except ValueError:
+                    continue
+                allowed_rows.append(row)
             if not download_images and image_wait_sec > 0:
                 # 待てないなりに少しだけ待つ(初見の1回目から絵入りにするため)
-                wait_for_images([row for _word, row in found], image_cache, image_wait_sec)
+                wait_for_images(allowed_rows, image_cache, image_wait_sec)
             for _word, row in found:
-                if not image_usage_allowed(
-                    row,
-                    allow_noncommercial_fanwork=allow_noncommercial_fanwork,
-                ):
+                if row not in allowed_rows:
                     continue
                 path, credit = _word_image(
                     row, image_cache, download_images, missing_images

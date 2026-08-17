@@ -208,9 +208,9 @@ def launch_wordlist_names() -> set[str]:
 
 
 def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
-    """Simple UIではカタログ名だけを許可し、filesystem pathを解決前に拒否する。"""
+    """Public/Simple APIではカタログ名だけを許可しpath解決前に拒否する。"""
     name = wordlist.strip()
-    if is_simple_ui() and name not in launch_wordlist_names():
+    if (is_public_mode() or is_simple_ui()) and name not in launch_wordlist_names():
         raise HTTPException(
             status_code=status_code,
             detail="この単語リストは現在利用できません",
@@ -2460,7 +2460,7 @@ def create_app(
                 # 毎回サーバーに聞く(キャッシュヒットなら数ミリ秒で304/即応答)。
                 # 画像の裏読みが間に合って作り直されたとき、ブラウザが古い
                 # 「絵なし」プレビューを握り続けないようにする
-                "Cache-Control": "private, no-cache",
+                "Cache-Control": "private, no-store",
                 "X-Preview-Cache": "hit" if cached else "miss",
                 # 単語画像が間に合わず文字だけで返したときは pending。UIはこれを見て
                 # 数秒後に1回だけ取り直す(裏で絵入りに作り直されているのでヒットする)
@@ -2476,6 +2476,7 @@ def create_app(
         layout_json: str = Form(""),
         lyrics: str = Form(""),
         subtitle_granularity: str = Form(""),
+        allow_noncommercial_fanwork: bool = Form(False),
     ) -> dict[str, Any]:
         """editor書き出しJSONの変換結果に基づく、キュー1枚ぶんのプレビューデータ。
 
@@ -2492,6 +2493,21 @@ def create_app(
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="editorのJSONが読めません") from exc
+        if is_public_mode():
+            from .editor_io import custom_wordlist_sid, is_original_wordlist
+
+            canonical = require_launch_wordlist(wordlist, status_code=422)
+            if not canonical:
+                raise HTTPException(
+                    status_code=422, detail="単語リストを選んでください"
+                )
+            if is_original_wordlist(payload) or custom_wordlist_sid(payload):
+                raise HTTPException(
+                    status_code=422, detail="この入力形式は現在利用できません"
+                )
+            payload = copy.deepcopy(payload)
+            payload["wordlist"] = {"filepath": f"{canonical}.csv"}
+            wordlist = canonical
         # 編集中のレイアウトがあれば、そのフィルタ・要素でキューを組む(なければ既定)
         layout_obj = load_layout(None)
         if layout_json.strip():
@@ -2517,9 +2533,12 @@ def create_app(
         item = cues[index]
         image_url = ""
         if item["image"]:
-            image_url = "/api/asset-preview?" + urlencode(
-                {"wordlist": result["wordlist"], "url": item["image"]}
-            )
+            query: dict[str, Any] = {
+                "wordlist": result["wordlist"], "url": item["image"]
+            }
+            if allow_noncommercial_fanwork:
+                query["noncommercial_fanwork"] = "true"
+            image_url = "/api/asset-preview?" + urlencode(query)
         return {
             "total": total,
             "index": index,
@@ -2647,7 +2666,7 @@ def create_app(
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
-        if is_simple_ui() and (
+        if (is_public_mode() or is_simple_ui()) and (
             (editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
             or bool(wordlist_text.strip())
@@ -2669,6 +2688,24 @@ def create_app(
                 raise HTTPException(
                     status_code=400, detail="editorのJSONが読めません"
                 ) from exc
+            if is_public_mode():
+                from .editor_io import custom_wordlist_sid, is_original_wordlist
+
+                canonical = require_launch_wordlist(wordlist, status_code=422)
+                if not canonical:
+                    raise HTTPException(
+                        status_code=422, detail="単語リストを選んでください"
+                    )
+                if is_original_wordlist(editor_payload) or custom_wordlist_sid(
+                    editor_payload
+                ):
+                    raise HTTPException(
+                        status_code=422, detail="この入力形式は現在利用できません"
+                    )
+                editor_payload = copy.deepcopy(editor_payload)
+                editor_payload["wordlist"] = {"filepath": f"{canonical}.csv"}
+                editor_bytes = json.dumps(editor_payload, ensure_ascii=False).encode()
+                wordlist = canonical
         # 自作の単語リスト(CSV/画像入りzip、または貼り付けテキスト+画像)。
         # ジョブを走らせる前にここで検証して弾く
         custom: wordlist_zip_mod.WordlistZip | None = None
@@ -2740,7 +2777,7 @@ def create_app(
                 voicevox_auto_octave if voicevox_auto_octave is not None else True
             )
         wordlist = wordlist.strip()
-        if is_simple_ui() and wordlist:
+        if (is_public_mode() or is_simple_ui()) and wordlist:
             wordlist = require_launch_wordlist(wordlist, status_code=422)
         # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
         # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
@@ -2797,6 +2834,8 @@ def create_app(
                     wordlist = (
                         Path(resolved).stem if resolved.endswith(".csv") else resolved
                     )
+        if is_public_mode() and wordlist:
+            wordlist = require_launch_wordlist(wordlist, status_code=422)
         if is_simple_ui() and preview <= 0:
             launch_wordlists = {
                 str(name) for name in load_launch_catalog().get("wordlists", [])
@@ -2937,10 +2976,12 @@ def create_app(
             raise HTTPException(status_code=409, detail="動画はまだできていません")
         if job.video.suffix == ".wav":  # プレビュー(歌声のみ)
             return FileResponse(
-                job.video, media_type="audio/wav", filename=_download_filename(job)
+                job.video, media_type="audio/wav", filename=_download_filename(job),
+                headers={"Cache-Control": "private, no-store"},
             )
         return FileResponse(
-            job.video, media_type="video/mp4", filename=_download_filename(job)
+            job.video, media_type="video/mp4", filename=_download_filename(job),
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get("/api/jobs/{job_id}/playback", dependencies=[Depends(_require_api_key)])
@@ -2965,7 +3006,8 @@ def create_app(
         if not job.thumbnail.exists():
             raise HTTPException(status_code=404, detail="サムネ画像がありません")
         return FileResponse(
-            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job)
+            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job),
+            headers={"Cache-Control": "private, no-store"},
         )
 
     # ---- 同梱editor(/editor/)向けの配信・シード(A-2) ----
@@ -2993,7 +3035,10 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="単語リストが見つかりません"
             ) from exc
-        return FileResponse(path, media_type="text/csv")
+        return FileResponse(
+            path, media_type="text/csv",
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     @app.get("/editor/conf/setting.json")
     def editor_setting_json() -> JSONResponse:
@@ -3166,6 +3211,14 @@ def create_app(
         """
         if is_simple_ui():
             raise HTTPException(status_code=404, detail="Not Found")
+        if is_public_mode() and (
+            (wordlist_csv is not None and bool(wordlist_csv.filename))
+            or bool(wordlist_text.strip())
+            or any(bool(image.filename) for image in wordlist_images)
+        ):
+            raise HTTPException(
+                status_code=422, detail="この入力形式は現在利用できません"
+            )
         import tempfile
 
         from .align import align_lines
@@ -3214,6 +3267,8 @@ def create_app(
             # 絞り込み(where)の対象になる列を持たないので付けない(/api/jobs と同じ)
             entry = custom_wordlist_entry(sid)
         elif wordlist.strip():
+            if is_public_mode():
+                wordlist = require_launch_wordlist(wordlist, status_code=422)
             try:
                 resolve_wordlist(wordlist.strip())
             except FileNotFoundError as exc:

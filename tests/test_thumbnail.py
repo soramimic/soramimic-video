@@ -436,6 +436,30 @@ def test_compose_background_dims_and_covers(tmp_path: Path):
     assert compose_background([tmp_path / "missing.png"], 320, 180) is None
 
 
+def test_transparent_portrait_is_contained_without_cropping(tmp_path: Path):
+    image = tmp_path / "portrait.png"
+    portrait = Image.new("RGBA", (100, 200), (0, 0, 0, 0))
+    for y, color in (
+        (range(0, 20), (255, 0, 0, 255)),
+        (range(20, 180), (0, 255, 0, 255)),
+        (range(180, 200), (0, 0, 255, 255)),
+    ):
+        for py in y:
+            for px in range(40, 60):
+                portrait.putpixel((px, py), color)
+    portrait.save(image)
+
+    bg = compose_background([image], 320, 180, dim=1.0)
+    assert bg is not None
+    # containなら頭側の赤と足側の青が両方残る。coverだと中央だけが残る。
+    top = bg.getpixel((160, 5))
+    bottom = bg.getpixel((160, 174))
+    assert top[0] > 50 and top[0] > top[1] + top[2]
+    assert bottom[2] > 50 and bottom[2] > bottom[0] + bottom[1]
+    # 透明余白に埋め込まれたRGB値ではなく、明示した黒背景へ合成する。
+    assert bg.getpixel((10, 90)) == (0, 0, 0)
+
+
 # ---- generate_thumbnail(組み立て) ----
 
 

@@ -106,6 +106,38 @@ def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
     assert bob.get(f"/api/jobs/{a_id}").status_code == 200
 
 
+def test_public_jobs_reject_editor_wordlists_outside_launch_catalog(public_app):
+    client = TestClient(public_app)
+    editor = json.dumps(
+        {"wordlist": {"filepath": "/tmp/youtuber.csv"}}
+    ).encode()
+    response = client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "editor": ("editor.json", editor, "application/json"),
+        },
+        data={"wordlist": "youtuber"},
+    )
+    assert response.status_code == 422
+
+
+def test_public_editor_preview_requires_a_launch_wordlist(public_app):
+    client = TestClient(public_app)
+    response = client.post(
+        "/api/editor-preview",
+        files={
+            "editor": (
+                "editor.json",
+                json.dumps({"wordlist": {"filepath": "/tmp/youtuber.csv"}}).encode(),
+                "application/json",
+            )
+        },
+        data={"wordlist": ""},
+    )
+    assert response.status_code == 422
+
+
 def test_owner_is_persisted_across_restart(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)

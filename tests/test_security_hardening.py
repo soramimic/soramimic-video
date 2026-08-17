@@ -117,6 +117,14 @@ def test_simple_allowlist_accepts_published_wordlists(name: str, monkeypatch):
     assert api_mod.require_launch_wordlist(name) == name
 
 
+def test_public_runtime_uses_the_same_wordlist_allowlist(monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    assert api_mod.require_launch_wordlist("stations") == "stations"
+    with pytest.raises(api_mod.HTTPException) as exc:
+        api_mod.require_launch_wordlist("youtuber")
+    assert exc.value.status_code == 404
+
+
 def test_simple_rejects_filesystem_csv_before_resolution(
     simple_client: TestClient, tmp_path: Path
 ):
