@@ -47,7 +47,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PIL import Image, ImageEnhance
 
@@ -566,21 +566,33 @@ def compose_background(
     """
     d = resolve_design(design)
     dim = d.background_dim if dim is None else dim
-    images: list[Image.Image] = []
+    images: list[tuple[Image.Image, bool]] = []
     for path in image_paths:
         try:
             with Image.open(path) as img:
-                images.append(img.convert("RGB"))
+                rgba = img.convert("RGBA")
+                alpha_extrema = cast(tuple[int, int], rgba.getchannel("A").getextrema())
+                has_transparency = alpha_extrema[0] < 255
+                opaque = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+                opaque.alpha_composite(rgba)
+                images.append((opaque.convert("RGB"), has_transparency))
         except Exception as e:  # noqa: BLE001 - 読めない画像は無いものとして続ける
             logger.warning("サムネ背景に使えない画像です: %s (%s)", path, e)
     if not images:
         return None
     canvas = Image.new("RGB", (width, height), "black")
     slot_w = width // len(images)
-    for i, source in enumerate(images):
+    for i, (source, has_transparency) in enumerate(images):
         # 最後の枠は端数ぶんまで受け持つ(1pxの黒すじを残さない)
         w = width - slot_w * i if i == len(images) - 1 else slot_w
-        canvas.paste(_cover(source, w, height), (slot_w * i, 0))
+        if has_transparency:
+            fitted = source.copy()
+            fitted.thumbnail((w, height), Image.Resampling.LANCZOS)
+            slot = Image.new("RGB", (w, height), "black")
+            slot.paste(fitted, ((w - fitted.width) // 2, (height - fitted.height) // 2))
+        else:
+            slot = _cover(source, w, height)
+        canvas.paste(slot, (slot_w * i, 0))
     return apply_scrim(ImageEnhance.Brightness(canvas).enhance(dim), d.scrim)
 
 
@@ -706,11 +718,6 @@ def _word_image(
     page = str((row or {}).get("image_page") or "")
     path = download_image(url, cache) if download else cached_image(url, cache)
     if path is None:
-        from .asset_store import is_private_asset_id
-        from .image_usage import PrivateAssetPolicyError
-
-        if is_private_asset_id(url):
-            raise PrivateAssetPolicyError("非公開画像の実体を読み込めません")
         if missing is not None:
             missing.append((url, page))
         return None, ""
@@ -817,7 +824,7 @@ def resolve_headline(
     image_paths: list[Path] = []
     image_credits: list[str] = []
     if found and image_cache is not None:
-        from .image_usage import PrivateAssetPolicyError, require_image_usage
+        from .image_usage import require_image_usage
 
         try:
             allowed_rows: list[dict[str, str] | None] = []
@@ -827,8 +834,6 @@ def resolve_headline(
                         row or {},
                         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
                     )
-                except PrivateAssetPolicyError:
-                    raise
                 except ValueError:
                     continue
                 allowed_rows.append(row)
@@ -845,8 +850,6 @@ def resolve_headline(
                     image_paths.append(path)
                     image_credits.append(credit)
         except runproc.Cancelled:
-            raise
-        except PrivateAssetPolicyError:
             raise
         except Exception as e:  # noqa: BLE001 - 画像なしのサムネにフォールバック
             logger.warning("サムネ用の画像を取得できませんでした: %s", e)

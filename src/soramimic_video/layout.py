@@ -450,12 +450,6 @@ def load_wordlist_layouts() -> dict[str, str]:
             )
             continue
         out[str(wordlist)] = layout
-    from .private_wordlists import entries as private_wordlist_entries
-
-    for wordlist, entry in private_wordlist_entries().items():
-        private_layout = entry.get("layout")
-        if isinstance(private_layout, str) and private_layout in builtin:
-            out[wordlist] = private_layout
     return out
 
 

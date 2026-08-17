@@ -323,10 +323,7 @@ def wordlist_display_name(name: str) -> str:
 
     設定に無いリスト・設定を読めないときはリスト名(stem)をそのまま返す。
     """
-    from .private_wordlists import entries as private_wordlist_entries
-
-    private = private_wordlist_entries().get(name, {})
-    return str(private.get("label") or _wordlist_entry(name, None).get("text") or name)
+    return str(_wordlist_entry(name, None).get("text") or name)
 
 
 def wordlist_phrase_name(name: str) -> str:
@@ -338,10 +335,6 @@ def wordlist_phrase_name(name: str) -> str:
     """
     entry = load_wordlist_catalog(WORDLIST_CATALOG_PATH).get(name, {})
     phrase = entry.get("phrase")
-    if not phrase:
-        from .private_wordlists import entries as private_wordlist_entries
-
-        phrase = private_wordlist_entries().get(name, {}).get("phrase")
     return str(phrase) if isinstance(phrase, str) and phrase else wordlist_display_name(name)
 
 
