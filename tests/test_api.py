@@ -964,6 +964,14 @@ def test_config_has_wordlist_layouts(client):
     assert set(wl.values()) <= set(conf["layouts"])
 
 
+def test_config_has_youtuber_image_policy(client):
+    conf = client.get("/api/config").json()
+    assert conf["wordlist_image_policies"]["youtuber"] == {
+        "usage": "noncommercial_fanwork",
+        "terms": "https://hololivepro.com/terms/",
+    }
+
+
 def test_get_builtin_layout(client):
     body = client.get("/api/layouts/default").json()
     assert body["elements"][0]["type"] == "image"

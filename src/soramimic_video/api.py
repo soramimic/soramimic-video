@@ -65,7 +65,7 @@ from .layout import (
 )
 from .soramimic_engine import start_warmup_thread
 from .thumbnail_preview import RateLimiter, preview_cache_dir
-from .wordlist_catalog import default_launch_wordlists
+from .wordlist_catalog import default_launch_wordlists, load_wordlist_catalog
 
 if TYPE_CHECKING:  # 型注釈だけ。実行時のimportはハンドラの中で行う(起動を軽く保つ)
     from .project import Project
@@ -2137,6 +2137,13 @@ def create_app(
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
+            # 制限付き画像を含みうる単語リストでは、生成ボタンのそばに
+            # 利用条件の確認を出す。実際の強制は各CSV行のimage_usageが正本。
+            "wordlist_image_policies": {
+                name: policy
+                for name, entry in load_wordlist_catalog().items()
+                if isinstance((policy := entry.get("image_policy")), dict)
+            },
             "editor": editor_available,
             # 簡易UIでeditorボタンを隠しても、同梱のsetting.jsonから
             # 単語リスト選択肢は読むために別の能力値として返す。
