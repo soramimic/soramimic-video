@@ -436,12 +436,16 @@
     border-radius: 10px; background: var(--panel); text-align: center;
     box-shadow: 0 0 0 2px #1296f022;
   }
-  /* 通常の手動確認はCloudflare本体だけで意味が通る。独自の見出し・補足・外枠を
-     重ねず、失敗案内と短い完了表示のときだけ上のカード装飾を使う。 */
+  /* 通常の手動確認は、操作が必要だと分かる短い見出しとCloudflare本体だけを出す。
+     詳しい補足・外枠は重ねず、失敗案内と短い完了表示だけ上のカード装飾を使う。 */
   #turnstile-wrap.turnstile-challenge .turnstile-panel {
     padding: 0; border: 0; background: transparent; box-shadow: none;
   }
-  #turnstile-wrap.turnstile-challenge .turnstile-copy { display: none; }
+  #turnstile-wrap.turnstile-challenge .turnstile-copy { display: block; }
+  #turnstile-wrap.turnstile-challenge .turnstile-copy .hint { display: none; }
+  #turnstile-wrap.turnstile-challenge .turnstile-title {
+    margin: 0 0 .35rem; font-size: .95rem; line-height: 1.4;
+  }
   #turnstile-wrap:not(.turnstile-active) .turnstile-panel {
     max-width: 26rem; padding: 0; border: 0; background: transparent;
   }
@@ -652,10 +656,10 @@
   <!-- Cloudflare Turnstile。通常はバックグラウンドで確認し、人の操作が必要なときだけ
        案内とウィジェットを出してここまで自動スクロールする。 -->
   <div id="turnstile-wrap" hidden>
-    <div class="turnstile-panel">
+    <div class="turnstile-panel" tabindex="-1" aria-labelledby="turnstile-title">
       <div class="turnstile-copy" role="status" aria-live="polite">
-        <p class="turnstile-title" id="turnstile-title">合成前に確認してください</p>
-        <p class="hint">「私はロボットではありません」をチェックすると、そのまま合成を始めます。</p>
+        <p class="turnstile-title" id="turnstile-title">人間かどうかの確認が必要です</p>
+        <p class="hint">確認欄が表示されたらチェックしてください。完了すると、そのまま合成を始めます。</p>
       </div>
       <div id="turnstile-widget"></div>
     </div>
@@ -1402,6 +1406,7 @@ function showTurnstilePrompt(forceScroll = false, focusPanel = true) {
 }
 
 function showTurnstileChallenge() {
+  setTurnstilePromptCopy("チェックして動画生成を続ける", "");
   $("turnstile-wrap").classList.add("turnstile-challenge");
   showTurnstilePrompt(true, false);
 }
@@ -2429,6 +2434,23 @@ function showSubmitMsg(text) {
   el.hidden = !text;
 }
 
+// Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
+// Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
+async function postJobWithTurnstileRetry(form) {
+  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+  if (res.status !== 403 || !turnstileSiteKey) return res;
+  // resetだけでは前回実行の遅延callbackと新しい実行を区別できない。widgetを世代ごと
+  // 作り直し、拒否されたtokenの実行から届くcallbackを無効化してから再確認する。
+  turnstileNeedsInteraction = false;
+  turnstileWaiting = false;
+  turnstileFailed = false;
+  hideTurnstilePrompt();
+  rebuildTurnstileWidget();
+  if (!await ensureTurnstileToken()) return res;
+  form.set("turnstile_token", turnstileToken());
+  return fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+}
+
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
 // 本番生成は previewSec=0 で呼ばれ、モードは使われない。
 async function submitJob(previewSec, previewMode) {
@@ -2480,8 +2502,10 @@ async function submitJob(previewSec, previewMode) {
   if (turnstileSiteKey) {
     if (!await ensureTurnstileToken()) {
       setBusy(false);
-      showSubmitMsg("人間かどうかの確認を完了できませんでした。もう一度お試しください。");
-      hideTurnstilePrompt();
+      showSubmitMsg(turnstileScriptFailed
+        ? "人間かどうかの確認を読み込めませんでした。ページを再読み込みしてください。"
+        : "人間かどうかの確認を完了できませんでした。もう一度お試しください。");
+      showTurnstileFailure(turnstileScriptFailed);
       return;
     }
   }
@@ -2521,10 +2545,20 @@ async function submitJob(previewSec, previewMode) {
   $("result").hidden = true;
   showProgress();
   setJobStatus("送信中…");
+  let keepTurnstilePrompt = false;
   try {
-    const res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || res.status);
+    const res = await postJobWithTurnstileRetry(form);
+    const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
+    if (turnstileRejected) {
+      keepTurnstilePrompt = true;
+      showTurnstileFailure(false);
+      showSubmitMsg("人間かどうかの確認をやり直して、もう一度生成してください。");
+    }
+    let body = {};
+    try { body = await res.json(); } catch { /* edge/proxyのHTMLエラーでも状態を失わない */ }
+    if (!res.ok) {
+      throw new Error(body.detail || res.status);
+    }
     watch(body.id);
   } catch (err) {
     // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
@@ -2537,7 +2571,7 @@ async function submitJob(previewSec, previewMode) {
     setBusy(false);
   } finally {
     // Turnstileのトークンは1回きり。次の投入用に取り直す
-    resetTurnstile();
+    resetTurnstile(!keepTurnstilePrompt);
   }
 }
 

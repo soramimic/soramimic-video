@@ -357,16 +357,18 @@ def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()
     script = _script()
-    assert 'id="turnstile-title">合成前に確認してください' in markup
+    assert 'id="turnstile-title">人間かどうかの確認が必要です' in markup
     assert 'class="turnstile-copy" role="status" aria-live="polite"' in markup
+    assert 'class="turnstile-panel" tabindex="-1"' in markup
     assert 'id="turnstile-cancel"' not in markup
     assert 'turnstile-ui' not in script
     assert 'turnstile-overlay' not in markup
-    prompt = _function_body(script, "function showTurnstilePrompt()")
+    prompt = _function_body(script, "function showTurnstilePrompt(")
     assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
     assert "if (!alreadyActive || forceScroll)" in prompt
     assert "if (focusPanel)" in prompt
     challenge = _function_body(script, "function showTurnstileChallenge()")
+    assert 'setTurnstilePromptCopy("チェックして動画生成を続ける", "")' in challenge
     assert 'classList.add("turnstile-challenge")' in challenge
     assert "showTurnstilePrompt(true, false)" in challenge
     render = _function_body(script, "function renderTurnstileWidget()")
@@ -384,7 +386,8 @@ def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
     assert "#turnstile-wrap.turnstile-complete #turnstile-widget" in markup
     assert "inset-inline-start: -10000px" in markup
     assert "visibility: hidden" in markup
-    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy { display: none; }" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy { display: block; }" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy .hint { display: none; }" in markup
     assert "#turnstile-wrap.turnstile-challenge .turnstile-panel" in markup
 
 
@@ -563,7 +566,7 @@ def test_submit_never_posts_without_a_turnstile_token():
         "if (samplePending) await samplePending;"
     )
     ensure = _function_body(_script(), "async function ensureTurnstileToken(")
-    assert "!turnstileFailed && !!turnstileToken()" in ensure
+    assert "const verified = !failed && !!turnstileToken()" in ensure
     assert "rebuildTurnstileWidget()" in ensure
     assert "const loadDeadline = Math.min(deadline, Date.now() + 10000);" in ensure
     assert "Date.now() - loadStarted > 800" not in ensure
@@ -580,8 +583,8 @@ def test_submit_never_posts_without_a_turnstile_token():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_turnstile_errors_rebuild_widget():
-    """失敗・2分timeoutのwidgetは世代ごと破棄し、古いcallbackを無効化する。"""
+def test_turnstile_errors_rebuild_and_retry_widget():
+    """一時エラーは同じ操作で再試行し、timeoutは待ち時間を延長しない。"""
     ensure = _function_body(_script(), "async function ensureTurnstileToken(") + "\n}"
     node = textwrap.dedent(
         f"""
@@ -596,10 +599,12 @@ def test_turnstile_errors_rebuild_widget():
         let turnstilePromptCompletionTimer = null;
         let rebuilds = 0;
         let now = 0;
-        let waitMode = "error";
+        let waitMode = "error-then-success";
         let window = {{turnstile: {{execute() {{}} }}}};
         function turnstileToken() {{ return token; }}
         function showTurnstilePrompt() {{}}
+        function showTurnstileFailure() {{}}
+        function setTurnstilePromptCopy() {{}}
         function hideTurnstilePrompt() {{}}
         function completeTurnstilePrompt() {{}}
         function scheduleTurnstileInteractionPrompt() {{}}
@@ -611,16 +616,18 @@ def test_turnstile_errors_rebuild_widget():
         }}
         Date.now = () => now;
         global.setTimeout = (fn) => {{
-          if (waitMode === "error") turnstileFailed = true;
+          if (waitMode === "error-then-success") turnstileFailed = true;
+          else if (waitMode === "success") token = "fresh-token";
           else now += 200;
           fn();
           return 1;
         }};
         {ensure}
         (async () => {{
-          assert.equal(await ensureTurnstileToken(100), false);
-          assert.equal(rebuilds, 1, "an errored widget must rebuild before the next attempt");
+          assert.equal(await ensureTurnstileToken(100), true);
+          assert.equal(rebuilds, 1, "an errored widget must rebuild and retry immediately");
           waitMode = "timeout";
+          token = "";
           now = 0;
           assert.equal(await ensureTurnstileToken(100), false);
           assert.equal(rebuilds, 2, "a timed-out widget must also rebuild before retry");
