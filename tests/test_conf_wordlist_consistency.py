@@ -84,6 +84,22 @@ def test_wordlist_layouts_point_to_existing_wordlists():
         assert name in stems, f"wordlist_catalog.jsonの {name} が単語リストにありません"
 
 
+def test_yuzu_uses_specific_plant_taxonomy():
+    """ユズが大分類の汎用表示へ戻らず、柚子として科・属まで表示される。"""
+    path = WORDLISTS / "plant.csv"
+    if not path.is_file():
+        pytest.skip("submodule未取得")
+    with path.open(encoding="utf-8", newline="") as stream:
+        yuzu = next(row for row in csv.DictReader(stream) if row["original"] == "ユズ")
+
+    from soramimic_video.layout import load_layout
+
+    texts = load_layout("plant_card").render_texts(yuzu)
+    assert yuzu["scientific_name"] == "Citrus × junos"
+    assert "ミカン科ミカン属" in texts
+    assert "双子葉植物" not in texts
+
+
 def test_conf_wordlists_exist_and_facet_columns_match():
     entries = _conf_entries()
     assert entries, "confに単語リストがありません"
