@@ -75,6 +75,18 @@ def test_job_flow_with_editor(client):
     assert playback.headers["cache-control"] == "private, no-store"
 
 
+def test_noncommercial_fanwork_is_explicit_and_persisted(client):
+    ordinary = submit(client, editor=b'{"format": "soramimic-editor/1"}')
+    assert wait_done(client, ordinary)["params"]["allow_noncommercial_fanwork"] is False
+
+    opted_in = submit(
+        client,
+        editor=b'{"format": "soramimic-editor/1"}',
+        allow_noncommercial_fanwork="true",
+    )
+    assert wait_done(client, opted_in)["params"]["allow_noncommercial_fanwork"] is True
+
+
 def test_requires_editor_or_wordlist(client):
     files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
     res = client.post("/api/jobs", files=files)

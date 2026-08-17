@@ -11,6 +11,11 @@ def test_video_image_lead_defaults_and_can_be_disabled():
         "video", "--project", "work/song", "--image-lead-sec", "0",
     ])
     assert disabled.image_lead_sec == 0.0
+    assert video.noncommercial_fanwork is False
+    allowed = parser.parse_args([
+        "video", "--project", "work/song", "--noncommercial-fanwork",
+    ])
+    assert allowed.noncommercial_fanwork is True
 
     serve = parser.parse_args(["serve"])
     assert serve.video_image_lead_sec == 0.1

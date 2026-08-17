@@ -1074,6 +1074,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
         "midi_end_credit": midi_end_credit_of(job.params),
+        "allow_noncommercial_fanwork": bool(
+            job.params.get("allow_noncommercial_fanwork", False)
+        ),
     }
 
     if not config.get("parallel_video", True):
@@ -2239,25 +2242,34 @@ def create_app(
             "row": row,
         }
 
-    def _wordlist_has_image_url(wordlist: str, url: str) -> bool:
-        """URLがimage列に実在するかを走査し、見つけ次第止める。"""
+    def _wordlist_image_row(wordlist: str, url: str) -> dict[str, str] | None:
+        """URLがimage列に実在する行を返す。"""
         from .convert import resolve_wordlist
 
         wordlist = require_launch_wordlist(wordlist)
         try:
             with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
-                return any(row.get("image") == url for row in csv.DictReader(f))
+                return next(
+                    (row for row in csv.DictReader(f) if row.get("image") == url),
+                    None,
+                )
         except (FileNotFoundError, OSError):
-            return False
+            return None
 
     @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
-    def wordlist_image(request: Request, wordlist: str = "", url: str = "") -> FileResponse:
+    def wordlist_image(
+        request: Request,
+        wordlist: str = "",
+        url: str = "",
+        noncommercial_fanwork: bool = False,
+    ) -> FileResponse:
         """レイアウト編集プレビュー用の画像(WYSIWYG表示向け)。
 
         url指定時はプレビューのキュー画像を返す。オープンプロキシ化を避けるため、
         指定した単語リストのimage列に実在するURLだけを取得して返す。
         url未指定時は代表行(単語リストの最初の画像あり行)の画像。
         """
+        from .image_usage import require_image_usage
         from .video import cached_image, download_image
 
         wordlist = require_launch_wordlist(wordlist)
@@ -2266,7 +2278,10 @@ def create_app(
             raise HTTPException(status_code=429, detail="画像の取得が続いています")
 
         if url:
-            if not wordlist.strip() or not _wordlist_has_image_url(wordlist.strip(), url):
+            row = (
+                _wordlist_image_row(wordlist.strip(), url) if wordlist.strip() else None
+            )
+            if row is None:
                 raise HTTPException(status_code=404, detail="画像が見つかりません")
             target = url
         else:
@@ -2274,6 +2289,13 @@ def create_app(
             if not row or not row.get("image"):
                 raise HTTPException(status_code=404, detail="画像のある行がありません")
             target = row["image"]
+        try:
+            require_image_usage(
+                row,
+                allow_noncommercial_fanwork=noncommercial_fanwork,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         cache_dir = jobs_dir.resolve() / "image-cache"
         path = cached_image(target, cache_dir)
         if path is None:
@@ -2306,6 +2328,7 @@ def create_app(
         where: str = "",
         convert_params: str = "",
         images: bool = True,
+        noncommercial_fanwork: bool = False,
     ) -> FileResponse:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
@@ -2348,6 +2371,7 @@ def create_app(
                 params=parse_convert_params(convert_params),
                 with_images=images,
                 title_kana=title_kana,
+                allow_noncommercial_fanwork=noncommercial_fanwork,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -2555,6 +2579,7 @@ def create_app(
         song_title: str = Form(""),
         original_credit: str = Form(""),
         credit_notice: str = Form(""),
+        allow_noncommercial_fanwork: bool = Form(False),
         wordlist: str = Form(""),
         where: str = Form(""),
         convert_params: str = Form(""),
@@ -2629,6 +2654,7 @@ def create_app(
             layout_json = ""
             original_credit = ""
             credit_notice = ""
+            # 簡易UIでも明示チェックがある場合だけ許可する。
         # プレビューは元歌詞をそのまま歌わせるので替え歌の入力は不要
         if preview <= 0 and editor_bytes is None and custom is None and not wordlist.strip():
             raise HTTPException(
@@ -2757,6 +2783,7 @@ def create_app(
             "song_title": song_title.strip(),
             "original_credit": original_credit.strip(),
             "credit_notice": credit_notice.strip(),
+            "allow_noncommercial_fanwork": allow_noncommercial_fanwork,
         }
         if custom is not None:
             # 表示名(履歴・サムネ・ダウンロード名)はアップロードしたファイル名から作る

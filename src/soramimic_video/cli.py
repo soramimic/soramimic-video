@@ -233,6 +233,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         original_credit=args.original_credit,
         credit_notice=args.credit_notice,
         image_lead_sec=args.image_lead_sec,
+        allow_noncommercial_fanwork=args.noncommercial_fanwork,
     )
     print(f"動画完成: {out}")
     return 0
@@ -256,6 +257,7 @@ def cmd_prewarm_images(args: argparse.Namespace) -> int:
         cache_dir,
         delay=args.delay,
         revalidate=args.revalidate,
+        allow_noncommercial_fanwork=args.noncommercial_fanwork,
     )
     print(
         f"prewarm完了: 取得 {summary['fetched']} / 更新確認 {summary['revalidated']} / "
@@ -300,6 +302,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
             mode=mode, dry_run=args.dry_run,
             download_workers=args.download_workers,
             source_manifest_url=args.source_manifest_url,
+            allow_noncommercial_fanwork=args.noncommercial_fanwork,
         )
     except (OSError, ValueError, RuntimeError) as e:
         print(f"asset sync失敗(last-goodを維持): {e}", file=sys.stderr)
@@ -562,6 +565,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--image-lead-sec", type=float, default=0.1,
         help="カードを音声より先に表示する秒数(既定: 0.1、無効化: 0)",
     )
+    p.add_argument(
+        "--noncommercial-fanwork",
+        action="store_true",
+        help="非営利ファン活動に限定された単語画像を利用する",
+    )
     p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
     p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
     p.add_argument(
@@ -619,6 +627,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="キャッシュ済み画像もETag/Last-Modifiedで更新確認する",
     )
+    p.add_argument(
+        "--noncommercial-fanwork",
+        action="store_true",
+        help="非営利ファン活動に限定された画像も事前取得する",
+    )
     p.set_defaults(func=cmd_prewarm_images)
 
     p = sub.add_parser(
@@ -658,6 +671,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="画像取得の並列数(1または2、既定2。長時間のCommons一括取得は1を推奨)",
     )
     p.add_argument("--dry-run", action="store_true", help="取得せず差分件数だけ表示する")
+    p.add_argument(
+        "--noncommercial-fanwork",
+        action="store_true",
+        help="非営利ファン活動に限定された画像も同期する",
+    )
     p.set_defaults(func=cmd_sync_assets)
 
     p = sub.add_parser("asset-status", help="永続asset storeのmanifest集計を表示する")

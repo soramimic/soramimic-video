@@ -131,6 +131,7 @@ class PreviewSpec:
     # 曲名の読み(カタカナ)。あれば変換の入力に使う(samples.json の title_kana)。
     # 見出しに出す曲名は title のまま
     title_kana: str = ""
+    allow_noncommercial_fanwork: bool = False
 
     @classmethod
     def create(
@@ -143,6 +144,7 @@ class PreviewSpec:
         height: int = PREVIEW_HEIGHT,
         with_images: bool = True,
         title_kana: str = "",
+        allow_noncommercial_fanwork: bool = False,
     ) -> PreviewSpec:
         """where・変換パラメータの既定をジョブ本体と同じ経路で解決して組み立てる。
 
@@ -161,6 +163,7 @@ class PreviewSpec:
             height=height,
             with_images=with_images,
             title_kana=title_kana,
+            allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         )
 
     @property
@@ -183,6 +186,7 @@ class PreviewSpec:
                 "params": {k: str(v) for k, v in self.params.items()},
                 "size": [self.width, self.height],
                 "with_images": self.with_images,
+                "allow_noncommercial_fanwork": self.allow_noncommercial_fanwork,
                 "layout": _layout_fingerprint(),
             },
             ensure_ascii=False,
@@ -240,6 +244,7 @@ class PreviewSpec:
             missing_images=missing,
             image_wait_sec=wait_sec if image_cache is not None else 0.0,
             song_kana=self.title_kana,
+            allow_noncommercial_fanwork=self.allow_noncommercial_fanwork,
         )
         if out is None:
             tmp.unlink(missing_ok=True)

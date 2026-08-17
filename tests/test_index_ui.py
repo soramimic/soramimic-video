@@ -1489,6 +1489,13 @@ def test_layout_preview_image_needs_a_wordlist_name():
     assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in thumb
 
 
+def test_noncommercial_fanwork_requires_explicit_checkbox():
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'type="checkbox" id="noncommercial-fanwork"' in html
+    assert 'form.append("allow_noncommercial_fanwork"' in html
+    assert '$("noncommercial-fanwork").checked ? "true" : "false"' in html
+
+
 # ---- エディタからの「曲を変えたい」依頼(hostRequest)にホストが応える ----
 
 

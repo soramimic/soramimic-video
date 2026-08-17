@@ -970,6 +970,59 @@ def test_image_cues_credit_from_wordlist_column(tmp_path: Path):
     assert credits[0]["credit"] == "山田 太郎 (CC BY 2.0)"
 
 
+def test_image_cues_noncommercial_fanwork_requires_explicit_mode(tmp_path: Path):
+    project = _project(tmp_path)
+    row = project.parody.lines[0].words[0].wordlist_row
+    row["image_usage"] = "noncommercial_fanwork"
+    row["image_terms_page"] = "https://example.com/guideline"
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+
+    with pytest.raises(ValueError, match="非営利ファン活動"):
+        build_image_cues(project, work, 320, 180)
+
+    cues, credits = build_image_cues(
+        project,
+        work,
+        320,
+        180,
+        allow_noncommercial_fanwork=True,
+    )
+    assert len(cues) == 1
+    assert credits[0]["image_usage"] == "noncommercial_fanwork"
+    assert credits[0]["image_terms_page"] == "https://example.com/guideline"
+
+
+def test_image_cues_unknown_usage_fails_closed(tmp_path: Path):
+    project = _project(tmp_path)
+    project.parody.lines[0].words[0].wordlist_row["image_usage"] = "future_policy"
+    with pytest.raises(ValueError, match="未対応の画像利用区分"):
+        build_image_cues(
+            project,
+            tmp_path / "video",
+            320,
+            180,
+            allow_noncommercial_fanwork=True,
+        )
+
+
+def test_prewarm_row_collection_excludes_noncommercial_by_default(tmp_path: Path):
+    from soramimic_video.prewarm import _collect_rows
+
+    path = tmp_path / "list.csv"
+    path.write_text(
+        "original,image,image_usage\n"
+        "通常,https://example.com/general.png,\n"
+        "限定,https://example.com/fan.png,noncommercial_fanwork\n",
+        encoding="utf-8",
+    )
+    assert set(_collect_rows([path])) == {"https://example.com/general.png"}
+    assert set(_collect_rows([path], allow_noncommercial_fanwork=True)) == {
+        "https://example.com/general.png",
+        "https://example.com/fan.png",
+    }
+
+
 def test_image_cues_credit_fetched(tmp_path: Path, monkeypatch):
     # Commonsから取得したcredit_textがフレームデータとcredits一覧に入る
     import soramimic_video.video as video_mod

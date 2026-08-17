@@ -1144,6 +1144,7 @@ def build_image_cues(
     layout: Layout | None = None,
     app_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
+    allow_noncommercial_fanwork: bool = False,
 ) -> tuple[list[ImageCue], list[dict]]:
     """替え歌単語の歌唱区間に対応するフレームキュー列と、使用画像のクレジット情報。
 
@@ -1159,6 +1160,14 @@ def build_image_cues(
     if layout is None:
         layout = load_layout(None)
     frames = collect_word_frames(project, layout)
+    from .image_usage import require_image_usage
+
+    for wf in frames:
+        if wf.data.get("image"):
+            require_image_usage(
+                wf.data,
+                allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+            )
 
     cues: list[ImageCue] = []
     credits: dict[str, dict] = {}
@@ -1216,6 +1225,8 @@ def build_image_cues(
                 "image": url,
                 "image_page": data.get("image_page", ""),
                 "credit": str(data.get("image_credit") or ""),
+                "image_usage": str(data.get("image_usage") or ""),
+                "image_terms_page": str(data.get("image_terms_page") or ""),
             }
     return cues, list(credits.values())
 
@@ -1735,12 +1746,14 @@ def write_credits(credits: list[dict], work: Path) -> Path | None:
         "クレジット欄が空の画像は表記不要(パブリックドメイン等)か情報を取得"
         "できなかったもので、後者はライセンス確認先で要確認です。",
         "",
-        "| 単語 | 画像 | クレジット | ライセンス確認先 |",
-        "|---|---|---|---|",
+        "| 単語 | 画像 | クレジット | ライセンス確認先 | 利用区分 |",
+        "|---|---|---|---|---|",
     ]
     for c in credits:
         lines.append(
-            f"| {c['original']} | {c['image']} | {c.get('credit', '')} | {c['image_page']} |"
+            f"| {c['original']} | {c['image']} | {c.get('credit', '')} | "
+            f"{c.get('image_terms_page') or c['image_page']} | "
+            f"{c.get('image_usage', '')} |"
         )
     path = work / "credits.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1824,6 +1837,7 @@ def prepare_video(
     credit_notice: str = "",
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
+    allow_noncommercial_fanwork: bool = False,
 ) -> PreparedVideo:
     """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
     if fps <= 0:
@@ -1858,6 +1872,7 @@ def prepare_video(
     cues, credits = build_image_cues(
         project, work, width, height, image_cache, layout_obj, credit_text,
         image_lead_sec=image_lead_sec,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
     if cues:
         logger.info("画像キュー: %d件", len(cues))
@@ -1872,6 +1887,7 @@ def prepare_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
     if thumbnail is not None:
         cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
@@ -1967,6 +1983,7 @@ def make_video(
     credit_notice: str = "",
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
+    allow_noncommercial_fanwork: bool = False,
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
@@ -2015,6 +2032,7 @@ def make_video(
     cues, credits = build_image_cues(
         project, work, width, height, image_cache, layout_obj, credit_text,
         image_lead_sec=image_lead_sec,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
     if cues:
         logger.info("画像キュー: %d件", len(cues))
@@ -2034,6 +2052,7 @@ def make_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
     if thumbnail is not None:
         cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))

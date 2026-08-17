@@ -113,6 +113,7 @@ uv run soramimic-video serve
 - 同梱サンプル曲の根拠と作成方法は [docs/sample-rights.md](docs/sample-rights.md) に記録しています。
 - 著作権のある楽曲の MIDI・歌詞・音源・動画を repository へ commit しないでください。
 - 単語リスト画像を使う場合は、自動生成される `credits.md` のライセンス表示に従ってください。
+- `image_usage=noncommercial_fanwork` の画像は既定では使用しません。個人の非営利ファン活動として条件を確認した場合に限り、Web UIの確認欄または `video --noncommercial-fanwork` で明示的に有効化してください。
 - 画像に作者表示が必要な場合、既定では動画フレームへ出典を表示します。表示を無効にする場合は、
   別の適切な場所で必要な表示を行ってください。
 - VOICEVOX を使う動画には、選択したキャラクターを含む必要なクレジットを表示してください。

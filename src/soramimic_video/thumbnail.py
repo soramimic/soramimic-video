@@ -784,6 +784,7 @@ def resolve_headline(
     missing_images: list[tuple[str, str]] | None = None,
     image_wait_sec: float = 0.0,
     song_kana: str = "",
+    allow_noncommercial_fanwork: bool = False,
 ) -> tuple[list[str], list[Path], list[str]]:
     """曲名を1フレーズ変換し、(見出しの単語, 単語画像, クレジット文言)を返す。
 
@@ -811,11 +812,18 @@ def resolve_headline(
     image_paths: list[Path] = []
     image_credits: list[str] = []
     if found and image_cache is not None:
+        from .image_usage import image_usage_allowed
+
         try:
             if not download_images and image_wait_sec > 0:
                 # 待てないなりに少しだけ待つ(初見の1回目から絵入りにするため)
                 wait_for_images([row for _word, row in found], image_cache, image_wait_sec)
             for _word, row in found:
+                if not image_usage_allowed(
+                    row,
+                    allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+                ):
+                    continue
                 path, credit = _word_image(
                     row, image_cache, download_images, missing_images
                 )
@@ -845,6 +853,7 @@ def build_thumbnail(
     design: str | TextDesign | None = None,
     image_wait_sec: float = 0.0,
     song_kana: str = "",
+    allow_noncommercial_fanwork: bool = False,
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -872,6 +881,7 @@ def build_thumbnail(
         missing_images,
         image_wait_sec=image_wait_sec,
         song_kana=song_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
 
     try:
@@ -904,6 +914,7 @@ def generate_thumbnail(
     title: str | None = None,
     app_credit: str = "",
     title_kana: str = "",
+    allow_noncommercial_fanwork: bool = False,
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
@@ -924,4 +935,5 @@ def generate_thumbnail(
         height=height,
         app_credit=app_credit,
         song_kana=title_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
