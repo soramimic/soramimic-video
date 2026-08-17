@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,6 +54,8 @@ from . import runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
 from . import wordlist_zip as wordlist_zip_mod
 from .access_identity import canonical_email, valid_issuer, verify_access_email
+from .asset_preview import derive_asset_preview
+from .asset_preview import preview_cache_dir as asset_preview_cache_dir
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -1571,6 +1573,8 @@ def create_app(
         "image_cache": jobs_dir.resolve() / "image-cache",
         # 生成前に出す仮サムネ(/api/thumbnail-preview)のPNGキャッシュ
         "preview_cache": preview_cache_dir(jobs_dir),
+        # UI/editorへ返す単語画像は、動画用原本cacheとは別の派生PNGだけを置く。
+        "asset_preview_cache": asset_preview_cache_dir(jobs_dir),
         # 自作リストで替え歌エディタを開いたときの単語リスト置き場(ジョブ横断)
         "editor_sessions": editor_sessions_dir(jobs_dir),
         "soundfont": resolve_soundfont(soundfont),
@@ -2242,53 +2246,72 @@ def create_app(
             "row": row,
         }
 
-    def _wordlist_image_row(wordlist: str, url: str) -> dict[str, str] | None:
-        """URLがimage列に実在する行を返す。"""
-        from .convert import resolve_wordlist
+    def _asset_preview_wordlist_path(wordlist: str) -> Path:
+        """HTTP previewで参照できる名前付きCSVだけを厳格に解決する。"""
+        from .convert import WORDLISTS_DIR
 
-        wordlist = require_launch_wordlist(wordlist)
+        name = wordlist.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            raise HTTPException(status_code=404, detail="単語リストが見つかりません")
+        if (is_public_mode() or is_simple_ui()) and name not in launch_wordlist_names():
+            raise HTTPException(status_code=404, detail="この単語リストは現在利用できません")
         try:
-            with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
-                return next(
-                    (row for row in csv.DictReader(f) if row.get("image") == url),
-                    None,
-                )
+            root = WORDLISTS_DIR.resolve(strict=True)
+            candidate = root / f"{name}.csv"
+            if candidate.is_symlink():
+                raise OSError("symlink")
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+            if resolved.parent != root or not resolved.is_file():
+                raise OSError("not a packaged wordlist")
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=404, detail="単語リストが見つかりません"
+            ) from exc
+        return resolved
+
+    def _asset_preview_row(wordlist: str, url: str) -> dict[str, str] | None:
+        """指定URLまたは代表画像の、名前付きCSVに実在する行だけを返す。"""
+        try:
+            path = _asset_preview_wordlist_path(wordlist)
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, encoding="utf-8") as f:
+                rows = csv.DictReader(f)
+                if url:
+                    return next((row for row in rows if row.get("image") == url), None)
+                first = next(rows, None)
+                if first and first.get("image"):
+                    return first
+                return next((row for row in rows if row.get("image")), None)
         except (FileNotFoundError, OSError):
             return None
 
+    @app.get("/api/asset-preview", dependencies=[Depends(_require_api_key)])
     @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
-    def wordlist_image(
+    def asset_preview(
         request: Request,
         wordlist: str = "",
         url: str = "",
         noncommercial_fanwork: bool = False,
     ) -> FileResponse:
-        """レイアウト編集プレビュー用の画像(WYSIWYG表示向け)。
+        """レイアウト編集用に、原本から作った安全な派生PNGだけを返す。
 
         url指定時はプレビューのキュー画像を返す。オープンプロキシ化を避けるため、
-        指定した単語リストのimage列に実在するURLだけを取得して返す。
+        指定した名前付き単語リストのimage列に実在するURLだけを対象にする。
         url未指定時は代表行(単語リストの最初の画像あり行)の画像。
         """
+        from .asset_store import verified_preview_asset
         from .image_usage import require_image_usage
-        from .video import cached_image, download_image
+        from .video import cached_image
 
-        wordlist = require_launch_wordlist(wordlist)
+        _asset_preview_wordlist_path(wordlist)
         # URL照合にもCSV走査が要るため、cache判定より先に広いhit枠を適用する。
         if not _allow_expensive_get(request, cache_hit=True):
             raise HTTPException(status_code=429, detail="画像の取得が続いています")
-
-        if url:
-            row = (
-                _wordlist_image_row(wordlist.strip(), url) if wordlist.strip() else None
-            )
-            if row is None:
-                raise HTTPException(status_code=404, detail="画像が見つかりません")
-            target = url
-        else:
-            row = _sample_row(wordlist.strip()) if wordlist.strip() else None
-            if not row or not row.get("image"):
-                raise HTTPException(status_code=404, detail="画像のある行がありません")
-            target = row["image"]
+        row = _asset_preview_row(wordlist, url)
+        if row is None or not row.get("image"):
+            raise HTTPException(status_code=404, detail="画像が見つかりません")
+        target = row["image"]
         try:
             require_image_usage(
                 row,
@@ -2296,17 +2319,41 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        parsed = urlsplit(target)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=404, detail="画像が見つかりません")
+
+        managed, path, revision, source_sha256 = verified_preview_asset(target)
         cache_dir = jobs_dir.resolve() / "image-cache"
-        path = cached_image(target, cache_dir)
-        if path is None:
-            if not _allow_expensive_get(request):
-                raise HTTPException(status_code=429, detail="画像の取得が続いています")
-            with _expensive_get_slot():
-                # 待機中に別リクエストが保存していればネットワーク処理を繰り返さない。
-                path = cached_image(target, cache_dir) or download_image(target, cache_dir)
+        if not managed:
+            path = cached_image(target, cache_dir)
         if path is None:
             raise HTTPException(status_code=404, detail="画像を取得できません")
-        return FileResponse(path)
+        if not managed:
+            try:
+                resolved_cache = cache_dir.resolve(strict=True)
+                if path.is_symlink():
+                    raise OSError("symlink")
+                path = path.resolve(strict=True)
+                path.relative_to(resolved_cache)
+            except (OSError, ValueError) as exc:
+                raise HTTPException(status_code=404, detail="画像を取得できません") from exc
+        try:
+            with _expensive_get_slot():
+                preview = derive_asset_preview(
+                    path,
+                    config["asset_preview_cache"],
+                    asset_id=target,
+                    source_revision=revision,
+                    expected_sha256=source_sha256,
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="画像を変換できません") from exc
+        return FileResponse(
+            preview,
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     def _sample_title(sample_id: str) -> tuple[str, str]:
         """サンプル曲の (曲名, 読み)。読みは samples.json の title_kana(無ければ空)。
@@ -2470,7 +2517,7 @@ def create_app(
         item = cues[index]
         image_url = ""
         if item["image"]:
-            image_url = "/api/wordlist-image?" + urlencode(
+            image_url = "/api/asset-preview?" + urlencode(
                 {"wordlist": result["wordlist"], "url": item["image"]}
             )
         return {

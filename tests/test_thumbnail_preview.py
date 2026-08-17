@@ -382,9 +382,10 @@ def test_index_html_builder_uses_preview_with_fallback():
     assert "/api/thumbnail-preview?" in html  # カードはプレビューを取りに行く
     assert "builder-loading" in html  # 生成待ちのローディング表示がある
     assert "PREVIEW_TIMEOUT_MS = 8000" in html  # 8秒で打ち切る
-    # 失敗・429・タイムアウトは代表画像(/api/wordlist-image)にフォールバックする
+    # 失敗・429・タイムアウトは派生代表画像(/api/asset-preview)にフォールバックする
     assert "loadWordlistImage(combo.wordlistName, seq);" in html
-    assert "/api/wordlist-image?wordlist=" in html
+    assert "/api/asset-preview?wordlist=" in html
+    assert "/api/wordlist-image?" not in html
     # フォールバックしたままにはせず、本物のプレビューを裏で聞き直す
     assert "retryPreviewAfterFallback(url, seq, PREVIEW_FALLBACK_RETRIES," in html
 

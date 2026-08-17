@@ -3249,7 +3249,7 @@ function loadWordlistImage(name, seq) {
     updateBuilderOverlay();
   };
   if (!name || hiddenPreviewReason(name)) { hide(); return; }
-  const url = "/api/wordlist-image?wordlist=" + encodeURIComponent(name)
+  const url = "/api/asset-preview?wordlist=" + encodeURIComponent(name)
     + ($("noncommercial-fanwork").checked ? "&noncommercial_fanwork=true" : "")
     + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
@@ -4006,7 +4006,7 @@ function leContent(e) {
       // 自作リストのときは #wordlist が空。空の名前で頼むと404になるので、
       // loadWordlistImage と同じく名前が無ければ引かない(プレースホルダに落ちる)
       const name = $("wordlist").value.trim();
-      if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);
+      if (name) src = "/api/asset-preview?wordlist=" + encodeURIComponent(name);
       if (src && $("noncommercial-fanwork").checked) src += "&noncommercial_fanwork=true";
     }
     if (src) {
