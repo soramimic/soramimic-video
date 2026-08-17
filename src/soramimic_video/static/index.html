@@ -436,10 +436,27 @@
     border-radius: 10px; background: var(--panel); text-align: center;
     box-shadow: 0 0 0 2px #1296f022;
   }
+  /* 通常の手動確認は、操作が必要だと分かる短い見出しとCloudflare本体だけを出す。
+     詳しい補足・外枠は重ねず、失敗案内と短い完了表示だけ上のカード装飾を使う。 */
+  #turnstile-wrap.turnstile-challenge .turnstile-panel {
+    padding: 0; border: 0; background: transparent; box-shadow: none;
+  }
+  #turnstile-wrap.turnstile-challenge .turnstile-copy { display: block; }
+  #turnstile-wrap.turnstile-challenge .turnstile-copy .hint { display: none; }
+  #turnstile-wrap.turnstile-challenge .turnstile-title {
+    margin: 0 0 .35rem; font-size: .95rem; line-height: 1.4;
+  }
   #turnstile-wrap:not(.turnstile-active) .turnstile-panel {
     max-width: 26rem; padding: 0; border: 0; background: transparent;
   }
   #turnstile-wrap:not(.turnstile-active) .turnstile-copy { display: none; }
+  /* 案内を閉じた後にCloudflareのiframeだけが残ったり、自動確認で一瞬だけ見えたり
+     しないよう、ウィジェットも案内と同じ表示状態にする。完了表示中も確認欄は隠す。 */
+  #turnstile-wrap:not(.turnstile-active) #turnstile-widget,
+  #turnstile-wrap.turnstile-complete #turnstile-widget {
+    position: absolute; inset-inline-start: -10000px; visibility: hidden;
+    opacity: 0; pointer-events: none;
+  }
   .turnstile-title { margin: 0; font-weight: 700; }
   .turnstile-copy .hint { margin: .2rem 0 .5rem; }
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
@@ -639,10 +656,10 @@
   <!-- Cloudflare Turnstile。通常はバックグラウンドで確認し、人の操作が必要なときだけ
        案内とウィジェットを出してここまで自動スクロールする。 -->
   <div id="turnstile-wrap" hidden>
-    <div class="turnstile-panel">
+    <div class="turnstile-panel" tabindex="-1" aria-labelledby="turnstile-title">
       <div class="turnstile-copy" role="status" aria-live="polite">
-        <p class="turnstile-title" id="turnstile-title">合成前に確認してください</p>
-        <p class="hint">「私はロボットではありません」をチェックすると、そのまま合成を始めます。</p>
+        <p class="turnstile-title" id="turnstile-title">人間かどうかの確認が必要です</p>
+        <p class="hint">確認欄が表示されたらチェックしてください。完了すると、そのまま合成を始めます。</p>
       </div>
       <div id="turnstile-widget"></div>
     </div>
@@ -1345,16 +1362,98 @@ let turnstileLastToken = "";
 let turnstileNeedsInteraction = false;
 let turnstileWaiting = false;
 let turnstileFailed = false;
+let turnstileScriptFailed = false;
+const TURNSTILE_PROMPT_MIN_MS = 1400;
+const TURNSTILE_INTERACTION_REVEAL_MS = 700;
+let turnstilePromptShownAt = 0;
+let turnstilePromptCompletionTimer = null;
+let turnstileInteractionRevealTimer = null;
 
-function showTurnstilePrompt() {
+function cancelTurnstileInteractionReveal() {
+  if (turnstileInteractionRevealTimer === null) return;
+  clearTimeout(turnstileInteractionRevealTimer);
+  turnstileInteractionRevealTimer = null;
+}
+
+function scheduleTurnstileInteractionPrompt(epoch = turnstileEpoch) {
+  if (turnstileInteractionRevealTimer !== null) return;
+  turnstileInteractionRevealTimer = setTimeout(() => {
+    turnstileInteractionRevealTimer = null;
+    // Cloudflareが操作UIを準備しても、直後に自動成功することがある。少し待っても
+    // 操作要求が続いている場合だけ表示し、自動成功時の一瞬の点滅をなくす。
+    if (epoch !== turnstileEpoch || !turnstileWaiting
+        || !turnstileNeedsInteraction || turnstileToken()) return;
+    showTurnstileChallenge();
+  }, TURNSTILE_INTERACTION_REVEAL_MS);
+}
+
+function showTurnstilePrompt(forceScroll = false, focusPanel = true) {
   const wrap = $("turnstile-wrap");
-  if (wrap.classList.contains("turnstile-active")) return;
-  wrap.classList.add("turnstile-active");
-  requestAnimationFrame(() => wrap.scrollIntoView({ behavior: "smooth", block: "center" }));
+  const alreadyActive = wrap.classList.contains("turnstile-active");
+  if (!alreadyActive) {
+    wrap.classList.remove("turnstile-complete");
+    wrap.classList.add("turnstile-active");
+    turnstilePromptShownAt = Date.now();
+  }
+  if (!alreadyActive || forceScroll) {
+    requestAnimationFrame(() => {
+      // 予約後すぐ自動確認が完了した場合は、生成開始後に画面やフォーカスを戻さない。
+      if (!wrap.classList.contains("turnstile-active")) return;
+      wrap.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (focusPanel) wrap.querySelector(".turnstile-panel").focus({ preventScroll: true });
+    });
+  }
+}
+
+function showTurnstileChallenge() {
+  setTurnstilePromptCopy("チェックして動画生成を続ける", "");
+  $("turnstile-wrap").classList.add("turnstile-challenge");
+  showTurnstilePrompt(true, false);
+}
+
+function setTurnstilePromptCopy(title, hint) {
+  $("turnstile-title").textContent = title;
+  $("turnstile-wrap").querySelector(".turnstile-copy .hint").textContent = hint;
+}
+
+function showTurnstileFailure(reloadPage = false) {
+  // 直前の成功表示タイマーが、サーバー拒否など後から判明した失敗案内を消さないようにする。
+  hideTurnstilePrompt();
+  setTurnstilePromptCopy(
+    reloadPage ? "確認を読み込めませんでした" : "人間かどうかの確認をやり直してください",
+    reloadPage
+      ? "ページを再読み込みして、もう一度生成してください。"
+      : "もう一度「生成」を押すと新しい確認を始めます。確認欄が出たらチェックしてください。",
+  );
+  showTurnstilePrompt(true);
 }
 
 function hideTurnstilePrompt() {
-  $("turnstile-wrap").classList.remove("turnstile-active");
+  cancelTurnstileInteractionReveal();
+  if (turnstilePromptCompletionTimer !== null) {
+    clearTimeout(turnstilePromptCompletionTimer);
+    turnstilePromptCompletionTimer = null;
+  }
+  const wrap = $("turnstile-wrap");
+  wrap.classList.remove("turnstile-active", "turnstile-challenge", "turnstile-complete");
+  turnstilePromptShownAt = 0;
+}
+
+function completeTurnstilePrompt() {
+  const wrap = $("turnstile-wrap");
+  if (!wrap.classList.contains("turnstile-active")) return;
+  if (wrap.classList.contains("turnstile-complete")) return;
+  const remaining = TURNSTILE_PROMPT_MIN_MS - (Date.now() - turnstilePromptShownAt);
+  if (remaining <= 0) {
+    hideTurnstilePrompt();
+    return;
+  }
+  // 自動確認が一瞬で終わったときは、謎の点滅にせず結果が読める時間だけ残す。
+  // 確認欄自体はすぐ隠すので、手動でチェックした後にチェック欄が残り続けない。
+  setTurnstilePromptCopy("確認できました", "動画生成を始めます。");
+  wrap.classList.remove("turnstile-challenge");
+  wrap.classList.add("turnstile-complete");
+  turnstilePromptCompletionTimer = setTimeout(hideTurnstilePrompt, remaining);
 }
 
 function renderTurnstileWidget() {
@@ -1363,34 +1462,49 @@ function renderTurnstileWidget() {
     sitekey: turnstileSiteKey,
     theme: "auto",
     appearance: "interaction-only",
+    execution: "execute",
     "before-interactive-callback": () => {
       if (epoch !== turnstileEpoch) return;
       turnstileNeedsInteraction = true;
-      if (turnstileWaiting) showTurnstilePrompt();
+      if (turnstileWaiting) scheduleTurnstileInteractionPrompt(epoch);
     },
     callback: (token) => {
       if (epoch !== turnstileEpoch) return;
+      cancelTurnstileInteractionReveal();
       turnstileLastToken = token || "";
       turnstileNeedsInteraction = false;
-      if (turnstileLastToken) hideTurnstilePrompt();
+      if (turnstileLastToken) completeTurnstilePrompt();
     },
     "expired-callback": () => {
       if (epoch === turnstileEpoch) turnstileLastToken = "";
     },
     "error-callback": () => {
       if (epoch !== turnstileEpoch) return;
+      cancelTurnstileInteractionReveal();
       turnstileLastToken = "";
       turnstileFailed = true;
+      if (turnstileWaiting) showTurnstilePrompt(true);
     },
     "timeout-callback": () => {
       if (epoch !== turnstileEpoch) return;
+      cancelTurnstileInteractionReveal();
       turnstileLastToken = "";
       turnstileFailed = true;
+      if (turnstileWaiting) showTurnstilePrompt(true);
+    },
+    "unsupported-callback": () => {
+      if (epoch !== turnstileEpoch) return;
+      cancelTurnstileInteractionReveal();
+      turnstileLastToken = "";
+      turnstileFailed = true;
+      turnstileScriptFailed = true;
+      if (turnstileWaiting) showTurnstilePrompt(true);
     },
   });
 }
 
 function rebuildTurnstileWidget() {
+  cancelTurnstileInteractionReveal();
   const oldWidget = turnstileWidget;
   // 先に世代を進め、remove中にも届き得る旧callbackを無効化する。
   turnstileEpoch += 1;
@@ -1402,10 +1516,14 @@ function rebuildTurnstileWidget() {
   $("turnstile-widget").replaceChildren();
   try {
     renderTurnstileWidget();
+    return true;
   } catch (err) {
     // 回復用の再描画まで失敗してもsubmitJobをrejectしてbusyのままにしない。
     // 次の投入ではページ再読み込みを促す通常の確認失敗として扱う。
     console.warn("Turnstileの再描画に失敗しました", err);
+    turnstileFailed = true;
+    if (turnstileWaiting) showTurnstilePrompt(true);
+    return false;
   }
 }
 
@@ -1418,13 +1536,19 @@ function setupTurnstile(siteKey) {
   // appearance: interaction-only で普段は何も表示せず、Cloudflareが人間の
   // 操作を求めるときだけウィジェットを出す。
   window.onTurnstileLoad = () => {
-    renderTurnstileWidget();
+    turnstileScriptFailed = false;
+    rebuildTurnstileWidget();
   };
   const s = document.createElement("script");
   s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js"
     + "?onload=onTurnstileLoad&render=explicit";
   s.async = true;
   s.defer = true;
+  s.addEventListener("error", () => {
+    turnstileScriptFailed = true;
+    turnstileFailed = true;
+    if (turnstileWaiting) showTurnstilePrompt(true);
+  });
   document.head.appendChild(s);
 }
 
@@ -1434,13 +1558,17 @@ function turnstileToken() {
   return window.turnstile.getResponse(turnstileWidget) || turnstileLastToken || "";
 }
 
-function resetTurnstile() {
+function resetTurnstile(hidePrompt = true) {
+  cancelTurnstileInteractionReveal();
   turnstileLastToken = "";
   turnstileNeedsInteraction = false;
   turnstileWaiting = false;
   turnstileFailed = false;
-  hideTurnstilePrompt();
-  if (turnstileWidget !== null && window.turnstile) window.turnstile.reset(turnstileWidget);
+  // 自動確認が速かった場合の短い完了表示は、投入完了直後のresetでも打ち切らない。
+  if (hidePrompt && turnstilePromptCompletionTimer === null) hideTurnstilePrompt();
+  if (turnstileWidget !== null && window.turnstile) {
+    try { window.turnstile.reset(turnstileWidget); } catch { /* 次の生成時に再描画する */ }
+  }
 }
 
 // Turnstileが有効なら、トークンが発行されるまで少しだけ待つ。ページを開いた直後や
@@ -1449,36 +1577,68 @@ function resetTurnstile() {
 // 配られたとき)だけなので、無効な構成では何もしない。
 async function ensureTurnstileToken(timeoutMs = 120000) {
   if (!turnstileSiteKey) return true;
-  // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
-  // それでも作れなければ2分待たせず確認失敗として戻す。
-  if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
-  if (turnstileWidget === null && window.turnstile) return false;
-  if (turnstileToken()) return true;
-  const t0 = Date.now();
-  let executed = false;
-  turnstileWaiting = true;
-  turnstileFailed = false;
-  if (turnstileNeedsInteraction) showTurnstilePrompt();
-  while (!turnstileToken() && !turnstileFailed && Date.now() - t0 < timeoutMs) {
-    // ウィジェットが描画済みなのに待っても出ないときは一度だけ明示実行する
-    if (!executed && turnstileWidget !== null && Date.now() - t0 > 1500) {
-      executed = true;
-      try { window.turnstile.execute(turnstileWidget); } catch { /* 実行中なら無視 */ }
+  setTurnstilePromptCopy(
+    "ロボットではないことを確認しています",
+    "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
+  );
+  const deadline = Date.now() + timeoutMs;
+  // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
+  // 読み込み失敗時は下の明示的な失敗案内へ切り替える。
+  const loadDeadline = Math.min(deadline, Date.now() + 10000);
+  while (turnstileWidget === null && !turnstileScriptFailed && Date.now() < loadDeadline) {
+    if (window.turnstile && !rebuildTurnstileWidget()) break;
+    if (turnstileWidget !== null) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (turnstileWidget === null || turnstileScriptFailed) {
+    showTurnstileFailure(turnstileScriptFailed);
+    return false;
+  }
+  // 一時的なerror/timeout callbackは、widgetを作り直すだけで次のタップでは通ることが
+  // ある。最初のerrorだけは同じタップのまま新しいwidgetで一度再試行する。
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
+    if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
+    if (turnstileWidget === null && window.turnstile) {
+      showTurnstilePrompt(true);
+      return false;
     }
-    // callbackが来ない通信中も、待っている理由を隠さない。
-    if (Date.now() - t0 > 3000) showTurnstilePrompt();
-    await new Promise((r) => setTimeout(r, 200));
+    if (turnstileToken()) return true;
+    turnstileWaiting = true;
+    turnstileFailed = false;
+    if (turnstileNeedsInteraction) scheduleTurnstileInteractionPrompt();
+    // tokenをページ表示時に先取りすると、生成までに失効してサーバーで拒否され得る。
+    // execution:execute と組み合わせ、生成タップの直後に新しい確認を始める。
+    try { window.turnstile.execute(turnstileWidget); } catch {
+      turnstileFailed = true;
+      showTurnstilePrompt(true);
+    }
+    while (!turnstileToken() && !turnstileFailed && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    turnstileWaiting = false;
+    const failed = turnstileFailed;
+    const verified = !failed && !!turnstileToken();
+    if (verified) {
+      // getResponseがcallbackより先にtokenを返す順序でも、表示済みの案内を即座に
+      // 閉じて点滅へ戻さない。callbackが後から来てもcomplete処理は二重予約しない。
+      if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();
+      return true;
+    }
+    if (turnstileWidget !== null && window.turnstile) {
+      // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
+      // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
+      rebuildTurnstileWidget();
+      turnstileNeedsInteraction = false;
+      // 1回目の失敗後も案内を画面外へ置き去りにしない。
+      if ($("turnstile-wrap").classList.contains("turnstile-active")) {
+        showTurnstilePrompt(true);
+      }
+    }
+    // 期限切れは再試行しても待ち時間を延ばすだけなので、即時errorのときだけ再試行する。
+    if (!failed || Date.now() >= deadline) return false;
   }
-  turnstileWaiting = false;
-  const verified = !turnstileFailed && !!turnstileToken();
-  if (verified) hideTurnstilePrompt();
-  else if (turnstileWidget !== null && window.turnstile) {
-    // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
-    // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
-    rebuildTurnstileWidget();
-    turnstileNeedsInteraction = false;
-  }
-  return verified;
+  return false;
 }
 
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
@@ -2274,6 +2434,23 @@ function showSubmitMsg(text) {
   el.hidden = !text;
 }
 
+// Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
+// Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
+async function postJobWithTurnstileRetry(form) {
+  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+  if (res.status !== 403 || !turnstileSiteKey) return res;
+  // resetだけでは前回実行の遅延callbackと新しい実行を区別できない。widgetを世代ごと
+  // 作り直し、拒否されたtokenの実行から届くcallbackを無効化してから再確認する。
+  turnstileNeedsInteraction = false;
+  turnstileWaiting = false;
+  turnstileFailed = false;
+  hideTurnstilePrompt();
+  rebuildTurnstileWidget();
+  if (!await ensureTurnstileToken()) return res;
+  form.set("turnstile_token", turnstileToken());
+  return fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+}
+
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
 // 本番生成は previewSec=0 で呼ばれ、モードは使われない。
 async function submitJob(previewSec, previewMode) {
@@ -2325,8 +2502,10 @@ async function submitJob(previewSec, previewMode) {
   if (turnstileSiteKey) {
     if (!await ensureTurnstileToken()) {
       setBusy(false);
-      showSubmitMsg("人間かどうかの確認を完了できませんでした。もう一度お試しください。");
-      hideTurnstilePrompt();
+      showSubmitMsg(turnstileScriptFailed
+        ? "人間かどうかの確認を読み込めませんでした。ページを再読み込みしてください。"
+        : "人間かどうかの確認を完了できませんでした。もう一度お試しください。");
+      showTurnstileFailure(turnstileScriptFailed);
       return;
     }
   }
@@ -2366,12 +2545,25 @@ async function submitJob(previewSec, previewMode) {
   $("result").hidden = true;
   showProgress();
   setJobStatus("送信中…");
+  let keepTurnstilePrompt = false;
   try {
-    const res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || res.status);
+    const res = await postJobWithTurnstileRetry(form);
+    const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
+    if (turnstileRejected) {
+      keepTurnstilePrompt = true;
+      showTurnstileFailure(false);
+      showSubmitMsg("人間かどうかの確認をやり直して、もう一度生成してください。");
+    }
+    let body = {};
+    try { body = await res.json(); } catch { /* edge/proxyのHTMLエラーでも状態を失わない */ }
+    if (!res.ok) {
+      throw new Error(body.detail || res.status);
+    }
     watch(body.id);
   } catch (err) {
+    // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
+    // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
+    if (!keepTurnstilePrompt) hideTurnstilePrompt();
     $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
     setBuilderState("preview");
     showBuilderMsg("生成を開始できませんでした: " + err.message);
@@ -2379,7 +2571,7 @@ async function submitJob(previewSec, previewMode) {
     setBusy(false);
   } finally {
     // Turnstileのトークンは1回きり。次の投入用に取り直す
-    resetTurnstile();
+    resetTurnstile(!keepTurnstilePrompt);
   }
 }
 
