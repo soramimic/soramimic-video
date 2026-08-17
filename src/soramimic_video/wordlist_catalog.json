@@ -15,5 +15,12 @@
   "municipality": {"layout": "municipality_card"},
   "pokemon": {"layout": "pokemon_card", "phrase": "ポケモン名", "launch": true},
   "school": {"layout": "school_card"},
-  "youtuber": {"layout": "youtuber_card", "phrase": "YouTuber名"}
+  "youtuber": {
+    "layout": "youtuber_card",
+    "phrase": "YouTuber名",
+    "image_policy": {
+      "usage": "noncommercial_fanwork",
+      "terms": "https://hololivepro.com/terms/"
+    }
+  }
 }

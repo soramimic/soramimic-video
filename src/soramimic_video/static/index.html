@@ -483,6 +483,13 @@
   /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
      2つ目だけ下にずれるので消す */
   .builder-selects .field + .field { margin-top: 0; }
+  .fanwork-confirmation {
+    margin-top: .65rem; padding: .65rem .75rem; border: 1px solid #f59e0b88;
+    border-radius: 10px; background: #f59e0b14;
+  }
+  .fanwork-confirmation label { display: flex; align-items: flex-start; gap: .5rem; margin: 0; }
+  .fanwork-confirmation input { flex: 0 0 auto; margin-top: .2rem; }
+  .fanwork-confirmation .hint { margin: .35rem 0 0 1.65rem; }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -603,6 +610,18 @@
       <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
       <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
+  </div>
+  <!-- 制限付き画像を含みうるリストでは、生成ボタンと同じカード内で明示確認する。
+       詳細設定の奥に置くとモバイルでは存在に気づかず、本生成まで進んで失敗する。 -->
+  <div class="fanwork-confirmation" id="builder-fanwork-confirmation" hidden tabindex="-1">
+    <label>
+      <input type="checkbox" id="noncommercial-fanwork">
+      <span>この動画は非営利のファン活動として公開する</span>
+    </label>
+    <p class="hint">この単語リストには利用条件付きの公式画像が含まれます。
+      <a id="builder-fanwork-terms" href="https://hololivepro.com/terms/"
+        target="_blank" rel="noopener noreferrer">利用条件を確認</a>してからチェックしてください。
+      画像クレジットは生成物の credits.md に記録されます。</p>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
@@ -855,13 +874,6 @@
       <p class="hint" data-info>入力文を改変せず、元曲名と並べてエンドクレジットに載せます。</p>
     </div>
 
-    <div class="field">
-      <label>
-        <input type="checkbox" id="noncommercial-fanwork">
-        この動画は非営利のファン活動として公開する
-      </label>
-      <p class="hint" data-info>この確認を入れた場合だけ、非営利利用に限定されたファンワーク画像を使用します。画像ごとの利用条件とクレジットは生成後の credits.md でも確認してください。</p>
-    </div>
   </section>
 
 </details>
@@ -1184,6 +1196,7 @@ let resumed = false;
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
 // 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
 let wordlistLayouts = {};
+let wordlistImagePolicies = {};
 let simpleMode = false;
 let launchWordlists = [];
 let fixedVoicevoxStyle = 3003;
@@ -1193,6 +1206,7 @@ async function loadConfig() {
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
   simpleMode = !!conf.simple_ui;
+  wordlistImagePolicies = conf.wordlist_image_policies || {};
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
   $("advanced").hidden = simpleMode;
@@ -2133,11 +2147,13 @@ async function poll(id, seq = pollSeq) {
     openJobDetails();
     finish();
   } else {
-    $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
+    const failure = job.error || "不明なエラー";
+    $("status-line").innerHTML = `<span class="error">エラー: ${failure}</span>`;
     // 枠は選び直せるプレビューに戻し、要点は枠の下に出す。畳んである詳細
     // (#job-card)にはステージとログが残るので、失敗したときだけ開いて見せる。
     setBuilderState("preview");
-    showBuilderMsg(`生成に失敗しました: ${job.error || "不明なエラー"}`);
+    showBuilderMsg(failure === "生成に失敗しました"
+      ? failure : `生成に失敗しました: ${failure}`);
     openJobDetails();
     finish();
   }
@@ -2466,6 +2482,20 @@ async function submitJob(previewSec, previewMode) {
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
   if (submitBusy) return;
   setBusy(true);
+  // 制限付き画像の確認は、高コストな本生成ジョブを投入する前に止める。
+  // 音声だけのプレビューには画像を使わないので確認不要。
+  if (previewSec === 0 && requiresNoncommercialFanwork()
+      && !$("noncommercial-fanwork").checked) {
+    const msg = "この単語リストの画像を使うには、利用条件を確認し、"
+      + "「非営利のファン活動として公開する」にチェックしてください。";
+    setBusy(false);
+    showSubmitMsg(msg);
+    showBuilderMsg(msg);
+    const panel = $("builder-fanwork-confirmation");
+    panel.scrollIntoView({ block: "center", behavior: "smooth" });
+    panel.focus({ preventScroll: true });
+    return;
+  }
   // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
   // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
   if (previewSec === 0) $("builder-image-hidden").hidden = true;
@@ -3068,7 +3098,25 @@ function syncBuilderValues() {
     synth.remove();
   }
   card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
+  updateNoncommercialFanworkPrompt();
   syncLuckyAvailability();
+}
+
+function currentImagePolicy() {
+  return wordlistImagePolicies[currentWordlistName()] || null;
+}
+
+function requiresNoncommercialFanwork() {
+  const policy = currentImagePolicy();
+  return !!policy && policy.usage === "noncommercial_fanwork";
+}
+
+function updateNoncommercialFanworkPrompt() {
+  const panel = $("builder-fanwork-confirmation");
+  const policy = currentImagePolicy();
+  panel.hidden = !requiresNoncommercialFanwork();
+  const terms = policy && policy.terms;
+  if (terms) $("builder-fanwork-terms").href = terms;
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -3427,7 +3475,8 @@ function schedulePreview(force) {
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
-  const key = `${combo}\n${previewShowImages ? 1 : 0}`;
+  const key = `${combo}\n${previewShowImages ? 1 : 0}`
+    + `\n${$("noncommercial-fanwork").checked ? 1 : 0}`;
   if (key === previewKey) return;
   previewKey = key;
   clearTimeout(previewTimer);
@@ -3513,6 +3562,12 @@ $("sample-select").addEventListener("change", () => { syncBuilderValues(); sched
 $("wordlist-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
 // セレクトが無い構成・エディタからの書き戻し(自作リストで空になる)でも追従する
 $("wordlist").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+$("noncommercial-fanwork").addEventListener("change", () => {
+  showSubmitMsg("");
+  showBuilderMsg("");
+  schedulePreview(true);
+  leFetchCue(leCueIndex);
+});
 
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {

@@ -31,3 +31,11 @@ def test_launch_catalog_does_not_duplicate_wordlist_configuration():
 
 def test_wordlist_catalog_is_packaged_next_to_code():
     assert WORDLIST_CATALOG_PATH.is_file()
+
+
+def test_youtuber_catalog_exposes_noncommercial_image_policy():
+    policy = load_wordlist_catalog()["youtuber"]["image_policy"]
+    assert policy == {
+        "usage": "noncommercial_fanwork",
+        "terms": "https://hololivepro.com/terms/",
+    }
