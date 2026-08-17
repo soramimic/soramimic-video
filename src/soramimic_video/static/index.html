@@ -436,6 +436,12 @@
     border-radius: 10px; background: var(--panel); text-align: center;
     box-shadow: 0 0 0 2px #1296f022;
   }
+  /* 通常の手動確認はCloudflare本体だけで意味が通る。独自の見出し・補足・外枠を
+     重ねず、失敗案内と短い完了表示のときだけ上のカード装飾を使う。 */
+  #turnstile-wrap.turnstile-challenge .turnstile-panel {
+    padding: 0; border: 0; background: transparent; box-shadow: none;
+  }
+  #turnstile-wrap.turnstile-challenge .turnstile-copy { display: none; }
   #turnstile-wrap:not(.turnstile-active) .turnstile-panel {
     max-width: 26rem; padding: 0; border: 0; background: transparent;
   }
@@ -1373,15 +1379,11 @@ function scheduleTurnstileInteractionPrompt(epoch = turnstileEpoch) {
     // 操作要求が続いている場合だけ表示し、自動成功時の一瞬の点滅をなくす。
     if (epoch !== turnstileEpoch || !turnstileWaiting
         || !turnstileNeedsInteraction || turnstileToken()) return;
-    setTurnstilePromptCopy(
-      "人間かどうかの確認が必要です",
-      "確認欄をチェックしてください。完了すると、そのまま動画生成を始めます。",
-    );
-    showTurnstilePrompt(true);
+    showTurnstileChallenge();
   }, TURNSTILE_INTERACTION_REVEAL_MS);
 }
 
-function showTurnstilePrompt(forceScroll = false) {
+function showTurnstilePrompt(forceScroll = false, focusPanel = true) {
   const wrap = $("turnstile-wrap");
   const alreadyActive = wrap.classList.contains("turnstile-active");
   if (!alreadyActive) {
@@ -1394,9 +1396,14 @@ function showTurnstilePrompt(forceScroll = false) {
       // 予約後すぐ自動確認が完了した場合は、生成開始後に画面やフォーカスを戻さない。
       if (!wrap.classList.contains("turnstile-active")) return;
       wrap.scrollIntoView({ behavior: "smooth", block: "center" });
-      wrap.querySelector(".turnstile-panel").focus({ preventScroll: true });
+      if (focusPanel) wrap.querySelector(".turnstile-panel").focus({ preventScroll: true });
     });
   }
+}
+
+function showTurnstileChallenge() {
+  $("turnstile-wrap").classList.add("turnstile-challenge");
+  showTurnstilePrompt(true, false);
 }
 
 function setTurnstilePromptCopy(title, hint) {
@@ -1423,7 +1430,7 @@ function hideTurnstilePrompt() {
     turnstilePromptCompletionTimer = null;
   }
   const wrap = $("turnstile-wrap");
-  wrap.classList.remove("turnstile-active", "turnstile-complete");
+  wrap.classList.remove("turnstile-active", "turnstile-challenge", "turnstile-complete");
   turnstilePromptShownAt = 0;
 }
 
@@ -1439,6 +1446,7 @@ function completeTurnstilePrompt() {
   // 自動確認が一瞬で終わったときは、謎の点滅にせず結果が読める時間だけ残す。
   // 確認欄自体はすぐ隠すので、手動でチェックした後にチェック欄が残り続けない。
   setTurnstilePromptCopy("確認できました", "動画生成を始めます。");
+  wrap.classList.remove("turnstile-challenge");
   wrap.classList.add("turnstile-complete");
   turnstilePromptCompletionTimer = setTimeout(hideTurnstilePrompt, remaining);
 }
