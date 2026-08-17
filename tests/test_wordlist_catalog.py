@@ -16,6 +16,7 @@ def test_launch_wordlists_have_complete_video_metadata():
 
     assert launch
     assert "marine_life" in launch
+    assert "pokemon" in launch
     for name in launch:
         entry = catalog[name]
         assert entry.get("layout") in layouts, f"{name} の既定レイアウトが不正です"

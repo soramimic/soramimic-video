@@ -438,6 +438,7 @@ def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
         "sekitsui",
         "plant",
         "marine_life",
+        "pokemon",
     ]
     assert conf["fixed_voicevox_style"] == 6000
     assert [row["id"] for row in client.get("/api/samples").json()] == [
