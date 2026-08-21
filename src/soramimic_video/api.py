@@ -63,6 +63,7 @@ from .layout import (
 )
 from .soramimic_engine import start_warmup_thread
 from .thumbnail_preview import RateLimiter, preview_cache_dir
+from .wordlist_catalog import default_launch_wordlists
 
 if TYPE_CHECKING:  # 型注釈だけ。実行時のimportはハンドラの中で行う(起動を軽く保つ)
     from .project import Project
@@ -83,7 +84,7 @@ JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除する�
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
 LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
 LAUNCH_CATALOG_ENV = "SORAMIMIC_LAUNCH_CATALOG"  # 環境別の公開選択肢(非追跡可)
-HIDDEN_UI_WORDLISTS = {"plant"}  # データ/APIを残して選択UIだけから外す
+HIDDEN_UI_WORDLISTS: set[str] = set()
 TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
 TURNSTILE_SITE_ENV = "TURNSTILE_SITE_KEY"  # 同・サイトキー(フロントに渡す)
 OPS_TOKEN_ENV = "SORAMIMIC_OPS_TOKEN"
@@ -181,6 +182,8 @@ def load_launch_catalog() -> dict[str, Any]:
         raise RuntimeError(f"初回公開カタログが読めません ({path}): {exc}") from exc
     if not isinstance(data, dict):
         raise RuntimeError("初回公開カタログはJSON objectで指定してください")
+    if "wordlists" not in data:
+        data = {**data, "wordlists": default_launch_wordlists()}
     return data
 
 
@@ -2125,7 +2128,7 @@ def create_app(
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "voicevox": _voicevox_config(),
             "layouts": builtin_layout_names(),
-            # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_layouts.json)
+            # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
             "editor": editor_available,
             # 簡易UIでeditorボタンを隠しても、同梱のsetting.jsonから

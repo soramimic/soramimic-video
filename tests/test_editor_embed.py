@@ -438,7 +438,7 @@ def test_setup_seed_passes_a_restorable_filter_at_the_top_level(client, tmp_path
     if not (root / "soramimic-wordlists" / "baseball.csv").is_file() or not (
         root / "soramimic" / "conf" / "setting.json"
     ).is_file():
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     from soramimic_video.facets import default_where
 
     # 既定の絞り込み(video が何も指定しないときに使う条件)
@@ -1020,7 +1020,7 @@ def test_index_treats_original_wordlist_as_custom():
 
 
 def test_setting_json_from_source_conf(client):
-    """配信用confはソースを正本とし、非公開リストだけUIから除外する。"""
+    """配信用confはソースを正本とし、植物を含む公開候補を返す。"""
     from soramimic_video.editor_io import SETTING_JSON
 
     if not SETTING_JSON.is_file():
@@ -1042,9 +1042,8 @@ def test_setting_json_from_source_conf(client):
         return found
 
     assert "plant" in names(source["wordlist"])
-    assert names(served["wordlist"]) == [
-        name for name in names(source["wordlist"]) if name != "plant"
-    ]
+    assert names(served["wordlist"]) == names(source["wordlist"])
+    assert "plant" in names(served["wordlist"])
     assert json.loads(SETTING_JSON.read_text(encoding="utf-8")) == source
 
 

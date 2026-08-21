@@ -147,15 +147,15 @@ def test_simple_ui_hides_advanced_and_filters_wordlists():
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
 
 
-def test_plant_wordlist_is_hidden_from_every_selection_ui():
-    """植物データ/APIは残し、品質確認中はUIの候補だけから除外する。"""
+def test_plant_wordlist_is_available_in_every_selection_ui():
+    """品質確認済みの植物を、通常UIと簡易UIの候補へ戻す。"""
     script = _script()
-    assert 'const HIDDEN_UI_WORDLISTS = new Set(["plant"]);' in script
+    assert "const HIDDEN_UI_WORDLISTS = new Set();" in script
     body = _function_body(script, "async function loadWordlistSelect(editorAvailable)")
     assert "return !HIDDEN_UI_WORDLISTS.has(name);" in body
     restore = _function_body(script, "async function doRestoreForm()")
     assert 'HIDDEN_UI_WORDLISTS.has(state.wordlist || "")' in restore
-    assert 'state.wordlist = $("wordlist").value;' in restore
+    assert 'new Set(["plant"])' not in script
 
 
 def test_simple_ui_hides_the_irrelevant_song_length_limit():
@@ -357,13 +357,200 @@ def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()
     script = _script()
-    assert 'id="turnstile-title">合成前に確認してください' in markup
+    assert 'id="turnstile-title">人間かどうかの確認が必要です' in markup
     assert 'class="turnstile-copy" role="status" aria-live="polite"' in markup
+    assert 'class="turnstile-panel" tabindex="-1"' in markup
     assert 'id="turnstile-cancel"' not in markup
     assert 'turnstile-ui' not in script
     assert 'turnstile-overlay' not in markup
-    prompt = _function_body(script, "function showTurnstilePrompt()")
+    prompt = _function_body(script, "function showTurnstilePrompt(")
     assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
+    assert "if (!alreadyActive || forceScroll)" in prompt
+    assert "if (focusPanel)" in prompt
+    challenge = _function_body(script, "function showTurnstileChallenge()")
+    assert 'setTurnstilePromptCopy("チェックして動画生成を続ける", "")' in challenge
+    assert 'classList.add("turnstile-challenge")' in challenge
+    assert "showTurnstilePrompt(true, false)" in challenge
+    render = _function_body(script, "function renderTurnstileWidget()")
+    assert 'execution: "execute"' in render
+    assert "scheduleTurnstileInteractionPrompt(epoch)" in render
+    assert "cancelTurnstileInteractionReveal();" in render
+    failure = _function_body(script, "function showTurnstileFailure(")
+    assert failure.index("hideTurnstilePrompt();") < failure.index("setTurnstilePromptCopy(")
+
+
+def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
+    """自動確認のiframeだけを点滅させず、完了後もチェック欄を残さない。"""
+    markup = _markup()
+    assert "#turnstile-wrap:not(.turnstile-active) #turnstile-widget" in markup
+    assert "#turnstile-wrap.turnstile-complete #turnstile-widget" in markup
+    assert "inset-inline-start: -10000px" in markup
+    assert "visibility: hidden" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy { display: block; }" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy .hint { display: none; }" in markup
+    assert "#turnstile-wrap.turnstile-challenge .turnstile-panel" in markup
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_turnstile_interaction_prompt_is_delayed_and_cancelable():
+    """操作UIの準備直後に自動成功した場合は、一度も確認欄を表示しない。"""
+    script = _script()
+    schedule = _function_body(script, "function scheduleTurnstileInteractionPrompt(") + "\n}"
+    cancel = _function_body(script, "function cancelTurnstileInteractionReveal()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const TURNSTILE_INTERACTION_REVEAL_MS = 700;
+        let turnstileInteractionRevealTimer = null;
+        let turnstileEpoch = 3;
+        let turnstileWaiting = true;
+        let turnstileNeedsInteraction = true;
+        let token = "";
+        let timerCallback = null;
+        let timerDelay = null;
+        let shows = 0;
+        let clears = 0;
+        const setTimeout = (fn, delay) => {{ timerCallback = fn; timerDelay = delay; return 1; }};
+        const clearTimeout = () => {{ clears += 1; }};
+        const turnstileToken = () => token;
+        const showTurnstileChallenge = () => {{ shows += 1; }};
+        {cancel}
+        {schedule}
+
+        scheduleTurnstileInteractionPrompt(3);
+        assert.equal(timerDelay, 700);
+        token = "auto-token";
+        turnstileNeedsInteraction = false;
+        cancelTurnstileInteractionReveal();
+        timerCallback();
+        assert.equal(clears, 1);
+        assert.equal(shows, 0);
+
+        token = "";
+        turnstileNeedsInteraction = true;
+        scheduleTurnstileInteractionPrompt(3);
+        timerCallback();
+        assert.equal(shows, 1);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_fast_turnstile_completion_stays_readable_then_disappears():
+    """短時間の自動確認は完了文を残し、長い手動確認は完了直後に閉じる。"""
+    script = _script()
+    hide = _function_body(script, "function hideTurnstilePrompt()") + "\n}"
+    complete = _function_body(script, "function completeTurnstilePrompt()") + "\n}"
+    failure = _function_body(script, "function showTurnstileFailure(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const TURNSTILE_PROMPT_MIN_MS = 1400;
+        let turnstilePromptShownAt = 0;
+        let turnstilePromptCompletionTimer = null;
+        let now = 0;
+        let active = true;
+        let completeClass = false;
+        let timerDelay = null;
+        let timerCalls = 0;
+        let clears = 0;
+        let copy = null;
+        const wrap = {{
+          classList: {{
+            contains(name) {{ return name === "turnstile-active" ? active : completeClass; }},
+            add(name) {{ if (name === "turnstile-complete") completeClass = true; }},
+            remove(...names) {{
+              if (names.includes("turnstile-active")) active = false;
+              if (names.includes("turnstile-complete")) completeClass = false;
+            }},
+          }},
+        }};
+        const $ = () => wrap;
+        Date.now = () => now;
+        const setTurnstilePromptCopy = (title, hint) => {{ copy = [title, hint]; }};
+        const showTurnstilePrompt = () => {{ active = true; }};
+        const cancelTurnstileInteractionReveal = () => {{}};
+        const setTimeout = (_fn, delay) => {{ timerCalls += 1; timerDelay = delay; return 1; }};
+        const clearTimeout = () => {{ clears += 1; }};
+        {hide}
+        {complete}
+        {failure}
+
+        turnstilePromptShownAt = 0;
+        now = 200;
+        completeTurnstilePrompt();
+        assert.equal(copy[0], "確認できました");
+        assert.equal(copy[1], "動画生成を始めます。");
+        assert.equal(completeClass, true);
+        assert.equal(active, true);
+        assert.equal(timerDelay, 1200);
+        assert.equal(timerCalls, 1);
+        completeTurnstilePrompt();
+        assert.equal(timerCalls, 1);
+
+        showTurnstileFailure(false);
+        assert.equal(clears, 1);
+        assert.equal(turnstilePromptCompletionTimer, null);
+        assert.equal(completeClass, false);
+        assert.equal(active, true);
+        assert.equal(copy[0], "人間かどうかの確認をやり直してください");
+
+        turnstilePromptCompletionTimer = null;
+        completeClass = false;
+        active = true;
+        timerDelay = null;
+        turnstilePromptShownAt = 0;
+        now = 1500;
+        completeTurnstilePrompt();
+        assert.equal(active, false);
+        assert.equal(timerDelay, null);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_turnstile_prompt_can_rescroll_after_retry():
+    """表示済みでも再試行時は再スクロールでき、通常pollでは繰り返さない。"""
+    prompt = _function_body(_script(), "function showTurnstilePrompt(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let active = false;
+        let scrolls = 0;
+        let focuses = 0;
+        let turnstilePromptShownAt = 0;
+        const frames = [];
+        const wrap = {{
+          classList: {{
+            contains() {{ return active; }},
+            add() {{ active = true; }},
+            remove() {{}},
+          }},
+          scrollIntoView() {{ scrolls += 1; }},
+          querySelector() {{ return {{ focus() {{ focuses += 1; }} }}; }},
+        }};
+        const $ = () => wrap;
+        const requestAnimationFrame = (fn) => frames.push(fn);
+        {prompt}
+        // 成功callbackが次のframeより先に案内を隠した場合は、画面を戻さない。
+        showTurnstilePrompt();
+        active = false;
+        frames.shift()();
+        assert.equal(scrolls, 0);
+
+        showTurnstilePrompt();
+        frames.shift()();
+        showTurnstilePrompt();
+        assert.equal(frames.length, 0);
+        showTurnstilePrompt(true);
+        frames.shift()();
+        assert.equal(scrolls, 2);
+        assert.equal(focuses, 2);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True)
 
 
 def test_submit_never_posts_without_a_turnstile_token():
@@ -379,15 +566,25 @@ def test_submit_never_posts_without_a_turnstile_token():
         "if (samplePending) await samplePending;"
     )
     ensure = _function_body(_script(), "async function ensureTurnstileToken(")
-    assert "!turnstileFailed && !!turnstileToken()" in ensure
+    assert "const verified = !failed && !!turnstileToken()" in ensure
     assert "rebuildTurnstileWidget()" in ensure
-    assert "if (turnstileWidget === null && window.turnstile) return false;" in ensure
+    assert "const loadDeadline = Math.min(deadline, Date.now() + 10000);" in ensure
+    assert "Date.now() - loadStarted > 800" not in ensure
+    assert "Date.now() - t0 > 800" not in ensure
+    assert "if (turnstileWidget === null || turnstileScriptFailed)" in ensure
+    assert "window.turnstile.execute(turnstileWidget)" in ensure
     assert "timeoutMs = 120000" in ensure
+    assert "for (let attempt = 0; attempt < 2; attempt += 1)" in ensure
+    assert "if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();" in ensure
+    assert "showTurnstileFailure(turnstileScriptFailed);" in guard
+    assert "hideTurnstilePrompt();" not in guard
+    assert "resetTurnstile(!keepTurnstilePrompt);" in submit
+    assert "if (!keepTurnstilePrompt) hideTurnstilePrompt();" in submit
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_turnstile_errors_rebuild_widget():
-    """失敗・2分timeoutのwidgetは世代ごと破棄し、古いcallbackを無効化する。"""
+def test_turnstile_errors_rebuild_and_retry_widget():
+    """一時エラーは同じ操作で再試行し、timeoutは待ち時間を延長しない。"""
     ensure = _function_body(_script(), "async function ensureTurnstileToken(") + "\n}"
     node = textwrap.dedent(
         f"""
@@ -398,26 +595,39 @@ def test_turnstile_errors_rebuild_widget():
         let turnstileNeedsInteraction = false;
         let turnstileWaiting = false;
         let turnstileFailed = false;
+        let turnstileScriptFailed = false;
+        let turnstilePromptCompletionTimer = null;
         let rebuilds = 0;
         let now = 0;
-        let waitMode = "error";
+        let waitMode = "error-then-success";
         let window = {{turnstile: {{execute() {{}} }}}};
         function turnstileToken() {{ return token; }}
         function showTurnstilePrompt() {{}}
+        function showTurnstileFailure() {{}}
+        function setTurnstilePromptCopy() {{}}
         function hideTurnstilePrompt() {{}}
-        function rebuildTurnstileWidget() {{ rebuilds += 1; token = ""; }}
+        function completeTurnstilePrompt() {{}}
+        function scheduleTurnstileInteractionPrompt() {{}}
+        const $ = () => ({{classList: {{contains() {{ return false; }}}}}});
+        function rebuildTurnstileWidget() {{
+          rebuilds += 1;
+          token = "";
+          if (waitMode === "error-then-success") waitMode = "success";
+        }}
         Date.now = () => now;
         global.setTimeout = (fn) => {{
-          if (waitMode === "error") turnstileFailed = true;
+          if (waitMode === "error-then-success") turnstileFailed = true;
+          else if (waitMode === "success") token = "fresh-token";
           else now += 200;
           fn();
           return 1;
         }};
         {ensure}
         (async () => {{
-          assert.equal(await ensureTurnstileToken(100), false);
-          assert.equal(rebuilds, 1, "an errored widget must rebuild before the next attempt");
+          assert.equal(await ensureTurnstileToken(100), true);
+          assert.equal(rebuilds, 1, "an errored widget must rebuild and retry immediately");
           waitMode = "timeout";
+          token = "";
           now = 0;
           assert.equal(await ensureTurnstileToken(100), false);
           assert.equal(rebuilds, 2, "a timed-out widget must also rebuild before retry");

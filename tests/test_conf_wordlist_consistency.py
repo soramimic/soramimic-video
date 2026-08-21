@@ -2,8 +2,7 @@
 
 confのfacetsはCSVの列を絞り込みに使うため、片方のsubmoduleだけ更新すると
 「列が無くて絞り込みが空振り」「CSVが無くて404」が起きる(実際に危うかった事故)。
-submoduleはCIでは取得されない(soramimic本体がprivate)ため、このテストは
-ローカルの全テスト実行時=submodule更新をpushする前に効く。
+CIでもpin済みsubmoduleを再帰取得し、デプロイ対象と同じ組み合わせを検査する。
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ def _flatten_wordlist(items: list) -> list[dict]:
 
 def _conf_entries() -> list[dict]:
     if not CONF.is_file() or not WORDLISTS.is_dir():
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     conf = json.loads(CONF.read_text(encoding="utf-8"))
     return [
         w
@@ -75,14 +74,30 @@ def _csv_header(name: str) -> list[str]:
 
 
 def test_wordlist_layouts_point_to_existing_wordlists():
-    """単語リスト別レイアウト(wordlist_layouts.json)のキーがCSVとして実在すること。"""
+    """単語リストカタログのレイアウトキーがCSVとして実在すること。"""
     from soramimic_video.layout import load_wordlist_layouts
 
     stems = {p.stem for p in WORDLISTS.glob("*.csv")}
     if not stems:
-        pytest.skip("submodule未取得(CIではsoramimic本体がprivateのため取得しない)")
+        pytest.skip("submodule未取得")
     for name in load_wordlist_layouts():
-        assert name in stems, f"wordlist_layouts.jsonの {name} が単語リストにありません"
+        assert name in stems, f"wordlist_catalog.jsonの {name} が単語リストにありません"
+
+
+def test_yuzu_uses_specific_plant_taxonomy():
+    """ユズが大分類の汎用表示へ戻らず、柚子として科・属まで表示される。"""
+    path = WORDLISTS / "plant.csv"
+    if not path.is_file():
+        pytest.skip("submodule未取得")
+    with path.open(encoding="utf-8", newline="") as stream:
+        yuzu = next(row for row in csv.DictReader(stream) if row["original"] == "ユズ")
+
+    from soramimic_video.layout import load_layout
+
+    texts = load_layout("plant_card").render_texts(yuzu)
+    assert yuzu["scientific_name"] == "Citrus × junos"
+    assert "ミカン科ミカン属" in texts
+    assert "双子葉植物" not in texts
 
 
 def test_conf_wordlists_exist_and_facet_columns_match():
