@@ -6,10 +6,12 @@ APIキー認証を確認する。NEUTRINO実行込みのE2Eは手動(serve)で�
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
 import time
+import wave
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,16 @@ FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
 
 
+def fake_wav(seconds: float = 0.1, rate: int = 8000) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * round(seconds * rate))
+    return out.getvalue()
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     def fake_pipeline(job, config):
@@ -34,6 +46,7 @@ def client(tmp_path, monkeypatch):
         return out
 
     monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
     app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
     return TestClient(app)
 
@@ -73,6 +86,107 @@ def test_job_flow_with_editor(client):
     assert playback.headers["content-type"] == "video/mp4"
     assert playback.headers["content-disposition"].startswith("inline;")
     assert playback.headers["cache-control"] == "private, no-store"
+
+
+def test_job_flow_accepts_wav_and_keeps_existing_playback(client):
+    wav = fake_wav()
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", wav, "audio/wav")},
+        data={"wordlist": "stations", "lyrics": "あ"},
+    )
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    body = wait_done(client, job_id)
+    assert body["status"] == "done"
+    assert body["params"]["input_kind"] == "audio"
+    assert body["song_label"] == "アップロードした曲"
+    job = client.app.state.manager.jobs[job_id]
+    assert (job.dir / "input.wav").read_bytes() == wav
+    assert not (job.dir / "input.mid").exists()
+    assert client.get(body["playback_url"]).content == FAKE_MP4
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "detail"),
+    [
+        ("voice.mp3", fake_wav(), "WAVファイルを選んでください"),
+        ("voice.wav", b"not a wav", "WAVファイルではありません"),
+    ],
+)
+def test_rejects_invalid_wav(client, filename, content, detail):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": (filename, content, "application/octet-stream")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 400
+    assert detail in res.json()["detail"]
+
+
+def test_rejects_wav_with_midi_or_sample(client):
+    files = {
+        "audio": ("voice.wav", fake_wav(), "audio/wav"),
+        "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+    }
+    res = client.post("/api/jobs", files=files, data={"wordlist": "stations"})
+    assert res.status_code == 422
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"sample_id": "furusato", "wordlist": "stations"},
+    )
+    assert res.status_code == 422
+
+
+def test_wav_input_is_hidden_and_rejected_without_audio_extra(client, monkeypatch):
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: False)
+    assert client.get("/api/config").json()["audio_input"] is False
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 503
+    assert "WAV入力を利用できません" in res.json()["detail"]
+
+
+def test_wav_upload_limit_is_configurable(client, monkeypatch):
+    monkeypatch.setenv(api_mod.MAX_AUDIO_UPLOAD_BYTES_ENV, "64")
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 413
+
+
+def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
+    from soramimic_video import analyze_audio as analyze_audio_mod
+
+    class ReachedAnalyzer(Exception):
+        pass
+
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(fake_wav())
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("あ", encoding="utf-8")
+
+    def fake_analyze(audio_path, project_dir, **kwargs):
+        assert audio_path == audio
+        assert project_dir == tmp_path
+        assert kwargs["lyrics_path"] == lyrics
+        assert kwargs["whisper_model"] == "small"
+        raise ReachedAnalyzer
+
+    monkeypatch.setattr(analyze_audio_mod, "analyze_audio", fake_analyze)
+    job = api_mod.Job(
+        id="wavtest",
+        dir=tmp_path,
+        params={"input_kind": "audio"},
+    )
+    with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})
 
 
 def test_noncommercial_fanwork_is_explicit_and_persisted(client):

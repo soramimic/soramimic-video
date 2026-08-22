@@ -7,7 +7,8 @@ GET /api/jobs/{id}/video で取得する。GET / に簡易Web UIを同梱。
 
 環境変数 SORAMIMIC_VIDEO_API_KEY を設定すると全APIで X-API-Key ヘッダ
 (または api_key クエリ)を必須にする(LAN外に公開するとき用)。
-依存は `pip install -e '.[api]'` で入る。NEUTRINOの実行が重いので
+依存は `pip install -e '.[api]'`、WAV入力を使う場合は
+`pip install -e '.[api,audio]'` で入る。NEUTRINOの実行が重いので
 ワーカーは1本、ジョブは投入順に直列実行する。
 
 SORAMIMIC_PUBLIC=1 を設定すると「公開モード」になり、匿名セッション
@@ -22,6 +23,8 @@ import copy
 import csv
 import hashlib
 import hmac
+import importlib.util
+import io
 import ipaddress
 import json
 import logging
@@ -35,6 +38,7 @@ import threading
 import time
 import traceback
 import uuid
+import wave
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -85,6 +89,7 @@ DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の
 IP_DAILY_QUOTA_ENV = "SORAMIMIC_IP_DAILY_QUOTA"
 IP_HASH_KEY_ENV = "SORAMIMIC_IP_HASH_KEY"
 MAX_SONG_SECONDS_ENV = "SORAMIMIC_MAX_SONG_SECONDS"  # 入力MIDIの演奏時間の上限(秒)
+MAX_AUDIO_UPLOAD_BYTES_ENV = "SORAMIMIC_MAX_AUDIO_UPLOAD_BYTES"
 JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除するまでの時間(0=無効)
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
 LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
@@ -112,6 +117,8 @@ DEFAULT_GET_CACHE_HIT_IP_RATE_LIMIT = 600
 DEFAULT_GET_RATE_WINDOW = 60.0
 GET_CONCURRENCY = 4
 SIMPLE_MAX_REQUEST_BYTES_ENV = "SORAMIMIC_SIMPLE_MAX_REQUEST_BYTES"
+DEFAULT_MAX_AUDIO_UPLOAD_BYTES = 200 * 1024 * 1024
+DEFAULT_MAX_MIDI_UPLOAD_BYTES = 5 * 1024 * 1024
 DEFAULT_SIMPLE_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_LIMIT = 5
 DEFAULT_DAILY_QUOTA = 5
@@ -223,7 +230,87 @@ def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
 
 async def read_midi_upload(midi: UploadFile) -> bytes:
     """アップロードされたMIDIを読む。Simple UIでは持ち込み自体を受け付けない。"""
-    return await midi.read()
+    data = await midi.read(DEFAULT_MAX_MIDI_UPLOAD_BYTES + 1)
+    if len(data) > DEFAULT_MAX_MIDI_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="MIDIファイルが大きすぎます")
+    return data
+
+
+def max_audio_upload_bytes() -> int:
+    return max(
+        1,
+        int(_env_float(MAX_AUDIO_UPLOAD_BYTES_ENV, DEFAULT_MAX_AUDIO_UPLOAD_BYTES)),
+    )
+
+
+def audio_input_available() -> bool:
+    """audio extraが揃ったサーバーだけWAV入力を公開する。"""
+    return all(
+        importlib.util.find_spec(name) is not None
+        for name in (
+            "demucs",
+            "torch",
+            "torchaudio",
+            "transformers",
+            "librosa",
+            "faster_whisper",
+        )
+    )
+
+
+async def read_wav_upload(audio: UploadFile) -> tuple[bytes, float]:
+    """WAVを上限付きで読み、PCMとして読めることと演奏時間を検査する。"""
+    maximum = max_audio_upload_bytes()
+    data = await audio.read(maximum + 1)
+    if len(data) > maximum:
+        raise HTTPException(
+            status_code=413,
+            detail=f"WAVファイルが大きすぎます(上限は{maximum / 1024 / 1024:.0f}MBです)",
+        )
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise HTTPException(status_code=400, detail="WAVファイルではありません")
+    try:
+        with wave.open(io.BytesIO(data), "rb") as wav:
+            channels = wav.getnchannels()
+            rate = wav.getframerate()
+            frames = wav.getnframes()
+            width = wav.getsampwidth()
+    except (EOFError, wave.Error) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="PCM形式のWAVファイルを選んでください(float WAVには対応していません)",
+        ) from exc
+    if channels not in (1, 2) or rate <= 0 or frames <= 0 or width not in (1, 2, 3, 4):
+        raise HTTPException(status_code=400, detail="対応していないWAV形式です")
+    return data, frames / rate
+
+
+async def resolve_song_input(
+    midi: UploadFile | None,
+    audio: UploadFile | None,
+    sample_id: str,
+) -> tuple[bytes, str, float | None, str | None, str]:
+    """サンプル/MIDI/WAVのうち一つだけをジョブ入力へ解決する。"""
+    has_audio = audio is not None and bool(audio.filename)
+    has_midi = midi is not None and bool(midi.filename)
+    if has_audio and (has_midi or sample_id.strip()):
+        raise HTTPException(
+            status_code=422,
+            detail="WAVとサンプル曲・MIDIは同時に指定できません",
+        )
+    if has_audio and audio is not None:
+        if not audio_input_available():
+            raise HTTPException(
+                status_code=503,
+                detail="このサーバーではWAV入力を利用できません",
+            )
+        filename = audio.filename or "input.wav"
+        if not filename.lower().endswith(".wav"):
+            raise HTTPException(status_code=400, detail="WAVファイルを選んでください")
+        data, seconds = await read_wav_upload(audio)
+        return data, "audio", seconds, None, filename
+    data, resolved_sample_id, filename = await resolve_midi_input(midi, sample_id)
+    return data, "midi", None, resolved_sample_id, filename
 
 
 def resolve_sample_midi(sample_id: str) -> tuple[str, bytes]:
@@ -1001,14 +1088,25 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         planned_video_total_sec,
         prepare_video,
     )
-    from .xfparse import analyze_midi
-
     d = job.dir
     with _stage(job, "analyze"):
-        project = analyze_midi(d / "input.mid")
         lyrics_path = d / "lyrics.txt"
-        if lyrics_path.exists():
-            align_lines(project, lyrics_path.read_text(encoding="utf-8").splitlines())
+        if job.params.get("input_kind") == "audio":
+            from .analyze_audio import analyze_audio
+
+            project = analyze_audio(
+                d / "input.wav",
+                d,
+                lyrics_path=lyrics_path if lyrics_path.exists() else None,
+                whisper_model=str(config.get("whisper_model") or "small"),
+                device=config.get("audio_device"),
+            )
+        else:
+            from .xfparse import analyze_midi
+
+            project = analyze_midi(d / "input.mid")
+            if lyrics_path.exists():
+                align_lines(project, lyrics_path.read_text(encoding="utf-8").splitlines())
         project.save(d)
 
     preview_sec = float(job.params.get("preview") or 0)
@@ -1316,7 +1414,7 @@ class JobManager:
 
     def create(
         self,
-        midi: bytes,
+        midi: bytes | None,
         editor: bytes | None,
         lyrics: str,
         params: dict[str, Any],
@@ -1325,11 +1423,17 @@ class JobManager:
         client_hash: str | None = None,
         wordlist_csv: str = "",
         wordlist_images: dict[str, bytes] | None = None,
+        audio: bytes | None = None,
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
         job_dir.mkdir(parents=True)
-        (job_dir / "input.mid").write_bytes(midi)
+        if audio is not None:
+            (job_dir / "input.wav").write_bytes(audio)
+        elif midi is not None:
+            (job_dir / "input.mid").write_bytes(midi)
+        else:
+            raise ValueError("MIDIまたはWAVが必要です")
         # 自作の単語リスト(正規化済みCSV)はこのジョブの中だけに置く。
         # 名前は params["wordlist_csv"] 側で決まっている(custom_wordlist_name)
         if wordlist_csv:
@@ -1676,6 +1780,13 @@ def create_app(
             maximum = int(
                 _env_float(SIMPLE_MAX_REQUEST_BYTES_ENV, DEFAULT_SIMPLE_MAX_REQUEST_BYTES)
             )
+            # 従来のMIDI経路は小さい上限のまま保つ。公式UIがWAVを送るときだけ
+            # 無圧縮音源用の上限へ広げ、endpoint内でも実データを再度上限検査する。
+            if (
+                request.url.path == "/api/jobs"
+                and request.headers.get("x-soramimic-wav-upload") == "1"
+            ):
+                maximum = max(maximum, max_audio_upload_bytes() + 1024 * 1024)
             try:
                 length = int(request.headers.get("content-length", ""))
             except ValueError:
@@ -2155,6 +2266,8 @@ def create_app(
             "max_wordlist_zip_bytes": wordlist_zip_mod.max_zip_bytes(),
             "max_wordlist_image_bytes": wordlist_zip_mod.max_image_bytes(),
             "max_wordlist_images": wordlist_zip_mod.max_images(),
+            "audio_input": audio_input_available(),
+            "max_audio_upload_bytes": max_audio_upload_bytes(),
         }
         if is_simple_ui():
             launch = load_launch_catalog()
@@ -2573,8 +2686,9 @@ def create_app(
     def _check_public_limits(
         owner: str | None,
         client_hash: str | None,
-        midi_bytes: bytes,
+        midi_bytes: bytes | None,
         *,
+        input_seconds: float | None = None,
         quota_exempt: bool = False,
     ) -> None:
         """公開モードの投入制限(キュー上限・日次クォータ・曲長)をまとめて確認する。
@@ -2611,7 +2725,9 @@ def create_app(
                 )
         max_seconds = _env_float(MAX_SONG_SECONDS_ENV, DEFAULT_MAX_SONG_SECONDS)
         if max_seconds > 0:
-            seconds = song_seconds(midi_bytes)
+            seconds = input_seconds
+            if seconds is None and midi_bytes is not None:
+                seconds = song_seconds(midi_bytes)
             if seconds is not None and seconds > max_seconds:
                 raise HTTPException(
                     status_code=400,
@@ -2624,6 +2740,7 @@ def create_app(
     async def create_job(
         request: Request,
         midi: UploadFile | None = File(None),
+        audio: UploadFile | None = File(None),
         sample_id: str = Form(""),
         editor: UploadFile | None = None,
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
@@ -2665,12 +2782,13 @@ def create_app(
     ) -> dict[str, Any]:
         _check_turnstile(request, turnstile_token)
         quota_exempt = await _quota_exempt(request)
-        midi_bytes, launch_sample_id, midi_filename = await resolve_midi_input(
-            midi, sample_id
+        input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
+            await resolve_song_input(midi, audio, sample_id)
         )
-        if not midi_bytes.startswith(b"MThd"):
+        if input_kind == "midi" and not input_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
-        lyrics = require_launch_lyrics(launch_sample_id, lyrics)
+        if input_kind == "midi":
+            lyrics = require_launch_lyrics(launch_sample_id, lyrics)
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
@@ -2872,7 +2990,10 @@ def create_app(
             "layout": layout,
             "subtitle_granularity": subtitle_granularity.strip(),
             "parody_source": "editor" if editor_bytes else "convert",
-            "midi_filename": midi_filename,
+            # 既存の表示・ダウンロード名helperとの互換のため、WAVでもこのキーに
+            # 元ファイル名を入れる。入力種別は input_kind が正本。
+            "midi_filename": input_filename,
+            "input_kind": input_kind,
             "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),
             "original_credit": original_credit.strip(),
@@ -2907,14 +3028,17 @@ def create_app(
             _check_public_limits(
                 owner,
                 client_hash,
-                midi_bytes,
+                input_bytes if input_kind == "midi" else None,
+                input_seconds=input_seconds,
                 quota_exempt=quota_exempt,
             )
             job = manager.create(
-                midi_bytes, editor_bytes, lyrics, params,
+                input_bytes if input_kind == "midi" else None,
+                editor_bytes, lyrics, params,
                 layout_json=layout_json, owner=owner, client_hash=client_hash,
                 wordlist_csv=custom.csv.text if custom is not None else "",
                 wordlist_images=custom.images if custom is not None else None,
+                audio=input_bytes if input_kind == "audio" else None,
             )
         return {"id": job.id}
 
