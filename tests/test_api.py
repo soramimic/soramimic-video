@@ -151,6 +151,53 @@ def test_wav_input_is_hidden_and_rejected_without_audio_extra(client, monkeypatc
     assert "WAV入力を利用できません" in res.json()["detail"]
 
 
+def test_wav_capability_preserves_full_ui_editor_and_local_samples(
+    tmp_path, monkeypatch
+):
+    """WAV対応は通常UIを簡易UIへ変えず、既存の環境限定曲も絞らない。"""
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    (samples / "samples.json").write_text(
+        json.dumps([{"id": "bundled", "title": "同梱曲"}]), encoding="utf-8"
+    )
+    (samples / "samples.local.json").write_text(
+        json.dumps([{"id": "local", "title": "環境限定曲"}]), encoding="utf-8"
+    )
+    (samples / "local.mid").write_bytes(FAKE_MIDI)
+    editor_dist = tmp_path / "editor-dist"
+    editor_dist.mkdir()
+    (editor_dist / "editor.html").write_text("<!doctype html>", encoding="utf-8")
+
+    def fake_pipeline(job, config):
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.delenv(api_mod.SIMPLE_UI_ENV, raising=False)
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(samples))
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
+    monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    full_client = TestClient(
+        api_mod.create_app(jobs_dir=tmp_path / "jobs", editor_dist=editor_dist)
+    )
+
+    conf = full_client.get("/api/config").json()
+    assert conf["audio_input"] is True
+    assert "simple_ui" not in conf
+    assert conf["editor"] is True
+    assert [row["id"] for row in full_client.get("/api/samples").json()] == [
+        "bundled",
+        "local",
+    ]
+    selected = full_client.post(
+        "/api/jobs", data={"sample_id": "local", "wordlist": "stations"}
+    )
+    assert selected.status_code == 200, selected.text
+    job = full_client.app.state.manager.jobs[selected.json()["id"]]
+    assert job.params["sample_id"] == "local"
+    assert (job.dir / "input.mid").read_bytes() == FAKE_MIDI
+
+
 def test_wav_upload_limit_is_configurable(client, monkeypatch):
     monkeypatch.setenv(api_mod.MAX_AUDIO_UPLOAD_BYTES_ENV, "64")
     res = client.post(
