@@ -343,6 +343,88 @@ def test_submit_takes_the_midi_from_the_current_song_choice():
     assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_superseded_midi_check_keeps_submit_waiter_live():
+    """復元中に検証予約が重なっても、先のPromiseを待つ生成操作を置き去りにしない。"""
+    schedule = _function_body(_script(), "function scheduleMidiCheck()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let midiRejecting = false;
+        let midiCheckTimer = null;
+        let midiChecking = null;
+        let midiCheckResolve = null;
+        let timerSeq = 0;
+        const timers = new Map();
+        global.setTimeout = (fn) => {{
+          const id = ++timerSeq;
+          timers.set(id, fn);
+          return id;
+        }};
+        global.clearTimeout = (id) => timers.delete(id);
+        let checks = 0;
+        async function runScheduledMidiCheck() {{ checks += 1; }}
+        {schedule}
+        (async () => {{
+          scheduleMidiCheck();
+          const firstWaiter = midiChecking;
+          scheduleMidiCheck();
+          const latestWaiter = midiChecking;
+          assert.notEqual(firstWaiter, latestWaiter);
+          assert.equal(timers.size, 1, "debounce must leave only the latest check scheduled");
+          const runLatest = [...timers.values()][0];
+          timers.clear();
+          runLatest();
+          await Promise.all([firstWaiter, latestWaiter]);
+          assert.equal(checks, 1);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_duplicate_sample_midi_check_reuses_in_flight_request():
+    """同じサンプルの検証が実行中なら、復元処理が重なっても二重解析しない。"""
+    script = _script()
+    key_fn = _function_body(script, "function currentMidiCheckKey()") + "\n}"
+    run_fn = _function_body(script, "function runScheduledMidiCheck()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const midiFile = {{ name: "yorunikakeru.mid", size: 12345 }};
+        const elements = {{
+          midi: {{ files: [midiFile] }},
+          lyrics: {{ value: "夜に駆ける" }}
+        }};
+        const $ = (id) => elements[id];
+        let midiSampleId = "yorunikakeru";
+        let midiCheckInFlight = null;
+        let midiCheckInFlightKey = "";
+        let midiCheckInFlightFile = null;
+        let midiCheckInFlightLyrics = "";
+        let checks = 0;
+        let finishCheck;
+        function checkMidi() {{
+          checks += 1;
+          return new Promise((resolve) => {{ finishCheck = resolve; }});
+        }}
+        {key_fn}
+        {run_fn}
+        (async () => {{
+          const first = runScheduledMidiCheck();
+          const second = runScheduledMidiCheck();
+          assert.equal(first, second);
+          assert.equal(checks, 1, "same sample validation must share the active request");
+          finishCheck();
+          await Promise.all([first, second]);
+          assert.equal(midiCheckInFlight, null);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_legacy_saved_sample_midi_is_migrated_to_id_only():
     """旧版が保存したサンプルMIDIは、バイナリを復元せずIDだけに移行する。"""
     restored = _function_body(_script(), "async function doRestoreForm()")
@@ -350,7 +432,54 @@ def test_legacy_saved_sample_midi_is_migrated_to_id_only():
     assert "if (!restoredSampleId) restoredSampleId = restoredId;" in restored
     assert "localStorage.removeItem(MIDI_KEY);" in restored
     initialized = _function_body(_script(), "async function initBuilder()")
-    assert "trackSample(applySample({ keepLyrics: true }))" in initialized
+    assert "trackSample(applySample({ keepLyrics: editedLyrics }))" in initialized
+
+
+def test_completed_video_requests_no_preload_hint():
+    """共有Fileは維持しつつ、完成直後の自動デコードを抑えるhintを指定する。"""
+    video = next(a for tag, a in _tags() if a.get("id") == "builder-video")
+    assert video.get("preload") == "none"
+
+
+def test_video_generation_hides_the_sensitive_image_notice_immediately():
+    """昆虫画像への配慮は、声プレビューでなく動画生成を選んだ時点で閉じる。"""
+    submit = _function_body(_script(), "async function submitJob(")
+    hide = 'if (previewSec === 0) $("builder-image-hidden").hidden = true;'
+    assert hide in submit
+    assert submit.index(hide) < submit.index("if (samplePending) await samplePending;")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_job_post_retries_one_server_rejected_turnstile_token():
+    """tokenがサーバーで拒否されたとき、新しいtokenで同じ投入を一度だけ再送する。"""
+    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let calls = 0;
+        let rebuilds = 0;
+        let turnstileSiteKey = "site";
+        let turnstileNeedsInteraction = true;
+        let turnstileWaiting = true;
+        let turnstileFailed = true;
+        const form = {{ values: {{}}, set(key, value) {{ this.values[key] = value; }} }};
+        const headers = () => ({{}});
+        const fetch = async () => {{ calls += 1; return {{ status: calls === 1 ? 403 : 200 }}; }};
+        function hideTurnstilePrompt() {{}}
+        function rebuildTurnstileWidget() {{ rebuilds += 1; }}
+        async function ensureTurnstileToken() {{ return true; }}
+        function turnstileToken() {{ return "fresh-token"; }}
+        {post}
+        (async () => {{
+          const response = await postJobWithTurnstileRetry(form);
+          assert.equal(response.status, 200);
+          assert.equal(calls, 2);
+          assert.equal(rebuilds, 1);
+          assert.equal(form.values.turnstile_token, "fresh-token");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 def test_turnstile_interaction_scrolls_to_inline_prompt():
@@ -763,7 +892,6 @@ def test_desktop_video_has_separate_download_and_share_buttons():
           assert.equal(shareCalls[0].files[0].name, "video.mp4");
           assert.equal(shareCalls[0].text.includes("#Soramimic"), true);
           assert.equal(shareCalls[0].text.includes("#そらみみっく"), true);
-          assert.equal(shareCalls[0].text.includes("#ソラミミック"), false);
 
           navigator.share = () => Promise.reject({{ name: "NotAllowedError" }});
           elements["share-save"].handlers.click();
@@ -905,7 +1033,6 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
             "playback and share must use the same File");
           assert.deepEqual(Object.keys(shareCalls[0]), ["files", "text"]);
           assert.equal(shareCalls[0].text.includes("#Soramimic #そらみみっく\\n"), true);
-          assert.equal(shareCalls[0].text.includes("#ソラミミック"), false);
           assert.equal(shareCalls[0].text.includes("#soramimic"), false);
           assert.equal(shareCalls[0].text.endsWith("https://video.example"), true);
           assert.equal(elements["share-save"].disabled, false,
@@ -1168,11 +1295,27 @@ def test_setup_seed_has_no_results_so_viewing_alone_is_not_an_edit():
     assert "sig === meta.sig" in live and 'state: "none"' in live
 
 
-def test_restored_sample_id_keeps_saved_lyrics_without_midi_binary():
-    """復元したサンプルIDを選び直し、保存済みの編集歌詞を残す。"""
+def test_restored_sample_id_refreshes_only_unedited_lyrics():
+    """復元したサンプルIDを選び直し、手編集済みの歌詞だけ残す。"""
     init = _function_body(_script(), "async function initBuilder()")
-    assert "const restoredId = restoredSampleId;" in init
-    assert "applySample({ keepLyrics: true })" in init
+    assert "sampleLyricsId === restoredId" in init
+    assert "sampleLyricsBaseline !== null" in init
+    assert '$("lyrics").value !== sampleLyricsBaseline' in init
+    assert "applySample({ keepLyrics: editedLyrics })" in init
+
+
+def test_sample_lyrics_baseline_is_saved_and_restored():
+    """標準歌詞の更新と手編集の保護はリロードを跨いで判定できる。"""
+    script = _script()
+    apply_sample = _function_body(script, "async function applySample(")
+    assert "sampleLyricsId = sid;" in apply_sample
+    assert "sampleLyricsBaseline = sampleLyrics;" in apply_sample
+    save = _function_body(script, "function saveForm()")
+    assert "sampleLyricsId," in save
+    assert "sampleLyricsBaseline," in save
+    restore = _function_body(script, "async function doRestoreForm()")
+    assert 'sampleLyricsId = state.sampleLyricsId || "";' in restore
+    assert 'typeof state.sampleLyricsBaseline === "string"' in restore
 
 
 def test_sample_selection_never_fetches_or_injects_midi():
@@ -1304,6 +1447,31 @@ def test_card_selects_mirror_the_canonical_form():
     assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
 
 
+def test_wav_input_reuses_the_builder_and_mobile_player():
+    html = INDEX.read_text(encoding="utf-8")
+    script = _script()
+    assert 'id="audio-upload-button"' in html
+    assert 'id="audio" accept=".wav,audio/wav,audio/x-wav"' in html
+    assert 'id="audio-input-panel"' in html
+    assert 'id="audio-lyrics"' in html
+    assert '<video id="builder-video" controls playsinline' in html
+    submit = _function_body(script, "async function submitJob(")
+    assert 'if (audio) form.append("audio", audio);' in submit
+    assert (
+        'form.append("lyrics", audio ? $("audio-lyrics").value : $("lyrics").value);'
+        in submit
+    )
+    # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
+    assert 'localStorage.setItem("audioFile"' not in script
+
+
+def test_sample_picker_uses_each_manifest_title_as_is():
+    """一番版とフル版の別項目名をsamples.jsonどおりプルダウンへ出す。"""
+    load = _function_body(_script(), "async function loadSamples()")
+    assert '<option value="${s.id}">${s.title}</option>' in load
+    assert "s.edition" not in load
+
+
 def test_card_wordlist_select_shows_the_editor_own_list():
     """エディタの中で自作リストを使っているあいだは、合成の選択肢で選択済みに見せる。
 
@@ -1327,16 +1495,61 @@ def test_layout_preview_image_needs_a_wordlist_name():
     """レイアウトプレビューの代表画像は、単語リスト名が空なら取りに行かない。
 
     自作リスト(ORIGINAL/csvText)のあいだは正本 #wordlist が空。空の名前で
-    /api/wordlist-image を叩くと404になるので、loadWordlistImage と同じ空ガードを
+    /api/asset-preview を叩くと404になるので、loadWordlistImage と同じ空ガードを
     置いてプレースホルダに落とす。
     """
     script = _script()
     body = _function_body(script, "function leContent(e)")
     assert 'const name = $("wordlist").value.trim();' in body
-    assert 'if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);' in body
+    assert 'if (name) src = "/api/asset-preview?wordlist=" + encodeURIComponent(name);' in body
+    assert "/api/wordlist-image?" not in script
     # 代表画像のもう一方の経路(サムネ)も同じ流儀の空ガードを持つ
     thumb = _function_body(script, "function loadWordlistImage(name, seq)")
     assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in thumb
+
+
+def test_noncommercial_fanwork_requires_explicit_checkbox():
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'type="checkbox" id="noncommercial-fanwork"' in html
+    assert 'id="builder-fanwork-confirmation" hidden' in html
+    assert "function requiresNoncommercialFanwork()" in html
+    assert "previewSec === 0 && requiresNoncommercialFanwork()" in html
+    assert "以下の二次創作ガイドラインを確認し、遵守します" in html
+    assert "生成するには、ガイドラインを確認してチェックを入れてください。" in html
+    assert "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。" not in html
+    assert "非営利のファン活動に限って利用できる公式画像" in html
+    assert "fanwork-details" in html
+    assert "fanwork-terms" in html
+    assert ".fanwork-confirmation label > span { min-width: 0; }" in html
+    assert "margin-top: .25rem; font-size: .8rem; line-height: 1.45;" in html
+    assert ".fanwork-terms a { overflow-wrap: anywhere; }" in html
+    assert 'id="builder-fanwork-error" role="alert" hidden' in html
+    assert 'aria-describedby="fanwork-guidance builder-fanwork-error"' in html
+    assert ".fanwork-error" in html
+    submit = _function_body(html, "async function submitJob(previewSec, previewMode)")
+    assert (
+        'showFanworkError("生成するには、ガイドラインを確認してチェックを入れてください。")'
+        in submit
+    )
+    assert '$("noncommercial-fanwork").focus({ preventScroll: true });' in submit
+    assert "showSubmitMsg(msg);" not in submit
+    assert "showBuilderMsg(msg);" not in submit
+    fanwork_error = _function_body(html, "function showFanworkError(text)")
+    assert 'checkbox.setAttribute("aria-invalid", "true")' in fanwork_error
+    assert 'checkbox.removeAttribute("aria-invalid")' in fanwork_error
+    assert html.count('showFanworkError("");') >= 5
+    prompt = _function_body(html, "function updateNoncommercialFanworkPrompt()")
+    assert 'if (panel.hidden) showFanworkError("");' in prompt
+    assert "policy.terms_pages || policy.terms" in prompt
+    assert "Array.isArray(rawTerms)" in prompt
+    assert 'link.target = "_blank";' in prompt
+    assert 'link.rel = "noopener noreferrer";' in prompt
+    assert '$("builder-fanwork-terms").replaceChildren(...links);' in prompt
+    assert "非営利のファン活動として公開する" not in html
+    assert "画像クレジットは生成物の credits.md に記録されます。" not in html
+    assert 'form.append("allow_noncommercial_fanwork"' in html
+    assert '$("noncommercial-fanwork").checked ? "true" : "false"' in html
+    assert 'failure === "生成に失敗しました"' in html
 
 
 # ---- エディタからの「曲を変えたい」依頼(hostRequest)にホストが応える ----

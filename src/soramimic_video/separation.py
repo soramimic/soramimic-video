@@ -10,9 +10,10 @@ from __future__ import annotations
 import importlib.util
 import logging
 import shutil
-import subprocess
 import sys
 from pathlib import Path
+
+from . import runproc
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ def separate(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
         str(audio_path),
     ]
     logger.info("demucs実行中(数分かかります): %s", " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = runproc.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"demucsが失敗しました:\n{proc.stderr[-2000:]}")
 

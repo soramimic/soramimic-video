@@ -6,10 +6,12 @@ APIキー認証を確認する。NEUTRINO実行込みのE2Eは手動(serve)で�
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
 import time
+import wave
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,16 @@ FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
 
 
+def fake_wav(seconds: float = 0.1, rate: int = 8000) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * round(seconds * rate))
+    return out.getvalue()
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     def fake_pipeline(job, config):
@@ -34,6 +46,7 @@ def client(tmp_path, monkeypatch):
         return out
 
     monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
     app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
     return TestClient(app)
 
@@ -73,6 +86,119 @@ def test_job_flow_with_editor(client):
     assert playback.headers["content-type"] == "video/mp4"
     assert playback.headers["content-disposition"].startswith("inline;")
     assert playback.headers["cache-control"] == "private, no-store"
+
+
+def test_job_flow_accepts_wav_and_keeps_existing_playback(client):
+    wav = fake_wav()
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", wav, "audio/wav")},
+        data={"wordlist": "stations", "lyrics": "あ"},
+    )
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    body = wait_done(client, job_id)
+    assert body["status"] == "done"
+    assert body["params"]["input_kind"] == "audio"
+    assert body["song_label"] == "アップロードした曲"
+    job = client.app.state.manager.jobs[job_id]
+    assert (job.dir / "input.wav").read_bytes() == wav
+    assert not (job.dir / "input.mid").exists()
+    assert client.get(body["playback_url"]).content == FAKE_MP4
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "detail"),
+    [
+        ("voice.mp3", fake_wav(), "WAVファイルを選んでください"),
+        ("voice.wav", b"not a wav", "WAVファイルではありません"),
+    ],
+)
+def test_rejects_invalid_wav(client, filename, content, detail):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": (filename, content, "application/octet-stream")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 400
+    assert detail in res.json()["detail"]
+
+
+def test_rejects_wav_with_midi_or_sample(client):
+    files = {
+        "audio": ("voice.wav", fake_wav(), "audio/wav"),
+        "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+    }
+    res = client.post("/api/jobs", files=files, data={"wordlist": "stations"})
+    assert res.status_code == 422
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"sample_id": "furusato", "wordlist": "stations"},
+    )
+    assert res.status_code == 422
+
+
+def test_wav_input_is_hidden_and_rejected_without_audio_extra(client, monkeypatch):
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: False)
+    assert client.get("/api/config").json()["audio_input"] is False
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 503
+    assert "WAV入力を利用できません" in res.json()["detail"]
+
+
+def test_wav_upload_limit_is_configurable(client, monkeypatch):
+    monkeypatch.setenv(api_mod.MAX_AUDIO_UPLOAD_BYTES_ENV, "64")
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 413
+
+
+def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
+    from soramimic_video import analyze_audio as analyze_audio_mod
+
+    class ReachedAnalyzer(Exception):
+        pass
+
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(fake_wav())
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("あ", encoding="utf-8")
+
+    def fake_analyze(audio_path, project_dir, **kwargs):
+        assert audio_path == audio
+        assert project_dir == tmp_path
+        assert kwargs["lyrics_path"] == lyrics
+        assert kwargs["whisper_model"] == "small"
+        raise ReachedAnalyzer
+
+    monkeypatch.setattr(analyze_audio_mod, "analyze_audio", fake_analyze)
+    job = api_mod.Job(
+        id="wavtest",
+        dir=tmp_path,
+        params={"input_kind": "audio"},
+    )
+    with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})
+
+
+def test_noncommercial_fanwork_is_explicit_and_persisted(client):
+    ordinary = submit(client, editor=b'{"format": "soramimic-editor/1"}')
+    assert wait_done(client, ordinary)["params"]["allow_noncommercial_fanwork"] is False
+
+    opted_in = submit(
+        client,
+        editor=b'{"format": "soramimic-editor/1"}',
+        allow_noncommercial_fanwork="true",
+    )
+    assert wait_done(client, opted_in)["params"]["allow_noncommercial_fanwork"] is True
 
 
 def test_requires_editor_or_wordlist(client):
@@ -286,8 +412,11 @@ def test_index_html_builder_card_has_selects():
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
     assert (
-        '$("wordlist-select").addEventListener("change", '
-        "() => { syncBuilderValues(); schedulePreview(); });" in html
+        '$("wordlist-select").addEventListener("change", () => {\n'
+        '  showFanworkError("");\n'
+        "  syncBuilderValues();\n"
+        "  schedulePreview();\n"
+        "});" in html
     )
     advanced = _advanced_html()
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
@@ -389,7 +518,7 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     # 中断は生成中も枠の中から押せる
     assert '$("builder-cancel").addEventListener("click", cancelJob);' in html
     # 完成したら同じ枠が動画プレイヤーになり、シェアは枠の直下に出る
-    assert '<video id="builder-video" controls playsinline hidden></video>' in html
+    assert '<video id="builder-video" controls playsinline preload="none" hidden></video>' in html
     assert "video.poster = qs(job.thumbnail_url);" in html
     assert '$("builder-share").innerHTML = SHARE_HTML;' in html
     # 選び直したら枠は新しいプレビューに戻る
@@ -950,6 +1079,28 @@ def test_config_has_wordlist_layouts(client):
     assert wl["scientist"] == "scientist_card"
     # 値はすべて組み込みレイアウト名(UIがそのまま#layoutに入れるため)
     assert set(wl.values()) <= set(conf["layouts"])
+
+
+def test_config_has_youtuber_image_policy(client):
+    conf = client.get("/api/config").json()
+    assert conf["wordlist_image_policies"]["youtuber"] == {
+        "usage": "noncommercial_fanwork",
+        "terms": "https://hololivepro.com/terms/",
+        "terms_pages": [
+            {
+                "url": "https://hololivepro.com/terms/",
+                "label": "ホロライブプロダクション二次創作ガイドライン",
+            },
+            {
+                "url": "https://www.anycolor.co.jp/guidelines/",
+                "label": "ANYCOLOR二次創作ガイドライン",
+            },
+            {
+                "url": "https://vhs-city.com/aogirihighschool/guidelines/fanfic",
+                "label": "あおぎり高校二次創作ガイドライン",
+            },
+        ],
+    }
 
 
 def test_get_builtin_layout(client):
@@ -1524,7 +1675,6 @@ def test_index_html_has_platform_appropriate_save_share_buttons():
     assert "navigator.share({ files: [prepared.file], text: SHARE_TEXT })" in html
     assert "#Soramimic" in html
     assert "#そらみみっく" in html
-    assert "#ソラミミック" not in html
     click = html[html.index("function bindShare(videoUrl)") :]
     click = click[: click.index("\n}\n")]
     assert "fetch(" not in click and "await " not in click
@@ -1940,7 +2090,7 @@ def test_index_html_wordlist_values_are_hidden_canonicals():
 
 
 def test_index_html_keeps_the_conf_default_filters():
-    """チェックボックスUIを畳んでも、confのfacet既定(default:true)の絞り込みは残す。
+    """チェックボックスUIを畳んでも、editorと同じfacet既定の絞り込みは残す。
 
     駅名は現存駅だけ・流行はセンシティブ除外…といった既定が消えると、UIの整理が
     そのまま出力の変化になってしまう。組み立てた式が本当にエディタ側
@@ -1949,8 +2099,9 @@ def test_index_html_keeps_the_conf_default_filters():
     """
     html = _index_html()
     body = html.split("function facetDefaultWhere(g) {")[1].split("\n}")[0]
-    # 既定ONの値だけを集める
-    assert '(f.values || []).filter((v) => v.default === true)' in body
+    # default:true があればその値、ひとつも無ければeditorと同じく全値を選ぶ
+    assert 'const defaults = values.filter((v) => v.default === true);' in body
+    assert 'const selected = defaults.length ? defaults : values;' in body
     # 値の述語は where 優先、無ければ col=v の or(複数列は全列)を括弧でくくる
     assert '(v.where ? v.where : "(" + cols.map((c) => c + "=" + v.v).join(" or ") + ")")' in body
     # ファセットごとにも括弧をつけ、facetをまたぐと and(エディタの compileWhere と同形)
@@ -2152,9 +2303,7 @@ def test_index_html_progress_uses_the_active_stage_plan():
     # convert / import-editor は排他(parody_source で決まる)
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
-    assert (
-        'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
-    )
+    assert 'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
     assert "setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);" in html
 
 

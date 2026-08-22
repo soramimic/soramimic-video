@@ -483,6 +483,23 @@
   /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
      2つ目だけ下にずれるので消す */
   .builder-selects .field + .field { margin-top: 0; }
+  .fanwork-confirmation {
+    margin-top: .65rem; padding: .65rem .75rem; border: 1px solid #f59e0b88;
+    border-radius: 10px; background: #f59e0b14;
+  }
+  .fanwork-confirmation label { display: flex; align-items: flex-start; gap: .5rem; margin: 0; }
+  .fanwork-confirmation label > span { min-width: 0; }
+  .fanwork-confirmation input { flex: 0 0 auto; margin-top: .2rem; }
+  .fanwork-details { margin: .35rem 0 0 1.65rem; }
+  .fanwork-confirmation .hint { margin: 0; }
+  .fanwork-terms {
+    display: flex; flex-direction: column; align-items: flex-start; gap: .15rem;
+    margin-top: .25rem; font-size: .8rem; line-height: 1.45;
+  }
+  .fanwork-terms a { overflow-wrap: anywhere; }
+  .fanwork-error {
+    margin: .35rem 0 0; color: var(--danger); font-size: .8rem; font-weight: 600;
+  }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -583,6 +600,9 @@
         aria-label="替え歌を編集" title="替え歌を編集">
         <span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>
     </div>
+    <button type="button" id="audio-upload-button" class="btn-sm" hidden
+      aria-label="WAV音源を入力" title="WAV音源を入力">
+      <span class="lucky-icon" aria-hidden="true">🎵</span>WAV入力</button>
     <button type="button" id="lucky" class="btn-sm" disabled
       title="曲と単語リストをランダムに選ぶ">
       <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
@@ -604,6 +624,27 @@
       <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
   </div>
+  <div id="audio-input-panel" class="field" hidden>
+    <p><strong id="audio-filename"></strong></p>
+    <label for="audio-lyrics">元歌詞(任意)</label>
+    <textarea id="audio-lyrics" rows="4" placeholder="空欄なら音源から自動認識します"></textarea>
+    <p class="hint">音源を解析してメロディーとタイミングを推定します。解析には時間がかかることがあります。</p>
+    <button type="button" id="audio-clear" class="btn-sm">サンプル曲に戻す</button>
+  </div>
+  <!-- 制限付き画像を含みうるリストでは、生成ボタンと同じカード内で明示確認する。
+       詳細設定の奥に置くとモバイルでは存在に気づかず、本生成まで進んで失敗する。 -->
+  <div class="fanwork-confirmation" id="builder-fanwork-confirmation" hidden tabindex="-1">
+    <label>
+      <input type="checkbox" id="noncommercial-fanwork"
+        aria-describedby="fanwork-guidance builder-fanwork-error">
+      <span>以下の二次創作ガイドラインを確認し、遵守します</span>
+    </label>
+    <div class="fanwork-details">
+      <p class="hint" id="fanwork-guidance">この単語リストには、非営利のファン活動に限って利用できる公式画像が含まれます。</p>
+      <div class="fanwork-terms" id="builder-fanwork-terms"></div>
+      <p class="fanwork-error" id="builder-fanwork-error" role="alert" hidden></p>
+    </div>
+  </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
        だけが枠の大きさを決める。
@@ -614,7 +655,7 @@
        - #builder-video: 完成した動画。poster にサムネを敷くので絵が途切れない -->
   <div class="builder-figure" id="builder-figure" hidden>
     <img id="builder-image" alt="この組み合わせのサムネイル" hidden>
-    <video id="builder-video" controls playsinline hidden></video>
+    <video id="builder-video" controls playsinline preload="none" hidden></video>
     <div class="builder-figure-loading" id="builder-loading" hidden>
       <span class="spinner" aria-hidden="true"></span>
       <span>プレビューを作成中…</span>
@@ -728,6 +769,7 @@
      ビルダーカードへ移してある。 -->
 <div id="song-store" hidden>
   <input type="file" id="midi" accept=".mid,.midi">
+  <input type="file" id="audio" accept=".wav,audio/wav,audio/x-wav">
   <p id="midi-restore-hint" hidden></p>
   <p id="midi-error" hidden></p>
   <div id="sample-details">
@@ -854,6 +896,7 @@
         placeholder="例: ©表記、ライセンス名、許諾番号など"></textarea>
       <p class="hint" data-info>入力文を改変せず、元曲名と並べてエンドクレジットに載せます。</p>
     </div>
+
   </section>
 
 </details>
@@ -1176,17 +1219,22 @@ let resumed = false;
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
 // 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
 let wordlistLayouts = {};
+let wordlistImagePolicies = {};
 let simpleMode = false;
 let launchWordlists = [];
 let fixedVoicevoxStyle = 3003;
+let maxAudioUploadBytes = 200 * 1024 * 1024;
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
   simpleMode = !!conf.simple_ui;
+  wordlistImagePolicies = conf.wordlist_image_policies || {};
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
+  maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
+  $("audio-upload-button").hidden = !conf.audio_input;
   $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
   // 開いたうえで、そこまでスクロールして見えるようにする
@@ -2008,7 +2056,10 @@ function renderStages(job) {
     li.hidden = !plan.includes(name) && !doneNames.has(name);
     li.classList.toggle("done", doneNames.has(name));
     li.classList.toggle("now", job.stage === name);
-    const base = li.textContent.replace(/ [\d.]+秒$/, "");
+    let base = li.textContent.replace(/ [\d.]+秒$/, "");
+    if (name === "analyze") {
+      base = job.params.input_kind === "audio" ? "音源解析" : "MIDI解析";
+    }
     li.textContent = doneNames.has(name) ? `${base} ${secs[name]}秒` : base;
   });
 }
@@ -2088,7 +2139,8 @@ async function poll(id, seq = pollSeq) {
   renderStages(job);
   renderBuilderBar(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
-  const label = STAGE_LABELS[job.stage] || job.stage || "…";
+  const label = job.stage === "analyze" && job.params.input_kind === "audio"
+    ? "音源解析" : (STAGE_LABELS[job.stage] || job.stage || "…");
   // 「何段階目か」の数字は出さない。どこまで進んだかはプログレスバーが見せている
   if (job.status === "running") {
     if (cancelPendingJob === id) {
@@ -2125,11 +2177,13 @@ async function poll(id, seq = pollSeq) {
     openJobDetails();
     finish();
   } else {
-    $("status-line").innerHTML = `<span class="error">エラー: ${job.error || "不明"}</span>`;
+    const failure = job.error || "不明なエラー";
+    $("status-line").innerHTML = `<span class="error">エラー: ${failure}</span>`;
     // 枠は選び直せるプレビューに戻し、要点は枠の下に出す。畳んである詳細
     // (#job-card)にはステージとログが残るので、失敗したときだけ開いて見せる。
     setBuilderState("preview");
-    showBuilderMsg(`生成に失敗しました: ${job.error || "不明なエラー"}`);
+    showBuilderMsg(failure === "生成に失敗しました"
+      ? failure : `生成に失敗しました: ${failure}`);
     openJobDetails();
     finish();
   }
@@ -2437,7 +2491,11 @@ function showSubmitMsg(text) {
 // Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
 // Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
 async function postJobWithTurnstileRetry(form) {
-  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+  const jobHeaders = () => ({
+    ...headers(),
+    ...(form.has && form.has("audio") ? { "X-Soramimic-WAV-Upload": "1" } : {}),
+  });
+  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
   if (res.status !== 403 || !turnstileSiteKey) return res;
   // resetだけでは前回実行の遅延callbackと新しい実行を区別できない。widgetを世代ごと
   // 作り直し、拒否されたtokenの実行から届くcallbackを無効化してから再確認する。
@@ -2448,7 +2506,7 @@ async function postJobWithTurnstileRetry(form) {
   rebuildTurnstileWidget();
   if (!await ensureTurnstileToken()) return res;
   form.set("turnstile_token", turnstileToken());
-  return fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+  return fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
 }
 
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
@@ -2458,18 +2516,38 @@ async function submitJob(previewSec, previewMode) {
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
   if (submitBusy) return;
   setBusy(true);
+  // 制限付き画像の確認は、高コストな本生成ジョブを投入する前に止める。
+  // 音声だけのプレビューには画像を使わないので確認不要。
+  if (previewSec === 0 && requiresNoncommercialFanwork()
+      && !$("noncommercial-fanwork").checked) {
+    setBusy(false);
+    showSubmitMsg("");
+    showBuilderMsg("");
+    showFanworkError("生成するには、ガイドラインを確認してチェックを入れてください。");
+    const panel = $("builder-fanwork-confirmation");
+    panel.scrollIntoView({ block: "center", behavior: "smooth" });
+    $("noncommercial-fanwork").focus({ preventScroll: true });
+    return;
+  }
+  showFanworkError("");
+  // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
+  // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
+  if (previewSec === 0) $("builder-image-hidden").hidden = true;
   // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
-  if (samplePending) await samplePending;
-  if (midiChecking) await midiChecking;
+  const audio = $("audio").files[0];
+  if (!audio) {
+    if (samplePending) await samplePending;
+    if (midiChecking) await midiChecking;
+  }
   // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
   // いたり、復元した古い中身が入っていたりする状態では投げない。
-  if (!await ensureSelectedSampleMidi()) {
+  if (!audio && !await ensureSelectedSampleMidi()) {
     setBusy(false);   // 先に無効化されている場合に戻す
     return;
   }
   const midi = $("midi").files[0];
   const sampleId = midiSampleId;
-  if (!sampleId && !midi) {
+  if (!audio && !sampleId && !midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
     // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
     // サンプル曲はカードの「曲」プルダウン(🎲でも選び直せる)、自分のMIDIは⚙のエディタ。
@@ -2511,10 +2589,11 @@ async function submitJob(previewSec, previewMode) {
   }
   const form = new FormData();
   // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
-  if (sampleId) form.append("sample_id", sampleId);
+  if (audio) form.append("audio", audio);
+  else if (sampleId) form.append("sample_id", sampleId);
   else form.append("midi", midi);
   if (editorSrc.file) form.append("editor", editorSrc.file);
-  form.append("lyrics", $("lyrics").value);
+  form.append("lyrics", audio ? $("audio-lyrics").value : $("lyrics").value);
   form.append("model", $("model").value);
   form.append("synthesizer", simpleMode ? "voicevox" : $("synthesizer").value);
   form.append("voicevox_style", simpleMode
@@ -2523,9 +2602,11 @@ async function submitJob(previewSec, previewMode) {
   form.append("transpose", simpleMode ? "0" : ($("transpose").value.trim() || "0"));
   form.append("preview", String(previewSec));
   form.append("preview_mode", previewMode || "");
-  form.append("song_title", songTitleOf(midi));
+  form.append("song_title", songTitleOf(audio || midi));
   form.append("original_credit", $("original-credit").value.trim());
   form.append("credit_notice", $("credit-notice").value.trim());
+  form.append("allow_noncommercial_fanwork",
+    $("noncommercial-fanwork").checked ? "true" : "false");
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
@@ -2627,6 +2708,58 @@ const samplesReady = loadSamples();
 // サーバー内のMIDIを使うサンプルID。持ち込みMIDIでは空文字。
 // サンプルのMIDIバイナリはブラウザへ取得・保存しない。
 let midiSampleId = "";
+function clearAudioInput() {
+  if (!$("audio").files[0] && $("audio-input-panel").hidden) return;
+  $("audio").value = "";
+  $("audio-input-panel").hidden = true;
+  $("audio-filename").textContent = "";
+  document.querySelector('.stages li[data-stage="analyze"]').textContent = "MIDI解析";
+  $("builder-edit").disabled = false;
+  $("builder-edit").title = "替え歌を編集";
+  syncBuilderOptions();
+}
+
+$("audio-upload-button").addEventListener("click", () => $("audio").click());
+$("audio").addEventListener("change", () => {
+  const file = $("audio").files[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".wav")) {
+    showBuilderMsg("WAVファイルを選んでください。");
+    $("audio").value = "";
+    return;
+  }
+  if (file.size > maxAudioUploadBytes) {
+    showBuilderMsg(`WAVファイルが大きすぎます(上限は${Math.round(maxAudioUploadBytes / 1024 / 1024)}MBです)。`);
+    $("audio").value = "";
+    return;
+  }
+  $("sample-select").value = "";
+  midiSampleId = "";
+  $("midi").value = "";
+  $("audio-filename").textContent = file.name;
+  $("audio-input-panel").hidden = false;
+  $("audio-lyrics").value = "";
+  clearEditorFile();
+  $("builder-edit").disabled = true;
+  $("builder-edit").title = "WAV入力は音源解析後に自動変換して動画を生成します";
+  document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
+  syncBuilderOptions();
+  syncBuilderValues();
+  showBuilderMsg("");
+  schedulePreview(true);
+});
+$("audio-clear").addEventListener("click", () => {
+  clearAudioInput();
+  const fallback = [...$("sample-select").options].find((option) => option.value);
+  if (fallback) {
+    $("sample-select").value = fallback.value;
+    $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+});
+// #lyrics がどのサンプルの配信値かと、その時点の未編集値。リロード時に
+// 「前回の標準歌詞」だけ最新版へ更新し、ユーザーが手で直した歌詞は残すために使う。
+// null はこの情報を保存する前の旧版状態で、標準歌詞とみなし一度最新版へ移行する。
+let sampleLyricsId = "", sampleLyricsBaseline = null;
 // applySample による注入のあいだだけ true。#midi の change で来歴を消さないための番人
 let midiFromSample = false;
 // 自分で選んだファイル・復元・拒否によるクリアでは来歴が失われる(=サンプル曲の
@@ -2660,7 +2793,10 @@ async function applySample(opts = {}) {
     }
     $("midi-restore-hint").hidden = true;
     if (lyricsRes) {
-      $("lyrics").value = await lyricsRes.text();
+      const sampleLyrics = await lyricsRes.text();
+      sampleLyricsId = sid;
+      sampleLyricsBaseline = sampleLyrics;
+      $("lyrics").value = sampleLyrics;
       $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
     }
     // クレジット表記: プリセットがある曲は選曲時に自動で入れる(権利者指定の
@@ -2700,6 +2836,7 @@ function trackSample(p) {
 // 別の曲で生成されるのを防ぐのは ensureSelectedSampleMidi)。
 $("sample-select").addEventListener("change", () => {
   const sid = $("sample-select").value;
+  if (sid) clearAudioInput();
   if (!sid) {
     midiSampleId = "";
     if (!restoring) saveForm();
@@ -2753,18 +2890,65 @@ async function ensureSelectedSampleMidi(onFail) {
 let midiCheckSeq = 0;       // 応答の追い越しを捨てるための世代番号
 let midiCheckTimer = null;
 let midiChecking = null;    // 検証中のPromise(投入・編集の前に待つ)
+let midiCheckResolve = null; // debounceで置き換えたPromiseの待機者を次の検証へ引き継ぐ
+let midiCheckInFlight = null;
+let midiCheckInFlightKey = "";
+let midiCheckInFlightFile = null;
+let midiCheckInFlightLyrics = "";
 let midiRejecting = false;  // 拒否のクリアで自分自身を呼び直さないための番人
 // 最後に通った検証結果。File の同一性も持ち、別のファイルに前回の
 // midi_lines を流用しない。自分のMIDIモーダルの元歌詞欄の下敷きに使う。
 let lastMidiCheck = null;
 
+function currentMidiCheckKey() {
+  const f = $("midi").files[0];
+  // 同梱サンプルはIDで同一性を保証できる。持ち込みFileは同名・同サイズでも
+  // 内容が違い得るためcoalesceせず、Fileオブジェクトごとに検証する。
+  if (!midiSampleId) return "";
+  return `${midiSampleId}\u0000${$("lyrics").value}`;
+}
+
+function runScheduledMidiCheck() {
+  const file = $("midi").files[0] || null;
+  const lyrics = $("lyrics").value;
+  const key = currentMidiCheckKey();
+  const sameInput = key
+    ? midiCheckInFlightKey === key
+    : midiCheckInFlightFile === file && midiCheckInFlightLyrics === lyrics;
+  if (midiCheckInFlight && sameInput) return midiCheckInFlight;
+  const run = checkMidi();
+  midiCheckInFlight = run;
+  midiCheckInFlightKey = key;
+  midiCheckInFlightFile = file;
+  midiCheckInFlightLyrics = lyrics;
+  const clear = () => {
+    if (midiCheckInFlight !== run) return;
+    midiCheckInFlight = null;
+    midiCheckInFlightKey = "";
+    midiCheckInFlightFile = null;
+    midiCheckInFlightLyrics = "";
+  };
+  run.then(clear, clear);
+  return run;
+}
+
 function scheduleMidiCheck() {
   if (midiRejecting) return;
   if (midiCheckTimer) clearTimeout(midiCheckTimer);
+  const supersededResolve = midiCheckResolve;
   // サンプル選択はMIDIの注入と元歌詞の反映が別のイベントで来るので、少し待って束ねる
-  midiChecking = new Promise((resolve) => {
-    midiCheckTimer = setTimeout(() => { checkMidi().then(resolve, resolve); }, 250);
+  const nextCheck = new Promise((resolve) => {
+    midiCheckResolve = resolve;
+    midiCheckTimer = setTimeout(() => {
+      midiCheckTimer = null;
+      if (midiCheckResolve === resolve) midiCheckResolve = null;
+      runScheduledMidiCheck().then(resolve, resolve);
+    }, 250);
   });
+  midiChecking = nextCheck;
+  // clearTimeoutした古いPromiseを未解決のまま残すと、その瞬間に生成を押して
+  // awaitしていたsubmitJobが永久に止まる。古い待機者も最新の検証完了まで待たせる。
+  if (supersededResolve) supersededResolve(nextCheck);
 }
 
 function clearMidiNotices() {
@@ -2966,6 +3150,7 @@ let builderLive = false;    // 初期選択が決まったか(それまでプレ
 // 触らず表示を戻すだけにして、「何も選ばない」に落ちないようにする。
 const EDITOR_WORDLIST_VALUE = "__editor__";
 const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";
+const AUDIO_SONG_VALUE = "__audio__";
 
 // 正本がいま「エディタで書いた自作リスト」を指している状態か。
 // 正本に名前が入っていれば(カードや🎲で選び直した直後など)そちらが優先で、
@@ -2978,6 +3163,12 @@ function showsEditorWordlist() {
 // サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
 function syncBuilderOptions() {
   $("builder-sample").innerHTML = $("sample-select").innerHTML;
+  if ($("audio").files[0]) {
+    const option = document.createElement("option");
+    option.value = AUDIO_SONG_VALUE;
+    option.textContent = `WAV: ${$("audio").files[0].name}`;
+    $("builder-sample").appendChild(option);
+  }
   const wl = $("wordlist-select");
   $("builder-wordlist").innerHTML = wl.innerHTML;
   // 単語リストのプルダウンが出ない構成(editor conf が無い)ではカード側も出さない
@@ -2988,7 +3179,8 @@ function syncBuilderOptions() {
 // 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
 // 自作リストのあいだだけ合成の選択肢を足し、抜けたら取り除く。
 function syncBuilderValues() {
-  $("builder-sample").value = $("sample-select").value;
+  $("builder-sample").value = $("audio").files[0]
+    ? AUDIO_SONG_VALUE : $("sample-select").value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const own = showsEditorWordlist();
   const synth = [...card.options].find((o) => o.value === EDITOR_WORDLIST_VALUE);
@@ -3001,7 +3193,47 @@ function syncBuilderValues() {
     synth.remove();
   }
   card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
+  updateNoncommercialFanworkPrompt();
   syncLuckyAvailability();
+}
+
+function currentImagePolicy() {
+  return wordlistImagePolicies[currentWordlistName()] || null;
+}
+
+function requiresNoncommercialFanwork() {
+  const policy = currentImagePolicy();
+  return !!policy && policy.usage === "noncommercial_fanwork";
+}
+
+function updateNoncommercialFanworkPrompt() {
+  const panel = $("builder-fanwork-confirmation");
+  const policy = currentImagePolicy();
+  panel.hidden = !requiresNoncommercialFanwork();
+  if (panel.hidden) showFanworkError("");
+  const rawTerms = policy && (policy.terms_pages || policy.terms);
+  const terms = Array.isArray(rawTerms)
+    ? rawTerms
+    : (rawTerms ? [{ url: rawTerms, label: "二次創作ガイドライン" }] : []);
+  const links = terms.flatMap((term) => {
+    if (!term || typeof term.url !== "string" || !term.url) return [];
+    const link = document.createElement("a");
+    link.href = term.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = term.label || term.url;
+    return [link];
+  });
+  $("builder-fanwork-terms").replaceChildren(...links);
+}
+
+function showFanworkError(text) {
+  const error = $("builder-fanwork-error");
+  const checkbox = $("noncommercial-fanwork");
+  error.textContent = text || "";
+  error.hidden = !text;
+  if (text) checkbox.setAttribute("aria-invalid", "true");
+  else checkbox.removeAttribute("aria-invalid");
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -3182,7 +3414,8 @@ function loadWordlistImage(name, seq) {
     updateBuilderOverlay();
   };
   if (!name || hiddenPreviewReason(name)) { hide(); return; }
-  const url = "/api/wordlist-image?wordlist=" + encodeURIComponent(name)
+  const url = "/api/asset-preview?wordlist=" + encodeURIComponent(name)
+    + ($("noncommercial-fanwork").checked ? "&noncommercial_fanwork=true" : "")
     + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
   const probe = new Image();
@@ -3232,6 +3465,7 @@ function loadThumbnailPreview(combo) {
   previewAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), PREVIEW_TIMEOUT_MS);
   const params = { sample: combo.sampleId, wordlist: combo.wordlistName };
+  if ($("noncommercial-fanwork").checked) params.noncommercial_fanwork = "true";
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
   let pending = false;
@@ -3358,7 +3592,8 @@ function schedulePreview(force) {
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
-  const key = `${combo}\n${previewShowImages ? 1 : 0}`;
+  const key = `${combo}\n${previewShowImages ? 1 : 0}`
+    + `\n${$("noncommercial-fanwork").checked ? 1 : 0}`;
   if (key === previewKey) return;
   previewKey = key;
   clearTimeout(previewTimer);
@@ -3393,6 +3628,7 @@ function selectWordlist(name) {
 // 組み合わせ(🎲ランダム・初期表示の既定)をカードとフォームへ反映する。
 // 曲のMIDI取得まで待ち、成功したかを返す。
 async function applyCombo(c) {
+  clearAudioInput();
   if (c.wordlistName) {
     selectWordlist(c.wordlistName);
     clearEditorFile();
@@ -3422,7 +3658,12 @@ async function pickCombo(c) {
 
 // カードのプルダウン: 正本へ流して change を発火し、プレビューを予約する
 $("builder-sample").addEventListener("change", () => {
+  if ($("builder-sample").value === AUDIO_SONG_VALUE) {
+    syncBuilderValues();
+    return;
+  }
   $("sample-select").value = $("builder-sample").value;
+  clearAudioInput();
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   schedulePreview();
 });
@@ -3441,9 +3682,24 @@ $("builder-wordlist").addEventListener("change", () => {
 // 正本(詳細設定の曲・隠しの単語リスト)が変わったらカードのプルダウンと
 // プレビューを追従させる
 $("sample-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
-$("wordlist-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+$("wordlist-select").addEventListener("change", () => {
+  showFanworkError("");
+  syncBuilderValues();
+  schedulePreview();
+});
 // セレクトが無い構成・エディタからの書き戻し(自作リストで空になる)でも追従する
-$("wordlist").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
+$("wordlist").addEventListener("change", () => {
+  showFanworkError("");
+  syncBuilderValues();
+  schedulePreview();
+});
+$("noncommercial-fanwork").addEventListener("change", () => {
+  showFanworkError("");
+  showSubmitMsg("");
+  showBuilderMsg("");
+  schedulePreview(true);
+  leFetchCue(leCueIndex);
+});
 
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
@@ -3464,11 +3720,15 @@ async function initBuilder() {
   syncBuilderOptions();
   const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
   const def = DEFAULT_COMBO;
-  // 1. 曲: 保存されたサンプルIDへ戻し、保存済みの編集歌詞は残す。
+  // 1. 曲: 保存されたサンプルIDへ戻す。標準歌詞が手編集されて
+  //    いなければ最新版を取り直し、編集済みならその値を残す。
   const restoredId = restoredSampleId;
   if (!$("sample-select").value && known.has(restoredId)) {
     $("sample-select").value = restoredId;
-    trackSample(applySample({ keepLyrics: true }));
+    const editedLyrics = sampleLyricsId === restoredId
+      && sampleLyricsBaseline !== null
+      && $("lyrics").value !== sampleLyricsBaseline;
+    trackSample(applySample({ keepLyrics: editedLyrics }));
   }
   // 2. 単語リストが未設定なら既定の組み合わせのものにする
   //    (エディタで書いた自作リストを使っているときは名前が空でも「未設定」ではない)
@@ -3700,6 +3960,8 @@ async function leFetchCue(index) {
   form.append("wordlist", $("wordlist").value.trim());
   form.append("cue", Math.max(0, index | 0));
   form.append("lyrics", $("lyrics").value);
+  form.append("allow_noncommercial_fanwork",
+    $("noncommercial-fanwork").checked ? "true" : "false");
   if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
   try {
     const res = await fetch("/api/editor-preview", { method: "POST", body: form, headers: headers() });
@@ -3925,13 +4187,16 @@ function leContent(e) {
     if (leCue) {
       // image_urlは同一オリジンのパス。認証ありのときはapi_keyを付ける(既にクエリ有り)
       if (leCue.image_url) {
-        src = leCue.image_url + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
+        src = leCue.image_url
+          + ($("noncommercial-fanwork").checked ? "&noncommercial_fanwork=true" : "")
+          + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
       }
     } else if (leSide === "elements" && leSample && leSample.image) {
       // 自作リストのときは #wordlist が空。空の名前で頼むと404になるので、
       // loadWordlistImage と同じく名前が無ければ引かない(プレースホルダに落ちる)
       const name = $("wordlist").value.trim();
-      if (name) src = "/api/wordlist-image?wordlist=" + encodeURIComponent(name);
+      if (name) src = "/api/asset-preview?wordlist=" + encodeURIComponent(name);
+      if (src && $("noncommercial-fanwork").checked) src += "&noncommercial_fanwork=true";
     }
     if (src) {
       const img = document.createElement("img");
@@ -5590,7 +5855,11 @@ function facetDefaultWhere(g) {
   facets.forEach((f) => {
     // 値の述語: where があればそれ、なければ列ごとの col=v の or(複数列は全列ぶん)
     const cols = f.columns || (f.column ? [f.column] : []);
-    const frags = (f.values || []).filter((v) => v.default === true).map(
+    const values = f.values || [];
+    const defaults = values.filter((v) => v.default === true);
+    // editorはdefault:trueが一つも無いfacetを全選択で描くので、同じ値を使う。
+    const selected = defaults.length ? defaults : values;
+    const frags = selected.map(
       (v) => (v.where ? v.where : "(" + cols.map((c) => c + "=" + v.v).join(" or ") + ")"));
     if (frags.length) clauses.push("(" + frags.join(" or ") + ")");
   });
@@ -5747,6 +6016,9 @@ function saveForm() {
     localStorage.setItem(FORM_KEY, JSON.stringify({
       lyrics: $("lyrics").value,
       sampleId: midiSampleId,
+      // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
+      sampleLyricsId,
+      sampleLyricsBaseline,
       wordlist: $("wordlist").value,
       // 選んだ単語リスト(confエントリ)の絞り込み。画面には出さないが、同名で
       // 絞り込み違いのグループを復元時に選び分けるために持ち回る
@@ -5958,6 +6230,9 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
+    sampleLyricsId = state.sampleLyricsId || "";
+    sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
+      ? state.sampleLyricsBaseline : null;
     $("original-credit").value = state.originalCredit || "";
     $("credit-notice").value = state.creditNotice || "";
     // 旧版の保存(duplicate / preset / convertSliders)はもう画面に対応する項目が
