@@ -69,6 +69,31 @@ Web UI では、曲と単語リストの選択、替え歌編集、動画生成�
 できます。公開 instance では、混雑防止や不正利用防止のため、投稿数・入力サイズ・曲長などが
 制限される場合があります。画面に表示された案内に従ってください。
 
+WAV 音源を入力するサーバーは、音源解析用の依存もインストールして起動します。
+
+```sh
+uv sync --extra api --extra audio
+uv run soramimic-video serve
+```
+
+画面の「WAV入力」からPCM形式のモノラルまたはステレオWAVを選びます。元歌詞は任意で、
+空欄の場合は音源から自動認識します。音源分離・歌詞認識・タイミング推定・音高推定を
+サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
+使います。float WAVには対応していません。
+
+WAV入力には次の設定が適用されます。
+
+| 環境変数 | 既定値 | 内容 |
+|---|---:|---|
+| `SORAMIMIC_MAX_AUDIO_UPLOAD_BYTES` | 200MB | WAV 1ファイルの最大容量 |
+| `SORAMIMIC_MAX_SONG_SECONDS` | 420秒（公開モード） | MIDI/WAV共通の曲長上限 |
+| `SORAMIMIC_JOB_TTL_HOURS` | 0（自動削除なし） | 完了後に入力・中間物・動画を自動削除するまでの時間 |
+
+公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
+受付を開始してください。リバースプロキシを使う場合は、同じWAV上限までmultipart requestを
+通せるようbody sizeとtimeoutも設定します。`audio` extraがないサーバーでは、WAV入力
+ボタンは表示されません。
+
 手元だけで使う素材は公開 manifest へ追加せず、gitignore 対象の local sample 設定または
 `SORAMIMIC_SAMPLES_DIR` で指定できます。権利を確認できない素材を repository へ
 commit しないでください。

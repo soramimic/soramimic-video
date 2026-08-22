@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import time
+import wave
 
 import pytest
 
@@ -20,6 +22,16 @@ from soramimic_video import api as api_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
+
+
+def fake_wav(seconds: float, rate: int = 8000) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * round(seconds * rate))
+    return out.getvalue()
 
 
 def fast_pipeline(job, config):
@@ -54,6 +66,7 @@ def public_app(tmp_path, monkeypatch):
     """公開モードのアプリ。パイプラインと曲長判定はモックする。"""
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
     # ダミーMIDIは解析できないので、曲長は0秒(=上限に引っかからない)扱いにする
     monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
     return api_mod.create_app(jobs_dir=tmp_path / "jobs")
@@ -198,6 +211,17 @@ def test_song_length_limit_returns_400(public_app, monkeypatch):
     assert "長すぎます" in detail and "約10分" in detail and "約7分" in detail
 
 
+def test_wav_uses_the_same_public_song_length_limit(public_app, monkeypatch):
+    monkeypatch.setenv(api_mod.MAX_SONG_SECONDS_ENV, "1")
+    res = TestClient(public_app).post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(2), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 400
+    assert "曲が長すぎます" in res.json()["detail"]
+
+
 def test_fmt_duration_ja():
     # 上限が1分未満のときに「0分」と出ないよう、秒と分を出し分ける
     assert api_mod.fmt_duration_ja(30) == "約30秒"
@@ -236,6 +260,29 @@ def test_job_ttl_cleanup(tmp_path, monkeypatch):
     assert not job_dir.exists()
     assert client.get("/api/jobs").json() == []
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_job_ttl_cleanup_removes_uploaded_wav(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    response = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(0.1), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    wait_done(client, job_id)
+    manager = client.app.state.manager
+    wav_path = manager.jobs[job_id].dir / "input.wav"
+    assert wav_path.exists()
+    manager.jobs[job_id].finished_at = time.time() - 2 * 3600
+
+    assert manager.cleanup_expired() == [job_id]
+    assert not wav_path.exists()
 
 
 def test_job_ttl_cleanup_removes_stale_editor_sessions(tmp_path, monkeypatch):

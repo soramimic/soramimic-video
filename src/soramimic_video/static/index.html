@@ -600,6 +600,9 @@
         aria-label="替え歌を編集" title="替え歌を編集">
         <span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>
     </div>
+    <button type="button" id="audio-upload-button" class="btn-sm" hidden
+      aria-label="WAV音源を入力" title="WAV音源を入力">
+      <span class="lucky-icon" aria-hidden="true">🎵</span>WAV入力</button>
     <button type="button" id="lucky" class="btn-sm" disabled
       title="曲と単語リストをランダムに選ぶ">
       <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
@@ -620,6 +623,13 @@
       <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
       <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
+  </div>
+  <div id="audio-input-panel" class="field" hidden>
+    <p><strong id="audio-filename"></strong></p>
+    <label for="audio-lyrics">元歌詞(任意)</label>
+    <textarea id="audio-lyrics" rows="4" placeholder="空欄なら音源から自動認識します"></textarea>
+    <p class="hint">音源を解析してメロディーとタイミングを推定します。解析には時間がかかることがあります。</p>
+    <button type="button" id="audio-clear" class="btn-sm">サンプル曲に戻す</button>
   </div>
   <!-- 制限付き画像を含みうるリストでは、生成ボタンと同じカード内で明示確認する。
        詳細設定の奥に置くとモバイルでは存在に気づかず、本生成まで進んで失敗する。 -->
@@ -759,6 +769,7 @@
      ビルダーカードへ移してある。 -->
 <div id="song-store" hidden>
   <input type="file" id="midi" accept=".mid,.midi">
+  <input type="file" id="audio" accept=".wav,audio/wav,audio/x-wav">
   <p id="midi-restore-hint" hidden></p>
   <p id="midi-error" hidden></p>
   <div id="sample-details">
@@ -1212,6 +1223,7 @@ let wordlistImagePolicies = {};
 let simpleMode = false;
 let launchWordlists = [];
 let fixedVoicevoxStyle = 3003;
+let maxAudioUploadBytes = 200 * 1024 * 1024;
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
@@ -1221,6 +1233,8 @@ async function loadConfig() {
   wordlistImagePolicies = conf.wordlist_image_policies || {};
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
+  maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
+  $("audio-upload-button").hidden = !conf.audio_input;
   $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
   // 開いたうえで、そこまでスクロールして見えるようにする
@@ -2042,7 +2056,10 @@ function renderStages(job) {
     li.hidden = !plan.includes(name) && !doneNames.has(name);
     li.classList.toggle("done", doneNames.has(name));
     li.classList.toggle("now", job.stage === name);
-    const base = li.textContent.replace(/ [\d.]+秒$/, "");
+    let base = li.textContent.replace(/ [\d.]+秒$/, "");
+    if (name === "analyze") {
+      base = job.params.input_kind === "audio" ? "音源解析" : "MIDI解析";
+    }
     li.textContent = doneNames.has(name) ? `${base} ${secs[name]}秒` : base;
   });
 }
@@ -2122,7 +2139,8 @@ async function poll(id, seq = pollSeq) {
   renderStages(job);
   renderBuilderBar(job);
   $("log").textContent = (job.log || []).slice(-15).join("\n");
-  const label = STAGE_LABELS[job.stage] || job.stage || "…";
+  const label = job.stage === "analyze" && job.params.input_kind === "audio"
+    ? "音源解析" : (STAGE_LABELS[job.stage] || job.stage || "…");
   // 「何段階目か」の数字は出さない。どこまで進んだかはプログレスバーが見せている
   if (job.status === "running") {
     if (cancelPendingJob === id) {
@@ -2473,7 +2491,11 @@ function showSubmitMsg(text) {
 // Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
 // Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
 async function postJobWithTurnstileRetry(form) {
-  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+  const jobHeaders = () => ({
+    ...headers(),
+    ...(form.has && form.has("audio") ? { "X-Soramimic-WAV-Upload": "1" } : {}),
+  });
+  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
   if (res.status !== 403 || !turnstileSiteKey) return res;
   // resetだけでは前回実行の遅延callbackと新しい実行を区別できない。widgetを世代ごと
   // 作り直し、拒否されたtokenの実行から届くcallbackを無効化してから再確認する。
@@ -2484,7 +2506,7 @@ async function postJobWithTurnstileRetry(form) {
   rebuildTurnstileWidget();
   if (!await ensureTurnstileToken()) return res;
   form.set("turnstile_token", turnstileToken());
-  return fetch("/api/jobs", { method: "POST", body: form, headers: headers() });
+  return fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
 }
 
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
@@ -2512,17 +2534,20 @@ async function submitJob(previewSec, previewMode) {
   // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
   if (previewSec === 0) $("builder-image-hidden").hidden = true;
   // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
-  if (samplePending) await samplePending;
-  if (midiChecking) await midiChecking;
+  const audio = $("audio").files[0];
+  if (!audio) {
+    if (samplePending) await samplePending;
+    if (midiChecking) await midiChecking;
+  }
   // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
   // いたり、復元した古い中身が入っていたりする状態では投げない。
-  if (!await ensureSelectedSampleMidi()) {
+  if (!audio && !await ensureSelectedSampleMidi()) {
     setBusy(false);   // 先に無効化されている場合に戻す
     return;
   }
   const midi = $("midi").files[0];
   const sampleId = midiSampleId;
-  if (!sampleId && !midi) {
+  if (!audio && !sampleId && !midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
     // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
     // サンプル曲はカードの「曲」プルダウン(🎲でも選び直せる)、自分のMIDIは⚙のエディタ。
@@ -2564,10 +2589,11 @@ async function submitJob(previewSec, previewMode) {
   }
   const form = new FormData();
   // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
-  if (sampleId) form.append("sample_id", sampleId);
+  if (audio) form.append("audio", audio);
+  else if (sampleId) form.append("sample_id", sampleId);
   else form.append("midi", midi);
   if (editorSrc.file) form.append("editor", editorSrc.file);
-  form.append("lyrics", $("lyrics").value);
+  form.append("lyrics", audio ? $("audio-lyrics").value : $("lyrics").value);
   form.append("model", $("model").value);
   form.append("synthesizer", simpleMode ? "voicevox" : $("synthesizer").value);
   form.append("voicevox_style", simpleMode
@@ -2576,7 +2602,7 @@ async function submitJob(previewSec, previewMode) {
   form.append("transpose", simpleMode ? "0" : ($("transpose").value.trim() || "0"));
   form.append("preview", String(previewSec));
   form.append("preview_mode", previewMode || "");
-  form.append("song_title", songTitleOf(midi));
+  form.append("song_title", songTitleOf(audio || midi));
   form.append("original_credit", $("original-credit").value.trim());
   form.append("credit_notice", $("credit-notice").value.trim());
   form.append("allow_noncommercial_fanwork",
@@ -2682,6 +2708,54 @@ const samplesReady = loadSamples();
 // サーバー内のMIDIを使うサンプルID。持ち込みMIDIでは空文字。
 // サンプルのMIDIバイナリはブラウザへ取得・保存しない。
 let midiSampleId = "";
+function clearAudioInput() {
+  if (!$("audio").files[0] && $("audio-input-panel").hidden) return;
+  $("audio").value = "";
+  $("audio-input-panel").hidden = true;
+  $("audio-filename").textContent = "";
+  document.querySelector('.stages li[data-stage="analyze"]').textContent = "MIDI解析";
+  $("builder-edit").disabled = false;
+  $("builder-edit").title = "替え歌を編集";
+  syncBuilderOptions();
+}
+
+$("audio-upload-button").addEventListener("click", () => $("audio").click());
+$("audio").addEventListener("change", () => {
+  const file = $("audio").files[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".wav")) {
+    showBuilderMsg("WAVファイルを選んでください。");
+    $("audio").value = "";
+    return;
+  }
+  if (file.size > maxAudioUploadBytes) {
+    showBuilderMsg(`WAVファイルが大きすぎます(上限は${Math.round(maxAudioUploadBytes / 1024 / 1024)}MBです)。`);
+    $("audio").value = "";
+    return;
+  }
+  $("sample-select").value = "";
+  midiSampleId = "";
+  $("midi").value = "";
+  $("audio-filename").textContent = file.name;
+  $("audio-input-panel").hidden = false;
+  $("audio-lyrics").value = "";
+  clearEditorFile();
+  $("builder-edit").disabled = true;
+  $("builder-edit").title = "WAV入力は音源解析後に自動変換して動画を生成します";
+  document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
+  syncBuilderOptions();
+  syncBuilderValues();
+  showBuilderMsg("");
+  schedulePreview(true);
+});
+$("audio-clear").addEventListener("click", () => {
+  clearAudioInput();
+  const fallback = [...$("sample-select").options].find((option) => option.value);
+  if (fallback) {
+    $("sample-select").value = fallback.value;
+    $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+});
 // #lyrics がどのサンプルの配信値かと、その時点の未編集値。リロード時に
 // 「前回の標準歌詞」だけ最新版へ更新し、ユーザーが手で直した歌詞は残すために使う。
 // null はこの情報を保存する前の旧版状態で、標準歌詞とみなし一度最新版へ移行する。
@@ -2762,6 +2836,7 @@ function trackSample(p) {
 // 別の曲で生成されるのを防ぐのは ensureSelectedSampleMidi)。
 $("sample-select").addEventListener("change", () => {
   const sid = $("sample-select").value;
+  if (sid) clearAudioInput();
   if (!sid) {
     midiSampleId = "";
     if (!restoring) saveForm();
@@ -3075,6 +3150,7 @@ let builderLive = false;    // 初期選択が決まったか(それまでプレ
 // 触らず表示を戻すだけにして、「何も選ばない」に落ちないようにする。
 const EDITOR_WORDLIST_VALUE = "__editor__";
 const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";
+const AUDIO_SONG_VALUE = "__audio__";
 
 // 正本がいま「エディタで書いた自作リスト」を指している状態か。
 // 正本に名前が入っていれば(カードや🎲で選び直した直後など)そちらが優先で、
@@ -3087,6 +3163,12 @@ function showsEditorWordlist() {
 // サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
 function syncBuilderOptions() {
   $("builder-sample").innerHTML = $("sample-select").innerHTML;
+  if ($("audio").files[0]) {
+    const option = document.createElement("option");
+    option.value = AUDIO_SONG_VALUE;
+    option.textContent = `WAV: ${$("audio").files[0].name}`;
+    $("builder-sample").appendChild(option);
+  }
   const wl = $("wordlist-select");
   $("builder-wordlist").innerHTML = wl.innerHTML;
   // 単語リストのプルダウンが出ない構成(editor conf が無い)ではカード側も出さない
@@ -3097,7 +3179,8 @@ function syncBuilderOptions() {
 // 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
 // 自作リストのあいだだけ合成の選択肢を足し、抜けたら取り除く。
 function syncBuilderValues() {
-  $("builder-sample").value = $("sample-select").value;
+  $("builder-sample").value = $("audio").files[0]
+    ? AUDIO_SONG_VALUE : $("sample-select").value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const own = showsEditorWordlist();
   const synth = [...card.options].find((o) => o.value === EDITOR_WORDLIST_VALUE);
@@ -3545,6 +3628,7 @@ function selectWordlist(name) {
 // 組み合わせ(🎲ランダム・初期表示の既定)をカードとフォームへ反映する。
 // 曲のMIDI取得まで待ち、成功したかを返す。
 async function applyCombo(c) {
+  clearAudioInput();
   if (c.wordlistName) {
     selectWordlist(c.wordlistName);
     clearEditorFile();
@@ -3574,7 +3658,12 @@ async function pickCombo(c) {
 
 // カードのプルダウン: 正本へ流して change を発火し、プレビューを予約する
 $("builder-sample").addEventListener("change", () => {
+  if ($("builder-sample").value === AUDIO_SONG_VALUE) {
+    syncBuilderValues();
+    return;
+  }
   $("sample-select").value = $("builder-sample").value;
+  clearAudioInput();
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   schedulePreview();
 });

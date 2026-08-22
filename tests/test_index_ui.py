@@ -1447,6 +1447,24 @@ def test_card_selects_mirror_the_canonical_form():
     assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
 
 
+def test_wav_input_reuses_the_builder_and_mobile_player():
+    html = INDEX.read_text(encoding="utf-8")
+    script = _script()
+    assert 'id="audio-upload-button"' in html
+    assert 'id="audio" accept=".wav,audio/wav,audio/x-wav"' in html
+    assert 'id="audio-input-panel"' in html
+    assert 'id="audio-lyrics"' in html
+    assert '<video id="builder-video" controls playsinline' in html
+    submit = _function_body(script, "async function submitJob(")
+    assert 'if (audio) form.append("audio", audio);' in submit
+    assert (
+        'form.append("lyrics", audio ? $("audio-lyrics").value : $("lyrics").value);'
+        in submit
+    )
+    # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
+    assert 'localStorage.setItem("audioFile"' not in script
+
+
 def test_sample_picker_uses_each_manifest_title_as_is():
     """一番版とフル版の別項目名をsamples.jsonどおりプルダウンへ出す。"""
     load = _function_body(_script(), "async function loadSamples()")
