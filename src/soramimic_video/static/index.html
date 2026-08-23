@@ -635,12 +635,12 @@
       <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
   </div>
-  <div class="audio-upload-entry" id="audio-upload-entry">
-    <button type="button" id="audio-upload-button" disabled
-      aria-describedby="audio-upload-hint">
-      <span aria-hidden="true">＋</span>自分のWAVファイルをアップロード
+  <div class="audio-upload-entry" id="song-upload-entry">
+    <button type="button" id="song-upload-button"
+      aria-describedby="song-upload-hint">
+      <span aria-hidden="true">＋</span>自分の曲ファイルをアップロード
     </button>
-    <p class="hint" id="audio-upload-hint">WAV入力を確認しています…</p>
+    <p class="hint" id="song-upload-hint">XF MIDI・WAV入力を確認しています…</p>
   </div>
   <p class="hint" id="audio-sample-credit" hidden></p>
   <div id="audio-input-panel" class="field" hidden>
@@ -787,8 +787,8 @@
      食い違い警告(#lyrics-midi-warn)だけはどこにも中継先が無いので、ここではなく
      ビルダーカードへ移してある。 -->
 <div id="song-store" hidden>
-  <input type="file" id="midi" accept=".mid,.midi">
-  <input type="file" id="audio" accept=".wav,audio/wav,audio/x-wav">
+  <input type="file" id="midi"
+    accept=".mid,.midi,.wav,audio/midi,audio/wav,audio/x-wav">
   <p id="midi-restore-hint" hidden></p>
   <p id="midi-error" hidden></p>
   <div id="sample-details">
@@ -1255,10 +1255,9 @@ async function loadConfig() {
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   audioInputReady = conf.audio_input === true;
-  $("audio-upload-button").disabled = !audioInputReady;
-  $("audio-upload-hint").textContent = audioInputReady
-    ? `PCM形式のWAV・最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB`
-    : "このサーバーではWAV入力を準備中です";
+  $("song-upload-hint").textContent = audioInputReady
+    ? `XF MIDI または PCM WAV（WAVは最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
+    : "XF MIDIに対応（このサーバーではWAV入力を準備中です）";
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
@@ -2559,7 +2558,7 @@ async function submitJob(previewSec, previewMode) {
   // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
   if (previewSec === 0) $("builder-image-hidden").hidden = true;
   // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
-  const audio = $("audio").files[0];
+  const audio = ownAudioFile();
   if (!audio) {
     if (samplePending) await samplePending;
     if (midiChecking) await midiChecking;
@@ -2570,15 +2569,14 @@ async function submitJob(previewSec, previewMode) {
     setBusy(false);   // 先に無効化されている場合に戻す
     return;
   }
-  const midi = $("midi").files[0];
+  const midi = ownSongKind() === "midi" ? ownSongFile() : null;
   const sampleId = midiSampleId;
   if (!audio && !sampleId && !midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
     // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
-    // サンプル曲はカードの「曲」プルダウン(🎲でも選び直せる)、自分のMIDIは⚙のエディタ。
+    // サンプル曲はカードの「曲」プルダウン、自分の曲はその直下の共通アップロード。
     showSubmitMsg("曲がまだセットされていません。"
-      + "上の「曲」から選ぶか🎲で選び直してください"
-      + "(自分のXF MIDIファイルを使うときは⚙の編集画面から読み込めます)。");
+      + "上の「曲」から選ぶか、自分のXF MIDI / WAVファイルをアップロードしてください。");
     return;
   }
   showSubmitMsg("");
@@ -2769,8 +2767,24 @@ const samplesReady = loadSamples();
 // サーバー内のMIDIを使うサンプルID。持ち込みMIDIでは空文字。
 // サンプルのMIDIバイナリはブラウザへ取得・保存しない。
 let midiSampleId = "";
-function clearAudioInput() {
-  $("audio").value = "";
+function ownSongFile() {
+  return $("midi").files[0] || null;
+}
+
+function ownSongKind(file = ownSongFile()) {
+  if (!file) return "";
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".wav")) return "audio";
+  if (name.endsWith(".mid") || name.endsWith(".midi")) return "midi";
+  return "";
+}
+
+function ownAudioFile() {
+  const file = ownSongFile();
+  return ownSongKind(file) === "audio" ? file : null;
+}
+
+function clearAudioPresentation() {
   $("audio-input-panel").hidden = true;
   $("audio-filename").textContent = "";
   const sampleAudio = selectedSampleIsAudio();
@@ -2783,27 +2797,58 @@ function clearAudioInput() {
   syncBuilderOptions();
 }
 
-$("audio-upload-button").addEventListener("click", () => $("audio").click());
-$("audio").addEventListener("change", () => {
-  const file = $("audio").files[0];
+function clearAudioInput() {
+  if (ownSongKind() === "audio") {
+    $("midi").value = "";
+    $("midi").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  clearAudioPresentation();
+}
+
+function rejectOwnSongFile(message) {
+  $("midi").value = "";
+  $("midi").dispatchEvent(new Event("change", { bubbles: true }));
+  clearAudioPresentation();
+  syncBuilderValues();
+  schedulePreview(true);
+  showBuilderMsg(message);
+}
+
+$("song-upload-button").addEventListener("click", () => $("midi").click());
+$("midi").addEventListener("change", () => {
+  const file = ownSongFile();
   if (!file) return;
-  if (!file.name.toLowerCase().endsWith(".wav")) {
-    showBuilderMsg("WAVファイルを選んでください。");
-    $("audio").value = "";
+  const kind = ownSongKind(file);
+  if (!kind) {
+    rejectOwnSongFile("XF MIDI（.mid / .midi）またはWAV（.wav）を選んでください。");
     return;
   }
-  if (file.size > maxAudioUploadBytes) {
-    showBuilderMsg(`WAVファイルが大きすぎます(上限は${Math.round(maxAudioUploadBytes / 1024 / 1024)}MBです)。`);
-    $("audio").value = "";
+  if (kind === "audio" && !audioInputReady) {
+    rejectOwnSongFile("このサーバーではWAV入力を準備中です。XF MIDIは利用できます。");
+    return;
+  }
+  if (kind === "audio" && file.size > maxAudioUploadBytes) {
+    rejectOwnSongFile(`WAVファイルが大きすぎます(上限は${Math.round(maxAudioUploadBytes / 1024 / 1024)}MBです)。`);
     return;
   }
   $("sample-select").value = "";
   midiSampleId = "";
-  $("midi").value = "";
+  $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  clearEditorFile();
+  if (kind === "midi") {
+    clearAudioPresentation();
+    $("builder-edit").disabled = false;
+    $("builder-edit").title = "替え歌を編集";
+    document.querySelector('.stages li[data-stage="analyze"]').textContent = "MIDI解析";
+    syncBuilderOptions();
+    syncBuilderValues();
+    showBuilderMsg("");
+    schedulePreview(true);
+    return;
+  }
   $("audio-filename").textContent = file.name;
   $("audio-input-panel").hidden = false;
   $("audio-lyrics").value = "";
-  clearEditorFile();
   $("builder-edit").disabled = true;
   $("builder-edit").title = "WAV入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
@@ -2813,6 +2858,8 @@ $("audio").addEventListener("change", () => {
   schedulePreview(true);
 });
 $("audio-clear").addEventListener("click", () => {
+  $("midi").value = "";
+  $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioInput();
   const fallback = [...$("sample-select").options].find((option) => option.value);
   if (fallback) {
@@ -3023,6 +3070,15 @@ function runScheduledMidiCheck() {
 
 function scheduleMidiCheck() {
   if (midiRejecting) return;
+  if (ownSongKind() === "audio" || selectedSampleIsAudio()) {
+    if (midiCheckTimer) clearTimeout(midiCheckTimer);
+    midiCheckTimer = null;
+    if (midiCheckResolve) midiCheckResolve();
+    midiCheckResolve = null;
+    clearMidiNotices();
+    midiChecking = null;
+    return;
+  }
   if (midiCheckTimer) clearTimeout(midiCheckTimer);
   const supersededResolve = midiCheckResolve;
   // サンプル選択はMIDIの注入と元歌詞の反映が別のイベントで来るので、少し待って束ねる
@@ -3101,7 +3157,10 @@ function renderLyricsMidiWarning(info) {
 
 async function checkMidi() {
   const seq = ++midiCheckSeq;
-  if (selectedSampleIsAudio()) { clearMidiNotices(); return; }
+  if (selectedSampleIsAudio() || ownSongKind() === "audio") {
+    clearMidiNotices();
+    return;
+  }
   const f = $("midi").files[0];
   const sampleId = midiSampleId;
   if (!sampleId && !f) { clearMidiNotices(); return; }
@@ -3240,7 +3299,7 @@ let builderLive = false;    // 初期選択が決まったか(それまでプレ
 // 触らず表示を戻すだけにして、「何も選ばない」に落ちないようにする。
 const EDITOR_WORDLIST_VALUE = "__editor__";
 const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";
-const AUDIO_SONG_VALUE = "__audio__";
+const OWN_SONG_VALUE = "__own_song__";
 
 // 正本がいま「エディタで書いた自作リスト」を指している状態か。
 // 正本に名前が入っていれば(カードや🎲で選び直した直後など)そちらが優先で、
@@ -3253,10 +3312,11 @@ function showsEditorWordlist() {
 // サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
 function syncBuilderOptions() {
   $("builder-sample").innerHTML = $("sample-select").innerHTML;
-  if ($("audio").files[0]) {
+  const file = ownSongFile();
+  if (file) {
     const option = document.createElement("option");
-    option.value = AUDIO_SONG_VALUE;
-    option.textContent = `WAV: ${$("audio").files[0].name}`;
+    option.value = OWN_SONG_VALUE;
+    option.textContent = `${ownSongKind(file) === "audio" ? "WAV" : "XF MIDI"}: ${file.name}`;
     $("builder-sample").appendChild(option);
   }
   const wl = $("wordlist-select");
@@ -3269,8 +3329,8 @@ function syncBuilderOptions() {
 // 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
 // 自作リストのあいだだけ合成の選択肢を足し、抜けたら取り除く。
 function syncBuilderValues() {
-  $("builder-sample").value = $("audio").files[0]
-    ? AUDIO_SONG_VALUE : $("sample-select").value;
+  $("builder-sample").value = ownSongFile()
+    ? OWN_SONG_VALUE : $("sample-select").value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const own = showsEditorWordlist();
   const synth = [...card.options].find((o) => o.value === EDITOR_WORDLIST_VALUE);
@@ -3548,8 +3608,9 @@ function loadThumbnailPreview(combo) {
     loadWordlistImage(combo.wordlistName, seq);
     return;
   }
-  // WAVプリセットはMIDI由来の事前変換プレビューを作らず、代表画像を即表示する。
-  if (sampleInputKinds[combo.sampleId] === "audio") {
+  // 持ち込み曲とWAVプリセットはMIDI由来の事前変換プレビューを作らず、
+  // 代表画像を即表示する。
+  if (combo.sampleId === OWN_SONG_VALUE || sampleInputKinds[combo.sampleId] === "audio") {
     loadWordlistImage(combo.wordlistName, seq);
     return;
   }
@@ -3753,7 +3814,7 @@ async function pickCombo(c) {
 
 // カードのプルダウン: 正本へ流して change を発火し、プレビューを予約する
 $("builder-sample").addEventListener("change", () => {
-  if ($("builder-sample").value === AUDIO_SONG_VALUE) {
+  if ($("builder-sample").value === OWN_SONG_VALUE) {
     syncBuilderValues();
     return;
   }
@@ -5444,6 +5505,9 @@ async function hostChangeSong(sid) {
 // 自分のMIDIへの差し替え。親の #midi(既存のファイル選択)をそのまま使う。
 async function hostUploadSong() {
   if (!await pickMidiFile()) return;       // やめた: 何も変えずに依頼だけ消す
+  if (ownSongKind() === "audio") {
+    throw new Error("WAVを曲としてセットしました。WAVは動画生成画面から生成してください");
+  }
   if (midiChecking) await midiChecking;    // 歌詞なしMIDIはここで取り消される
   if (!$("midi").files[0]) {
     throw new Error("そのMIDIは使えません(歌詞入りのXF形式MIDIが必要です)");
@@ -5509,7 +5573,7 @@ function pickMidiFile() {
 // 前の曲の変換結果(results/tokensList/unitsList)は捨てて未変換に戻すので、
 // エディタは「この設定で変換」からやり直せる。
 async function reseedEditorSong() {
-  const midi = $("midi").files[0];
+  const midi = ownSongKind() === "midi" ? ownSongFile() : null;
   if (!midiSampleId && !midi) throw new Error("MIDIファイルがありません");
   const form = new FormData();
   if (midiSampleId) form.append("sample_id", midiSampleId);
@@ -5664,12 +5728,16 @@ async function regenerateEditor() {
 // 「この設定で変換」でブラウザ内で変換する(soramimic frontend/README の約束)。
 // 単語リストは無くてよい(エディタ側が conf の既定で始める)。
 async function convertAndOpenEditor() {
+  if (ownSongKind() === "audio" || selectedSampleIsAudio()) {
+    $("open-editor-msg").textContent = "WAV入力は動画生成時に自動変換されるため、先に編集できません";
+    return;
+  }
   if (midiChecking) await midiChecking;
   // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
   if (!await ensureSelectedSampleMidi((m) => { $("open-editor-msg").textContent = m; })) {
     return;
   }
-  const midi = $("midi").files[0];
+  const midi = ownSongKind() === "midi" ? ownSongFile() : null;
   const msg = $("open-editor-msg");
   msg.textContent = "";
   if (!midiSampleId && !midi) {
@@ -6232,11 +6300,13 @@ $("layout-select").addEventListener("change", async () => {
  "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
-// MIDIはバイナリなのでdataURL化して保存(未選択なら消す)
+// 持ち込みMIDIはバイナリなのでdataURL化して保存する。WAVは大きくなりやすく、
+// ブラウザ保存容量を使い切るためページ再読み込みをまたいで保存しない。
 $("midi").addEventListener("change", async () => {
-  const f = $("midi").files[0];
+  const f = ownSongFile();
   try {
     if (!f) { localStorage.removeItem(MIDI_KEY); return; }
+    if (ownSongKind(f) !== "midi") { localStorage.removeItem(MIDI_KEY); return; }
     const dataUrl = await new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(r.result);
@@ -6417,10 +6487,9 @@ async function doRestoreForm() {
         localStorage.removeItem(MIDI_KEY);
       } else {
         const blob = await (await fetch(m.dataUrl)).blob();
-        injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), false);
+        injectFile($("midi"), new File([blob], m.name, { type: "audio/midi" }), true);
         $("midi-restore-hint").textContent = "前回のファイルを復元: " + m.name;
         $("midi-restore-hint").hidden = false;
-        scheduleMidiCheck();
       }
     }
   } catch { /* 復元失敗は無視 */ }
