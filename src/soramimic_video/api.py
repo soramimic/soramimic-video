@@ -24,7 +24,6 @@ import csv
 import hashlib
 import hmac
 import importlib.util
-import io
 import ipaddress
 import json
 import logging
@@ -38,7 +37,6 @@ import threading
 import time
 import traceback
 import uuid
-import wave
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -60,6 +58,13 @@ from . import wordlist_zip as wordlist_zip_mod
 from .access_identity import canonical_email, valid_issuer, verify_access_email
 from .asset_preview import derive_asset_preview
 from .asset_preview import preview_cache_dir as asset_preview_cache_dir
+from .audio_input import (
+    SUPPORTED_AUDIO_EXTENSIONS,
+    AudioInputError,
+    audio_tools_available,
+    normalize_compressed_audio,
+    validate_pcm_wav,
+)
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -245,8 +250,8 @@ def max_audio_upload_bytes() -> int:
 
 
 def audio_input_available() -> bool:
-    """audio extraが揃ったサーバーだけWAV入力を公開する。"""
-    return all(
+    """audio extraと音声デコーダが揃ったサーバーだけ音源入力を公開する。"""
+    return audio_tools_available() and all(
         importlib.util.find_spec(name) is not None
         for name in (
             "demucs",
@@ -262,34 +267,29 @@ def audio_input_available() -> bool:
 def validate_wav_bytes(data: bytes, maximum: int | None = None) -> float:
     """PCM WAVを検査し、演奏時間を返す。"""
     limit = maximum if maximum is not None else max_audio_upload_bytes()
-    if len(data) > limit:
-        raise HTTPException(
-            status_code=413,
-            detail=f"WAVファイルが大きすぎます(上限は{limit / 1024 / 1024:.0f}MBです)",
-        )
-    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
-        raise HTTPException(status_code=400, detail="WAVファイルではありません")
     try:
-        with wave.open(io.BytesIO(data), "rb") as wav:
-            channels = wav.getnchannels()
-            rate = wav.getframerate()
-            frames = wav.getnframes()
-            width = wav.getsampwidth()
-    except (EOFError, wave.Error) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="PCM形式のWAVファイルを選んでください(float WAVには対応していません)",
-        ) from exc
-    if channels not in (1, 2) or rate <= 0 or frames <= 0 or width not in (1, 2, 3, 4):
-        raise HTTPException(status_code=400, detail="対応していないWAV形式です")
-    return frames / rate
+        return validate_pcm_wav(data, limit)
+    except AudioInputError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-async def read_wav_upload(audio: UploadFile) -> tuple[bytes, float]:
-    """WAVを上限付きで読み、PCMとして読めることと演奏時間を検査する。"""
+async def read_audio_upload(audio: UploadFile) -> tuple[bytes, float]:
+    """音声を上限付きで読み、必要なら解析用WAVへ正規化する。"""
     maximum = max_audio_upload_bytes()
     data = await audio.read(maximum + 1)
-    return data, validate_wav_bytes(data, maximum)
+    filename = audio.filename or "input"
+    if Path(filename).suffix.lower() == ".wav":
+        return data, validate_wav_bytes(data, maximum)
+    try:
+        return await run_in_threadpool(
+            normalize_compressed_audio,
+            data,
+            filename,
+            maximum,
+            _env_float(MAX_SONG_SECONDS_ENV, DEFAULT_MAX_SONG_SECONDS),
+        )
+    except AudioInputError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 async def resolve_song_input(
@@ -297,24 +297,24 @@ async def resolve_song_input(
     audio: UploadFile | None,
     sample_id: str,
 ) -> tuple[bytes, str, float | None, str | None, str]:
-    """サンプル/MIDI/WAVのうち一つだけをジョブ入力へ解決する。"""
+    """サンプル/MIDI/音声のうち一つだけをジョブ入力へ解決する。"""
     has_audio = audio is not None and bool(audio.filename)
     has_midi = midi is not None and bool(midi.filename)
     if has_audio and (has_midi or sample_id.strip()):
         raise HTTPException(
             status_code=422,
-            detail="WAVとサンプル曲・MIDIは同時に指定できません",
+            detail="音声とサンプル曲・MIDIは同時に指定できません",
         )
     if has_audio and audio is not None:
         if not audio_input_available():
             raise HTTPException(
                 status_code=503,
-                detail="このサーバーではWAV入力を利用できません",
+                detail="このサーバーでは音声入力を利用できません",
             )
-        filename = audio.filename or "input.wav"
-        if not filename.lower().endswith(".wav"):
-            raise HTTPException(status_code=400, detail="WAVファイルを選んでください")
-        data, seconds = await read_wav_upload(audio)
+        filename = audio.filename or "input"
+        if Path(filename).suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="対応していない音声形式です")
+        data, seconds = await read_audio_upload(audio)
         return data, "audio", seconds, None, filename
     if sample_id.strip() and not has_midi:
         entry = next(
@@ -1831,11 +1831,14 @@ def create_app(
             maximum = int(
                 _env_float(SIMPLE_MAX_REQUEST_BYTES_ENV, DEFAULT_SIMPLE_MAX_REQUEST_BYTES)
             )
-            # 従来のMIDI経路は小さい上限のまま保つ。公式UIがWAVを送るときだけ
-            # 無圧縮音源用の上限へ広げ、endpoint内でも実データを再度上限検査する。
+            # 従来のMIDI経路は小さい上限のまま保つ。公式UIが音源を送るときだけ
+            # 音源用の上限へ広げ、endpoint内でも実データを再度上限検査する。
             if (
                 request.url.path == "/api/jobs"
-                and request.headers.get("x-soramimic-wav-upload") == "1"
+                and (
+                    request.headers.get("x-soramimic-audio-upload") == "1"
+                    or request.headers.get("x-soramimic-wav-upload") == "1"
+                )
             ):
                 maximum = max(maximum, max_audio_upload_bytes() + 1024 * 1024)
             try:

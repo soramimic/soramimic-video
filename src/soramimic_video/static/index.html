@@ -493,6 +493,10 @@
     font-weight: 700;
   }
   .audio-upload-entry .hint { margin: 0; }
+  .audio-upload-entry.drag-over {
+    border-color: var(--accent); border-radius: 10px; background: #1296f010;
+    box-shadow: inset 0 0 0 2px #1296f044;
+  }
   @media (max-width: 26rem) {
     .audio-upload-entry { align-items: stretch; flex-direction: column; }
     .audio-upload-entry button { width: 100%; min-height: 2.75rem; }
@@ -640,7 +644,7 @@
       aria-describedby="song-upload-hint">
       <span aria-hidden="true">＋</span>自分の曲ファイルをアップロード
     </button>
-    <p class="hint" id="song-upload-hint">XF MIDI・WAV入力を確認しています…</p>
+    <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
   </div>
   <p class="hint" id="audio-sample-credit" hidden></p>
   <div id="audio-input-panel" class="field" hidden>
@@ -788,7 +792,7 @@
      ビルダーカードへ移してある。 -->
 <div id="song-store" hidden>
   <input type="file" id="midi"
-    accept=".mid,.midi,.wav,audio/midi,audio/wav,audio/x-wav">
+    accept=".mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.webm,audio/*,audio/midi">
   <p id="midi-restore-hint" hidden></p>
   <p id="midi-error" hidden></p>
   <div id="sample-details">
@@ -1256,8 +1260,8 @@ async function loadConfig() {
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   audioInputReady = conf.audio_input === true;
   $("song-upload-hint").textContent = audioInputReady
-    ? `XF MIDI または PCM WAV（WAVは最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
-    : "XF MIDIに対応（このサーバーではWAV入力を準備中です）";
+    ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）。PCはここへドロップできます`
+    : "XF MIDIに対応（このサーバーでは音声入力を準備中です）";
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
@@ -2517,7 +2521,7 @@ function showSubmitMsg(text) {
 async function postJobWithTurnstileRetry(form) {
   const jobHeaders = () => ({
     ...headers(),
-    ...(form.has && form.has("audio") ? { "X-Soramimic-WAV-Upload": "1" } : {}),
+    ...(form.has && form.has("audio") ? { "X-Soramimic-Audio-Upload": "1" } : {}),
   });
   let res = await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
   if (res.status !== 403 || !turnstileSiteKey) return res;
@@ -2576,7 +2580,7 @@ async function submitJob(previewSec, previewMode) {
     // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
     // サンプル曲はカードの「曲」プルダウン、自分の曲はその直下の共通アップロード。
     showSubmitMsg("曲がまだセットされていません。"
-      + "上の「曲」から選ぶか、自分のXF MIDI / WAVファイルをアップロードしてください。");
+      + "上の「曲」から選ぶか、自分のXF MIDI / 音声ファイルをアップロードしてください。");
     return;
   }
   showSubmitMsg("");
@@ -2774,7 +2778,8 @@ function ownSongFile() {
 function ownSongKind(file = ownSongFile()) {
   if (!file) return "";
   const name = file.name.toLowerCase();
-  if (name.endsWith(".wav")) return "audio";
+  if ([".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".webm"]
+      .some((extension) => name.endsWith(extension))) return "audio";
   if (name.endsWith(".mid") || name.endsWith(".midi")) return "midi";
   return "";
 }
@@ -2815,20 +2820,61 @@ function rejectOwnSongFile(message) {
 }
 
 $("song-upload-button").addEventListener("click", () => $("midi").click());
+function setOwnSongFile(file) {
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  $("midi").files = transfer.files;
+  $("midi").dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+// PCでは曲入力欄全体をドロップ先にする。複数ファイルを暗黙に先頭だけ使うと
+// 選択したつもりの曲と違う事故になるため、必ず1ファイルに絞ってもらう。
+let songDragDepth = 0;
+const songUploadEntry = $("song-upload-entry");
+function hasDraggedFiles(event) {
+  return [...(event.dataTransfer?.types || [])].includes("Files");
+}
+songUploadEntry.addEventListener("dragenter", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  songDragDepth += 1;
+  songUploadEntry.classList.add("drag-over");
+});
+songUploadEntry.addEventListener("dragover", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+songUploadEntry.addEventListener("dragleave", () => {
+  songDragDepth = Math.max(0, songDragDepth - 1);
+  if (!songDragDepth) songUploadEntry.classList.remove("drag-over");
+});
+songUploadEntry.addEventListener("drop", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  songDragDepth = 0;
+  songUploadEntry.classList.remove("drag-over");
+  const files = [...(event.dataTransfer?.files || [])];
+  if (files.length !== 1) {
+    showBuilderMsg("曲ファイルは1つだけドロップしてください。");
+    return;
+  }
+  setOwnSongFile(files[0]);
+});
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
   if (!file) return;
   const kind = ownSongKind(file);
   if (!kind) {
-    rejectOwnSongFile("XF MIDI（.mid / .midi）またはWAV（.wav）を選んでください。");
+    rejectOwnSongFile("XF MIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
     return;
   }
   if (kind === "audio" && !audioInputReady) {
-    rejectOwnSongFile("このサーバーではWAV入力を準備中です。XF MIDIは利用できます。");
+    rejectOwnSongFile("このサーバーでは音声入力を準備中です。XF MIDIは利用できます。");
     return;
   }
   if (kind === "audio" && file.size > maxAudioUploadBytes) {
-    rejectOwnSongFile(`WAVファイルが大きすぎます(上限は${Math.round(maxAudioUploadBytes / 1024 / 1024)}MBです)。`);
+    rejectOwnSongFile(`音声ファイルが大きすぎます(上限は${Math.round(maxAudioUploadBytes / 1024 / 1024)}MBです)。`);
     return;
   }
   $("sample-select").value = "";
@@ -2850,7 +2896,7 @@ $("midi").addEventListener("change", () => {
   $("audio-input-panel").hidden = false;
   $("audio-lyrics").value = "";
   $("builder-edit").disabled = true;
-  $("builder-edit").title = "WAV入力は音源解析後に自動変換して動画を生成します";
+  $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
   syncBuilderOptions();
   syncBuilderValues();
@@ -3316,7 +3362,7 @@ function syncBuilderOptions() {
   if (file) {
     const option = document.createElement("option");
     option.value = OWN_SONG_VALUE;
-    option.textContent = `${ownSongKind(file) === "audio" ? "WAV" : "XF MIDI"}: ${file.name}`;
+    option.textContent = `${ownSongKind(file) === "audio" ? "音声" : "XF MIDI"}: ${file.name}`;
     $("builder-sample").appendChild(option);
   }
   const wl = $("wordlist-select");
@@ -5729,7 +5775,7 @@ async function regenerateEditor() {
 // 単語リストは無くてよい(エディタ側が conf の既定で始める)。
 async function convertAndOpenEditor() {
   if (ownSongKind() === "audio" || selectedSampleIsAudio()) {
-    $("open-editor-msg").textContent = "WAV入力は動画生成時に自動変換されるため、先に編集できません";
+    $("open-editor-msg").textContent = "音声入力は動画生成時に自動変換されるため、先に編集できません";
     return;
   }
   if (midiChecking) await midiChecking;
