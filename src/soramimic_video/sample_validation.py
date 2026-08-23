@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,8 @@ class SampleValidation:
     notes: int
     lines: int
     matched_lines: int
+    input_kind: str = "midi"
+    seconds: float | None = None
 
 
 def _manifest(path: Path) -> list[dict[str, Any]]:
@@ -37,7 +41,7 @@ def validate_sample_directory(
     directory = directory.resolve()
     manifests = [directory / "samples.local.json"]
     if not local_only:
-        manifests.insert(0, directory / "samples.json")
+        manifests[0:0] = [directory / "samples.json", directory / "audio_samples.json"]
     entries = [entry for path in manifests for entry in _manifest(path)]
     if not entries:
         names = "samples.local.json" if local_only else "samples.json / samples.local.json"
@@ -55,9 +59,14 @@ def validate_sample_directory(
             raise ValueError(f"サンプルIDが重複しています: {sample_id}")
         seen.add(sample_id)
 
-        midi_path = directory / f"{sample_id}.mid"
         lyrics_path = directory / f"{sample_id}_lyrics.txt"
-        missing = [str(path) for path in (midi_path, lyrics_path) if not path.is_file()]
+        input_kind = str(entry.get("input_kind") or "midi")
+        asset_path = directory / (
+            str(entry.get("audio_file") or f"{sample_id}.wav")
+            if input_kind == "audio"
+            else f"{sample_id}.mid"
+        )
+        missing = [str(path) for path in (asset_path, lyrics_path) if not path.is_file()]
         if missing:
             raise ValueError(f"{sample_id}: ファイルがありません: {', '.join(missing)}")
 
@@ -69,7 +78,24 @@ def validate_sample_directory(
         if not lyric_lines:
             raise ValueError(f"{sample_id}: 元歌詞が空です")
 
-        project = analyze_midi(midi_path)
+        if input_kind == "audio":
+            expected_hash = str(entry.get("sha256") or "")
+            actual_hash = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+            if not re.fullmatch(r"[0-9a-f]{64}", expected_hash) or actual_hash != expected_hash:
+                raise ValueError(f"{sample_id}: WAVのSHA-256が一致しません")
+            try:
+                with wave.open(str(asset_path), "rb") as wav:
+                    if wav.getnchannels() not in (1, 2) or wav.getsampwidth() not in (1, 2, 3, 4):
+                        raise ValueError(f"{sample_id}: 対応していないWAV形式です")
+                    seconds = wav.getnframes() / wav.getframerate()
+            except wave.Error as exc:
+                raise ValueError(f"{sample_id}: PCM WAVではありません") from exc
+            results.append(
+                SampleValidation(sample_id, 0, len(lyric_lines), 0, "audio", seconds)
+            )
+            continue
+
+        project = analyze_midi(asset_path)
         align_lines(project, lyric_lines)
         empty_kana = sum(not note.kana for note in project.notes)
         matched = sum(line.original_text is not None for line in project.lines)

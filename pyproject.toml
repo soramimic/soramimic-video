@@ -47,6 +47,11 @@ audio = [
     "soramimic-yomi",
     "numpy>=1.24",
 ]
+# 同梱WAVサンプルの再生成用。実行時サーバーには不要
+sample-audio = [
+    "numpy>=1.24",
+    "pyopenjtalk-plus>=0.4.1.post8",
+]
 
 [project.scripts]
 soramimic-video = "soramimic_video.cli:main"
@@ -71,6 +76,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/soramimic_video"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"THIRD_PARTY_NOTICES.md" = "soramimic_video/THIRD_PARTY_NOTICES.md"
+"src/soramimic_video/static/sample/katatsumuri_audio.wav" = "soramimic_video/static/sample/katatsumuri_audio.wav"
+"src/soramimic_video/static/sample/momotarou_audio.wav" = "soramimic_video/static/sample/momotarou_audio.wav"
+"src/soramimic_video/static/sample/harugakita_audio.wav" = "soramimic_video/static/sample/harugakita_audio.wav"
 
 [tool.ruff]
 line-length = 100

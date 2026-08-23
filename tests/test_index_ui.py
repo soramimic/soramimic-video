@@ -1451,6 +1451,11 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     html = INDEX.read_text(encoding="utf-8")
     script = _script()
     assert 'id="audio-upload-button"' in html
+    assert html.index('id="builder-sample"') < html.index('id="audio-upload-button"')
+    assert '自分のWAVファイルをアップロード' in html
+    assert '$("audio-upload-button").hidden' not in script
+    assert '$("audio-upload-button").disabled = !audioInputReady;' in script
+    assert 'このサーバーではWAV入力を準備中です' in script
     assert 'id="audio" accept=".wav,audio/wav,audio/x-wav"' in html
     assert 'id="audio-input-panel"' in html
     assert 'id="audio-lyrics"' in html
@@ -1468,8 +1473,30 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
 def test_sample_picker_uses_each_manifest_title_as_is():
     """一番版とフル版の別項目名をsamples.jsonどおりプルダウンへ出す。"""
     load = _function_body(_script(), "async function loadSamples()")
-    assert '<option value="${s.id}">${s.title}</option>' in load
+    render = _function_body(_script(), "function renderSampleOptions(")
+    assert "sample.title" in render
+    assert 'audioGroup.label = "音源から解析するサンプル";' in render
+    assert "option.disabled = audio && !audioInputReady;" in render
     assert "s.edition" not in load
+
+
+def test_audio_sample_skips_midi_check_and_disables_editor():
+    script = _script()
+    check = _function_body(script, "async function checkMidi(")
+    assert "if (selectedSampleIsAudio())" in check
+    apply = _function_body(script, "async function applySample(")
+    assert '$("builder-edit").disabled = sampleAudio;' in apply
+    assert 'link.textContent = "ライセンス";' in apply
+    thumbnail = _function_body(script, "function loadThumbnailPreview(")
+    audio_fallback = thumbnail.index('sampleInputKinds[combo.sampleId] === "audio"')
+    assert audio_fallback < thumbnail.index('fetch(url, { headers: headers()')
+    assert "loadWordlistImage(combo.wordlistName, seq);" in thumbnail[audio_fallback:]
+    random = _function_body(script, "function luckyCandidatePools(")
+    assert "o.value && !o.disabled" in random
+    host_songs = _function_body(script, "function hostSongList(")
+    assert 'sampleInputKinds[o.value] !== "audio"' in host_songs
+    init = _function_body(script, "async function initBuilder(")
+    assert "available.has(restoredId)" in init
 
 
 def test_card_wordlist_select_shows_the_editor_own_list():
