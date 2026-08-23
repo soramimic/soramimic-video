@@ -615,7 +615,7 @@ def test_index_html_builder_submit_is_gated_while_busy():
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    assert '上の「曲」から選ぶか🎲で選び直してください' in html
+    assert '上の「曲」から選ぶか、自分のXF MIDI / WAVファイルをアップロードしてください' in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
@@ -2027,7 +2027,9 @@ def test_index_html_song_values_are_hidden_canonicals():
     """
     html = _index_html()
     store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
-    assert '<input type="file" id="midi" accept=".mid,.midi">' in store
+    assert 'id="midi"' in store
+    assert 'accept=".mid,.midi,.wav,audio/midi,audio/wav,audio/x-wav"' in store
+    assert 'id="audio"' not in store
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in store
     assert '<textarea id="lyrics"></textarea>' in store
     # 隠しのまま置いてよいのは、中身が別の見える場所へ中継されるか、

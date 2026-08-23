@@ -363,6 +363,9 @@ def test_superseded_midi_check_keeps_submit_waiter_live():
         }};
         global.clearTimeout = (id) => timers.delete(id);
         let checks = 0;
+        const ownSongKind = () => "";
+        const selectedSampleIsAudio = () => false;
+        const clearMidiNotices = () => {{}};
         async function runScheduledMidiCheck() {{ checks += 1; }}
         {schedule}
         (async () => {{
@@ -1450,13 +1453,16 @@ def test_card_selects_mirror_the_canonical_form():
 def test_wav_input_reuses_the_builder_and_mobile_player():
     html = INDEX.read_text(encoding="utf-8")
     script = _script()
-    assert 'id="audio-upload-button"' in html
-    assert html.index('id="builder-sample"') < html.index('id="audio-upload-button"')
-    assert '自分のWAVファイルをアップロード' in html
-    assert '$("audio-upload-button").hidden' not in script
-    assert '$("audio-upload-button").disabled = !audioInputReady;' in script
+    assert 'id="song-upload-button"' in html
+    assert html.index('id="builder-sample"') < html.index('id="song-upload-button"')
+    assert '自分の曲ファイルをアップロード' in html
+    assert '$("song-upload-button").disabled' not in script
     assert 'このサーバーではWAV入力を準備中です' in script
-    assert 'id="audio" accept=".wav,audio/wav,audio/x-wav"' in html
+    assert 'accept=".mid,.midi,.wav,audio/midi,audio/wav,audio/x-wav"' in html
+    assert 'function ownSongKind(' in script
+    assert 'name.endsWith(".wav")' in script
+    assert 'name.endsWith(".mid") || name.endsWith(".midi")' in script
+    assert '$("song-upload-button").addEventListener("click", () => $("midi").click());' in script
     assert 'id="audio-input-panel"' in html
     assert 'id="audio-lyrics"' in html
     assert '<video id="builder-video" controls playsinline' in html
@@ -1468,6 +1474,8 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     )
     # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
     assert 'localStorage.setItem("audioFile"' not in script
+    save = script[script.index('// 持ち込みMIDIはバイナリ') :]
+    assert 'if (ownSongKind(f) !== "midi")' in save
 
 
 def test_sample_picker_uses_each_manifest_title_as_is():
@@ -1483,12 +1491,12 @@ def test_sample_picker_uses_each_manifest_title_as_is():
 def test_audio_sample_skips_midi_check_and_disables_editor():
     script = _script()
     check = _function_body(script, "async function checkMidi(")
-    assert "if (selectedSampleIsAudio())" in check
+    assert 'selectedSampleIsAudio() || ownSongKind() === "audio"' in check
     apply = _function_body(script, "async function applySample(")
     assert '$("builder-edit").disabled = sampleAudio;' in apply
     assert 'link.textContent = "ライセンス";' in apply
     thumbnail = _function_body(script, "function loadThumbnailPreview(")
-    audio_fallback = thumbnail.index('sampleInputKinds[combo.sampleId] === "audio"')
+    audio_fallback = thumbnail.index('combo.sampleId === OWN_SONG_VALUE')
     assert audio_fallback < thumbnail.index('fetch(url, { headers: headers()')
     assert "loadWordlistImage(combo.wordlistName, seq);" in thumbnail[audio_fallback:]
     random = _function_body(script, "function luckyCandidatePools(")
