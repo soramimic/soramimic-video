@@ -93,6 +93,7 @@ MAX_AUDIO_UPLOAD_BYTES_ENV = "SORAMIMIC_MAX_AUDIO_UPLOAD_BYTES"
 JOB_TTL_HOURS_ENV = "SORAMIMIC_JOB_TTL_HOURS"  # 完了後に自動削除するまでの時間(0=無効)
 SAMPLES_DIR_ENV = "SORAMIMIC_SAMPLES_DIR"  # 同梱サンプル曲の差し替え先
 LOCAL_SAMPLES_MANIFEST = "samples.local.json"  # ローカル限定サンプルの追加分(非追跡)
+AUDIO_SAMPLES_MANIFEST = "audio_samples.json"
 LAUNCH_CATALOG_ENV = "SORAMIMIC_LAUNCH_CATALOG"  # 環境別の公開選択肢(非追跡可)
 HIDDEN_UI_WORDLISTS: set[str] = set()
 TURNSTILE_SECRET_ENV = "TURNSTILE_SECRET_KEY"  # Cloudflare Turnstileの秘密鍵
@@ -258,14 +259,13 @@ def audio_input_available() -> bool:
     )
 
 
-async def read_wav_upload(audio: UploadFile) -> tuple[bytes, float]:
-    """WAVを上限付きで読み、PCMとして読めることと演奏時間を検査する。"""
-    maximum = max_audio_upload_bytes()
-    data = await audio.read(maximum + 1)
-    if len(data) > maximum:
+def validate_wav_bytes(data: bytes, maximum: int | None = None) -> float:
+    """PCM WAVを検査し、演奏時間を返す。"""
+    limit = maximum if maximum is not None else max_audio_upload_bytes()
+    if len(data) > limit:
         raise HTTPException(
             status_code=413,
-            detail=f"WAVファイルが大きすぎます(上限は{maximum / 1024 / 1024:.0f}MBです)",
+            detail=f"WAVファイルが大きすぎます(上限は{limit / 1024 / 1024:.0f}MBです)",
         )
     if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
         raise HTTPException(status_code=400, detail="WAVファイルではありません")
@@ -282,7 +282,14 @@ async def read_wav_upload(audio: UploadFile) -> tuple[bytes, float]:
         ) from exc
     if channels not in (1, 2) or rate <= 0 or frames <= 0 or width not in (1, 2, 3, 4):
         raise HTTPException(status_code=400, detail="対応していないWAV形式です")
-    return data, frames / rate
+    return frames / rate
+
+
+async def read_wav_upload(audio: UploadFile) -> tuple[bytes, float]:
+    """WAVを上限付きで読み、PCMとして読めることと演奏時間を検査する。"""
+    maximum = max_audio_upload_bytes()
+    data = await audio.read(maximum + 1)
+    return data, validate_wav_bytes(data, maximum)
 
 
 async def resolve_song_input(
@@ -309,6 +316,28 @@ async def resolve_song_input(
             raise HTTPException(status_code=400, detail="WAVファイルを選んでください")
         data, seconds = await read_wav_upload(audio)
         return data, "audio", seconds, None, filename
+    if sample_id.strip() and not has_midi:
+        entry = next(
+            (row for row in visible_samples() if row.get("id") == sample_id.strip()),
+            None,
+        )
+        if entry and entry.get("input_kind") == "audio":
+            if not audio_input_available():
+                raise HTTPException(
+                    status_code=503,
+                    detail="このサーバーではWAV入力を利用できません",
+                )
+            filename = str(entry.get("audio_file") or f"{sample_id.strip()}.wav")
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+\.wav", filename):
+                raise HTTPException(status_code=422, detail="音源サンプルの設定が不正です")
+            try:
+                data = (samples_dir() / filename).read_bytes()
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=422, detail="選択した曲のWAVが見つかりません"
+                ) from exc
+            seconds = validate_wav_bytes(data)
+            return data, "audio", seconds, sample_id.strip(), filename
     data, resolved_sample_id, filename = await resolve_midi_input(midi, sample_id)
     return data, "midi", None, resolved_sample_id, filename
 
@@ -326,6 +355,9 @@ def resolve_sample_midi(sample_id: str) -> tuple[str, bytes]:
         or normalized not in visible_ids
     ):
         raise HTTPException(status_code=422, detail="このサンプル曲は現在利用できません")
+    entry = next(row for row in visible_samples() if row.get("id") == normalized)
+    if entry.get("input_kind") == "audio":
+        raise HTTPException(status_code=422, detail="WAVサンプルはMIDI編集に使えません")
     path = samples_dir() / f"{normalized}.mid"
     try:
         data = path.read_bytes()
@@ -417,6 +449,25 @@ def load_samples() -> list[dict[str, Any]]:
         logger.warning("samples.json が壊れています: %s", directory)
         return []
     base = [e for e in entries if isinstance(e, dict)]
+
+    audio_path = directory / AUDIO_SAMPLES_MANIFEST
+    try:
+        audio_entries = json.loads(audio_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        audio_entries = []
+    except (OSError, json.JSONDecodeError):
+        logger.warning("音源サンプルmanifestを読めません: %s", audio_path)
+        audio_entries = []
+    known = {str(entry.get("id")) for entry in base}
+    for entry in audio_entries:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        sample_id = str(entry["id"])
+        if sample_id in known:
+            logger.warning("音源サンプルIDがMIDIと重複しています: %s", sample_id)
+            continue
+        base.append({**entry, "input_kind": "audio"})
+        known.add(sample_id)
 
     local_path = directory / LOCAL_SAMPLES_MANIFEST
     try:
@@ -2789,6 +2840,15 @@ def create_app(
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
         if input_kind == "midi":
             lyrics = require_launch_lyrics(launch_sample_id, lyrics)
+        elif launch_sample_id:
+            try:
+                lyrics = (samples_dir() / f"{launch_sample_id}_lyrics.txt").read_text(
+                    encoding="utf-8"
+                )
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=422, detail="選択した曲の歌詞が見つかりません"
+                ) from exc
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
@@ -3018,6 +3078,9 @@ def create_app(
             params["where"] = ""
         # 一般向け履歴は内部paramsを解釈せず、この時点で確定した表示専用名を使う。
         # status.json の params に保存されるので、カタログ更新後も表示が変わらない。
+        if params["sample_id"]:
+            params["original_credit"] = original_credit_of(params)
+            params["credit_notice"] = credit_notice_of(params)
         params["song_label"] = new_job_song_label(params)
         params["wordlist_label"] = job_wordlist_label(params)
         # レンダリング必須のサンプル帰属表記も受付時に確定する。ワーカー開始後に

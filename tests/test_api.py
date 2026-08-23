@@ -107,6 +107,42 @@ def test_job_flow_accepts_wav_and_keeps_existing_playback(client):
     assert client.get(body["playback_url"]).content == FAKE_MP4
 
 
+def test_job_flow_accepts_bundled_wav_preset(client, tmp_path, monkeypatch):
+    samples = tmp_path / "audio-samples"
+    samples.mkdir()
+    (samples / "samples.json").write_text("[]", encoding="utf-8")
+    (samples / "audio_samples.json").write_text(
+        json.dumps([{
+            "id": "demo_audio",
+            "title": "音源サンプル",
+            "original_credit": "PD song",
+            "credit_notice": "Synthetic voice (CC BY 3.0)",
+        }]),
+        encoding="utf-8",
+    )
+    wav = fake_wav()
+    (samples / "demo_audio.wav").write_bytes(wav)
+    (samples / "demo_audio_lyrics.txt").write_text("あ", encoding="utf-8")
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(samples))
+
+    listed = client.get("/api/samples").json()
+    assert [(row["id"], row["input_kind"]) for row in listed] == [
+        ("demo_audio", "audio")
+    ]
+    res = client.post(
+        "/api/jobs", data={"sample_id": "demo_audio", "wordlist": "stations"}
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    assert body["params"]["input_kind"] == "audio"
+    assert body["params"]["sample_id"] == "demo_audio"
+    assert body["params"]["original_credit"] == "PD song"
+    assert body["params"]["credit_notice"] == "Synthetic voice (CC BY 3.0)"
+    job = client.app.state.manager.jobs[body["id"]]
+    assert (job.dir / "input.wav").read_bytes() == wav
+    assert not (job.dir / "input.mid").exists()
+
+
 @pytest.mark.parametrize(
     ("filename", "content", "detail"),
     [

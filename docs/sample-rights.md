@@ -70,3 +70,12 @@
   作った、拍頭にベースとブロックコードを置くだけのもの。**既存の編曲は写さない**。
   たとえば「紅葉」の現行教科書版は中野義見の二部合唱編曲で保護期間内なので、
   低音部を写してはいけない(同梱データは斉唱の主旋律＋自前のコード付けだけ)。
+
+## 音源解析サンプル
+
+`audio_samples.json` の3曲は、上表のPD曲からプロジェクト内で生成したMIDI伴奏と、
+HTS Voice "Mei"による新規合成音声をミックスしたもの。音声は名古屋工業大学の
+[HTS Voice "Mei" (CC BY 3.0)](https://github.com/r9y9/pyopenjtalk/blob/master/pyopenjtalk/htsvoice/LICENSE_mei_normal.htsvoice)
+を使用し、必要な帰属表記をmanifest、選曲画面、生成動画へ引き継ぐ。
+伴奏音色はFluidR3 GM (MIT)を使用し、その帰属表記も同じ経路で引き継ぐ。
+生成手順は `examples/gen_audio_samples.py`、各ファイルのSHA-256はmanifestに記録する。

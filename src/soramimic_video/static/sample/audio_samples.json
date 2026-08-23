@@ -1,0 +1,38 @@
+[
+ {
+  "id": "katatsumuri_audio",
+  "input_kind": "audio",
+  "title": "かたつむり（音源解析）",
+  "title_kana": "カタツムリ",
+  "description": "WAV音源から解析するサンプル・PD唱歌",
+  "audio_file": "katatsumuri_audio.wav",
+  "sha256": "675d33890dd4c06beaa27bd48f1c4b20c0277dec8c6c3c2ed3a5b3a3fb1d84eb",
+  "original_credit": "文部省唱歌『かたつむり』（詞・曲ともにパブリックドメイン）",
+  "credit_notice": "音声: HTS Voice “Mei” © Nagoya Institute of Technology (CC BY 3.0) / 伴奏音色: FluidR3 GM (MIT)",
+  "license_url": "https://creativecommons.org/licenses/by/3.0/"
+ },
+ {
+  "id": "momotarou_audio",
+  "input_kind": "audio",
+  "title": "桃太郎（音源解析）",
+  "title_kana": "モモタロー",
+  "description": "WAV音源から解析するサンプル・PD唱歌",
+  "audio_file": "momotarou_audio.wav",
+  "sha256": "d515f4255818f207f75970390f93d3171367d1d16bd542274248b402e7e667da",
+  "original_credit": "文部省唱歌『桃太郎』（詞・曲ともにパブリックドメイン）",
+  "credit_notice": "音声: HTS Voice “Mei” © Nagoya Institute of Technology (CC BY 3.0) / 伴奏音色: FluidR3 GM (MIT)",
+  "license_url": "https://creativecommons.org/licenses/by/3.0/"
+ },
+ {
+  "id": "harugakita_audio",
+  "input_kind": "audio",
+  "title": "春が来た（音源解析）",
+  "title_kana": "ハルガキタ",
+  "description": "WAV音源から解析するサンプル・PD唱歌",
+  "audio_file": "harugakita_audio.wav",
+  "sha256": "01578d8a263b6d0f0daf138b263443f3391ff8ac1f8c436b394e2394b44981b2",
+  "original_credit": "高野辰之作詞・岡野貞一作曲『春が来た』（パブリックドメイン）",
+  "credit_notice": "音声: HTS Voice “Mei” © Nagoya Institute of Technology (CC BY 3.0) / 伴奏音色: FluidR3 GM (MIT)",
+  "license_url": "https://creativecommons.org/licenses/by/3.0/"
+ }
+]

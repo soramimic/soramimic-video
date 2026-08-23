@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
+import wave
 
 import pytest
 
@@ -47,3 +50,31 @@ def test_rejects_unmatched_original_lyrics(tmp_path):
 
     with pytest.raises(ValueError, match="対応しないXF行"):
         validate_sample_directory(tmp_path, local_only=True)
+
+
+def test_validates_audio_samples_and_hash(tmp_path):
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(b"\0\0" * 800)
+    data = output.getvalue()
+    (tmp_path / "samples.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "audio_samples.json").write_text(
+        json.dumps(
+            [{
+                "id": "voice",
+                "input_kind": "audio",
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "voice.wav").write_bytes(data)
+    (tmp_path / "voice_lyrics.txt").write_text("あ\n", encoding="utf-8")
+
+    result = validate_sample_directory(tmp_path)[0]
+
+    assert result.input_kind == "audio"
+    assert result.seconds == pytest.approx(0.1)
