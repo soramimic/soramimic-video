@@ -76,8 +76,9 @@ uv sync --extra api --extra audio
 uv run soramimic-video serve
 ```
 
-曲選択の下にある「自分のWAVファイルをアップロード」から、PCM形式のモノラルまたは
-ステレオWAVを選びます。元歌詞は任意で、
+曲選択の下にある「自分の曲ファイルをアップロード」から、XF MIDI（`.mid` / `.midi`）
+またはPCM形式のモノラル・ステレオWAV（`.wav`）を選びます。形式は拡張子から自動で
+判定されます。WAVの元歌詞は任意で、
 空欄の場合は音源から自動認識します。音源分離・歌詞認識・タイミング推定・音高推定を
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
@@ -92,8 +93,8 @@ WAV入力には次の設定が適用されます。
 
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じWAV上限までmultipart requestを
-通せるようbody sizeとtimeoutも設定します。`audio` extraがないサーバーでは、WAV入力
-ボタンに「準備中」と表示され、選択できません。
+通せるようbody sizeとtimeoutも設定します。`audio` extraがないサーバーでも共通の
+アップロードボタンからXF MIDIを選べます。WAVを選んだ場合だけ「準備中」と案内します。
 
 同梱の音源解析サンプルを再生成する場合は、FluidR3 GM SoundFontとfluidsynthを
 用意して次を実行します。必要な第三者ライセンスは `THIRD_PARTY_NOTICES.md` に記載しています。
