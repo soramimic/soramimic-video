@@ -2606,6 +2606,10 @@ audio = [
     { name = "torchcodec" },
     { name = "transformers" },
 ]
+sample-audio = [
+    { name = "numpy" },
+    { name = "pyopenjtalk-plus" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2631,8 +2635,10 @@ requires-dist = [
     { name = "mecab-python3", specifier = ">=1.0" },
     { name = "mido", specifier = ">=1.3" },
     { name = "numpy", marker = "extra == 'audio'", specifier = ">=1.24" },
+    { name = "numpy", marker = "extra == 'sample-audio'", specifier = ">=1.24" },
     { name = "pillow", specifier = ">=10.1" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'api'", specifier = ">=2.9" },
+    { name = "pyopenjtalk-plus", marker = "extra == 'sample-audio'", specifier = ">=0.4.1.post8" },
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.9" },
     { name = "requests", specifier = ">=2.31" },
     { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=6fd96e490111cb9d9dcb6dcb58c886bf0aa8506c" },
@@ -2646,7 +2652,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.29" },
     { name = "xfmido", specifier = ">=0.0.2" },
 ]
-provides-extras = ["api", "audio"]
+provides-extras = ["api", "audio", "sample-audio"]
 
 [package.metadata.requires-dev]
 dev = [

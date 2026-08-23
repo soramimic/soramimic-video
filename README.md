@@ -76,7 +76,8 @@ uv sync --extra api --extra audio
 uv run soramimic-video serve
 ```
 
-画面の「WAV入力」からPCM形式のモノラルまたはステレオWAVを選びます。元歌詞は任意で、
+曲選択の下にある「自分のWAVファイルをアップロード」から、PCM形式のモノラルまたは
+ステレオWAVを選びます。元歌詞は任意で、
 空欄の場合は音源から自動認識します。音源分離・歌詞認識・タイミング推定・音高推定を
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
@@ -92,7 +93,15 @@ WAV入力には次の設定が適用されます。
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じWAV上限までmultipart requestを
 通せるようbody sizeとtimeoutも設定します。`audio` extraがないサーバーでは、WAV入力
-ボタンは表示されません。
+ボタンに「準備中」と表示され、選択できません。
+
+同梱の音源解析サンプルを再生成する場合は、FluidR3 GM SoundFontとfluidsynthを
+用意して次を実行します。必要な第三者ライセンスは `THIRD_PARTY_NOTICES.md` に記載しています。
+
+```sh
+uv sync --extra sample-audio
+uv run python examples/gen_audio_samples.py
+```
 
 手元だけで使う素材は公開 manifest へ追加せず、gitignore 対象の local sample 設定または
 `SORAMIMIC_SAMPLES_DIR` で指定できます。権利を確認できない素材を repository へ

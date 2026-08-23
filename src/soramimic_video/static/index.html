@@ -483,6 +483,20 @@
   /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
      2つ目だけ下にずれるので消す */
   .builder-selects .field + .field { margin-top: 0; }
+  .audio-upload-entry {
+    display: flex; align-items: center; gap: .6rem; margin-top: .65rem;
+    padding-top: .65rem; border-top: 1px solid var(--border);
+  }
+  .audio-upload-entry button {
+    display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
+    flex: 0 0 auto; border-color: var(--accent); color: var(--accent-dark);
+    font-weight: 700;
+  }
+  .audio-upload-entry .hint { margin: 0; }
+  @media (max-width: 26rem) {
+    .audio-upload-entry { align-items: stretch; flex-direction: column; }
+    .audio-upload-entry button { width: 100%; min-height: 2.75rem; }
+  }
   .fanwork-confirmation {
     margin-top: .65rem; padding: .65rem .75rem; border: 1px solid #f59e0b88;
     border-radius: 10px; background: #f59e0b14;
@@ -600,9 +614,6 @@
         aria-label="替え歌を編集" title="替え歌を編集">
         <span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>
     </div>
-    <button type="button" id="audio-upload-button" class="btn-sm" hidden
-      aria-label="WAV音源を入力" title="WAV音源を入力">
-      <span class="lucky-icon" aria-hidden="true">🎵</span>WAV入力</button>
     <button type="button" id="lucky" class="btn-sm" disabled
       title="曲と単語リストをランダムに選ぶ">
       <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
@@ -624,6 +635,14 @@
       <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
   </div>
+  <div class="audio-upload-entry" id="audio-upload-entry">
+    <button type="button" id="audio-upload-button" disabled
+      aria-describedby="audio-upload-hint">
+      <span aria-hidden="true">＋</span>自分のWAVファイルをアップロード
+    </button>
+    <p class="hint" id="audio-upload-hint">WAV入力を確認しています…</p>
+  </div>
+  <p class="hint" id="audio-sample-credit" hidden></p>
   <div id="audio-input-panel" class="field" hidden>
     <p><strong id="audio-filename"></strong></p>
     <label for="audio-lyrics">元歌詞(任意)</label>
@@ -1224,6 +1243,7 @@ let simpleMode = false;
 let launchWordlists = [];
 let fixedVoicevoxStyle = 3003;
 let maxAudioUploadBytes = 200 * 1024 * 1024;
+let audioInputReady = false;
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
@@ -1234,7 +1254,12 @@ async function loadConfig() {
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
-  $("audio-upload-button").hidden = !conf.audio_input;
+  audioInputReady = conf.audio_input === true;
+  $("audio-upload-button").disabled = !audioInputReady;
+  $("audio-upload-hint").textContent = audioInputReady
+    ? `PCM形式のWAV・最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB`
+    : "このサーバーではWAV入力を準備中です";
+  renderSampleOptions();
   $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
   // 開いたうえで、そこまでスクロールして見えるようにする
@@ -2673,24 +2698,60 @@ let sampleDescriptions = {};
 // 権利者から表記が指定されている曲(初音ミクの消失・魔王魂など)だけを持つ。
 // 選曲時に ③元曲クレジット へ自動で入れて、表記漏れを防ぐ。
 let sampleCredits = {};
+let sampleInputKinds = {};
+let sampleLicenseUrls = {};
+let sampleCatalog = [];
+
+function selectedSampleIsAudio() {
+  return sampleInputKinds[$("sample-select").value] === "audio";
+}
+
+function renderSampleOptions() {
+  if (!sampleCatalog.length) return;
+  const selected = $("sample-select").value;
+  const select = $("sample-select");
+  select.replaceChildren(new Option("サンプル曲から選ぶ…", ""));
+  const midiGroup = document.createElement("optgroup");
+  midiGroup.label = "MIDIサンプル";
+  const audioGroup = document.createElement("optgroup");
+  audioGroup.label = "音源から解析するサンプル";
+  sampleCatalog.forEach((sample) => {
+    const audio = (sample.input_kind || "midi") === "audio";
+    const option = new Option(
+      `${sample.title}${audio && !audioInputReady ? "（準備中）" : ""}`,
+      sample.id,
+    );
+    option.disabled = audio && !audioInputReady;
+    (audio ? audioGroup : midiGroup).append(option);
+  });
+  if (midiGroup.children.length) select.append(midiGroup);
+  if (audioGroup.children.length) select.append(audioGroup);
+  if ([...select.options].some((option) => option.value === selected && !option.disabled)) {
+    select.value = selected;
+  }
+  syncBuilderOptions();
+}
 
 async function loadSamples() {
   try {
     const res = await fetch("/api/samples");
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
+    sampleCatalog = samples;
     sampleDescriptions = {};
     sampleCredits = {};
+    sampleInputKinds = {};
+    sampleLicenseUrls = {};
     samples.forEach((s) => {
+      sampleInputKinds[s.id] = s.input_kind || "midi";
+      if (s.license_url) sampleLicenseUrls[s.id] = s.license_url;
       if (s.description) sampleDescriptions[s.id] = s.description;
       const credit = {};
       if (s.original_credit) credit.originalCredit = s.original_credit;
       if (s.credit_notice) credit.creditNotice = s.credit_notice;
       if (credit.originalCredit || credit.creditNotice) sampleCredits[s.id] = credit;
     });
-    $("sample-select").innerHTML = '<option value="">サンプル曲から選ぶ…</option>' +
-      samples.map((s) => `<option value="${s.id}">${s.title}</option>`).join("");
-    syncBuilderOptions();  // カードの曲プルダウンへ写す
+    renderSampleOptions();
   } catch {
     // 正本の選択肢とカード側の曲プルダウンだけを隠す。カード自体は残し、
     // 一時的な取得失敗を見える形にする(詳細設定には曲入力がもう無いため)。
@@ -2709,13 +2770,16 @@ const samplesReady = loadSamples();
 // サンプルのMIDIバイナリはブラウザへ取得・保存しない。
 let midiSampleId = "";
 function clearAudioInput() {
-  if (!$("audio").files[0] && $("audio-input-panel").hidden) return;
   $("audio").value = "";
   $("audio-input-panel").hidden = true;
   $("audio-filename").textContent = "";
-  document.querySelector('.stages li[data-stage="analyze"]').textContent = "MIDI解析";
-  $("builder-edit").disabled = false;
-  $("builder-edit").title = "替え歌を編集";
+  const sampleAudio = selectedSampleIsAudio();
+  document.querySelector('.stages li[data-stage="analyze"]').textContent =
+    sampleAudio ? "音源解析" : "MIDI解析";
+  $("builder-edit").disabled = sampleAudio;
+  $("builder-edit").title = sampleAudio
+    ? "WAVサンプルは音源解析後に自動変換して動画を生成します"
+    : "替え歌を編集";
   syncBuilderOptions();
 }
 
@@ -2792,6 +2856,31 @@ async function applySample(opts = {}) {
       midiFromSample = false;
     }
     $("midi-restore-hint").hidden = true;
+    const sampleAudio = selectedSampleIsAudio();
+    $("builder-edit").disabled = sampleAudio;
+    $("builder-edit").title = sampleAudio
+      ? "WAVサンプルは音源解析後に自動変換して動画を生成します"
+      : "替え歌を編集";
+    document.querySelector('.stages li[data-stage="analyze"]').textContent =
+      sampleAudio ? "音源解析" : "MIDI解析";
+    const creditHint = $("audio-sample-credit");
+    if (sampleAudio && sampleCredits[sid]) {
+      creditHint.replaceChildren(document.createTextNode(sampleCredits[sid].creditNotice || ""));
+      const licenseUrl = sampleLicenseUrls[sid];
+      if (licenseUrl) {
+        creditHint.append(document.createTextNode(" "));
+        const link = document.createElement("a");
+        link.href = licenseUrl;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "ライセンス";
+        creditHint.append(link);
+      }
+      creditHint.hidden = false;
+    } else {
+      creditHint.replaceChildren();
+      creditHint.hidden = true;
+    }
     if (lyricsRes) {
       const sampleLyrics = await lyricsRes.text();
       sampleLyricsId = sid;
@@ -3012,6 +3101,7 @@ function renderLyricsMidiWarning(info) {
 
 async function checkMidi() {
   const seq = ++midiCheckSeq;
+  if (selectedSampleIsAudio()) { clearMidiNotices(); return; }
   const f = $("midi").files[0];
   const sampleId = midiSampleId;
   if (!sampleId && !f) { clearMidiNotices(); return; }
@@ -3107,7 +3197,7 @@ function luckyCombo(sampleId, wordlistName) {
 function luckyCandidatePools() {
   const currentSampleId = $("sample-select").value;
   const samples = [...$("sample-select").options]
-    .filter((o) => o.value && o.value !== currentSampleId);
+    .filter((o) => o.value && !o.disabled && o.value !== currentSampleId);
   const sel = $("wordlist-select");
   const all = sel.hidden ? [] : [...sel.options].filter((o) => o.value);
   const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
@@ -3458,6 +3548,11 @@ function loadThumbnailPreview(combo) {
     loadWordlistImage(combo.wordlistName, seq);
     return;
   }
+  // WAVプリセットはMIDI由来の事前変換プレビューを作らず、代表画像を即表示する。
+  if (sampleInputKinds[combo.sampleId] === "audio") {
+    loadWordlistImage(combo.wordlistName, seq);
+    return;
+  }
   fig.hidden = false;
   $("builder-loading").hidden = false;
 
@@ -3719,11 +3814,13 @@ async function initBuilder() {
   await samplesReady;         // 曲のプルダウンが揃うのを待つ
   syncBuilderOptions();
   const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
+  const available = new Set([...$("sample-select").options]
+    .filter((o) => o.value && !o.disabled).map((o) => o.value));
   const def = DEFAULT_COMBO;
   // 1. 曲: 保存されたサンプルIDへ戻す。標準歌詞が手編集されて
   //    いなければ最新版を取り直し、編集済みならその値を残す。
   const restoredId = restoredSampleId;
-  if (!$("sample-select").value && known.has(restoredId)) {
+  if (!$("sample-select").value && available.has(restoredId)) {
     $("sample-select").value = restoredId;
     const editedLyrics = sampleLyricsId === restoredId
       && sampleLyricsBaseline !== null
@@ -5261,7 +5358,7 @@ function editorSessionData() {
 // #sample-select)と同じ並び・同じ表示名にする(二重管理しない)。
 function hostSongList() {
   return [...$("sample-select").options]
-    .filter((o) => o.value)
+    .filter((o) => o.value && !o.disabled && sampleInputKinds[o.value] !== "audio")
     .map((o) => ({ id: o.value, title: o.textContent }));
 }
 
