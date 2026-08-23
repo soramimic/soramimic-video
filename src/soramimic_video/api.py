@@ -14,7 +14,7 @@ GET /api/jobs/{id}/video で取得する。GET / に簡易Web UIを同梱。
 SORAMIMIC_PUBLIC=1 を設定すると「公開モード」になり、匿名セッション
 (HttpOnly cookie)ごとにジョブを分離し、キュー上限・日次クォータ・
 曲長上限で投入を制限する。環境変数を何も設定しなければ従来と同じ挙動
-(全ジョブが全員から見え、制限なし)。詳細は docs/public-mode.md を参照。
+(全ジョブが全員から見え、制限なし)。
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ import csv
 import hashlib
 import hmac
 import importlib.util
-import io
 import ipaddress
 import json
 import logging
@@ -38,7 +37,6 @@ import threading
 import time
 import traceback
 import uuid
-import wave
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -46,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,6 +56,15 @@ from . import runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
 from . import wordlist_zip as wordlist_zip_mod
 from .access_identity import canonical_email, valid_issuer, verify_access_email
+from .asset_preview import derive_asset_preview
+from .asset_preview import preview_cache_dir as asset_preview_cache_dir
+from .audio_input import (
+    SUPPORTED_AUDIO_EXTENSIONS,
+    AudioInputError,
+    audio_tools_available,
+    normalize_compressed_audio,
+    validate_pcm_wav,
+)
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -67,7 +74,10 @@ from .layout import (
 )
 from .soramimic_engine import start_warmup_thread
 from .thumbnail_preview import RateLimiter, preview_cache_dir
-from .wordlist_catalog import default_launch_wordlists
+from .wordlist_catalog import (
+    default_launch_wordlists,
+    load_wordlist_image_policies,
+)
 
 if TYPE_CHECKING:  # 型注釈だけ。実行時のimportはハンドラの中で行う(起動を軽く保つ)
     from .project import Project
@@ -214,9 +224,9 @@ def launch_wordlist_names() -> set[str]:
 
 
 def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
-    """Simple UIではカタログ名だけを許可し、filesystem pathを解決前に拒否する。"""
+    """Public/Simple APIではカタログ名だけを許可しpath解決前に拒否する。"""
     name = wordlist.strip()
-    if is_simple_ui() and name not in launch_wordlist_names():
+    if (is_public_mode() or is_simple_ui()) and name not in launch_wordlist_names():
         raise HTTPException(
             status_code=status_code,
             detail="この単語リストは現在利用できません",
@@ -240,8 +250,8 @@ def max_audio_upload_bytes() -> int:
 
 
 def audio_input_available() -> bool:
-    """audio extraが揃ったサーバーだけWAV入力を公開する。"""
-    return all(
+    """audio extraと音声デコーダが揃ったサーバーだけ音源入力を公開する。"""
+    return audio_tools_available() and all(
         importlib.util.find_spec(name) is not None
         for name in (
             "demucs",
@@ -257,34 +267,29 @@ def audio_input_available() -> bool:
 def validate_wav_bytes(data: bytes, maximum: int | None = None) -> float:
     """PCM WAVを検査し、演奏時間を返す。"""
     limit = maximum if maximum is not None else max_audio_upload_bytes()
-    if len(data) > limit:
-        raise HTTPException(
-            status_code=413,
-            detail=f"WAVファイルが大きすぎます(上限は{limit / 1024 / 1024:.0f}MBです)",
-        )
-    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
-        raise HTTPException(status_code=400, detail="WAVファイルではありません")
     try:
-        with wave.open(io.BytesIO(data), "rb") as wav:
-            channels = wav.getnchannels()
-            rate = wav.getframerate()
-            frames = wav.getnframes()
-            width = wav.getsampwidth()
-    except (EOFError, wave.Error) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="PCM形式のWAVファイルを選んでください(float WAVには対応していません)",
-        ) from exc
-    if channels not in (1, 2) or rate <= 0 or frames <= 0 or width not in (1, 2, 3, 4):
-        raise HTTPException(status_code=400, detail="対応していないWAV形式です")
-    return frames / rate
+        return validate_pcm_wav(data, limit)
+    except AudioInputError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-async def read_wav_upload(audio: UploadFile) -> tuple[bytes, float]:
-    """WAVを上限付きで読み、PCMとして読めることと演奏時間を検査する。"""
+async def read_audio_upload(audio: UploadFile) -> tuple[bytes, float]:
+    """音声を上限付きで読み、必要なら解析用WAVへ正規化する。"""
     maximum = max_audio_upload_bytes()
     data = await audio.read(maximum + 1)
-    return data, validate_wav_bytes(data, maximum)
+    filename = audio.filename or "input"
+    if Path(filename).suffix.lower() == ".wav":
+        return data, validate_wav_bytes(data, maximum)
+    try:
+        return await run_in_threadpool(
+            normalize_compressed_audio,
+            data,
+            filename,
+            maximum,
+            _env_float(MAX_SONG_SECONDS_ENV, DEFAULT_MAX_SONG_SECONDS),
+        )
+    except AudioInputError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 async def resolve_song_input(
@@ -292,24 +297,24 @@ async def resolve_song_input(
     audio: UploadFile | None,
     sample_id: str,
 ) -> tuple[bytes, str, float | None, str | None, str]:
-    """サンプル/MIDI/WAVのうち一つだけをジョブ入力へ解決する。"""
+    """サンプル/MIDI/音声のうち一つだけをジョブ入力へ解決する。"""
     has_audio = audio is not None and bool(audio.filename)
     has_midi = midi is not None and bool(midi.filename)
     if has_audio and (has_midi or sample_id.strip()):
         raise HTTPException(
             status_code=422,
-            detail="WAVとサンプル曲・MIDIは同時に指定できません",
+            detail="音声とサンプル曲・MIDIは同時に指定できません",
         )
     if has_audio and audio is not None:
         if not audio_input_available():
             raise HTTPException(
                 status_code=503,
-                detail="このサーバーではWAV入力を利用できません",
+                detail="このサーバーでは音声入力を利用できません",
             )
-        filename = audio.filename or "input.wav"
-        if not filename.lower().endswith(".wav"):
-            raise HTTPException(status_code=400, detail="WAVファイルを選んでください")
-        data, seconds = await read_wav_upload(audio)
+        filename = audio.filename or "input"
+        if Path(filename).suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="対応していない音声形式です")
+        data, seconds = await read_audio_upload(audio)
         return data, "audio", seconds, None, filename
     if sample_id.strip() and not has_midi:
         entry = next(
@@ -1223,6 +1228,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
         "midi_end_credit": midi_end_credit_of(job.params),
+        "allow_noncommercial_fanwork": bool(
+            job.params.get("allow_noncommercial_fanwork", False)
+        ),
     }
 
     if not config.get("parallel_video", True):
@@ -1723,6 +1731,8 @@ def create_app(
         "image_cache": jobs_dir.resolve() / "image-cache",
         # 生成前に出す仮サムネ(/api/thumbnail-preview)のPNGキャッシュ
         "preview_cache": preview_cache_dir(jobs_dir),
+        # UI/editorへ返す単語画像は、動画用原本cacheとは別の派生PNGだけを置く。
+        "asset_preview_cache": asset_preview_cache_dir(jobs_dir),
         # 自作リストで替え歌エディタを開いたときの単語リスト置き場(ジョブ横断)
         "editor_sessions": editor_sessions_dir(jobs_dir),
         "soundfont": resolve_soundfont(soundfont),
@@ -1821,11 +1831,14 @@ def create_app(
             maximum = int(
                 _env_float(SIMPLE_MAX_REQUEST_BYTES_ENV, DEFAULT_SIMPLE_MAX_REQUEST_BYTES)
             )
-            # 従来のMIDI経路は小さい上限のまま保つ。公式UIがWAVを送るときだけ
-            # 無圧縮音源用の上限へ広げ、endpoint内でも実データを再度上限検査する。
+            # 従来のMIDI経路は小さい上限のまま保つ。公式UIが音源を送るときだけ
+            # 音源用の上限へ広げ、endpoint内でも実データを再度上限検査する。
             if (
                 request.url.path == "/api/jobs"
-                and request.headers.get("x-soramimic-wav-upload") == "1"
+                and (
+                    request.headers.get("x-soramimic-audio-upload") == "1"
+                    or request.headers.get("x-soramimic-wav-upload") == "1"
+                )
             ):
                 maximum = max(maximum, max_audio_upload_bytes() + 1024 * 1024)
             try:
@@ -2278,6 +2291,8 @@ def create_app(
 
     @app.get("/api/config")
     async def get_config(request: Request, response: Response) -> dict[str, Any]:
+        from .convert import WORDLISTS_DIR
+
         response.headers["Cache-Control"] = "no-store"
         auth_required = bool(os.environ.get(API_KEY_ENV))
         try:
@@ -2292,6 +2307,9 @@ def create_app(
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
+            # 制限付き画像を含みうる単語リストでは、生成ボタンのそばに
+            # 利用条件の確認を出す。実際の強制は各CSV行のimage_usageが正本。
+            "wordlist_image_policies": load_wordlist_image_policies(WORDLISTS_DIR),
             "editor": editor_available,
             # 簡易UIでeditorボタンを隠しても、同梱のsetting.jsonから
             # 単語リスト選択肢は読むために別の能力値として返す。
@@ -2403,52 +2421,114 @@ def create_app(
             "row": row,
         }
 
-    def _wordlist_has_image_url(wordlist: str, url: str) -> bool:
-        """URLがimage列に実在するかを走査し、見つけ次第止める。"""
-        from .convert import resolve_wordlist
+    def _asset_preview_wordlist_path(wordlist: str) -> Path:
+        """HTTP previewで参照できる名前付きCSVだけを厳格に解決する。"""
+        from .convert import WORDLISTS_DIR
 
-        wordlist = require_launch_wordlist(wordlist)
+        name = wordlist.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            raise HTTPException(status_code=404, detail="単語リストが見つかりません")
+        if (is_public_mode() or is_simple_ui()) and name not in launch_wordlist_names():
+            raise HTTPException(status_code=404, detail="この単語リストは現在利用できません")
         try:
-            with open(resolve_wordlist(wordlist), encoding="utf-8") as f:
-                return any(row.get("image") == url for row in csv.DictReader(f))
-        except (FileNotFoundError, OSError):
-            return False
+            root = WORDLISTS_DIR.resolve(strict=True)
+            candidate = root / f"{name}.csv"
+            if candidate.is_symlink():
+                raise OSError("symlink")
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+            if resolved.parent != root or not resolved.is_file():
+                raise OSError("not a packaged wordlist")
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=404, detail="単語リストが見つかりません"
+            ) from exc
+        return resolved
 
+    def _asset_preview_row(wordlist: str, url: str) -> dict[str, str] | None:
+        """指定URLまたは代表画像の、名前付きCSVに実在する行だけを返す。"""
+        try:
+            path = _asset_preview_wordlist_path(wordlist)
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, encoding="utf-8") as f:
+                rows = csv.DictReader(f)
+                if url:
+                    return next((row for row in rows if row.get("image") == url), None)
+                first = next(rows, None)
+                if first and first.get("image"):
+                    return first
+                return next((row for row in rows if row.get("image")), None)
+        except (FileNotFoundError, OSError):
+            return None
+
+    @app.get("/api/asset-preview", dependencies=[Depends(_require_api_key)])
     @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
-    def wordlist_image(request: Request, wordlist: str = "", url: str = "") -> FileResponse:
-        """レイアウト編集プレビュー用の画像(WYSIWYG表示向け)。
+    def asset_preview(
+        request: Request,
+        wordlist: str = "",
+        url: str = "",
+        noncommercial_fanwork: bool = False,
+    ) -> FileResponse:
+        """レイアウト編集用に、原本から作った安全な派生PNGだけを返す。
 
         url指定時はプレビューのキュー画像を返す。オープンプロキシ化を避けるため、
-        指定した単語リストのimage列に実在するURLだけを取得して返す。
+        指定した名前付き単語リストのimage列に実在するURLだけを対象にする。
         url未指定時は代表行(単語リストの最初の画像あり行)の画像。
         """
-        from .video import cached_image, download_image
+        from .asset_store import verified_preview_asset
+        from .image_usage import require_image_usage
+        from .video import cached_image
 
-        wordlist = require_launch_wordlist(wordlist)
+        _asset_preview_wordlist_path(wordlist)
         # URL照合にもCSV走査が要るため、cache判定より先に広いhit枠を適用する。
         if not _allow_expensive_get(request, cache_hit=True):
             raise HTTPException(status_code=429, detail="画像の取得が続いています")
+        row = _asset_preview_row(wordlist, url)
+        if row is None or not row.get("image"):
+            raise HTTPException(status_code=404, detail="画像が見つかりません")
+        target = row["image"]
+        try:
+            require_image_usage(
+                row,
+                allow_noncommercial_fanwork=noncommercial_fanwork,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        parsed = urlsplit(target)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=404, detail="画像が見つかりません")
 
-        if url:
-            if not wordlist.strip() or not _wordlist_has_image_url(wordlist.strip(), url):
-                raise HTTPException(status_code=404, detail="画像が見つかりません")
-            target = url
-        else:
-            row = _sample_row(wordlist.strip()) if wordlist.strip() else None
-            if not row or not row.get("image"):
-                raise HTTPException(status_code=404, detail="画像のある行がありません")
-            target = row["image"]
+        managed, path, revision, source_sha256 = verified_preview_asset(target)
         cache_dir = jobs_dir.resolve() / "image-cache"
-        path = cached_image(target, cache_dir)
-        if path is None:
-            if not _allow_expensive_get(request):
-                raise HTTPException(status_code=429, detail="画像の取得が続いています")
-            with _expensive_get_slot():
-                # 待機中に別リクエストが保存していればネットワーク処理を繰り返さない。
-                path = cached_image(target, cache_dir) or download_image(target, cache_dir)
+        if not managed:
+            path = cached_image(target, cache_dir)
         if path is None:
             raise HTTPException(status_code=404, detail="画像を取得できません")
-        return FileResponse(path)
+        if not managed:
+            try:
+                resolved_cache = cache_dir.resolve(strict=True)
+                if path.is_symlink():
+                    raise OSError("symlink")
+                path = path.resolve(strict=True)
+                path.relative_to(resolved_cache)
+            except (OSError, ValueError) as exc:
+                raise HTTPException(status_code=404, detail="画像を取得できません") from exc
+        try:
+            with _expensive_get_slot():
+                preview = derive_asset_preview(
+                    path,
+                    config["asset_preview_cache"],
+                    asset_id=target,
+                    source_revision=revision,
+                    expected_sha256=source_sha256,
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="画像を変換できません") from exc
+        return FileResponse(
+            preview,
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     def _sample_title(sample_id: str) -> tuple[str, str]:
         """サンプル曲の (曲名, 読み)。読みは samples.json の title_kana(無ければ空)。
@@ -2470,6 +2550,7 @@ def create_app(
         where: str = "",
         convert_params: str = "",
         images: bool = True,
+        noncommercial_fanwork: bool = False,
     ) -> FileResponse:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
@@ -2512,6 +2593,7 @@ def create_app(
                 params=parse_convert_params(convert_params),
                 with_images=images,
                 title_kana=title_kana,
+                allow_noncommercial_fanwork=noncommercial_fanwork,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -2553,7 +2635,7 @@ def create_app(
                 # 毎回サーバーに聞く(キャッシュヒットなら数ミリ秒で304/即応答)。
                 # 画像の裏読みが間に合って作り直されたとき、ブラウザが古い
                 # 「絵なし」プレビューを握り続けないようにする
-                "Cache-Control": "private, no-cache",
+                "Cache-Control": "private, no-store",
                 "X-Preview-Cache": "hit" if cached else "miss",
                 # 単語画像が間に合わず文字だけで返したときは pending。UIはこれを見て
                 # 数秒後に1回だけ取り直す(裏で絵入りに作り直されているのでヒットする)
@@ -2569,6 +2651,7 @@ def create_app(
         layout_json: str = Form(""),
         lyrics: str = Form(""),
         subtitle_granularity: str = Form(""),
+        allow_noncommercial_fanwork: bool = Form(False),
     ) -> dict[str, Any]:
         """editor書き出しJSONの変換結果に基づく、キュー1枚ぶんのプレビューデータ。
 
@@ -2585,6 +2668,21 @@ def create_app(
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="editorのJSONが読めません") from exc
+        if is_public_mode():
+            from .editor_io import custom_wordlist_sid, is_original_wordlist
+
+            canonical = require_launch_wordlist(wordlist, status_code=422)
+            if not canonical:
+                raise HTTPException(
+                    status_code=422, detail="単語リストを選んでください"
+                )
+            if is_original_wordlist(payload) or custom_wordlist_sid(payload):
+                raise HTTPException(
+                    status_code=422, detail="この入力形式は現在利用できません"
+                )
+            payload = copy.deepcopy(payload)
+            payload["wordlist"] = {"filepath": f"{canonical}.csv"}
+            wordlist = canonical
         # 編集中のレイアウトがあれば、そのフィルタ・要素でキューを組む(なければ既定)
         layout_obj = load_layout(None)
         if layout_json.strip():
@@ -2610,9 +2708,12 @@ def create_app(
         item = cues[index]
         image_url = ""
         if item["image"]:
-            image_url = "/api/wordlist-image?" + urlencode(
-                {"wordlist": result["wordlist"], "url": item["image"]}
-            )
+            query: dict[str, Any] = {
+                "wordlist": result["wordlist"], "url": item["image"]
+            }
+            if allow_noncommercial_fanwork:
+                query["noncommercial_fanwork"] = "true"
+            image_url = "/api/asset-preview?" + urlencode(query)
         return {
             "total": total,
             "index": index,
@@ -2723,6 +2824,7 @@ def create_app(
         song_title: str = Form(""),
         original_credit: str = Form(""),
         credit_notice: str = Form(""),
+        allow_noncommercial_fanwork: bool = Form(False),
         wordlist: str = Form(""),
         where: str = Form(""),
         convert_params: str = Form(""),
@@ -2753,7 +2855,7 @@ def create_app(
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
-        if is_simple_ui() and (
+        if (is_public_mode() or is_simple_ui()) and (
             (editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
             or bool(wordlist_text.strip())
@@ -2775,6 +2877,24 @@ def create_app(
                 raise HTTPException(
                     status_code=400, detail="editorのJSONが読めません"
                 ) from exc
+            if is_public_mode():
+                from .editor_io import custom_wordlist_sid, is_original_wordlist
+
+                canonical = require_launch_wordlist(wordlist, status_code=422)
+                if not canonical:
+                    raise HTTPException(
+                        status_code=422, detail="単語リストを選んでください"
+                    )
+                if is_original_wordlist(editor_payload) or custom_wordlist_sid(
+                    editor_payload
+                ):
+                    raise HTTPException(
+                        status_code=422, detail="この入力形式は現在利用できません"
+                    )
+                editor_payload = copy.deepcopy(editor_payload)
+                editor_payload["wordlist"] = {"filepath": f"{canonical}.csv"}
+                editor_bytes = json.dumps(editor_payload, ensure_ascii=False).encode()
+                wordlist = canonical
         # 自作の単語リスト(CSV/画像入りzip、または貼り付けテキスト+画像)。
         # ジョブを走らせる前にここで検証して弾く
         custom: wordlist_zip_mod.WordlistZip | None = None
@@ -2807,6 +2927,7 @@ def create_app(
             layout_json = ""
             original_credit = ""
             credit_notice = ""
+            # 簡易UIでも明示チェックがある場合だけ許可する。
         # プレビューは元歌詞をそのまま歌わせるので替え歌の入力は不要
         if preview <= 0 and editor_bytes is None and custom is None and not wordlist.strip():
             raise HTTPException(
@@ -2845,7 +2966,7 @@ def create_app(
                 voicevox_auto_octave if voicevox_auto_octave is not None else True
             )
         wordlist = wordlist.strip()
-        if is_simple_ui() and wordlist:
+        if (is_public_mode() or is_simple_ui()) and wordlist:
             wordlist = require_launch_wordlist(wordlist, status_code=422)
         # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
         # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
@@ -2902,6 +3023,8 @@ def create_app(
                     wordlist = (
                         Path(resolved).stem if resolved.endswith(".csv") else resolved
                     )
+        if is_public_mode() and wordlist:
+            wordlist = require_launch_wordlist(wordlist, status_code=422)
         if is_simple_ui() and preview <= 0:
             launch_wordlists = {
                 str(name) for name in load_launch_catalog().get("wordlists", [])
@@ -2938,6 +3061,7 @@ def create_app(
             "song_title": song_title.strip(),
             "original_credit": original_credit.strip(),
             "credit_notice": credit_notice.strip(),
+            "allow_noncommercial_fanwork": allow_noncommercial_fanwork,
         }
         if custom is not None:
             # 表示名(履歴・サムネ・ダウンロード名)はアップロードしたファイル名から作る
@@ -3050,10 +3174,12 @@ def create_app(
             raise HTTPException(status_code=409, detail="動画はまだできていません")
         if job.video.suffix == ".wav":  # プレビュー(歌声のみ)
             return FileResponse(
-                job.video, media_type="audio/wav", filename=_download_filename(job)
+                job.video, media_type="audio/wav", filename=_download_filename(job),
+                headers={"Cache-Control": "private, no-store"},
             )
         return FileResponse(
-            job.video, media_type="video/mp4", filename=_download_filename(job)
+            job.video, media_type="video/mp4", filename=_download_filename(job),
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get("/api/jobs/{job_id}/playback", dependencies=[Depends(_require_api_key)])
@@ -3078,7 +3204,8 @@ def create_app(
         if not job.thumbnail.exists():
             raise HTTPException(status_code=404, detail="サムネ画像がありません")
         return FileResponse(
-            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job)
+            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job),
+            headers={"Cache-Control": "private, no-store"},
         )
 
     # ---- 同梱editor(/editor/)向けの配信・シード(A-2) ----
@@ -3106,7 +3233,10 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="単語リストが見つかりません"
             ) from exc
-        return FileResponse(path, media_type="text/csv")
+        return FileResponse(
+            path, media_type="text/csv",
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     @app.get("/editor/conf/setting.json")
     def editor_setting_json() -> JSONResponse:
@@ -3279,6 +3409,14 @@ def create_app(
         """
         if is_simple_ui():
             raise HTTPException(status_code=404, detail="Not Found")
+        if is_public_mode() and (
+            (wordlist_csv is not None and bool(wordlist_csv.filename))
+            or bool(wordlist_text.strip())
+            or any(bool(image.filename) for image in wordlist_images)
+        ):
+            raise HTTPException(
+                status_code=422, detail="この入力形式は現在利用できません"
+            )
         import tempfile
 
         from .align import align_lines
@@ -3327,6 +3465,8 @@ def create_app(
             # 絞り込み(where)の対象になる列を持たないので付けない(/api/jobs と同じ)
             entry = custom_wordlist_entry(sid)
         elif wordlist.strip():
+            if is_public_mode():
+                wordlist = require_launch_wordlist(wordlist, status_code=422)
             try:
                 resolve_wordlist(wordlist.strip())
             except FileNotFoundError as exc:

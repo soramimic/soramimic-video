@@ -1457,14 +1457,18 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert html.index('id="builder-sample"') < html.index('id="song-upload-button"')
     assert '自分の曲ファイルをアップロード' in html
     assert '$("song-upload-button").disabled' not in script
-    assert 'このサーバーではWAV入力を準備中です' in script
-    assert 'accept=".mid,.midi,.wav,audio/midi,audio/wav,audio/x-wav"' in html
+    assert 'このサーバーでは音声入力を準備中です' in script
+    assert '.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.webm,audio/*' in html
     assert 'function ownSongKind(' in script
-    assert 'name.endsWith(".wav")' in script
+    assert '[".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".webm"]' in script
     assert 'name.endsWith(".mid") || name.endsWith(".midi")' in script
     assert '$("song-upload-button").addEventListener("click", () => $("midi").click());' in script
     assert 'id="audio-input-panel"' in html
     assert 'id="audio-lyrics"' in html
+    assert 'songUploadEntry.addEventListener("drop"' in script
+    assert 'files.length !== 1' in script
+    assert 'setOwnSongFile(files[0]);' in script
+    assert 'songUploadEntry.classList.add("drag-over")' in script
     assert '<video id="builder-video" controls playsinline' in html
     submit = _function_body(script, "async function submitJob(")
     assert 'if (audio) form.append("audio", audio);' in submit

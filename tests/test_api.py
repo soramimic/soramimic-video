@@ -10,6 +10,8 @@ import io
 import json
 import logging
 import re
+import shutil
+import subprocess
 import time
 import wave
 from pathlib import Path
@@ -21,6 +23,7 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from soramimic_video import api as api_mod  # noqa: E402
+from soramimic_video import audio_input as audio_input_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
@@ -34,6 +37,20 @@ def fake_wav(seconds: float = 0.1, rate: int = 8000) -> bytes:
         wav.setframerate(rate)
         wav.writeframes(b"\x00\x00" * round(seconds * rate))
     return out.getvalue()
+
+
+def encoded_audio(tmp_path: Path, suffix: str, codec: str, muxer: str) -> bytes:
+    path = tmp_path / f"tone{suffix}"
+    subprocess.run(
+        [
+            shutil.which("ffmpeg") or "ffmpeg",
+            "-v", "error", "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=0.2",
+            "-c:a", codec, "-f", muxer, "-y", str(path),
+        ],
+        check=True,
+    )
+    return path.read_bytes()
 
 
 @pytest.fixture
@@ -143,14 +160,15 @@ def test_job_flow_accepts_bundled_wav_preset(client, tmp_path, monkeypatch):
     assert not (job.dir / "input.mid").exists()
 
 
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobeが必要")
 @pytest.mark.parametrize(
     ("filename", "content", "detail"),
     [
-        ("voice.mp3", fake_wav(), "WAVファイルを選んでください"),
+        ("voice.mp3", fake_wav(), "音声ファイルを読み取れません"),
         ("voice.wav", b"not a wav", "WAVファイルではありません"),
     ],
 )
-def test_rejects_invalid_wav(client, filename, content, detail):
+def test_rejects_invalid_audio(client, filename, content, detail):
     res = client.post(
         "/api/jobs",
         files={"audio": (filename, content, "application/octet-stream")},
@@ -184,7 +202,71 @@ def test_wav_input_is_hidden_and_rejected_without_audio_extra(client, monkeypatc
         data={"wordlist": "stations"},
     )
     assert res.status_code == 503
-    assert "WAV入力を利用できません" in res.json()["detail"]
+    assert "音声入力を利用できません" in res.json()["detail"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpegが必要")
+@pytest.mark.parametrize(
+    ("suffix", "codec", "muxer"),
+    [
+        (".mp3", "libmp3lame", "mp3"),
+        (".m4a", "aac", "ipod"),
+        (".aac", "aac", "adts"),
+        (".flac", "flac", "flac"),
+        (".ogg", "libvorbis", "ogg"),
+        (".opus", "libopus", "opus"),
+        (".webm", "libopus", "webm"),
+    ],
+)
+def test_normalizes_supported_audio_formats(tmp_path, suffix, codec, muxer):
+    raw = encoded_audio(tmp_path, suffix, codec, muxer)
+    wav, seconds = audio_input_mod.normalize_compressed_audio(
+        raw, f"voice{suffix}", 200 * 1024 * 1024, 420,
+    )
+    assert wav[:4] == b"RIFF"
+    assert wav[8:12] == b"WAVE"
+    assert 0.1 < seconds < 1
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpegが必要")
+def test_mp3_upload_is_stored_as_normalized_wav(client, tmp_path):
+    raw = encoded_audio(tmp_path, ".mp3", "libmp3lame", "mp3")
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.mp3", raw, "audio/mpeg")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    job = client.app.state.manager.jobs[body["id"]]
+    stored = (job.dir / "input.wav").read_bytes()
+    assert stored[:4] == b"RIFF"
+    assert body["params"]["input_kind"] == "audio"
+
+
+def test_rejects_compressed_audio_over_upload_limit():
+    with pytest.raises(audio_input_mod.AudioInputError) as caught:
+        audio_input_mod.normalize_compressed_audio(b"x" * 11, "voice.mp3", 10, 420)
+    assert caught.value.status_code == 413
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpegが必要")
+def test_rejects_webm_containing_video(tmp_path):
+    path = tmp_path / "movie.webm"
+    subprocess.run(
+        [
+            shutil.which("ffmpeg") or "ffmpeg",
+            "-v", "error", "-f", "lavfi", "-i", "color=black:s=16x16:d=0.2",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2",
+            "-c:v", "libvpx", "-c:a", "libopus", "-shortest", "-y", str(path),
+        ],
+        check=True,
+    )
+    with pytest.raises(audio_input_mod.AudioInputError) as caught:
+        audio_input_mod.normalize_compressed_audio(
+            path.read_bytes(), path.name, 200 * 1024 * 1024, 420,
+        )
+    assert caught.value.status_code == 400
 
 
 def test_wav_capability_preserves_full_ui_editor_and_local_samples(
@@ -615,7 +697,7 @@ def test_index_html_builder_submit_is_gated_while_busy():
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    assert '上の「曲」から選ぶか、自分のXF MIDI / WAVファイルをアップロードしてください' in html
+    assert '上の「曲」から選ぶか、自分のXF MIDI / 音声ファイルをアップロードしてください' in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
@@ -2028,7 +2110,7 @@ def test_index_html_song_values_are_hidden_canonicals():
     html = _index_html()
     store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
     assert 'id="midi"' in store
-    assert 'accept=".mid,.midi,.wav,audio/midi,audio/wav,audio/x-wav"' in store
+    assert '.mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.webm' in store
     assert 'id="audio"' not in store
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in store
     assert '<textarea id="lyrics"></textarea>' in store
