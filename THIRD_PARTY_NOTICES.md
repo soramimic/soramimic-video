@@ -1,5 +1,17 @@
 # Third-party notices
 
+## PJS pitch corrector
+
+The WAV pitch corrector parameters were learned from the PJS: Phoneme-balanced
+Japanese Singing-voice corpus.
+
+- Contributors: Junya Koguchi (Meiji University), Shinnosuke Takamichi (University of Tokyo)
+- License: [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+- Project: [PJS corpus](https://sites.google.com/site/shinnosuketakamichi/research-topics/pjs_corpus)
+
+The distributed model parameters are licensed under CC BY-SA 4.0. The surrounding
+inference code remains licensed under this repository's MIT license.
+
 ## HTS Voice "Mei"
 
 The WAV analysis samples use speech synthesized with HTS Voice "Mei".
