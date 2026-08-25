@@ -164,14 +164,4 @@ uv sync --group dev --extra api
 uv run pytest -q
 ```
 
-ピッチ推定の評価・学習用に、歌唱WAVと時刻付きMIDIを含むPJSコーパスを取得して
-検査済みmanifestへ変換できます。データ本体はgitignore対象の `work/` に保存されます。
-
-```sh
-uv run soramimic-video prepare-pitch-corpus pjs
-```
-
-PJSはCC BY-SA 4.0です。生成される `dataset.json` に取得元、ライセンス、必要な
-クレジットと検査結果を記録します。
-
 設計上の公開 interface は [DESIGN.md](DESIGN.md) を参照してください。
