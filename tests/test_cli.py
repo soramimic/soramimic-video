@@ -2,6 +2,15 @@ from soramimic_video import asset_store, cli
 from soramimic_video.cli import build_parser
 
 
+def test_prepare_pitch_corpus_defaults_to_gitignored_work_directory():
+    args = build_parser().parse_args(["prepare-pitch-corpus", "pjs"])
+
+    assert args.corpus == "pjs"
+    assert args.root == "work/pitch-corpora"
+    assert args.archive is None
+    assert args.no_download is False
+
+
 def test_video_image_lead_defaults_and_can_be_disabled():
     parser = build_parser()
 
