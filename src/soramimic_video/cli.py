@@ -348,33 +348,6 @@ def cmd_asset_status(args: argparse.Namespace) -> int:
     return 0 if healthy else 1
 
 
-def cmd_prepare_pitch_corpus(args: argparse.Namespace) -> int:
-    from .pitch_corpus import CorpusError, prepare_pitch_corpus
-
-    try:
-        prepared = prepare_pitch_corpus(
-            args.corpus,
-            Path(args.root),
-            archive_path=Path(args.archive) if args.archive else None,
-            download=not args.no_download,
-        )
-    except (CorpusError, OSError) as exc:
-        print(f"教師コーパス準備失敗: {exc}", file=sys.stderr)
-        return 1
-    print(
-        f"教師コーパス準備完了: {prepared.corpus_id} v{prepared.version} / "
-        f"{prepared.sample_count}音源 / {prepared.note_count}音符 / "
-        f"{prepared.duration_seconds / 60:.1f}分"
-    )
-    print(f"サンプルmanifest: {prepared.samples_manifest}")
-    print(f"音符manifest: {prepared.notes_manifest}")
-    print(f"ライセンス: {prepared.license_id}")
-    print(f"クレジット: {prepared.attribution}")
-    if prepared.warnings:
-        print(f"検査警告: {len(prepared.warnings)}件（dataset.jsonに記録）")
-    return 0
-
-
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -729,27 +702,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="共有asset store (環境変数 SORAMIMIC_VIDEO_ASSET_STORE でも指定可)",
     )
     p.set_defaults(func=cmd_asset_status)
-
-    p = sub.add_parser(
-        "prepare-pitch-corpus",
-        help="権利情報付きの歌唱WAV・MIDI教師コーパスを取得・検査する",
-    )
-    p.add_argument("corpus", choices=("pjs",), help="取得する登録済みコーパス")
-    p.add_argument(
-        "--root",
-        default="work/pitch-corpora",
-        help="ダウンロード・展開・manifestの保存先（既定: work/pitch-corpora）",
-    )
-    p.add_argument(
-        "--archive",
-        help="取得済みZIPを使う。指定時はネットワークからダウンロードしない",
-    )
-    p.add_argument(
-        "--no-download",
-        action="store_true",
-        help="ZIPが保存先に無い場合もダウンロードしない",
-    )
-    p.set_defaults(func=cmd_prepare_pitch_corpus)
 
     p = sub.add_parser("serve", help="動画生成APIサーバー(+Web UI)を起動する")
     p.add_argument("--host", default="127.0.0.1", help="LANに公開するなら 0.0.0.0")
