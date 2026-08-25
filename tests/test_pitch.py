@@ -42,6 +42,42 @@ def test_mora_midi_notes_all_unvoiced_uses_default():
     assert mora_midi_notes(track, [(0.0, 0.2)], default=62) == [62]
 
 
+def test_mora_midi_notes_uses_short_window_correction():
+    primary_times = np.arange(0.0, 0.5, 0.032)
+    short_times = np.arange(0.0, 0.5, 0.01)
+    short = PitchTrack(
+        times=short_times,
+        midi=np.full(len(short_times), 59.0),
+        voiced_probability=np.full(len(short_times), 0.8),
+    )
+    track = PitchTrack(
+        times=primary_times,
+        midi=np.full(len(primary_times), 60.0),
+        voiced_probability=np.full(len(primary_times), 0.8),
+        short_window=short,
+    )
+
+    assert mora_midi_notes(track, [(0.0, 0.3)]) == [59]
+
+
+def test_mora_midi_notes_does_not_correct_under_100ms():
+    primary_times = np.arange(0.0, 0.2, 0.032)
+    short_times = np.arange(0.0, 0.2, 0.01)
+    short = PitchTrack(
+        times=short_times,
+        midi=np.full(len(short_times), 59.0),
+        voiced_probability=np.full(len(short_times), 0.8),
+    )
+    track = PitchTrack(
+        times=primary_times,
+        midi=np.full(len(primary_times), 60.0),
+        voiced_probability=np.full(len(primary_times), 0.8),
+        short_window=short,
+    )
+
+    assert mora_midi_notes(track, [(0.0, 0.09)]) == [60]
+
+
 def test_voiced_end_stops_at_unvoiced_break():
     # 0.5秒まで有声、その後3フレーム以上無声
     track = _track([60.0] * 5 + [np.nan] * 5)

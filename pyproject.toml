@@ -79,6 +79,7 @@ packages = ["src/soramimic_video"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "THIRD_PARTY_NOTICES.md" = "soramimic_video/THIRD_PARTY_NOTICES.md"
+"src/soramimic_video/data/pitch_corrector_v1.json" = "soramimic_video/data/pitch_corrector_v1.json"
 "src/soramimic_video/static/sample/katatsumuri_audio.wav" = "soramimic_video/static/sample/katatsumuri_audio.wav"
 "src/soramimic_video/static/sample/momotarou_audio.wav" = "soramimic_video/static/sample/momotarou_audio.wav"
 "src/soramimic_video/static/sample/harugakita_audio.wav" = "soramimic_video/static/sample/harugakita_audio.wav"
