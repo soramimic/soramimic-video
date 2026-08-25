@@ -1,6 +1,7 @@
 """vocals.wav の f0 抽出とモーラごとの音高(midi_note)決定。
 
-f0 は librosa.pyin。モーラの音高は区間内の有声フレームの中央値とする
+f0 は librosa.pyin。モーラの音高は区間内の有声フレームの最頻半音を基準に、
+WAV由来のF0特徴だけを使う軽量補正器で高確度な誤りだけを直す
 (v1 は 1モーラ=1音符。モーラ内の音程変化=メリスマは扱わない)。
 有声区間の情報は、CTCアライメントのスパイク状スパンを実際の歌唱長へ
 伸長するのにも使う(voiced_end)。
@@ -13,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from .pitch_corrector import correct_midi_notes
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,8 @@ _UNVOICED_BREAK_FRAMES = 3  # これ以上連続で無声なら歌唱が途切�
 class PitchTrack:
     times: np.ndarray  # フレーム時刻(秒)
     midi: np.ndarray  # midiノート値(float)。無声はNaN
+    voiced_probability: np.ndarray | None = None
+    short_window: PitchTrack | None = None
 
     def frame_period(self) -> float:
         return float(self.times[1] - self.times[0]) if len(self.times) > 1 else 0.032
@@ -38,10 +43,38 @@ def extract_pitch(vocals_path: Path) -> PitchTrack:
 
     logger.info("f0抽出中(pyin)...")
     y, sr = librosa.load(str(vocals_path), sr=SAMPLING_RATE_PITCH, mono=True)
-    f0, _, _ = librosa.pyin(y, fmin=FMIN_HZ, fmax=FMAX_HZ, sr=sr)
-    times = librosa.times_like(f0, sr=sr)
+    f0, _, voiced_probability = librosa.pyin(
+        y,
+        fmin=FMIN_HZ,
+        fmax=FMAX_HZ,
+        sr=sr,
+        frame_length=2048,
+        hop_length=512,
+    )
+    short_f0, _, short_probability = librosa.pyin(
+        y,
+        fmin=FMIN_HZ,
+        fmax=FMAX_HZ,
+        sr=sr,
+        frame_length=1024,
+        hop_length=160,
+    )
+    times = librosa.frames_to_time(np.arange(len(f0)), sr=sr, hop_length=512)
+    short_times = librosa.frames_to_time(
+        np.arange(len(short_f0)), sr=sr, hop_length=160
+    )
     midi = librosa.hz_to_midi(f0)  # NaNは無声のまま
-    return PitchTrack(times=times, midi=midi)
+    short_midi = librosa.hz_to_midi(short_f0)
+    return PitchTrack(
+        times=times,
+        midi=midi,
+        voiced_probability=voiced_probability,
+        short_window=PitchTrack(
+            times=short_times,
+            midi=short_midi,
+            voiced_probability=short_probability,
+        ),
+    )
 
 
 def mora_midi_notes(
@@ -70,8 +103,10 @@ def mora_midi_notes(
             value = next((v for v in raw[i + 1 :] if v is not None), None)
         if value is None:
             value = default
-        notes.append(int(np.clip(value, MIDI_MIN, MIDI_MAX)))
-    return notes
+        notes.append(int(value))
+    if track.short_window is not None:
+        notes = correct_midi_notes(track, track.short_window, spans, notes)
+    return [int(np.clip(note, MIDI_MIN, MIDI_MAX)) for note in notes]
 
 
 def _mode_in_range(track: PitchTrack, start: float, end: float) -> int | None:
