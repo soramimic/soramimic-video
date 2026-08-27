@@ -379,6 +379,20 @@ def _start_rebuild(state: dict[str, Any]) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _current_mix(project_dir: Path) -> Path | None:
+    """Return a non-stale prebuilt editor mix, if one exists."""
+    project_path = project_dir / "project.json"
+    mixed = project_dir / "mix" / "song.wav"
+    try:
+        if mixed.stat().st_size <= 44:
+            return None
+        if mixed.stat().st_mtime_ns < project_path.stat().st_mtime_ns:
+            return None
+    except OSError:
+        return None
+    return mixed
+
+
 # ---- サーバー ----
 
 
@@ -523,13 +537,18 @@ def serve(
     """
     project = Project.load(project_dir)
     audio_path = _resolve_audio(project, project_dir, audio)
+    mixed = _current_mix(project_dir)
     state: dict[str, Any] = {
         "project_dir": project_dir,
         "audio": audio_path,
         "envelope": audio_envelope(audio_path) if audio_path else None,
         "reference": reference_from_midi(reference_midi) if reference_midi else None,
         "options": options or {},
-        "job": {"state": "idle", "message": "", "mixed": None},
+        "job": {
+            "state": "done" if mixed else "idle",
+            "message": f"完了: {mixed.name}" if mixed else "",
+            "mixed": mixed,
+        },
     }
     logger.info(
         "モーラ%d個 / 行%d個 / 音源%s",

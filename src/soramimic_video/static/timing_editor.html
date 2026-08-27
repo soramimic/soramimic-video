@@ -501,5 +501,5 @@ addEventListener('keydown',ev=>{
  else if(ev.ctrlKey&&ev.key==='s'){ev.preventDefault();save()}
 });
 addEventListener('beforeunload',ev=>{if(dirty)ev.preventDefault()});
-load().then(()=>{resize();tick()});
+load().then(()=>{resize();tick();poll()});
 </script></body></html>
