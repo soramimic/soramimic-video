@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from soramimic_video.project import (
     SongInfo,
 )
 from soramimic_video.timing_editor import (
+    EDITOR_HTML,
+    _current_mix,
     apply_payload,
     build_payload,
     grid_lines,
@@ -212,3 +215,22 @@ def test_rebuild_leaves_engine_url_unset_when_not_given(monkeypatch, tmp_path: P
     assert seen["kwargs"]["voicevox_style"] == 42
     assert seen["soundfont"] == "x.sf2"
     assert out.name == "song.wav"
+
+
+def test_current_mix_requires_a_non_stale_wave(tmp_path: Path) -> None:
+    project = tmp_path / "project.json"
+    mixed = tmp_path / "mix" / "song.wav"
+    mixed.parent.mkdir()
+    project.write_text("{}", encoding="utf-8")
+    mixed.write_bytes(b"RIFF" + b"\0" * 64)
+
+    assert _current_mix(tmp_path) == mixed
+
+    mixed_mtime = mixed.stat().st_mtime_ns
+    os.utime(project, ns=(mixed_mtime + 1, mixed_mtime + 1))
+    assert _current_mix(tmp_path) is None
+
+
+def test_editor_checks_for_prebuilt_mix_on_load() -> None:
+    html = EDITOR_HTML.read_text(encoding="utf-8")
+    assert "load().then(()=>{resize();tick();poll()});" in html
