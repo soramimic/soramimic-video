@@ -37,6 +37,7 @@ EDITOR_HTML = STATIC_DIR / "timing_editor.html"
 DEFAULT_PORT = 8765
 ENVELOPE_RATE = 100  # 波形表示の解像度(点/秒)
 _DEFAULT_TEMPO = 500_000  # us/beat(テンポ指定が無いMIDIの既定=120BPM)
+FULL_MIX_NAME = "full-audio-with-vocal.wav"
 
 
 # ---- テンポマップ ----
@@ -363,14 +364,89 @@ def rebuild(project_dir: Path, options: dict[str, Any]) -> Path:
     return mix(project, project_dir, soundfont=options.get("soundfont"))
 
 
+def mix_full_audio(
+    full_audio: Path,
+    project_dir: Path,
+    *,
+    full_audio_gain: float = 0.35,
+    vocal_gain: float = 1.0,
+) -> Path:
+    """原曲音源の全成分と合成歌唱を重ねた、編集確認用WAVを作る。
+
+    マスタリング済みの原曲へさらに歌を足すため、原曲側を既定で下げる。最後に
+    リミッターを通して、スマートフォン再生時のクリップを避ける。入力は変更せず、
+    mix/full-audio-with-vocal.wav へ別ファイルとして書き出す。
+    """
+    from . import runproc
+    from .synthesize import vocal_path
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg が見つかりません")
+    if not full_audio.exists():
+        raise RuntimeError(f"原曲音源がありません({full_audio})")
+    vocal = vocal_path(project_dir)
+    if not vocal.exists():
+        raise RuntimeError(f"歌唱wavがありません({vocal})。先に合成を実行してください")
+    if full_audio_gain < 0 or vocal_gain < 0:
+        raise ValueError("音量は0以上で指定してください")
+
+    work = project_dir / "mix"
+    work.mkdir(parents=True, exist_ok=True)
+    out = work / FULL_MIX_NAME
+    tmp = work / f".{FULL_MIX_NAME}.{threading.get_ident()}.tmp.wav"
+    cmd = [
+        ffmpeg, "-y",
+        "-i", str(full_audio),
+        "-i", str(vocal),
+        "-filter_complex",
+        f"[0:a]volume={full_audio_gain}[a0];"
+        f"[1:a]volume={vocal_gain}[a1];"
+        "[a0][a1]amix=inputs=2:duration=longest:normalize=0,"
+        "alimiter=limit=0.95:level=0:latency=1[out]",
+        "-map", "[out]",
+        str(tmp),
+    ]
+    try:
+        proc = runproc.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0 or not tmp.exists():
+            raise RuntimeError(f"ffmpeg原曲ミックスが失敗しました:\n{proc.stderr[-2000:]}")
+        tmp.replace(out)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return out
+
+
+def rebuild_outputs(
+    project_dir: Path,
+    options: dict[str, Any],
+    full_audio: Path | None = None,
+    full_audio_gain: float = 0.35,
+) -> tuple[Path, Path | None]:
+    """歌唱を再合成し、通常ミックスと任意の原曲ミックスを更新する。"""
+    mixed = rebuild(project_dir, options)
+    full_mixed = None
+    if full_audio is not None:
+        full_mixed = mix_full_audio(
+            full_audio, project_dir, full_audio_gain=full_audio_gain
+        )
+    return mixed, full_mixed
+
+
 def _start_rebuild(state: dict[str, Any]) -> None:
     job = state["job"]
 
     def worker() -> None:
         try:
-            out = rebuild(state["project_dir"], state["options"])
-            job.update(state="done", message=f"完了: {out.name}", mixed=out)
-            logger.info("作り直し完了: %s", out)
+            out, full_out = rebuild_outputs(
+                state["project_dir"], state["options"], state.get("full_audio"),
+                state.get("full_audio_gain", 0.35),
+            )
+            job.update(
+                state="done", message=f"完了: {out.name}", mixed=out,
+                full_mixed=full_out,
+            )
+            logger.info("作り直し完了: %s / 原曲ミックス%s", out, full_out or "なし")
         except Exception as exc:  # GUIに理由を出す
             logger.exception("作り直しに失敗しました")
             job.update(state="error", message=str(exc))
@@ -387,6 +463,24 @@ def _current_mix(project_dir: Path) -> Path | None:
         if mixed.stat().st_size <= 44:
             return None
         if mixed.stat().st_mtime_ns < project_path.stat().st_mtime_ns:
+            return None
+    except OSError:
+        return None
+    return mixed
+
+
+def _current_full_mix(project_dir: Path, full_audio: Path | None) -> Path | None:
+    """Return a non-stale prebuilt full-audio plus synthesized-vocal mix."""
+    if full_audio is None:
+        return None
+    from .synthesize import vocal_path
+
+    mixed = project_dir / "mix" / FULL_MIX_NAME
+    dependencies = [project_dir / "project.json", full_audio, vocal_path(project_dir)]
+    try:
+        if mixed.stat().st_size <= 44:
+            return None
+        if any(mixed.stat().st_mtime_ns < path.stat().st_mtime_ns for path in dependencies):
             return None
     except OSError:
         return None
@@ -455,9 +549,12 @@ def _make_handler(state: dict[str, Any]) -> type[http.server.BaseHTTPRequestHand
             elif path == "/rebuild_status":
                 job = state["job"]
                 self._json(200, {"state": job["state"], "message": job["message"],
-                                 "has_mix": job.get("mixed") is not None})
+                                 "has_mix": job.get("mixed") is not None,
+                                 "has_full_mix": job.get("full_mixed") is not None})
             elif path == "/mixed" and state["job"].get("mixed") is not None:
                 self._file(state["job"]["mixed"], "audio/wav")
+            elif path == "/full-mixed" and state["job"].get("full_mixed") is not None:
+                self._file(state["job"]["full_mixed"], "audio/wav")
             elif path == "/audio" and state["audio"] is not None:
                 audio: Path = state["audio"]
                 ctype = "audio/mpeg" if audio.suffix.lower() == ".mp3" else "audio/wav"
@@ -527,6 +624,8 @@ def serve(
     host: str = "127.0.0.1",
     port: int = DEFAULT_PORT,
     audio: Path | None = None,
+    full_audio: Path | None = None,
+    full_audio_gain: float = 0.35,
     reference_midi: Path | None = None,
     options: dict[str, Any] | None = None,
 ) -> None:
@@ -537,10 +636,23 @@ def serve(
     """
     project = Project.load(project_dir)
     audio_path = _resolve_audio(project, project_dir, audio)
+    if full_audio is not None and not full_audio.exists():
+        logger.warning("原曲音源が見つかりません: %s", full_audio)
+        full_audio = None
     mixed = _current_mix(project_dir)
+    full_mixed = _current_full_mix(project_dir, full_audio)
+    if full_audio is not None and full_mixed is None:
+        try:
+            full_mixed = mix_full_audio(
+                full_audio, project_dir, full_audio_gain=full_audio_gain
+            )
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("起動時の原曲＋合成ミックスを作れませんでした: %s", exc)
     state: dict[str, Any] = {
         "project_dir": project_dir,
         "audio": audio_path,
+        "full_audio": full_audio,
+        "full_audio_gain": full_audio_gain,
         "envelope": audio_envelope(audio_path) if audio_path else None,
         "reference": reference_from_midi(reference_midi) if reference_midi else None,
         "options": options or {},
@@ -548,6 +660,7 @@ def serve(
             "state": "done" if mixed else "idle",
             "message": f"完了: {mixed.name}" if mixed else "",
             "mixed": mixed,
+            "full_mixed": full_mixed,
         },
     }
     logger.info(

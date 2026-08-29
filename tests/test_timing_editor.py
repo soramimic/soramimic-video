@@ -14,10 +14,12 @@ from soramimic_video.project import (
 )
 from soramimic_video.timing_editor import (
     EDITOR_HTML,
+    _current_full_mix,
     _current_mix,
     apply_payload,
     build_payload,
     grid_lines,
+    mix_full_audio,
     rebuild,
     sec_to_tick,
     synthesize_line,
@@ -231,6 +233,62 @@ def test_current_mix_requires_a_non_stale_wave(tmp_path: Path) -> None:
     assert _current_mix(tmp_path) is None
 
 
+def test_mix_full_audio_uses_separate_output_and_limiter(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from soramimic_video import runproc
+    from soramimic_video.synthesize import vocal_path
+
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"RIFFsource")
+    vocal = vocal_path(tmp_path)
+    vocal.parent.mkdir()
+    vocal.write_bytes(b"RIFFvocal")
+    seen: dict = {}
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(b"RIFF" + b"\0" * 64)
+        return Result()
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(runproc, "run", fake_run)
+
+    out = mix_full_audio(source, tmp_path, full_audio_gain=0.4)
+
+    assert out == tmp_path / "mix" / "full-audio-with-vocal.wav"
+    assert source.read_bytes() == b"RIFFsource"
+    filters = seen["cmd"][seen["cmd"].index("-filter_complex") + 1]
+    assert "volume=0.4" in filters
+    assert "alimiter=limit=0.95" in filters
+
+
+def test_current_full_mix_requires_all_inputs_to_be_older(tmp_path: Path) -> None:
+    from soramimic_video.synthesize import vocal_path
+
+    project = tmp_path / "project.json"
+    source = tmp_path / "source.wav"
+    vocal = vocal_path(tmp_path)
+    mixed = tmp_path / "mix" / "full-audio-with-vocal.wav"
+    vocal.parent.mkdir()
+    mixed.parent.mkdir(exist_ok=True)
+    for path in (project, source, vocal):
+        path.write_bytes(b"input")
+    mixed.write_bytes(b"RIFF" + b"\0" * 64)
+    newest = max(path.stat().st_mtime_ns for path in (project, source, vocal))
+    os.utime(mixed, ns=(newest + 1, newest + 1))
+
+    assert _current_full_mix(tmp_path, source) == mixed
+    os.utime(source, ns=(newest + 2, newest + 2))
+    assert _current_full_mix(tmp_path, source) is None
+
+
 def test_editor_checks_for_prebuilt_mix_on_load() -> None:
     html = EDITOR_HTML.read_text(encoding="utf-8")
     assert "load().then(()=>{resize();tick();poll()});" in html
+    assert '<option value="full" disabled>原曲＋リツ</option>' in html
+    assert "full:{src:'/full-mixed'" in html

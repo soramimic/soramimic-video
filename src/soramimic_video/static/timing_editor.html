@@ -25,7 +25,7 @@ canvas{display:block;cursor:default;touch-action:none}
 </style></head><body>
 <div id="bar">
  <button id="bplay" title="Space">▶ 再生</button>
- <select id="asrc" title="鳴らす音源"><option value="main">音源</option><option value="mixed" disabled>ミックス</option></select>
+ <select id="asrc" title="鳴らす音源"><option value="main">音源</option><option value="mixed" disabled>BGM＋リツ</option><option value="full" disabled>原曲＋リツ</option></select>
  <select id="aspd"><option value="1">1.0x</option><option value="0.75">0.75x</option><option value="0.5">0.5x</option><option value="0.25">0.25x</option></select>
  <button id="bsnap" class="on" title="ドラッグ時にノート境界へ吸着">吸着</button>
  <select id="bunit" title="吸着・調整の単位(拍の分割)"><option value="auto">単位:自動</option><option value="1">1拍</option><option value="2">1/2拍</option><option value="3">1/3拍</option><option value="4">1/4拍</option><option value="6">1/6拍</option><option value="12">1/12拍</option></select>
@@ -70,7 +70,7 @@ const RULER=30,LYRIC=20,WAVE=56;
 let undoStack=[],redoStack=[];
 let audio=new Audio(),audioOffset=0,playing=false;
 audio.preload='auto';
-const AUDIO={main:{src:'/audio',off:0},mixed:{src:'/mixed',off:0}};
+const AUDIO={main:{src:'/audio',off:0},mixed:{src:'/mixed',off:0},full:{src:'/full-mixed',off:0}};
 let lineAudio=null,lineT0=0,synthing=false;
 audio.addEventListener('error',()=>setStatus('音声読込エラー: '+(audio.error&&audio.error.code)));
 audio.addEventListener('ended',()=>{playing=false;$('bplay').textContent='▶ 再生'});
@@ -100,7 +100,7 @@ async function load(){
  setStatus('モーラ'+moras.length+'個'+(d.has_audio?'':' / 音源なし'));resize()}
 function setStatus(s){$('status').textContent=s}
 function setAudio(k){const c=AUDIO[k];const t=curTime();audio.pause();playing=false;$('bplay').textContent='▶ 再生';
- audio.src=c.src;audioOffset=c.off;audio.load();seekTo(t)}
+ audio.src=c.src+'?v='+Date.now();audioOffset=c.off;audio.load();seekTo(t)}
 function curTime(){return audio.currentTime-audioOffset}
 function seekTo(t){try{audio.currentTime=Math.max(0,t+audioOffset)}catch(e){}}
 
@@ -412,9 +412,12 @@ async function poll(){
  const j=await fetch('/rebuild_status').then(x=>x.json()).catch(()=>null);
  if(!j)return;
  if(j.state==='running'){setStatus('合成中… '+j.message);setTimeout(poll,2000)}
- else if(j.state==='done'){setStatus('合成できました ✓ 「ミックス」で聴けます');
+ else if(j.state==='done'){setStatus('合成できました ✓ 音源を切り替えて聴けます');
   const opt=$('asrc').querySelector('option[value=mixed]');
-  if(opt&&j.has_mix){opt.disabled=false;$('asrc').value='mixed';setAudio('mixed')}}
+  if(opt&&j.has_mix)opt.disabled=false;
+  const full=$('asrc').querySelector('option[value=full]');
+  if(full&&j.has_full_mix){full.disabled=false;$('asrc').value='full';setAudio('full')}
+  else if(opt&&j.has_mix){$('asrc').value='mixed';setAudio('mixed')}}
  else if(j.state==='error')setStatus('合成に失敗: '+j.message)}
 $('blegato').onclick=()=>{const li=lineInfo();if(!li)return;snap();
  const idxs=li.idxs;let fixed=0;
