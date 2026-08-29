@@ -2,6 +2,16 @@ from soramimic_video import asset_store, cli
 from soramimic_video.cli import build_parser
 
 
+def test_edit_timing_accepts_full_audio_overlay_options():
+    args = build_parser().parse_args([
+        "edit-timing", "--project", "work/song",
+        "--full-audio", "source.wav", "--full-audio-gain", "0.4",
+    ])
+
+    assert args.full_audio == "source.wav"
+    assert args.full_audio_gain == 0.4
+
+
 def test_video_image_lead_defaults_and_can_be_disabled():
     parser = build_parser()
 

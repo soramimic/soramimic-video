@@ -23,6 +23,8 @@ def cmd_edit_timing(args: argparse.Namespace) -> int:
         host=args.host,
         port=args.port,
         audio=Path(args.audio) if args.audio else None,
+        full_audio=Path(args.full_audio) if args.full_audio else None,
+        full_audio_gain=args.full_audio_gain,
         reference_midi=Path(args.reference_midi) if args.reference_midi else None,
         options={
             "synthesizer": args.synthesizer,
@@ -518,6 +520,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--audio", help="重ねて聴く音源(既定: project.jsonのvocals_path/audio_path)"
+    )
+    p.add_argument(
+        "--full-audio",
+        help="合成歌唱と重ねて聴く原曲音源(ボーカルを含むWAV/MP3)",
+    )
+    p.add_argument(
+        "--full-audio-gain", type=float, default=0.35,
+        help="原曲＋合成モードの原曲音量(既定: 0.35)",
     )
     p.add_argument(
         "--reference-midi", help="背景に薄く表示する参照メロディMIDI(既定: 編集前の音符)"
