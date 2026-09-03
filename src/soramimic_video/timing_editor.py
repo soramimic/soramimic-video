@@ -17,6 +17,7 @@ import array
 import http.server
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ DEFAULT_PORT = 8765
 ENVELOPE_RATE = 100  # 波形表示の解像度(点/秒)
 _DEFAULT_TEMPO = 500_000  # us/beat(テンポ指定が無いMIDIの既定=120BPM)
 FULL_MIX_NAME = "full-audio-with-vocal.wav"
+IGNORE_RANGES_NAME = "evaluation-ignore.json"
 
 
 # ---- テンポマップ ----
@@ -143,6 +145,7 @@ def build_payload(
     reference: list[list[float]] | None = None,
     envelope: dict[str, Any] | None = None,
     has_audio: bool = False,
+    ignore_ranges: list[dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     """GUIが読むJSONを組み立てる。
 
@@ -172,10 +175,89 @@ def build_payload(
         "grid": grid_lines(project.song, end_sec + 5.0),
         "rms": envelope,
         "has_audio": has_audio,
+        "ignore_ranges": ignore_ranges or [],
         "line_texts": {
             str(line.id): line.original_text or line.xf_surface for line in project.lines
         },
     }
+
+
+def normalize_ignore_ranges(items: Any) -> list[dict[str, float]]:
+    """Validate, sort, and merge evaluation-ignore time ranges.
+
+    The editor uses ``start``/``end`` while the persisted sidecar uses the more
+    explicit ``start_sec``/``end_sec`` names.  Accept both so the file is easy
+    for evaluation scripts to consume without coupling them to the browser UI.
+    """
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise ValueError("ignore_ranges は配列で指定してください")
+    ranges: list[tuple[float, float]] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"ignore_ranges[{i}] はオブジェクトで指定してください")
+        start_value = item.get("start_sec", item.get("start"))
+        end_value = item.get("end_sec", item.get("end"))
+        if start_value is None or end_value is None:
+            raise ValueError(f"ignore_ranges[{i}] の開始・終了秒が不正です")
+        try:
+            start = float(start_value)
+            end = float(end_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ignore_ranges[{i}] の開始・終了秒が不正です") from exc
+        if not math.isfinite(start) or not math.isfinite(end):
+            raise ValueError(f"ignore_ranges[{i}] の開始・終了秒が不正です")
+        if start < 0:
+            raise ValueError(f"ignore_ranges[{i}] の開始秒は0以上にしてください")
+        if end <= start:
+            raise ValueError(f"ignore_ranges[{i}] は終了秒を開始秒より後にしてください")
+        start, end = round(start, 4), round(end, 4)
+        if end <= start:
+            raise ValueError(f"ignore_ranges[{i}] は0.0001秒以上にしてください")
+        ranges.append((start, end))
+
+    merged: list[list[float]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [{"start": start, "end": end} for start, end in merged]
+
+
+def load_ignore_ranges(project_dir: Path) -> list[dict[str, float]]:
+    """Load the project-local evaluation-ignore sidecar, if present."""
+    path = project_dir / IGNORE_RANGES_NAME
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError(f"{IGNORE_RANGES_NAME} のversionが未対応です")
+    return normalize_ignore_ranges(data.get("ranges"))
+
+
+def save_ignore_ranges(project_dir: Path, items: Any) -> list[dict[str, float]]:
+    """Atomically persist normalized evaluation-ignore ranges beside project.json."""
+    ranges = normalize_ignore_ranges(items)
+    data = {
+        "version": 1,
+        "time_basis": "project_seconds",
+        "ranges": [
+            {"start_sec": item["start"], "end_sec": item["end"]}
+            for item in ranges
+        ],
+    }
+    path = project_dir / IGNORE_RANGES_NAME
+    tmp = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return ranges
 
 
 def apply_payload(project: Project, payload: dict[str, Any]) -> dict[str, Any]:
@@ -539,13 +621,19 @@ def _make_handler(state: dict[str, Any]) -> type[http.server.BaseHTTPRequestHand
             if path == "/":
                 self._file(EDITOR_HTML, "text/html; charset=utf-8")
             elif path == "/data":
-                project = Project.load(state["project_dir"])
-                self._json(200, build_payload(
-                    project,
-                    reference=state["reference"],
-                    envelope=state["envelope"],
-                    has_audio=state["audio"] is not None,
-                ))
+                try:
+                    project_dir: Path = state["project_dir"]
+                    project = Project.load(project_dir)
+                    self._json(200, build_payload(
+                        project,
+                        reference=state["reference"],
+                        envelope=state["envelope"],
+                        has_audio=state["audio"] is not None,
+                        ignore_ranges=load_ignore_ranges(project_dir),
+                    ))
+                except Exception as exc:
+                    logger.exception("編集データの読込に失敗しました")
+                    self._json(500, {"error": str(exc)})
             elif path == "/rebuild_status":
                 job = state["job"]
                 self._json(200, {"state": job["state"], "message": job["message"],
@@ -603,12 +691,26 @@ def _make_handler(state: dict[str, Any]) -> type[http.server.BaseHTTPRequestHand
                 project_dir: Path = state["project_dir"]
                 project = Project.load(project_dir)
                 info = apply_payload(project, payload)
+                has_ignore_payload = "ignore_ranges" in payload
+                ignore_ranges = (
+                    normalize_ignore_ranges(payload["ignore_ranges"])
+                    if has_ignore_payload else load_ignore_ranges(project_dir)
+                )
                 stamp = time.strftime("%m%d-%H%M%S")
                 current = project_dir / "project.json"
                 if current.exists():
                     shutil.copy(current, current.with_suffix(f".json.bak-{stamp}"))
+                ignore_path = project_dir / IGNORE_RANGES_NAME
+                if has_ignore_payload and ignore_path.exists():
+                    shutil.copy(
+                        ignore_path,
+                        ignore_path.with_name(f"{ignore_path.name}.bak-{stamp}"),
+                    )
                 project.save(project_dir)
+                if has_ignore_payload:
+                    ignore_ranges = save_ignore_ranges(project_dir, ignore_ranges)
                 info["backup"] = stamp
+                info["ignore_ranges"] = len(ignore_ranges)
                 logger.info("保存しました: %d音符 / %d行", info["notes"], info["lines"])
                 self._json(200, info)
             except Exception as exc:  # GUIに理由を返す
