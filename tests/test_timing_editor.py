@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -14,13 +15,17 @@ from soramimic_video.project import (
 )
 from soramimic_video.timing_editor import (
     EDITOR_HTML,
+    IGNORE_RANGES_NAME,
     _current_full_mix,
     _current_mix,
     apply_payload,
     build_payload,
     grid_lines,
+    load_ignore_ranges,
     mix_full_audio,
+    normalize_ignore_ranges,
     rebuild,
+    save_ignore_ranges,
     sec_to_tick,
     synthesize_line,
     tick_to_sec,
@@ -81,7 +86,9 @@ def test_grid_lines_marks_measures_and_beats() -> None:
 
 
 def test_build_payload_lists_moras_in_time_order() -> None:
-    payload = build_payload(_project())
+    payload = build_payload(
+        _project(), ignore_ranges=[{"start": 2.0, "end": 3.5}]
+    )
     assert [m["text"] for m in payload["moras"]] == ["シ", "ズ", "ヨル"]
     assert [m["line"] for m in payload["moras"]] == [0, 0, 1]
     assert [m["i"] for m in payload["moras"]] == [0, 1, 0]
@@ -89,6 +96,59 @@ def test_build_payload_lists_moras_in_time_order() -> None:
     # 参照音符は既定で編集前の音符
     assert payload["reference"][0] == [0.0, 0.5, 60]
     assert payload["line_texts"]["1"] == "夜"
+    assert payload["ignore_ranges"] == [{"start": 2.0, "end": 3.5}]
+
+
+def test_ignore_ranges_are_sorted_and_overlaps_are_merged() -> None:
+    assert normalize_ignore_ranges([
+        {"start": 4.0, "end": 5.0},
+        {"start_sec": 1.0, "end_sec": 2.5},
+        {"start": 2.0, "end": 3.0},
+    ]) == [
+        {"start": 1.0, "end": 3.0},
+        {"start": 4.0, "end": 5.0},
+    ]
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        "not-a-list",
+        [{"start": -1, "end": 2}],
+        [{"start": 2, "end": 2}],
+        [{"start": 1, "end": float("inf")}],
+    ],
+)
+def test_ignore_ranges_reject_invalid_values(ranges: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_ignore_ranges(ranges)
+
+
+def test_ignore_ranges_roundtrip_in_project_sidecar(tmp_path: Path) -> None:
+    saved = save_ignore_ranges(tmp_path, [
+        {"start": 8.125, "end": 9.5},
+        {"start": 2.0, "end": 3.0},
+    ])
+
+    assert saved == [
+        {"start": 2.0, "end": 3.0},
+        {"start": 8.125, "end": 9.5},
+    ]
+    sidecar = tmp_path / IGNORE_RANGES_NAME
+    raw = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert raw == {
+        "version": 1,
+        "time_basis": "project_seconds",
+        "ranges": [
+            {"start_sec": 2.0, "end_sec": 3.0},
+            {"start_sec": 8.125, "end_sec": 9.5},
+        ],
+    }
+    assert load_ignore_ranges(tmp_path) == saved
+
+
+def test_missing_ignore_sidecar_loads_as_empty(tmp_path: Path) -> None:
+    assert load_ignore_ranges(tmp_path) == []
 
 
 def test_apply_payload_moves_note_and_keeps_surface() -> None:
@@ -292,3 +352,12 @@ def test_editor_checks_for_prebuilt_mix_on_load() -> None:
     assert "load().then(()=>{resize();tick();poll()});" in html
     assert '<option value="full" disabled>原曲＋リツ</option>' in html
     assert "full:{src:'/full-mixed'" in html
+
+
+def test_editor_can_mark_and_save_ignore_ranges() -> None:
+    html = EDITOR_HTML.read_text(encoding="utf-8")
+    assert 'id="bistart"' in html
+    assert 'id="biend"' in html
+    assert 'id="bidel"' in html
+    assert "ignoreRanges=normalizeIgnores(d.ignore_ranges||[])" in html
+    assert "JSON.stringify({moras,ignore_ranges:ignoreRanges})" in html

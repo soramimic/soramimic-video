@@ -17,9 +17,11 @@ button.on{background:#2a5d8f;border-color:var(--acc)}
 canvas{display:block;cursor:default;touch-action:none}
 #panel input{background:#181a20;color:var(--fg);border:1px solid #4a4f5c;border-radius:6px;padding:6px;font-size:16px}
 #ptext{width:3.5em;text-align:center}
-#pstart,#pend{width:5.5em}#ppitch{width:3.5em}
+#pstart,#pend,#istart,#iend{width:5.5em}#ppitch{width:3.5em}
 #pline{color:#9ab;max-width:30vw;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 #pline b{color:var(--sel)}
+#iinfo{color:#e99;white-space:nowrap}
+#biend.marking{background:#74343b;border-color:#f77}
 #txtedit{position:absolute;display:none;width:3.6em;font-size:16px;text-align:center;z-index:5;
  border:2px solid var(--sel);border-radius:4px;background:#181a20;color:#fff}
 </style></head><body>
@@ -56,6 +58,13 @@ canvas{display:block;cursor:default;touch-action:none}
  <button id="blegall" title="全モーラに長さ揃えを一括適用(隙間0.15秒未満のみ埋める)。Undo可">間詰め(全)</button>
  <button id="bdist" title="複数モーラを含むブロックを、実ノートの区切りで1モーラずつ順に割り付け直す。直後のーは吸収">モーラ割付</button>
  <button id="bquant" title="選択行の開始位置を吸着(近くの実ノート開始を優先、なければ8分/16分/三連の拍分割点)。長さも区切りに整える。Undo可">グリッド整列</button>
+ <span style="border-left:1px solid #4a4f5c;margin:0 2px"></span>
+ <button id="bistart" title="現在の再生位置をignore区間の開始にする">ignore開始</button>
+ <button id="biend" title="現在の再生位置までをignore区間として追加" disabled>ignore終了</button>
+ <input id="istart" type="number" min="0" step="0.001" title="選択中ignoreの開始秒" disabled>
+ <input id="iend" type="number" min="0" step="0.001" title="選択中ignoreの終了秒" disabled>
+ <button id="bidel" title="選択中のignore区間を削除" disabled>ignore削除</button>
+ <span id="iinfo">ignore 0区間</span>
  <span id="pline"></span>
 </div>
 <script>
@@ -63,6 +72,7 @@ canvas{display:block;cursor:default;touch-action:none}
 const $=id=>document.getElementById(id);
 const cv=$('cv'),ctx=cv.getContext('2d');
 let notes=[],moras=[],rms=null,beats={measures:[],beats:[]},lineTexts={};
+let ignoreRanges=[],ignoreSel=-1,ignoreMark=null;
 let sel=-1,dirty=false;
 let t0=25,pps=120;
 let pTop=94,pBot=64,rowH=16,pView=92;
@@ -88,6 +98,7 @@ function clampV(){const vis=Math.floor(rollH()/rowH);
 async function load(){
  const d=await fetch('/data').then(x=>x.json());
  moras=(d.moras||[]).slice().sort((x,y)=>x.start-y.start);
+ ignoreRanges=normalizeIgnores(d.ignore_ranges||[]);
  notes=d.reference||[];rms=d.rms||null;beats=d.grid||{measures:[],beats:[]};lineTexts=d.line_texts||{};
  // 表示位置と音域は中身に合わせる
  const ps=[...moras.map(m=>m.pitch),...notes.map(n=>n[2])];
@@ -97,7 +108,8 @@ async function load(){
   const span=moras[moras.length-1].end-moras[0].start;
   if(span>0)pps=Math.min(300,Math.max(20,(innerWidth-40)/Math.min(span,20)))}
  if(d.has_audio)setAudio('main');else{$('bplay').disabled=true;$('aspd').disabled=true}
- setStatus('モーラ'+moras.length+'個'+(d.has_audio?'':' / 音源なし'));resize()}
+ refreshIgnorePanel();
+ setStatus('モーラ'+moras.length+'個 / ignore '+ignoreRanges.length+'区間'+(d.has_audio?'':' / 音源なし'));resize()}
 function setStatus(s){$('status').textContent=s}
 function setAudio(k){const c=AUDIO[k];const t=curTime();audio.pause();playing=false;$('bplay').textContent='▶ 再生';
  audio.src=c.src+'?v='+Date.now();audioOffset=c.off;audio.load();seekTo(t)}
@@ -134,6 +146,16 @@ function draw(){
   for(const[mt,mn]of beats.measures){if(mt<tA||mt>tB)continue;const x=t2x(mt);
    ctx.strokeStyle='#4a5164';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x,RULER);ctx.lineTo(x,H2);ctx.stroke();ctx.lineWidth=1;
    if(pps>60){ctx.fillStyle='#7a8299';ctx.fillText(mn,x+2,H2-4)}}}
+ // 採点対象外の時間帯。音符より背面へ赤い帯として描く。
+ for(let i=0;i<ignoreRanges.length;i++){const r=ignoreRanges[i];if(r.end<tA||r.start>tB)continue;
+  const x=t2x(r.start),w=Math.max(2,(r.end-r.start)*pps);
+  ctx.fillStyle=i===ignoreSel?'rgba(255,92,92,.32)':'rgba(255,92,92,.18)';
+  ctx.fillRect(x,RULER,w,H-RULER);
+  ctx.strokeStyle=i===ignoreSel?'#ffb0b0':'#b9575f';ctx.lineWidth=i===ignoreSel?2:1;
+  ctx.strokeRect(x+.5,RULER+.5,w-1,H-RULER-1);ctx.lineWidth=1;
+  if(w>38){ctx.fillStyle='#ffd0d0';ctx.fillText('ignore',x+3,RULER+14)}}
+ if(ignoreMark!==null&&ignoreMark>=tA&&ignoreMark<=tB){const x=t2x(ignoreMark);
+  ctx.strokeStyle='#ff6b73';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();ctx.lineWidth=1}
  ctx.fillStyle='#3a4152';
  for(const[s,e,p]of notes){if(e<tA||s>tB)continue;
   ctx.fillRect(t2x(s),p2y(p)-rowH,Math.max(2,(e-s)*pps),rowH-1)}
@@ -156,7 +178,22 @@ function draw(){
     ctx.strokeStyle='#f90';ctx.lineWidth=2;ctx.strokeRect(mx,my-rowH,mw,rowH-1);ctx.lineWidth=1;break}}}
 }
 
+function normalizeIgnores(src){const out=[];
+ const items=src.map(x=>({start:Math.max(0,+x.start),end:+x.end}))
+  .filter(x=>Number.isFinite(x.start)&&Number.isFinite(x.end)&&x.end>x.start)
+  .sort((a,b)=>a.start-b.start);
+ for(const r of items){const last=out[out.length-1];
+  if(last&&r.start<=last.end)last.end=Math.max(last.end,r.end);else out.push(r)}
+ return out}
+function hitIgnore(t){for(let i=ignoreRanges.length-1;i>=0;i--){const r=ignoreRanges[i];if(r.start<=t&&t<=r.end)return i}return -1}
+function refreshIgnorePanel(){const r=ignoreRanges[ignoreSel];
+ $('istart').disabled=!r;$('iend').disabled=!r;$('bidel').disabled=!r;
+ $('istart').value=r?r.start.toFixed(3):'';$('iend').value=r?r.end.toFixed(3):'';
+ $('iinfo').textContent=r?'ignore '+(ignoreSel+1)+'/'+ignoreRanges.length:'ignore '+ignoreRanges.length+'区間'}
+function selectIgnore(i){ignoreSel=(i>=0&&i<ignoreRanges.length)?i:-1;
+ if(ignoreSel>=0){sel=-1;$('pline').textContent=''}refreshIgnorePanel();draw()}
 function select(i,scroll){sel=i;const m=moras[i];if(!m){$('pline').textContent='';draw();return}
+ ignoreSel=-1;refreshIgnorePanel();
  $('ptext').value=m.text;$('pstart').value=m.start.toFixed(3);$('pend').value=m.end.toFixed(3);$('ppitch').value=m.pitch;
  const ls=moras.filter(x=>x.line===m.line).sort((a,b)=>a.start-b.start);
  const lt=lineTexts[m.line]?' 〈'+lineTexts[m.line]+'〉':'';
@@ -167,9 +204,12 @@ function hit(x,y){for(let i=moras.length-1;i>=0;i--){const m=moras[i];
   const mx=t2x(m.start),mw=Math.max(3,(m.end-m.start)*pps),my=p2y(m.pitch);
   if(x>=mx-3&&x<=mx+mw+3&&y>=my-rowH-3&&y<=my+3)return i}return -1}
 
-function snap(){undoStack.push(JSON.stringify(moras));if(undoStack.length>200)undoStack.shift();redoStack=[];dirty=true;setStatus('未保存の変更あり')}
-function undo(){if(!undoStack.length)return;redoStack.push(JSON.stringify(moras));moras=JSON.parse(undoStack.pop());sel=-1;draw()}
-function redo(){if(!redoStack.length)return;undoStack.push(JSON.stringify(moras));moras=JSON.parse(redoStack.pop());sel=-1;draw()}
+function stateJson(){return JSON.stringify({moras,ignoreRanges})}
+function restoreState(raw){const s=JSON.parse(raw);moras=s.moras;ignoreRanges=s.ignoreRanges||[];
+ sel=-1;ignoreSel=-1;ignoreMark=null;refreshIgnorePanel();draw()}
+function snap(){undoStack.push(stateJson());if(undoStack.length>200)undoStack.shift();redoStack=[];dirty=true;setStatus('未保存の変更あり')}
+function undo(){if(!undoStack.length)return;redoStack.push(stateJson());restoreState(undoStack.pop())}
+function redo(){if(!redoStack.length)return;undoStack.push(stateJson());restoreState(redoStack.pop())}
 
 // ---- ポインタ操作(マウス+タッチ統合) ----
 // タップ=選択 / 選択済みモーラをドラッグ=移動(端で伸縮) / 余白ドラッグ=スワイプ移動 / 2本指=ピンチズーム
@@ -181,7 +221,7 @@ cv.addEventListener('pointerdown',ev=>{
  const[x,y]=cvPos(ev);ptrs.set(ev.pointerId,{x,y});
  if(ptrs.size===2){drag=null;const a=[...ptrs.values()];
   pinch={d:Math.abs(a[0].x-a[1].x)+1,mid:x2t((a[0].x+a[1].x)/2),pps0:pps};return}
- if(y<RULER){seekTo(x2t(x));draw();return}
+ if(y<RULER){const t=x2t(x);seekTo(t);selectIgnore(hitIgnore(t));return}
  const i=hit(x,y);
  const isMouse=ev.pointerType==='mouse';
  if(i>=0&&(isMouse||i===sel)){
@@ -393,11 +433,35 @@ function tick(){if(playing){const t=curTime();
 for(const id of['bsnap','bfollow'])$(id).onclick=ev=>ev.target.classList.toggle('on');
 $('bbeat').onclick=ev=>{ev.target.classList.toggle('on');draw()};
 
+function currentEditTime(){const t=(lineAudio&&!lineAudio.paused)?lineAudio.currentTime+lineT0:curTime();
+ return Number.isFinite(t)?Math.max(0,t):Math.max(0,t0)}
+function finishIgnoreMark(){ignoreMark=null;$('biend').disabled=true;$('biend').classList.remove('marking')}
+$('bistart').onclick=()=>{ignoreMark=currentEditTime();ignoreSel=-1;refreshIgnorePanel();
+ $('biend').disabled=false;$('biend').classList.add('marking');
+ setStatus('ignore開始 '+ignoreMark.toFixed(3)+'秒：終了位置へ移動して「ignore終了」');draw()};
+$('biend').onclick=()=>{if(ignoreMark===null)return;const here=currentEditTime();
+ const start=Math.min(ignoreMark,here),end=Math.max(ignoreMark,here);
+ if(end-start<0.01){setStatus('ignore区間は0.01秒以上にしてください');return}
+ snap();const mid=(start+end)/2;ignoreRanges=normalizeIgnores([...ignoreRanges,{start,end}]);
+ finishIgnoreMark();selectIgnore(ignoreRanges.findIndex(r=>r.start<=mid&&mid<=r.end));
+ setStatus('ignoreを追加 '+start.toFixed(3)+'–'+end.toFixed(3)+'秒（保存してください）')};
+function editIgnoreBoundary(key,value){const r=ignoreRanges[ignoreSel],v=+value;if(!r||!Number.isFinite(v)||v<0)return;
+ const start=key==='start'?v:r.start,end=key==='end'?v:r.end;
+ if(end-start<0.01){setStatus('ignore区間は0.01秒以上にしてください');refreshIgnorePanel();return}
+ snap();const mid=(start+end)/2;r.start=start;r.end=end;ignoreRanges=normalizeIgnores(ignoreRanges);
+ selectIgnore(ignoreRanges.findIndex(x=>x.start<=mid&&mid<=x.end));
+ setStatus('ignore境界を変更（保存してください）')}
+$('istart').onchange=ev=>editIgnoreBoundary('start',ev.target.value);
+$('iend').onchange=ev=>editIgnoreBoundary('end',ev.target.value);
+$('bidel').onclick=()=>{if(ignoreSel<0)return;snap();ignoreRanges.splice(ignoreSel,1);ignoreSel=-1;
+ refreshIgnorePanel();setStatus('ignoreを削除（保存してください）');draw()};
+
 async function save(){renum();
- const body=JSON.stringify({moras});
+ const body=JSON.stringify({moras,ignore_ranges:ignoreRanges});
  try{const r=await fetch('/save',{method:'POST',body});const j=await r.json();
   if(r.ok){dirty=false;
    setStatus('保存OK: '+j.notes+'音符 / '+j.lines+'行'
+    +' / ignore '+j.ignore_ranges+'区間'
     +(j.backup?' (bak-'+j.backup+')':'')
     +(j.parody_dropped?' ※替え歌データは作り直しが必要':''))}
   else setStatus('保存失敗: '+(j.error||r.status))}
