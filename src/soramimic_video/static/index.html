@@ -656,7 +656,6 @@
     </div>
   </div>
   <div class="custom-wordlist-actions" id="custom-wordlist-actions">
-    <button type="button" id="custom-wordlist-add" class="btn-sm">＋ 自作リストを登録</button>
     <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
   </div>
   <div id="custom-wordlist-panel" class="field" hidden>
@@ -3385,7 +3384,7 @@ function closeCustomList() {
 }
 function setCustomListBusy(busy) {
   customListBusy = busy;
-  for (const id of ["add", "edit", "name", "text", "file", "save", "cancel", "delete"]) {
+  for (const id of ["edit", "name", "text", "file", "save", "cancel", "delete"]) {
     $("custom-wordlist-" + id).disabled = busy;
   }
   $("builder-wordlist").disabled = busy;
@@ -3396,7 +3395,6 @@ async function checkCustomList(form) {
   if (!res.ok) throw new Error(body.detail || "単語リストを確認できませんでした。");
   return body;
 }
-$("custom-wordlist-add").addEventListener("click", () => openCustomList());
 $("custom-wordlist-edit").addEventListener("click", () => openCustomList(activeCustomListId));
 $("custom-wordlist-cancel").addEventListener("click", closeCustomList);
 $("custom-wordlist-panel").addEventListener("keydown", (event) => {
