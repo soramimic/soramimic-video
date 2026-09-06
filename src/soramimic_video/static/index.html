@@ -3973,7 +3973,7 @@ function schedulePreview(force) {
   previewComboKey = combo;
   const key = `${combo}\n${previewShowImages ? 1 : 0}`
     + `\n${$("noncommercial-fanwork").checked ? 1 : 0}`;
-  if (!force && key === previewKey) return;
+  if (key === previewKey) return;
   previewKey = key;
   clearTimeout(previewTimer);
   previewTimer = setTimeout(renderBuilder, force ? 0 : PREVIEW_DEBOUNCE_MS);
