@@ -451,6 +451,8 @@ def test_builder_restores_only_explicit_song_choices():
         const ownSongFile = () => file;
         const currentWordlistName = () => wordlist;
         const usesEditorWordlist = () => false;
+        let customList = null;
+        const activeCustomList = () => customList;
         const selectWordlist = (name) => {{ wordlist = name; }};
         const syncBuilderOptions = () => {{}};
         const syncBuilderValues = () => {{}};
@@ -492,6 +494,11 @@ def test_builder_restores_only_explicit_song_choices():
           assert.equal(previews, 4);
           await initBuilder();
           assert.equal(previews, 4, "reloading configuration must not repeat initialization");
+          wordlist = "";
+          customList = {{ id: "saved-list", text: "ねこ,ネコ" }};
+          await start("previous");
+          assert.equal(wordlist, "", "restored custom selection must not become the default list");
+          assert.equal(customList.id, "saved-list");
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
     )
