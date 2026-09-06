@@ -628,7 +628,7 @@
   <div id="song-upload-panel">
     <div class="audio-upload-entry" id="song-upload-entry">
       <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
-        <span aria-hidden="true">＋</span>自分の曲ファイルをアップロード
+        <span aria-hidden="true">＋</span>曲をアップロード
       </button>
       <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
       <p class="hint" id="song-upload-filename" role="status" hidden></p>
@@ -2607,7 +2607,7 @@ async function submitJob(previewSec, previewMode) {
     // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
     // 曲が未選択ならアップロードから案内する。
     showSubmitMsg("曲がまだセットされていません。"
-      + "自分の曲ファイルをアップロードするか、「サンプル曲で試す」から選んでください。");
+      + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
     return;
   }
   showSubmitMsg("");
@@ -2854,7 +2854,7 @@ function showSongInputMode(mode) {
   $("song-upload-panel").hidden = mode !== "upload";
   $("sample-picker").hidden = mode !== "sample";
   $("song-source-switch").textContent = mode === "upload"
-    ? "サンプル曲で試す" : "自分の曲をアップロードする";
+    ? "サンプル曲で試す" : "曲をアップロード";
 }
 
 function switchSongInputMode(mode) {

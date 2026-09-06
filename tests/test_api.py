@@ -698,7 +698,7 @@ def test_index_html_builder_submit_is_gated_while_busy():
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    assert '自分の曲ファイルをアップロードするか、「サンプル曲で試す」から選んでください' in html
+    assert '曲をアップロードするか、「サンプル曲で試す」から選んでください' in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
