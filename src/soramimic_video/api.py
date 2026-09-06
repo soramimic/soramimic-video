@@ -1849,6 +1849,7 @@ def create_app(
                 return JSONResponse({"detail": "入力が大きすぎます"}, status_code=413)
         if not is_public_mode() or request.url.path in {
             "/healthz",
+            "/custom-wordlists.js",
             "/ogp-soramimic-v1.png",
             "/ogp-soramimic-v2.png",
             "/ogp-soramimic-v3.png",
@@ -2105,6 +2106,14 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/custom-wordlists.js", include_in_schema=False)
+    def custom_wordlists_script() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "custom-wordlists.js",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/ogp-soramimic-v1.png", include_in_schema=False)
     def ogp_image_v1() -> FileResponse:
@@ -2858,7 +2867,7 @@ def create_app(
         if (is_public_mode() or is_simple_ui()) and (
             (editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
-            or bool(wordlist_text.strip())
+            or (is_simple_ui() and bool(wordlist_text.strip()))
             or any(bool(image.filename) for image in wordlist_images)
         ):
             raise HTTPException(
@@ -2903,9 +2912,12 @@ def create_app(
             if has_wordlist_file and wordlist_csv is not None:
                 custom = wordlist_zip_mod.parse_upload(await wordlist_csv.read())
             elif wordlist_text.strip():
-                custom = wordlist_zip_mod.parse_parts(
-                    wordlist_text.encode("utf-8"),
-                    await _read_wordlist_images(wordlist_images),
+                images = await _read_wordlist_images(wordlist_images)
+                custom = (
+                    wordlist_zip_mod.parse_parts(wordlist_text.encode("utf-8"), images)
+                    if images else wordlist_zip_mod.WordlistZip(
+                        csv=wordlist_csv_mod.parse(wordlist_text.encode("utf-8"))
+                    )
                 )
         except wordlist_csv_mod.WordlistCsvError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2966,7 +2978,7 @@ def create_app(
                 voicevox_auto_octave if voicevox_auto_octave is not None else True
             )
         wordlist = wordlist.strip()
-        if (is_public_mode() or is_simple_ui()) and wordlist:
+        if (is_public_mode() or is_simple_ui()) and wordlist and custom is None:
             wordlist = require_launch_wordlist(wordlist, status_code=422)
         # editor経由のジョブはJSON側の単語リスト指定がフォーム選択より優先される。
         # 履歴に実際の単語リスト名が残るよう、ここで解決して params に入れる
@@ -3023,7 +3035,7 @@ def create_app(
                     wordlist = (
                         Path(resolved).stem if resolved.endswith(".csv") else resolved
                     )
-        if is_public_mode() and wordlist:
+        if is_public_mode() and wordlist and custom is None:
             wordlist = require_launch_wordlist(wordlist, status_code=422)
         if is_simple_ui() and preview <= 0:
             launch_wordlists = {
@@ -3129,6 +3141,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found")
         has_file = wordlist_csv is not None and bool(wordlist_csv.filename)
         has_text = bool(wordlist_text.strip())
+        if is_public_mode() and any(bool(image.filename) for image in wordlist_images):
+            raise HTTPException(status_code=422, detail="この入力形式は現在利用できません")
         if has_file and has_text:
             raise HTTPException(
                 status_code=400,
@@ -3141,18 +3155,29 @@ def create_app(
             )
         try:
             if has_file and wordlist_csv is not None:
-                parsed = wordlist_zip_mod.parse_upload(await wordlist_csv.read())
+                contents = await wordlist_csv.read()
+                if is_public_mode() and wordlist_zip_mod.looks_like_zip(contents):
+                    raise HTTPException(
+                        status_code=422, detail="この入力形式は現在利用できません"
+                    )
+                parsed = wordlist_zip_mod.parse_upload(contents)
                 name = custom_wordlist_name(wordlist_csv.filename or "")
             else:
-                parsed = wordlist_zip_mod.parse_parts(
-                    wordlist_text.encode("utf-8"),
-                    await _read_wordlist_images(wordlist_images),
+                images = await _read_wordlist_images(wordlist_images)
+                parsed = (
+                    wordlist_zip_mod.parse_parts(wordlist_text.encode("utf-8"), images)
+                    if images else wordlist_zip_mod.WordlistZip(
+                        csv=wordlist_csv_mod.parse(wordlist_text.encode("utf-8"))
+                    )
                 )
                 # リスト名は任意。空なら custom_wordlist_name の既定("custom")に落ちる
                 name = custom_wordlist_name(f"{wordlist_name.strip()}.csv")
         except wordlist_csv_mod.WordlistCsvError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {**parsed.summary(), "name": name}
+        result = {**parsed.summary(), "name": name}
+        if not parsed.image_count:
+            result["csv_text"] = parsed.csv.text
+        return result
 
     @app.get("/api/jobs", dependencies=[Depends(_require_api_key)])
     def list_jobs(request: Request) -> list[dict[str, Any]]:
@@ -3383,6 +3408,7 @@ def create_app(
         wordlist_csv: UploadFile | None = None,
         wordlist_text: str = Form(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
+        wordlist_name: str = Form(""),
     ) -> dict[str, Any]:
         """MIDI(+単語リスト)から editor セッションJSONを組んで返す。
 
@@ -3397,9 +3423,9 @@ def create_app(
         editor はセットアップ画面から始まり、「この設定で変換」でブラウザ内で
         変換してから編集画面に入る。単語リストは要らない(エディタで選べる)。
 
-        自作リストのときは、editor がDBを組めるよう正規化済みCSVを
-        editor-sessions/<sid>/ に置き、JSONの単語リスト設定を
-        /editor/session-wordlists/<sid>.csv 向けにして返す。
+        テキストだけの自作リストは正規化済みCSVをJSON内のcsvTextに含める。
+        ファイル・画像付きリストはeditor-sessions/<sid>/に保存し、
+        /editor/session-wordlists/<sid>.csvを参照する設定を返す。
 
         元歌詞(lyrics)は、どちらのモードでもシードの ``lyrics`` にそのまま
         載せて返す(ルビ記法も素通し)。editor はこれを元歌詞欄の初期値にし、
@@ -3411,7 +3437,6 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found")
         if is_public_mode() and (
             (wordlist_csv is not None and bool(wordlist_csv.filename))
-            or bool(wordlist_text.strip())
             or any(bool(image.filename) for image in wordlist_images)
         ):
             raise HTTPException(
@@ -3428,6 +3453,7 @@ def create_app(
             resolve_wordlist,
         )
         from .editor_io import (
+            ORIGINAL_WORDLIST_VALUE,
             SESSION_WORDLIST_FILENAME,
             custom_wordlist_entry,
             export_editor,
@@ -3447,9 +3473,12 @@ def create_app(
             if has_wordlist_file and wordlist_csv is not None:
                 custom = wordlist_zip_mod.parse_upload(await wordlist_csv.read())
             elif wordlist_text.strip():
-                custom = wordlist_zip_mod.parse_parts(
-                    wordlist_text.encode("utf-8"),
-                    await _read_wordlist_images(wordlist_images),
+                images = await _read_wordlist_images(wordlist_images)
+                custom = (
+                    wordlist_zip_mod.parse_parts(wordlist_text.encode("utf-8"), images)
+                    if images else wordlist_zip_mod.WordlistZip(
+                        csv=wordlist_csv_mod.parse(wordlist_text.encode("utf-8"))
+                    )
                 )
         except wordlist_csv_mod.WordlistCsvError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3457,13 +3486,18 @@ def create_app(
         conv_wordlist = ""
         conv_where: str | None = None
         if custom is not None:
-            # 自作リストは名前で引けないので、editorが取りに来られる場所に置く
-            sid = store_editor_session_wordlist(config["editor_sessions"], custom)
-            conv_wordlist = str(
-                config["editor_sessions"] / sid / SESSION_WORDLIST_FILENAME
-            )
-            # 絞り込み(where)の対象になる列を持たないので付けない(/api/jobs と同じ)
-            entry = custom_wordlist_entry(sid)
+            if not has_wordlist_file and not custom.image_count:
+                entry = {
+                    "value": ORIGINAL_WORDLIST_VALUE,
+                    "text": wordlist_name.strip() or "自作リスト",
+                    "csvText": custom.csv.text,
+                }
+            else:
+                sid = store_editor_session_wordlist(config["editor_sessions"], custom)
+                conv_wordlist = str(
+                    config["editor_sessions"] / sid / SESSION_WORDLIST_FILENAME
+                )
+                entry = custom_wordlist_entry(sid)
         elif wordlist.strip():
             if is_public_mode():
                 wordlist = require_launch_wordlist(wordlist, status_code=422)
@@ -3485,6 +3519,10 @@ def create_app(
 
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
+            if custom is not None and entry and entry.get("value") == ORIGINAL_WORDLIST_VALUE:
+                csv_path = d / SESSION_WORDLIST_FILENAME
+                csv_path.write_text(custom.csv.text, encoding="utf-8")
+                conv_wordlist = str(csv_path)
             (d / "input.mid").write_bytes(midi_bytes)
             try:
                 project = analyze_midi(d / "input.mid")
