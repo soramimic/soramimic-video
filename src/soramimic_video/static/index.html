@@ -486,7 +486,8 @@
   }
   .audio-upload-entry button {
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
-    width: 100%; min-height: 3.25rem;
+    width: 100%; min-height: 2.75rem;
+    border-color: var(--accent); color: var(--link); font-weight: 700;
   }
   .audio-upload-entry .hint { margin: 0; }
   #song-upload-filename { overflow-wrap: anywhere; color: var(--text); }
@@ -494,11 +495,13 @@
     border-color: var(--accent); background: #1296f010;
     box-shadow: inset 0 0 0 2px #1296f044;
   }
-  .sample-picker { margin: .65rem 0 0; }
-  .sample-picker > summary {
-    padding: .35rem 0; color: var(--muted); font-size: .85rem;
-    overflow-wrap: anywhere;
+  .song-source-switch {
+    display: block; margin-top: .4rem; padding: .4rem 0;
+    min-height: 2.75rem; border: 0; background: transparent;
+    color: var(--muted); font-size: .85rem; text-decoration: underline;
+    text-underline-offset: .2em;
   }
+  .song-source-switch:hover:not(:disabled) { color: var(--link); }
   .fanwork-confirmation {
     margin-top: .65rem; padding: .65rem .75rem; border: 1px solid #f59e0b88;
     border-radius: 10px; background: #f59e0b14;
@@ -622,30 +625,31 @@
   </div>
   <!-- ⚙を押したときの応答。押したボタンのすぐ下に出す -->
   <span id="open-editor-msg" class="error"></span>
-
-  <div class="audio-upload-entry" id="song-upload-entry">
-    <button type="button" id="song-upload-button" class="btn-primary"
-      aria-describedby="song-upload-hint">
-      <span aria-hidden="true">＋</span>自分の曲ファイルをアップロード
-    </button>
-    <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
-    <p class="hint" id="song-upload-filename" role="status" hidden></p>
+  <div id="song-upload-panel">
+    <div class="audio-upload-entry" id="song-upload-entry">
+      <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
+        <span aria-hidden="true">＋</span>自分の曲ファイルをアップロード
+      </button>
+      <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
+      <p class="hint" id="song-upload-filename" role="status" hidden></p>
+    </div>
+    <div id="audio-input-panel" class="field" hidden>
+      <p><strong id="audio-filename"></strong></p>
+      <label for="audio-lyrics">元歌詞(任意)</label>
+      <textarea id="audio-lyrics" rows="4" placeholder="空欄なら音源から自動認識します"></textarea>
+      <p class="hint">音源を解析してメロディーとタイミングを推定します。解析には時間がかかることがあります。</p>
+      <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
+    </div>
   </div>
-  <details class="sample-picker" id="sample-picker">
-    <summary id="sample-picker-summary">サンプル曲で試す</summary>
+  <div id="sample-picker" hidden>
     <div class="field" id="builder-sample-field">
       <label for="builder-sample">サンプル曲</label>
       <select id="builder-sample" aria-label="サンプル曲"></select>
     </div>
-  </details>
-  <p class="hint" id="audio-sample-credit" hidden></p>
-  <div id="audio-input-panel" class="field" hidden>
-    <p><strong id="audio-filename"></strong></p>
-    <label for="audio-lyrics">元歌詞(任意)</label>
-    <textarea id="audio-lyrics" rows="4" placeholder="空欄なら音源から自動認識します"></textarea>
-    <p class="hint">音源を解析してメロディーとタイミングを推定します。解析には時間がかかることがあります。</p>
-    <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
+    <p class="hint" id="audio-sample-credit" hidden></p>
   </div>
+  <button type="button" id="song-source-switch" class="song-source-switch"
+    aria-controls="song-upload-panel sample-picker">サンプル曲で試す</button>
   <div class="builder-selects">
     <div class="field" id="builder-wordlist-field">
       <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
@@ -2795,6 +2799,8 @@ const samplesReady = loadSamples();
 // サーバー内のMIDIを使うサンプルID。持ち込みMIDIでは空文字。
 // サンプルのMIDIバイナリはブラウザへ取得・保存しない。
 let midiSampleId = "";
+let sampleApplySeq = 0;
+let songInputMode = "upload";
 function ownSongFile() {
   return $("midi").files[0] || null;
 }
@@ -2842,6 +2848,40 @@ function rejectOwnSongFile(message) {
   schedulePreview(true);
   showBuilderMsg(message);
 }
+
+function showSongInputMode(mode) {
+  songInputMode = mode;
+  $("song-upload-panel").hidden = mode !== "upload";
+  $("sample-picker").hidden = mode !== "sample";
+  $("song-source-switch").textContent = mode === "upload"
+    ? "サンプル曲で試す" : "自分の曲をアップロードする";
+}
+
+function switchSongInputMode(mode) {
+  if (mode === songInputMode) return;
+  // 非表示になる入力を残さず、取得中のサンプルも無効にする。
+  $("sample-select").value = "";
+  $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+  $("midi").value = "";
+  $("midi").dispatchEvent(new Event("change", { bubbles: true }));
+  clearAudioPresentation();
+  clearEditorFile();
+  for (const id of ["lyrics", "audio-lyrics", "original-credit", "credit-notice"]) {
+    $(id).value = "";
+    $(id).dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  $("sample-status").textContent = "";
+  $("audio-sample-credit").hidden = true;
+  $("midi-restore-hint").hidden = true;
+  showSongInputMode(mode);
+  syncBuilderValues();
+  schedulePreview(true);
+  $(mode === "upload" ? "song-upload-button" : "builder-sample").focus();
+}
+
+$("song-source-switch").addEventListener("click", () => {
+  switchSongInputMode(songInputMode === "upload" ? "sample" : "upload");
+});
 
 $("song-upload-button").addEventListener("click", () => $("midi").click());
 function setOwnSongFile(file) {
@@ -2951,6 +2991,7 @@ $("midi").addEventListener("change", () => {
 // おまかせからも使うので、changeハンドラ本体をawaitできる関数に切り出してある。
 // opts.keepLyrics: 手で直した元歌詞を残し、IDだけ選び直す。
 async function applySample(opts = {}) {
+  const request = ++sampleApplySeq;
   const sid = $("sample-select").value;
   if (!sid) return false;
   try {
@@ -2959,8 +3000,9 @@ async function applySample(opts = {}) {
     if (lyricsRes && !lyricsRes.ok) {
       throw new Error("サンプルの取得に失敗しました");
     }
-    // 取得中に別の曲が選ばれたら、遅く返った古い応答は反映しない。
-    if ($("sample-select").value !== sid) return false;
+    const sampleLyrics = lyricsRes ? await lyricsRes.text() : null;
+    // 本文まで読み終えてから、切替前の古い応答でないことを確かめる。
+    if (request !== sampleApplySeq || $("sample-select").value !== sid) return false;
     // 前の持ち込みMIDIとlocalStorageの保存版は残さない。
     midiSampleId = sid;
     midiFromSample = true;
@@ -2997,7 +3039,6 @@ async function applySample(opts = {}) {
       creditHint.hidden = true;
     }
     if (lyricsRes) {
-      const sampleLyrics = await lyricsRes.text();
       sampleLyricsId = sid;
       sampleLyricsBaseline = sampleLyrics;
       $("lyrics").value = sampleLyrics;
@@ -3024,6 +3065,7 @@ async function applySample(opts = {}) {
     if (!restoring) saveForm();
     return true;
   } catch (err) {
+    if (request !== sampleApplySeq || $("sample-select").value !== sid) return false;
     $("sample-status").textContent = err.message;
     return false;
   }
@@ -3039,6 +3081,7 @@ function trackSample(p) {
 // 正本領域にあるため、ビルダーカードに理由を出す(黙って
 // 別の曲で生成されるのを防ぐのは ensureSelectedSampleMidi)。
 $("sample-select").addEventListener("change", () => {
+  sampleApplySeq += 1;
   const sid = $("sample-select").value;
   if (sid) clearAudioInput();
   if (!sid) {
@@ -3046,8 +3089,10 @@ $("sample-select").addEventListener("change", () => {
     if (!restoring) saveForm();
     return;
   }
-  trackSample(applySample()).then((ok) => {
-    if (ok || !sid || sid !== $("sample-select").value) return;
+  const pending = trackSample(applySample());
+  const request = sampleApplySeq;
+  pending.then((ok) => {
+    if (ok || request !== sampleApplySeq || !sid || sid !== $("sample-select").value) return;
     showBuilderMsg(`⚠ 「${sampleTitleOf(sid)}」の曲データを取得できませんでした。`
       + "別の曲を選ぶか、しばらくしてからもう一度お試しください。");
   }, () => { /* trackSample 側で拾う */ });
@@ -3503,13 +3548,6 @@ function showsEditorWordlist() {
 // サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
 function syncBuilderOptions() {
   $("builder-sample").innerHTML = $("sample-select").innerHTML;
-  const file = ownSongFile();
-  if (file) {
-    const option = document.createElement("option");
-    option.value = OWN_SONG_VALUE;
-    option.textContent = `${ownSongKind(file) === "audio" ? "音声" : "XF MIDI"}: ${file.name}`;
-    $("builder-sample").appendChild(option);
-  }
   const wl = $("wordlist-select");
   $("builder-wordlist").innerHTML = wl.innerHTML;
   if (!simpleMode) {
@@ -3539,10 +3577,8 @@ function syncBuilderValues() {
   $("song-upload-filename").textContent = file ? file.name : "";
   $("song-upload-filename").hidden = !file;
   const sample = $("sample-select");
-  $("sample-picker-summary").textContent = !file && sample.value
-    ? `サンプル曲: ${sample.selectedOptions[0].textContent}` : "サンプル曲で試す";
-  $("builder-sample").value = ownSongFile()
-    ? OWN_SONG_VALUE : $("sample-select").value;
+  showSongInputMode(sample.value ? "sample" : file ? "upload" : songInputMode);
+  $("builder-sample").value = sample.value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const selectedCustom = activeCustomList();
   const own = !selectedCustom && showsEditorWordlist();
@@ -4038,10 +4074,6 @@ async function pickCombo(c) {
 
 // カードのプルダウン: 正本へ流して change を発火し、プレビューを予約する
 $("builder-sample").addEventListener("change", () => {
-  if ($("builder-sample").value === OWN_SONG_VALUE) {
-    syncBuilderValues();
-    return;
-  }
   $("sample-select").value = $("builder-sample").value;
   clearAudioInput();
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));

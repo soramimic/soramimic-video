@@ -505,6 +505,153 @@ def test_builder_restores_only_explicit_song_choices():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
+def _song_input_node_harness() -> str:
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function ownSongFile()",
+            "function showSongInputMode(",
+            "function switchSongInputMode(",
+            "function syncBuilderValues()",
+            "async function applySample(",
+            "function trackSample(",
+        )
+    )
+    sample_change = script[script.index('$("sample-select").addEventListener("change", () => {'):]
+    sample_change = sample_change[:sample_change.index("\n});") + len("\n});")]
+    return textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        let focused = "";
+        function $(id) {
+          if (!elements.has(id)) elements.set(id, {
+            _value: "", hidden: false, textContent: "", files: [], options: [],
+            selectedOptions: [{ textContent: "Sample song" }], listeners: new Map(),
+            get value() { return this._value; },
+            set value(value) {
+              this._value = value;
+              if (id === "midi" && value === "") this.files = [];
+            },
+            focus() { focused = id; },
+            addEventListener(type, callback) { this.listeners.set(type, callback); },
+            dispatchEvent(event) { this.listeners.get(event.type)?.(event); },
+            replaceChildren() {}
+          });
+          return elements.get(id);
+        }
+        let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
+        let midiFromSample = false, samplePending = null, restoring = false;
+        let sampleLyricsId = "", sampleLyricsBaseline = null;
+        const sampleCredits = {}, sampleLicenseUrls = {}, sampleDescriptions = {};
+        const EDITOR_WORDLIST_VALUE = "__editor__";
+        const showsEditorWordlist = () => false;
+        const activeCustomList = () => null;
+        const simpleMode = false;
+        const updateNoncommercialFanworkPrompt = () => {};
+        const syncLuckyAvailability = () => {};
+        const selectedSampleIsAudio = () => false;
+        const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
+        const clearAudioInput = clearAudioPresentation;
+        const clearEditorFile = () => { $("editor").files = []; };
+        let previews = 0, saves = 0, builderMessage = "";
+        const schedulePreview = () => { previews += 1; };
+        const saveForm = () => { saves += 1; };
+        const showBuilderMsg = (message) => { builderMessage = message; };
+        const sampleTitleOf = (id) => id;
+        const document = { querySelector: () => $("analyze-stage") };
+        """
+    ) + functions + "\n" + sample_change
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
+    """入力元を切り替えると隠れた曲を解除し、表示中の入力へフォーカスを移す。"""
+    node = _song_input_node_harness() + textwrap.dedent(
+        """
+        $("midi").files = [{ name: "my-song.mid" }];
+        $("editor").files = [{ name: "parody.json" }];
+        for (const id of ["lyrics", "audio-lyrics", "original-credit", "credit-notice"]) {
+          $(id).value = "old song data";
+        }
+        syncBuilderValues();
+        assert.equal($("song-upload-panel").hidden, false);
+        assert.equal($("sample-picker").hidden, true);
+        switchSongInputMode("sample");
+        assert.deepEqual($("midi").files, [], "a hidden MIDI must not remain active");
+        assert.deepEqual($("editor").files, []);
+        for (const id of ["lyrics", "audio-lyrics", "original-credit", "credit-notice"]) {
+          assert.equal($(id).value, "");
+        }
+        assert.equal($("song-upload-panel").hidden, true);
+        assert.equal($("sample-picker").hidden, false);
+        assert.equal($("song-upload-filename").hidden, true);
+        assert.equal(focused, "builder-sample");
+        syncBuilderValues();
+        assert.equal(songInputMode, "sample", "an empty picker must stay open");
+        $("sample-select").value = "previous";
+        midiSampleId = "previous";
+        $("audio-sample-credit").hidden = false;
+        const before = sampleApplySeq;
+        switchSongInputMode("upload");
+        assert.equal($("sample-select").value, "");
+        assert.equal(midiSampleId, "", "the hidden sample must no longer generate");
+        assert.ok(sampleApplySeq > before, "switching invalidates pending sample requests");
+        assert.equal($("audio-sample-credit").hidden, true);
+        assert.equal($("song-upload-panel").hidden, false);
+        assert.equal($("sample-picker").hidden, true);
+        assert.equal(focused, "song-upload-button");
+        assert.equal(previews, 2);
+        switchSongInputMode("upload");
+        assert.equal(previews, 2, "switching to the current mode is a no-op");
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_sample_body_finishing_after_source_switch_cannot_replace_current_song():
+    """切替前の歌詞本文が遅れて届いても、再選択した同じIDや持ち込み曲を上書きしない。"""
+    node = _song_input_node_harness() + textwrap.dedent(
+        """
+        let finishBody, bodyStarted;
+        const readingBody = new Promise((resolve) => { bodyStarted = resolve; });
+        const fetch = async () => ({ ok: true, text: () => {
+          bodyStarted();
+          return new Promise((resolve) => { finishBody = resolve; });
+        }});
+        (async () => {
+          showSongInputMode("sample");
+          $("sample-select").value = "previous";
+          $("sample-select").dispatchEvent(new Event("change"));
+          const pending = samplePending;
+          await readingBody;
+          switchSongInputMode("upload");
+          const ownMidi = { name: "my-song.mid" };
+          $("midi").files = [ownMidi];
+          $("lyrics").value = "my lyrics";
+          // The same sample ID can be selected again before its old response arrives.
+          // Keep that ID equal so this exercises request invalidation independently.
+          $("sample-select").value = "previous";
+          const savedBefore = saves;
+          finishBody("obsolete sample lyrics");
+          assert.equal(await pending, false);
+          assert.equal($("midi").files[0], ownMidi);
+          assert.equal(midiSampleId, "");
+          assert.equal($("lyrics").value, "my lyrics");
+          assert.equal(sampleLyricsId, "");
+          assert.equal(sampleLyricsBaseline, null);
+          assert.equal($("sample-status").textContent, "");
+          assert.equal($("original-credit").value, "");
+          assert.equal(saves, savedBefore);
+          assert.equal(builderMessage, "", "a canceled request must not show a fetch error");
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_legacy_saved_sample_midi_is_migrated_to_id_only():
     """旧版が保存したサンプルMIDIは、バイナリを復元せずIDだけに移行する。"""
     restored = _function_body(_script(), "async function doRestoreForm()")
