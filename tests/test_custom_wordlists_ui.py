@@ -272,7 +272,7 @@ def test_editor_original_edits_update_registered_list_and_its_provenance():
     functions = "\n".join(frontend_function(name) for name in [
         "parseJson", "activeCustomList", "refreshCustomLists", "editorProvenance",
         "editorSessionData", "editorSessionWordlist", "editorWhereOf", "withHostInfo",
-        "applyEditorWordlist", "adoptEditorSeedProvenance",
+        "applyEditorWordlist", "adoptEditorSeedProvenance", "markEditorSeed", "editorContentSig",
     ])
     run_node(functions + r"""
 const simpleMode = false;
@@ -296,7 +296,8 @@ const sessionStorage = {
   getItem: (key) => sessions.get(key) ?? null,
   setItem: (key, value) => sessions.set(key, value),
 };
-const payload = { wordlist: { value: 'ORIGINAL', csvText: 'text,yomi\nねこ,ネコ' } };
+const originalCsv = 'text,yomi\nねこ,ネコ';
+const payload = { wordlist: { value: 'ORIGINAL', csvText: originalCsv } };
 const seed = withHostInfo(payload);
 assert.equal(seed.videoCustomListId, first.id);
 assert.equal(seed.videoCustomListText, first.text);
@@ -306,15 +307,16 @@ const builtinSeed = withHostInfo({ wordlist: { value: 'pokemon', filepath: 'poke
 assert.equal(builtinSeed.videoCustomListId, undefined);
 sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
 const originalProvenance = editorProvenance();
-sessionStorage.setItem(EDITOR_SEED_KEY,
-  JSON.stringify({ sig: 'seed-sig', from: originalProvenance }));
+markEditorSeed(JSON.stringify(seed));
+const originalMetadata = JSON.parse(sessionStorage.getItem(EDITOR_SEED_KEY));
+assert.equal(originalMetadata.customListCsvText, originalCsv);
 
 // Merely reopening the normalized CSV does not overwrite the user's original input.
 applyEditorWordlist();
 assert.equal(repository.lists()[0].text, 'ねこ');
 assert.equal(saves, 0);
 
-const editedCsv = 'text,yomi\nねこ,ネコ\nとり,トリ';
+const editedCsv = 'text,yomi\nいぬ,イヌ';
 seed.wordlist.csvText = editedCsv;
 sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
 applyEditorWordlist();
@@ -331,9 +333,33 @@ assert.equal(live.videoCustomListCsvText, editedCsv);
 const metadata = JSON.parse(sessionStorage.getItem(EDITOR_SEED_KEY));
 assert.deepEqual(metadata.from, editorProvenance());
 assert.notDeepEqual(metadata.from, originalProvenance);
-assert.equal(metadata.sig, 'seed-sig');
+assert.equal(metadata.sig, originalMetadata.sig);
+assert.equal(metadata.customListCsvText, editedCsv);
 applyEditorWordlist();
 assert.equal(saves, 1);
+
+// The child retains its initial metadata when undo writes the original CSV again.
+assert.equal(seed.videoCustomListCsvText, originalCsv);
+assert.equal(seed.videoCustomListText, first.text);
+seed.wordlist.csvText = originalCsv;
+sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
+applyEditorWordlist();
+assert.equal(repository.lists()[0].text, originalCsv);
+assert.deepEqual(repository.lists()[1], other);
+assert.equal(activeCustomList().text, originalCsv);
+assert.equal(saves, 2);
+const undoMetadata = JSON.parse(sessionStorage.getItem(EDITOR_SEED_KEY));
+assert.equal(undoMetadata.customListCsvText, originalCsv);
+assert.deepEqual(undoMetadata.from, editorProvenance());
+assert.equal(undoMetadata.sig, originalMetadata.sig);
+applyEditorWordlist();
+assert.equal(saves, 2);
+
+// Later note edits can serialize stale child metadata without changing its CSV.
+sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
+applyEditorWordlist();
+assert.equal(saves, 2);
+assert.equal(JSON.parse(sessionStorage.getItem(EDITOR_KEY)).videoCustomListText, originalCsv);
 
 // An unrelated editor session cannot update a registered list with the same display name.
 live.videoCustomListId = other.id;
@@ -342,5 +368,5 @@ sessionStorage.setItem(EDITOR_KEY, JSON.stringify(live));
 const before = repository.lists();
 applyEditorWordlist();
 assert.deepEqual(repository.lists(), before);
-assert.equal(saves, 1);
+assert.equal(saves, 2);
 """)

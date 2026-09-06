@@ -5528,7 +5528,11 @@ function parseJson(text) {
 
 // エディタへシードを書いたときに、その内容の指紋と来歴を控える。
 function markEditorSeed(text) {
-  const meta = { sig: editorContentSig(parseJson(text)), from: editorProvenance() };
+  const data = parseJson(text);
+  const meta = { sig: editorContentSig(data), from: editorProvenance() };
+  if (activeCustomList() && data?.videoCustomListId === activeCustomListId) {
+    meta.customListCsvText = data.wordlist?.csvText;
+  }
   try { sessionStorage.setItem(EDITOR_SEED_KEY, JSON.stringify(meta)); } catch { /* 保存できなくても生成は続く */ }
 }
 
@@ -5609,17 +5613,34 @@ function applyEditorWordlist() {
   const own = value === "ORIGINAL" || value.startsWith("custom:");
   const data = editorSessionData();
   const list = activeCustomList();
+  // Keep the last synchronized CSV outside the iframe's payload: Undo can restore
+  // an older copy of that payload, including its initial CSV metadata.
+  const seedMeta = parseJson(sessionStorage.getItem(EDITOR_SEED_KEY) || "null");
+  const previousCsv = seedMeta?.customListCsvText ?? data?.videoCustomListCsvText;
   if (list && own && value === "ORIGINAL" && typeof w.csvText === "string"
-      && data?.videoCustomListId === list.id && data.videoCustomListCsvText !== w.csvText) {
+      && data?.videoCustomListId === list.id && previousCsv !== w.csvText) {
     try {
       customListsRepository.save({ id: list.id, name: list.name, text: w.csvText });
       refreshCustomLists();
       data.videoCustomListText = w.csvText;
       data.videoCustomListCsvText = w.csvText;
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(data));
+      if (seedMeta) {
+        seedMeta.customListCsvText = w.csvText;
+        sessionStorage.setItem(EDITOR_SEED_KEY, JSON.stringify(seedMeta));
+      }
       adoptEditorSeedProvenance();
       saveForm();
     } catch (err) { showBuilderMsg(err.message); }
+  }
+  const currentList = activeCustomList();
+  if (currentList && value === "ORIGINAL" && data?.videoCustomListId === currentList.id
+      && (previousCsv === w.csvText || currentList.text === w.csvText)
+      && (data.videoCustomListText !== currentList.text || data.videoCustomListCsvText !== w.csvText)) {
+    data.videoCustomListText = currentList.text;
+    data.videoCustomListCsvText = w.csvText;
+    try { sessionStorage.setItem(EDITOR_KEY, JSON.stringify(data)); }
+    catch (err) { showBuilderMsg(err.message); }
   }
   const name = own ? ""
     : String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "");
