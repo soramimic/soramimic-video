@@ -2158,7 +2158,8 @@ def test_index_html_song_values_are_hidden_canonicals():
     # 正本をhiddenへ移してもカード・🎲・エディタとの既存経路は維持する
     assert '$("sample-select").value = c.sampleId;' in html
     assert '$("sample-select").addEventListener("change", () => {' in html
-    assert "trackSample(applySample()).then((ok) => {" in html
+    assert "const pending = trackSample(applySample());" in html
+    assert "pending.then((ok) => {" in html
     assert (
         '$("sample-select").addEventListener("change", '
         "() => { syncBuilderValues(); schedulePreview(); });" in html
