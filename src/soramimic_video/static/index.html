@@ -473,33 +473,29 @@
     border-radius: 999px; background: var(--panel-2);
   }
   .lucky-icon { font-size: 1rem; line-height: 1; }
-  /* プルダウンは横並び(狭い画面では1列に折り返す) */
-  .builder-selects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
-  @media (max-width: 26rem) { .builder-selects { grid-template-columns: 1fr; } }
-  /* ラベルとプルダウンは同じ行に置く(モバイル幅でも1行に収める) */
+  .builder-selects { margin-top: .8rem; }
   .builder-selects .field { display: flex; align-items: center; gap: .5rem; }
   .builder-selects label { margin: 0; flex: 0 0 auto; white-space: nowrap; }
   .builder-selects select { flex: 1 1 auto; min-width: 0; }
-  /* 間隔はグリッドのgapで取る。.field + .field の上マージンが残ると横並びの
-     2つ目だけ下にずれるので消す */
-  .builder-selects .field + .field { margin-top: 0; }
   .audio-upload-entry {
-    display: flex; align-items: center; gap: .6rem; margin-top: .65rem;
-    padding-top: .65rem; border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: .5rem;
+    padding: .8rem; border: 1px dashed var(--border); border-radius: 10px;
+    background: var(--panel-2);
   }
   .audio-upload-entry button {
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
-    flex: 0 0 auto; border-color: var(--accent); color: var(--accent-dark);
-    font-weight: 700;
+    width: 100%; min-height: 3.25rem;
   }
   .audio-upload-entry .hint { margin: 0; }
+  #song-upload-filename { overflow-wrap: anywhere; color: var(--text); }
   .audio-upload-entry.drag-over {
-    border-color: var(--accent); border-radius: 10px; background: #1296f010;
+    border-color: var(--accent); background: #1296f010;
     box-shadow: inset 0 0 0 2px #1296f044;
   }
-  @media (max-width: 26rem) {
-    .audio-upload-entry { align-items: stretch; flex-direction: column; }
-    .audio-upload-entry button { width: 100%; min-height: 2.75rem; }
+  .sample-picker { margin: .65rem 0 0; }
+  .sample-picker > summary {
+    padding: .35rem 0; color: var(--muted); font-size: .85rem;
+    overflow-wrap: anywhere;
   }
   .fanwork-confirmation {
     margin-top: .65rem; padding: .65rem .75rem; border: 1px solid #f59e0b88;
@@ -624,35 +620,34 @@
   </div>
   <!-- ⚙を押したときの応答。押したボタンのすぐ下に出す -->
   <span id="open-editor-msg" class="error"></span>
-  <!-- 曲と単語リストのプルダウン。値の正本は詳細設定側の #sample-select と
-       隠しの #wordlist-select で、ここはその写し(syncBuilderOptions)。
-       エディタの中で書いた自作リストを使っているあいだは、単語リスト側に
-       合成の選択肢「自作リスト(替え歌エディタ)」が足されて選択済みになる。 -->
-  <div class="builder-selects">
-    <div class="field" id="builder-sample-field">
-      <label for="builder-sample">曲</label>
-      <select id="builder-sample" aria-label="曲(サンプル曲)"></select>
-    </div>
-    <div class="field" id="builder-wordlist-field">
-      <!-- 「(何に空耳させるか)」の補足は幅を食うので title に退避する -->
-      <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
-      <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
-    </div>
-  </div>
   <div class="audio-upload-entry" id="song-upload-entry">
-    <button type="button" id="song-upload-button"
+    <button type="button" id="song-upload-button" class="btn-primary"
       aria-describedby="song-upload-hint">
       <span aria-hidden="true">＋</span>自分の曲ファイルをアップロード
     </button>
     <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
+    <p class="hint" id="song-upload-filename" role="status" hidden></p>
   </div>
+  <details class="sample-picker" id="sample-picker">
+    <summary id="sample-picker-summary">サンプル曲で試す</summary>
+    <div class="field" id="builder-sample-field">
+      <label for="builder-sample">サンプル曲</label>
+      <select id="builder-sample" aria-label="サンプル曲"></select>
+    </div>
+  </details>
   <p class="hint" id="audio-sample-credit" hidden></p>
   <div id="audio-input-panel" class="field" hidden>
     <p><strong id="audio-filename"></strong></p>
     <label for="audio-lyrics">元歌詞(任意)</label>
     <textarea id="audio-lyrics" rows="4" placeholder="空欄なら音源から自動認識します"></textarea>
     <p class="hint">音源を解析してメロディーとタイミングを推定します。解析には時間がかかることがあります。</p>
-    <button type="button" id="audio-clear" class="btn-sm">サンプル曲に戻す</button>
+    <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
+  </div>
+  <div class="builder-selects">
+    <div class="field" id="builder-wordlist-field">
+      <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
+      <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
+    </div>
   </div>
   <!-- 制限付き画像を含みうるリストでは、生成ボタンと同じカード内で明示確認する。
        詳細設定の奥に置くとモバイルでは存在に気づかず、本生成まで進んで失敗する。 -->
@@ -2578,9 +2573,9 @@ async function submitJob(previewSec, previewMode) {
   if (!audio && !sampleId && !midi) {
     setBusy(false);  // 先に無効化されている場合に戻す
     // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
-    // サンプル曲はカードの「曲」プルダウン、自分の曲はその直下の共通アップロード。
+    // 曲が未選択ならアップロードから案内する。
     showSubmitMsg("曲がまだセットされていません。"
-      + "上の「曲」から選ぶか、自分のXF MIDI / 音声ファイルをアップロードしてください。");
+      + "自分の曲ファイルをアップロードするか、「サンプル曲で試す」から選んでください。");
     return;
   }
   showSubmitMsg("");
@@ -2907,11 +2902,9 @@ $("audio-clear").addEventListener("click", () => {
   $("midi").value = "";
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioInput();
-  const fallback = [...$("sample-select").options].find((option) => option.value);
-  if (fallback) {
-    $("sample-select").value = fallback.value;
-    $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
-  }
+  syncBuilderValues();
+  schedulePreview(true);
+  $("song-upload-button").focus();
 });
 // #lyrics がどのサンプルの配信値かと、その時点の未編集値。リロード時に
 // 「前回の標準歌詞」だけ最新版へ更新し、ユーザーが手で直した歌詞は残すために使う。
@@ -3375,6 +3368,12 @@ function syncBuilderOptions() {
 // 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
 // 自作リストのあいだだけ合成の選択肢を足し、抜けたら取り除く。
 function syncBuilderValues() {
+  const file = ownSongFile();
+  $("song-upload-filename").textContent = file ? file.name : "";
+  $("song-upload-filename").hidden = !file;
+  const sample = $("sample-select");
+  $("sample-picker-summary").textContent = !file && sample.value
+    ? `サンプル曲: ${sample.selectedOptions[0].textContent}` : "サンプル曲で試す";
   $("builder-sample").value = ownSongFile()
     ? OWN_SONG_VALUE : $("sample-select").value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
@@ -3593,7 +3592,8 @@ function currentWordlistName() {
 }
 
 // いま選ばれている組み合わせ
-const currentCombo = () => luckyCombo($("sample-select").value, currentWordlistName());
+const currentCombo = () => luckyCombo(
+  ownSongFile() ? OWN_SONG_VALUE : $("sample-select").value, currentWordlistName());
 
 // 単語リストの代表画像(サムネプレビューが取れなかったときのフォールバック)。
 // どちらも取れなければ画像なしで成立させる(枠ごと隠す)。
@@ -3650,7 +3650,13 @@ function loadThumbnailPreview(combo) {
   const reason = hiddenPreviewReason(combo.wordlistName);
   $("builder-image-hidden").hidden = !reason;
   $("builder-image-hidden-note").textContent = reason;
-  if (!combo.wordlistName || !combo.sampleId) {
+  if (!combo.sampleId) {
+    fig.hidden = true;
+    $("builder-loading").hidden = true;
+    $("builder-image-hidden").hidden = true;
+    return;
+  }
+  if (!combo.wordlistName) {
     loadWordlistImage(combo.wordlistName, seq);
     return;
   }
@@ -3920,14 +3926,13 @@ async function initBuilder() {
   builderReady = true;
   await samplesReady;         // 曲のプルダウンが揃うのを待つ
   syncBuilderOptions();
-  const known = new Set([...$("sample-select").options].filter((o) => o.value).map((o) => o.value));
   const available = new Set([...$("sample-select").options]
     .filter((o) => o.value && !o.disabled).map((o) => o.value));
   const def = DEFAULT_COMBO;
   // 1. 曲: 保存されたサンプルIDへ戻す。標準歌詞が手編集されて
   //    いなければ最新版を取り直し、編集済みならその値を残す。
   const restoredId = restoredSampleId;
-  if (!$("sample-select").value && available.has(restoredId)) {
+  if (!ownSongFile() && !$("sample-select").value && available.has(restoredId)) {
     $("sample-select").value = restoredId;
     const editedLyrics = sampleLyricsId === restoredId
       && sampleLyricsBaseline !== null
@@ -3938,11 +3943,6 @@ async function initBuilder() {
   //    (エディタで書いた自作リストを使っているときは名前が空でも「未設定」ではない)
   if (!currentWordlistName() && !usesEditorWordlist() && def.wordlist) {
     selectWordlist(def.wordlist);
-  }
-  // 3. 曲がまだ無ければ既定の組み合わせをセットする(MIDIと元歌詞をここで取りに行く)
-  if (!$("sample-select").value && known.has(def.sample)) {
-    $("sample-select").value = def.sample;
-    trackSample(applySample());
   }
   syncBuilderValues();
   builderLive = true;

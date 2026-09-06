@@ -557,9 +557,9 @@ def test_index_html_builder_card_has_selects():
         encoding="utf-8"
     )
     card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
-    # プルダウンは2つ横並び。サムネ枠より上に置く(選ぶ → 下に絵が出る)
+    # サンプル曲と単語リストはサムネ枠より上で選べる。
     assert '<div class="builder-selects">' in card
-    assert '<select id="builder-sample" aria-label="曲(サンプル曲)"></select>' in card
+    assert '<select id="builder-sample" aria-label="サンプル曲"></select>' in card
     assert (
         '<select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>'
         in card
@@ -698,7 +698,7 @@ def test_index_html_builder_submit_is_gated_while_busy():
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    assert '上の「曲」から選ぶか、自分のXF MIDI / 音声ファイルをアップロードしてください' in html
+    assert '自分の曲ファイルをアップロードするか、「サンプル曲で試す」から選んでください' in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
