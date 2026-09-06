@@ -288,7 +288,7 @@ def _select(csv_path: Path, where: str) -> list[tuple[str, ...]]:
 
 
 def test_normalized_where_selects_the_same_rows_as_flat_form():
-    """名前付きリスト全19件で、平坦形と正規形の where が同じ行を選ぶ。
+    """名前付きリスト全20件で、平坦形と正規形の where が同じ行を選ぶ。
 
     editorと形をそろえるために括弧を足したことで**出力の中身が変わらない**ことを固定する
     (全値ONの節は「列の値がその一覧のどれか」という条件になるので、
@@ -297,7 +297,7 @@ def test_normalized_where_selects_the_same_rows_as_flat_form():
     if not (WORDLISTS / "baseball.csv").is_file():
         pytest.skip("submodule未取得")
     entries = _conf_entries()
-    assert len(entries) == 19, f"conf の単語リスト数が変わった: {len(entries)}件"
+    assert len(entries) == 20, f"conf の単語リスト数が変わった: {len(entries)}件"
     for entry in entries:
         csv_path = WORDLISTS / Path(entry["filepath"]).name
         old, new = _flat_default_where(entry), default_where(entry)
