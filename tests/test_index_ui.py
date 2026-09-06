@@ -428,6 +428,76 @@ def test_duplicate_sample_midi_check_reuses_in_flight_request():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_builder_restores_only_explicit_song_choices():
+    """初回は曲を選ばず、保存サンプルを復元しても持ち込みMIDIを上書きしない。"""
+    initialize = _function_body(_script(), "async function initBuilder()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const elements = {{
+          "sample-select": {{ value: "", options: [
+            {{ value: "" }}, {{ value: "furusato" }},
+            {{ value: "previous" }}, {{ value: "unavailable", disabled: true }}
+          ] }},
+          lyrics: {{ value: "edited lyrics" }}
+        }};
+        const $ = (id) => elements[id];
+        let builderReady = false, builderLive = false;
+        let restoredSampleId = "", file = null, wordlist = "";
+        let sampleLyricsId = "previous", sampleLyricsBaseline = "original lyrics";
+        const samplesReady = Promise.resolve();
+        const DEFAULT_COMBO = {{ sample: "furusato", wordlist: "baseball" }};
+        const ownSongFile = () => file;
+        const currentWordlistName = () => wordlist;
+        const usesEditorWordlist = () => false;
+        const selectWordlist = (name) => {{ wordlist = name; }};
+        const syncBuilderOptions = () => {{}};
+        const syncBuilderValues = () => {{}};
+        let previews = 0;
+        const schedulePreview = () => {{ previews += 1; }};
+        let applied = [];
+        const applySample = (options) => {{
+          applied.push({{ id: $("sample-select").value, ...options }});
+          return Promise.resolve(true);
+        }};
+        const trackSample = (pending) => pending;
+        {initialize}
+        async function start(savedId, ownFile = null) {{
+          builderReady = false;
+          builderLive = false;
+          restoredSampleId = savedId;
+          file = ownFile;
+          $("sample-select").value = "";
+          applied = [];
+          await initBuilder();
+          assert.equal(builderLive, true);
+        }}
+        (async () => {{
+          await start("");
+          assert.equal($("sample-select").value, "", "fresh start needs an explicit song choice");
+          assert.deepEqual(applied, []);
+          assert.equal(wordlist, "baseball", "wordlist defaults remain available");
+          await start("previous");
+          assert.equal($("sample-select").value, "previous");
+          assert.deepEqual(applied, [{{ id: "previous", keepLyrics: true }}]);
+          const restoredMidi = {{ name: "my-song.mid" }};
+          await start("previous", restoredMidi);
+          assert.equal(file, restoredMidi);
+          assert.equal($("sample-select").value, "");
+          assert.deepEqual(applied, [], "stale sample state must not replace the restored upload");
+          await start("unavailable");
+          assert.equal($("sample-select").value, "");
+          assert.deepEqual(applied, []);
+          assert.equal(previews, 4);
+          await initBuilder();
+          assert.equal(previews, 4, "reloading configuration must not repeat initialization");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_legacy_saved_sample_midi_is_migrated_to_id_only():
     """旧版が保存したサンプルMIDIは、バイナリを復元せずIDだけに移行する。"""
     restored = _function_body(_script(), "async function doRestoreForm()")
@@ -1454,7 +1524,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     html = INDEX.read_text(encoding="utf-8")
     script = _script()
     assert 'id="song-upload-button"' in html
-    assert html.index('id="builder-sample"') < html.index('id="song-upload-button"')
+    assert html.index('id="song-upload-button"') < html.index('id="builder-sample"')
     assert '自分の曲ファイルをアップロード' in html
     assert '$("song-upload-button").disabled' not in script
     assert 'このサーバーでは音声入力を準備中です' in script
