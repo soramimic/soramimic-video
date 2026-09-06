@@ -524,7 +524,7 @@ def test_index_html_gates_neutrino_by_config():
 def test_index_html_explains_missing_custom_wordlist_preview():
     html = _index_html()
     assert "自作リストはプレビューに対応していません。" in html
-    assert "const custom = showsEditorWordlist();" in html
+    assert "const custom = !!activeCustomList() || showsEditorWordlist();" in html
 
 
 def test_index_html_hides_preview_for_sensitive_wordlists():
@@ -2465,9 +2465,8 @@ def test_index_html_editor_auto_import_checks_provenance():
     assert 'wordlist: $("wordlist").value.trim(),' in prov
     assert 'where: $("where").value.trim(),' in prov
     assert "params: buildConvertParams()," in prov
-    # 撤去した自作リスト(画像つき)の指紋キーは書かない。ただし古いシードを
-    # 「別の入力」として弾けるよう、比較キーの並びからは外さない
-    assert "customWordlist" not in prov
+    # 登録済み自作リストのIDと内容が変わった編集も、別の入力として判定する。
+    assert "customWordlist" in prov
     assert (
         'const PROVENANCE_KEYS = '
         '["song", "wordlist", "customWordlist", "where", "params"];' in html
