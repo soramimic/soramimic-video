@@ -6,6 +6,7 @@ APIキー認証を確認する。NEUTRINO実行込みのE2Eは手動(serve)で�
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import logging
@@ -1246,9 +1247,10 @@ def test_config_has_wordlist_layouts(client):
     assert set(wl.values()) <= set(conf["layouts"])
 
 
-def test_config_has_youtuber_image_policy(client):
+def test_config_has_vtuber_image_policy(client):
     conf = client.get("/api/config").json()
-    assert conf["wordlist_image_policies"]["youtuber"] == {
+    assert "youtuber" not in conf["wordlist_image_policies"]
+    assert conf["wordlist_image_policies"]["vtuber"] == {
         "usage": "noncommercial_fanwork",
         "terms": "https://hololivepro.com/terms/",
         "terms_pages": [
@@ -1266,6 +1268,36 @@ def test_config_has_youtuber_image_policy(client):
             },
         ],
     }
+
+
+@pytest.mark.parametrize(("name", "label"), [("youtuber", "YouTuber"), ("vtuber", "VTuber")])
+def test_creator_wordlists_are_separate_in_ui_and_editor(client, name, label):
+    from soramimic_video.editor_io import (
+        SETTING_JSON,
+        _flatten_wordlists,
+        named_wordlist_entry,
+        wordlist_phrase_name,
+    )
+
+    if not SETTING_JSON.is_file():
+        pytest.skip("submodule未取得")
+    config = client.get("/api/config").json()
+    assert config["wordlist_layouts"][name] == "youtuber_card"
+    assert wordlist_phrase_name(name) == f"{label}名"
+
+    response = client.get("/editor/conf/setting.json")
+    assert response.status_code == 200
+    entries = _flatten_wordlists(response.json()["wordlist"])
+    entry = next(item for item in entries if item.get("value") == name.upper())
+    assert entry == named_wordlist_entry(name)
+    assert entry["text"] == label
+    assert {facet["column"] for facet in entry["facets"]} == {"type", "status"}
+
+    response = client.get(f"/editor/{entry['filepath']}")
+    assert response.status_code == 200
+    rows = list(csv.DictReader(io.StringIO(response.text)))
+    assert rows
+    assert {row["category"] for row in rows} == {name}
 
 
 def test_get_builtin_layout(client):
