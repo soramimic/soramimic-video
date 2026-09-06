@@ -166,37 +166,29 @@ def test_wordlist_csv_route(client, tmp_path, monkeypatch):
 def test_editor_session_accepts_custom_wordlist(client, tmp_path):
     payload = _custom_session(client, tmp_path)
     entry = payload["wordlist"]
-    sid = entry["value"].removeprefix("custom:")
-    assert len(sid) == 16 and entry["value"].startswith("custom:")
-    assert entry["text"] == "自作リスト"
-    # editorのbuildDatabaseはこのfilepathを /editor/session-wordlists/<sid>.csv に解決する
-    assert entry["filepath"] == f"session-wordlists/{sid}.csv"
-    assert entry["dbtype"] == "tidy"
-    assert "where" not in entry  # 自作リストに絞り込みは効かない
+    assert entry["value"] == "ORIGINAL"
+    assert entry["text"] == "わたしの単語"
+    assert entry["csvText"].startswith("id,original,surface,pronunciation\n")
+    assert "filepath" not in entry
+    assert "where" not in entry
     assert payload["results"] and len(payload["unitsList"]) == len(payload["results"])
-    # 正規化済みCSVはセッション置き場に残る(生成時の単語行の引き当てに使う)
-    saved = tmp_path / "jobs" / "editor-sessions" / sid / "wordlist.csv"
-    assert saved.read_text(encoding="utf-8").splitlines()[0].startswith("id,original,")
+    assert not list((tmp_path / "jobs" / "editor-sessions").glob("*/wordlist.csv"))
 
 
-def test_editor_session_custom_id_is_deterministic(client, tmp_path):
-    """同じ中身なら同じセッション(=開き直してもディレクトリが増えない)。"""
-    first = _custom_session(client, tmp_path)["wordlist"]["value"]
-    second = _custom_session(client, tmp_path)["wordlist"]["value"]
+def test_editor_session_custom_text_is_self_contained(client, tmp_path):
+    first = _custom_session(client, tmp_path)["wordlist"]
+    second = _custom_session(client, tmp_path)["wordlist"]
     assert first == second
-    sessions = tmp_path / "jobs" / "editor-sessions"
-    assert [p.name for p in sessions.iterdir()] == [first.removeprefix("custom:")]
-    # sid は /api/wordlist-check が返す指紋と同じ(UIの来歴判定と揃う)
     check = client.post(
         "/api/wordlist-check", data={"wordlist_text": CUSTOM_TEXT}
     ).json()
-    assert first == f"custom:{check['fingerprint']}"
+    assert first["csvText"] == check["csv_text"]
 
 
 def test_editor_session_custom_beats_wordlist_name(client, tmp_path):
     """自作リストとリスト名が両方来たら自作を優先する(/api/jobs と同じ)。"""
     payload = _custom_session(client, tmp_path, wordlist="definitely-not-a-real-list")
-    assert payload["wordlist"]["value"].startswith("custom:")
+    assert payload["wordlist"]["value"] == "ORIGINAL"
 
 
 def test_editor_session_rejects_broken_custom_wordlist(client, tmp_path):
@@ -508,11 +500,11 @@ def test_setup_seed_accepts_a_custom_wordlist(client, tmp_path):
     assert res.status_code == 200, res.text
     payload = res.json()
     entry = payload["wordlist"]
-    sid = entry["value"].removeprefix("custom:")
-    assert entry["filepath"] == f"session-wordlists/{sid}.csv"
+    assert entry["value"] == "ORIGINAL"
+    assert entry["csvText"].startswith("id,original,surface,pronunciation\n")
+    assert "filepath" not in entry
     assert "results" not in payload
-    # DB構築用の正規化CSVは変換込みモードと同じく置かれる
-    assert (tmp_path / "jobs" / "editor-sessions" / sid / "wordlist.csv").is_file()
+    assert not list((tmp_path / "jobs" / "editor-sessions").glob("*/wordlist.csv"))
 
 
 def test_editor_session_still_converts_by_default(client, tmp_path):

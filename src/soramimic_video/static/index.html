@@ -474,6 +474,8 @@
   }
   .lucky-icon { font-size: 1rem; line-height: 1; }
   /* プルダウンは横並び(狭い画面では1列に折り返す) */
+  .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+  #custom-wordlist-panel { padding: .8rem; border: 1px solid #ddd; border-radius: .5rem; }
   .builder-selects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
   @media (max-width: 26rem) { .builder-selects { grid-template-columns: 1fr; } }
   /* ラベルとプルダウンは同じ行に置く(モバイル幅でも1行に収める) */
@@ -602,7 +604,7 @@
      プルダウンは正本(#sample-select / #wordlist-select)の写しで、選択は双方向に
      同期する(syncBuilderOptions / syncBuilderValues)。
      右上には⚙(替え歌を編集)と🎲(ランダム)。単語リストの絞り込み・変換のしかた
-     の調整と自作リストは、⚙で開く同梱エディタの⚙モーダルに一本化してある
+     の調整は、⚙で開く同梱エディタの⚙モーダルにある。自作リストはこのカードで管理する
      (エディタの中で選び直した結果は正本を経由してこのプルダウンにも出る)。
      見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
@@ -638,6 +640,28 @@
       <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
       <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
+  </div>
+  <div class="custom-wordlist-actions" id="custom-wordlist-actions">
+    <button type="button" id="custom-wordlist-add" class="btn-sm">＋ 自作リストを登録</button>
+    <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
+  </div>
+  <div id="custom-wordlist-panel" class="field" hidden>
+    <label for="custom-wordlist-name">リスト名</label>
+    <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：好きな食べ物">
+    <label for="custom-wordlist-text">単語</label>
+    <textarea id="custom-wordlist-text" rows="7" aria-describedby="custom-wordlist-hint"
+      placeholder="りんご
+東京,トウキョウ
+大阪,オオサカ,オーサカ"></textarea>
+    <p class="hint" id="custom-wordlist-hint">1行に1語。読みを指定する場合は「単語,読み」。CSV・テキストファイルも読み込めます。リストはこのブラウザに保存されます。</p>
+    <label for="custom-wordlist-file">CSV・テキストを読み込む</label>
+    <input type="file" id="custom-wordlist-file" accept=".csv,.txt,text/csv,text/plain">
+    <div class="custom-wordlist-actions">
+      <button type="button" id="custom-wordlist-save">保存して使う</button>
+      <button type="button" id="custom-wordlist-cancel" class="btn-sm">キャンセル</button>
+      <button type="button" id="custom-wordlist-delete" class="btn-danger btn-sm" hidden>削除</button>
+    </div>
+    <p id="custom-wordlist-message" class="error" role="status"></p>
   </div>
   <div class="audio-upload-entry" id="song-upload-entry">
     <button type="button" id="song-upload-button"
@@ -1070,6 +1094,7 @@
   </div>
 </div>
 
+<script src="/custom-wordlists.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
@@ -1254,6 +1279,8 @@ async function loadConfig() {
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
   simpleMode = !!conf.simple_ui;
+  $("custom-wordlist-actions").hidden = simpleMode;
+  refreshCustomLists();
   wordlistImagePolicies = conf.wordlist_image_policies || {};
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
@@ -2648,6 +2675,7 @@ async function submitJob(previewSec, previewMode) {
       form.append("layout_json", $("layout-json").value);
     }
   }
+  if (!editorSrc.file) appendCustomWordlist(form);
   if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
   setBusy(true);
   $("result").hidden = true;
@@ -3263,18 +3291,141 @@ const HIDDEN_PREVIEW_WORDLISTS = {
   insect: "昆虫の画像が苦手な方への配慮で、プレビューを隠しています。",
 };
 
-// ---- 自作の単語リスト(video側の画像つきモーダルは撤去済み) ----
-// 単語リストを自分で書く導線は、同梱エディタの⚙モーダル(「変換のしかた」)の
-// テキスト欄に一本化した。エディタで書いたリストは editor.json の
-// wordlist.value = "ORIGINAL" + csvText として運ばれるので、video側は名前でも
-// ファイルでもなく「編集済み替え歌そのもの」を受け取って生成する。
-// video側にあった自作リスト(単語ごとの画像を付けられるモーダル)は、UIが二重に
-// なるため撤去した。単語画像つきの自作リストは、将来ホスト移譲方式(サーバーに
-// 置いたリストをエディタにも見せる)で復活させる予定。
-// サーバー側のAPI(/api/wordlist-check、生成の wordlist_csv / wordlist_text /
-// wordlist_images、/api/editor-session の custom:<sid>)は、その復活とAPI利用者の
-// 互換のためそのまま残してある。過去に作った editor.json(wordlist.value が
-// custom:<sid>)の表示・生成も従来どおり動く。
+// ---- メイン画面の名前付き自作リスト ----
+const customListsRepository = VideoCustomWordlists.createRepository(localStorage);
+const CUSTOM_LIST_PREFIX = "__custom_list__:";
+const NEW_CUSTOM_LIST = "__new_custom_list__";
+let customLists = [];
+let activeCustomListId = "";
+let editingCustomListId = "";
+let customListBusy = false;
+function refreshCustomLists() {
+  try { customLists = customListsRepository.lists(); }
+  catch (err) { showBuilderMsg(err.message); }
+}
+function activeCustomList() {
+  return simpleMode ? null : customLists.find((list) => list.id === activeCustomListId) || null;
+}
+function appendCustomWordlist(form) {
+  const list = activeCustomList();
+  if (!list) return;
+  form.set("wordlist", "");
+  form.set("where", "");
+  form.set("wordlist_text", list.text);
+  form.set("wordlist_name", list.name);
+}
+function selectCustomList(id) {
+  if (simpleMode || !customLists.some((list) => list.id === id)) return;
+  activeCustomListId = id;
+  $("wordlist-select").selectedIndex = -1;
+  $("wordlist").value = "";
+  setWhere("");
+  clearEditorFile();
+  $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+  syncBuilderOptions();
+  saveForm();
+  schedulePreview(true);
+}
+function openCustomList(id = "") {
+  refreshCustomLists();
+  const list = customLists.find((item) => item.id === id);
+  const legacy = !id && showsEditorWordlist() ? editorSessionWordlist() : null;
+  editingCustomListId = list?.id || "";
+  $("custom-wordlist-name").value = list?.name || legacy?.text || "";
+  $("custom-wordlist-text").value = list?.text || legacy?.csvText || "";
+  $("custom-wordlist-file").value = "";
+  $("custom-wordlist-delete").hidden = !list;
+  $("custom-wordlist-message").textContent = "";
+  $("custom-wordlist-panel").hidden = false;
+  syncBuilderValues();
+  $("custom-wordlist-name").focus();
+}
+function closeCustomList() {
+  if (customListBusy) return;
+  $("custom-wordlist-panel").hidden = true;
+  $("builder-wordlist").focus();
+}
+function setCustomListBusy(busy) {
+  customListBusy = busy;
+  for (const id of ["add", "edit", "name", "text", "file", "save", "cancel", "delete"]) {
+    $("custom-wordlist-" + id).disabled = busy;
+  }
+  $("builder-wordlist").disabled = busy;
+}
+async function checkCustomList(form) {
+  const res = await fetch("/api/wordlist-check", { method: "POST", headers: headers(), body: form });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || "単語リストを確認できませんでした。");
+  return body;
+}
+$("custom-wordlist-add").addEventListener("click", () => openCustomList());
+$("custom-wordlist-edit").addEventListener("click", () => openCustomList(activeCustomListId));
+$("custom-wordlist-cancel").addEventListener("click", closeCustomList);
+$("custom-wordlist-panel").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeCustomList();
+});
+$("custom-wordlist-save").addEventListener("click", async () => {
+  const name = $("custom-wordlist-name").value.trim();
+  const text = $("custom-wordlist-text").value.trim();
+  const msg = $("custom-wordlist-message");
+  if (!name || !text) { msg.textContent = "リスト名と単語を入力してください。"; return; }
+  setCustomListBusy(true);
+  msg.textContent = "単語を確認しています…";
+  try {
+    const form = new FormData();
+    form.append("wordlist_text", text);
+    await checkCustomList(form);
+    const list = customListsRepository.save({ id: editingCustomListId, name, text });
+    refreshCustomLists();
+    selectCustomList(list.id);
+    $("custom-wordlist-panel").hidden = true;
+  } catch (err) { msg.textContent = err.message; }
+  finally { setCustomListBusy(false); }
+  if ($("custom-wordlist-panel").hidden) $("builder-wordlist").focus();
+});
+$("custom-wordlist-file").addEventListener("change", async () => {
+  const file = $("custom-wordlist-file").files[0];
+  if (!file) return;
+  const msg = $("custom-wordlist-message");
+  if (file.size > 10 * 1024 * 1024) { msg.textContent = "10MB以下のファイルを選んでください。"; return; }
+  setCustomListBusy(true);
+  msg.textContent = "読み込んでいます…";
+  try {
+    const bytes = await file.arrayBuffer();
+    let text;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { text = new TextDecoder("shift-jis", { fatal: true }).decode(bytes); }
+    const form = new FormData();
+    form.append("wordlist_text", text);
+    const body = await checkCustomList(form);
+    $("custom-wordlist-text").value = text;
+    if (!$("custom-wordlist-name").value.trim()) {
+      $("custom-wordlist-name").value = file.name.replace(/\.(csv|txt)$/i, "").slice(0, 100);
+    }
+    msg.textContent = `${body.rows}語を読み込みました。「保存して使う」で登録できます。`;
+  } catch (err) { msg.textContent = "読み込めませんでした: " + err.message; }
+  finally { setCustomListBusy(false); $("custom-wordlist-file").value = ""; }
+});
+$("custom-wordlist-delete").addEventListener("click", () => {
+  const list = customLists.find((item) => item.id === editingCustomListId);
+  if (!list || !confirm(`「${list.name}」を削除しますか？`)) return;
+  try {
+    customListsRepository.remove(list.id);
+    refreshCustomLists();
+    if (activeCustomListId === list.id) {
+      activeCustomListId = "";
+      sessionStorage.removeItem(EDITOR_KEY);
+      sessionStorage.removeItem(EDITOR_SEED_KEY);
+      clearEditorFile();
+      const first = $("wordlist-select").options[0];
+      if (first) { $("wordlist-select").value = first.value; applyWordlistSelection(); }
+    }
+    syncBuilderOptions();
+    saveForm();
+    schedulePreview(true);
+    closeCustomList();
+  } catch (err) { $("custom-wordlist-message").textContent = err.message; }
+});
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -3367,8 +3518,23 @@ function syncBuilderOptions() {
   }
   const wl = $("wordlist-select");
   $("builder-wordlist").innerHTML = wl.innerHTML;
-  // 単語リストのプルダウンが出ない構成(editor conf が無い)ではカード側も出さない
-  $("builder-wordlist-field").hidden = wl.hidden;
+  if (!simpleMode) {
+    const group = document.createElement("optgroup");
+    group.label = "自作リスト";
+    for (const list of customLists) {
+      const option = document.createElement("option");
+      option.value = CUSTOM_LIST_PREFIX + list.id;
+      option.textContent = list.name;
+      group.appendChild(option);
+    }
+    const add = document.createElement("option");
+    add.value = NEW_CUSTOM_LIST;
+    add.textContent = "＋ 新しいリスト";
+    group.appendChild(add);
+    $("builder-wordlist").appendChild(group);
+  }
+  // 同梱リストがない構成でも、自作リストは選択・登録できる。
+  $("builder-wordlist-field").hidden = wl.hidden && simpleMode;
   syncBuilderValues();
 }
 
@@ -3378,7 +3544,8 @@ function syncBuilderValues() {
   $("builder-sample").value = ownSongFile()
     ? OWN_SONG_VALUE : $("sample-select").value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
-  const own = showsEditorWordlist();
+  const selectedCustom = activeCustomList();
+  const own = !selectedCustom && showsEditorWordlist();
   const synth = [...card.options].find((o) => o.value === EDITOR_WORDLIST_VALUE);
   if (own && !synth) {
     const o = document.createElement("option");
@@ -3388,7 +3555,9 @@ function syncBuilderValues() {
   } else if (!own && synth) {
     synth.remove();
   }
-  card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
+  card.value = selectedCustom ? CUSTOM_LIST_PREFIX + selectedCustom.id
+    : own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
+  $("custom-wordlist-edit").hidden = simpleMode || !(selectedCustom || own);
   updateNoncommercialFanworkPrompt();
   syncLuckyAvailability();
 }
@@ -3774,7 +3943,7 @@ function renderBuilder() {
   const c = currentCombo();
   // 自作リスト(エディタの⚙で書いたもの)はサーバーに置いていないのでサムネの
   // プレビューが作れない。黙って空枠にせず、その旨だけ静かに出して生成には進める
-  const custom = showsEditorWordlist();
+  const custom = !!activeCustomList() || showsEditorWordlist();
   const note = custom
     ? "自作リストはプレビューに対応していません。そのまま生成できます。"
     : "";
@@ -3790,13 +3959,14 @@ function schedulePreview(force) {
   if (!builderLive || $("lucky-card").hidden) return;
   showBuilderMsg("");
   const c = currentCombo();
-  const combo = `${c.sampleId}\n${c.wordlistName}`;
+  const list = activeCustomList();
+  const combo = `${c.sampleId}\n${c.wordlistName}\n${list?.id || ""}:${list?.updatedAt || ""}`;
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
   const key = `${combo}\n${previewShowImages ? 1 : 0}`
     + `\n${$("noncommercial-fanwork").checked ? 1 : 0}`;
-  if (key === previewKey) return;
+  if (!force && key === previewKey) return;
   previewKey = key;
   clearTimeout(previewTimer);
   previewTimer = setTimeout(renderBuilder, force ? 0 : PREVIEW_DEBOUNCE_MS);
@@ -3816,6 +3986,7 @@ function clearEditorFile() {
 // (サーバーは名前で解決できる)。どちらも既存の change 経路をそのまま通す。
 function selectWordlist(name) {
   if (!name) return;
+  activeCustomListId = "";
   const opt = wordlistOptionByName(name);
   if (opt) {
     const sel = $("wordlist-select");
@@ -3871,6 +4042,8 @@ $("builder-sample").addEventListener("change", () => {
 });
 $("builder-wordlist").addEventListener("change", () => {
   const v = $("builder-wordlist").value;
+  if (v === NEW_CUSTOM_LIST) { openCustomList(); return; }
+  if (v.startsWith(CUSTOM_LIST_PREFIX)) { selectCustomList(v.slice(CUSTOM_LIST_PREFIX.length)); return; }
   // 合成の選択肢(自作リスト)は正本に対応する値を持たない。選ばれても正本には
   // 何も書かず表示だけ戻す(いまの自作リストのまま=実質なにも起きない)
   if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }
@@ -3936,7 +4109,7 @@ async function initBuilder() {
   }
   // 2. 単語リストが未設定なら既定の組み合わせのものにする
   //    (エディタで書いた自作リストを使っているときは名前が空でも「未設定」ではない)
-  if (!currentWordlistName() && !usesEditorWordlist() && def.wordlist) {
+  if (!currentWordlistName() && !activeCustomList() && !usesEditorWordlist() && def.wordlist) {
     selectWordlist(def.wordlist);
   }
   // 3. 曲がまだ無ければ既定の組み合わせをセットする(MIDIと元歌詞をここで取りに行く)
@@ -5293,14 +5466,13 @@ function editorProvenance() {
   return {
     song: midiSampleId ? `sample:${midiSampleId}` : (midi ? `${midi.name}:${midi.size}` : ""),
     wordlist: $("wordlist").value.trim(),
+    customWordlist: activeCustomList() ? JSON.stringify([activeCustomListId, activeCustomList().text]) : "",
     where: $("where").value.trim(),
     params: buildConvertParams(),
   };
 }
 
-// customWordlist は撤去した video側の自作リスト(画像つき)の指紋。今は誰も
-// 書かないが、キーは残す——撤去前に作った古いシードが sessionStorage に残って
-// いたら、それは「今と別の入力から作られた編集」として弾きたいため。
+// 自作リストはIDと内容も比較し、別のリストや保存前の内容で作った編集を使わない。
 const PROVENANCE_KEYS = ["song", "wordlist", "customWordlist", "where", "params"];
 const sameProvenance = (a, b) =>
   PROVENANCE_KEYS.every((k) => ((a || {})[k] || "") === ((b || {})[k] || ""));
@@ -5402,6 +5574,20 @@ function applyEditorWordlist() {
   const value = String(w.value || "");
   // 古い自作リスト(custom:<sid>)は名前も絞り込みも持たないので ORIGINAL と同じ扱い
   const own = value === "ORIGINAL" || value.startsWith("custom:");
+  const data = editorSessionData();
+  const list = activeCustomList();
+  if (list && own && value === "ORIGINAL" && typeof w.csvText === "string"
+      && data?.videoCustomListId === list.id && data.videoCustomListCsvText !== w.csvText) {
+    try {
+      customListsRepository.save({ id: list.id, name: list.name, text: w.csvText });
+      refreshCustomLists();
+      data.videoCustomListText = w.csvText;
+      data.videoCustomListCsvText = w.csvText;
+      sessionStorage.setItem(EDITOR_KEY, JSON.stringify(data));
+      adoptEditorSeedProvenance();
+      saveForm();
+    } catch (err) { showBuilderMsg(err.message); }
+  }
   const name = own ? ""
     : String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "");
   if (!own && !name) return;        // 素性が読めないものは触らない
@@ -5474,6 +5660,12 @@ function hostSongList() {
 function withHostInfo(payload) {
   const data = { ...(payload || {}) };
   data.host = { songs: hostSongList(), canUploadSong: true };
+  const list = activeCustomList();
+  if (list && data.wordlist?.value === "ORIGINAL") {
+    data.videoCustomListId = list.id;
+    data.videoCustomListText = list.text;
+    data.videoCustomListCsvText = data.wordlist.csvText;
+  }
   const song = { ...(data.song || {}) };
   // 自分で選んだMIDI(midiSampleId が空)は一覧のどれでもないので id を付けない
   if (midiSampleId) song.id = midiSampleId;
@@ -5630,6 +5822,7 @@ async function reseedEditorSong() {
   form.append("convert_params", buildConvertParams());
   form.append("song_title", songTitleOf(midi));
   form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
+  appendCustomWordlist(form);
   const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
   const body = await res.json();
   if (!res.ok) throw new Error(body.detail || res.status);
@@ -5800,6 +5993,7 @@ async function convertAndOpenEditor() {
   form.append("convert_params", buildConvertParams());
   form.append("song_title", songTitleOf(midi));
   form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
+  appendCustomWordlist(form);
   const btn = $("builder-edit");
   btn.disabled = true;
   const label = btn.textContent;
@@ -5851,6 +6045,14 @@ function closeEditor() {
 }
 
 function showEditorFrame() {
+  const wordlist = editorSessionWordlist();
+  if (wordlist?.value === "ORIGINAL" && typeof wordlist.csvText === "string") {
+    try { localStorage.setItem("originalWordlist", wordlist.csvText); }
+    catch {
+      showBuilderMsg("自作リストを編集画面へ渡せません。ブラウザの保存設定を確認してください。");
+      return;
+    }
+  }
   hideEditorResume();   // 選択の役目は終わり(開いたら裏に残さない)
   // 本家editorへ「videoのapp shell内で開いている」と明示する。単体起動時の
   // Soramimicロゴは従来どおり生成画面へ進むが、埋め込み時は親へ戻る操作になる。
@@ -6084,6 +6286,7 @@ function applyWordlistSelection() {
   const sel = $("wordlist-select");
   const opt = sel.selectedOptions[0];
   if (!opt) return;
+  activeCustomListId = "";
   const g = wordlistGroups[Number(opt.value)];
   $("wordlist").value = g ? g.name : "";
   // 絞り込みは conf の既定(facetsのdefault、無ければentryのwhere)を入れる。
@@ -6115,6 +6318,8 @@ function escapeHtml(t) {
 // editor.jsonがあると投入時にwordlist/whereは無視されるため、その警告に使う
 function parodyMismatch() {
   if (!editorWordlist || !$("editor").files[0]) return false;
+  const list = activeCustomList();
+  if (list) return editorWordlist.customId !== list.id || editorWordlist.customText !== list.text;
   const cur = $("wordlist").value.trim();
   if (!cur) return false;  // 未選択なら比較する意味がない
   return editorWordlist.name !== cur
@@ -6141,7 +6346,7 @@ function renderParodyStatus() {
   } else if (parodyMismatch()) {
     // 事実は1つ「編集済みが優先される」。名前が同じで絞り込みだけ違うことも
     // あるので、そのときは同じ名前を2回並べない
-    const cur = $("wordlist").value.trim();
+    const cur = activeCustomList()?.name || $("wordlist").value.trim();
     s.innerHTML = (editorWordlist.name === cur
       ? "⚠ 編集済みの替え歌を使うため、選択中の絞り込みは使われません"
       : `⚠ 編集済みの替え歌(「${escapeHtml(editorWordlist.name)}」から作成)を使うため、`
@@ -6185,6 +6390,8 @@ async function updateParodyStatus() {
             ? (w.text || "自作リスト")
             : String(w.filepath).replace(/.*\//, "").replace(/\.csv$/, ""),
           where: custom ? "" : editorWhereOf(data),
+          customId: data.videoCustomListId || "",
+          customText: data.videoCustomListText || "",
         };
       }
     } catch { /* 生成元が読めなければ不一致判定を諦める(警告なし) */ }
@@ -6231,6 +6438,7 @@ function saveForm() {
       sampleLyricsId,
       sampleLyricsBaseline,
       wordlist: $("wordlist").value,
+      customWordlistId: activeCustomListId,
       // 選んだ単語リスト(confエントリ)の絞り込み。画面には出さないが、同名で
       // 絞り込み違いのグループを復元時に選び分けるために持ち回る
       where: $("where").value,
@@ -6440,6 +6648,9 @@ async function doRestoreForm() {
       $("wordlist").value = state.wordlist || "";
       $("where").value = state.where || "";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    if (!simpleMode && customLists.some((list) => list.id === state.customWordlistId)) {
+      selectCustomList(state.customWordlistId);
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";

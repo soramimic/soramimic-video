@@ -1440,8 +1440,8 @@ def test_card_selects_mirror_the_canonical_form():
     # 選択肢は optgroup ごとそのまま複製する(表示名の付け直しをしない)
     assert '$("builder-sample").innerHTML = $("sample-select").innerHTML;' in opts
     assert '$("builder-wordlist").innerHTML = wl.innerHTML;' in opts
-    # 単語リストのセレクトが出ない構成(editor conf 無し)ではカード側も出さない
-    assert '$("builder-wordlist-field").hidden = wl.hidden;' in opts
+    # 同梱リストの設定が無くても通常UIでは自作リストを選べる
+    assert '$("builder-wordlist-field").hidden = wl.hidden && simpleMode;' in opts
     assert "syncBuilderValues();" in opts
     # カード → 正本 → change の順(既存の applySample / applyWordlistSelection を通す)
     wiring = script[script.index('$("builder-sample").addEventListener'):]
@@ -1524,10 +1524,10 @@ def test_card_wordlist_select_shows_the_editor_own_list():
     shows = _function_body(script, "function showsEditorWordlist()")
     assert "return !currentWordlistName() && usesEditorWordlist();" in shows
     body = _function_body(script, "function syncBuilderValues()")
-    assert "const own = showsEditorWordlist();" in body
+    assert "const own = !selectedCustom && showsEditorWordlist();" in body
     assert "card.appendChild(o);" in body     # 自作リストのあいだだけ足す
     assert "synth.remove();" in body          # 名前付きリストに戻ったら取り除く
-    assert 'card.value = own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);' in body
+    assert 'card.value = selectedCustom ? CUSTOM_LIST_PREFIX + selectedCustom.id' in body
     # 選び直されても正本は触らない(「何も選ばない」に落とさない)
     assert "if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }" in script
 def test_layout_preview_image_needs_a_wordlist_name():

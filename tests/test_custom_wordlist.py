@@ -272,3 +272,45 @@ def test_run_pipeline_prefers_the_uploaded_wordlist(client, tmp_path, monkeypatc
     assert REAL_RUN_PIPELINE(job, {"parallel_video": False}) == out
     assert calls["wordlist"] == str(job.dir / api_mod.WORDLIST_DIRNAME / "mine.csv")
     assert calls["cache_db"] is False
+
+
+def test_wordlist_check_returns_safe_normalized_text(client):
+    response = client.post(
+        "/api/wordlist-check",
+        data={"wordlist_text": (
+            "surface,pronunciation,image,image_page\n"
+            "猫,ネコ,http://127.0.0.1/private,file:///etc/passwd\n"
+        )},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["csv_text"] == "id,original,surface,pronunciation\n1,猫,猫,ネコ"
+    assert result["dropped_columns"] == ["image", "image_page"]
+    assert result["images"] == 0
+
+
+def test_wordlist_check_import_returns_normalized_shift_jis_csv(client):
+    response = client.post(
+        "/api/wordlist-check",
+        files={"wordlist_csv": (
+            "鳥.csv", "単語,読み\n雀,スズメ\n".encode("cp932"), "text/csv"
+        )},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["csv_text"] == (
+        "id,original,surface,pronunciation\n1,雀,雀,スズメ"
+    )
+
+
+@pytest.mark.parametrize("public", [False, True])
+def test_custom_wordlist_script_is_served_without_cookie(client, monkeypatch, public):
+    if public:
+        monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    response = client.get("/custom-wordlists.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.text == (api_mod.STATIC_DIR / "custom-wordlists.js").read_text(
+        encoding="utf-8"
+    )
+    assert "set-cookie" not in response.headers
