@@ -1,4 +1,4 @@
-# main宛ては同一repositoryのpreviewブランチからのPull Requestだけを許可する。
+# mainは同一repositoryのpreviewまたは検証済みMarkdown-only PRを許可する。
 # それ以外はdevへ向け直し、通常の開発・検証フローへ戻す。
 # - PRのコードは checkout しないため、pull_request_target でも安全
 name: retarget-main-pr
@@ -24,8 +24,32 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.pull_request.number }}
       REPO: ${{ github.repository }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
-      - name: base を dev に付け替えて通知
+      - name: Check out trusted base policy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Keep Markdown-only PRs on main
         run: |
+          set +e
+          node .github/scripts/check-main-pr.cjs
+          result=$?
+          set -e
+          if [ "$result" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$result" -ne 1 ]; then
+            exit "$result"
+          fi
+          live=$(gh api "repos/$REPO/pulls/$PR")
+          if [ "$(echo "$live" | jq -r .state)" != open ] || \
+             [ "$(echo "$live" | jq -r .base.ref)" != main ] || \
+             [ "$(echo "$live" | jq -r .base.sha)" != "$BASE_SHA" ] || \
+             [ "$(echo "$live" | jq -r .head.sha)" != "$SHA" ]; then
+            exit 1
+          fi
           gh pr edit "$PR" --repo "$REPO" --base dev
-          gh pr comment "$PR" --repo "$REPO" --body "🔀 baseを\`main\`から\`dev\`へ変更しました。\`main\`へマージできるのは、同一repositoryの\`preview\`ブランチからのrelease PRだけです。"

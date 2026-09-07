@@ -39,3 +39,5 @@ jobs:
           bash deploy/tests/test-auto-deploy.sh
           bash deploy/tests/test-install-auto-deploy.sh
           bash deploy/tests/test-deploy-public.sh
+      - name: Markdown-only PR policy tests
+        run: node tests/main-pr-policy.cjs
