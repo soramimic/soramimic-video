@@ -485,6 +485,49 @@
   .custom-wordlist-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .75rem; }
   .custom-wordlist-header h2 { margin: 0; font-size: 1.1rem; }
   #custom-wordlist-close { flex: 0 0 auto; min-width: 2.75rem; font-size: 1.2rem; }
+  #custom-wordlist-panel { width: min(40rem, calc(100vw - 2rem)); padding: 1.2rem; }
+  #custom-wordlist-panel > label { color: var(--text); margin-top: 0; margin-bottom: .35rem; }
+  #custom-wordlist-name { margin-bottom: .7rem; }
+  .custom-wordlist-dropzone {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center;
+    width: 100%; min-height: 7rem; padding: 1rem 1.25rem; margin-bottom: .7rem;
+    border: 2px dashed #93b4f8; border-radius: 12px;
+    background: color-mix(in srgb, var(--accent) 4%, var(--panel));
+    text-align: left; transition: border-color 150ms ease, background-color 150ms ease;
+  }
+  .custom-wordlist-dropzone:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  }
+  .custom-wordlist-dropzone.is-dragging {
+    border-color: var(--accent); border-style: solid;
+    background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  }
+  .custom-wordlist-dropzone-icon {
+    width: 2.25rem; height: 2.25rem; margin-right: .9rem;
+    fill: none; stroke: var(--accent); stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .custom-wordlist-dropzone-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .45rem; }
+  .custom-wordlist-dropzone-copy strong { font-size: .95rem; font-weight: 650; }
+  .custom-wordlist-dropzone-copy > span { color: var(--accent); font-size: .85rem; font-weight: 600; }
+  .custom-wordlist-dropzone-mobile { display: none; }
+  #custom-wordlist-text { height: 22rem; min-height: 12rem; line-height: 1.65; }
+  #custom-wordlist-text::placeholder { color: var(--muted); opacity: 1; }
+  .custom-wordlist-status { margin: .65rem 0 0; color: var(--muted); font-size: .85rem; overflow-wrap: anywhere; }
+  .custom-wordlist-status.is-error { color: var(--danger); }
+  .custom-wordlist-footer { display: flex; justify-content: flex-end; gap: .6rem; margin-top: .8rem; }
+  .custom-wordlist-footer #custom-wordlist-delete { margin-right: auto; }
+  @media (max-width: 768px) {
+    #custom-wordlist-panel { padding: 1rem; }
+    .custom-wordlist-dropzone { min-height: 5.5rem; padding: .8rem 1rem; }
+    .custom-wordlist-dropzone-desktop, .custom-wordlist-dropzone-copy > span { display: none; }
+    .custom-wordlist-dropzone-mobile { display: inline; }
+    #custom-wordlist-text { height: 38dvh; min-height: 10rem; }
+    .custom-wordlist-footer { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
+    .custom-wordlist-footer button { padding-inline: .7rem; white-space: nowrap; }
+    .custom-wordlist-footer #custom-wordlist-delete { grid-column: 1 / -1; justify-self: start; }
+  }
+
   .builder-selects { margin-top: .8rem; }
   .builder-input-row {
     display: grid; grid-template-columns: 4.25rem minmax(0, 1fr);
@@ -933,25 +976,39 @@
 
 <dialog id="custom-wordlist-panel" class="custom-wordlist-dialog" aria-labelledby="custom-wordlist-title">
   <div class="custom-wordlist-header">
-    <h2 id="custom-wordlist-title">自作リストを登録</h2>
+    <h2 id="custom-wordlist-title">自作単語リストの保存</h2>
     <button type="button" id="custom-wordlist-close" class="btn-sm" aria-label="閉じる">×</button>
   </div>
   <label for="custom-wordlist-name">リスト名</label>
-  <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：好きな食べ物">
-  <label for="custom-wordlist-text">単語</label>
-  <textarea id="custom-wordlist-text" rows="7" aria-describedby="custom-wordlist-hint"
-    placeholder="りんご
+  <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：歴代レスラー" autocomplete="off">
+  <button type="button" id="custom-wordlist-dropzone" class="custom-wordlist-dropzone">
+    <svg class="custom-wordlist-dropzone-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14.5v3A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-3" />
+    </svg>
+    <span class="custom-wordlist-dropzone-copy">
+      <strong class="custom-wordlist-dropzone-desktop">CSV・TXTファイルをここにドロップ</strong>
+      <strong class="custom-wordlist-dropzone-mobile">CSV・TXTファイルを選択</strong>
+      <span>またはクリックして選択</span>
+    </span>
+  </button>
+  <input type="file" id="custom-wordlist-file" accept=".csv,.txt,text/csv,text/plain" hidden>
+  <textarea id="custom-wordlist-text" rows="16" aria-label="単語と読み" aria-describedby="custom-wordlist-hint"
+    placeholder="#単語と読みを、1行に1語ずつカンマ(,)区切りで入力してください
+#ひとつの単語に複数の読み方を登録できます
+#読みを省略すると自動で推定します
+#半角シャープ(#)でコメントを書けます
+#1行目に列名(id,original,surface,pronunciation,description)を書けば、CSVも貼り付けられます
+
+りんご
 東京,トウキョウ
 大阪,オオサカ,オーサカ"></textarea>
-  <p class="hint" id="custom-wordlist-hint">1行に1語。読みを指定する場合は「単語,読み」。CSV・テキストファイルも読み込めます。リストはこのブラウザに保存されます。</p>
-  <label for="custom-wordlist-file">CSV・テキストを読み込む</label>
-  <input type="file" id="custom-wordlist-file" accept=".csv,.txt,text/csv,text/plain">
-  <div class="custom-wordlist-actions">
-    <button type="button" id="custom-wordlist-save">保存して使う</button>
-    <button type="button" id="custom-wordlist-cancel" class="btn-sm">キャンセル</button>
-    <button type="button" id="custom-wordlist-delete" class="btn-danger btn-sm" hidden>削除</button>
+  <p class="hint" id="custom-wordlist-hint">リストはこのブラウザに保存されます。</p>
+  <p id="custom-wordlist-message" class="custom-wordlist-status" role="status" hidden></p>
+  <div class="custom-wordlist-footer">
+    <button type="button" id="custom-wordlist-delete" class="btn-danger" hidden>削除</button>
+    <button type="button" id="custom-wordlist-cancel">キャンセル</button>
+    <button type="button" id="custom-wordlist-save" class="btn-primary">保存して使用</button>
   </div>
-  <p id="custom-wordlist-message" class="error" role="status"></p>
 </dialog>
 
 <dialog id="custom-wordlist-discard" class="custom-wordlist-dialog"
@@ -3384,8 +3441,8 @@ async function openCustomList(id = "") {
     : { name: "", text: "" };
   $("custom-wordlist-file").value = "";
   $("custom-wordlist-delete").hidden = !list;
-  $("custom-wordlist-message").textContent = "";
-  $("custom-wordlist-title").textContent = list ? "自作リストを編集" : "自作リストを登録";
+  showCustomListMessage("");
+  $("custom-wordlist-title").textContent = list ? "自作単語リストの編集" : "自作単語リストの保存";
   syncBuilderValues();
   $("custom-wordlist-panel").showModal();
   document.body.classList.add("custom-wordlist-open");
@@ -3408,10 +3465,16 @@ function closeCustomList() {
 }
 function setCustomListBusy(busy) {
   customListBusy = busy;
-  for (const id of ["edit", "name", "text", "file", "save", "cancel", "delete", "close"]) {
+  for (const id of ["edit", "name", "text", "file", "dropzone", "save", "cancel", "delete", "close"]) {
     $("custom-wordlist-" + id).disabled = busy;
   }
   $("builder-wordlist").disabled = busy;
+}
+function showCustomListMessage(text, isError = false) {
+  const msg = $("custom-wordlist-message");
+  msg.textContent = text;
+  msg.hidden = !text;
+  msg.classList.toggle("is-error", isError);
 }
 async function checkCustomList(form) {
   const controller = new AbortController();
@@ -3454,10 +3517,9 @@ $("custom-wordlist-panel").addEventListener("close", () => {
 $("custom-wordlist-save").addEventListener("click", async () => {
   const name = $("custom-wordlist-name").value.trim();
   const text = $("custom-wordlist-text").value.trim();
-  const msg = $("custom-wordlist-message");
-  if (!name || !text) { msg.textContent = "リスト名と単語を入力してください。"; return; }
+  if (!name || !text) { showCustomListMessage("リスト名と単語を入力してください。", true); return; }
   setCustomListBusy(true);
-  msg.textContent = "単語を確認しています…";
+  showCustomListMessage("単語を確認しています…");
   let saved = false;
   try {
     const form = new FormData();
@@ -3467,17 +3529,18 @@ $("custom-wordlist-save").addEventListener("click", async () => {
     await refreshCustomLists();
     selectCustomList(list.id);
     saved = true;
-  } catch (err) { msg.textContent = err.message; }
+  } catch (err) { showCustomListMessage(err.message, true); }
   finally { setCustomListBusy(false); }
   if (saved) closeCustomList();
 });
-$("custom-wordlist-file").addEventListener("change", async () => {
-  const file = $("custom-wordlist-file").files[0];
-  if (!file) return;
-  const msg = $("custom-wordlist-message");
-  if (file.size > 10 * 1024 * 1024) { msg.textContent = "10MB以下のファイルを選んでください。"; return; }
+async function loadCustomListFile(file) {
+  if (!file || customListBusy) return;
+  if (file.size > 10 * 1024 * 1024) {
+    showCustomListMessage("10MB以下のファイルを選んでください。", true);
+    return;
+  }
   setCustomListBusy(true);
-  msg.textContent = "読み込んでいます…";
+  showCustomListMessage("読み込んでいます…");
   try {
     const bytes = await file.arrayBuffer();
     let text;
@@ -3490,10 +3553,45 @@ $("custom-wordlist-file").addEventListener("change", async () => {
     if (!$("custom-wordlist-name").value.trim()) {
       $("custom-wordlist-name").value = file.name.replace(/\.(csv|txt)$/i, "").slice(0, 100);
     }
-    msg.textContent = `${body.rows}語を読み込みました。「保存して使う」で登録できます。`;
-  } catch (err) { msg.textContent = "読み込めませんでした: " + err.message; }
-  finally { setCustomListBusy(false); $("custom-wordlist-file").value = ""; }
+    showCustomListMessage(`${file.name}: ${body.rows}語を入力欄へ読み込みました。`);
+  } catch (err) { showCustomListMessage("読み込めませんでした: " + err.message, true); }
+  finally { setCustomListBusy(false); }
+}
+const customListDropzone = $("custom-wordlist-dropzone");
+customListDropzone.addEventListener("click", () => $("custom-wordlist-file").click());
+$("custom-wordlist-file").addEventListener("change", () => {
+  const file = $("custom-wordlist-file").files[0];
+  $("custom-wordlist-file").value = "";
+  loadCustomListFile(file);
 });
+let customListDragDepth = 0;
+function resetCustomListDrag() {
+  customListDragDepth = 0;
+  customListDropzone.classList.remove("is-dragging");
+}
+customListDropzone.addEventListener("dragenter", (event) => {
+  if (!event.dataTransfer?.types.includes("Files")) return;
+  event.preventDefault();
+  if (customListBusy) return;
+  customListDragDepth += 1;
+  customListDropzone.classList.add("is-dragging");
+});
+customListDropzone.addEventListener("dragover", (event) => {
+  if (!event.dataTransfer?.types.includes("Files")) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = customListBusy ? "none" : "copy";
+});
+customListDropzone.addEventListener("dragleave", () => {
+  customListDragDepth = Math.max(0, customListDragDepth - 1);
+  if (!customListDragDepth) customListDropzone.classList.remove("is-dragging");
+});
+customListDropzone.addEventListener("dragend", resetCustomListDrag);
+customListDropzone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  resetCustomListDrag();
+  loadCustomListFile(event.dataTransfer?.files[0]);
+});
+$("custom-wordlist-panel").addEventListener("close", resetCustomListDrag);
 $("custom-wordlist-delete").addEventListener("click", async () => {
   const list = customLists.find((item) => item.id === editingCustomListId);
   if (!list || !confirm(`「${list.name}」を削除しますか？`)) return;
@@ -3514,7 +3612,7 @@ $("custom-wordlist-delete").addEventListener("click", async () => {
     saveForm();
     schedulePreview(true);
     deleted = true;
-  } catch (err) { $("custom-wordlist-message").textContent = err.message; }
+  } catch (err) { showCustomListMessage(err.message, true); }
   finally { setCustomListBusy(false); }
   if (deleted) closeCustomList();
 });
