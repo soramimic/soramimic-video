@@ -389,3 +389,59 @@ assert.equal(editorSyncPending, null);
 await syncEditorSession();
 assert.equal(passes, 3);
 """)
+
+
+def test_file_import_updates_fields_only_after_validation_and_preserves_typed_name():
+    functions = "\n".join(frontend_function(name) for name in [
+        "loadCustomListFile", "setCustomWordlistText",
+    ])
+    run_node(functions + """
+let customListBusy = false;
+const setCustomListBusy = value => { customListBusy = value; };
+const fields = {
+  'custom-wordlist-name': { value: '' }, 'custom-wordlist-text': { value: '前の入力' },
+};
+const $ = id => fields[id];
+const messages = [];
+const showCustomListMessage = (text, error = false) => messages.push({ text, error });
+let rejectFile = false;
+const checkCustomList = async form => {
+  assert.equal(customListBusy, true);
+  assert.equal(await form.get('wordlist_text').text(), 'ねこ,ネコ');
+  if (rejectFile) throw new Error('読みを確認してください');
+  return { rows: 1 };
+};
+const file = new File(['ねこ,ネコ'], '動物.csv');
+await loadCustomListFile(file);
+assert.equal(fields['custom-wordlist-name'].value, '動物');
+assert.equal(fields['custom-wordlist-text'].value, 'ねこ,ネコ');
+assert.equal(messages.at(-1).error, false);
+assert.ok(messages.at(-1).text.includes('動物.csv'));
+fields['custom-wordlist-name'].value = '自分の名前';
+fields['custom-wordlist-text'].value = '残したい入力';
+rejectFile = true;
+await loadCustomListFile(file);
+assert.equal(fields['custom-wordlist-name'].value, '自分の名前');
+assert.equal(fields['custom-wordlist-text'].value, '残したい入力');
+assert.equal(messages.at(-1).error, true);
+assert.equal(customListBusy, false);
+rejectFile = false;
+await loadCustomListFile(file);
+assert.equal(fields['custom-wordlist-name'].value, '自分の名前');
+""")
+
+
+def test_file_import_ignores_busy_drops_and_rejects_oversized_files_before_reading():
+    run_node(frontend_function("loadCustomListFile") + """
+let customListBusy = true;
+const messages = [];
+const showCustomListMessage = (text, error) => messages.push({ text, error });
+const file = { size: 10 * 1024 * 1024 + 1, arrayBuffer: () => assert.fail('Must not read') };
+await loadCustomListFile(file);
+assert.deepEqual(messages, []);
+customListBusy = false;
+await loadCustomListFile(file);
+assert.equal(messages.length, 1);
+assert.equal(messages[0].error, true);
+assert.ok(messages[0].text.includes('10MB'));
+""")
