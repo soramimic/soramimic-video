@@ -474,7 +474,17 @@
   }
   .lucky-icon { font-size: 1rem; line-height: 1; }
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
-  #custom-wordlist-panel { padding: .8rem; border: 1px solid var(--border); border-radius: .5rem; }
+  body.custom-wordlist-open { overflow: hidden; }
+  #custom-wordlist-panel {
+    width: min(34rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem);
+    margin: auto; padding: 1.1rem; overflow: auto;
+    border: 1px solid var(--border); border-radius: .75rem;
+    background: var(--panel); color: var(--text); box-shadow: 0 1rem 3rem #0003;
+  }
+  #custom-wordlist-panel::backdrop { background: #0f172a88; }
+  .custom-wordlist-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .75rem; }
+  .custom-wordlist-header h2 { margin: 0; font-size: 1.1rem; }
+  #custom-wordlist-close { flex: 0 0 auto; min-width: 2.75rem; font-size: 1.2rem; }
   .builder-selects { margin-top: .8rem; }
   .builder-input-row {
     display: grid; grid-template-columns: 4.25rem minmax(0, 1fr);
@@ -657,24 +667,6 @@
   </div>
   <div class="custom-wordlist-actions" id="custom-wordlist-actions">
     <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
-  </div>
-  <div id="custom-wordlist-panel" class="field" hidden>
-    <label for="custom-wordlist-name">リスト名</label>
-    <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：好きな食べ物">
-    <label for="custom-wordlist-text">単語</label>
-    <textarea id="custom-wordlist-text" rows="7" aria-describedby="custom-wordlist-hint"
-      placeholder="りんご
-東京,トウキョウ
-大阪,オオサカ,オーサカ"></textarea>
-    <p class="hint" id="custom-wordlist-hint">1行に1語。読みを指定する場合は「単語,読み」。CSV・テキストファイルも読み込めます。リストはこのブラウザに保存されます。</p>
-    <label for="custom-wordlist-file">CSV・テキストを読み込む</label>
-    <input type="file" id="custom-wordlist-file" accept=".csv,.txt,text/csv,text/plain">
-    <div class="custom-wordlist-actions">
-      <button type="button" id="custom-wordlist-save">保存して使う</button>
-      <button type="button" id="custom-wordlist-cancel" class="btn-sm">キャンセル</button>
-      <button type="button" id="custom-wordlist-delete" class="btn-danger btn-sm" hidden>削除</button>
-    </div>
-    <p id="custom-wordlist-message" class="error" role="status"></p>
   </div>
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
     <p class="hint">制作した動画の内容に応じて、必要な二次利用規約を遵守してください。</p>
@@ -943,6 +935,29 @@
   <p class="hint" id="public-credit"></p>
 </footer>
 </div>
+
+<dialog id="custom-wordlist-panel" aria-labelledby="custom-wordlist-title">
+  <div class="custom-wordlist-header">
+  <h2 id="custom-wordlist-title">自作リストを登録</h2>
+  <button type="button" id="custom-wordlist-close" class="btn-sm" aria-label="閉じる">×</button>
+  </div>
+  <label for="custom-wordlist-name">リスト名</label>
+  <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：好きな食べ物">
+  <label for="custom-wordlist-text">単語</label>
+  <textarea id="custom-wordlist-text" rows="7" aria-describedby="custom-wordlist-hint"
+    placeholder="りんご
+東京,トウキョウ
+大阪,オオサカ,オーサカ"></textarea>
+  <p class="hint" id="custom-wordlist-hint">1行に1語。読みを指定する場合は「単語,読み」。CSV・テキストファイルも読み込めます。リストはこのブラウザに保存されます。</p>
+  <label for="custom-wordlist-file">CSV・テキストを読み込む</label>
+  <input type="file" id="custom-wordlist-file" accept=".csv,.txt,text/csv,text/plain">
+  <div class="custom-wordlist-actions">
+    <button type="button" id="custom-wordlist-save">保存して使う</button>
+    <button type="button" id="custom-wordlist-cancel" class="btn-sm">キャンセル</button>
+    <button type="button" id="custom-wordlist-delete" class="btn-danger btn-sm" hidden>削除</button>
+  </div>
+  <p id="custom-wordlist-message" class="error" role="status"></p>
+</dialog>
 
 <!-- 替え歌エディタ(同梱editor)の全画面モーダル。開くまではDOMにあるだけで空。
      .wrap の外に置いてページ全体を覆う(詳細設定の中に展開すると編集領域が狭い)。
@@ -3311,6 +3326,7 @@ let customLists = [];
 let activeCustomListId = "";
 let editingCustomListId = "";
 let customListBusy = false;
+let customListOpener = null;
 function refreshCustomLists() {
   try { customLists = customListsRepository.lists(); }
   catch (err) { showBuilderMsg(err.message); }
@@ -3339,6 +3355,8 @@ function selectCustomList(id) {
   schedulePreview(true);
 }
 function openCustomList(id = "") {
+  if (customListBusy || $("custom-wordlist-panel").open) return;
+  customListOpener = document.activeElement;
   refreshCustomLists();
   const list = customLists.find((item) => item.id === id);
   const legacy = !id && showsEditorWordlist() ? editorSessionWordlist() : null;
@@ -3348,32 +3366,54 @@ function openCustomList(id = "") {
   $("custom-wordlist-file").value = "";
   $("custom-wordlist-delete").hidden = !list;
   $("custom-wordlist-message").textContent = "";
-  $("custom-wordlist-panel").hidden = false;
+  $("custom-wordlist-title").textContent = list ? "自作リストを編集" : "自作リストを登録";
   syncBuilderValues();
+  $("custom-wordlist-panel").showModal();
+  document.body.classList.add("custom-wordlist-open");
   $("custom-wordlist-name").focus();
 }
 function closeCustomList() {
   if (customListBusy) return;
-  $("custom-wordlist-panel").hidden = true;
-  $("builder-wordlist").focus();
+  $("custom-wordlist-panel").close();
 }
 function setCustomListBusy(busy) {
   customListBusy = busy;
-  for (const id of ["edit", "name", "text", "file", "save", "cancel", "delete"]) {
+  for (const id of ["edit", "name", "text", "file", "save", "cancel", "delete", "close"]) {
     $("custom-wordlist-" + id).disabled = busy;
   }
   $("builder-wordlist").disabled = busy;
 }
 async function checkCustomList(form) {
-  const res = await fetch("/api/wordlist-check", { method: "POST", headers: headers(), body: form });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.detail || "単語リストを確認できませんでした。");
-  return body;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const res = await fetch("/api/wordlist-check", {
+      method: "POST", headers: headers(), body: form, signal: controller.signal,
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || "単語リストを確認できませんでした。");
+    return body;
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error("確認に時間がかかっています。もう一度保存してください。");
+    throw err;
+  } finally { clearTimeout(timer); }
 }
 $("custom-wordlist-edit").addEventListener("click", () => openCustomList(activeCustomListId));
 $("custom-wordlist-cancel").addEventListener("click", closeCustomList);
-$("custom-wordlist-panel").addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeCustomList();
+$("custom-wordlist-close").addEventListener("click", closeCustomList);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("custom-wordlist-panel").open) event.stopPropagation();
+}, { capture: true });
+$("custom-wordlist-panel").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeCustomList();
+});
+$("custom-wordlist-panel").addEventListener("close", () => {
+  document.body.classList.remove("custom-wordlist-open");
+  const opener = customListOpener;
+  customListOpener = null;
+  if (opener?.isConnected && !opener.disabled && opener.getClientRects().length) opener.focus();
+  else $("builder-wordlist").focus();
 });
 $("custom-wordlist-save").addEventListener("click", async () => {
   const name = $("custom-wordlist-name").value.trim();
@@ -3382,6 +3422,7 @@ $("custom-wordlist-save").addEventListener("click", async () => {
   if (!name || !text) { msg.textContent = "リスト名と単語を入力してください。"; return; }
   setCustomListBusy(true);
   msg.textContent = "単語を確認しています…";
+  let saved = false;
   try {
     const form = new FormData();
     form.append("wordlist_text", text);
@@ -3389,10 +3430,10 @@ $("custom-wordlist-save").addEventListener("click", async () => {
     const list = customListsRepository.save({ id: editingCustomListId, name, text });
     refreshCustomLists();
     selectCustomList(list.id);
-    $("custom-wordlist-panel").hidden = true;
+    saved = true;
   } catch (err) { msg.textContent = err.message; }
   finally { setCustomListBusy(false); }
-  if ($("custom-wordlist-panel").hidden) $("builder-wordlist").focus();
+  if (saved) closeCustomList();
 });
 $("custom-wordlist-file").addEventListener("change", async () => {
   const file = $("custom-wordlist-file").files[0];
