@@ -2980,21 +2980,9 @@ def create_app(
                 status_code=422,
                 detail="editorの書き出しJSONか単語リスト(名前かCSV)のどちらかが必要です",
             )
+        custom_columns = custom.csv.columns if custom is not None else None
         layout = layout.strip()
         layout_json = layout_json.strip()
-        # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
-        if layout_json:
-            try:
-                parse_layout(json.loads(layout_json), "layout_json")
-            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
-                ) from exc
-        elif layout:
-            try:
-                load_layout(layout)
-            except (FileNotFoundError, ValueError) as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if synthesizer not in ("neutrino", "voicevox"):
             raise HTTPException(
                 status_code=422, detail="synthesizerは neutrino か voicevox です"
@@ -3046,7 +3034,7 @@ def create_app(
                         f"(上限は{wordlist_csv_mod.max_bytes() / 1024 / 1024:.1f}MBです)。",
                     )
                 try:
-                    wordlist_csv_mod.parse_editor_text(csv_text)
+                    custom_columns = wordlist_csv_mod.parse_editor_text(csv_text).columns
                 except wordlist_csv_mod.WordlistCsvError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
                 # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
@@ -3055,12 +3043,19 @@ def create_app(
             elif sid:
                 # 自作リストで作った替え歌。単語リスト行(=単語画像)は
                 # editorセッションのCSVから引くので、無ければ受け付けない
-                if session_wordlist_path(config["editor_sessions"], sid) is None:
+                session_csv = session_wordlist_path(config["editor_sessions"], sid)
+                if session_csv is None:
                     raise HTTPException(
                         status_code=422,
                         detail="自作リストの単語データが見つかりません。"
                         "替え歌エディタを開き直してから生成してください。",
                     )
+                try:
+                    custom_columns = wordlist_csv_mod.parse_editor_text(
+                        session_csv.read_text(encoding="utf-8")
+                    ).columns
+                except wordlist_csv_mod.WordlistCsvError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
                 # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
                 wordlist = CUSTOM_WORDLIST_TEXT
             else:
@@ -3083,6 +3078,24 @@ def create_app(
             # レイアウトは単一の共通デザインではなく、選んだリストに
             # 対応する検証済みの既定デザインにサーバー側で固定する。
             layout = load_wordlist_layouts().get(wordlist, "")
+        if custom_columns is not None:
+            layout = (
+                "custom_description" if "description" in custom_columns else "custom_original"
+            )
+            layout_json = ""
+        # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
+        if layout_json:
+            try:
+                parse_layout(json.loads(layout_json), "layout_json")
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
+                ) from exc
+        elif layout:
+            try:
+                load_layout(layout)
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,

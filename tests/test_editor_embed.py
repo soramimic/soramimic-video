@@ -1058,3 +1058,13 @@ def test_config_editor_flag_false(tmp_path):
     assert client.get("/api/config").json()["editor"] is False
     # dist が無ければ /editor 配下は配信されない
     assert client.get("/editor/editor.html").status_code == 404
+
+
+@pytest.mark.parametrize("description", [False, True])
+def test_embedded_custom_list_uses_centered_layout(job_client, description):
+    csv_text = "id,original,surface,pronunciation"
+    csv_text += ",description\n42,猫,ねこ,ネコ,動物\n" if description else "\n42,猫,ねこ,ネコ\n"
+    res = _post_job(job_client, _preview_payload(csv_text))
+    assert res.status_code == 200, res.text
+    params = job_client.get(f"/api/jobs/{res.json()['id']}").json()["params"]
+    assert params["layout"] == ("custom_description" if description else "custom_original")

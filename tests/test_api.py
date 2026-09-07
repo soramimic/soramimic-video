@@ -2062,7 +2062,7 @@ def test_index_html_sends_layout_json_only_when_edited():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert 'if (leDirty && $("layout-json").value.trim()) {' in html
+    assert 'if (!customLayout && leDirty && $("layout-json").value.trim()) {' in html
     assert '    form.append("layout_json", $("layout-json").value);' in html
     # 読み込んだだけのJSONは編集扱いにしない。leToJson が dirty のまま保存して
     # いるので、降ろしたあとに保存し直さないとリロードで編集扱いに戻ってしまう

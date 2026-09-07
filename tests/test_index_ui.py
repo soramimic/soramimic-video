@@ -1818,11 +1818,13 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         let editorFile = null;
         const editorSourceForSubmit = () => ({ file: editorFile, live: false });
         const parodyMismatch = () => true, confirm = () => true;
-        const editorWordlist = { name: "fanwork" }, leDirty = false;
+        const editorWordlist = { name: "fanwork" }, leDirty = true;
         let simpleMode = true;
         const fixedVoicevoxStyle = 3003, turnstileSiteKey = "";
         const songTitleOf = () => "sample", buildConvertParams = () => "{}";
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
+        const activeCustomList = () => selected === "custom" ? {} : null;
+        const showsEditorWordlist = () => false;
         const showProgress = () => {}, setJobStatus = () => {}, resetTurnstile = () => {};
         const watch = () => { submitBusy = false; };
         const requests = [];
@@ -1860,6 +1862,15 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
           assert.equal(requests.length, before + 1);
           assert.ok(requests.at(-1).get("editor"));
           assert.equal(requests.at(-1).get("allow_noncommercial_fanwork"), "true");
+          $("layout").value = "caption";
+          $("layout-json").value = '{"elements": []}';
+          for (const name of ["custom", "ordinary"]) {
+            selected = name;
+            await submitJob(0, "");
+            assert.equal(requests.at(-1).get("layout"), name === "custom" ? "" : "caption");
+            assert.equal(requests.at(-1).has("layout_json"), name !== "custom");
+          }
+
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
