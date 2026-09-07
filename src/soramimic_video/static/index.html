@@ -879,10 +879,9 @@
     <!-- 中身がレイアウトだけになったので、見出し「見た目」+ラベル「レイアウト」の
          二段構えをやめて見出しに統合(ⓘも1つに) -->
     <h3 class="opt-group-title">② 見た目</h3>
-    <p id="layout-help" class="hint opt-group-lead" data-info>動画の画面の作り(画像・説明文・字幕の配置)。単語リストに合わせて自動で決まります。細かく変えたいときは「レイアウトを調整」から(全画面で開きます)。プリセットの選び直しや、自作レイアウト(JSONファイル)の読み込みも編集画面の中にあります。</p>
+    <p class="hint opt-group-lead" data-info>動画の画面の作り(画像・説明文・字幕の配置)。単語リストに合わせて自動で決まります。細かく変えたいときは「レイアウトを調整」から(全画面で開きます)。プリセットの選び直しや、自作レイアウト(JSONファイル)の読み込みも編集画面の中にあります。</p>
 
-    <p id="custom-layout-note" class="hint" hidden>自作リストは単語を中央に表示します。description列がある場合は、その下に説明を中央揃えで表示します。</p>
-    <div id="layout-controls" class="field">
+    <div class="field">
       <!-- 送信値・保存値の正本は隠し input#layout(空値=サーバー既定、組み込み名は
            /api/config の layouts)。単語リスト連動(applyWordlistLayout)もこれを見る。
            プリセットのプルダウン(#layout-select)と編集は全画面モーダル(#le-modal)へ
@@ -3625,9 +3624,6 @@ function syncBuilderValues() {
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const selectedCustom = activeCustomList();
   const own = !selectedCustom && showsEditorWordlist();
-  $("layout-controls").hidden = !!selectedCustom || own;
-  $("layout-help").hidden = !!selectedCustom || own;
-  $("custom-layout-note").hidden = !selectedCustom && !own;
   const synth = [...card.options].find((o) => o.value === EDITOR_WORDLIST_VALUE);
   if (own && !synth) {
     const o = document.createElement("option");
