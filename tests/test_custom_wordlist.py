@@ -314,3 +314,26 @@ def test_custom_wordlist_script_is_served_without_cookie(client, monkeypatch, pu
         encoding="utf-8"
     )
     assert "set-cookie" not in response.headers
+
+
+@pytest.mark.parametrize("upload", [False, True])
+@pytest.mark.parametrize("extra_header,extra_cell,expected", [
+    ("", "", "custom_original"),
+    (",description", ",動物", "custom_description"),
+    (", Description ", ",", "custom_description"),
+])
+def test_custom_layout_uses_columns_and_ignores_previous_layout(
+    client, tmp_path, upload, extra_header, extra_cell, expected,
+):
+    text = f"original,surface,pronunciation{extra_header}\n猫,ねこ,ネコ{extra_cell}\n"
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    data = {"layout": "caption", "layout_json": '{"elements": []}'}
+    if upload:
+        files["wordlist_csv"] = ("list.csv", text.encode(), "text/csv")
+    else:
+        data["wordlist_text"] = text
+    res = client.post("/api/jobs", files=files, data=data)
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    assert client.get(f"/api/jobs/{job_id}").json()["params"]["layout"] == expected
+    assert not (tmp_path / "jobs" / job_id / api_mod.LAYOUT_FILENAME).exists()
