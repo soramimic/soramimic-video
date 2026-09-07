@@ -1,24 +1,20 @@
 # Repository agent rules
 
-## Worktree isolation
+## Delivery and worktrees
 
-- Treat the clone's primary worktree (the main worktree shown first by
-  `git worktree list`) as a protected coordination checkout. Keep it on `dev`; do not
-  use it for implementation work.
-- In the protected checkout, do not run commands that change the checked-out branch or
-  commit, including `git switch` and branch or commit forms of `git checkout`.
-- Before modifying tracked files for an implementation or bug-fix task, create or select
-  a session-specific linked worktree with its own task branch. Perform edits, tests,
-  commits, rebases, and conflict resolution only in that worktree.
-- Read-only inspection and worktree-management commands such as `git status`, `git log`,
-  `git fetch`, and `git worktree add/list` may run from the protected checkout. Remove
-  only worktrees owned by the current session, and never reuse or remove a worktree or
-  branch owned by another active session.
-- If a task genuinely requires changing the protected checkout, stop and obtain the
-  user's explicit approval in the current conversation before doing so.
+- Ordinary implementation is complete when its pull request is merged into `dev`
+  after mandatory checks pass, even though the repository's default branch is `main`.
+- Keep the clone's primary worktree on `dev` as a protected coordination checkout.
+  Preserve its branch, changes, and running services. Perform edits, tests, commits,
+  rebases, and conflict resolution in a session-specific linked worktree with a task
+  branch from `origin/dev`. Remove only worktrees owned by the current session.
+- Changing the protected checkout requires the user's explicit approval.
 
 ## Branch promotion safety
 
+- Development delivery does not authorize a release. Create or mark ready a
+  promotion to `preview` or a `preview` to `main` release only when the user has
+  requested that promotion; passing CI or a generic instruction to finish is insufficient.
 - Same-repository, non-draft pull requests targeting `dev`, `preview`, or `main` are
   automatically merged after all mandatory checks pass unless they carry the
   `no-automerge` label.
@@ -31,3 +27,33 @@
 - Creating or marking ready the `preview` to `main` release pull request is the release
   instruction. Add `no-automerge` before marking it ready when production must remain
   paused after CI.
+
+## Changes and verification
+
+- Use [README.md](README.md) for setup and [DESIGN.md](DESIGN.md) for public interfaces.
+  Initialize the recorded submodule commits recursively; change their pointers only
+  when the requested change requires it.
+- For code changes, install with `uv sync --extra api` and run the relevant tests.
+  The CI checks are `uv run ruff check .`, `uv run mypy src`, and `uv run pytest -q`.
+- For documentation-only changes, check links, command names, and `git diff --check`.
+  Mandatory CI and branch protections still apply before merge.
+- Keep user uploads and generated song media out of commits. Follow the sample and
+  image usage requirements in [README.md](README.md) and [docs/sample-rights.md](docs/sample-rights.md),
+  and preserve existing third-party attribution and license notices.
+
+## Agent coordination
+
+- Default to one agent. Delegate only an explicitly requested or clearly useful,
+  bounded independent subtask while the parent advances other work. Use the
+  smallest useful team and a self-contained brief; avoid unnecessary full-history
+  forks, recursive delegation, duplicate work, and overlapping edits.
+- Prefer completion notifications. When blocked on a result, call the native wait
+  tool directly with an explicit timeout suited to the expected duration and the
+  active runtime and communication limits. Avoid repeated short waits, wrapping
+  native agent waits in another yielding tool, and checking status after every
+  unchanged timeout.
+- Send follow-up messages only for new information, changed scope, or a concrete
+  blocker. If a final result conflicts with a running status, inspect once and
+  reconcile it instead of polling indefinitely. Respect required progress updates.
+- Use bounded waits and incremental output for CI and long commands too. A timeout
+  is neither completion nor approval; required checks must still pass before merge.
