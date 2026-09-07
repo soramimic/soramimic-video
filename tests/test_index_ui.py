@@ -1611,7 +1611,7 @@ def test_editor_wordlist_is_written_back_to_the_form():
     レイアウトの解決が古いリストのままになる(どれも正本を見ている)。
     """
     script = _script()
-    body = _function_body(script, "function applyEditorWordlist()")
+    body = _function_body(script, "async function applyEditorWordlist()")
     # 名前付きリスト(filepath) → stem を既存の選択経路へ流し、where はエディタ優先
     assert r'String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "")' in body
     assert "selectWordlist(name);" in body
@@ -1647,7 +1647,7 @@ def test_editor_lyrics_are_written_back_to_the_form():
     assert '$("lyrics").value = data.lyrics;' in body
     assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
     # 単語リストの書き戻しと同じ経路(ポーリングと「閉じる」)で拾う
-    sync = _function_body(script, "function syncEditorSession()")
+    sync = _function_body(script, "async function syncEditorSessionOnce()")
     assert "applyEditorLyrics();" in sync
     # 来歴(editorProvenance)は元歌詞を見ないので、書き戻しで編集が捨てられない
     prov = _function_body(script, "function editorProvenance()")
@@ -1903,7 +1903,7 @@ def test_editor_seed_advertises_the_song_choices():
 def test_host_request_is_polled_and_handled_once():
     """依頼の処理は監視ポーリングの中で、開いているあいだだけ、1件ずつ。"""
     script = _script()
-    sync = _function_body(script, "function syncEditorSession()")
+    sync = _function_body(script, "async function syncEditorSessionOnce()")
     assert "handleHostRequest();" in sync
     body = _function_body(script, "async function handleHostRequest()")
     # 多重処理を防ぐ(処理中フラグと、応えた nonce の記録)

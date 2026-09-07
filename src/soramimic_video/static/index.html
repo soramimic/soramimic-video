@@ -1290,7 +1290,8 @@ async function loadConfig() {
   $("auth").hidden = !conf.auth_required;
   simpleMode = !!conf.simple_ui;
   $("custom-wordlist-actions").hidden = simpleMode;
-  refreshCustomLists();
+  try { await refreshCustomLists(); }
+  catch (err) { showBuilderMsg(err.message); }
   wordlistImagePolicies = conf.wordlist_image_policies || {};
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
@@ -3327,7 +3328,7 @@ const HIDDEN_PREVIEW_WORDLISTS = {
 };
 
 // ---- メイン画面の名前付き自作リスト ----
-const customListsRepository = VideoCustomWordlists.createRepository(localStorage);
+const customListsRepository = VideoCustomWordlists.createRepository();
 const CUSTOM_LIST_PREFIX = "__custom_list__:";
 const NEW_CUSTOM_LIST = "__new_custom_list__";
 let customLists = [];
@@ -3336,19 +3337,22 @@ let editingCustomListId = "";
 let customListBusy = false;
 let customListOpener = null;
 let customListInitialValues = { name: "", text: "" };
-function refreshCustomLists() {
-  try { customLists = customListsRepository.lists(); }
-  catch (err) { showBuilderMsg(err.message); }
+async function refreshCustomLists() {
+  customLists = await customListsRepository.lists();
 }
 function activeCustomList() {
   return simpleMode ? null : customLists.find((list) => list.id === activeCustomListId) || null;
+}
+function setCustomWordlistText(form, text) {
+  const file = new Blob([text], { type: "text/plain;charset=utf-8" });
+  form.set("wordlist_text", file, "wordlist.txt");
 }
 function appendCustomWordlist(form) {
   const list = activeCustomList();
   if (!list) return;
   form.set("wordlist", "");
   form.set("where", "");
-  form.set("wordlist_text", list.text);
+  setCustomWordlistText(form, list.text);
   form.set("wordlist_name", list.name);
 }
 function selectCustomList(id) {
@@ -3363,10 +3367,13 @@ function selectCustomList(id) {
   saveForm();
   schedulePreview(true);
 }
-function openCustomList(id = "") {
+async function openCustomList(id = "") {
   if (customListBusy || $("custom-wordlist-panel").open) return;
   customListOpener = document.activeElement;
-  refreshCustomLists();
+  setCustomListBusy(true);
+  try { await refreshCustomLists(); }
+  catch (err) { showBuilderMsg(err.message); return; }
+  finally { setCustomListBusy(false); }
   const list = customLists.find((item) => item.id === id);
   const legacy = !id && showsEditorWordlist() ? editorSessionWordlist() : null;
   editingCustomListId = list?.id || "";
@@ -3454,10 +3461,10 @@ $("custom-wordlist-save").addEventListener("click", async () => {
   let saved = false;
   try {
     const form = new FormData();
-    form.append("wordlist_text", text);
+    setCustomWordlistText(form, text);
     await checkCustomList(form);
-    const list = customListsRepository.save({ id: editingCustomListId, name, text });
-    refreshCustomLists();
+    const list = await customListsRepository.save({ id: editingCustomListId, name, text });
+    await refreshCustomLists();
     selectCustomList(list.id);
     saved = true;
   } catch (err) { msg.textContent = err.message; }
@@ -3477,7 +3484,7 @@ $("custom-wordlist-file").addEventListener("change", async () => {
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { text = new TextDecoder("shift-jis", { fatal: true }).decode(bytes); }
     const form = new FormData();
-    form.append("wordlist_text", text);
+    setCustomWordlistText(form, text);
     const body = await checkCustomList(form);
     $("custom-wordlist-text").value = text;
     if (!$("custom-wordlist-name").value.trim()) {
@@ -3487,12 +3494,14 @@ $("custom-wordlist-file").addEventListener("change", async () => {
   } catch (err) { msg.textContent = "読み込めませんでした: " + err.message; }
   finally { setCustomListBusy(false); $("custom-wordlist-file").value = ""; }
 });
-$("custom-wordlist-delete").addEventListener("click", () => {
+$("custom-wordlist-delete").addEventListener("click", async () => {
   const list = customLists.find((item) => item.id === editingCustomListId);
   if (!list || !confirm(`「${list.name}」を削除しますか？`)) return;
+  setCustomListBusy(true);
+  let deleted = false;
   try {
-    customListsRepository.remove(list.id);
-    refreshCustomLists();
+    await customListsRepository.remove(list.id);
+    await refreshCustomLists();
     if (activeCustomListId === list.id) {
       activeCustomListId = "";
       sessionStorage.removeItem(EDITOR_KEY);
@@ -3504,8 +3513,10 @@ $("custom-wordlist-delete").addEventListener("click", () => {
     syncBuilderOptions();
     saveForm();
     schedulePreview(true);
-    closeCustomList();
+    deleted = true;
   } catch (err) { $("custom-wordlist-message").textContent = err.message; }
+  finally { setCustomListBusy(false); }
+  if (deleted) closeCustomList();
 });
 
 const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -5612,7 +5623,7 @@ function usesEditorWordlist() {
 // エディタの中で選ばれている単語リストを親の正本へ書き戻す。
 // 変わっていなければ何もしない(何もしないことが大事: 毎周期で来歴を付け替えると、
 // 曲を差し替えたときに stale にならなくなってしまう)。
-function applyEditorWordlist() {
+async function applyEditorWordlist() {
   const w = editorSessionWordlist();
   if (!w) return;
   const value = String(w.value || "");
@@ -5627,8 +5638,13 @@ function applyEditorWordlist() {
   if (list && own && value === "ORIGINAL" && typeof w.csvText === "string"
       && data?.videoCustomListId === list.id && previousCsv !== w.csvText) {
     try {
-      customListsRepository.save({ id: list.id, name: list.name, text: w.csvText });
-      refreshCustomLists();
+      await customListsRepository.save({ id: list.id, name: list.name, text: w.csvText });
+      await refreshCustomLists();
+      // Editing can continue while the database commits. Never overwrite newer iframe data.
+      const latest = editorSessionData();
+      if (activeCustomListId !== list.id || latest?.videoCustomListId !== list.id
+          || latest?.wordlist?.csvText !== w.csvText) return;
+      Object.assign(data, latest);
       data.videoCustomListText = w.csvText;
       data.videoCustomListCsvText = w.csvText;
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(data));
@@ -5922,8 +5938,22 @@ async function reseedEditorSong() {
 // エディタ(iframe)の編集は親から検知できないので、開いているあいだだけ軽く監視する。
 // 単語リストの書き戻しもここで拾う(閉じるまで待つと、開いているあいだカードの
 // プルダウンが古いままになる)。
+let editorSyncPending = null;
+let editorSyncRequested = false;
 function syncEditorSession() {
-  applyEditorWordlist();
+  editorSyncRequested = true;
+  if (editorSyncPending) return editorSyncPending;
+  editorSyncPending = (async () => {
+    do {
+      editorSyncRequested = false;
+      await syncEditorSessionOnce();
+    } while (editorSyncRequested);
+  })().catch((err) => showBuilderMsg(err.message))
+    .finally(() => { editorSyncPending = null; });
+  return editorSyncPending;
+}
+async function syncEditorSessionOnce() {
+  await applyEditorWordlist();
   applyEditorLyrics();   // 元歌詞(字幕用)の書き戻しも同じ経路で拾う
   // 「曲を変えたい」の依頼もここで拾う(非同期。開いているあいだだけ応える)
   handleHostRequest();
@@ -6078,7 +6108,8 @@ async function convertAndOpenEditor() {
   }
 }
 
-function importEditor() {
+async function importEditor() {
+  await syncEditorSession();
   const raw = sessionStorage.getItem(EDITOR_KEY);
   if (!raw) { alert("編集データがありません"); return; }
   const file = new File([raw], "editor.json", { type: "application/json" });
