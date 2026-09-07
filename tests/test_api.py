@@ -579,7 +579,6 @@ def test_index_html_builder_card_has_selects():
     )
     assert (
         '$("wordlist-select").addEventListener("change", () => {\n'
-        '  showFanworkError("");\n'
         "  syncBuilderValues();\n"
         "  schedulePreview();\n"
         "});" in html
