@@ -1265,6 +1265,22 @@ def test_config_has_vtuber_image_policy(client):
                 "url": "https://vhs-city.com/aogirihighschool/guidelines/fanfic",
                 "label": "あおぎり高校二次創作ガイドライン",
             },
+            {
+                "url": "https://realize-pro.com/guideline/",
+                "label": "りあぷろ二次創作ガイドライン",
+            },
+            {
+                "url": "https://sugu310.fanbox.cc/posts/2568555",
+                "label": "sugu310.fanbox.cc 二次創作ガイドライン",
+            },
+            {
+                "url": "https://lit.link/chinatsuvtuber",
+                "label": "lit.link 二次創作ガイドライン",
+            },
+            {
+                "url": "https://lit.link/uyunyqn",
+                "label": "lit.link 二次創作ガイドライン",
+            },
         ],
     }
 
