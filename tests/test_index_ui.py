@@ -549,7 +549,7 @@ def _song_input_node_harness() -> str:
         const showsEditorWordlist = () => false;
         const activeCustomList = () => null;
         const simpleMode = false;
-        const updateNoncommercialFanworkPrompt = () => {};
+        const updateNoncommercialFanworkNotice = () => {};
         const syncLuckyAvailability = () => {};
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
@@ -1771,48 +1771,104 @@ def test_layout_preview_image_needs_a_wordlist_name():
     assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in thumb
 
 
-def test_noncommercial_fanwork_requires_explicit_checkbox():
-    html = INDEX.read_text(encoding="utf-8")
-    assert 'type="checkbox" id="noncommercial-fanwork"' in html
-    assert 'id="builder-fanwork-confirmation" hidden' in html
-    assert "function requiresNoncommercialFanwork()" in html
-    assert "previewSec === 0 && requiresNoncommercialFanwork()" in html
-    assert "以下の二次創作ガイドラインを確認し、遵守します" in html
-    assert "生成するには、ガイドラインを確認してチェックを入れてください。" in html
-    assert "「以下の二次創作ガイドラインを確認し、遵守します」にチェックしてください。" not in html
-    assert "非営利のファン活動に限って利用できる公式画像" in html
-    assert "fanwork-details" in html
-    assert "fanwork-terms" in html
-    assert ".fanwork-confirmation label > span { min-width: 0; }" in html
-    assert "margin-top: .25rem; font-size: .8rem; line-height: 1.45;" in html
-    assert ".fanwork-terms a { overflow-wrap: anywhere; }" in html
-    assert 'id="builder-fanwork-error" role="alert" hidden' in html
-    assert 'aria-describedby="fanwork-guidance builder-fanwork-error"' in html
-    assert ".fanwork-error" in html
-    submit = _function_body(html, "async function submitJob(previewSec, previewMode)")
-    assert (
-        'showFanworkError("生成するには、ガイドラインを確認してチェックを入れてください。")'
-        in submit
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_fanwork_notice_allows_generation_and_images_without_confirmation():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function currentImagePolicy()",
+            "function usesNoncommercialFanworkImages()",
+            "function updateNoncommercialFanworkNotice()",
+            "function loadWordlistImage(name, seq)",
+            "async function submitJob(previewSec, previewMode)",
+        )
     )
-    assert '$("noncommercial-fanwork").focus({ preventScroll: true });' in submit
-    assert "showSubmitMsg(msg);" not in submit
-    assert "showBuilderMsg(msg);" not in submit
-    fanwork_error = _function_body(html, "function showFanworkError(text)")
-    assert 'checkbox.setAttribute("aria-invalid", "true")' in fanwork_error
-    assert 'checkbox.removeAttribute("aria-invalid")' in fanwork_error
-    assert html.count('showFanworkError("");') >= 5
-    prompt = _function_body(html, "function updateNoncommercialFanworkPrompt()")
-    assert 'if (panel.hidden) showFanworkError("");' in prompt
-    assert "policy.terms_pages || policy.terms" in prompt
-    assert "Array.isArray(rawTerms)" in prompt
-    assert 'link.target = "_blank";' in prompt
-    assert 'link.rel = "noopener noreferrer";' in prompt
-    assert '$("builder-fanwork-terms").replaceChildren(...links);' in prompt
-    assert "非営利のファン活動として公開する" not in html
-    assert "画像クレジットは生成物の credits.md に記録されます。" not in html
-    assert 'form.append("allow_noncommercial_fanwork"' in html
-    assert '$("noncommercial-fanwork").checked ? "true" : "false"' in html
-    assert 'failure === "生成に失敗しました"' in html
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        let selected = "fanwork";
+        const wordlistImagePolicies = {
+          fanwork: { usage: "noncommercial_fanwork", terms_pages: [
+            { url: "https://example.com/one", label: "規約1" },
+            { url: "https://example.com/two", label: "規約2" },
+          ] },
+          legacy: { usage: "noncommercial_fanwork", terms: "https://example.com/legacy" },
+          ordinary: { usage: "standard" },
+        };
+        const currentWordlistName = () => selected;
+        const elements = new Map();
+        const $ = (id) => {
+          if (id === "noncommercial-fanwork") throw new Error("No checkbox exists");
+          if (!elements.has(id)) elements.set(id, {
+            value: "", hidden: false,
+            replaceChildren(...children) { this.children = children; },
+          });
+          return elements.get(id);
+        };
+        const document = { createElement: () => ({}) };
+        let imageUrl;
+        class Image { set src(url) { imageUrl = url; } }
+        const previewSeq = 1, hiddenPreviewReason = () => "", apiKey = () => "";
+        let submitBusy = false;
+        const setBusy = (value) => { submitBusy = value; };
+        const ownAudioFile = () => null, ownSongKind = () => "sample";
+        const samplePending = null, midiChecking = null, midiSampleId = "sample";
+        const ensureSelectedSampleMidi = async () => true;
+        let editorFile = null;
+        const editorSourceForSubmit = () => ({ file: editorFile, live: false });
+        const parodyMismatch = () => true, confirm = () => true;
+        const editorWordlist = { name: "fanwork" }, leDirty = false;
+        let simpleMode = true;
+        const fixedVoicevoxStyle = 3003, turnstileSiteKey = "";
+        const songTitleOf = () => "sample", buildConvertParams = () => "{}";
+        const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
+        const showProgress = () => {}, setJobStatus = () => {}, resetTurnstile = () => {};
+        const watch = () => { submitBusy = false; };
+        const requests = [];
+        const postJobWithTurnstileRetry = async (form) => {
+          requests.push(form);
+          return { ok: true, status: 200, json: async () => ({ id: "job" }) };
+        };
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          for (const name of ["fanwork", "ordinary", "legacy", "custom"]) {
+            selected = name;
+            $("wordlist").value = name;
+            const restricted = name === "fanwork" || name === "legacy";
+            updateNoncommercialFanworkNotice();
+            assert.equal($("builder-fanwork-notice").hidden, !restricted);
+            const links = $("builder-fanwork-terms").children;
+            assert.equal(links.length, name === "fanwork" ? 2 : name === "legacy" ? 1 : 0);
+            if (restricted) {
+              assert.equal(links[0].href, name === "fanwork"
+                ? "https://example.com/one" : "https://example.com/legacy");
+              assert.equal(links[0].target, "_blank");
+              assert.equal(links[0].rel, "noopener noreferrer");
+            }
+            loadWordlistImage(name, previewSeq);
+            const query = new URL(imageUrl, "https://example.com").searchParams;
+            assert.equal(query.get("noncommercial_fanwork"), "true");
+            const before = requests.length;
+            await submitJob(0, "");
+            assert.equal(requests.length, before + 1, "generation must proceed without a check");
+            assert.equal(requests.at(-1).get("allow_noncommercial_fanwork"), "true");
+          }
+          // Uploaded edits can use a different list from the current selection.
+          selected = "ordinary";
+          simpleMode = false;
+          editorFile = new Blob(["{}"], { type: "application/json" });
+          const before = requests.length;
+          await submitJob(0, "");
+          assert.equal(requests.length, before + 1);
+          assert.ok(requests.at(-1).get("editor"));
+          assert.equal(requests.at(-1).get("allow_noncommercial_fanwork"), "true");
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 # ---- エディタからの「曲を変えたい」依頼(hostRequest)にホストが応える ----
