@@ -370,3 +370,71 @@ applyEditorWordlist();
 assert.deepEqual(repository.lists(), before);
 assert.equal(saves, 2);
 """)
+
+
+@pytest.mark.parametrize(
+    ("initial", "current", "changed"),
+    [
+        (("", ""), ("", ""), False),
+        (("", ""), ("動物", ""), True),
+        (("", ""), ("", "ねこ"), True),
+        (("動物", "ねこ"), ("動物", "ねこ"), False),
+        (("動物", "ねこ"), ("猫", "ねこ"), True),
+        (("動物", "ねこ"), ("動物", "いぬ"), True),
+        (("動物", "ねこ"), ("", ""), True),
+    ],
+)
+def test_custom_list_discard_detects_current_unsaved_values(initial, current, changed):
+    run_node(f"""
+const customListInitialValues = {{name: {json.dumps(initial[0])}, text: {json.dumps(initial[1])}}};
+const fields = {{
+  'custom-wordlist-name': {{value: {json.dumps(current[0])}}},
+  'custom-wordlist-text': {{value: {json.dumps(current[1])}}},
+}};
+const $ = (id) => fields[id];
+{frontend_function('customListHasChanges')}
+assert.equal(customListHasChanges(), {json.dumps(changed)});
+// Restoring the opening values also clears a prior change without an input event.
+fields['custom-wordlist-name'].value = customListInitialValues.name;
+fields['custom-wordlist-text'].value = customListInitialValues.text;
+assert.equal(customListHasChanges(), false);
+""")
+
+
+def test_custom_list_close_requests_preserve_changes_until_discarded():
+    run_node(f"""
+let customListBusy = false;
+let changed = false;
+let focused = false;
+const panel = {{open: true, close() {{ this.open = false; }} }};
+const discard = {{
+  open: false,
+  showModal() {{ assert.equal(this.open, false); this.open = true; }},
+  close() {{ this.open = false; }},
+}};
+const $ = (id) => ({{
+  'custom-wordlist-panel': panel,
+  'custom-wordlist-discard': discard,
+  'custom-wordlist-keep': {{focus() {{ focused = true; }} }},
+}})[id];
+const customListHasChanges = () => changed;
+{frontend_function('requestCloseCustomList')}
+{frontend_function('closeCustomList')}
+requestCloseCustomList();
+assert.equal(panel.open, false);
+panel.open = true;
+changed = true;
+customListBusy = true;
+requestCloseCustomList();
+assert.equal(panel.open, true);
+assert.equal(discard.open, false);
+customListBusy = false;
+requestCloseCustomList();
+assert.equal(panel.open, true);
+assert.equal(discard.open, true);
+assert.equal(focused, true);
+requestCloseCustomList(); // Repeated close requests must not reopen the confirmation.
+closeCustomList(); // Explicit discard, successful save, or successful deletion.
+assert.equal(panel.open, false);
+assert.equal(discard.open, false);
+""")

@@ -475,13 +475,13 @@
   .lucky-icon { font-size: 1rem; line-height: 1; }
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
   body.custom-wordlist-open { overflow: hidden; }
-  #custom-wordlist-panel {
+  .custom-wordlist-dialog {
     width: min(34rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem);
     margin: auto; padding: 1.1rem; overflow: auto;
     border: 1px solid var(--border); border-radius: .75rem;
     background: var(--panel); color: var(--text); box-shadow: 0 1rem 3rem #0003;
   }
-  #custom-wordlist-panel::backdrop { background: #0f172a88; }
+  .custom-wordlist-dialog::backdrop { background: #0f172a88; }
   .custom-wordlist-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .75rem; }
   .custom-wordlist-header h2 { margin: 0; font-size: 1.1rem; }
   #custom-wordlist-close { flex: 0 0 auto; min-width: 2.75rem; font-size: 1.2rem; }
@@ -931,10 +931,10 @@
 </footer>
 </div>
 
-<dialog id="custom-wordlist-panel" aria-labelledby="custom-wordlist-title">
+<dialog id="custom-wordlist-panel" class="custom-wordlist-dialog" aria-labelledby="custom-wordlist-title">
   <div class="custom-wordlist-header">
-  <h2 id="custom-wordlist-title">自作リストを登録</h2>
-  <button type="button" id="custom-wordlist-close" class="btn-sm" aria-label="閉じる">×</button>
+    <h2 id="custom-wordlist-title">自作リストを登録</h2>
+    <button type="button" id="custom-wordlist-close" class="btn-sm" aria-label="閉じる">×</button>
   </div>
   <label for="custom-wordlist-name">リスト名</label>
   <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：好きな食べ物">
@@ -952,6 +952,18 @@
     <button type="button" id="custom-wordlist-delete" class="btn-danger btn-sm" hidden>削除</button>
   </div>
   <p id="custom-wordlist-message" class="error" role="status"></p>
+</dialog>
+
+<dialog id="custom-wordlist-discard" class="custom-wordlist-dialog"
+  aria-labelledby="custom-wordlist-discard-title" aria-describedby="custom-wordlist-discard-hint">
+  <div class="custom-wordlist-header">
+    <h2 id="custom-wordlist-discard-title">変更を破棄しますか？</h2>
+  </div>
+  <p id="custom-wordlist-discard-hint">保存していない入力内容は失われます。</p>
+  <div class="custom-wordlist-actions">
+    <button type="button" id="custom-wordlist-keep" autofocus>編集を続ける</button>
+    <button type="button" id="custom-wordlist-discard-confirm" class="btn-danger">破棄する</button>
+  </div>
 </dialog>
 
 <!-- 替え歌エディタ(同梱editor)の全画面モーダル。開くまではDOMにあるだけで空。
@@ -3322,6 +3334,7 @@ let activeCustomListId = "";
 let editingCustomListId = "";
 let customListBusy = false;
 let customListOpener = null;
+let customListInitialValues = { name: "", text: "" };
 function refreshCustomLists() {
   try { customLists = customListsRepository.lists(); }
   catch (err) { showBuilderMsg(err.message); }
@@ -3358,6 +3371,9 @@ function openCustomList(id = "") {
   editingCustomListId = list?.id || "";
   $("custom-wordlist-name").value = list?.name || legacy?.text || "";
   $("custom-wordlist-text").value = list?.text || legacy?.csvText || "";
+  customListInitialValues = list
+    ? { name: $("custom-wordlist-name").value, text: $("custom-wordlist-text").value }
+    : { name: "", text: "" };
   $("custom-wordlist-file").value = "";
   $("custom-wordlist-delete").hidden = !list;
   $("custom-wordlist-message").textContent = "";
@@ -3367,8 +3383,19 @@ function openCustomList(id = "") {
   document.body.classList.add("custom-wordlist-open");
   $("custom-wordlist-name").focus();
 }
+function customListHasChanges() {
+  return $("custom-wordlist-name").value !== customListInitialValues.name
+    || $("custom-wordlist-text").value !== customListInitialValues.text;
+}
+function requestCloseCustomList() {
+  if (customListBusy || $("custom-wordlist-discard").open) return;
+  if (!customListHasChanges()) { closeCustomList(); return; }
+  $("custom-wordlist-discard").showModal();
+  $("custom-wordlist-keep").focus();
+}
 function closeCustomList() {
   if (customListBusy) return;
+  if ($("custom-wordlist-discard").open) $("custom-wordlist-discard").close();
   $("custom-wordlist-panel").close();
 }
 function setCustomListBusy(busy) {
@@ -3394,14 +3421,20 @@ async function checkCustomList(form) {
   } finally { clearTimeout(timer); }
 }
 $("custom-wordlist-edit").addEventListener("click", () => openCustomList(activeCustomListId));
-$("custom-wordlist-cancel").addEventListener("click", closeCustomList);
-$("custom-wordlist-close").addEventListener("click", closeCustomList);
+$("custom-wordlist-cancel").addEventListener("click", requestCloseCustomList);
+$("custom-wordlist-close").addEventListener("click", requestCloseCustomList);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && $("custom-wordlist-panel").open) event.stopPropagation();
 }, { capture: true });
 $("custom-wordlist-panel").addEventListener("cancel", (event) => {
   event.preventDefault();
-  closeCustomList();
+  requestCloseCustomList();
+});
+$("custom-wordlist-keep").addEventListener("click", () => $("custom-wordlist-discard").close());
+$("custom-wordlist-discard-confirm").addEventListener("click", closeCustomList);
+$("custom-wordlist-discard").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  $("custom-wordlist-discard").close();
 });
 $("custom-wordlist-panel").addEventListener("close", () => {
   document.body.classList.remove("custom-wordlist-open");
