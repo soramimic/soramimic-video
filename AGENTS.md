@@ -39,7 +39,7 @@
   Mandatory CI and branch protections still apply before merge.
 - Keep user uploads and generated song media out of commits. Follow the sample and
   image usage requirements in [README.md](README.md) and [docs/sample-rights.md](docs/sample-rights.md),
-  and preserve [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+  and preserve existing third-party attribution and license notices.
 
 ## Agent coordination
 
