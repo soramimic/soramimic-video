@@ -1,0 +1,10 @@
+{
+  "name": "soramimic-video-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/custom-wordlists-storage.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "6.2.5"
+  }
+}

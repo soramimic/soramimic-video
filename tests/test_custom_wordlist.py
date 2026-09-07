@@ -337,3 +337,65 @@ def test_custom_layout_uses_columns_and_ignores_previous_layout(
     job_id = res.json()["id"]
     assert client.get(f"/api/jobs/{job_id}").json()["params"]["layout"] == expected
     assert not (tmp_path / "jobs" / job_id / api_mod.LAYOUT_FILENAME).exists()
+
+
+
+def large_wordlist_bytes(size: int) -> bytes:
+    header = b"original,surface,pronunciation,description\n"
+    prefix = "猫,ねこ,ネコ,".encode()
+    count = 100
+    width, remainder = divmod(size - len(header) - count * (len(prefix) + 1), count)
+    return header + b"".join(
+        prefix + b"a" * (width + (index < remainder)) + b"\n"
+        for index in range(count)
+    )
+
+
+@pytest.mark.parametrize("size", [1024 * 1024 + 1, 10 * 1024 * 1024])
+def test_file_valued_text_checks_and_generates_large_lists(client, tmp_path, size):
+    data = large_wordlist_bytes(size)
+    assert len(data) == size
+    field = ("wordlist.txt", data, "text/plain;charset=utf-8")
+    checked = client.post("/api/wordlist-check", files={"wordlist_text": field})
+    assert checked.status_code == 200, checked.text[:500]
+    assert checked.json()["rows"] == 100
+    res = client.post(
+        "/api/jobs",
+        files={"midi": ("song.mid", FAKE_MIDI, "audio/midi"), "wordlist_text": field},
+        data={"wordlist_name": "大きいリスト"},
+    )
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    params = client.get(f"/api/jobs/{job_id}").json()["params"]
+    assert params["wordlist"] == "大きいリスト"
+    assert params["wordlist_rows"] == 100
+    assert params["layout"] == "custom_description"
+    saved = tmp_path / "jobs" / job_id / api_mod.WORDLIST_DIRNAME / params["wordlist_csv"]
+    assert saved.read_text(encoding="utf-8") == checked.json()["csv_text"]
+
+
+@pytest.mark.parametrize("endpoint", ["/api/wordlist-check", "/api/jobs", "/api/editor-session"])
+def test_file_valued_text_enforces_application_size_limit(client, monkeypatch, endpoint):
+    monkeypatch.setenv(wc.MAX_BYTES_ENV, "1024")
+    res = client.post(
+        endpoint,
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "wordlist_text": ("wordlist.txt", b"a" * 1025, "text/plain"),
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "大きすぎます" in res.json()["detail"]
+
+
+def test_file_valued_text_keeps_row_limit_and_validation(client, monkeypatch):
+    monkeypatch.setenv(wc.MAX_ROWS_ENV, "1")
+    res = client.post("/api/wordlist-check", files={
+        "wordlist_text": ("wordlist.txt", "ねこ,ネコ\nいぬ,イヌ".encode(), "text/plain"),
+    })
+    assert res.status_code == 400
+    assert "1" in res.json()["detail"]
+    res = client.post("/api/wordlist-check", files={
+        "wordlist_text": ("wordlist.txt", b"\x81", "text/plain"),
+    })
+    assert res.status_code == 400
