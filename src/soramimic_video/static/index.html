@@ -502,23 +502,16 @@
     text-underline-offset: .2em;
   }
   .song-source-switch:hover:not(:disabled) { color: var(--link); }
-  .fanwork-confirmation {
+  .fanwork-notice {
     margin-top: .65rem; padding: .65rem .75rem; border: 1px solid #f59e0b88;
     border-radius: 10px; background: #f59e0b14;
   }
-  .fanwork-confirmation label { display: flex; align-items: flex-start; gap: .5rem; margin: 0; }
-  .fanwork-confirmation label > span { min-width: 0; }
-  .fanwork-confirmation input { flex: 0 0 auto; margin-top: .2rem; }
-  .fanwork-details { margin: .35rem 0 0 1.65rem; }
-  .fanwork-confirmation .hint { margin: 0; }
+  .fanwork-notice .hint { margin: 0; }
   .fanwork-terms {
     display: flex; flex-direction: column; align-items: flex-start; gap: .15rem;
     margin-top: .25rem; font-size: .8rem; line-height: 1.45;
   }
   .fanwork-terms a { overflow-wrap: anywhere; }
-  .fanwork-error {
-    margin: .35rem 0 0; color: var(--danger); font-size: .8rem; font-weight: 600;
-  }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -676,19 +669,9 @@
     </div>
     <p id="custom-wordlist-message" class="error" role="status"></p>
   </div>
-  <!-- 制限付き画像を含みうるリストでは、生成ボタンと同じカード内で明示確認する。
-       詳細設定の奥に置くとモバイルでは存在に気づかず、本生成まで進んで失敗する。 -->
-  <div class="fanwork-confirmation" id="builder-fanwork-confirmation" hidden tabindex="-1">
-    <label>
-      <input type="checkbox" id="noncommercial-fanwork"
-        aria-describedby="fanwork-guidance builder-fanwork-error">
-      <span>以下の二次創作ガイドラインを確認し、遵守します</span>
-    </label>
-    <div class="fanwork-details">
-      <p class="hint" id="fanwork-guidance">この単語リストには、非営利のファン活動に限って利用できる公式画像が含まれます。</p>
-      <div class="fanwork-terms" id="builder-fanwork-terms"></div>
-      <p class="fanwork-error" id="builder-fanwork-error" role="alert" hidden></p>
-    </div>
+  <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
+    <p class="hint">制作した動画の内容に応じて、必要な二次利用規約を遵守してください。</p>
+    <div class="fanwork-terms" id="builder-fanwork-terms"></div>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
@@ -2569,20 +2552,6 @@ async function submitJob(previewSec, previewMode) {
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
   if (submitBusy) return;
   setBusy(true);
-  // 制限付き画像の確認は、高コストな本生成ジョブを投入する前に止める。
-  // 音声だけのプレビューには画像を使わないので確認不要。
-  if (previewSec === 0 && requiresNoncommercialFanwork()
-      && !$("noncommercial-fanwork").checked) {
-    setBusy(false);
-    showSubmitMsg("");
-    showBuilderMsg("");
-    showFanworkError("生成するには、ガイドラインを確認してチェックを入れてください。");
-    const panel = $("builder-fanwork-confirmation");
-    panel.scrollIntoView({ block: "center", behavior: "smooth" });
-    $("noncommercial-fanwork").focus({ preventScroll: true });
-    return;
-  }
-  showFanworkError("");
   // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
   // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
   if (previewSec === 0) $("builder-image-hidden").hidden = true;
@@ -2657,8 +2626,7 @@ async function submitJob(previewSec, previewMode) {
   form.append("song_title", songTitleOf(audio || midi));
   form.append("original_credit", $("original-credit").value.trim());
   form.append("credit_notice", $("credit-notice").value.trim());
-  form.append("allow_noncommercial_fanwork",
-    $("noncommercial-fanwork").checked ? "true" : "false");
+  form.append("allow_noncommercial_fanwork", "true");
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
   form.append("convert_params", buildConvertParams());
@@ -3591,7 +3559,7 @@ function syncBuilderValues() {
   card.value = selectedCustom ? CUSTOM_LIST_PREFIX + selectedCustom.id
     : own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
   $("custom-wordlist-edit").hidden = simpleMode || !(selectedCustom || own);
-  updateNoncommercialFanworkPrompt();
+  updateNoncommercialFanworkNotice();
   syncLuckyAvailability();
 }
 
@@ -3599,16 +3567,15 @@ function currentImagePolicy() {
   return wordlistImagePolicies[currentWordlistName()] || null;
 }
 
-function requiresNoncommercialFanwork() {
+function usesNoncommercialFanworkImages() {
   const policy = currentImagePolicy();
   return !!policy && policy.usage === "noncommercial_fanwork";
 }
 
-function updateNoncommercialFanworkPrompt() {
-  const panel = $("builder-fanwork-confirmation");
+function updateNoncommercialFanworkNotice() {
+  const panel = $("builder-fanwork-notice");
   const policy = currentImagePolicy();
-  panel.hidden = !requiresNoncommercialFanwork();
-  if (panel.hidden) showFanworkError("");
+  panel.hidden = !usesNoncommercialFanworkImages();
   const rawTerms = policy && (policy.terms_pages || policy.terms);
   const terms = Array.isArray(rawTerms)
     ? rawTerms
@@ -3623,15 +3590,6 @@ function updateNoncommercialFanworkPrompt() {
     return [link];
   });
   $("builder-fanwork-terms").replaceChildren(...links);
-}
-
-function showFanworkError(text) {
-  const error = $("builder-fanwork-error");
-  const checkbox = $("noncommercial-fanwork");
-  error.textContent = text || "";
-  error.hidden = !text;
-  if (text) checkbox.setAttribute("aria-invalid", "true");
-  else checkbox.removeAttribute("aria-invalid");
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -3814,7 +3772,7 @@ function loadWordlistImage(name, seq) {
   };
   if (!name || hiddenPreviewReason(name)) { hide(); return; }
   const url = "/api/asset-preview?wordlist=" + encodeURIComponent(name)
-    + ($("noncommercial-fanwork").checked ? "&noncommercial_fanwork=true" : "")
+    + "&noncommercial_fanwork=true"
     + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
   // 先に Image で読めるか確かめてから差し込む(404でも壊れ画像を出さない)
   const probe = new Image();
@@ -3876,7 +3834,7 @@ function loadThumbnailPreview(combo) {
   previewAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), PREVIEW_TIMEOUT_MS);
   const params = { sample: combo.sampleId, wordlist: combo.wordlistName };
-  if ($("noncommercial-fanwork").checked) params.noncommercial_fanwork = "true";
+  params.noncommercial_fanwork = "true";
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
   let pending = false;
@@ -4004,8 +3962,7 @@ function schedulePreview(force) {
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
-  const key = `${combo}\n${previewShowImages ? 1 : 0}`
-    + `\n${$("noncommercial-fanwork").checked ? 1 : 0}`;
+  const key = `${combo}\n${previewShowImages ? 1 : 0}`;
   if (key === previewKey) return;
   previewKey = key;
   clearTimeout(previewTimer);
@@ -4094,24 +4051,14 @@ $("builder-wordlist").addEventListener("change", () => {
 // プレビューを追従させる
 $("sample-select").addEventListener("change", () => { syncBuilderValues(); schedulePreview(); });
 $("wordlist-select").addEventListener("change", () => {
-  showFanworkError("");
   syncBuilderValues();
   schedulePreview();
 });
 // セレクトが無い構成・エディタからの書き戻し(自作リストで空になる)でも追従する
 $("wordlist").addEventListener("change", () => {
-  showFanworkError("");
   syncBuilderValues();
   schedulePreview();
 });
-$("noncommercial-fanwork").addEventListener("change", () => {
-  showFanworkError("");
-  showSubmitMsg("");
-  showBuilderMsg("");
-  schedulePreview(true);
-  leFetchCue(leCueIndex);
-});
-
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
   previewShowImages = true;
@@ -4367,8 +4314,7 @@ async function leFetchCue(index) {
   form.append("wordlist", $("wordlist").value.trim());
   form.append("cue", Math.max(0, index | 0));
   form.append("lyrics", $("lyrics").value);
-  form.append("allow_noncommercial_fanwork",
-    $("noncommercial-fanwork").checked ? "true" : "false");
+  form.append("allow_noncommercial_fanwork", "true");
   if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
   try {
     const res = await fetch("/api/editor-preview", { method: "POST", body: form, headers: headers() });
@@ -4595,7 +4541,7 @@ function leContent(e) {
       // image_urlは同一オリジンのパス。認証ありのときはapi_keyを付ける(既にクエリ有り)
       if (leCue.image_url) {
         src = leCue.image_url
-          + ($("noncommercial-fanwork").checked ? "&noncommercial_fanwork=true" : "")
+          + "&noncommercial_fanwork=true"
           + (apiKey() ? "&api_key=" + encodeURIComponent(apiKey()) : "");
       }
     } else if (leSide === "elements" && leSample && leSample.image) {
@@ -4603,7 +4549,7 @@ function leContent(e) {
       // loadWordlistImage と同じく名前が無ければ引かない(プレースホルダに落ちる)
       const name = $("wordlist").value.trim();
       if (name) src = "/api/asset-preview?wordlist=" + encodeURIComponent(name);
-      if (src && $("noncommercial-fanwork").checked) src += "&noncommercial_fanwork=true";
+      if (src) src += "&noncommercial_fanwork=true";
     }
     if (src) {
       const img = document.createElement("img");
