@@ -15,8 +15,12 @@ grep -Fx '  checks: write' "$automerge_workflow" >/dev/null
 grep -Fx '  pull_request_target:' "$automerge_workflow" >/dev/null
 ! grep -Fx '  pull_request:' "$automerge_workflow" >/dev/null
 grep -Fx '    branches: [dev, preview, main]' "$automerge_workflow" >/dev/null
-! grep -F 'actions/checkout' "$automerge_workflow" >/dev/null
-grep -F "github.event.pull_request.head.ref == 'preview'" "$automerge_workflow" >/dev/null
+grep -F 'ref: ${{ github.event.pull_request.base.sha }}' "$automerge_workflow" >/dev/null
+! grep -F 'ref: ${{ github.event.pull_request.head.sha }}' "$automerge_workflow" >/dev/null
+grep -F 'persist-credentials: false' "$automerge_workflow" >/dev/null
+grep -F 'sparse-checkout: .github/scripts' "$automerge_workflow" >/dev/null
+[[ $(grep -Fc 'node .github/scripts/check-main-pr.cjs' "$automerge_workflow") -eq 2 ]]
+grep -F 'if [ "$BASE" = main ] && [ "$BRANCH" != preview ]; then' "$automerge_workflow" >/dev/null
 grep -F "live_base=\$(echo \"\$live\" | jq -r .base.ref)" "$automerge_workflow" >/dev/null
 grep -F 'select(. == "no-automerge")' "$automerge_workflow" >/dev/null
 grep -F 'if [ "$BRANCH" != dev ] && [ "$BRANCH" != preview ]; then' \
