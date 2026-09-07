@@ -520,11 +520,6 @@
     border-radius: 10px; background: #f59e0b14;
   }
   .fanwork-notice .hint { margin: 0; }
-  .fanwork-terms {
-    display: flex; flex-direction: column; align-items: flex-start; gap: .15rem;
-    margin-top: .25rem; font-size: .8rem; line-height: 1.45;
-  }
-  .fanwork-terms a { overflow-wrap: anywhere; }
   .builder-figure {
     margin-top: .7rem; background: var(--panel-2); border: 1px solid var(--border);
     border-radius: 8px; overflow: hidden; text-align: center;
@@ -669,8 +664,8 @@
     <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
   </div>
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
-    <p class="hint">制作した動画の内容に応じて、必要な二次利用規約を遵守してください。</p>
-    <div class="fanwork-terms" id="builder-fanwork-terms"></div>
+    <p class="hint">動画の内容に応じて、<a id="builder-fanwork-guidelines" href="/guidelines"
+      target="_blank" rel="noopener noreferrer">利用ガイドライン</a>をお守りください。</p>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
@@ -3622,22 +3617,9 @@ function usesNoncommercialFanworkImages() {
 
 function updateNoncommercialFanworkNotice() {
   const panel = $("builder-fanwork-notice");
-  const policy = currentImagePolicy();
   panel.hidden = !usesNoncommercialFanworkImages();
-  const rawTerms = policy && (policy.terms_pages || policy.terms);
-  const terms = Array.isArray(rawTerms)
-    ? rawTerms
-    : (rawTerms ? [{ url: rawTerms, label: "二次創作ガイドライン" }] : []);
-  const links = terms.flatMap((term) => {
-    if (!term || typeof term.url !== "string" || !term.url) return [];
-    const link = document.createElement("a");
-    link.href = term.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = term.label || term.url;
-    return [link];
-  });
-  $("builder-fanwork-terms").replaceChildren(...links);
+  $("builder-fanwork-guidelines").href = "/guidelines?"
+    + new URLSearchParams({ wordlist: currentWordlistName() });
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
