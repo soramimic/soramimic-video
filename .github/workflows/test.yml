@@ -33,3 +33,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy src
       - run: uv run pytest -q
+      - name: Markdown-only PR policy tests
+        run: node tests/main-pr-policy.cjs
