@@ -1,11 +1,11 @@
 # dev / preview / main向けPRの自動マージ。CI(test など、このPRに付く全チェック)が
 # すべて成功したら、確認したコミットSHAを指定してマージしブランチを削除する。
-# - main向けは同一repositoryのpreviewブランチからのrelease PRだけを対象にする
-# - main向けのそれ以外のPRはretarget-main-pr.yamlがdevへ向け直す
+# - main向けは同一repositoryのpreview releaseまたは検証済みMarkdown-only PRを対象にする
+# - それ以外のmain PRはretarget-main-pr.yamlがdevへ向け直す
 # - 除外したいPRには `no-automerge` ラベルを付ける(ドラフトPRも対象外)
 # - 新しいpushが来ると古い待機はキャンセルされ、新SHAで待機し直す
 # write権限を持つため、必ずbase側の監査済み定義を使うpull_request_targetで動かす。
-# head codeのcheckout・source・実行は追加しない。
+# PR headのコードはcheckout・source・実行しない。
 name: automerge
 on:
   pull_request_target:
@@ -24,14 +24,12 @@ concurrency:
 jobs:
   automerge:
     # 公開リポジトリのフォークPRは人間の確認なしに自動マージしない。
-    # mainは同一repositoryのpreviewブランチからのPRだけを許可する。
+    # mainの出所とMarkdown-only例外は信頼済みbaseのpolicyで検証する。
     if: >-
       ${{
         !github.event.pull_request.draft &&
         !contains(github.event.pull_request.labels.*.name, 'no-automerge') &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        (github.event.pull_request.base.ref != 'main' ||
-          github.event.pull_request.head.ref == 'preview')
+        github.event.pull_request.head.repo.full_name == github.repository
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -41,10 +39,20 @@ jobs:
       SHA: ${{ github.event.pull_request.head.sha }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
       BASE: ${{ github.event.pull_request.base.ref }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
       REPO: ${{ github.repository }}
     steps:
+      - name: Check out trusted base policy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - name: 他のチェックの完了を待って自動マージ
         run: |
+          if [ "$BASE" = main ] && [ "$BRANCH" != preview ]; then
+            node .github/scripts/check-main-pr.cjs || exit 1
+          fi
           echo "PR #$PR ($SHA) のチェック完了を待機します"
           for i in $(seq 1 50); do
             sleep 20
@@ -86,8 +94,7 @@ jobs:
                 exit 0
               fi
               if [ "$BASE" = main ] && [ "$BRANCH" != preview ]; then
-                echo "mainへマージできるのはpreviewブランチからのPRだけです" >&2
-                exit 1
+                node .github/scripts/check-main-pr.cjs || exit 1
               fi
               echo "全チェック成功。マージします"
               tested_merge_sha=$(gh api "repos/$REPO/git/ref/pull/$PR/merge" -q .object.sha)
