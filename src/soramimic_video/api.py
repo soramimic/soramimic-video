@@ -673,6 +673,22 @@ def _clean_name(value: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", value).strip("_")[:40]
 
 
+async def read_wordlist_text(value: str | UploadFile) -> str:
+    if isinstance(value, str):
+        return value
+    limit = wordlist_csv_mod.max_bytes()
+    data = await value.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"自作リストが大きすぎます(上限は{limit / 1024 / 1024:.1f}MBです)。",
+        )
+    try:
+        return wordlist_csv_mod.decode(data)
+    except wordlist_csv_mod.WordlistCsvError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def custom_wordlist_name(filename: str) -> str:
     """アップロードされたCSVのファイル名から、リストの表示名(=保存名)を作る。
 
@@ -2844,7 +2860,7 @@ def create_app(
         wordlist_csv: UploadFile | None = None,
         # 画面に貼り付けた単語リスト(zipを作らずに画像を付ける経路)。
         # wordlist_csv が付いていないときだけ見る。画像は名前で行に結びつく
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
         lyrics: str = Form(""),
@@ -2898,6 +2914,7 @@ def create_app(
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
+        wordlist_text = await read_wordlist_text(wordlist_text)
         if (is_public_mode() or is_simple_ui()) and (
             (editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
@@ -3170,7 +3187,7 @@ def create_app(
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
     async def wordlist_check(
         wordlist_csv: UploadFile | None = None,
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
     ) -> dict[str, Any]:
@@ -3186,6 +3203,7 @@ def create_app(
         """
         if is_simple_ui():
             raise HTTPException(status_code=404, detail="Not Found")
+        wordlist_text = await read_wordlist_text(wordlist_text)
         has_file = wordlist_csv is not None and bool(wordlist_csv.filename)
         has_text = bool(wordlist_text.strip())
         if is_public_mode() and any(bool(image.filename) for image in wordlist_images):
@@ -3453,7 +3471,7 @@ def create_app(
         # 自作の単語リスト。/api/jobs と同じ2通りの入口(zip/CSV1ファイル、または
         # 貼り付けテキスト+画像)。付いていればリスト名(wordlist)より優先する
         wordlist_csv: UploadFile | None = None,
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
     ) -> dict[str, Any]:
@@ -3509,6 +3527,7 @@ def create_app(
         )
         from .xfparse import analyze_midi
 
+        wordlist_text = await read_wordlist_text(wordlist_text)
         midi_bytes, _resolved_sample_id, _midi_filename = await resolve_midi_input(
             midi, sample_id
         )
