@@ -16,6 +16,7 @@ WORDLIST_CATALOG_PATH = Path(__file__).resolve().parent / "wordlist_catalog.json
 GUIDELINE_LABELS = {
     "https://hololivepro.com/terms/": "ホロライブプロダクション二次創作ガイドライン",
     "https://www.anycolor.co.jp/guidelines/": "ANYCOLOR二次創作ガイドライン",
+    "https://realize-pro.com/guideline/": "りあぷろ二次創作ガイドライン",
     "https://vhs-city.com/aogirihighschool/guidelines/fanfic": (
         "あおぎり高校二次創作ガイドライン"
     ),
