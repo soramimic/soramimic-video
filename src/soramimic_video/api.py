@@ -42,6 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlsplit
@@ -2106,6 +2107,39 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/guidelines", response_class=HTMLResponse)
+    def guidelines(wordlist: str = "") -> str:
+        from .convert import WORDLISTS_DIR
+
+        policies = load_wordlist_image_policies(WORDLISTS_DIR)
+
+        def terms_links(entries: list[dict[str, Any]]) -> str:
+            links: dict[str, str] = {}
+            for policy in entries:
+                for term in policy.get("terms_pages", []):
+                    url = str(term.get("url") or "").strip()
+                    try:
+                        parsed = urlsplit(url)
+                    except ValueError:
+                        continue
+                    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                        continue
+                    links.setdefault(url, str(term.get("label") or url))
+            return "\n".join(
+                f'<li><a href="{escape(url, quote=True)}" target="_blank" '
+                f'rel="noopener noreferrer">{escape(label)}</a></li>'
+                for url, label in links.items()
+            )
+
+        selected = policies.get(wordlist.strip())
+        links = terms_links([selected]) if selected else ""
+        if not links:
+            links = terms_links(list(policies.values()))
+        content = f'<ul class="guidelines">{links}</ul>' if links else ""
+        return (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8").replace(
+            "<!-- guideline-links -->", content
+        )
 
     @app.get("/custom-wordlists.js", include_in_schema=False)
     def custom_wordlists_script() -> FileResponse:

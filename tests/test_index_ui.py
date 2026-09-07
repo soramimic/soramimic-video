@@ -1840,14 +1840,9 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             const restricted = name === "fanwork" || name === "legacy";
             updateNoncommercialFanworkNotice();
             assert.equal($("builder-fanwork-notice").hidden, !restricted);
-            const links = $("builder-fanwork-terms").children;
-            assert.equal(links.length, name === "fanwork" ? 2 : name === "legacy" ? 1 : 0);
-            if (restricted) {
-              assert.equal(links[0].href, name === "fanwork"
-                ? "https://example.com/one" : "https://example.com/legacy");
-              assert.equal(links[0].target, "_blank");
-              assert.equal(links[0].rel, "noopener noreferrer");
-            }
+            const guidance = new URL($("builder-fanwork-guidelines").href, "https://example.com");
+            assert.equal(guidance.pathname, "/guidelines");
+            assert.equal(guidance.searchParams.get("wordlist"), name);
             loadWordlistImage(name, previewSeq);
             const query = new URL(imageUrl, "https://example.com").searchParams;
             assert.equal(query.get("noncommercial_fanwork"), "true");
