@@ -476,9 +476,12 @@
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
   #custom-wordlist-panel { padding: .8rem; border: 1px solid var(--border); border-radius: .5rem; }
   .builder-selects { margin-top: .8rem; }
-  .builder-selects .field { display: flex; align-items: center; gap: .5rem; }
-  .builder-selects label { margin: 0; flex: 0 0 auto; white-space: nowrap; }
-  .builder-selects select { flex: 1 1 auto; min-width: 0; }
+  .builder-input-row {
+    display: grid; grid-template-columns: 4.25rem minmax(0, 1fr);
+    align-items: center; gap: .5rem;
+  }
+  .builder-input-row > label { margin: 0; white-space: nowrap; }
+  .builder-input-row select { min-width: 0; }
   .audio-upload-entry {
     display: flex; flex-direction: column; gap: .5rem;
     padding: .8rem; border: 1px dashed var(--border); border-radius: 10px;
@@ -626,12 +629,15 @@
   <!-- ⚙を押したときの応答。押したボタンのすぐ下に出す -->
   <span id="open-editor-msg" class="error"></span>
   <div id="song-upload-panel">
-    <div class="audio-upload-entry" id="song-upload-entry">
-      <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
-        <span aria-hidden="true">＋</span>曲をアップロード
-      </button>
-      <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
-      <p class="hint" id="song-upload-filename" role="status" hidden></p>
+    <div class="builder-input-row">
+      <label for="midi">曲</label>
+      <div class="audio-upload-entry" id="song-upload-entry">
+        <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
+          <span aria-hidden="true">＋</span>曲をアップロード
+        </button>
+        <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
+        <p class="hint" id="song-upload-filename" role="status" hidden></p>
+      </div>
     </div>
     <div id="audio-input-panel" class="field" hidden>
       <p><strong id="audio-filename"></strong></p>
@@ -642,7 +648,8 @@
     </div>
   </div>
   <div id="sample-picker" hidden>
-    <div class="field" id="builder-sample-field">
+    <div class="field builder-input-row" id="builder-sample-field">
+      <label for="builder-sample">曲</label>
       <select id="builder-sample" aria-label="サンプル曲"></select>
     </div>
     <p class="hint" id="audio-sample-credit" hidden></p>
@@ -650,7 +657,7 @@
   <button type="button" id="song-source-switch" class="song-source-switch"
     aria-controls="song-upload-panel sample-picker">サンプル曲で試す</button>
   <div class="builder-selects">
-    <div class="field" id="builder-wordlist-field">
+    <div class="field builder-input-row" id="builder-wordlist-field">
       <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
       <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>
     </div>
