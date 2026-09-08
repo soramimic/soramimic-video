@@ -47,7 +47,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from PIL import Image, ImageEnhance
 
@@ -566,21 +566,33 @@ def compose_background(
     """
     d = resolve_design(design)
     dim = d.background_dim if dim is None else dim
-    images: list[Image.Image] = []
+    images: list[tuple[Image.Image, bool]] = []
     for path in image_paths:
         try:
             with Image.open(path) as img:
-                images.append(img.convert("RGB"))
+                rgba = img.convert("RGBA")
+                alpha_extrema = cast(tuple[int, int], rgba.getchannel("A").getextrema())
+                has_transparency = alpha_extrema[0] < 255
+                opaque = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+                opaque.alpha_composite(rgba)
+                images.append((opaque.convert("RGB"), has_transparency))
         except Exception as e:  # noqa: BLE001 - 読めない画像は無いものとして続ける
             logger.warning("サムネ背景に使えない画像です: %s (%s)", path, e)
     if not images:
         return None
     canvas = Image.new("RGB", (width, height), "black")
     slot_w = width // len(images)
-    for i, source in enumerate(images):
+    for i, (source, has_transparency) in enumerate(images):
         # 最後の枠は端数ぶんまで受け持つ(1pxの黒すじを残さない)
         w = width - slot_w * i if i == len(images) - 1 else slot_w
-        canvas.paste(_cover(source, w, height), (slot_w * i, 0))
+        if has_transparency:
+            fitted = source.copy()
+            fitted.thumbnail((w, height), Image.Resampling.LANCZOS)
+            slot = Image.new("RGB", (w, height), "black")
+            slot.paste(fitted, ((w - fitted.width) // 2, (height - fitted.height) // 2))
+        else:
+            slot = _cover(source, w, height)
+        canvas.paste(slot, (slot_w * i, 0))
     return apply_scrim(ImageEnhance.Brightness(canvas).enhance(dim), d.scrim)
 
 
@@ -784,6 +796,8 @@ def resolve_headline(
     missing_images: list[tuple[str, str]] | None = None,
     image_wait_sec: float = 0.0,
     song_kana: str = "",
+    allow_noncommercial_fanwork: bool = False,
+    used_images: list[dict] | None = None,
 ) -> tuple[list[str], list[Path], list[str]]:
     """曲名を1フレーズ変換し、(見出しの単語, 単語画像, クレジット文言)を返す。
 
@@ -811,17 +825,33 @@ def resolve_headline(
     image_paths: list[Path] = []
     image_credits: list[str] = []
     if found and image_cache is not None:
+        from .image_usage import require_image_usage
+
         try:
+            allowed_rows: list[dict[str, str] | None] = []
+            for _word, row in found:
+                try:
+                    require_image_usage(
+                        row or {},
+                        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+                    )
+                except ValueError:
+                    continue
+                allowed_rows.append(row)
             if not download_images and image_wait_sec > 0:
                 # 待てないなりに少しだけ待つ(初見の1回目から絵入りにするため)
-                wait_for_images([row for _word, row in found], image_cache, image_wait_sec)
+                wait_for_images(allowed_rows, image_cache, image_wait_sec)
             for _word, row in found:
+                if row not in allowed_rows:
+                    continue
                 path, credit = _word_image(
                     row, image_cache, download_images, missing_images
                 )
                 if path is not None:
                     image_paths.append(path)
                     image_credits.append(credit)
+                    if used_images is not None:
+                        used_images.append({**(row or {}), "image_credit": credit})
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - 画像なしのサムネにフォールバック
@@ -845,6 +875,8 @@ def build_thumbnail(
     design: str | TextDesign | None = None,
     image_wait_sec: float = 0.0,
     song_kana: str = "",
+    allow_noncommercial_fanwork: bool = False,
+    used_images: list[dict] | None = None,
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -862,6 +894,7 @@ def build_thumbnail(
     曲名は読みの有無にかかわらず song(漢字まじりの表記)のまま。
     """
     wordlist_text = wordlist_text_of(wordlist)
+    resolved_images: list[dict] = []
     words, image_paths, image_credits = resolve_headline(
         song,
         wordlist,
@@ -872,6 +905,8 @@ def build_thumbnail(
         missing_images,
         image_wait_sec=image_wait_sec,
         song_kana=song_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=resolved_images,
     )
 
     try:
@@ -892,6 +927,8 @@ def build_thumbnail(
         logger.warning("サムネ画像を生成できませんでした: %s", e)
         return None
     runproc.log_generated_path(logger, "サムネ画像を生成しました", path)
+    if used_images is not None:
+        used_images.extend(resolved_images if style == STYLE_FULLBLEED else resolved_images[:1])
     return path
 
 
@@ -904,6 +941,8 @@ def generate_thumbnail(
     title: str | None = None,
     app_credit: str = "",
     title_kana: str = "",
+    allow_noncommercial_fanwork: bool = False,
+    used_images: list[dict] | None = None,
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
@@ -924,4 +963,6 @@ def generate_thumbnail(
         height=height,
         app_credit=app_credit,
         song_kana=title_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=used_images,
     )

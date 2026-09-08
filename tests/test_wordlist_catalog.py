@@ -101,3 +101,27 @@ def test_image_policy_uses_safe_catalog_fallback_when_csv_is_missing(tmp_path):
         "url": "https://example.com/guidelines",
         "label": "example.com 二次創作ガイドライン",
     }]
+
+
+def test_terms_labels_follow_people_and_organizations_without_domain_merging(tmp_path):
+    import csv
+
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"people": {"image_policy": {"usage": "noncommercial_fanwork"}}}))
+    with (tmp_path / "people.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "original", "org", "image_terms_page", "image_usage"
+        ])
+        writer.writeheader()
+        for name, url in [("A<&", "https://note.com/a"), ("B", "https://note.com/b"),
+                          ("A<&", "https://note.com/a"), ("C", "https://note.com/a"),
+                          ("A<&", "https://note.com/a/en"), ("D", "https://[broken")]:
+            writer.writerow({"original": name, "org": "個人勢", "image_terms_page": url,
+                             "image_usage": "noncommercial_fanwork"})
+    terms = load_wordlist_image_policies(tmp_path, catalog)["people"]["terms_pages"]
+    assert [term["url"] for term in terms] == [
+        "https://note.com/a", "https://note.com/b", "https://note.com/a/en"
+    ]
+    assert terms[0]["people"] == ["A<&", "C"]
+    assert "B" in terms[1]["label"]
+    assert "A<&" in terms[2]["label"]

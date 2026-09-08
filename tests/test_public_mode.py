@@ -119,6 +119,38 @@ def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
     assert bob.get(f"/api/jobs/{a_id}").status_code == 200
 
 
+def test_public_jobs_reject_editor_wordlists_outside_launch_catalog(public_app):
+    client = TestClient(public_app)
+    editor = json.dumps(
+        {"wordlist": {"filepath": "/tmp/youtuber.csv"}}
+    ).encode()
+    response = client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "editor": ("editor.json", editor, "application/json"),
+        },
+        data={"wordlist": "youtuber"},
+    )
+    assert response.status_code == 422
+
+
+def test_public_editor_preview_requires_a_launch_wordlist(public_app):
+    client = TestClient(public_app)
+    response = client.post(
+        "/api/editor-preview",
+        files={
+            "editor": (
+                "editor.json",
+                json.dumps({"wordlist": {"filepath": "/tmp/youtuber.csv"}}).encode(),
+                "application/json",
+            )
+        },
+        data={"wordlist": ""},
+    )
+    assert response.status_code == 422
+
+
 def test_owner_is_persisted_across_restart(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
@@ -600,3 +632,152 @@ def test_thumbnail_is_owner_checked(tmp_path, monkeypatch):
     assert alice.get(f"/api/jobs/{a_id}/thumbnail").status_code == 200
     bob.get("/api/config")  # bobにも別セッションのcookieを発行させる
     assert bob.get(f"/api/jobs/{a_id}/thumbnail").status_code == 404
+
+
+def test_public_accepts_named_text_wordlist_and_strips_images(public_app, tmp_path):
+    client = TestClient(public_app)
+    response = submit(
+        client, wordlist="unused-list-name", wordlist_name="庭の鳥",
+        wordlist_text=(
+            "surface,pronunciation,image,image_page\n"
+            "雀,スズメ,http://127.0.0.1/private,file:///etc/passwd\n"
+        ), where="type=bird",
+    )
+    assert response.status_code == 200, response.text
+    job = wait_done(client, response.json()["id"])
+    params = job["params"]
+    assert params["wordlist"] == "庭の鳥"
+    assert params["where"] == ""
+    assert params["wordlist_rows"] == 1
+    saved = (tmp_path / "jobs" / job["id"] / api_mod.WORDLIST_DIRNAME / "庭の鳥.csv")
+    assert saved.read_text(encoding="utf-8") == (
+        "id,original,surface,pronunciation\n1,雀,雀,スズメ"
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["/api/jobs", "/api/editor-session"])
+@pytest.mark.parametrize("field", ["wordlist_csv", "wordlist_images"])
+def test_public_custom_text_does_not_enable_file_inputs(public_app, endpoint, field):
+    client = TestClient(public_app)
+    response = client.post(
+        endpoint,
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            field: ("upload.csv", b"cat,cat", "text/csv"),
+        },
+        data={"wordlist_text": "雀,スズメ"},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_public_custom_text_does_not_enable_editor_upload(public_app):
+    client = TestClient(public_app)
+    response = client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "editor": ("editor.json", b"{}", "application/json"),
+        },
+        data={"wordlist_text": "雀,スズメ"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["/api/jobs", "/api/editor-session"])
+def test_public_rejects_invalid_custom_text(public_app, endpoint):
+    response = TestClient(public_app).post(
+        endpoint,
+        files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
+        data={"wordlist_text": "surface,pronunciation\n猫,猫又"},
+    )
+    assert response.status_code == 400, response.text
+    assert "カタカナ" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("as_file", [False, True])
+@pytest.mark.parametrize("convert", ["0", "1"])
+def test_public_text_editor_session_is_self_contained(public_app, tmp_path, convert, as_file):
+    from test_editor_embed import _xf_midi
+
+    midi = _xf_midi(tmp_path)
+    files = {"midi": ("song.mid", midi.read_bytes(), "audio/midi")}
+    data = {"wordlist_name": "地名", "convert": convert}
+    text = "静岡,シズオカ\n鈴鹿,スズカ"
+    if as_file:
+        files["wordlist_text"] = ("wordlist.txt", text.encode(), "text/plain")
+    else:
+        data["wordlist_text"] = text
+    response = TestClient(public_app).post("/api/editor-session", files=files, data=data)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["wordlist"]["value"] == "ORIGINAL"
+    assert result["wordlist"]["text"] == "地名"
+    assert "静岡" in result["wordlist"]["csvText"]
+    assert "filepath" not in result["wordlist"]
+    assert ("results" in result) == (convert == "1")
+    assert not list((tmp_path / "jobs" / "editor-sessions").glob("*/wordlist.csv"))
+
+
+def test_public_check_rejects_zip_and_image_channels(public_app):
+    client = TestClient(public_app)
+    response = client.post(
+        "/api/wordlist-check",
+        files={"wordlist_csv": ("words.zip", b"PK\x03\x04", "application/zip")},
+    )
+    assert response.status_code == 422
+    response = client.post(
+        "/api/wordlist-check",
+        files={"wordlist_images": ("cat.png", b"fake", "image/png")},
+        data={"wordlist_text": "猫,ネコ"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["/api/jobs", "/api/editor-session", "/api/wordlist-check"])
+@pytest.mark.parametrize("limit_env,limit", [
+    ("SORAMIMIC_MAX_WORDLIST_BYTES", "4"),
+    ("SORAMIMIC_MAX_WORDLIST_ROWS", "1"),
+])
+@pytest.mark.parametrize("as_file", [False, True])
+def test_public_custom_text_preserves_limits(
+    public_app, monkeypatch, endpoint, limit_env, limit, as_file,
+):
+    monkeypatch.setenv(limit_env, limit)
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    data = {}
+    text = "雀,スズメ\n猫,ネコ"
+    if as_file:
+        files["wordlist_text"] = ("wordlist.txt", text.encode(), "text/plain")
+    else:
+        data["wordlist_text"] = text
+    response = TestClient(public_app).post(endpoint, files=files, data=data)
+    assert response.status_code == 400, response.text
+
+
+def test_simple_ui_still_rejects_custom_text(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    response = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs")).post(
+        "/api/jobs",
+        data={"sample_id": "furusato", "wordlist_text": "雀,スズメ"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "この入力形式は現在利用できません"
+
+
+def test_image_credits_follow_job_session_ownership(public_app):
+    from soramimic_video.credits import write_credit_files
+
+    owner = TestClient(public_app)
+    other = TestClient(public_app)
+    result = submit(owner)
+    job_id = result.json()["id"]
+    body = wait_done(owner, job_id)
+    job = public_app.state.manager.jobs[job_id]
+    work = job.dir / "video"
+    work.mkdir()
+    write_credit_files([{"original": "画像A", "image_page": "https://example.com/a"}], work)
+    url = body["credits_url"]
+    for suffix in ("", "?download=true"):
+        assert owner.get(url + suffix).status_code == 200
+        assert other.get(url + suffix).status_code == 404
