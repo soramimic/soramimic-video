@@ -191,7 +191,7 @@ _COLUMN_MIN_ROWS = 4
 # 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
 # 歌声合成側のクレジット表記が要るときは呼び出し側が
 # 「lyrics & video by Soramimic / VOICEVOX:キャラ名」のように連結して data に入れる
-APP_CREDIT = "lyrics & video by Soramimic"
+APP_CREDIT = "lyrics & video by Soramimic / 非公式・ファンメイド"
 # 自動追加するアプリクレジットの位置(フレーム左下)と見た目。
 # 画像クレジット(画像の右下)・既定字幕(下端0.945)と重ならない最下段に、
 # 画像クレジット(0.025)より小さい文字で、白を少し透かして置く
