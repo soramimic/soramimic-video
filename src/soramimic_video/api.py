@@ -2127,13 +2127,13 @@ def create_app(
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     @app.get("/guidelines", response_class=HTMLResponse)
-    def guidelines(wordlist: str = "", q: str = "") -> str:
+    def guidelines(wordlist: str = "") -> str:
         from .convert import WORDLISTS_DIR
 
         policies = load_wordlist_image_policies(WORDLISTS_DIR)
 
-        def terms_links(entries: list[dict[str, Any]]) -> tuple[str, int]:
-            links: dict[str, dict[str, Any]] = {}
+        def terms_links(entries: list[dict[str, Any]]) -> str:
+            links: dict[str, str] = {}
             for policy in entries:
                 for term in policy.get("terms_pages", []):
                     url = str(term.get("url") or "").strip()
@@ -2143,36 +2143,18 @@ def create_app(
                         continue
                     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                         continue
-                    item = links.setdefault(url, {"label": str(term.get("label") or url),
-                                                  "names": []})
-                    for name in [*term.get("organizations", []), *term.get("people", [])]:
-                        if name not in item["names"]:
-                            item["names"].append(name)
-            rendered = "\n".join(
+                    links.setdefault(url, str(term.get("label") or url))
+            return "\n".join(
                 f'<li><a href="{escape(url, quote=True)}" target="_blank" '
-                f'rel="noopener noreferrer">{escape(item["label"])}</a>'
-                f'<p>{escape(" / ".join(item["names"]))}</p></li>'
-                for url, item in links.items()
-                if q.casefold().strip() in (item["label"] + " " + " ".join(item["names"])
-                                            + " " + url).casefold()
+                f'rel="noopener noreferrer">{escape(label)}</a></li>'
+                for url, label in links.items()
             )
 
-            return rendered, len(links)
-
         selected = policies.get(wordlist.strip())
-        entries = (
-            [selected] if selected and selected.get("terms_pages") else list(policies.values())
-        )
-        links, total = terms_links(entries)
-        content = (
-            '<form method="get"><label for="search">事務所・人物名で検索</label>'
-            f'<input type="hidden" name="wordlist" value="{escape(wordlist, quote=True)}">'
-            f'<input id="search" name="q" type="search" value="{escape(q, quote=True)}">'
-            '<button type="submit">検索</button></form>'
-            f'<p role="status">リスト全体の規約：{total}件（表示 {links.count("<li>")}件）</p>'
-        )
-        content += (f'<ul class="guidelines">{links}</ul>' if links
-                    else '<p>該当する規約はありません。</p>')
+        links = terms_links([selected]) if selected else ""
+        if not links:
+            links = terms_links(list(policies.values()))
+        content = f'<ul class="guidelines">{links}</ul>' if links else ""
         return (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8").replace(
             "<!-- guideline-links -->", content
         )
