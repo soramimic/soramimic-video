@@ -49,7 +49,6 @@ from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
 from .kana import normalize_long_vowels
 from .layout import (
-    APP_CREDIT,
     DEFAULT_SUBTITLES,
     ImageElement,
     Layout,
@@ -57,6 +56,7 @@ from .layout import (
     _font,
     _require_met,
     _SafeDict,
+    app_credit_for_wordlist,
     is_missing,
     load_layout,
     render_frame,
@@ -632,7 +632,7 @@ def idle_frame_data(project: Project, app_credit: str = "") -> dict:
     """
     title = Path(project.song.midi_path).stem if project.song.midi_path else ""
     wordlist = project.parody.wordlist if project.parody else ""
-    return {"title": title, "wordlist": wordlist, "app_credit": app_credit or APP_CREDIT}
+    return {"title": title, "wordlist": wordlist, "app_credit": app_credit or app_credit_for_wordlist(wordlist)}
 
 
 # ---- 歌唱なし区間(前奏・間奏・後奏) ----
@@ -935,7 +935,9 @@ def build_section_cues(
                 t = end
             if show_credits and t < sec.end:
                 data = section_frame_data(
-                    project, app_credit_text(synth_credit), "credits", sec.duration,
+                    project, app_credit_text(
+                        synth_credit, wordlist=project.parody.wordlist if project.parody else "",
+                    ), "credits", sec.duration,
                     image_credits=credit_text, synth_credit=synth_credit,
                     original_song=original_song,
                     original_display_credit=original_display_credit,
@@ -966,6 +968,7 @@ def app_credit_text(
     *,
     original_song: str = "",
     original_display_credit: str = "",
+    wordlist: str = "",
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
@@ -978,7 +981,7 @@ def app_credit_text(
     song = (original_song or "").strip()
     notice = (credit_notice or "").strip()
     display_credit = (original_display_credit or "").strip()
-    parts = [APP_CREDIT]
+    parts = [app_credit_for_wordlist(wordlist)]
     if synth:
         parts.append(synth)
     original = " — ".join(part for part in (song, display_credit or notice) if part)
@@ -1200,7 +1203,7 @@ def build_image_cues(
         start = max(0.0, wf.start - image_lead_sec)
         data, use_fallback = wf.data, wf.use_fallback
         # 全フレーム共通の署名(レイアウトが左下に焼き込む)
-        data["app_credit"] = app_credit or APP_CREDIT
+        data["app_credit"] = app_credit or app_credit_for_wordlist(project.parody.wordlist)
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
@@ -1857,6 +1860,7 @@ def prepare_video(
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
         original_song=original_song,
+        wordlist=project.parody.wordlist if project.parody else "",
     )
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
@@ -2009,6 +2013,7 @@ def make_video(
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
         original_song=original_song,
+        wordlist=project.parody.wordlist if project.parody else "",
     )
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)

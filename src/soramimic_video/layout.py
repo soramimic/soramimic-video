@@ -191,13 +191,20 @@ _COLUMN_MIN_ROWS = 4
 # 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
 # 歌声合成側のクレジット表記が要るときは呼び出し側が
 # 「lyrics & video by Soramimic / VOICEVOX:キャラ名」のように連結して data に入れる
-APP_CREDIT = "lyrics & video by Soramimic / 非公式・ファンメイド"
+APP_CREDIT = "lyrics & video by Soramimic"
 # 自動追加するアプリクレジットの位置(フレーム左下)と見た目。
 # 画像クレジット(画像の右下)・既定字幕(下端0.945)と重ならない最下段に、
 # 画像クレジット(0.025)より小さい文字で、白を少し透かして置く
 APP_CREDIT_BOX = (0.012, 0.945, 0.7, 0.045)
 APP_CREDIT_SIZE = 0.022
 APP_CREDIT_COLOR = "#ffffffb3"
+
+
+def app_credit_for_wordlist(wordlist: str = "") -> str:
+    """VTuberリストのときだけ非公式・ファンメイド表記を添える。"""
+    if wordlist.strip().lower() == "vtuber":
+        return f"{APP_CREDIT} / 非公式・ファンメイド"
+    return APP_CREDIT
 
 
 # 単語リストCSVで「値なし」を表す文字列(R由来のNA等)。値として描画せず空扱いにする。
