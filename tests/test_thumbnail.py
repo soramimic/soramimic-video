@@ -682,3 +682,17 @@ def test_thumbnail_reports_only_images_used_in_its_style(tmp_path, monkeypatch, 
     assert result.is_file()
     assert [row["original"] for row in used] == expected
     assert all(row["image_page"] and row["image_terms_page"] for row in used)
+
+
+@pytest.mark.parametrize("wordlist", ["vtuber", "pokemon", "stations", "youtuber", "custom"])
+def test_thumbnail_fanmade_credit_is_limited_to_vtuber(tmp_path, monkeypatch, wordlist):
+    monkeypatch.setattr(thumb_mod, "resolve_headline", lambda *a, **kw: ([], [], []))
+    credits = []
+
+    def render(out_path, *args, **kwargs):
+        credits.append(kwargs["app_credit"])
+        return out_path
+
+    monkeypatch.setattr(thumb_mod, "render_thumbnail", render)
+    thumb_mod.build_thumbnail(tmp_path / "thumb.png", "曲", wordlist)
+    assert ("非公式・ファンメイド" in credits[0]) == (wordlist == "vtuber")
