@@ -662,6 +662,8 @@ class Job:
             d["video_url"] = f"/api/jobs/{self.id}/video"
             d["playback_url"] = f"/api/jobs/{self.id}/playback"
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
+            if self.video.suffix != ".wav":
+                d["credits_url"] = f"/api/jobs/{self.id}/credits"
             if self.thumbnail.exists():
                 d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
         if with_log and not is_public_mode():
@@ -2125,13 +2127,13 @@ def create_app(
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     @app.get("/guidelines", response_class=HTMLResponse)
-    def guidelines(wordlist: str = "") -> str:
+    def guidelines(wordlist: str = "", q: str = "") -> str:
         from .convert import WORDLISTS_DIR
 
         policies = load_wordlist_image_policies(WORDLISTS_DIR)
 
-        def terms_links(entries: list[dict[str, Any]]) -> str:
-            links: dict[str, str] = {}
+        def terms_links(entries: list[dict[str, Any]]) -> tuple[str, int]:
+            links: dict[str, dict[str, Any]] = {}
             for policy in entries:
                 for term in policy.get("terms_pages", []):
                     url = str(term.get("url") or "").strip()
@@ -2141,21 +2143,43 @@ def create_app(
                         continue
                     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                         continue
-                    links.setdefault(url, str(term.get("label") or url))
-            return "\n".join(
+                    item = links.setdefault(url, {"label": str(term.get("label") or url),
+                                                  "names": []})
+                    for name in [*term.get("organizations", []), *term.get("people", [])]:
+                        if name not in item["names"]:
+                            item["names"].append(name)
+            rendered = "\n".join(
                 f'<li><a href="{escape(url, quote=True)}" target="_blank" '
-                f'rel="noopener noreferrer">{escape(label)}</a></li>'
-                for url, label in links.items()
+                f'rel="noopener noreferrer">{escape(item["label"])}</a>'
+                f'<p>{escape(" / ".join(item["names"]))}</p></li>'
+                for url, item in links.items()
+                if q.casefold().strip() in (item["label"] + " " + " ".join(item["names"])
+                                            + " " + url).casefold()
             )
 
+            return rendered, len(links)
+
         selected = policies.get(wordlist.strip())
-        links = terms_links([selected]) if selected else ""
-        if not links:
-            links = terms_links(list(policies.values()))
-        content = f'<ul class="guidelines">{links}</ul>' if links else ""
+        entries = (
+            [selected] if selected and selected.get("terms_pages") else list(policies.values())
+        )
+        links, total = terms_links(entries)
+        content = (
+            '<form method="get"><label for="search">事務所・人物名で検索</label>'
+            f'<input type="hidden" name="wordlist" value="{escape(wordlist, quote=True)}">'
+            f'<input id="search" name="q" type="search" value="{escape(q, quote=True)}">'
+            '<button type="submit">検索</button></form>'
+            f'<p role="status">リスト全体の規約：{total}件（表示 {links.count("<li>")}件）</p>'
+        )
+        content += (f'<ul class="guidelines">{links}</ul>' if links
+                    else '<p>該当する規約はありません。</p>')
         return (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8").replace(
             "<!-- guideline-links -->", content
         )
+
+    @app.get("/image-credits.js", include_in_schema=False)
+    def image_credits_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "image-credits.js", media_type="application/javascript")
 
     @app.get("/custom-wordlists.js", include_in_schema=False)
     def custom_wordlists_script() -> FileResponse:
@@ -2519,6 +2543,14 @@ def create_app(
                 return next((row for row in rows if row.get("image")), None)
         except (FileNotFoundError, OSError):
             return None
+
+    @app.get("/api/image-sources", dependencies=[Depends(_require_api_key)])
+    def image_sources(wordlist: str) -> list[dict[str, str]]:
+        from .credits import distinct_credits
+
+        path = _asset_preview_wordlist_path(wordlist)
+        with path.open(encoding="utf-8", newline="") as handle:
+            return distinct_credits([row for row in csv.DictReader(handle) if row.get("image")])
 
     @app.get("/api/asset-preview", dependencies=[Depends(_require_api_key)])
     @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
@@ -3256,6 +3288,22 @@ def create_app(
     @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(_require_api_key)])
     def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
         return manager.cancel(job_id, owner_of(request)).to_dict(with_log=False)
+
+    @app.get("/api/jobs/{job_id}/credits", dependencies=[Depends(_require_api_key)])
+    def get_credits(job_id: str, request: Request, download: bool = False) -> FileResponse:
+        from .video import VIDEO_DIR
+
+        job = manager.get(job_id, owner_of(request))
+        if job.status != "done" or not job.video or job.video.suffix == ".wav":
+            raise HTTPException(status_code=409, detail="動画はまだできていません")
+        path = job.dir / VIDEO_DIR / ("credits.md" if download else "credits.json")
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="この動画の出典情報は保存されていません")
+        return FileResponse(
+            path, media_type="text/markdown; charset=utf-8" if download else "application/json",
+            filename="credits.md" if download else None,
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     @app.get("/api/jobs/{job_id}/video", dependencies=[Depends(_require_api_key)])
     def get_video(job_id: str, request: Request) -> FileResponse:

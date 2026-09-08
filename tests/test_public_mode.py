@@ -763,3 +763,21 @@ def test_simple_ui_still_rejects_custom_text(tmp_path, monkeypatch):
     )
     assert response.status_code == 422
     assert response.json()["detail"] == "この入力形式は現在利用できません"
+
+
+def test_image_credits_follow_job_session_ownership(public_app):
+    from soramimic_video.credits import write_credit_files
+
+    owner = TestClient(public_app)
+    other = TestClient(public_app)
+    result = submit(owner)
+    job_id = result.json()["id"]
+    body = wait_done(owner, job_id)
+    job = public_app.state.manager.jobs[job_id]
+    work = job.dir / "video"
+    work.mkdir()
+    write_credit_files([{"original": "画像A", "image_page": "https://example.com/a"}], work)
+    url = body["credits_url"]
+    for suffix in ("", "?download=true"):
+        assert owner.get(url + suffix).status_code == 200
+        assert other.get(url + suffix).status_code == 404

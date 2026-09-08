@@ -797,6 +797,7 @@ def resolve_headline(
     image_wait_sec: float = 0.0,
     song_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
+    used_images: list[dict] | None = None,
 ) -> tuple[list[str], list[Path], list[str]]:
     """曲名を1フレーズ変換し、(見出しの単語, 単語画像, クレジット文言)を返す。
 
@@ -849,6 +850,8 @@ def resolve_headline(
                 if path is not None:
                     image_paths.append(path)
                     image_credits.append(credit)
+                    if used_images is not None:
+                        used_images.append({**(row or {}), "image_credit": credit})
         except runproc.Cancelled:
             raise
         except Exception as e:  # noqa: BLE001 - 画像なしのサムネにフォールバック
@@ -873,6 +876,7 @@ def build_thumbnail(
     image_wait_sec: float = 0.0,
     song_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
+    used_images: list[dict] | None = None,
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -890,6 +894,7 @@ def build_thumbnail(
     曲名は読みの有無にかかわらず song(漢字まじりの表記)のまま。
     """
     wordlist_text = wordlist_text_of(wordlist)
+    resolved_images: list[dict] = []
     words, image_paths, image_credits = resolve_headline(
         song,
         wordlist,
@@ -901,6 +906,7 @@ def build_thumbnail(
         image_wait_sec=image_wait_sec,
         song_kana=song_kana,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=resolved_images,
     )
 
     try:
@@ -921,6 +927,8 @@ def build_thumbnail(
         logger.warning("サムネ画像を生成できませんでした: %s", e)
         return None
     runproc.log_generated_path(logger, "サムネ画像を生成しました", path)
+    if used_images is not None:
+        used_images.extend(resolved_images if style == STYLE_FULLBLEED else resolved_images[:1])
     return path
 
 
@@ -934,6 +942,7 @@ def generate_thumbnail(
     app_credit: str = "",
     title_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
+    used_images: list[dict] | None = None,
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
@@ -955,4 +964,5 @@ def generate_thumbnail(
         app_credit=app_credit,
         song_kana=title_kana,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=used_images,
     )

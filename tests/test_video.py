@@ -2188,3 +2188,48 @@ def test_collect_word_frames_warns_on_foreign_layout(tmp_path: Path, caplog):
     with caplog.at_level(logging.WARNING, logger="soramimic_video.video"):
         collect_word_frames(_scientist_project(tmp_path), load_layout("scientist_card"))
     assert "レイアウトが参照する列が単語リストにありません" not in caplog.text
+
+
+def test_text_only_cues_do_not_claim_unused_images(tmp_path):
+    from soramimic_video.layout import parse_layout
+
+    project = _project(tmp_path)
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+    layout = parse_layout({"elements": [
+        {"type": "text", "text": "{surface}", "box": [0, 0, 1, 1]},
+    ]})
+    cues, credits = build_image_cues(project, work, 320, 180, layout=layout)
+    assert cues
+    assert credits == []
+
+
+def test_cues_keep_distinct_people_sharing_one_image(tmp_path):
+    from copy import deepcopy
+
+    project = _project(tmp_path)
+    first = project.parody.lines[0].words[0]
+    second = deepcopy(first)
+    second.wordlist_row["original"] = "別の人物"
+    second.original = "別の人物"
+    second.note_ids = [2]
+    second.note_kana = ["ム"]
+    project.parody.lines[0].words.append(second)
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+    _, credits = build_image_cues(project, work, 320, 180)
+    assert len(credits) == 2
+    assert credits[0]["image"] == credits[1]["image"]
+    assert credits[0]["original"] != credits[1]["original"]
+
+
+def test_credits_exclude_cues_covered_by_thumbnail_or_zero_duration(tmp_path):
+    from soramimic_video.video import ImageCue, credits_for_cues, prepend_thumbnail_cue
+
+    def cue(start, end, name):
+        return ImageCue(start, end, tmp_path / f"{name}.png",
+                        ({"original": name, "image": f"https://example.com/{name}"},))
+
+    cues = [cue(0, 1, "隠れた画像"), cue(2, 4, "残った画像"), cue(5, 5, "表示なし")]
+    kept = prepend_thumbnail_cue(cues, tmp_path / "thumbnail.png", 3)
+    assert [row["original"] for row in credits_for_cues(kept)] == ["残った画像"]

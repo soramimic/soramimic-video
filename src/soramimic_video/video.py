@@ -592,6 +592,20 @@ class ImageCue:
     start: float
     end: float
     frame: Path
+    credits: tuple[dict, ...] = ()
+
+
+def credits_for_cues(cues: list[ImageCue]) -> list[dict]:
+    from .credits import FIELDS
+
+    found: dict[tuple[str, ...], dict] = {}
+    for cue in cues:
+        if cue.end <= cue.start:
+            continue
+        for item in cue.credits:
+            key = tuple(str(item.get(field) or "") for field in FIELDS)
+            found.setdefault(key, item)
+    return list(found.values())
 
 
 def word_frame_data(word: ParodyWord, row: dict) -> dict:
@@ -772,7 +786,7 @@ def image_credits_text(credits: list[dict]) -> str:
 
     動画本編では画像ごとに右下へ焼き込んでいる文言を、後奏でまとめて出すため。
     """
-    texts = (str(c.get("credit") or "").strip() for c in credits)
+    texts = (str(c.get("image_credit") or c.get("credit") or "").strip() for c in credits)
     return " / ".join(dict.fromkeys(t for t in texts if t))
 
 
@@ -1170,7 +1184,7 @@ def build_image_cues(
             )
 
     cues: list[ImageCue] = []
-    credits: dict[str, dict] = {}
+    credits: dict[tuple[str, ...], dict] = {}
     cache = image_cache_dir(work, image_cache)
     # 画像と同じ共有キャッシュ配下へ置き、同じ単語・レイアウトのPNGをジョブ間で再利用する
     norm = cache / RENDERED_FRAME_CACHE_DIR
@@ -1218,8 +1232,19 @@ def build_image_cues(
         if cues and cues[-1].end > start:
             cues[-1].end = start
         cues.append(ImageCue(start=start, end=show_end, frame=frame))
-        if url and raw is not None and url not in credits:
-            credits[url] = {
+        credit_key = tuple(str(data.get(k) or "") for k in (
+            "id", "original", "image", "image_page", "image_credit", "image_terms_page",
+            "image_usage",
+        ))
+        visible_image = any(
+            isinstance(el, ImageElement) and _require_met(el, _SafeDict(data))
+            for el in layout.active_elements(use_fallback)
+        )
+        if url and raw is not None and visible_image:
+            credits[credit_key] = {
+                "id": str(data.get("id") or ""),
+                "org": str(data.get("org") or ""),
+                "image_credit": str(data.get("image_credit") or ""),
                 "word": data["surface"],
                 "original": data["original"],
                 "image": url,
@@ -1228,7 +1253,8 @@ def build_image_cues(
                 "image_usage": str(data.get("image_usage") or ""),
                 "image_terms_page": str(data.get("image_terms_page") or ""),
             }
-    return cues, list(credits.values())
+            cues[-1].credits = (credits[credit_key],)
+    return cues, credits_for_cues(cues)
 
 
 def thumbnail_show_end(project: Project) -> float:
@@ -1262,7 +1288,7 @@ def prepend_thumbnail_cue(
         if cue.end <= end:
             continue  # サムネに完全に覆われる単語(字幕はそのまま焼かれる)
         kept.append(
-            ImageCue(start=max(cue.start, end), end=cue.end, frame=cue.frame)
+            ImageCue(start=max(cue.start, end), end=cue.end, frame=cue.frame, credits=cue.credits)
         )
     return [ImageCue(start=0.0, end=end, frame=frame), *kept]
 
@@ -1736,28 +1762,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def write_credits(credits: list[dict], work: Path) -> Path | None:
-    if not credits:
-        return None
-    lines = [
-        "# 画像クレジット",
-        "",
-        "この動画で使用した画像の出典。公開時は各ファイルページのライセンス"
-        "(作者表示など)に従ってください。",
-        "クレジット欄が空の画像は表記不要(パブリックドメイン等)か情報を取得"
-        "できなかったもので、後者はライセンス確認先で要確認です。",
-        "",
-        "| 単語 | 画像 | クレジット | ライセンス確認先 | 利用区分 |",
-        "|---|---|---|---|---|",
-    ]
-    for c in credits:
-        lines.append(
-            f"| {c['original']} | {c['image']} | {c.get('credit', '')} | "
-            f"{c.get('image_terms_page') or c['image_page']} | "
-            f"{c.get('image_usage', '')} |"
-        )
-    path = work / "credits.md"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    from .credits import write_credit_files
+
+    return write_credit_files(credits, work)
 
 
 # ---- 本体 ----
@@ -1878,6 +1885,7 @@ def prepare_video(
         logger.info("画像キュー: %d件", len(cues))
     else:
         logger.warning("画像キューが0件です。動画の背景は全編無地になります")
+    thumbnail_credits: list[dict] = []
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -1888,9 +1896,14 @@ def prepare_video(
         credit_text,
         title_kana=song_title_kana,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=thumbnail_credits,
     )
     if thumbnail is not None:
-        cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
+        show_end = thumbnail_show_end(project)
+        cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
+        if show_end > 0:
+            cues[0].credits = tuple(thumbnail_credits)
+        credits = credits_for_cues(cues)
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
@@ -2043,6 +2056,7 @@ def make_video(
     # 曲名の空耳変換つきサムネ(thumbnail.png)。前奏区間に出すほか、SNS投稿用に
     # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)。
     # song_title_kana は曲名の読み(分かっていれば変換入力に使う)
+    thumbnail_credits: list[dict] = []
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -2053,9 +2067,14 @@ def make_video(
         credit_text,
         title_kana=song_title_kana,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=thumbnail_credits,
     )
     if thumbnail is not None:
-        cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
+        show_end = thumbnail_show_end(project)
+        cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
+        if show_end > 0:
+            cues[0].credits = tuple(thumbnail_credits)
+        credits = credits_for_cues(cues)
     # 間奏の「間奏(X秒)」・後奏のエンドロールを、歌唱フレームの隙間に差し込む
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,

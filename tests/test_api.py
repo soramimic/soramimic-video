@@ -1249,40 +1249,16 @@ def test_config_has_wordlist_layouts(client):
 def test_config_has_vtuber_image_policy(client):
     conf = client.get("/api/config").json()
     assert "youtuber" not in conf["wordlist_image_policies"]
-    assert conf["wordlist_image_policies"]["vtuber"] == {
-        "usage": "noncommercial_fanwork",
-        "terms": "https://hololivepro.com/terms/",
-        "terms_pages": [
-            {
-                "url": "https://hololivepro.com/terms/",
-                "label": "ホロライブプロダクション二次創作ガイドライン",
-            },
-            {
-                "url": "https://www.anycolor.co.jp/guidelines/",
-                "label": "ANYCOLOR二次創作ガイドライン",
-            },
-            {
-                "url": "https://vhs-city.com/aogirihighschool/guidelines/fanfic",
-                "label": "あおぎり高校二次創作ガイドライン",
-            },
-            {
-                "url": "https://realize-pro.com/guideline/",
-                "label": "りあぷろ二次創作ガイドライン",
-            },
-            {
-                "url": "https://sugu310.fanbox.cc/posts/2568555",
-                "label": "sugu310.fanbox.cc 二次創作ガイドライン",
-            },
-            {
-                "url": "https://lit.link/chinatsuvtuber",
-                "label": "lit.link 二次創作ガイドライン",
-            },
-            {
-                "url": "https://lit.link/uyunyqn",
-                "label": "lit.link 二次創作ガイドライン",
-            },
-        ],
-    }
+    policy = conf["wordlist_image_policies"]["vtuber"]
+    assert policy["usage"] == "noncommercial_fanwork"
+    assert policy["terms"] == "https://hololivepro.com/terms/"
+    by_url = {term["url"]: term for term in policy["terms_pages"]}
+    assert len(by_url) == len(policy["terms_pages"])
+    assert by_url["https://hololivepro.com/terms/"]["people"]
+    fsp = by_url["https://firststage-pro.com/guideline/"]
+    assert "FIRST STAGE PRODUCTION" in fsp["label"]
+    assert len(fsp["people"]) == 26
+
 
 
 @pytest.mark.parametrize(("name", "label"), [("youtuber", "YouTuber"), ("vtuber", "VTuber")])
@@ -2531,3 +2507,40 @@ def test_index_html_stage_chips_match_the_step_count():
     assert "li.hidden = !plan.includes(name) && !doneNames.has(name);" in body
     # 枠内のバーの分母も同じ数え方にそろえる
     assert "const total = stagePlan(job).length || 6;" in html
+
+
+def test_job_credits_download_and_missing_history(client):
+    from soramimic_video.credits import write_credit_files
+
+    job_id = submit(client, wordlist="stations")
+    body = wait_done(client, job_id)
+    url = body["credits_url"]
+    assert client.get(url).status_code == 404
+    job = client.app.state.manager.jobs[job_id]
+    write_credit_files([{"original": "素材", "image_page": "https://youtu.be/a?t=42",
+                         "image_terms_page": "https://example.com/terms",
+                         "image_credit": "非公式"}],
+                       job.dir / "video")
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json()["items"][0]["image_credit"] == "非公式"
+    response = client.get(url, params={"download": "true"})
+    assert response.status_code == 200
+    assert 'filename="credits.md"' in response.headers["content-disposition"]
+    assert "https://youtu.be/a?t=42" in response.text
+    assert "https://example.com/terms" in response.text
+    job.status = "running"
+    assert client.get(url).status_code == 409
+
+
+def test_image_sources_restricts_paths_and_preserves_fsp_metadata(client):
+    for name in ["../vtuber", "/etc/passwd", "vtuber.csv"]:
+        assert client.get("/api/image-sources", params={"wordlist": name}).status_code == 404
+    response = client.get("/api/image-sources", params={"wordlist": "vtuber"})
+    assert response.status_code == 200
+    rows = response.json()
+    fsp = [row for row in rows if row["image_terms_page"] == "https://firststage-pro.com/guideline/"]
+    assert len(fsp) == 26
+    assert all(row["image"] and row["image_page"] and row["image_credit"] for row in fsp)
+    assert all(row["image_usage"] == "noncommercial_fanwork" for row in fsp)
