@@ -91,3 +91,26 @@ def test_guidelines_tolerate_an_empty_catalog(client):
     assert response.status_code == 200
     assert "利用ガイドライン" in response.text
     assert '<ul class="guidelines">' not in response.text
+
+
+def test_search_matches_people_and_keeps_exact_urls(client):
+    browser, policies = client
+    policies["people"] = {"terms_pages": [
+        {"url": "https://note.com/a/terms", "label": "活動名A 利用ガイドライン",
+         "people": ["活動名A", "A別名"]},
+        {"url": "https://note.com/b/terms", "label": "活動名B 利用ガイドライン",
+         "people": ["活動名B"]},
+        {"url": "https://note.com/a/terms/en", "label": "活動名A English",
+         "people": ["活動名A"]},
+    ]}
+    response = browser.get("/guidelines", params={"wordlist": "people", "q": "活動名A"})
+    parser = Links()
+    parser.feed(response.text)
+    urls = [item["href"] for item in parser.links]
+    assert "https://note.com/a/terms" in urls
+    assert "https://note.com/a/terms/en" in urls
+    assert "https://note.com/b/terms" not in urls
+    assert "A別名" in response.text
+    response = browser.get("/guidelines", params={"wordlist": "people", "q": "該当なし"})
+    assert "該当する規約はありません" in response.text
+    assert "共通規約" not in response.text

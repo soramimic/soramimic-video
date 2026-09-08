@@ -661,3 +661,24 @@ def test_thumbnail_json_is_not_a_selectable_frame_layout():
     assert "thumbnail" not in builtin_layout_names()
     with pytest.raises(FileNotFoundError):
         load_layout("thumbnail")
+
+
+@pytest.mark.parametrize("style, expected", [("fullbleed", ["A", "B"]), ("side", ["A"])])
+def test_thumbnail_reports_only_images_used_in_its_style(tmp_path, monkeypatch, style, expected):
+    rows = [{"original": name, "image": f"https://example.com/{name}.png",
+             "image_page": f"https://example.com/{name}", "image_credit": f"非公式 {name}",
+             "image_terms_page": "https://example.com/terms"} for name in ("A", "B")]
+    source = tmp_path / "image.png"
+    Image.new("RGB", (40, 40), "red").save(source)
+    monkeypatch.setattr(thumb_mod, "title_paraphrase", lambda *args: [
+        ({"surface": row["original"]}, row) for row in rows
+    ])
+    monkeypatch.setattr(thumb_mod, "_word_image", lambda row, *args: (source, row["image_credit"]))
+    used = []
+    result = thumb_mod.build_thumbnail(
+        tmp_path / "thumb.png", "曲", "stations", image_cache=tmp_path,
+        style=style, used_images=used, width=320, height=180,
+    )
+    assert result.is_file()
+    assert [row["original"] for row in used] == expected
+    assert all(row["image_page"] and row["image_terms_page"] for row in used)

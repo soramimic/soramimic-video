@@ -2010,3 +2010,11 @@ def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
     assert "markEditorSeed(text);" in body
     # 前の曲で取り込んだ替え歌JSONは外す
     assert "clearEditorFile();" in body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_image_credits_interactions():
+    subprocess.run(
+        ["node", "tests/image-credits.mjs"], cwd=INDEX.parents[3],
+        check=True, text=True, capture_output=True,
+    )

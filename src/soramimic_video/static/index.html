@@ -189,6 +189,22 @@
   .stages li.done { color: var(--text); background: #16a34a33; border-color: #16a34a55; }
   .stages li.now { color: var(--text); background: #2563eb33; border-color: #2563eb55; animation: pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity: .5; } }
+  .image-sources { overflow-wrap: anywhere; min-width: 0; }
+  .image-sources input, .image-sources textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+  .image-sources input[type="search"] { min-height: 44px; padding: .6rem .75rem;
+    border: 1px solid var(--border); border-radius: 8px; font: inherit;
+    color: var(--text); background: var(--panel); }
+  .image-sources textarea { font-size: 1rem; }
+  .image-sources label { display: block; margin: .8rem 0; }
+  .image-source-card { border-top: 1px solid var(--border); padding: .8rem 0; }
+  .image-source-card h3, .image-source-card p { margin: .4rem 0; }
+  .image-source-card a { overflow-wrap: anywhere; }
+  .image-source-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .image-source-actions button { max-width: 100%; white-space: normal; }
+  #image-sources-dialog { width: min(44rem, calc(100% - 2rem)); max-height: 85dvh;
+    box-sizing: border-box; overflow: auto; color: var(--text); background: var(--panel, var(--bg));
+    border: 1px solid var(--border); border-radius: 12px; padding: 1rem; }
+  #image-sources-dialog::backdrop { background: #0008; }
   #result video { width: 100%; border-radius: 8px; margin-top: .5rem; }
   .error { color: var(--danger); white-space: pre-wrap; }
   pre {
@@ -706,6 +722,7 @@
   <div class="custom-wordlist-actions" id="custom-wordlist-actions">
     <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
   </div>
+  <button type="button" id="browse-image-sources" class="btn-sm">人物・素材の出典を確認</button>
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
     <p class="hint">動画の内容に応じて、<a id="builder-fanwork-guidelines" href="/guidelines"
       target="_blank" rel="noopener noreferrer">利用ガイドライン</a>をお守りください。</p>
@@ -1134,6 +1151,9 @@
           <button type="button" id="le-cue-next">次 ▶</button>
           <span class="hint" id="le-cue-hint">editor JSONの変換結果で表示中(動画のキュー順)</span>
         </div>
+        <details class="image-sources"><summary>表示中の素材の出典・規約</summary>
+          <div id="le-image-source"></div>
+        </details>
         <div id="le-canvas">
           <div id="le-guide-v" class="le-guide" hidden></div>
           <div id="le-guide-h" class="le-guide" hidden></div>
@@ -1161,6 +1181,12 @@
   </div>
 </div>
 
+<dialog id="image-sources-dialog" aria-labelledby="image-sources-title">
+  <form method="dialog"><button type="submit" class="btn-sm">閉じる</button></form>
+  <h2 id="image-sources-title">出典・クレジット</h2>
+  <div id="image-sources-content" class="image-sources"></div>
+</dialog>
+<script src="/image-credits.js"></script>
 <script src="/custom-wordlists.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -1941,6 +1967,11 @@ function historyCard(job, index) {
     }
     const download = historyButton("ダウンロード", "history-download");
     download.addEventListener("click", () => downloadHistoryResult(job));
+    if (job.result_kind !== "audio") {
+      const sources = historyButton("出典・クレジット", "history-sources");
+      sources.addEventListener("click", () => openImageSources(job));
+      actions.appendChild(sources);
+    }
     actions.appendChild(download);
     copy.appendChild(actions);
   }
@@ -2311,6 +2342,48 @@ async function poll(id, seq = pollSeq) {
     finish();
   }
 }
+
+let imageSourcesSeq = 0;
+async function openImageSources(job = null) {
+  const seq = ++imageSourcesSeq;
+  const dialog = $("image-sources-dialog");
+  const content = $("image-sources-content");
+  $("image-sources-title").textContent = job
+    ? "この動画の出典・クレジット" : "選択リスト全体の人物・素材";
+  content.textContent = "読み込み中…";
+  if (!dialog.open) dialog.showModal();
+  try {
+    const name = currentWordlistName();
+    if (!job && !name) throw new Error("表示中の素材の出典はレイアウト確認画面で確認できます。");
+    const url = job ? (job.credits_url || `/api/jobs/${encodeURIComponent(job.id)}/credits`)
+      : "/api/image-sources?" + new URLSearchParams({wordlist: name});
+    const res = await fetch(url, {headers: headers(), cache: "no-store"});
+    if (!res.ok) throw new Error(res.status === 404
+      ? "この動画の出典情報は保存されていません。再生成した動画では確認できます。"
+      : "出典情報を取得できませんでした。もう一度お試しください。");
+    const data = await res.json();
+    if (seq !== imageSourcesSeq) return;
+    ImageCredits.render(content, job ? data.items : data, {
+      scope: job ? "この動画の使用素材" : "選択リスト全体の素材",
+      text: job ? data.text : null,
+      download: job ? async () => {
+        const response = await fetch(url + "?download=true", {headers: headers(), cache: "no-store"});
+        if (!response.ok) throw new Error("保存に失敗しました");
+        const blobUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = "credits.md";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+      } : null,
+    });
+  } catch (error) {
+    if (seq === imageSourcesSeq) content.textContent = error.message;
+  }
+}
+$("browse-image-sources").addEventListener("click", () => openImageSources());
 
 // ---- 完成した動画を保存・共有する ----
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
@@ -3858,7 +3931,8 @@ for (const type of ["change", "input"]) {
   document.addEventListener(type, (ev) => {
     const t = ev.target;
     if (t instanceof Node
-        && ($("builder-figure").contains(t) || $("builder-share").contains(t))) return;
+        && ($("builder-figure").contains(t) || $("builder-share").contains(t)
+            || $("image-sources-dialog")?.contains(t))) return;
     releaseBuilderDone();
   }, true);
 }
@@ -3877,6 +3951,12 @@ function showBuilderVideo(job) {
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
+  const sourceButton = document.createElement("button");
+  sourceButton.type = "button";
+  sourceButton.className = "btn-sm";
+  sourceButton.textContent = "この動画の出典・クレジット";
+  sourceButton.addEventListener("click", () => openImageSources(job));
+  $("builder-share").append(sourceButton);
   bindShare(job.video_url);
   prepareVideoShare(job.video_url, video);
   setBuilderState("done");
@@ -4875,6 +4955,12 @@ function leSelectionOverlay(box, index) {
 }
 
 function leRender() {
+  const source = $("le-image-source");
+  if (source && window.ImageCredits) {
+    const row = leSampleData();
+    source.replaceChildren(row.image ? ImageCredits.itemCard(row)
+      : document.createTextNode("表示中の素材に画像情報はありません。"));
+  }
   const canvas = $("le-canvas");
   canvas.querySelectorAll(".le-box").forEach((b) => b.remove());
   canvas.style.background = (leLayout && leLayout.background) || "#000";

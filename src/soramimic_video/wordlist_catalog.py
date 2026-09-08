@@ -14,6 +14,9 @@ from urllib.parse import urlsplit
 
 WORDLIST_CATALOG_PATH = Path(__file__).resolve().parent / "wordlist_catalog.json"
 GUIDELINE_LABELS = {
+    "https://firststage-pro.com/guideline/": (
+        "FIRST STAGE PRODUCTION（いちプロ）二次創作ガイドライン"
+    ),
     "https://hololivepro.com/terms/": "ホロライブプロダクション二次創作ガイドライン",
     "https://www.anycolor.co.jp/guidelines/": "ANYCOLOR二次創作ガイドライン",
     "https://realize-pro.com/guideline/": "りあぷろ二次創作ガイドライン",
@@ -56,25 +59,44 @@ def _guideline_label(url: str) -> str:
 
 def _safe_terms_url(value: object) -> str:
     url = str(value or "").strip()
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return url
 
 
-def _csv_terms_pages(csv_path: Path, usage: str) -> list[str]:
-    """Return distinct terms URLs for restricted rows, preserving CSV order."""
+def _csv_terms_pages(csv_path: Path, usage: str) -> list[dict[str, Any]]:
+    """Group exact URLs with their organizations and people in CSV order."""
+    groups: dict[str, dict[str, Any]] = {}
     try:
         with csv_path.open(encoding="utf-8", newline="") as handle:
-            rows = csv.DictReader(handle)
-            urls = [
-                _safe_terms_url(row.get("image_terms_page"))
-                for row in rows
-                if row.get("image_usage") == usage
-            ]
+            for row in csv.DictReader(handle):
+                if row.get("image_usage") != usage:
+                    continue
+                url = _safe_terms_url(row.get("image_terms_page"))
+                if not url:
+                    continue
+                group = groups.setdefault(url, {"url": url, "label": _guideline_label(url)})
+                for field, value in (("people", row.get("original") or row.get("surface")),
+                                     ("organizations", row.get("org"))):
+                    value = str(value or "").strip()
+                    if value and value != "NA":
+                        values = group.setdefault(field, [])
+                        if value not in values:
+                            values.append(value)
     except (OSError, UnicodeError, csv.Error):
         return []
-    return list(dict.fromkeys(url for url in urls if url))
+    for group in groups.values():
+        if group["url"] not in GUIDELINE_LABELS:
+            names = list(group.get("organizations", []))
+            if len(group.get("people", [])) == 1 or not names:
+                names.extend(group.get("people", []))
+            if names:
+                group["label"] = " / ".join(names) + " 利用ガイドライン"
+    return list(groups.values())
 
 
 def load_wordlist_image_policies(
@@ -89,12 +111,10 @@ def load_wordlist_image_policies(
             continue
         policy = dict(source)
         usage = str(policy.get("usage") or "")
-        urls = _csv_terms_pages(wordlists_dir / f"{name}.csv", usage) if usage else []
-        if not urls:
+        terms = _csv_terms_pages(wordlists_dir / f"{name}.csv", usage) if usage else []
+        if not terms:
             fallback = _safe_terms_url(policy.get("terms"))
-            urls = [fallback] if fallback else []
-        policy["terms_pages"] = [
-            {"url": url, "label": _guideline_label(url)} for url in urls
-        ]
+            terms = [{"url": fallback, "label": _guideline_label(fallback)}] if fallback else []
+        policy["terms_pages"] = terms
         policies[name] = policy
     return policies
