@@ -63,6 +63,7 @@ from .layout import (
     APP_CREDIT,
     LAYOUTS_DIR,
     Layout,
+    app_credit_for_wordlist,
     fitted_image_box,
     parse_layout,
     render_image,
@@ -920,7 +921,7 @@ def build_thumbnail(
             width=width,
             height=height,
             style=style,
-            app_credit=app_credit,
+            app_credit=app_credit or app_credit_for_wordlist(wordlist),
             design=design,
         )
     except Exception as e:  # noqa: BLE001 - 描画失敗もジョブは落とさない

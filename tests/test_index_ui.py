@@ -1836,11 +1836,13 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
     ) + functions + textwrap.dedent(
         """
         (async () => {
-          for (const name of ["fanwork", "ordinary", "legacy", "custom"]) {
+          for (const name of [
+            "vtuber", "pokemon", "youtuber", "fanwork", "ordinary", "legacy", "custom",
+          ]) {
             selected = name;
             $("wordlist").value = name;
             updateNoncommercialFanworkNotice();
-            assert.equal($("builder-fanwork-notice").hidden, false);
+            assert.equal($("builder-fanwork-notice").hidden, name !== "vtuber");
             const guidance = new URL($("builder-fanwork-guidelines").href, "https://example.com");
             assert.equal(guidance.pathname, "/guidelines");
             assert.equal(guidance.searchParams.get("wordlist"), name);

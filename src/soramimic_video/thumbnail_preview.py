@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from .convert import resolve_convert_settings, resolve_wordlist
+from .layout import app_credit_for_wordlist
 from .thumbnail import (
     DEFAULT_STYLE,
     HEADLINE_MAX_WORDS,
@@ -107,7 +108,8 @@ def _layout_fingerprint() -> str:
         thumbnail_layout_spec(has_word=False, has_image=False),
     ]
     return json.dumps(
-        [DEFAULT_STYLE, design_fingerprint(), HEADLINE_MAX_WORDS, SIGNATURE, specs],
+        [DEFAULT_STYLE, design_fingerprint(), HEADLINE_MAX_WORDS, SIGNATURE,
+         app_credit_for_wordlist("vtuber"), specs],
         ensure_ascii=False,
         sort_keys=True,
     )

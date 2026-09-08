@@ -1884,11 +1884,13 @@ def test_build_section_cues_snaps_pages_to_beats(tmp_path: Path):
     assert credits_cue.end == 30.2
 
 
-def test_build_section_cues_appends_credits_page(tmp_path: Path):
+@pytest.mark.parametrize("wordlist", ["vtuber", "pokemon", "stations"])
+def test_build_section_cues_appends_credits_page(tmp_path: Path, wordlist):
     from soramimic_video.layout import load_layout, render_section_frame
     from soramimic_video.video import app_credit_text, build_section_cues, section_frame_data
 
     project = _endroll_project(tmp_path)
+    project.parody.wordlist = wordlist
     layout = load_layout("default")
     work = tmp_path / "v"
     got = build_section_cues(project, [_cue(0.0, 10.0)], 30.0, layout, work, 320, 180,
@@ -1900,7 +1902,7 @@ def test_build_section_cues_appends_credits_page(tmp_path: Path):
     assert got[-1].start == got[-2].end and got[-1].end == 30.0
     expected = render_section_frame(
         layout,
-        section_frame_data(project, app_credit_text("VOICEVOX:四国めたん"),
+        section_frame_data(project, app_credit_text("VOICEVOX:四国めたん", wordlist=wordlist),
                            section="credits", duration=20.0,
                            synth_credit="VOICEVOX:四国めたん",
                            original_song="赤とんぼ",
@@ -2233,3 +2235,17 @@ def test_credits_exclude_cues_covered_by_thumbnail_or_zero_duration(tmp_path):
     cues = [cue(0, 1, "隠れた画像"), cue(2, 4, "残った画像"), cue(5, 5, "表示なし")]
     kept = prepend_thumbnail_cue(cues, tmp_path / "thumbnail.png", 3)
     assert [row["original"] for row in credits_for_cues(kept)] == ["残った画像"]
+
+
+@pytest.mark.parametrize("wordlist", ["vtuber", "pokemon", "stations", "youtuber", "custom"])
+def test_fanmade_credit_is_limited_to_vtuber(tmp_path, wordlist):
+    from soramimic_video.video import app_credit_text, idle_frame_data
+
+    project = _project(tmp_path)
+    project.parody.wordlist = wordlist
+    credit = app_credit_text("VOICEVOX:四国めたん", original_song="曲", wordlist=wordlist)
+    assert ("非公式・ファンメイド" in credit) == (wordlist == "vtuber")
+    assert "VOICEVOX:四国めたん" in credit and "Original: 曲" in credit
+    assert ("非公式・ファンメイド" in idle_frame_data(project)["app_credit"]) == (
+        wordlist == "vtuber"
+    )
