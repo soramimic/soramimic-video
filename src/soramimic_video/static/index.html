@@ -722,7 +722,6 @@
   <div class="custom-wordlist-actions" id="custom-wordlist-actions">
     <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
   </div>
-  <button type="button" id="browse-image-sources" class="btn-sm">人物・素材の出典を確認</button>
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
     <p class="hint">動画の内容に応じて、<a id="builder-fanwork-guidelines" href="/guidelines"
       target="_blank" rel="noopener noreferrer">利用ガイドライン</a>をお守りください。</p>
@@ -2383,7 +2382,6 @@ async function openImageSources(job = null) {
     if (seq === imageSourcesSeq) content.textContent = error.message;
   }
 }
-$("browse-image-sources").addEventListener("click", () => openImageSources());
 
 // ---- 完成した動画を保存・共有する ----
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
