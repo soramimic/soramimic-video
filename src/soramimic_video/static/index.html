@@ -722,9 +722,9 @@
   <div class="custom-wordlist-actions" id="custom-wordlist-actions">
     <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
   </div>
-  <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
-    <p class="hint">動画の内容に応じて、<a id="builder-fanwork-guidelines" href="/guidelines"
-      target="_blank" rel="noopener noreferrer">利用ガイドライン</a>をお守りください。</p>
+  <div class="fanwork-notice" id="builder-fanwork-notice">
+    <p class="hint">本アプリは非公式であり、各作品・団体・権利者とは関係ありません。動画の内容に応じて、各権利者の<a id="builder-fanwork-guidelines" href="/guidelines"
+      target="_blank" rel="noopener noreferrer">利用ガイドライン</a>を守ってください。</p>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
@@ -3830,8 +3830,6 @@ function usesNoncommercialFanworkImages() {
 }
 
 function updateNoncommercialFanworkNotice() {
-  const panel = $("builder-fanwork-notice");
-  panel.hidden = !usesNoncommercialFanworkImages();
   $("builder-fanwork-guidelines").href = "/guidelines?"
     + new URLSearchParams({ wordlist: currentWordlistName() });
 }
