@@ -1839,9 +1839,8 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
           for (const name of ["fanwork", "ordinary", "legacy", "custom"]) {
             selected = name;
             $("wordlist").value = name;
-            const restricted = name === "fanwork" || name === "legacy";
             updateNoncommercialFanworkNotice();
-            assert.equal($("builder-fanwork-notice").hidden, !restricted);
+            assert.equal($("builder-fanwork-notice").hidden, false);
             const guidance = new URL($("builder-fanwork-guidelines").href, "https://example.com");
             assert.equal(guidance.pathname, "/guidelines");
             assert.equal(guidance.searchParams.get("wordlist"), name);
