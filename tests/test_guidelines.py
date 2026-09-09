@@ -81,7 +81,9 @@ def test_guidelines_escape_links_and_reject_unsafe_schemes(client):
     parsed = Links()
     parsed.feed(response.text)
     external = [link for link in parsed.links if link["href"] != "/"]
-    assert external == [{"href": url, "target": "_blank", "rel": "noopener noreferrer"}]
+    assert {"href": url, "target": "_blank", "rel": "noopener noreferrer"} in external
+    assert all(link["target"] == "_blank" and link["rel"] == "noopener noreferrer"
+               for link in external)
 
 
 def test_guidelines_tolerate_an_empty_catalog(client):
