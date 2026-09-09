@@ -275,13 +275,16 @@ def cmd_audit_image_links(args: argparse.Namespace) -> int:
     try:
         report = audit_links(
             Path(args.wordlists_dir), Path(args.report_dir), scope=args.scope,
-            workers=args.workers, timeout=args.timeout, delay=args.delay,
+            max_urls=args.max_urls, workers=args.workers, timeout=args.timeout, delay=args.delay,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"画像URL検査失敗: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({"total": report["total"], **report["counts"]}, ensure_ascii=False))
-    return 1 if report["counts"]["ok"] != report["total"] else 0
+    print(json.dumps({
+        "total": report["total"], **report["counts"],
+        "coverage": report["coverage"], "known_findings": report["known_findings"],
+    }, ensure_ascii=False))
+    return 1 if report["known_findings"] else 0
 
 
 def cmd_sync_assets(args: argparse.Namespace) -> int:
@@ -681,7 +684,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("audit-image-links", help="画像URLの疎通を検査しJSONレポートを保存する")
     p.add_argument("--wordlists-dir", default="external/soramimic-wordlists")
     p.add_argument("--report-dir", required=True)
-    p.add_argument("--scope", choices=("all", "external-fanwork"), default="external-fanwork")
+    p.add_argument("--scope", choices=("all", "external-fanwork"), default="all")
+    p.add_argument(
+        "--max-urls", type=int, default=0,
+        help="1回の検査上限。未検査・古い結果から巡回する(0=全件)",
+    )
     p.add_argument("--workers", type=int, choices=(1, 2), default=2)
     p.add_argument("--timeout", type=float, default=15)
     p.add_argument("--delay", type=float, default=0.5)

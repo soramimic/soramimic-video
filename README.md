@@ -61,18 +61,25 @@ uv run soramimic-video edit-timing --project work/song
 ## 画像URLの検査
 
 ```sh
-uv run soramimic-video audit-image-links --report-dir work/image-link-audit
+uv run soramimic-video audit-image-links --report-dir work/image-link-audit --max-urls 2500
 ```
 
-既定では、非営利ファン活動向け画像のうち外部サイト配信のURLを検査します。
-`--scope all` は単語リスト内の全HTTP(S)画像URLを対象にします。同一URLはまとめて検査し、
-該当する名前、HTTPステータス、検査日時、連続失敗回数を `latest.json` に保存します。
-直近30回の結果も日時付きJSONで保持します。
+既定では、全単語リストのHTTP(S)画像URLを対象にします。同じURLはまとめて検査します。
+`--max-urls` で1回の件数を制限すると、未検査のURL、最後の検査が古いURLの順に巡回します。
+同じ保存先で繰り返し実行すれば、実行日が空いても保存済みの結果から再開できます。
+上限を省略するか0にすると一度に全件を検査します。
+
+`latest.json` には、検査済みの全URLについて名前、HTTPステータス、検査日時、連続失敗回数を
+保存します。`coverage` で全URL数と未検査件数、`known_findings` で未解消の検出件数を確認できます。
+当日検査しなかったURLの問題も保持し、次の検査で正常になれば解消します。
+日時付きJSONにはその回に検査した結果だけを保存し、直近30回分を保持します。
+`--scope external-fanwork` は外部配信の非営利ファン活動向け画像だけに絞る指定です。
 
 404・410は `broken`、空の応答やHTMLは `invalid`、アクセス制限やタイムアウトは
 `unavailable` として区別し、異常は一度再試行します。検査は画像URLの疎通確認で、
 画像全体の破損検査やURLの自動修正は行いません。終了コードは正常0、検出あり1、
-実行失敗2です。定期実行時は終了コードとレポートの検査日時を確認してください。
+実行失敗2です。終了コード0でも未検査URLが残ることがあるため、定期実行時は
+終了コードに加えて `coverage` と検査日時を確認してください。
 
 ## Web UI
 
