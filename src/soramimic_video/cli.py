@@ -305,6 +305,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
             download_workers=args.download_workers,
             source_manifest_url=args.source_manifest_url,
             allow_noncommercial_fanwork=args.noncommercial_fanwork,
+            allow_builtin_fanwork=args.builtin_fanwork,
         )
     except (OSError, ValueError, RuntimeError) as e:
         print(f"asset sync失敗(last-goodを維持): {e}", file=sys.stderr)
@@ -699,10 +700,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="画像取得の並列数(1または2、既定2。長時間のCommons一括取得は1を推奨)",
     )
     p.add_argument("--dry-run", action="store_true", help="取得せず差分件数だけ表示する")
-    p.add_argument(
+    fanwork = p.add_mutually_exclusive_group()
+    fanwork.add_argument(
         "--noncommercial-fanwork",
         action="store_true",
         help="非営利ファン活動に限定された画像も同期する",
+    )
+    fanwork.add_argument(
+        "--builtin-fanwork",
+        action="store_true",
+        help="非営利ファン画像のうち組み込み配布URLだけを追加同期する",
     )
     p.set_defaults(func=cmd_sync_assets)
 

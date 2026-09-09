@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from soramimic_video import asset_store, image_credit, prewarm, video
+from soramimic_video import asset_store, cli, image_credit, prewarm, video
 
 
 def _png(path: Path, color: str = "red") -> None:
@@ -121,6 +121,77 @@ def test_sync_uses_local_raw_github_image_and_runtime_is_offline(tmp_path, monke
     assert video.download_image(url, tmp_path / "job-cache") == store / entry["local_path"]
     info = image_credit.fetch_image_credit(url, "", tmp_path / "job-cache")
     assert info["credit_text"] == "local credit"
+
+
+def test_builtin_fanwork_sync_restores_images_without_external_fanwork(tmp_path, monkeypatch):
+    wordlists = tmp_path / "wordlists"
+    prefix = asset_store.BUILTIN_ASSET_URL_PREFIXES[0]
+    ordinary, restored, added = [prefix + f"cards/{name}.png" for name in ("free", "old", "new")]
+    for name in ("free", "old", "new"):
+        _png(wordlists / "images" / "cards" / f"{name}.png")
+    csv_path = wordlists / "vtuber.csv"
+    csv_path.write_text(
+        "image,image_page,image_credit,image_usage\n"
+        f"{ordinary},,free credit,\n"
+        f"{restored},,old credit,noncommercial_fanwork\n"
+        f"{added},,new credit,noncommercial_fanwork\n"
+        "https://example.com/unavailable.png,,external credit,noncommercial_fanwork\n"
+        f"{prefix}cards/unsupported.png,,,unsupported\n",
+    )
+    store = tmp_path / "store"
+    _png(store / "images" / "old.png")
+    old_manifest = {"version": 1, "assets": {restored: {
+        "status": "available", "local_path": "images/old.png", "orphaned_at": "before",
+        "credit": {"status": "known", "credit_text": "old credit"},
+    }}}
+    (store / "manifest.json").write_text(json.dumps(old_manifest))
+    external = "https://example.com/unavailable.png"
+    old_manifest["assets"][external] = {"status": "failed"}
+    (store / "manifest.pending.json").write_text(json.dumps(old_manifest))
+    monkeypatch.setattr(
+        prewarm, "download_image",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("external download")),
+    )
+    args = cli.build_parser().parse_args([
+        "sync-assets", "--wordlists-dir", str(wordlists), "--asset-store", str(store),
+        "--builtin-fanwork",
+    ])
+
+    assert args.func(args) == 0
+    manifest = asset_store.load_manifest(store)
+    assert {url for url, entry in manifest["assets"].items() if "orphaned_at" not in entry} == {
+        ordinary, restored, added,
+    }
+    assert external not in manifest["assets"]
+    assert "orphaned_at" not in manifest["assets"][restored]
+    for url in (ordinary, restored, added):
+        managed, path = asset_store.local_asset(url, store)
+        assert managed and path is not None and video.image_is_visible(path)
+    assert manifest["assets"][added]["credit"]["credit_text"] == "new credit"
+    assert args.func(args) == 0
+    assert "orphaned_at" not in asset_store.load_manifest(store)["assets"][restored]
+
+
+def test_builtin_fanwork_scope_keeps_usage_and_url_boundaries(tmp_path):
+    raw = asset_store.BUILTIN_ASSET_URL_PREFIXES[0] + "a.png"
+    release = asset_store.BUILTIN_ASSET_URL_PREFIXES[1] + "v1/a.png"
+    ordinary = "https://example.com/free.png"
+    external = "https://example.com/fan.png"
+    lookalike = raw.replace("/images/", "/images-other/")
+    unsupported = asset_store.BUILTIN_ASSET_URL_PREFIXES[0] + "unsupported.png"
+    path = tmp_path / "words.csv"
+    path.write_text(
+        "image,image_usage\n" + f"{ordinary},\n"
+        + "".join(f"{url},noncommercial_fanwork\n" for url in (raw, release, external, lookalike))
+        + f"{unsupported},unsupported\n",
+    )
+    assert set(prewarm._collect_rows([path])) == {ordinary}
+    assert set(prewarm._collect_rows([path], allow_builtin_fanwork=True)) == {
+        ordinary, raw, release,
+    }
+    assert set(prewarm._collect_rows([path], allow_noncommercial_fanwork=True)) == {
+        ordinary, raw, release, external, lookalike,
+    }
 
 
 def test_sync_batches_commons_and_distinguishes_no_attribution(tmp_path, monkeypatch):

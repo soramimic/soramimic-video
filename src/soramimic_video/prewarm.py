@@ -32,7 +32,7 @@ import requests
 from PIL import Image, UnidentifiedImageError
 
 from . import runproc
-from .asset_store import MANIFEST_NAME, PENDING_MANIFEST_NAME, load_manifest
+from .asset_store import MANIFEST_NAME, PENDING_MANIFEST_NAME, is_builtin_asset_url, load_manifest
 from .image_credit import (
     commons_file_title,
     fetch_commons_assets_batch,
@@ -102,7 +102,8 @@ def _credit_cached(url: str, cache_dir: Path) -> bool:
 
 
 def _collect_rows(
-    csv_paths: list[Path], *, allow_noncommercial_fanwork: bool = False
+    csv_paths: list[Path], *, allow_noncommercial_fanwork: bool = False,
+    allow_builtin_fanwork: bool = False,
 ) -> dict[str, dict]:
     """CSV群から http(s) の image 列を持つ行をユニークURLごとに集める(初出優先)。"""
     rows: dict[str, dict] = {}
@@ -111,13 +112,16 @@ def _collect_rows(
             for row in csv.DictReader(f):
                 from .image_usage import image_usage_allowed
 
-                if not image_usage_allowed(
-                    row,
-                    allow_noncommercial_fanwork=allow_noncommercial_fanwork,
-                ):
-                    continue
                 url = (row.get("image") or "").strip()
                 if not url.startswith(("http://", "https://")):
+                    continue
+                if not image_usage_allowed(
+                    row,
+                    allow_noncommercial_fanwork=(
+                        allow_noncommercial_fanwork
+                        or (allow_builtin_fanwork and is_builtin_asset_url(url))
+                    ),
+                ):
                     continue
                 existing = rows.setdefault(url, row)
                 # Repeated images are common. Preserve the first row, but do not lose
@@ -449,6 +453,7 @@ def sync_asset_store(
     mode: str = "manifest",
     source_manifest_url: str = SOURCE_MANIFEST_URL,
     allow_noncommercial_fanwork: bool = False,
+    allow_builtin_fanwork: bool = False,
 ) -> dict[str, int]:
     """Synchronize all built-in wordlist assets into an atomic persistent manifest."""
     if mode not in {"manifest", "full"}:
@@ -458,6 +463,7 @@ def sync_asset_store(
     rows = _collect_rows(
         csv_paths,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        allow_builtin_fanwork=allow_builtin_fanwork,
     )
     skip_revalidate_urls = skip_revalidate_urls or set()
     controlled_urls = {
