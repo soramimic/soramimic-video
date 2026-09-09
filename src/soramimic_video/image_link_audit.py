@@ -83,16 +83,27 @@ def probe(url: str, timeout: float) -> dict:
 
 
 def audit_links(
-    wordlists: Path, report_dir: Path, *, scope: str = "external-fanwork",
-    workers: int = 2, timeout: float = 15, delay: float = 0.5,
+    wordlists: Path, report_dir: Path, *, scope: str = "all",
+    max_urls: int = 0, workers: int = 2, timeout: float = 15, delay: float = 0.5,
 ) -> dict:
     if workers not in {1, 2} or not 0 < timeout <= 60 or not 0 <= delay <= 60:
         raise ValueError("workers=1..2、timeout=0..60(0を除く)、delay=0..60が必要です")
+    if max_urls < 0:
+        raise ValueError("max_urlsは0以上が必要です")
     links = collect_links(wordlists, scope)
     with _store_lock(report_dir):
         latest = report_dir / "latest.json"
         previous = json.loads(latest.read_text(encoding="utf-8")) if latest.exists() else {}
         old = {row["url"]: row for row in previous.get("results", [])}
+        run_number = previous.get("run_number", 0) + 1
+        # Rotate by persisted run order, even when a scheduled day is missed or
+        # the wall clock moves backwards. Newly added URLs are checked first.
+        selected = sorted(links, key=lambda url: (
+            old.get(url, {}).get("last_checked_run", 0),
+            old.get(url, {}).get("checked_at", ""), url,
+        ))
+        if max_urls:
+            selected = selected[:max_urls]
         started = datetime.now(UTC).isoformat()
 
         def check(url: str) -> dict:
@@ -107,24 +118,46 @@ def audit_links(
             return {
                 **result, "url": url, "references": links[url],
                 "checked_at": datetime.now(UTC).isoformat(), "consecutive_failures": failures,
+                "last_checked_run": run_number,
             }
 
         results = []
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for index, result in enumerate(pool.map(check, sorted(links)), 1):
+            for index, result in enumerate(pool.map(check, selected), 1):
                 results.append(result)
                 if index % 100 == 0:
-                    logger.info("画像URL検査: %d / %d", index, len(links))
+                    logger.info("画像URL検査: %d / %d", index, len(selected))
         counts = {status: 0 for status in ("ok", "broken", "invalid", "unavailable")}
         counts.update(Counter(row["status"] for row in results))
+        current = {
+            url: {**row, "references": links[url]}
+            for url, row in old.items() if url in links
+        }
+        current.update({row["url"]: row for row in results})
+        list_coverage: dict[str, dict[str, int]] = {}
+        for url, references in links.items():
+            for name in {ref["wordlist"] for ref in references}:
+                item = list_coverage.setdefault(name, {"total_urls": 0, "checked_urls": 0})
+                item["total_urls"] += 1
+                item["checked_urls"] += url in current
         report = {
-            "version": 1, "scope": scope, "started_at": started,
+            "version": 2, "run_number": run_number, "scope": scope, "started_at": started,
             "finished_at": datetime.now(UTC).isoformat(), "total": len(results),
-            "counts": counts, "results": results,
+            "counts": counts, "checked_urls": selected,
+            "coverage": {
+                "total_urls": len(links), "checked_urls": len(current),
+                "unchecked_urls": len(links) - len(current),
+                "oldest_checked_at": min(row["checked_at"] for row in current.values()),
+                "wordlists": list_coverage,
+            },
+            "known_findings": sum(row["status"] != "ok" for row in current.values()),
+            "results": [current[url] for url in sorted(current)],
         }
         # A failed/interrupted run leaves the previous completed report in place.
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        _atomic_json(report_dir / f"{stamp}.json", report)
+        # Keep the aggregate as the atomic resume point. History files contain
+        # only this run's results so bounded runs also bound archive growth.
+        _atomic_json(report_dir / f"{stamp}.json", {**report, "results": results})
         _atomic_json(latest, report)
         for expired in sorted(report_dir.glob("[0-9]*.json"))[:-30]:
             expired.unlink()

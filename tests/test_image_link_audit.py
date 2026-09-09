@@ -148,3 +148,77 @@ def test_interruption_and_concurrent_run_preserve_report(tmp_path, monkeypatch):
     assert latest.read_text() == '{"results": []}'
     with audit._store_lock(reports), pytest.raises(RuntimeError, match="実行中"):
         audit.audit_links(lists, reports, scope="all")
+
+
+def test_bounded_runs_cover_every_list_and_keep_findings(tmp_path, monkeypatch):
+    lists = tmp_path / "lists"
+    lists.mkdir()
+    reports = tmp_path / "reports"
+    urls = [f"https://example.com/{n}.png" for n in range(6)]
+    for name, subset in [("plant", urls[:3]), ("stations", urls[2:])]:
+        write_list(lists / f"{name}.csv", [
+            {"original": url, "image": url} for url in subset
+        ])
+    calls = []
+    broken = {urls[0]}
+
+    def check(url, timeout):
+        calls.append(url)
+        return {"status": "broken" if url in broken else "ok", "http_status": 404 if
+                url in broken else 200, "reason": "test"}
+
+    monkeypatch.setattr(audit, "probe", check)
+    monkeypatch.setattr(audit.time, "sleep", lambda _: None)
+    args = ["audit-image-links", "--wordlists-dir", str(lists),
+            "--report-dir", str(reports), "--max-urls", "2", "--delay", "0"]
+    for run in range(3):
+        assert main(args) == 1  # A finding persists on days that check different URLs.
+        report = json.loads((reports / "latest.json").read_text())
+        assert report["checked_urls"] == urls[run * 2:run * 2 + 2]
+        assert report["coverage"]["unchecked_urls"] == 4 - run * 2
+        assert report["known_findings"] == 1
+        assert len(report["results"]) == (run + 1) * 2
+    assert set(calls) == set(urls)
+    assert report["coverage"]["total_urls"] == 6
+    assert report["coverage"]["wordlists"] == {
+        "plant": {"total_urls": 3, "checked_urls": 3},
+        "stations": {"total_urls": 4, "checked_urls": 4},
+    }
+    assert report["results"][0]["consecutive_failures"] == 1
+    assert {ref["wordlist"] for row in report["results"] for ref in row["references"]} == {
+        "plant", "stations",
+    }
+    # The next run revisits the oldest results, without needing a daily date slot.
+    broken.clear()
+    assert main(args) == 0
+    report = json.loads((reports / "latest.json").read_text())
+    assert report["checked_urls"] == urls[:2]
+    assert report["coverage"]["unchecked_urls"] == 0
+    assert report["results"][0]["consecutive_failures"] == 0
+    assert report["known_findings"] == 0
+    for history in reports.glob("[0-9]*.json"):
+        assert len(json.loads(history.read_text())["results"]) == 2
+
+
+def test_new_and_removed_urls_and_old_report_migration(tmp_path, monkeypatch):
+    lists = tmp_path / "lists"
+    lists.mkdir()
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    a, b, removed = (f"https://example.com/{n}.png" for n in (1, 2, 3))
+    write_list(lists / "plant.csv", [{"original": "new name", "image": a}, {"image": b}])
+    old = [{"url": url, "status": "broken", "checked_at": "2000-01-01T00:00:00Z",
+            "consecutive_failures": 2, "references": []} for url in (a, removed)]
+    (reports / "latest.json").write_text(json.dumps({"version": 1, "results": old}))
+    monkeypatch.setattr(audit, "probe", lambda *_: {"status": "ok", "reason": "test"})
+    monkeypatch.setattr(audit.time, "sleep", lambda _: None)
+    first = audit.audit_links(lists, reports, max_urls=1)
+    assert first["checked_urls"] == [b]  # New URL before the previously checked URL.
+    assert first["known_findings"] == 1  # Removed URL's finding is discarded.
+    assert first["results"][0]["references"] == [{"wordlist": "plant", "name": "new name"}]
+    second = audit.audit_links(lists, reports, max_urls=1)
+    assert second["checked_urls"] == [a]
+    assert second["results"][0]["consecutive_failures"] == 0
+    assert second["known_findings"] == 0
+    with pytest.raises(ValueError, match="max_urls"):
+        audit.audit_links(lists, reports, max_urls=-1)
