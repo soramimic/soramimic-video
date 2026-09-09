@@ -140,10 +140,14 @@ def test_builtin_fanwork_sync_restores_images_without_external_fanwork(tmp_path,
     )
     store = tmp_path / "store"
     _png(store / "images" / "old.png")
-    (store / "manifest.json").write_text(json.dumps({"assets": {restored: {
+    old_manifest = {"version": 1, "assets": {restored: {
         "status": "available", "local_path": "images/old.png", "orphaned_at": "before",
         "credit": {"status": "known", "credit_text": "old credit"},
-    }}}))
+    }}}
+    (store / "manifest.json").write_text(json.dumps(old_manifest))
+    external = "https://example.com/unavailable.png"
+    old_manifest["assets"][external] = {"status": "failed"}
+    (store / "manifest.pending.json").write_text(json.dumps(old_manifest))
     monkeypatch.setattr(
         prewarm, "download_image",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("external download")),
@@ -155,7 +159,10 @@ def test_builtin_fanwork_sync_restores_images_without_external_fanwork(tmp_path,
 
     assert args.func(args) == 0
     manifest = asset_store.load_manifest(store)
-    assert set(manifest["assets"]) == {ordinary, restored, added}
+    assert {url for url, entry in manifest["assets"].items() if "orphaned_at" not in entry} == {
+        ordinary, restored, added,
+    }
+    assert external not in manifest["assets"]
     assert "orphaned_at" not in manifest["assets"][restored]
     for url in (ordinary, restored, added):
         managed, path = asset_store.local_asset(url, store)
