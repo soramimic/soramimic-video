@@ -58,6 +58,22 @@ uv run soramimic-video edit-timing --project work/song
 各 command と option の詳細は `uv run soramimic-video --help` および各 subcommand の
 `--help` を参照してください。
 
+## 画像URLの検査
+
+```sh
+uv run soramimic-video audit-image-links --report-dir work/image-link-audit
+```
+
+既定では、非営利ファン活動向け画像のうち外部サイト配信のURLを検査します。
+`--scope all` は単語リスト内の全HTTP(S)画像URLを対象にします。同一URLはまとめて検査し、
+該当する名前、HTTPステータス、検査日時、連続失敗回数を `latest.json` に保存します。
+直近30回の結果も日時付きJSONで保持します。
+
+404・410は `broken`、空の応答やHTMLは `invalid`、アクセス制限やタイムアウトは
+`unavailable` として区別し、異常は一度再試行します。検査は画像URLの疎通確認で、
+画像全体の破損検査やURLの自動修正は行いません。終了コードは正常0、検出あり1、
+実行失敗2です。定期実行時は終了コードとレポートの検査日時を確認してください。
+
 ## Web UI
 
 ```sh
