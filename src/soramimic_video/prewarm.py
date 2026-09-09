@@ -32,7 +32,7 @@ import requests
 from PIL import Image, UnidentifiedImageError
 
 from . import runproc
-from .asset_store import MANIFEST_NAME, PENDING_MANIFEST_NAME, load_manifest
+from .asset_store import MANIFEST_NAME, PENDING_MANIFEST_NAME, is_builtin_asset_url, load_manifest
 from .image_credit import (
     commons_file_title,
     fetch_commons_assets_batch,
@@ -101,14 +101,27 @@ def _credit_cached(url: str, cache_dir: Path) -> bool:
     return (cache_dir / "credits" / f"{name}.json").exists()
 
 
-def _collect_rows(csv_paths: list[Path]) -> dict[str, dict]:
+def _collect_rows(
+    csv_paths: list[Path], *, allow_noncommercial_fanwork: bool = False,
+    allow_builtin_fanwork: bool = False,
+) -> dict[str, dict]:
     """CSV群から http(s) の image 列を持つ行をユニークURLごとに集める(初出優先)。"""
     rows: dict[str, dict] = {}
     for path in csv_paths:
         with path.open(encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
+                from .image_usage import image_usage_allowed
+
                 url = (row.get("image") or "").strip()
                 if not url.startswith(("http://", "https://")):
+                    continue
+                if not image_usage_allowed(
+                    row,
+                    allow_noncommercial_fanwork=(
+                        allow_noncommercial_fanwork
+                        or (allow_builtin_fanwork and is_builtin_asset_url(url))
+                    ),
+                ):
                     continue
                 existing = rows.setdefault(url, row)
                 # Repeated images are common. Preserve the first row, but do not lose
@@ -439,13 +452,19 @@ def sync_asset_store(
     download_workers: int = 2,
     mode: str = "manifest",
     source_manifest_url: str = SOURCE_MANIFEST_URL,
+    allow_noncommercial_fanwork: bool = False,
+    allow_builtin_fanwork: bool = False,
 ) -> dict[str, int]:
     """Synchronize all built-in wordlist assets into an atomic persistent manifest."""
     if mode not in {"manifest", "full"}:
         raise ValueError(f"不正なasset sync modeです: {mode}")
     if revalidate:
         mode = "full"
-    rows = _collect_rows(csv_paths)
+    rows = _collect_rows(
+        csv_paths,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        allow_builtin_fanwork=allow_builtin_fanwork,
+    )
     skip_revalidate_urls = skip_revalidate_urls or set()
     controlled_urls = {
         url for url in rows if url.startswith(SOURCE_RELEASE_URL_PREFIX)
@@ -788,6 +807,7 @@ def prewarm_images(
     cache_dir: Path,
     delay: float = 1.0,
     revalidate: bool = False,
+    allow_noncommercial_fanwork: bool = False,
 ) -> dict[str, int]:
     """CSVの画像URLを直列に取得して画像キャッシュを温める。取得数/スキップ数/失敗数を返す。
 
@@ -795,7 +815,10 @@ def prewarm_images(
     CSVの image_credit 列が空でクレジット未取得なら fetch_image_credit も行い、delay秒待つ。
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    rows = _collect_rows(csv_paths)
+    rows = _collect_rows(
+        csv_paths,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+    )
     total = len(rows)
     fetched = skipped = failed = revalidated = 0
     for i, (url, row) in enumerate(rows.items(), 1):
