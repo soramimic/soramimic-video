@@ -28,6 +28,7 @@ def endpoint():
         "/html": (200, "text/html", b"<html>"),
         "/fake": (200, "image/png", b"<!DOCTYPE html>"),
         "/empty": (200, "image/png", b""),
+        "/blank": (200, "image/png", b" \r\n"),
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -72,7 +73,7 @@ def test_http_classification_and_redirect(endpoint, monkeypatch):
         "unknown-binary": "unavailable",
         "ok": "ok", "redirect": "ok", "missing": "broken", "gone": "broken",
         "denied": "unavailable", "limited": "unavailable", "error": "unavailable",
-        "html": "invalid", "fake": "invalid", "empty": "invalid",
+        "html": "invalid", "fake": "invalid", "empty": "invalid", "blank": "invalid",
     }
     for path, status in expected.items():
         assert audit.probe(f"{base}/{path}", 1)["status"] == status

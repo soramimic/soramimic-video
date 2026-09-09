@@ -83,7 +83,7 @@ def probe(url: str, timeout: float) -> dict:
             prefix = next(response.iter_content(chunk_size=1024), b"")
             text_prefix = prefix.lstrip().lower()
             content_type = response.headers.get("Content-Type", "").split(";")[0].lower()
-            if not prefix:
+            if not text_prefix:
                 status, reason = "invalid", "empty response"
             elif content_type in {"text/html", "application/xhtml+xml"} or text_prefix.startswith(
                 (b"<!doctype html", b"<html")
