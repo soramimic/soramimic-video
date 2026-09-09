@@ -52,6 +52,21 @@ def collect_links(wordlists: Path, scope: str) -> dict[str, list[dict[str, str]]
     return links
 
 
+def _image_prefix(prefix: bytes) -> bool:
+    """Recognize image headers when a download uses application/octet-stream."""
+    if prefix.startswith((
+        b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM",
+        b"II*\x00", b"MM\x00*", b"\x00\x00\x01\x00",
+    )):
+        return True
+    if prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP":
+        return True
+    if prefix[4:8] == b"ftyp" and prefix[8:12] in {b"avif", b"avis"}:
+        return True
+    text = prefix.lstrip().lower()
+    return text.startswith((b"<svg", b"<?xml")) and b"<svg" in text
+
+
 def probe(url: str, timeout: float) -> dict:
     """Stream only a small prefix; 403/429/timeouts are not confirmed broken links."""
     try:
@@ -65,15 +80,16 @@ def probe(url: str, timeout: float) -> dict:
                 return {**result, "status": "broken", "reason": f"HTTP {code}"}
             if code != 200:
                 return {**result, "status": "unavailable", "reason": f"HTTP {code}"}
-            prefix = next(response.iter_content(chunk_size=1024), b"").lstrip().lower()
+            prefix = next(response.iter_content(chunk_size=1024), b"")
+            text_prefix = prefix.lstrip().lower()
             content_type = response.headers.get("Content-Type", "").split(";")[0].lower()
-            if not prefix:
+            if not text_prefix:
                 status, reason = "invalid", "empty response"
-            elif content_type in {"text/html", "application/xhtml+xml"} or prefix.startswith(
+            elif content_type in {"text/html", "application/xhtml+xml"} or text_prefix.startswith(
                 (b"<!doctype html", b"<html")
             ):
                 status, reason = "invalid", "HTML instead of image"
-            elif content_type.startswith("image/"):
+            elif content_type.startswith("image/") or _image_prefix(prefix):
                 status, reason = "ok", "image endpoint reachable"
             else:
                 status, reason = "unavailable", f"unrecognized content type: {content_type}"

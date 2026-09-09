@@ -16,6 +16,10 @@ def endpoint():
     calls = Counter()
     routes = {
         "/ok": (200, "image/png", b"\x89PNG\r\n\x1a\n"),
+        "/binary-png": (200, "application/octet-stream", b"\x89PNG\r\n\x1a\n"),
+        "/binary-jpeg": (200, "application/octet-stream", b"\xff\xd8\xff\xe0\x00\x10JFIF"),
+        "/binary-svg": (200, "application/octet-stream", b'<?xml version="1.0"?><svg>'),
+        "/unknown-binary": (200, "application/octet-stream", b"not an image"),
         "/missing": (404, "text/html", b"missing"),
         "/gone": (410, "text/html", b"gone"),
         "/denied": (403, "text/html", b"denied"),
@@ -24,6 +28,7 @@ def endpoint():
         "/html": (200, "text/html", b"<html>"),
         "/fake": (200, "image/png", b"<!DOCTYPE html>"),
         "/empty": (200, "image/png", b""),
+        "/blank": (200, "image/png", b" \r\n"),
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -64,9 +69,11 @@ def write_list(path, rows):
 def test_http_classification_and_redirect(endpoint, monkeypatch):
     base, _, _ = endpoint
     expected = {
+        "binary-png": "ok", "binary-jpeg": "ok", "binary-svg": "ok",
+        "unknown-binary": "unavailable",
         "ok": "ok", "redirect": "ok", "missing": "broken", "gone": "broken",
         "denied": "unavailable", "limited": "unavailable", "error": "unavailable",
-        "html": "invalid", "fake": "invalid", "empty": "invalid",
+        "html": "invalid", "fake": "invalid", "empty": "invalid", "blank": "invalid",
     }
     for path, status in expected.items():
         assert audit.probe(f"{base}/{path}", 1)["status"] == status
