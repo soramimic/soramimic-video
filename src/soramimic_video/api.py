@@ -2155,9 +2155,22 @@ def create_app(
         if not links:
             links = terms_links(list(policies.values()))
         content = f'<ul class="guidelines">{links}</ul>' if links else ""
+        contact_x = os.environ.get("CONTACT_X_URL", "").strip()
+        contact_link = ""
+        try:
+            parsed_contact = urlsplit(contact_x)
+        except ValueError:
+            parsed_contact = urlsplit("")
+        if parsed_contact.scheme == "https" and parsed_contact.hostname in {
+            "x.com", "www.x.com", "twitter.com", "www.twitter.com"
+        } and not parsed_contact.username and not parsed_contact.password:
+            contact_link = (
+                f'<a href="{escape(contact_x, quote=True)}" target="_blank" '
+                'rel="noopener noreferrer">X</a>または'
+            )
         return (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8").replace(
             "<!-- guideline-links -->", content
-        )
+        ).replace("<!-- contact-x-link -->", contact_link)
 
     @app.get("/image-credits.js", include_in_schema=False)
     def image_credits_script() -> FileResponse:
