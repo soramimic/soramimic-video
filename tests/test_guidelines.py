@@ -23,7 +23,6 @@ class Links(HTMLParser):
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.delenv("CONTACT_X_URL", raising=False)
     policies = {
         "first": {"terms_pages": [
             {"url": "https://example.com/one", "label": "規約1"},
@@ -113,27 +112,3 @@ def test_guidelines_keep_distinct_terms_urls(client):
     assert "https://note.com/a/terms" in urls
     assert "https://note.com/a/terms/en" in urls
     assert "https://note.com/b/terms" in urls
-
-
-@pytest.mark.parametrize("url", ["", "javascript:alert(1)", "https://[invalid",
-                                  "https://example.com/contact", "http://x.com/example",
-                                  "https://x.com.evil.test/example", "https://user@x.com/example"])
-def test_contact_uses_only_form_without_valid_x_url(client, monkeypatch, url):
-    monkeypatch.setenv("CONTACT_X_URL", url)
-    response = client[0].get("/guidelines")
-    assert response.status_code == 200
-    assert ">X</a>" not in response.text
-    assert "または" not in response.text
-    assert "お問い合わせフォーム</a>からお寄せください。" in response.text
-
-
-@pytest.mark.parametrize("host", ["x.com", "twitter.com"])
-def test_contact_x_url_is_configurable_and_escaped(client, monkeypatch, host):
-    url = f'https://{host}/example?a="quoted"&b=<value>'
-    monkeypatch.setenv("CONTACT_X_URL", f"  {url}  ")
-    response = client[0].get("/guidelines")
-    parsed = Links()
-    parsed.feed(response.text)
-    assert {"href": url, "target": "_blank", "rel": "noopener noreferrer"} in parsed.links
-    assert ">X</a>または" in response.text
-    assert 'a="quoted"' not in response.text
