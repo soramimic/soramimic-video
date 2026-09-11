@@ -2112,15 +2112,16 @@ def test_layout_name_only_job_has_no_layout_json(client):
     assert api_mod.resolve_layout(job, {}) == ("caption", "name:caption")
 
 
-def test_index_html_sends_layout_json_only_when_edited():
-    # 事故の本命: レイアウト名を切り替えてもテキストエリアの古いJSONが送られ、
-    # サーバー側で名前より優先されて別リストのカードになっていた。
-    # エディタを編集したとき(leDirty)だけ layout_json を送る。
+def test_index_html_never_sends_layout_json_from_web_ui():
+    # レイアウト編集の実装は残すが、Web UIからは単語リスト対応カードを固定で使い、
+    # 保存済みの手動JSONもジョブへ送らない。
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    assert 'if (!customLayout && leDirty && $("layout-json").value.trim()) {' in html
-    assert '    form.append("layout_json", $("layout-json").value);' in html
+    submit = html.split("async function submitJob(previewSec, previewMode) {")[1]
+    submit = submit.split("\n}\n\n// サムネ・フッター", 1)[0]
+    assert 'form.append("layout_json"' not in submit
+    assert 'form.append("layout", customLayout ? "" : $("layout").value)' in submit
     # 読み込んだだけのJSONは編集扱いにしない。leToJson が dirty のまま保存して
     # いるので、降ろしたあとに保存し直さないとリロードで編集扱いに戻ってしまう
     assert (
@@ -2145,14 +2146,16 @@ def test_index_html_layout_load_clears_on_fetch_error():
 
 
 def test_index_html_wordlist_layout_switch_clears_layout_json():
-    # applyWordlistLayout はレイアウト名を入れた直後に「同期で」JSONを捨てる。
-    # 非同期の leLoad 頼みだと、fetchが失敗したとき古いJSONが残る
+    # applyWordlistLayout は保存済みの手動選択より単語リスト対応カードを優先し、
+    # レイアウト名を入れた直後に「同期で」古いJSONを捨てる。
     import re
 
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
     body = re.search(r"function applyWordlistLayout\(\) \{.*?\n\}", html, re.S).group(0)
+    assert "cur && cur !== lastAutoLayout" not in body
+    assert 'next === cur && !leDirty && !$("layout-json").value.trim()' in body
     assert (
         body.index('setChoice("layout", next);')
         < body.index("leClearLayout();")
@@ -2286,11 +2289,12 @@ def _opt_groups() -> dict[str, str]:
     import re
 
     out: dict[str, str] = {}
-    for part in _advanced_html().split('<section class="opt-group">')[1:]:
-        body = part.split("</section>")[0]
+    for match in re.finditer(r'<section class="opt-group"(?P<attrs>[^>]*)>(?P<body>.*?)</section>',
+                             _advanced_html(), re.S):
+        body = match.group("body")
         title = re.search(r'<h3 class="opt-group-title">(.*?)</h3>', body)
         assert title, body[:200]
-        out[title.group(1)] = body
+        out[title.group(1)] = match.group(0)
     return out
 
 
@@ -2300,11 +2304,7 @@ def test_index_html_advanced_is_grouped_by_role():
     「空耳のもと」(単語リスト選択・エディタの導線)は、選ぶ操作がエディタの⚙と
     カードの⚙に移ったのでグループごと廃止した。
     """
-    assert list(_opt_groups()) == [
-        "① 歌声",
-        "② 見た目",
-        "③ 元曲クレジット",
-    ]
+    assert list(_opt_groups()) == ["① 歌声", "② 見た目", "曲情報・クレジット"]
     # どのグループにも1行の説明を添える
     assert _advanced_html().count('class="hint opt-group-lead"') == 3
     # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
@@ -2316,20 +2316,24 @@ def test_index_html_advanced_is_grouped_by_role():
     assert ".opt-group-title { font-size: .9rem;" in html
 
 
-def test_index_html_advanced_groups_hold_the_right_fields():
-    """詳細設定には動画側の歌声と見た目だけを残す。"""
+def test_index_html_advanced_groups_hide_controls_and_expose_song_text():
+    """歌声とレイアウトの実装は残して隠し、元曲由来の文字だけ見せる。"""
     g = _opt_groups()
     voice = g["① 歌声"]
+    assert voice.startswith('<section class="opt-group" hidden>')
     assert 'id="synthesizer"' in voice
     assert 'id="auto-octave"' in voice and 'id="transpose"' in voice
     assert 'id="preview"' in voice
     look = g["② 見た目"]
+    assert look.startswith('<section class="opt-group" hidden>')
     # プリセット選択も編集も全画面モーダル(#le-modal)へ寄せたので、グループに残るのは
     # 送信値の正本(隠しinput)・モーダルを開くボタン・カスタム編集中の目印だけ。
     # レイアウトは単語リストに連動して自動で決まるものなので、ふだんは選ばせない
     assert 'id="layout"' in look and 'id="le-open"' in look
     assert 'id="le-status"' in look
-    credit = g["③ 元曲クレジット"]
+    credit = g["曲情報・クレジット"]
+    assert not credit.startswith('<section class="opt-group" hidden>')
+    assert 'id="song-title"' in credit
     assert 'id="original-credit"' in credit
     assert 'id="credit-notice"' in credit
 
