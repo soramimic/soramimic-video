@@ -78,6 +78,7 @@ from .thumbnail_preview import RateLimiter, preview_cache_dir
 from .wordlist_catalog import (
     default_launch_wordlists,
     load_wordlist_image_policies,
+    load_wordlist_phrases,
 )
 
 if TYPE_CHECKING:  # 型注釈だけ。実行時のimportはハンドラの中で行う(起動を軽く保つ)
@@ -2384,6 +2385,8 @@ def create_app(
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
+            # 曲情報プレビューの「<単語リスト>で歌ってみた」に使う文章向け名称。
+            "wordlist_phrases": load_wordlist_phrases(),
             # 制限付き画像を含みうる単語リストでは、生成ボタンのそばに
             # 利用条件の確認を出す。実際の強制は各CSV行のimage_usageが正本。
             "wordlist_image_policies": load_wordlist_image_policies(WORDLISTS_DIR),
