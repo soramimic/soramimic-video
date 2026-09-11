@@ -2315,7 +2315,7 @@ def test_index_html_advanced_is_grouped_by_role():
     assert _advanced_html().count('class="hint opt-group-lead"') == 3
     # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
     advanced = _advanced_html()
-    assert advanced.index('id="auth"') < advanced.index('<section class="opt-group">')
+    assert advanced.index('id="auth"') < advanced.index('<section class="opt-group"')
     # 区切りは見た目にも出す(小見出し + 罫線)
     html = _index_html()
     assert ".opt-group + .opt-group {" in html
@@ -2338,7 +2338,7 @@ def test_index_html_advanced_groups_hide_controls_and_expose_song_text():
     assert 'id="layout"' in look and 'id="le-open"' in look
     assert 'id="le-status"' in look
     credit = g["曲情報・クレジット"]
-    assert not credit.startswith('<section class="opt-group" hidden>')
+    assert credit.startswith('<section class="opt-group" id="song-credit-section">')
     assert 'id="song-title"' in credit
     assert 'id="original-credit"' in credit
     assert 'id="credit-notice"' in credit

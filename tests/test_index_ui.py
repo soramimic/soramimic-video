@@ -621,6 +621,7 @@ def _song_input_node_harness() -> str:
           if (!elements.has(id)) elements.set(id, {
             _value: "", hidden: false, textContent: "", files: [], options: [],
             selectedOptions: [{ textContent: "Sample song" }], listeners: new Map(),
+            classList: { toggle() {} },
             get value() { return this._value; },
             set value(value) {
               this._value = value;
@@ -671,6 +672,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         syncBuilderValues();
         assert.equal($("song-upload-panel").hidden, false);
         assert.equal($("sample-picker").hidden, true);
+        assert.equal($("song-title").disabled, false);
         switchSongInputMode("sample");
         assert.deepEqual($("midi").files, [], "a hidden MIDI must not remain active");
         assert.deepEqual($("editor").files, []);
@@ -679,6 +681,9 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         }
         assert.equal($("song-upload-panel").hidden, true);
         assert.equal($("sample-picker").hidden, false);
+        for (const id of ["song-title", "original-credit", "credit-notice"]) {
+          assert.equal($(id).disabled, true, "sample metadata must be read-only");
+        }
         assert.equal($("song-upload-filename").hidden, true);
         assert.equal(focused, "builder-sample");
         syncBuilderValues();
@@ -694,6 +699,9 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         assert.equal($("audio-sample-credit").hidden, true);
         assert.equal($("song-upload-panel").hidden, false);
         assert.equal($("sample-picker").hidden, true);
+        for (const id of ["song-title", "original-credit", "credit-notice"]) {
+          assert.equal($(id).disabled, false, "own-song metadata must be editable");
+        }
         assert.equal(focused, "song-upload-button");
         assert.equal(previews, 2);
         switchSongInputMode("upload");
