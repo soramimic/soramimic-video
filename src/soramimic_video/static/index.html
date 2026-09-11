@@ -231,9 +231,12 @@
   }
   .opt-group-title { font-size: .9rem; margin: 0; color: var(--text); }
   .opt-group-lead { margin: .15rem 0 .7rem; }
-  /* 詳細設定は単語リストのすぐ下へ差し込む。カードの中のカードとして重く
-     見えないよう背景を一段落とし、絞り込みはエディタと同じチェックUIにする。 */
-  #advanced { margin: .6rem 0 0; background: var(--panel-2); }
+  /* 詳細設定は単語リストのすぐ下へ差し込む。親カードと同じ面へ直接置き、
+     二重カードに見える外枠・角丸・別背景を付けない。 */
+  #advanced {
+    margin: .6rem 0 0; padding: .15rem 0 0; border: 0; border-radius: 0;
+    background: transparent;
+  }
   .wordlist-filter-field { margin-bottom: 1rem; }
   .wordlist-facets { display: grid; gap: .45rem; margin-top: .45rem; }
   .facet-group {
