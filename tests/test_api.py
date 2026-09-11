@@ -2256,6 +2256,11 @@ def test_index_html_places_advanced_accordion_below_the_wordlist():
     assert card.index('id="builder-wordlist"') < card.index('id="advanced-slot"')
     assert card.index('id="advanced-slot"') < card.index('id="builder-fanwork-notice"')
     assert "$('advanced-slot').replaceWith($('advanced'));" in html
+    # 親カード内で二重のカードに見えないよう、外枠と別背景を打ち消す。
+    advanced_style = html.split("#advanced {")[1].split("}")[0]
+    assert "border: 0;" in advanced_style
+    assert "border-radius: 0;" in advanced_style
+    assert "background: transparent;" in advanced_style
 
 
 def test_index_html_wordlist_filter_is_first_in_advanced_settings():
