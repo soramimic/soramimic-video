@@ -7,6 +7,7 @@ from soramimic_video.wordlist_catalog import (
     default_launch_wordlists,
     load_wordlist_catalog,
     load_wordlist_image_policies,
+    load_wordlist_phrases,
 )
 
 
@@ -125,3 +126,17 @@ def test_terms_labels_follow_people_and_organizations_without_domain_merging(tmp
     assert terms[0]["people"] == ["A<&", "C"]
     assert "B" in terms[1]["label"]
     assert "A<&" in terms[2]["label"]
+
+
+def test_load_wordlist_phrases_uses_only_nonempty_strings(tmp_path):
+    path = tmp_path / "catalog.json"
+    path.write_text(
+        json.dumps({
+            "stations": {"phrase": "駅名"},
+            "empty": {"phrase": ""},
+            "number": {"phrase": 123},
+            "missing": {"layout": "default"},
+        }),
+        encoding="utf-8",
+    )
+    assert load_wordlist_phrases(path) == {"stations": "駅名"}

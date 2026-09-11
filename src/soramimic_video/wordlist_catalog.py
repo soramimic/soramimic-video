@@ -50,6 +50,15 @@ def default_launch_wordlists(path: Path = WORDLIST_CATALOG_PATH) -> list[str]:
     ]
 
 
+def load_wordlist_phrases(path: Path = WORDLIST_CATALOG_PATH) -> dict[str, str]:
+    """サムネイル文中で使う単語リスト名を返す。"""
+    return {
+        name: phrase
+        for name, entry in load_wordlist_catalog(path).items()
+        if isinstance((phrase := entry.get("phrase")), str) and phrase
+    }
+
+
 def _guideline_label(url: str) -> str:
     if url in GUIDELINE_LABELS:
         return GUIDELINE_LABELS[url]

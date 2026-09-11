@@ -175,6 +175,69 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
     assert '$("song-title").value = sampleTitleOf(sid)' in script
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_song_text_previews_follow_title_credits_and_wordlist():
+    """3つのプレビューは入力値と本番のクレジット優先順位に即時追随する。"""
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in ("function songTitleOf(file)", "function updateSongTextPreviews()")
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        const element = (id) => {
+          if (!elements.has(id)) elements.set(id, {
+            value: "", hidden: false, attrs: {}, textContent: "",
+            getAttribute(name) { return this.attrs[name] || ""; },
+            setAttribute(name, value) { this.attrs[name] = value; },
+            removeAttribute(name) { delete this.attrs[name]; },
+          });
+          return elements.get(id);
+        };
+        const $ = element;
+        const ownSongFile = () => ({ name: "upload.mid" });
+        let midiSampleId = "";
+        const sampleTitleOf = () => "サンプル曲";
+        const activeCustomList = () => null;
+        const selectedWordlistGroup = () => ({ text: "駅名" });
+        const showsEditorWordlist = () => false;
+        let wordlist = "stations";
+        const wordlistPhrases = { stations: "駅名", vtuber: "VTuber名" };
+        const currentWordlistName = () => wordlist;
+        $("builder-image").setAttribute("src", "blob:thumbnail");
+        $("song-title").value = "夜に駆ける";
+        $("original-credit").value = "作詞・作曲: 作者";
+        $("credit-notice").value = "© 権利者";
+        """
+    ) + functions + textwrap.dedent(
+        """
+        updateSongTextPreviews();
+        assert.equal($("song-preview-thumb-caption").textContent,
+          "夜に駆ける を 駅名 で歌ってみた");
+        assert.equal($("song-preview-footer").textContent,
+          "lyrics & video by Soramimic / VOICEVOX:波音リツ / Original: 夜に駆ける — © 権利者");
+        assert.equal($("song-preview-credits-original").textContent,
+          "夜に駆ける — © 権利者");
+        assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
+        assert.equal($("song-preview-thumb-bg").hidden, false);
+
+        // 最後のクレジットは指定表記が無ければ著作者を使う。
+        $("credit-notice").value = "";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-original").textContent,
+          "夜に駆ける — 作詞・作曲: 作者");
+
+        // VTuberカードの必須表記もフッターへ反映する。
+        wordlist = "vtuber";
+        updateSongTextPreviews();
+        assert.match($("song-preview-footer").textContent, /非公式・ファンメイド/);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_plant_wordlist_is_available_in_every_selection_ui():
     """品質確認済みの植物を、通常UIと簡易UIの候補へ戻す。"""
     script = _script()
