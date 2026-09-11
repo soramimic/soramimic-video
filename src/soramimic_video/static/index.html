@@ -1386,7 +1386,7 @@ async function loadConfig() {
   audioInputReady = conf.audio_input === true;
   $("song-upload-hint").textContent = audioInputReady
     ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）。PCはここへドロップできます`
-    : "XF MIDIに対応（このサーバーでは音声入力を準備中です）";
+    : "XF MIDIに対応";
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを

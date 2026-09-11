@@ -1681,6 +1681,8 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert html.index('id="song-upload-button"') < html.index('id="builder-sample"')
     assert '曲をアップロード' in html
     assert '$("song-upload-button").disabled' not in script
+    assert ': "XF MIDIに対応";' in script
+    assert 'XF MIDIに対応（このサーバーでは音声入力を準備中です）' not in script
     assert 'このサーバーでは音声入力を準備中です' in script
     assert '.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.webm,audio/*' in html
     assert 'function ownSongKind(' in script
