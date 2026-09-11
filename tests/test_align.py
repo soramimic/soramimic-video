@@ -1,16 +1,74 @@
 from soramimic_video.align import (
+    align_correct_lyrics,
     align_texts,
     build_subtitle_segments,
     parse_granularity_override,
     resolve_granularity,
     split_lyric_to_phrases,
 )
+from soramimic_video.project import Line, Note, Project, SongInfo
 
 
 def test_align_one_to_one():
     xf = ["沈むように", "溶けてゆくように"]
     lyrics = ["沈むように", "溶けてゆくように"]
     assert align_texts(xf, lyrics) == [0, 1]
+
+
+def test_correct_lyrics_rebuild_lines_on_recognized_note_timing(monkeypatch):
+    """正解歌詞の行と読みを使い、認識ノートの時刻・音高は変えない。"""
+    recognized = ["ハ", "ル", "ノ", "ソ", "ラ"]
+    notes = [
+        Note(
+            i,
+            60 + i,
+            i * 10,
+            (i + 1) * 10,
+            i * 0.1,
+            (i + 1) * 0.1,
+            0,
+            kana,
+            kana,
+            kana,
+        )
+        for i, kana in enumerate(recognized)
+    ]
+    project = Project(
+        song=SongInfo(midi_path="song.mid", ticks_per_beat=480),
+        notes=notes,
+        lines=[Line(0, "ハルノソラ", "ハルノソラ", list(range(5)))],
+    )
+    before = [(note.midi_note, note.start_sec, note.end_sec, note.kana) for note in notes]
+    monkeypatch.setattr("soramimic_video.align._readings", lambda lines: list(lines))
+
+    align_correct_lyrics(project, ["ハルノ", "ソラ"])
+
+    assert [(line.xf_surface, line.xf_kana, line.note_ids) for line in project.lines] == [
+        ("ハルノ", "ハルノ", [0, 1, 2]),
+        ("ソラ", "ソラ", [3, 4]),
+    ]
+    assert [line.original_text for line in project.lines] == ["ハルノ", "ソラ"]
+    assert [(note.midi_note, note.start_sec, note.end_sec, note.kana) for note in notes] == before
+    assert [note.line for note in notes] == [0, 0, 0, 1, 1]
+
+
+def test_correct_lyrics_replace_recognition_used_by_conversion(monkeypatch):
+    notes = [
+        Note(0, 60, 0, 10, 0.0, 0.1, 0, "キョ", "キョ", "キョ"),
+        Note(1, 62, 10, 20, 0.1, 0.2, 0, "オ", "オ", "オ"),
+    ]
+    project = Project(
+        song=SongInfo(midi_path="song.mid", ticks_per_beat=480),
+        notes=notes,
+        lines=[Line(0, "キョオ", "キョオ", [0, 1])],
+    )
+    monkeypatch.setattr("soramimic_video.align._readings", lambda lines: ["キョウ"])
+
+    align_correct_lyrics(project, ["今日"])
+
+    assert project.lines[0].xf_kana == "キョー"
+    assert project.lines[0].original_text == "今日"
+    assert [note.kana for note in project.notes] == ["キョ", "オ"]
 
 
 def test_align_two_xf_lines_to_one_lyric_line():
