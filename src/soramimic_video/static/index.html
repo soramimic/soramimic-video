@@ -231,6 +231,27 @@
   }
   .opt-group-title { font-size: .9rem; margin: 0; color: var(--text); }
   .opt-group-lead { margin: .15rem 0 .7rem; }
+  /* 詳細設定は単語リストのすぐ下へ差し込む。カードの中のカードとして重く
+     見えないよう背景を一段落とし、絞り込みはエディタと同じチェックUIにする。 */
+  #advanced { margin: .6rem 0 0; background: var(--panel-2); }
+  .wordlist-filter-field { margin-bottom: 1rem; }
+  .wordlist-facets { display: grid; gap: .45rem; margin-top: .45rem; }
+  .facet-group {
+    padding: .5rem .6rem; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel);
+  }
+  .facet-header {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: .5rem; margin-bottom: .35rem; padding-bottom: .35rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .facet-options { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .8rem; }
+  .facet-label { font-size: .85rem; font-weight: 600; color: var(--muted); }
+  .facet-check {
+    display: inline-flex; align-items: center; gap: .25rem; margin: 0;
+    font-size: .85rem; font-weight: 400; color: var(--text); cursor: pointer;
+  }
+  .facet-select-all { margin-left: auto; font-weight: 600; white-space: nowrap; }
   /* 「生成の詳細」はビルダーカード最下部の控えめなテキストリンク。
      エラー・中断で自動的に開いたときだけ警告色にして見つけやすくする(openJobDetails) */
   #job-card { margin-top: .8rem; }
@@ -673,8 +694,8 @@
      その枠(#builder-play)をタップすればそのまま生成が走る。
      プルダウンは正本(#sample-select / #wordlist-select)の写しで、選択は双方向に
      同期する(syncBuilderOptions / syncBuilderValues)。
-     右上には⚙(替え歌を編集)と🎲(ランダム)。単語リストの絞り込み・変換のしかた
-     の調整は、⚙で開く同梱エディタの⚙モーダルにある。自作リストはこのカードで管理する
+     右上には⚙(替え歌を編集)と🎲(ランダム)。単語リストの絞り込みは直下の詳細設定、
+     変換のしかたは⚙で開く同梱エディタにある。自作リストはこのカードで管理する
      (エディタの中で選び直した結果は正本を経由してこのプルダウンにも出る)。
      見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
@@ -737,6 +758,9 @@
   <div class="custom-wordlist-actions" id="custom-wordlist-actions">
     <button type="button" id="custom-wordlist-edit" class="btn-sm" hidden>選択中のリストを編集</button>
   </div>
+  <!-- #advanced はHTML上では正本の入力群とまとまった位置に置き、ページ構築時に
+       このスロットへ移す。単語リスト直下で開閉でき、下のプレビューを探し回らずに済む。 -->
+  <div id="advanced-slot"></div>
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
     <p class="hint">本アプリは、動画に使用する画像の権利者や、登場する人物・団体とは関係ありません。動画の内容に応じて、各権利者の<a id="builder-fanwork-guidelines" href="/guidelines"
       target="_blank" rel="noopener noreferrer">利用ガイドライン</a>を守ってください。</p>
@@ -841,7 +865,7 @@
        カードのプルダウンはこれの写しで、🎲の抽選対象と表示名の引き当ても兼ねる。
        conf が取れない構成では hidden のまま(=カード側のプルダウンも出ない)
      - #wordlist … リスト名(stem)。自作リストのときは空
-     - #where … 選んだリストの絞り込み条件(エディタで絞り込んだらそれが入る) -->
+     - #where … 選んだリストの絞り込み条件(詳細設定・エディタの変更が入る) -->
 <div id="wordlist-store" hidden>
   <select id="wordlist-select" hidden></select>
   <input type="hidden" id="wordlist">
@@ -878,7 +902,14 @@
      曲・元歌詞・単語リスト・変換のしかたはビルダーカードとエディタに一本化し、
      ここには動画にする側の歌声と見た目だけを残す。 -->
 <details class="card" id="advanced">
-  <summary>⚙️ 詳細設定(歌声・見た目)</summary>
+  <summary>⚙️ 詳細設定</summary>
+
+  <!-- 選択中の単語リストに facets があるときだけ表示する。チェック状態は #where
+       の正本と同期し、サムネイル・生成・替え歌エディタへ同じ条件を渡す。 -->
+  <div class="field wordlist-filter-field" id="wordlist-filter-field" hidden>
+    <label>単語リストのフィルター</label>
+    <div id="wordlist-facets" class="wordlist-facets"></div>
+  </div>
 
   <!-- 中身は役割ごとに2つのグループに分ける。フラットに並べると初見の人が
        どこから触ればいいか分からないため、小見出し+1行の説明で区切る。
@@ -1207,6 +1238,9 @@
 <script src="/custom-wordlists.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
+// 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
+// 描画前の初期化で表示位置だけをカード内のスロットへ移す。
+$('advanced-slot').replaceWith($('advanced'));
 const apiKey = () => $("api-key").value || localStorage.getItem("apiKey") || "";
 const headers = () => apiKey() ? { "X-API-Key": apiKey() } : {};
 const qs = (url) => apiKey() ? url + "?api_key=" + encodeURIComponent(apiKey()) : url;
@@ -6595,6 +6629,131 @@ function facetDefaultWhere(g) {
   return clauses.join(" and ");
 }
 
+// ---- トップ画面の単語リストフィルター ----
+// エディタの renderFacets / compileWhere と同じDOMと式を使う。設定の正本は従来どおり
+// #where で、ここはその内容を見えるチェックボックスとして編集するためのUI。
+function wordlistFacetClause(f, item) {
+  if (item.where) return item.where;
+  const cols = f.columns || [f.column];
+  return "(" + cols.map((c) => c + "=" + item.v).join(" or ") + ")";
+}
+
+function selectedWordlistGroup() {
+  if (activeCustomList()) return null;
+  const opt = $("wordlist-select").selectedOptions[0];
+  return opt ? wordlistGroups[Number(opt.value)] || null : null;
+}
+
+function wordlistWhereContains(where, frag) {
+  for (let i = where.indexOf(frag); i >= 0; i = where.indexOf(frag, i + 1)) {
+    const before = where.slice(0, i);
+    const after = where.slice(i + frag.length);
+    const okBefore = before === "" || before.endsWith("(")
+      || before.endsWith(" or ") || before.endsWith(" and ");
+    const okAfter = after === "" || after.startsWith(")")
+      || after.startsWith(" or ") || after.startsWith(" and ");
+    if (okBefore && okAfter) return true;
+  }
+  return false;
+}
+
+function compileWordlistFilter(g) {
+  const facets = g?.entries[0]?.facets || [];
+  if (!facets.length) return g?.entries[0]?.where || "";
+  const clauses = [];
+  for (const group of $("wordlist-facets").querySelectorAll(".facet-group")) {
+    const frags = [...group.querySelectorAll("input.facet-value:checked")]
+      .map((cb) => cb.__where);
+    if (frags.length) clauses.push("(" + frags.join(" or ") + ")");
+  }
+  return clauses.join(" and ");
+}
+
+function commitWordlistFilter() {
+  const g = selectedWordlistGroup();
+  if (!g) return;
+  clearEditorFile();
+  setWhere(compileWordlistFilter(g));
+  schedulePreview(true);
+}
+
+function renderWordlistFilter() {
+  const field = $("wordlist-filter-field");
+  const container = $("wordlist-facets");
+  const g = selectedWordlistGroup();
+  const facets = g?.entries[0]?.facets || [];
+  container.replaceChildren();
+  field.hidden = !facets.length;
+  if (!facets.length) return;
+
+  for (const f of facets) {
+    const group = document.createElement("div");
+    group.className = "facet-group";
+    const header = document.createElement("div");
+    header.className = "facet-header";
+    const label = document.createElement("span");
+    label.className = "facet-label";
+    label.textContent = f.label || f.column || "";
+    const selectAllLabel = document.createElement("label");
+    selectAllLabel.className = "facet-check facet-select-all";
+    const selectAll = document.createElement("input");
+    selectAll.type = "checkbox";
+    selectAll.className = "facet-select-all-input";
+    selectAll.setAttribute("aria-label", label.textContent + "をすべて選択");
+    selectAllLabel.append(selectAll, document.createTextNode("すべて"));
+    header.append(label, selectAllLabel);
+    group.appendChild(header);
+
+    const options = document.createElement("div");
+    options.className = "facet-options";
+    group.appendChild(options);
+    const valueCheckboxes = [];
+    const syncSelectAll = () => {
+      const checkedCount = valueCheckboxes.filter((cb) => cb.checked).length;
+      selectAll.checked = checkedCount === valueCheckboxes.length;
+      selectAll.indeterminate = checkedCount > 0 && checkedCount < valueCheckboxes.length;
+    };
+    selectAll.addEventListener("change", () => {
+      for (const cb of valueCheckboxes) cb.checked = selectAll.checked;
+      syncSelectAll();
+      commitWordlistFilter();
+    });
+    const defaults = (f.values || []).filter((item) => item.default === true);
+    const hasDefault = defaults.length > 0;
+    for (const item of f.values || []) {
+      const optionLabel = document.createElement("label");
+      optionLabel.className = "facet-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "facet-value";
+      cb.value = item.v;
+      cb.__where = wordlistFacetClause(f, item);
+      cb.checked = hasDefault ? item.default === true : true;
+      cb.addEventListener("change", () => { syncSelectAll(); commitWordlistFilter(); });
+      valueCheckboxes.push(cb);
+      optionLabel.append(cb, document.createTextNode(item.label || item.v));
+      options.appendChild(optionLabel);
+    }
+    syncSelectAll();
+    container.appendChild(group);
+  }
+
+  // 保存状態やエディタから戻った条件を、生成したチェックボックスへ復元する。
+  const where = $("where").value;
+  for (const cb of container.querySelectorAll("input.facet-value")) {
+    cb.checked = wordlistWhereContains(where, cb.__where);
+  }
+  for (const group of container.querySelectorAll(".facet-group")) {
+    const values = [...group.querySelectorAll("input.facet-value")];
+    const selectAll = group.querySelector("input.facet-select-all-input");
+    const checkedCount = values.filter((cb) => cb.checked).length;
+    selectAll.checked = checkedCount === values.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < values.length;
+  }
+}
+
+$("where").addEventListener("change", renderWordlistFilter);
+
 // 選択内容を canonical な #wordlist / #where に反映する。
 // 選択なし(selectedIndex=-1)は「名前で引けないリスト」——エディタの中で書いた
 // 自作リストを使っている状態で、#wordlist は書き戻し側が空にする。
@@ -6606,7 +6765,7 @@ function applyWordlistSelection() {
   const g = wordlistGroups[Number(opt.value)];
   $("wordlist").value = g ? g.name : "";
   // 絞り込みは conf の既定(facetsのdefault、無ければentryのwhere)を入れる。
-  // これを変えたい人はエディタの「変換のしかた」で絞り込み直す
+  // 詳細設定のチェックボックスとエディタの双方から、この値を変更できる
   setWhere(facetDefaultWhere(g));  // change も発火
   // 列取得・キュープレビュー等(#wordlistのchangeを見ている)を更新する
   $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
@@ -6934,9 +7093,8 @@ async function doRestoreForm() {
     const sel = $("wordlist-select");
     if (!sel.hidden && sel.options.length) {
       // 同name複数グループ(絞り込み違い)では、前回と同じ絞り込みのグループを
-      // 優先し、無ければname一致の先頭にフォールバックする。#where 自体は
-      // applyWordlistSelection がグループから入れ直す(画面から編集できない値を
-      // 古い保存から引きずらないため)。
+      // 優先し、無ければname一致の先頭にフォールバックする。フィルターを画面で
+      // 編集できるようになったため、同じ単語リストなら保存済みの #where も戻す。
       const wantName = state.wordlist || "";
       const wantWhere = (state.where || "").trim();
       const cands = wordlistGroups
@@ -6949,6 +7107,7 @@ async function doRestoreForm() {
       if (gi >= 0) {
         sel.value = String(gi);
         applyWordlistSelection();  // #wordlist/#where設定 + change
+        if (typeof state.where === "string") setWhere(state.where);
       } else {
         // 保存されていた名前が今の選択肢に無い(confが変わった・エディタの中で
         // 書いた自作リストを使ったままリロードした)。選択なし(selectedIndex=-1)に
