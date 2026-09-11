@@ -1146,7 +1146,7 @@ def _preview_window(project: Any, mode: str, seconds: float) -> tuple[float, flo
 
 def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     """analyze〜videoを順に実行して完成動画のパスを返す(ワーカースレッドから呼ぶ)。"""
-    from .align import align_lines
+    from .align import align_correct_lyrics, align_lines
     from .editor_io import import_editor, save_raw
     from .mix import mix
     from .synthesize import synthesize
@@ -1161,22 +1161,34 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     d = job.dir
     with _stage(job, "analyze"):
         lyrics_path = d / "lyrics.txt"
+        correct_lyrics = (
+            job.params.get("auto_lyrics") is False and lyrics_path.exists()
+        )
         if job.params.get("input_kind") == "audio":
             from .analyze_audio import analyze_audio
 
             project = analyze_audio(
                 d / "input.wav",
                 d,
-                lyrics_path=lyrics_path if lyrics_path.exists() else None,
+                # 手入力の正解歌詞がある場合も、まずWhisperの認識結果から
+                # ノート時刻を作る。後段でその認識列へ正解歌詞を対応付ける。
+                lyrics_path=(
+                    lyrics_path if lyrics_path.exists() and not correct_lyrics else None
+                ),
                 whisper_model=str(config.get("whisper_model") or "small"),
                 device=config.get("audio_device"),
             )
+            if correct_lyrics:
+                align_correct_lyrics(
+                    project, lyrics_path.read_text(encoding="utf-8").splitlines()
+                )
         else:
             from .xfparse import analyze_midi
 
             project = analyze_midi(d / "input.mid")
             if lyrics_path.exists():
-                align_lines(project, lyrics_path.read_text(encoding="utf-8").splitlines())
+                aligner = align_correct_lyrics if correct_lyrics else align_lines
+                aligner(project, lyrics_path.read_text(encoding="utf-8").splitlines())
         project.save(d)
 
     preview_sec = float(job.params.get("preview") or 0)
@@ -2878,6 +2890,9 @@ def create_app(
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
         lyrics: str = Form(""),
+        # True: XF内蔵歌詞 / Whisper認識歌詞をそのまま使う。
+        # False: 認識歌詞で作ったノートへ lyrics の正解歌詞を対応付ける。
+        auto_lyrics: bool = Form(True),
         model: str = Form("MERROW"),
         # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
         # 未設定のサーバーだと下の422ゲートで弾かれてしまうため既定にしない)
@@ -2925,6 +2940,11 @@ def create_app(
                 raise HTTPException(
                     status_code=422, detail="選択した曲の歌詞が見つかりません"
                 ) from exc
+        if not auto_lyrics and not lyrics.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="歌詞の自動認識をオフにした場合は正解歌詞を入力してください",
+            )
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
@@ -3147,6 +3167,7 @@ def create_app(
             # 元ファイル名を入れる。入力種別は input_kind が正本。
             "midi_filename": input_filename,
             "input_kind": input_kind,
+            "auto_lyrics": auto_lyrics,
             "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),
             "original_credit": original_credit.strip(),
@@ -3489,6 +3510,7 @@ def create_app(
         midi: UploadFile | None = File(None),
         sample_id: str = Form(""),
         lyrics: str = Form(""),
+        auto_lyrics: bool = Form(True),
         wordlist: str = Form(""),
         where: str = Form(""),
         convert_params: str = Form(""),
@@ -3539,7 +3561,7 @@ def create_app(
             )
         import tempfile
 
-        from .align import align_lines
+        from .align import align_correct_lyrics, align_lines
         from .convert import (
             convert_project,
             parse_convert_params,
@@ -3627,7 +3649,8 @@ def create_app(
                     status_code=400, detail=f"MIDIの解析に失敗しました: {exc}"
                 ) from exc
             if lyrics.strip():
-                align_lines(project, lyrics.splitlines())
+                aligner = align_correct_lyrics if not auto_lyrics else align_lines
+                aligner(project, lyrics.splitlines())
             conv_params = parse_convert_params(convert_params)
             # Web UIのノート長設定はsoramimicへ移したが、変換済みセッションを
             # 直接作る経路も従来の画面既定0.25と同じ結果にする。

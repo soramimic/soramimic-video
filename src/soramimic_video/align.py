@@ -14,14 +14,15 @@ phrases)場合でも、漢字率の高い行を取りこぼさないため。
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from bisect import bisect_left
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 import jaconv
 
 from .kana import normalize_long_vowels
-from .project import Project
+from .project import Line, Project
 from .ruby import strip_ruby
 
 # これ未満の類似度なら「対応なし」とする
@@ -148,6 +149,122 @@ def align_lines(project: Project, lyric_lines: list[str]) -> None:
     assignments = align_texts(xf_texts, lyrics)
     for line, a in zip(project.lines, assignments, strict=True):
         line.original_text = strip_ruby(lyrics[a]) if a is not None else None
+
+
+def _map_correct_offset_to_recognized(
+    opcodes: Sequence[tuple[str, int, int, int, int]],
+    offset: int,
+    recognized_length: int,
+) -> int:
+    """正解歌詞側の文字位置を、認識歌詞側の文字位置へ写す。"""
+    for _tag, correct_start, correct_end, recognized_start, recognized_end in opcodes:
+        # 挿入区間は正解側に幅が無いので、次の区間の始点へ寄せる。
+        if correct_start == correct_end:
+            continue
+        if offset < correct_end:
+            ratio = (offset - correct_start) / (correct_end - correct_start)
+            return round(recognized_start + ratio * (recognized_end - recognized_start))
+    return recognized_length
+
+
+def align_correct_lyrics(project: Project, lyric_lines: list[str]) -> None:
+    """認識済みノート列へ正解歌詞を対応付け、変換入力を正解歌詞に置き換える。
+
+    XF/Whisper が作った各ノートの時刻・音高・認識カナは保持する。認識カナ列と
+    正解歌詞の読みを文字列アラインし、正解歌詞の行境界を最寄りのノート境界へ
+    写して ``project.lines`` を組み直す。これにより替え歌変換は正解歌詞の読みを
+    入力にしつつ、生成結果は認識済みノートのタイミングへ載る。
+    """
+    lyrics = [ln.strip() for ln in lyric_lines if ln.strip()]
+    if not lyrics:
+        return
+    ordered_note_ids = [note_id for line in project.lines for note_id in line.note_ids]
+    if not ordered_note_ids:
+        return
+
+    readings = _readings(lyrics)
+    correct: list[tuple[str, str]] = []
+    for lyric, reading in zip(lyrics, readings, strict=True):
+        # カナだけの入力なら読み辞書が無い環境でも扱える。漢字を含む通常入力では
+        # サーバーに同梱された読み変換が reading を返す。
+        kana = jaconv.hira2kata(_pron_normalize(reading or strip_ruby(lyric)))
+        if kana:
+            correct.append((strip_ruby(lyric), kana))
+    if not correct:
+        raise ValueError("正解歌詞の読みを取得できませんでした")
+
+    # 歌詞行よりノートが少ない極端な入力では、空のLineを作らないよう隣接行を
+    # まとめる。通常の歌唱では1行に複数ノートあるためこの経路には入らない。
+    if len(correct) > len(ordered_note_ids):
+        merged: list[tuple[str, str]] = []
+        groups = len(ordered_note_ids)
+        for group in range(groups):
+            start = round(group * len(correct) / groups)
+            end = round((group + 1) * len(correct) / groups)
+            chunk = correct[start:end]
+            merged.append(
+                (
+                    " ".join(text for text, _ in chunk),
+                    "".join(kana for _, kana in chunk),
+                )
+            )
+        correct = merged
+
+    recognized_parts = [
+        jaconv.hira2kata(_pron_normalize(project.notes[note_id].kana))
+        for note_id in ordered_note_ids
+    ]
+    recognized_text = "".join(recognized_parts)
+    correct_text = "".join(kana for _, kana in correct)
+    if not recognized_text:
+        raise ValueError("認識歌詞の読みが空なので正解歌詞を対応付けられません")
+
+    opcodes = SequenceMatcher(
+        None, correct_text, recognized_text, autojunk=False
+    ).get_opcodes()
+    recognized_note_offsets = [0]
+    for part in recognized_parts:
+        recognized_note_offsets.append(recognized_note_offsets[-1] + len(part))
+
+    correct_offsets = [0]
+    for _text, kana in correct:
+        correct_offsets.append(correct_offsets[-1] + len(kana))
+
+    boundaries = [0]
+    note_count = len(ordered_note_ids)
+    for line_index, correct_offset in enumerate(correct_offsets[1:-1], start=1):
+        recognized_offset = _map_correct_offset_to_recognized(
+            opcodes, correct_offset, len(recognized_text)
+        )
+        pos = bisect_left(recognized_note_offsets, recognized_offset)
+        if pos and (
+            pos == len(recognized_note_offsets)
+            or recognized_offset - recognized_note_offsets[pos - 1]
+            <= recognized_note_offsets[pos] - recognized_offset
+        ):
+            pos -= 1
+        # 各歌詞行に最低1ノートを割り当て、後続行のぶんも残す。
+        remaining_lines = len(correct) - line_index
+        boundaries.append(max(boundaries[-1] + 1, min(pos, note_count - remaining_lines)))
+    boundaries.append(note_count)
+
+    new_lines: list[Line] = []
+    for line_id, ((surface, kana), start, end) in enumerate(
+        zip(correct, boundaries[:-1], boundaries[1:], strict=True)
+    ):
+        note_ids = ordered_note_ids[start:end]
+        for note_id in note_ids:
+            project.notes[note_id].line = line_id
+        new_lines.append(
+            Line(
+                id=line_id,
+                xf_surface=surface,
+                xf_kana=kana,
+                note_ids=note_ids,
+                original_text=surface,
+            )
+        )
+    project.lines = new_lines
 
 
 # ---- 字幕の表示粒度(granularity) ----

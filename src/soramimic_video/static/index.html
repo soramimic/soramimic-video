@@ -567,6 +567,13 @@
   }
   .audio-upload-entry .hint { margin: 0; }
   #song-upload-filename { overflow-wrap: anywhere; color: var(--text); }
+  .lyrics-recognition-toggle {
+    display: flex; align-items: center; gap: .45rem; margin-top: .15rem;
+  }
+  .lyrics-recognition-toggle input { width: 1.1rem; height: 1.1rem; margin: 0; }
+  #lyrics-correction-panel { display: grid; gap: .35rem; text-align: left; }
+  #lyrics-correction-panel[hidden] { display: none; }
+  #lyrics-correction-panel textarea { width: 100%; min-height: 7rem; resize: vertical; }
   .audio-upload-entry.drag-over {
     border-color: var(--accent); background: #1296f010;
     box-shadow: inset 0 0 0 2px #1296f044;
@@ -696,11 +703,18 @@
       </button>
       <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
       <p class="hint" id="song-upload-filename" role="status" hidden></p>
+      <label class="lyrics-recognition-toggle" for="auto-lyrics">
+        <input type="checkbox" id="auto-lyrics" aria-controls="lyrics-correction-panel" checked>
+        歌詞を自動認識
+      </label>
+      <div id="lyrics-correction-panel" hidden>
+        <label for="lyrics">正解歌詞</label>
+        <textarea id="lyrics" rows="5" placeholder="正しい歌詞を行ごとに入力してください"></textarea>
+        <p class="hint">認識した歌詞をノートの基準にし、入力した歌詞を替え歌生成に使います。</p>
+      </div>
     </div>
     <div id="audio-input-panel" class="field" hidden>
       <p><strong id="audio-filename"></strong></p>
-      <label for="audio-lyrics">元歌詞(任意)</label>
-      <textarea id="audio-lyrics" rows="4" placeholder="空欄なら音源から自動認識します"></textarea>
       <p class="hint">音源を解析してメロディーとタイミングを推定します。解析には時間がかかることがあります。</p>
       <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
     </div>
@@ -858,7 +872,6 @@
     <select id="sample-select" aria-label="サンプル曲"></select>
     <p id="sample-status"></p>
   </div>
-  <textarea id="lyrics"></textarea>
 </div>
 
 <!-- 2. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
@@ -2735,6 +2748,13 @@ async function submitJob(previewSec, previewMode) {
       + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
     return;
   }
+  if (songInputMode === "upload" && !$("auto-lyrics").checked
+      && !$("lyrics").value.trim()) {
+    setBusy(false);
+    showSubmitMsg("歌詞の自動認識をオフにした場合は、正解歌詞を入力してください。");
+    $("lyrics").focus();
+    return;
+  }
   showSubmitMsg("");
   // 替え歌の出どころを決める。エディタで編集したまま「取り込んで閉じる」を
   // 押していなくても、その編集がそのまま使われる(editorSourceForSubmit)。
@@ -2772,7 +2792,7 @@ async function submitJob(previewSec, previewMode) {
   else if (sampleId) form.append("sample_id", sampleId);
   else form.append("midi", midi);
   if (editorSrc.file) form.append("editor", editorSrc.file);
-  form.append("lyrics", audio ? $("audio-lyrics").value : $("lyrics").value);
+  appendSongLyrics(form);
   form.append("model", $("model").value);
   form.append("synthesizer", simpleMode ? "voicevox" : $("synthesizer").value);
   form.append("voicevox_style", simpleMode
@@ -2974,6 +2994,34 @@ function rejectOwnSongFile(message) {
   showBuilderMsg(message);
 }
 
+function automaticLyricsEnabled() {
+  return songInputMode !== "upload" || $("auto-lyrics").checked;
+}
+
+function songLyricsForRequest() {
+  if (songInputMode !== "upload") return $("lyrics").value;
+  return $("auto-lyrics").checked ? "" : $("lyrics").value;
+}
+
+function appendSongLyrics(form) {
+  form.append("lyrics", songLyricsForRequest());
+  form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");
+}
+
+function syncLyricsRecognition() {
+  const automatic = $("auto-lyrics").checked;
+  $("lyrics-correction-panel").hidden = automatic;
+  $("lyrics").required = !automatic;
+  $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
+}
+
+$("auto-lyrics").addEventListener("change", () => {
+  syncLyricsRecognition();
+  clearEditorFile();
+  scheduleMidiCheck();
+});
+syncLyricsRecognition();
+
 function showSongInputMode(mode) {
   songInputMode = mode;
   $("song-upload-panel").hidden = mode !== "upload";
@@ -2991,10 +3039,12 @@ function switchSongInputMode(mode) {
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioPresentation();
   clearEditorFile();
-  for (const id of ["lyrics", "audio-lyrics", "original-credit", "credit-notice"]) {
+  for (const id of ["lyrics", "original-credit", "credit-notice"]) {
     $(id).value = "";
     $(id).dispatchEvent(new Event("change", { bubbles: true }));
   }
+  $("auto-lyrics").checked = true;
+  syncLyricsRecognition();
   $("sample-status").textContent = "";
   $("audio-sample-credit").hidden = true;
   $("midi-restore-hint").hidden = true;
@@ -3083,7 +3133,6 @@ $("midi").addEventListener("change", () => {
   }
   $("audio-filename").textContent = file.name;
   $("audio-input-panel").hidden = false;
-  $("audio-lyrics").value = "";
   $("builder-edit").disabled = true;
   $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
@@ -3381,7 +3430,7 @@ function renderLyricsMidiWarning(info) {
   const lines = info.lines || 0;
   const lyr = info.lyrics_lines || 0;
   const bad = info.unmatched_lines || 0;
-  if (!lines || !lyr || bad < Math.max(2, lines * 0.2)) {
+  if (!$("auto-lyrics").checked || !lines || !lyr || bad < Math.max(2, lines * 0.2)) {
     el.textContent = "";
     el.hidden = true;
     return;
@@ -3408,7 +3457,7 @@ async function checkMidi() {
     const form = new FormData();
     if (sampleId) form.append("sample_id", sampleId);
     else form.append("midi", f);
-    form.append("lyrics", $("lyrics").value);
+    form.append("lyrics", songLyricsForRequest());
     const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
     body = await res.json();
     if (!res.ok) {
@@ -6068,7 +6117,7 @@ async function reseedEditorSong() {
   const form = new FormData();
   if (midiSampleId) form.append("sample_id", midiSampleId);
   else form.append("midi", midi);
-  form.append("lyrics", $("lyrics").value);
+  appendSongLyrics(form);
   form.append("wordlist", $("wordlist").value.trim());
   form.append("where", $("where").value.trim());
   form.append("convert_params", buildConvertParams());
@@ -6252,7 +6301,7 @@ async function convertAndOpenEditor() {
   const form = new FormData();
   if (midiSampleId) form.append("sample_id", midiSampleId);
   else form.append("midi", midi);
-  form.append("lyrics", $("lyrics").value);
+  appendSongLyrics(form);
   form.append("wordlist", $("wordlist").value.trim());
   form.append("where", $("where").value.trim());
   // 変換パラメータは生成時と同じものを使う(エディタの初期値と生成結果を揃える)

@@ -118,11 +118,40 @@ def test_job_flow_accepts_wav_and_keeps_existing_playback(client):
     body = wait_done(client, job_id)
     assert body["status"] == "done"
     assert body["params"]["input_kind"] == "audio"
+    assert body["params"]["auto_lyrics"] is True
     assert body["song_label"] == "アップロードした曲"
     job = client.app.state.manager.jobs[job_id]
     assert (job.dir / "input.wav").read_bytes() == wav
     assert not (job.dir / "input.mid").exists()
     assert client.get(body["playback_url"]).content == FAKE_MP4
+
+
+def test_manual_correct_lyrics_mode_is_persisted(client):
+    wav = fake_wav()
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", wav, "audio/wav")},
+        data={
+            "wordlist": "stations",
+            "auto_lyrics": "false",
+            "lyrics": "正しい歌詞",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    job = client.app.state.manager.jobs[body["id"]]
+    assert body["params"]["auto_lyrics"] is False
+    assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正しい歌詞"
+
+
+def test_manual_correct_lyrics_mode_requires_lyrics(client):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations", "auto_lyrics": "false", "lyrics": "  "},
+    )
+    assert res.status_code == 422
+    assert "正解歌詞を入力" in res.json()["detail"]
 
 
 def test_job_flow_accepts_bundled_wav_preset(client, tmp_path, monkeypatch):
@@ -352,6 +381,42 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
         params={"input_kind": "audio"},
     )
     with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})
+
+
+def test_manual_wav_lyrics_align_after_transcription(tmp_path, monkeypatch):
+    from soramimic_video import align as align_mod
+    from soramimic_video import analyze_audio as analyze_audio_mod
+
+    class ReachedCorrectLyricsAligner(Exception):
+        pass
+
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(fake_wav())
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("正しい歌詞", encoding="utf-8")
+    recognized_project = object()
+
+    def fake_analyze(audio_path, project_dir, **kwargs):
+        assert audio_path == audio
+        assert project_dir == tmp_path
+        assert kwargs["lyrics_path"] is None
+        return recognized_project
+
+    def fake_align(project, lines):
+        assert project is recognized_project
+        assert lines == ["正しい歌詞"]
+        raise ReachedCorrectLyricsAligner
+
+    monkeypatch.setattr(analyze_audio_mod, "analyze_audio", fake_analyze)
+    monkeypatch.setattr(align_mod, "align_correct_lyrics", fake_align)
+    job = api_mod.Job(
+        id="wav-correct-lyrics",
+        dir=tmp_path,
+        params={"input_kind": "audio", "auto_lyrics": False},
+    )
+
+    with pytest.raises(ReachedCorrectLyricsAligner):
         api_mod.run_pipeline(job, {})
 
 
@@ -2124,11 +2189,11 @@ def _advanced_html() -> str:
     return body.split('<details class="card" id="history">')[0]
 
 
-def test_index_html_song_values_are_hidden_canonicals():
-    """曲・MIDI・元歌詞の正本はDOMに残すが、詳細設定には表示しない。
+def test_index_html_song_values_keep_hidden_file_canonicals_and_visible_correct_lyrics():
+    """曲・MIDIの正本は隠し、正解歌詞だけアップロード欄に必要時表示する。
 
-    選ぶ操作はビルダーカードと替え歌エディタに移譲済み。送信・保存・復元・MIDI検証・
-    親子同期はこのIDを読むので、要素そのものは hidden の正本として温存する。
+    ファイル選択の正本は既存処理のためhidden領域に残す。歌詞の正本は自動認識を
+    オフにしたとき入力できるよう、アップロード欄の条件表示パネルへ置く。
     """
     html = _index_html()
     store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
@@ -2136,7 +2201,11 @@ def test_index_html_song_values_are_hidden_canonicals():
     assert '.mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.webm' in store
     assert 'id="audio"' not in store
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in store
-    assert '<textarea id="lyrics"></textarea>' in store
+    assert 'id="lyrics"' not in store
+    upload = html.split('<div id="song-upload-panel">')[1].split('<div id="sample-picker"')[0]
+    assert 'id="auto-lyrics"' in upload
+    assert 'id="lyrics-correction-panel" hidden' in upload
+    assert '<textarea id="lyrics"' in upload
     # 隠しのまま置いてよいのは、中身が別の見える場所へ中継されるか、
     # 読まれなくてもユーザーが困らないものだけ(理由はマークアップのコメント)
     for dynamic_id in (
