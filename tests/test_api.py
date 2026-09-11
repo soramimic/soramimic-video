@@ -2249,6 +2249,33 @@ def test_index_html_song_warnings_stay_reachable_without_section_one():
 # ---- 詳細設定(#advanced)の情報整理: 役割ごとのグループを使用頻度順に並べる ----
 
 
+def test_index_html_places_advanced_accordion_below_the_wordlist():
+    """詳細設定は単語リスト直下のスロットへ移し、カード内で開閉できる。"""
+    html = _index_html()
+    card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
+    assert card.index('id="builder-wordlist"') < card.index('id="advanced-slot"')
+    assert card.index('id="advanced-slot"') < card.index('id="builder-fanwork-notice"')
+    assert "$('advanced-slot').replaceWith($('advanced'));" in html
+
+
+def test_index_html_wordlist_filter_is_first_in_advanced_settings():
+    """選択中リストのファセット絞り込みを、詳細設定の先頭で直接変更できる。"""
+    advanced = _advanced_html()
+    assert advanced.index('id="wordlist-filter-field"') < advanced.index('id="auth"')
+    assert 'id="wordlist-facets" class="wordlist-facets"' in advanced
+    html = _index_html()
+    render = html.split("function renderWordlistFilter() {")[1].split("\n}")[0]
+    assert 'field.hidden = !facets.length;' in render
+    assert 'cb.__where = wordlistFacetClause(f, item);' in render
+    compile_filter = html.split("function compileWordlistFilter(g) {")[1].split("\n}")[0]
+    assert 'group.querySelectorAll("input.facet-value:checked")' in compile_filter
+    assert 'return clauses.join(" and ");' in compile_filter
+    commit = html.split("function commitWordlistFilter() {")[1].split("\n}")[0]
+    assert "clearEditorFile();" in commit
+    assert "setWhere(compileWordlistFilter(g));" in commit
+    assert "schedulePreview(true);" in commit
+
+
 def _opt_groups() -> dict[str, str]:
     """詳細設定のグループ見出し → そのグループのHTML。"""
     import re
@@ -2350,7 +2377,7 @@ def test_index_html_wordlist_values_are_hidden_canonicals():
 
 
 def test_index_html_keeps_the_conf_default_filters():
-    """チェックボックスUIを畳んでも、editorと同じfacet既定の絞り込みは残す。
+    """フィルターを触らなくても、editorと同じfacet既定の絞り込みを使う。
 
     駅名は現存駅だけ・流行はセンシティブ除外…といった既定が消えると、UIの整理が
     そのまま出力の変化になってしまう。組み立てた式が本当にエディタ側
