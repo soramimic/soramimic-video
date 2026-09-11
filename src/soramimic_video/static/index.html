@@ -231,6 +231,62 @@
   }
   .opt-group-title { font-size: .9rem; margin: 0; color: var(--text); }
   .opt-group-lead { margin: .15rem 0 .7rem; }
+  /* ---- 曲情報が実際に入る3か所の16:9プレビュー ---- */
+  .song-text-previews { display: grid; gap: .8rem; margin-top: 1rem; }
+  .song-text-preview { margin: 0; }
+  .song-text-preview > figcaption {
+    margin-bottom: .25rem; font-size: .8rem; font-weight: 700; color: var(--muted);
+  }
+  .song-text-stage {
+    position: relative; isolation: isolate; width: 100%; aspect-ratio: 16 / 9;
+    overflow: hidden; border: 1px solid #ffffff24; border-radius: 8px;
+    background: radial-gradient(circle at 72% 32%, #334155 0, #0f172a 38%, #020617 78%);
+    color: #fff; box-shadow: inset 0 0 0 1px #0004;
+  }
+  .song-text-stage-bg {
+    position: absolute; inset: 0; z-index: -2; width: 100%; height: 100%;
+    object-fit: cover; filter: brightness(.52) saturate(.75);
+  }
+  .song-text-stage::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background: linear-gradient(180deg, #0001 0 54%, #000e 55% 86%, #000 87% 100%);
+  }
+  .song-text-thumb-caption {
+    position: absolute; left: 5%; top: 60%; width: 90%; height: 23%; margin: 0;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    padding: 0 .3rem; overflow: hidden; font-size: clamp(.72rem, 3.5vw, 1.55rem);
+    font-weight: 800; line-height: 1.25; text-wrap: balance;
+    text-shadow: 0 2px 4px #000, 0 0 8px #000;
+  }
+  .song-text-thumb-credit {
+    position: absolute; right: 3%; bottom: 5%; width: 42%; margin: 0;
+    overflow: hidden; color: #fff; font-size: min(.66rem, .75vw);
+    line-height: 1.1; text-align: right; white-space: nowrap; text-shadow: 0 1px 3px #000;
+  }
+  .song-text-footer-stage::after {
+    background: linear-gradient(180deg, #0002 0 86%, #000 90% 100%);
+  }
+  .song-text-footer {
+    position: absolute; left: 1.2%; bottom: 1%; width: 70%; margin: 0;
+    overflow: hidden; color: #ffffffb3; font-size: min(.58rem, 1.05vw);
+    line-height: 1.1; white-space: nowrap; text-align: left;
+  }
+  .song-text-credits-stage { background: #000; }
+  .song-text-credits-stage::after { display: none; }
+  .song-text-credits-heading,
+  .song-text-credits-original,
+  .song-text-credits-app,
+  .song-text-credits-synth,
+  .song-text-credits-sites {
+    position: absolute; left: 8%; width: 84%; margin: 0; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    line-height: 1.2;
+  }
+  .song-text-credits-heading { top: 8%; height: 7%; color: #a8a8a8; font-size: clamp(.55rem, 1.8vw, .9rem); }
+  .song-text-credits-original { top: 23%; height: 10%; font-size: clamp(.68rem, 2.25vw, 1.15rem); font-weight: 600; }
+  .song-text-credits-app { top: 56%; height: 8%; font-size: clamp(.62rem, 2.15vw, 1.05rem); }
+  .song-text-credits-synth { top: 65%; height: 7%; font-size: clamp(.55rem, 1.8vw, .9rem); }
+  .song-text-credits-sites { top: 78%; height: 5%; color: #a8a8a8; font-size: clamp(.46rem, 1.5vw, .75rem); }
   /* 詳細設定は単語リストのすぐ下へ差し込む。親カードと同じ面へ直接置き、
      二重カードに見える外枠・角丸・別背景を付けない。 */
   #advanced {
@@ -1030,6 +1086,34 @@
       <p class="hint" data-info>入力文を改変せず、フッターと最後のクレジットに表示します。</p>
     </div>
 
+    <div class="song-text-previews" aria-label="曲情報の表示プレビュー">
+      <figure class="song-text-preview">
+        <figcaption>サムネイル</figcaption>
+        <div class="song-text-stage" aria-labelledby="song-preview-thumb-caption">
+          <img class="song-text-stage-bg" id="song-preview-thumb-bg" alt="" hidden>
+          <p class="song-text-thumb-caption" id="song-preview-thumb-caption"></p>
+          <p class="song-text-thumb-credit" id="song-preview-thumb-credit"></p>
+        </div>
+      </figure>
+      <figure class="song-text-preview">
+        <figcaption>動画フッター</figcaption>
+        <div class="song-text-stage song-text-footer-stage" aria-labelledby="song-preview-footer">
+          <img class="song-text-stage-bg" id="song-preview-footer-bg" alt="" hidden>
+          <p class="song-text-footer" id="song-preview-footer"></p>
+        </div>
+      </figure>
+      <figure class="song-text-preview">
+        <figcaption>最後のクレジット</figcaption>
+        <div class="song-text-stage song-text-credits-stage" aria-labelledby="song-preview-credits-original">
+          <p class="song-text-credits-heading">Credits</p>
+          <p class="song-text-credits-original" id="song-preview-credits-original"></p>
+          <p class="song-text-credits-app">Parody Lyrics &amp; Video　Soramimic</p>
+          <p class="song-text-credits-synth">Vocal Synthesis　VOICEVOX:波音リツ</p>
+          <p class="song-text-credits-sites">soramimic.com / video.soramimic.com</p>
+        </div>
+      </figure>
+    </div>
+
   </section>
 
 </details>
@@ -1418,6 +1502,7 @@ let resumed = false;
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
 // 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
 let wordlistLayouts = {};
+let wordlistPhrases = {};
 let wordlistImagePolicies = {};
 let simpleMode = false;
 let launchWordlists = [];
@@ -1468,6 +1553,7 @@ async function loadConfig() {
   fillChoiceOptions("layout", conf.layouts || [], "(指定なし)");
   setChoice("layout", $("layout").value || "");
   wordlistLayouts = conf.wordlist_layouts || {};
+  wordlistPhrases = conf.wordlist_phrases || {};
   $("editor-embed-controls").hidden = !conf.editor;
   setupPublicMode(conf);
   setupTurnstile(conf.turnstile_site_key || "");
@@ -1478,6 +1564,7 @@ async function loadConfig() {
   leUpdateStatus();     // 復元した編集の有無をフォーム側の表示に反映
   // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
   await initBuilder();
+  updateSongTextPreviews();
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
   const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
@@ -2895,6 +2982,48 @@ function songTitleOf(file) {
   const base = ((file && file.name) || "").replace(/\.[^.]+$/, "");
   return $("song-title").value.trim() || base;
 }
+
+// 曲情報の文字が入る3か所を、実際と同じ16:9・固定位置で即時確認する。
+// 背景には現在のビルダー画像を借りるが、文字は入力値から組み直すため、
+// 持ち込み曲の曲名を変えたときもジョブ生成を待たずに反映される。
+function updateSongTextPreviews() {
+  const title = songTitleOf(ownSongFile()) || "曲名";
+  const custom = activeCustomList();
+  const group = selectedWordlistGroup();
+  const wordlistLabel = custom?.name || wordlistPhrases[currentWordlistName()] || group?.text
+    || (showsEditorWordlist() ? "自作リスト" : "単語リスト");
+  const author = $("original-credit").value.trim();
+  const notice = $("credit-notice").value.trim();
+  const baseCredit = currentWordlistName().toLowerCase() === "vtuber"
+    ? "lyrics & video by Soramimic / 非公式・ファンメイド"
+    : "lyrics & video by Soramimic";
+  const original = [title, notice].filter(Boolean).join(" — ");
+  const footer = [baseCredit, "VOICEVOX:波音リツ",
+    original ? "Original: " + original : ""].filter(Boolean).join(" / ");
+  const finalCredit = [title, notice || author].filter(Boolean).join(" — ");
+
+  $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
+  $("song-preview-thumb-credit").textContent = footer;
+  $("song-preview-footer").textContent = footer;
+  $("song-preview-credits-original").textContent = finalCredit;
+
+  const builderImage = $("builder-image").getAttribute("src") || "";
+  for (const id of ["song-preview-thumb-bg", "song-preview-footer-bg"]) {
+    const image = $(id);
+    if (builderImage) image.setAttribute("src", builderImage);
+    else image.removeAttribute("src");
+    image.hidden = !builderImage;
+  }
+}
+
+for (const id of ["song-title", "original-credit", "credit-notice"]) {
+  $(id).addEventListener("input", updateSongTextPreviews);
+  $(id).addEventListener("change", updateSongTextPreviews);
+}
+$("wordlist").addEventListener("change", updateSongTextPreviews);
+new MutationObserver(updateSongTextPreviews).observe($("builder-image"), {
+  attributes: true, attributeFilter: ["src"],
+});
 
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
 let sampleDescriptions = {};

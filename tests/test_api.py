@@ -1303,6 +1303,12 @@ def test_config_lists_layouts(client):
     assert "default" in conf["layouts"] and "caption" in conf["layouts"]
 
 
+def test_config_lists_wordlist_phrases_for_text_previews(client):
+    phrases = client.get("/api/config").json()["wordlist_phrases"]
+    assert phrases["stations"] == "駅名"
+    assert phrases["baseball"] == "野球選手名"
+
+
 def test_config_has_wordlist_layouts(client):
     conf = client.get("/api/config").json()
     wl = conf["wordlist_layouts"]
@@ -2336,6 +2342,8 @@ def test_index_html_advanced_groups_hide_controls_and_expose_song_text():
     assert 'id="song-title"' in credit
     assert 'id="original-credit"' in credit
     assert 'id="credit-notice"' in credit
+    for preview in ("thumb-caption", "footer", "credits-original"):
+        assert f'id="song-preview-{preview}"' in credit
 
 
 def test_index_html_layout_base_select_lives_in_the_editor_modal():
