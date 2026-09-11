@@ -140,11 +140,39 @@ def test_simple_ui_hides_advanced_and_filters_wordlists():
     assert "loadWordlistSelect(conf.wordlist_config ?? conf.editor)" in script
     assert "const allowed = new Set(launchWordlists);" in script
     assert "return allowed.has(name);" in script
-    defaults = _function_body(script, "function applySimpleDefaults()")
+    defaults = _function_body(script, "function applyFixedUiDefaults()")
     assert '$("synthesizer").value = "voicevox"' in defaults
     assert '$("auto-octave").checked = true' in defaults
     assert '$("transpose").value = "0"' in defaults
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
+    assert "if (!simpleMode) return;" not in defaults
+
+
+def test_web_ui_only_exposes_fixed_position_song_text_fields():
+    """dev UIでも歌声・レイアウト操作を隠し、元曲由来の文字だけ残す。"""
+    markup = _markup()
+    advanced = markup[markup.index('<details class="card" id="advanced">') :]
+    advanced = advanced[: advanced.index("</details>")]
+    assert '<section class="opt-group" hidden>\n    <h3 class="opt-group-title">① 歌声' in advanced
+    assert '<section class="opt-group" hidden>\n    <!-- 中身がレイアウトだけ' in advanced
+    assert '<h3 class="opt-group-title">曲情報・クレジット</h3>' in advanced
+    for field in ("song-title", "original-credit", "credit-notice"):
+        assert f'id="{field}"' in advanced
+
+    script = _script()
+    submit = _function_body(script, "async function submitJob(previewSec, previewMode)")
+    assert 'form.append("synthesizer", "voicevox")' in submit
+    assert 'form.append("voicevox_style", String(fixedVoicevoxStyle))' in submit
+    assert 'form.append("auto_octave", "true")' in submit
+    assert 'form.append("transpose", "0")' in submit
+    assert 'form.append("layout_json"' not in submit
+    assert "let fixedVoicevoxStyle = 6000;" in script
+
+    title = _function_body(script, "function songTitleOf(file)")
+    assert '$("song-title").value.trim() || base' in title
+    assert 'songTitle: $("song-title").value' in script
+    assert '$("song-title").value = state.songTitle || ""' in script
+    assert '$("song-title").value = sampleTitleOf(sid)' in script
 
 
 def test_plant_wordlist_is_available_in_every_selection_ui():
@@ -1613,7 +1641,7 @@ def test_editor_wordlist_is_written_back_to_the_form():
     レイアウトの解決が古いリストのままになる(どれも正本を見ている)。
     """
     script = _script()
-    body = _function_body(script, "function applyEditorWordlist()")
+    body = _function_body(script, "async function applyEditorWordlist()")
     # 名前付きリスト(filepath) → stem を既存の選択経路へ流し、where はエディタ優先
     assert r'String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "")' in body
     assert "selectWordlist(name);" in body
@@ -1649,7 +1677,7 @@ def test_editor_lyrics_are_written_back_to_the_form():
     assert '$("lyrics").value = data.lyrics;' in body
     assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
     # 単語リストの書き戻しと同じ経路(ポーリングと「閉じる」)で拾う
-    sync = _function_body(script, "function syncEditorSession()")
+    sync = _function_body(script, "async function syncEditorSessionOnce()")
     assert "applyEditorLyrics();" in sync
     # 来歴(editorProvenance)は元歌詞を見ないので、書き戻しで編集が捨てられない
     prov = _function_body(script, "function editorProvenance()")
@@ -1829,11 +1857,13 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         let editorFile = null;
         const editorSourceForSubmit = () => ({ file: editorFile, live: false });
         const parodyMismatch = () => true, confirm = () => true;
-        const editorWordlist = { name: "fanwork" }, leDirty = false;
+        const editorWordlist = { name: "fanwork" }, leDirty = true;
         let simpleMode = true;
-        const fixedVoicevoxStyle = 3003, turnstileSiteKey = "";
+        const fixedVoicevoxStyle = 6000, turnstileSiteKey = "";
         const songTitleOf = () => "sample", buildConvertParams = () => "{}";
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
+        const activeCustomList = () => selected === "custom" ? {} : null;
+        const showsEditorWordlist = () => false;
         const showProgress = () => {}, setJobStatus = () => {}, resetTurnstile = () => {};
         const watch = () => { submitBusy = false; };
         const requests = [];
@@ -1872,6 +1902,19 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
           assert.equal(requests.length, before + 1);
           assert.ok(requests.at(-1).get("editor"));
           assert.equal(requests.at(-1).get("allow_noncommercial_fanwork"), "true");
+          $("layout").value = "caption";
+          $("layout-json").value = '{"elements": []}';
+          for (const name of ["custom", "ordinary"]) {
+            selected = name;
+            await submitJob(0, "");
+            assert.equal(requests.at(-1).get("layout"), name === "custom" ? "" : "caption");
+            assert.equal(requests.at(-1).has("layout_json"), false);
+            assert.equal(requests.at(-1).get("synthesizer"), "voicevox");
+            assert.equal(requests.at(-1).get("voicevox_style"), "6000");
+            assert.equal(requests.at(-1).get("auto_octave"), "true");
+            assert.equal(requests.at(-1).get("transpose"), "0");
+          }
+
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
@@ -1904,7 +1947,7 @@ def test_editor_seed_advertises_the_song_choices():
 def test_host_request_is_polled_and_handled_once():
     """依頼の処理は監視ポーリングの中で、開いているあいだだけ、1件ずつ。"""
     script = _script()
-    sync = _function_body(script, "function syncEditorSession()")
+    sync = _function_body(script, "async function syncEditorSessionOnce()")
     assert "handleHostRequest();" in sync
     body = _function_body(script, "async function handleHostRequest()")
     # 多重処理を防ぐ(処理中フラグと、応えた nonce の記録)
