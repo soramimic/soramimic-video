@@ -233,6 +233,7 @@
   .opt-group-lead { margin: .15rem 0 .7rem; }
   /* ---- 曲情報が実際に入る3か所の16:9プレビュー ---- */
   .song-text-previews { display: grid; gap: .8rem; margin-top: 1rem; }
+  #song-credit-section.is-readonly > .field { opacity: .55; }
   .song-text-preview { margin: 0; }
   .song-text-preview > figcaption {
     margin-bottom: .25rem; font-size: .8rem; font-weight: 700; color: var(--muted);
@@ -1062,7 +1063,7 @@
   </section>
 
   <!-- 固定レイアウトへ差し込む元曲由来の文字だけを編集できる。 -->
-  <section class="opt-group">
+  <section class="opt-group" id="song-credit-section">
     <h3 class="opt-group-title">曲情報・クレジット</h3>
     <p class="hint opt-group-lead" data-info>文字だけを書き換えられます。サムネイル、フッター、最後のクレジットで使う位置や大きさは、単語リストに対応するカードに固定されます。</p>
 
@@ -3184,6 +3185,12 @@ function showSongInputMode(mode) {
   songInputMode = mode;
   $("song-upload-panel").hidden = mode !== "upload";
   $("sample-picker").hidden = mode !== "sample";
+  const readonly = mode !== "upload";
+  $("song-credit-section").classList.toggle("is-readonly", readonly);
+  $("song-credit-section").setAttribute("aria-disabled", String(readonly));
+  for (const id of ["song-title", "original-credit", "credit-notice"]) {
+    $(id).disabled = readonly;
+  }
   $("song-source-switch").textContent = mode === "upload"
     ? "サンプル曲で試す" : "曲をアップロード";
 }
