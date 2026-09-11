@@ -511,6 +511,7 @@ def _song_input_node_harness() -> str:
         _function_body(script, head) + "\n}"
         for head in (
             "function ownSongFile()",
+            "function syncLyricsRecognition()",
             "function showSongInputMode(",
             "function switchSongInputMode(",
             "function syncBuilderValues()",
@@ -537,7 +538,8 @@ def _song_input_node_harness() -> str:
             focus() { focused = id; },
             addEventListener(type, callback) { this.listeners.set(type, callback); },
             dispatchEvent(event) { this.listeners.get(event.type)?.(event); },
-            replaceChildren() {}
+            replaceChildren() {},
+            setAttribute(name, value) { this[name] = value; }
           });
           return elements.get(id);
         }
@@ -572,7 +574,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         """
         $("midi").files = [{ name: "my-song.mid" }];
         $("editor").files = [{ name: "parody.json" }];
-        for (const id of ["lyrics", "audio-lyrics", "original-credit", "credit-notice"]) {
+        for (const id of ["lyrics", "original-credit", "credit-notice"]) {
           $(id).value = "old song data";
         }
         syncBuilderValues();
@@ -581,7 +583,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         switchSongInputMode("sample");
         assert.deepEqual($("midi").files, [], "a hidden MIDI must not remain active");
         assert.deepEqual($("editor").files, []);
-        for (const id of ["lyrics", "audio-lyrics", "original-credit", "credit-notice"]) {
+        for (const id of ["lyrics", "original-credit", "credit-notice"]) {
           assert.equal($(id).value, "");
         }
         assert.equal($("song-upload-panel").hidden, true);
@@ -1654,7 +1656,7 @@ def test_editor_lyrics_are_written_back_to_the_form():
     assert "lyrics" not in prov
     # 元歌詞はエディタへのシードにも載る(サーバーが入れるので送るだけ)
     for fn in ("async function convertAndOpenEditor()", "async function reseedEditorSong()"):
-        assert 'form.append("lyrics", $("lyrics").value);' in _function_body(script, fn)
+        assert "appendSongLyrics(form);" in _function_body(script, fn)
 
 
 def test_card_selects_mirror_the_canonical_form():
@@ -1690,7 +1692,11 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'name.endsWith(".mid") || name.endsWith(".midi")' in script
     assert '$("song-upload-button").addEventListener("click", () => $("midi").click());' in script
     assert 'id="audio-input-panel"' in html
-    assert 'id="audio-lyrics"' in html
+    assert 'id="auto-lyrics"' in html
+    assert 'id="auto-lyrics" aria-controls="lyrics-correction-panel" checked' in html
+    assert 'id="lyrics-correction-panel" hidden' in html
+    assert '<textarea id="lyrics"' in html
+    assert 'id="audio-lyrics"' not in html
     assert 'songUploadEntry.addEventListener("drop"' in script
     assert 'files.length !== 1' in script
     assert 'setOwnSongFile(files[0]);' in script
@@ -1698,10 +1704,10 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '<video id="builder-video" controls playsinline' in html
     submit = _function_body(script, "async function submitJob(")
     assert 'if (audio) form.append("audio", audio);' in submit
-    assert (
-        'form.append("lyrics", audio ? $("audio-lyrics").value : $("lyrics").value);'
-        in submit
-    )
+    assert "appendSongLyrics(form);" in submit
+    append = _function_body(script, "function appendSongLyrics(")
+    assert 'form.append("lyrics", songLyricsForRequest());' in append
+    assert 'form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");' in append
     # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
     assert 'localStorage.setItem("audioFile"' not in script
     save = script[script.index('// 持ち込みMIDIはバイナリ') :]
@@ -1783,13 +1789,16 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             "function usesNoncommercialFanworkImages()",
             "function updateNoncommercialFanworkNotice()",
             "function loadWordlistImage(name, seq)",
+            "function automaticLyricsEnabled()",
+            "function songLyricsForRequest()",
+            "function appendSongLyrics(form)",
             "async function submitJob(previewSec, previewMode)",
         )
     )
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
-        let selected = "fanwork";
+        let selected = "fanwork", songInputMode = "sample";
         const wordlistImagePolicies = {
           fanwork: { usage: "noncommercial_fanwork", terms_pages: [
             { url: "https://example.com/one", label: "規約1" },
