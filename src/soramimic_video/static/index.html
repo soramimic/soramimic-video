@@ -1971,11 +1971,6 @@ function historyCard(job, index) {
     }
     const download = historyButton("ダウンロード", "history-download");
     download.addEventListener("click", () => downloadHistoryResult(job));
-    if (job.result_kind !== "audio") {
-      const sources = historyButton("出典・クレジット", "history-sources");
-      sources.addEventListener("click", () => openImageSources(job));
-      actions.appendChild(sources);
-    }
     actions.appendChild(download);
     copy.appendChild(actions);
   }
@@ -3953,12 +3948,6 @@ function showBuilderVideo(job) {
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
-  const sourceButton = document.createElement("button");
-  sourceButton.type = "button";
-  sourceButton.className = "btn-sm";
-  sourceButton.textContent = "この動画の出典・クレジット";
-  sourceButton.addEventListener("click", () => openImageSources(job));
-  $("builder-share").append(sourceButton);
   bindShare(job.video_url);
   prepareVideoShare(job.video_url, video);
   setBuilderState("done");
