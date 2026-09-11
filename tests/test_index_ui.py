@@ -140,11 +140,39 @@ def test_simple_ui_hides_advanced_and_filters_wordlists():
     assert "loadWordlistSelect(conf.wordlist_config ?? conf.editor)" in script
     assert "const allowed = new Set(launchWordlists);" in script
     assert "return allowed.has(name);" in script
-    defaults = _function_body(script, "function applySimpleDefaults()")
+    defaults = _function_body(script, "function applyFixedUiDefaults()")
     assert '$("synthesizer").value = "voicevox"' in defaults
     assert '$("auto-octave").checked = true' in defaults
     assert '$("transpose").value = "0"' in defaults
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
+    assert "if (!simpleMode) return;" not in defaults
+
+
+def test_web_ui_only_exposes_fixed_position_song_text_fields():
+    """dev UIでも歌声・レイアウト操作を隠し、元曲由来の文字だけ残す。"""
+    markup = _markup()
+    advanced = markup[markup.index('<details class="card" id="advanced">') :]
+    advanced = advanced[: advanced.index("</details>")]
+    assert '<section class="opt-group" hidden>\n    <h3 class="opt-group-title">① 歌声' in advanced
+    assert '<section class="opt-group" hidden>\n    <!-- 中身がレイアウトだけ' in advanced
+    assert '<h3 class="opt-group-title">曲情報・クレジット</h3>' in advanced
+    for field in ("song-title", "original-credit", "credit-notice"):
+        assert f'id="{field}"' in advanced
+
+    script = _script()
+    submit = _function_body(script, "async function submitJob(previewSec, previewMode)")
+    assert 'form.append("synthesizer", "voicevox")' in submit
+    assert 'form.append("voicevox_style", String(fixedVoicevoxStyle))' in submit
+    assert 'form.append("auto_octave", "true")' in submit
+    assert 'form.append("transpose", "0")' in submit
+    assert 'form.append("layout_json"' not in submit
+    assert "let fixedVoicevoxStyle = 6000;" in script
+
+    title = _function_body(script, "function songTitleOf(file)")
+    assert '$("song-title").value.trim() || base' in title
+    assert 'songTitle: $("song-title").value' in script
+    assert '$("song-title").value = state.songTitle || ""' in script
+    assert '$("song-title").value = sampleTitleOf(sid)' in script
 
 
 def test_plant_wordlist_is_available_in_every_selection_ui():
@@ -1831,7 +1859,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         const parodyMismatch = () => true, confirm = () => true;
         const editorWordlist = { name: "fanwork" }, leDirty = true;
         let simpleMode = true;
-        const fixedVoicevoxStyle = 3003, turnstileSiteKey = "";
+        const fixedVoicevoxStyle = 6000, turnstileSiteKey = "";
         const songTitleOf = () => "sample", buildConvertParams = () => "{}";
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
         const activeCustomList = () => selected === "custom" ? {} : null;
@@ -1880,7 +1908,11 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             selected = name;
             await submitJob(0, "");
             assert.equal(requests.at(-1).get("layout"), name === "custom" ? "" : "caption");
-            assert.equal(requests.at(-1).has("layout_json"), name !== "custom");
+            assert.equal(requests.at(-1).has("layout_json"), false);
+            assert.equal(requests.at(-1).get("synthesizer"), "voicevox");
+            assert.equal(requests.at(-1).get("voicevox_style"), "6000");
+            assert.equal(requests.at(-1).get("auto_octave"), "true");
+            assert.equal(requests.at(-1).get("transpose"), "0");
           }
 
         })().catch((error) => { console.error(error); process.exitCode = 1; });

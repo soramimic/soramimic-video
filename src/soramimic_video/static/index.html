@@ -901,9 +901,9 @@
   </div>
 </div>
 
-<!-- 2. 細かい設定はすべてこの折りたたみの中。初見の画面には出さない。
-     曲・元歌詞・単語リスト・変換のしかたはビルダーカードとエディタに一本化し、
-     ここには動画にする側の歌声と見た目だけを残す。 -->
+<!-- 2. 元曲に由来する表示文字はこの折りたたみで編集する。
+     曲・元歌詞・単語リスト・変換のしかたはビルダーカードとエディタに一本化。
+     歌声とレイアウトの既存DOMは機能を残すため保持するが、Web UIでは非表示にする。 -->
 <details class="card" id="advanced">
   <summary>⚙️ 詳細設定</summary>
 
@@ -914,9 +914,7 @@
     <div id="wordlist-facets" class="wordlist-facets"></div>
   </div>
 
-  <!-- 中身は役割ごとに2つのグループに分ける。フラットに並べると初見の人が
-       どこから触ればいいか分からないため、小見出し+1行の説明で区切る。
-       ふだん触らないものは末尾の「上級者向け」へ。 -->
+  <!-- 既存機能の非表示グループと、表示する曲情報グループをDOM上で分ける。 -->
 
   <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig が auth_required を見て
        hidden を外す)。公開モードや認証なしの構成では最後まで hidden のまま。
@@ -927,8 +925,8 @@
     <input type="password" id="api-key" placeholder="X-API-Key">
   </div>
 
-  <!-- ① 歌声 -->
-  <section class="opt-group">
+  <!-- 歌声の調整・試聴機能はAPI/DOMには残すが、Web UIでは波音リツに固定する。 -->
+  <section class="opt-group" hidden>
     <h3 class="opt-group-title">① 歌声</h3>
     <p class="hint opt-group-lead" data-info>誰の声で、どの高さで歌うか。</p>
 
@@ -981,8 +979,8 @@
     </div>
   </section>
 
-  <!-- ② 見た目 -->
-  <section class="opt-group">
+  <!-- レイアウト編集機能はAPI/DOMには残すが、Web UIでは単語リスト対応カードに固定する。 -->
+  <section class="opt-group" hidden>
     <!-- 中身がレイアウトだけになったので、見出し「見た目」+ラベル「レイアウト」の
          二段構えをやめて見出しに統合(ⓘも1つに) -->
     <h3 class="opt-group-title">② 見た目</h3>
@@ -1007,23 +1005,29 @@
     </div>
   </section>
 
-  <!-- ③ 元曲クレジット -->
+  <!-- 固定レイアウトへ差し込む元曲由来の文字だけを編集できる。 -->
   <section class="opt-group">
-    <h3 class="opt-group-title">③ 元曲クレジット</h3>
-    <p class="hint opt-group-lead" data-info>動画の最後に元曲名を表示します。著作者や権利者から表記を指定されている場合は、ここにそのまま入力してください。</p>
+    <h3 class="opt-group-title">曲情報・クレジット</h3>
+    <p class="hint opt-group-lead" data-info>文字だけを書き換えられます。サムネイル、フッター、最後のクレジットで使う位置や大きさは、単語リストに対応するカードに固定されます。</p>
+
+    <div class="field">
+      <label for="song-title">曲名</label>
+      <input type="text" id="song-title" maxlength="200" placeholder="例: ふるさと">
+      <p class="hint" data-info>サムネイル、フッター、最後のクレジットに表示します。サンプル曲は登録済みの曲名が使われます。</p>
+    </div>
 
     <div class="field">
       <label for="original-credit">元曲の著作者</label>
       <textarea id="original-credit" rows="2" maxlength="500"
         placeholder="例: 作詞: ○○ / 作曲: △△"></textarea>
-      <p class="hint" data-info>作詞・作曲・編曲など。不明なら空欄のままにせず、公開前に権利情報を確認してください。</p>
+      <p class="hint" data-info>作詞・作曲・編曲など。最後のクレジットに表示します。不明なら空欄のままにせず、公開前に権利情報を確認してください。</p>
     </div>
 
     <div class="field">
       <label for="credit-notice">権利者から指定された表記</label>
       <textarea id="credit-notice" rows="3" maxlength="1000"
         placeholder="例: ©表記、ライセンス名、許諾番号など"></textarea>
-      <p class="hint" data-info>入力文を改変せず、元曲名と並べてエンドクレジットに載せます。</p>
+      <p class="hint" data-info>入力文を改変せず、フッターと最後のクレジットに表示します。</p>
     </div>
 
   </section>
@@ -1417,7 +1421,8 @@ let wordlistLayouts = {};
 let wordlistImagePolicies = {};
 let simpleMode = false;
 let launchWordlists = [];
-let fixedVoicevoxStyle = 3003;
+// Web UIの歌声はVOICEVOX 波音リツ(ノーマル・歌唱)に固定する。
+let fixedVoicevoxStyle = 6000;
 let maxAudioUploadBytes = 200 * 1024 * 1024;
 let audioInputReady = false;
 
@@ -1431,7 +1436,7 @@ async function loadConfig() {
   catch (err) { showBuilderMsg(err.message); }
   wordlistImagePolicies = conf.wordlist_image_policies || {};
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
-  fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 3003);
+  fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   audioInputReady = conf.audio_input === true;
   $("song-upload-hint").textContent = audioInputReady
@@ -1469,7 +1474,7 @@ async function loadConfig() {
   await loadWordlistSelect(conf.wordlist_config ?? conf.editor);
   updateParodyStatus();
   await restoreForm();  // wordlist選択肢が揃った後に前回の入力を復元(初回のみ)
-  applySimpleDefaults();
+  applyFixedUiDefaults();
   leUpdateStatus();     // 復元した編集の有無をフォーム側の表示に反映
   // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
   await initBuilder();
@@ -1485,8 +1490,7 @@ async function loadConfig() {
   }
 }
 
-function applySimpleDefaults() {
-  if (!simpleMode) return;
+function applyFixedUiDefaults() {
   synthesizerTouched = true;
   $("synthesizer").value = "voicevox";
   const style = [...$("voicevox-style").options]
@@ -1494,8 +1498,6 @@ function applySimpleDefaults() {
   if (style) $("voicevox-style").value = style.value;
   $("auto-octave").checked = true;
   $("transpose").value = "0";
-  $("original-credit").value = "";
-  $("credit-notice").value = "";
   const layout = wordlistLayouts[$("wordlist").value.trim()] || "";
   setChoice("layout", layout);
   lastAutoLayout = layout;
@@ -2831,11 +2833,10 @@ async function submitJob(previewSec, previewMode) {
   if (editorSrc.file) form.append("editor", editorSrc.file);
   appendSongLyrics(form);
   form.append("model", $("model").value);
-  form.append("synthesizer", simpleMode ? "voicevox" : $("synthesizer").value);
-  form.append("voicevox_style", simpleMode
-    ? String(fixedVoicevoxStyle) : ($("voicevox-style").value || "3003"));
-  form.append("auto_octave", simpleMode ? "true" : ($("auto-octave").checked ? "true" : "false"));
-  form.append("transpose", simpleMode ? "0" : ($("transpose").value.trim() || "0"));
+  form.append("synthesizer", "voicevox");
+  form.append("voicevox_style", String(fixedVoicevoxStyle));
+  form.append("auto_octave", "true");
+  form.append("transpose", "0");
   form.append("preview", String(previewSec));
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(audio || midi));
@@ -2847,16 +2848,8 @@ async function submitJob(previewSec, previewMode) {
   form.append("convert_params", buildConvertParams());
   const customLayout = !!activeCustomList() || showsEditorWordlist();
   form.append("layout", customLayout ? "" : $("layout").value);
-  // レイアウトJSONは、ユーザーがレイアウトエディタを編集したとき(leDirty)だけ
-  // 送る。読み込んだだけのJSONまで送ると、レイアウト名との食い違い(読み込みに
-  // 失敗して前のリストのJSONが残った等)がそのままサーバー側で優先され、
-  // 別の単語リスト向けのカードで生成されてしまう(api.pyはlayout.jsonを名前より
-  // 優先する)。編集していなければ名前だけ送り、サーバーに読ませる。
-  if (!simpleMode) {
-    if (!customLayout && leDirty && $("layout-json").value.trim()) {
-      form.append("layout_json", $("layout-json").value);
-    }
-  }
+  // Web UIは単語リスト対応カードに固定する。レイアウト編集機能とAPI入力は
+  // 残すが、この画面から古い保存済みJSONを送ってカードを上書きしない。
   if (!editorSrc.file) appendCustomWordlist(form);
   if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
   setBusy(true);
@@ -2893,15 +2886,14 @@ async function submitJob(previewSec, previewMode) {
   }
 }
 
-// サムネ・表示に使う曲名。サンプル曲(ファイル名が <サンプルID>.mid)は
-// samples.json の曲名を、自分で選んだMIDIはファイル名(拡張子なし)を送る。
+// サムネ・フッター・最後のクレジットに使う曲名。サンプル曲は
+// samples.json の曲名を、自分の曲は入力欄(空ならファイル名)から送る。
 // 来歴(midiSampleId)があるときはそれを正とする——MIDIと曲名を同じ出どころから
 // 決めることで、「別の曲のMIDI + 選んだ曲の曲名」のような食い違いを作らない。
 function songTitleOf(file) {
   if (midiSampleId) return sampleTitleOf(midiSampleId);
   const base = ((file && file.name) || "").replace(/\.[^.]+$/, "");
-  const opt = [...$("sample-select").options].find((o) => o.value && o.value === base);
-  return opt ? opt.textContent : base;
+  return $("song-title").value.trim() || base;
 }
 
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
@@ -3076,7 +3068,7 @@ function switchSongInputMode(mode) {
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioPresentation();
   clearEditorFile();
-  for (const id of ["lyrics", "original-credit", "credit-notice"]) {
+  for (const id of ["lyrics", "song-title", "original-credit", "credit-notice"]) {
     $(id).value = "";
     $(id).dispatchEvent(new Event("change", { bubbles: true }));
   }
@@ -3155,6 +3147,7 @@ $("midi").addEventListener("change", () => {
   }
   $("sample-select").value = "";
   midiSampleId = "";
+  if (!restoring) $("song-title").value = file.name.replace(/\.[^.]+$/, "");
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   clearEditorFile();
   if (kind === "midi") {
@@ -3216,6 +3209,7 @@ async function applySample(opts = {}) {
     if (request !== sampleApplySeq || $("sample-select").value !== sid) return false;
     // 前の持ち込みMIDIとlocalStorageの保存版は残さない。
     midiSampleId = sid;
+    $("song-title").value = sampleTitleOf(sid);
     midiFromSample = true;
     try {
       $("midi").value = "";
@@ -5700,15 +5694,13 @@ document.addEventListener("keydown", (ev) => {
 let lastAutoLayout = "";
 
 // 単語リストに対応する既定レイアウト(wordlistLayouts)を#layoutに当てる。
-// ユーザーが自分で選んだレイアウトは上書きしない。自動と見なすのは
-// 「現在値が空(=サーバー既定)」か「直前に自動でセットした値のまま」のときだけ。
+// Web UIでは手動編集を公開しないため、保存済みの手動値があっても必ず上書きする。
 function applyWordlistLayout() {
-  // 復元中は保存済みのレイアウト(手動選択かもしれない)をrestoreForm側が入れるので触らない
+  // 復元中はrestoreFormに任せ、完了後のapplyFixedUiDefaultsで対応カードへ固定する。
   if (restoring) return;
   const cur = $("layout").value.trim();
-  if (cur && cur !== lastAutoLayout) return;
   const next = wordlistLayouts[$("wordlist").value.trim()] || "";
-  if (next === cur) return;
+  if (next === cur && !leDirty && !$("layout-json").value.trim()) return;
   setChoice("layout", next);
   lastAutoLayout = next;
   // レイアウト名を変えたら、前のリスト向けのJSONは同期でその場で捨てる。
@@ -6911,6 +6903,7 @@ function saveForm() {
   try {
     localStorage.setItem(FORM_KEY, JSON.stringify({
       lyrics: $("lyrics").value,
+      songTitle: $("song-title").value,
       sampleId: midiSampleId,
       // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
       sampleLyricsId,
@@ -7026,7 +7019,7 @@ $("layout-select").addEventListener("change", async () => {
 
 // 対象コントロールのchangeで保存(ドラッグ編集はleToJson側で保存)。
 // model / layout は上の syncChoice が保存するのでここには入れない。
-["lyrics", "wordlist", "where",
+["lyrics", "song-title", "wordlist", "where",
  "transpose", "layout-json",
  "original-credit", "credit-notice",
  "synthesizer", "voicevox-style", "auto-octave"]
@@ -7132,6 +7125,7 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
+    $("song-title").value = state.songTitle || "";
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
       ? state.sampleLyricsBaseline : null;
