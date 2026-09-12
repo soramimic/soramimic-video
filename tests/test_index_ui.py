@@ -1889,6 +1889,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '<video id="builder-video" controls playsinline' in html
     submit = _function_body(script, "async function submitJob(")
     assert 'if (audio) form.append("audio", audio);' in submit
+    assert "if (audio && !automaticLyricsEnabled()" in submit
     assert "appendSongLyrics(form);" in submit
     append = _function_body(script, "function appendSongLyrics(")
     assert 'form.append("lyrics", songLyricsForRequest());' in append
