@@ -765,7 +765,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         for (const id of ["song-title", "original-credit", "credit-notice"]) {
           assert.equal($(id).disabled, true, "sample metadata must be read-only");
         }
-        assert.equal($("song-upload-filename").hidden, true);
+        assert.equal($("song-upload-selection").hidden, true);
         assert.equal(focused, "builder-sample");
         syncBuilderValues();
         assert.equal(songInputMode, "sample", "an empty picker must stay open");
@@ -1862,6 +1862,11 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'id="song-upload-button"' in html
     assert html.index('id="song-upload-button"') < html.index('id="builder-sample"')
     assert '曲をアップロード' in html
+    assert 'id="song-upload-selection" hidden' in html
+    assert 'id="song-upload-filename" role="status"' in html
+    assert 'id="song-upload-clear" aria-label="選択した曲を解除"' in html
+    assert 'id="audio-filename"' not in html
+    assert '曲ファイルを解除' not in html
     assert '$("song-upload-button").disabled' not in script
     assert ': "XF MIDIに対応";' in script
     assert 'XF MIDIに対応（このサーバーでは音声入力を準備中です）' not in script
@@ -1902,8 +1907,16 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '$("auto-lyrics").disabled = false;' in recognition
     assert '$("auto-lyrics-toggle").hidden = false;' in recognition
     audio_change = script[script.index('$("midi").addEventListener("change"') :]
-    audio_change = audio_change[: audio_change.index('$("audio-clear").addEventListener')]
+    audio_change = audio_change[: audio_change.index('$("song-upload-clear").addEventListener')]
     assert '$("auto-lyrics").checked = false;' not in audio_change
+    clear = script[script.index('$("song-upload-clear").addEventListener') :]
+    clear = clear[: clear.index('// #lyrics')]
+    assert '$("midi").value = "";' in clear
+    assert '$("song-upload-button").focus();' in clear
+    sync = _function_body(script, "function syncBuilderValues()")
+    assert '$("song-upload-selection").hidden = !file;' in sync
+    assert '$("song-upload-button").hidden = !!file;' in sync
+    assert '$("song-upload-hint").hidden = !!file;' in sync
     # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
     assert 'localStorage.setItem("audioFile"' not in script
     save = script[script.index('// 持ち込みMIDIはバイナリ') :]
