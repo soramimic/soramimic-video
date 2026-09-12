@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
@@ -44,10 +46,23 @@ def analyze_audio(
     skip_separation: bool = False,
     device: str | None = None,
     progress: Callable[[float], None] | None = None,
+    lyric_pipeline: str | None = None,
 ) -> Project:
     from .mora_align import align_moras_with_variants
     from .pitch import extract_pitch, mora_midi_notes, voiced_end
     from .reading import reading_candidates
+
+    lyric_pipeline = lyric_pipeline or os.environ.get("SORAMIMIC_LYRIC_PIPELINE", "cplus")
+    if lyric_pipeline not in {"cplus", "evidence"}:
+        raise ValueError("lyric_pipelineはcplusまたはevidenceです")
+    use_evidence = lyric_pipeline == "evidence"
+    if use_evidence:
+        from .lyric_recognition import require_lyric_pipeline
+
+        require_lyric_pipeline()
+    emissions = None
+    recognition = None
+    recognized_variants = None
 
     last_progress = 0.0
 
@@ -79,6 +94,31 @@ def analyze_audio(
         ]
         line_texts = [ln for ln in line_texts if ln]
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
+    elif use_evidence:
+        from .lyric_recognition import transcribe_multiview
+
+        recognition, emissions = transcribe_multiview(
+            vocals, audio_path, model_size=whisper_model, device=device,
+        )
+        out = project_dir / ANALYZE_DIR
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "recognition.json").write_text(recognition.to_json(), encoding="utf-8")
+        selected = recognition.selected_hypotheses
+        if not selected:
+            raise RuntimeError(
+                "音響的に支持された歌詞候補がありません。recognition.jsonの候補を確認し、"
+                "歌詞を指定して再実行してください。"
+            )
+        assessments = {item.hypothesis_id: item for item in recognition.assessments}
+        line_texts = [hypothesis.surface for hypothesis in selected]
+        recognized_variants = [
+            [split_moras(hypothesis.readings[
+                assessments[hypothesis.id].selected_reading_index
+            ].kana)] for hypothesis in selected
+        ]
+        logger.info("複数認識候補から音響的に支持された%d行を採用", len(line_texts))
+        if recognition.flags:
+            logger.warning("歌詞認識の診断: %s", ", ".join(recognition.flags))
     else:
         from .transcribe import transcribe_lines
 
@@ -92,7 +132,7 @@ def analyze_audio(
     # ルビ・辞書から得た発音候補の音響スコア選択に限る。
     # 元歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。カナ化には記法つきの
     # 行を渡し、字幕・表示に使うテキスト(line_texts)は素テキストに直しておく。
-    line_variants = [
+    line_variants = recognized_variants or [
         [split_moras(kana) for kana in reading_candidates(text)] or [[]]
         for text in line_texts
     ]
@@ -100,7 +140,19 @@ def analyze_audio(
         if not variants[0]:
             logger.warning("カナ読みが得られない行をスキップ: %r", text)
     line_texts = [strip_ruby(text) for text in line_texts]
-    aligned, chosen = align_moras_with_variants(vocals, line_variants, device=device)
+    if use_evidence:
+        import soundfile as sf
+
+        from .mora_align import compute_emissions
+
+        emissions = emissions or compute_emissions(vocals, device)
+        audio_duration_sec = float(sf.info(vocals).duration)
+        aligned, chosen = align_moras_with_variants(
+            vocals, line_variants, device=device, emissions=emissions, phonetic_aliases=True,
+        )
+    else:
+        aligned, chosen = align_moras_with_variants(vocals, line_variants, device=device)
+    raw_alignment = [replace(mora) for mora in aligned]
     expected_moras = sum(
         len(line[choice])
         for line, choice in zip(line_variants, chosen, strict=True)
@@ -125,7 +177,11 @@ def analyze_audio(
             if i + 1 < len(aligned)
             else m.end_sec + _MAX_LAST_NOTE_SEC
         )
+        if use_evidence:
+            limit = min(limit, audio_duration_sec)
         m.end_sec = max(m.end_sec, voiced_end(track, m.start_sec, limit))
+        if use_evidence:
+            m.end_sec = min(m.end_sec, audio_duration_sec)
     midi_notes = mora_midi_notes(track, [(m.start_sec, m.end_sec) for m in aligned])
     report(0.62)
 
@@ -225,6 +281,10 @@ def analyze_audio(
             limitations.append(
                 f"音高不定の{counts['spoken']}モーラをspokenとして保持しました。"
             )
+        if recognition is not None and recognition.flags:
+            limitations.append(
+                "未知歌詞の認識に未解決箇所があります。候補はrecognition.jsonで確認できます。"
+            )
         (out / "analysis.json").write_text(
             json.dumps(
                 {
@@ -232,6 +292,11 @@ def analyze_audio(
                     "mode": mode,
                     "official_lyrics": lyrics_path is not None,
                     "asr_used": lyrics_path is None,
+                    "lyric_pipeline": lyric_pipeline,
+                    "recognition_coverage": (
+                        recognition.coverage if recognition is not None else None
+                    ),
+                    "recognition_flags": list(recognition.flags) if recognition is not None else [],
                     "mora_count": len(mora_notes),
                     "sources": counts,
                     "limitations": limitations,
@@ -250,6 +315,34 @@ def analyze_audio(
         mora_notes=mora_notes,
         bpm=bpm,
     )
+    if use_evidence:
+        from wav_to_xf.cplus import from_cplus_assignments
+
+        from .lyric_layers import apply_lyric_layers
+
+        if len(project.notes) != len(raw_alignment):
+            raise RuntimeError("C+の全モーラを歌詞レイヤーへ引き渡せませんでした")
+        assignments = [
+            {
+                "line": mora.line, "kana": mora.kana,
+                "start_sec": note.start_sec, "end_sec": note.end_sec,
+                "midi_note": note.midi_note, "source": note.source,
+                "pitch_confidence": note.pitch_confidence,
+                "alignment_score": float(mora.score),
+                "alignment_start_sec": mora.start_sec,
+                "alignment_end_sec": mora.end_sec,
+            }
+            for mora, note in zip(raw_alignment, project.notes, strict=True)
+        ]
+        document, layers = from_cplus_assignments(
+            line_texts, ["".join(variants[index])
+                         for variants, index in zip(line_variants, chosen, strict=True)],
+            assignments,
+        )
+        out = project_dir / ANALYZE_DIR
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "correspondence.json").write_text(document.to_json(), encoding="utf-8")
+        apply_lyric_layers(project, layers.to_dict())
 
     # 目視検証用SRT
     out = project_dir / ANALYZE_DIR

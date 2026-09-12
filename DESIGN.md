@@ -18,6 +18,8 @@ XF MIDI + 元歌詞 ── analyze ─┐
 - `analyze`: XF の歌詞・読み・音符 timing を解析し、元歌詞と対応付けます。
 - `analyze-audio`: 歌唱音源から読み、timing、pitch を推定します。メロディ MIDI を併用できます。
 - `analyze-midi`: メロディ MIDI と歌詞から音符・モーラ対応を作ります。
+- `apply-lyric-layers`: 完全歌詞・実演・合成ノートのレイヤーJSONを取り込みます。
+- `export-xf`: 現在の歌詞とノートをXF MIDIと由来情報JSONへ書き出します。
 - `convert`: soramimic の単語リストを使って替え歌候補を作ります。
 - `export-edit` / `import-edit`: 人手編集用 JSON を書き出し・取り込みます。
 - `synthesize`: MusicXML を経由して歌唱音源を作ります。
@@ -36,6 +38,12 @@ project directory の `project.json` が処理段階間の公開 exchange format
 
 具体的な field は実際に生成される JSON と CLI の export 結果を正本とします。外部 tool が
 編集する場合は未知 field を保持してください。
+
+音源解析の `evidence` 経路では、`lyric_layers` に完全な `canonical`、音源に対応した
+`performed`、合成ノートの `synthesis_plan` を別々に保持します。替え歌変換は完全な読みを
+入力に使い、字幕は完全な表記を保持します。実演の省略で元歌詞を削りません。
+根拠のない省略や合成先が未解決のレイヤーは取り込み時にエラーにします。
+XF出力に添える `.provenance.json` は出力MIDIのハッシュと実際に選択したノートを含みます。
 
 ## Input methods
 
