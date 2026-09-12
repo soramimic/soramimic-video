@@ -40,6 +40,17 @@ _VARIANT_SCORE_MARGIN = 2.0
 _MODEL_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
+def _frame_ceiling(time_sec: float) -> int:
+    """Map padded seconds to a half-open CTC frame boundary.
+
+    Decimal timestamps that are exactly on the 20 ms grid can land a few ULPs
+    above an integer after floating-point addition and division.  A raw ceil
+    would then include one frame beginning at the window's exclusive end.
+    """
+    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+    return math.ceil((time_sec + _PAD_SEC) / frame_sec - 1e-9)
+
+
 @dataclass
 class AlignedMora:
     line: int
@@ -78,11 +89,10 @@ def decode_kana_window(
     """
     if not 0 <= start_sec < end_sec:
         raise ValueError("CTC window must have positive duration")
-    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
     # A half-open partition assigns a boundary frame to exactly one adjacent
     # window. floor(start)/ceil(end) would decode that frame twice.
-    first = max(0, math.ceil((start_sec + _PAD_SEC) / frame_sec))
-    last = min(len(emissions.log_probs), math.ceil((end_sec + _PAD_SEC) / frame_sec))
+    first = max(0, _frame_ceiling(start_sec))
+    last = min(len(emissions.log_probs), _frame_ceiling(end_sec))
     values = emissions.log_probs[first:last]
     if len(values) == 0:
         return "", 0.0
@@ -326,9 +336,8 @@ def align_moras_with_variants(
         log_probs = collapse_kana_aliases(emissions)
 
     if line_windows is not None:
-        frame_sec = FRAME_SAMPLES / SAMPLING_RATE
-        bounds = [(math.ceil((start + _PAD_SEC) / frame_sec),
-                   math.ceil((end + _PAD_SEC) / frame_sec)) for start, end in line_windows]
+        bounds = [(_frame_ceiling(start), _frame_ceiling(end))
+                  for start, end in line_windows]
         if any(first >= last or first < 0 or last > len(log_probs) for first, last in bounds):
             raise ValueError("line_windows must contain available CTC frames")
         aligned: list[AlignedMora] = []

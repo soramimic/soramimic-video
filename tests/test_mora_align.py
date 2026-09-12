@@ -86,6 +86,25 @@ def test_recognition_windows_keep_absolute_frame_times_and_do_not_recompute_mode
     np.testing.assert_array_equal(emissions.log_probs, matrix)
 
 
+def test_recognition_window_on_frame_grid_excludes_frame_at_end(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    matrix = np.zeros((2000, 2))
+    emissions = mora_align.CTCEmissions(matrix, {"<pad>": 0, "イ": 1})
+    calls = []
+
+    def align(values, targets):
+        calls.append(len(values))
+        return [SimpleNamespace(start=len(values) - 1, end=len(values), score=.42)]
+
+    monkeypatch.setattr(mora_align, "_forced_align", align)
+    result, _ = mora_align.align_moras_with_variants(
+        Path("unused.wav"), [[["イ"]]], device="cpu", emissions=emissions,
+        line_windows=[(28.84, 37.84)],
+    )
+    assert calls == [450]
+    assert (result[0].start_sec, result[0].end_sec) == pytest.approx((37.82, 37.84))
+
+
 @pytest.mark.parametrize("windows", [
     [], [(0, 1)], [(1, 2), (1.5, 3)], [(2, 3), (0, 1)],
     [(-1, 1), (2, 3)], [(0, float("inf")), (2, 3)], [(1, 1), (2, 3)],
