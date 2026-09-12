@@ -1,5 +1,6 @@
 """Integration contract tests, run when the optional local pipeline is installed."""
 
+import json
 import math
 import sys
 from pathlib import Path
@@ -14,6 +15,26 @@ from soramimic_video import lyric_recognition  # noqa: E402
 from soramimic_video.lyric_layers import apply_lyric_layers  # noqa: E402
 from soramimic_video.mora_align import CTCEmissions  # noqa: E402
 from soramimic_video.project import Project, SongInfo  # noqa: E402
+
+
+def test_stage3_uses_each_mora_ctc_peak_and_every_sheetsage_candidate():
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.stage3 import build_stage3_layers
+
+    document, realization = build_stage3_layers(
+        ["かき"], ["カキ"],
+        [AlignedMora(0, 0, "カ", 0.09, 0.11, 0.1),
+         AlignedMora(0, 1, "キ", 0.39, 0.41, 0.1)],
+        [MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.5, 62)],
+    )
+
+    anchors = [item for item in document.evidence if item.kind == "mora-ctc-anchor"]
+    assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
+    assert [(item.kana, item.note_candidate_id) for item in realization.synthesis_plan] == [
+        ("カ", "sheetsage-0"), ("キ", "sheetsage-1"),
+    ]
+    assert not realization.unresolved_unit_ids
 
 
 def test_multiview_runtime_reuses_models_and_retains_real_scores(monkeypatch):
@@ -96,6 +117,7 @@ def test_overlapping_asr_windows_keep_all_original_candidates(monkeypatch):
 def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
     from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
 
     def forbidden(*args, **kwargs):
@@ -116,9 +138,11 @@ def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
     monkeypatch.setattr(pitch, "extract_pitch", lambda *args: None)
     monkeypatch.setattr(pitch, "voiced_end", lambda track, start, limit: start + 0.2)
     monkeypatch.setattr(pitch, "mora_midi_notes", lambda *args: [60, 62])
-    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: [
+        MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.6, 62),
+    ])
     monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {
-        "sheetsage2": False, "rmvpe": False, "fcpe": False,
+        "sheetsage2": True, "rmvpe": False, "fcpe": False,
     })
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("かき", encoding="utf-8")
@@ -127,6 +151,70 @@ def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
     assert value.lyric_layers["canonical_text"] == "かき"
     assert [n.kana for n in value.notes] == ["カ", "キ"]
     assert [x["confidence"] for x in value.lyric_layers["performed"]] == [0.75, 0.65]
+
+
+def test_evidence_path_requires_sheetsage(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, mora_align, pitch, reading
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.mora_align import AlignedMora
+
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=1.0)))
+    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カ"])
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
+        [AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8)], [0],
+    ))
+    monkeypatch.setattr(pitch, "extract_pitch", lambda *args: None)
+    monkeypatch.setattr(pitch, "voiced_end", lambda track, start, limit: start + 0.1)
+    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *args: [60])
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: None)
+
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("か", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="SheetSage2モデル設定"):
+        analyze_audio(
+            tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
+            device="cpu", skip_separation=True, lyric_pipeline="evidence",
+        )
+
+
+def test_known_lyrics_evidence_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, mora_align, pitch, reading
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=1.0)))
+    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
+        [AlignedMora(0, 0, "カ", 0.09, 0.11, 0.1),
+         AlignedMora(0, 1, "キ", 0.39, 0.41, 0.1)], [0],
+    ))
+    monkeypatch.setattr(pitch, "extract_pitch", lambda *args: None)
+    monkeypatch.setattr(pitch, "voiced_end", lambda track, start, limit: start + 0.1)
+    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *args: [60, 62])
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: [
+        MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.5, 62),
+    ])
+    monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {
+        "sheetsage2": True, "rmvpe": False, "fcpe": False,
+    })
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("かき", encoding="utf-8")
+
+    value = analyze_audio(
+        tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
+        device="cpu", skip_separation=True, lyric_pipeline="evidence",
+    )
+
+    assert [(note.kana, note.midi_note) for note in value.notes] == [("カ", 60), ("キ", 62)]
+    correspondence = (tmp_path / "project/analyze_audio/correspondence.json").read_text()
+    assert '"mora-ctc-anchor"' in correspondence
+    analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
+    assert analysis["stage3_correspondence"] is True
 
 
 def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monkeypatch, tmp_path):
@@ -139,6 +227,7 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
 
     from soramimic_video import audio_melody, mora_align, pitch, reading
     from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
 
     hypotheses = tuple(RecognitionHypothesis(
@@ -174,9 +263,11 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
     monkeypatch.setattr(pitch, "extract_pitch", lambda *a: None)
     monkeypatch.setattr(pitch, "voiced_end", extend)
     monkeypatch.setattr(pitch, "mora_midi_notes", lambda *a: [60, 62])
-    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: None)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: [
+        MelodyNote(1.0, 2.0, 60), MelodyNote(8.0, 9.0, 62),
+    ])
     monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {
-        "sheetsage2": False, "rmvpe": False, "fcpe": False,
+        "sheetsage2": True, "rmvpe": False, "fcpe": False,
     })
     value = analyze_audio(tmp_path / "input.wav", tmp_path / "project", device="cpu",
                           skip_separation=True, lyric_pipeline="evidence")
