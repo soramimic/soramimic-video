@@ -802,7 +802,7 @@
     </div>
     <div id="audio-input-panel" class="field" hidden>
       <p><strong id="audio-filename"></strong></p>
-      <p class="hint">正式歌詞を一切書き換えず、音源からメロディーとタイミングを推定します。</p>
+      <p class="hint" id="audio-input-hint">歌詞を自動認識し、音源からメロディーとタイミングを推定します。</p>
       <p class="hint" id="audio-analysis-mode"></p>
       <p class="hint"><strong>音源解析 → 空耳変換 → 歌声/映像 → 完成</strong></p>
       <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
@@ -3177,8 +3177,7 @@ function rejectOwnSongFile(message) {
 }
 
 function automaticLyricsEnabled() {
-  return ownSongKind() !== "audio"
-    && (songInputMode !== "upload" || $("auto-lyrics").checked);
+  return songInputMode !== "upload" || $("auto-lyrics").checked;
 }
 
 function songLyricsForRequest() {
@@ -3199,14 +3198,17 @@ function syncLyricsRecognition() {
   const audio = songInputMode === "upload"
     && [".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".webm"]
       .some((ext) => filename.endsWith(ext));
-  const automatic = !audio && $("auto-lyrics").checked;
-  $("auto-lyrics").disabled = audio;
-  $("auto-lyrics-toggle").hidden = audio;
+  const automatic = $("auto-lyrics").checked;
+  $("auto-lyrics").disabled = false;
+  $("auto-lyrics-toggle").hidden = false;
   $("lyrics-correction-panel").hidden = automatic;
-  $("lyrics").required = audio && !$("lyrics-file").files?.[0];
+  $("lyrics").required = !automatic && !$("lyrics-file").files?.[0];
   $("lyrics-mode-hint").textContent = audio
     ? "この文字列を正解としてforced alignmentします。音声認識による書き換えはしません。"
     : "入力した歌詞を正解文字列として使います。";
+  $("audio-input-hint").textContent = automatic
+    ? "歌詞を自動認識し、音源からメロディーとタイミングを推定します。"
+    : "正式歌詞を一切書き換えず、音源からメロディーとタイミングを推定します。";
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
 }
 
@@ -3379,7 +3381,6 @@ $("midi").addEventListener("change", () => {
   $("builder-edit").disabled = true;
   $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
-  $("auto-lyrics").checked = false;
   $("audio-analysis-mode").textContent = audioAnalysis.sheetsage2
     ? (audioAnalysis.rmvpe && audioAnalysis.fcpe
       ? "SheetSage2採譜＋RMVPE/FCPE空白補完を使います。"

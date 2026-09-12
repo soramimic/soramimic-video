@@ -1192,11 +1192,21 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         if job.params.get("input_kind") == "audio":
             from .analyze_audio import analyze_audio
 
+            supplied_audio_lyrics = (
+                lyrics_path
+                if lyrics_path.exists()
+                and (
+                    job.params.get("auto_lyrics") is False
+                    or bool(job.params.get("sample_id"))
+                )
+                else None
+            )
             project = analyze_audio(
                 d / "input.wav",
                 d,
-                # 正式歌詞はASRで書き換えず、その全モーラを直接forced alignmentする。
-                lyrics_path=lyrics_path if lyrics_path.exists() else None,
+                # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
+                # アップロード音源の自動認識時はWhisperで歌詞行を決める。
+                lyrics_path=supplied_audio_lyrics,
                 whisper_model=str(config.get("whisper_model") or "small"),
                 device=config.get("audio_device"),
                 progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
@@ -2941,7 +2951,7 @@ def create_app(
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
         lyrics: str = Form(""),
-        # MIDIでは従来互換。音源アップロードは正式歌詞必須で常にFalseへ固定する。
+        # 省略時はMIDI・音源アップロードとも歌詞を自動認識する。
         auto_lyrics: bool = Form(True),
         model: str = Form("MERROW"),
         # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
@@ -2998,14 +3008,15 @@ def create_app(
                 raise HTTPException(
                     status_code=422, detail="選択した曲の歌詞が見つかりません"
                 ) from exc
-        if input_kind == "audio" and not lyrics.strip():
-            raise HTTPException(
-                status_code=422,
-                detail="音源解析には正式な元歌詞を入力またはアップロードしてください",
-            )
-        if input_kind == "audio":
-            # 正式歌詞を正解文字列として直接forced alignmentする。ASRは使わない。
-            auto_lyrics = False
+        if input_kind == "audio" and not launch_sample_id:
+            if auto_lyrics:
+                # 自動認識時は、古い画面や直接APIから残った歌詞を解析に混ぜない。
+                lyrics = ""
+            elif not lyrics.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="音源解析には正式な元歌詞を入力またはアップロードしてください",
+                )
         elif not auto_lyrics and not lyrics.strip():
             raise HTTPException(status_code=422, detail="正解歌詞を入力してください")
         if launch_sample_id:

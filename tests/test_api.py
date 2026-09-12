@@ -106,23 +106,24 @@ def test_job_flow_with_editor(client):
     assert playback.headers["cache-control"] == "private, no-store"
 
 
-def test_job_flow_accepts_wav_and_keeps_existing_playback(client):
+def test_job_flow_accepts_wav_with_auto_lyrics_by_default(client):
     wav = fake_wav()
     res = client.post(
         "/api/jobs",
         files={"audio": ("voice.wav", wav, "audio/wav")},
-        data={"wordlist": "stations", "lyrics": "あ"},
+        data={"wordlist": "stations"},
     )
     assert res.status_code == 200, res.text
     job_id = res.json()["id"]
     body = wait_done(client, job_id)
     assert body["status"] == "done"
     assert body["params"]["input_kind"] == "audio"
-    assert body["params"]["auto_lyrics"] is False
+    assert body["params"]["auto_lyrics"] is True
     assert body["song_label"] == "アップロードした曲"
     job = client.app.state.manager.jobs[job_id]
     assert (job.dir / "input.wav").read_bytes() == wav
     assert not (job.dir / "input.mid").exists()
+    assert not (job.dir / "lyrics.txt").exists()
     assert client.get(body["playback_url"]).content == FAKE_MP4
 
 
@@ -162,7 +163,7 @@ def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_pa
             "audio": ("voice.wav", fake_wav(), "audio/wav"),
             "lyrics_file": ("../../escaped.txt", "正式な歌詞".encode(), "text/plain"),
         },
-        data={"wordlist": "stations"},
+        data={"wordlist": "stations", "auto_lyrics": "false"},
     )
     assert res.status_code == 200, res.text
     body = wait_done(client, res.json()["id"])
@@ -401,13 +402,10 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
 
     audio = tmp_path / "input.wav"
     audio.write_bytes(fake_wav())
-    lyrics = tmp_path / "lyrics.txt"
-    lyrics.write_text("あ", encoding="utf-8")
-
     def fake_analyze(audio_path, project_dir, **kwargs):
         assert audio_path == audio
         assert project_dir == tmp_path
-        assert kwargs["lyrics_path"] == lyrics
+        assert kwargs["lyrics_path"] is None
         assert kwargs["whisper_model"] == "small"
         raise ReachedAnalyzer
 
@@ -415,7 +413,7 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
     job = api_mod.Job(
         id="wavtest",
         dir=tmp_path,
-        params={"input_kind": "audio"},
+        params={"input_kind": "audio", "auto_lyrics": True},
     )
     with pytest.raises(ReachedAnalyzer):
         api_mod.run_pipeline(job, {})
