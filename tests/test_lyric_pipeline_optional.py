@@ -107,10 +107,12 @@ def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
         info=lambda path: SimpleNamespace(duration=1.0)))
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
-    monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: ([
-        AlignedMora(0, 0, "カ", 0.1, 0.12, 0.75),
-        AlignedMora(0, 1, "キ", 0.4, 0.42, 0.65),
-    ], [0]))
+    def align(*args, **kwargs):
+        assert kwargs["line_windows"] is None
+        return ([AlignedMora(0, 0, "カ", 0.1, 0.12, 0.75),
+                 AlignedMora(0, 1, "キ", 0.4, 0.42, 0.65)], [0])
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
     monkeypatch.setattr(pitch, "extract_pitch", lambda *args: None)
     monkeypatch.setattr(pitch, "voiced_end", lambda track, start, limit: start + 0.2)
     monkeypatch.setattr(pitch, "mora_midi_notes", lambda *args: [60, 62])
@@ -125,3 +127,60 @@ def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
     assert value.lyric_layers["canonical_text"] == "かき"
     assert [n.kana for n in value.notes] == ["カ", "キ"]
     assert [x["confidence"] for x in value.lyric_layers["performed"]] == [0.75, 0.65]
+
+
+def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monkeypatch, tmp_path):
+    from wav_to_xf import ReadingCandidate
+    from wav_to_xf.recognition import (
+        AcousticPronunciation,
+        RecognitionHypothesis,
+        fuse_unknown_lyrics,
+    )
+
+    from soramimic_video import audio_melody, mora_align, pitch, reading
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.mora_align import AlignedMora
+
+    hypotheses = tuple(RecognitionHypothesis(
+        f"h{i}", "pass", "synthetic-asr", "vocals", True, str(i), start, start + 1,
+        "ja", .9, 0, kana, (ReadingCandidate(kana, "synthetic", 1),),
+    ) for i, (start, kana) in enumerate([(1., "カ"), (8., "キ")]))
+    acoustic = tuple(AcousticPronunciation(
+        f"a{i}", "synthetic-ctc", "vocals", h.start_sec, h.end_sec, .9, 0, kana=h.surface,
+    ) for i, h in enumerate(hypotheses))
+    result = fuse_unknown_lyrics(hypotheses, acoustic, duration_sec=10.)
+    emissions = object()
+    monkeypatch.setattr(lyric_recognition, "transcribe_multiview",
+                        lambda *a, **kw: (result, emissions))
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=10.)))
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda *a: pytest.fail("keep selected reading"))
+
+    def align(path, variants, **kwargs):
+        assert variants == [[["カ"]], [["キ"]]]
+        assert kwargs["line_windows"] == [(1., 2.), (8., 9.)]
+        assert kwargs["emissions"] is emissions
+        return ([AlignedMora(0, 0, "カ", 1.2, 1.3, .75),
+                 AlignedMora(1, 0, "キ", 8.2, 8.3, .65)], [0, 0])
+
+    extensions = []
+
+    def extend(track, start, limit):
+        extensions.append((start, limit))
+        return limit + .25
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    monkeypatch.setattr(pitch, "extract_pitch", lambda *a: None)
+    monkeypatch.setattr(pitch, "voiced_end", extend)
+    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *a: [60, 62])
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: None)
+    monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {
+        "sheetsage2": False, "rmvpe": False, "fcpe": False,
+    })
+    value = analyze_audio(tmp_path / "input.wav", tmp_path / "project", device="cpu",
+                          skip_separation=True, lyric_pipeline="evidence")
+    assert extensions == [(1.2, 2.), (8.2, 9.)]
+    assert [n.end_sec for n in value.notes] == [2., 9.]
+    assert [n.kana for n in value.notes] == ["カ", "キ"]
+    assert value.lyric_layers["canonical_text"] == "カ\nキ"

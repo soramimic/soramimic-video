@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -262,6 +262,8 @@ def _spans_to_moras(
     spans: list[Any],
     owners: list[tuple[int, int]],
     line_moras: list[list[str]],
+    *,
+    frame_offset: int = 0,
 ) -> list[AlignedMora]:
     """トークンスパンを(行,モーラ)ごとに集約してAlignedMora列にする。"""
     moras = [
@@ -271,8 +273,8 @@ def _spans_to_moras(
     ]
     index = {(m.line, m.mora): m for m in moras}
     for span, owner in zip(spans, owners, strict=True):
-        start = max(0.0, span.start * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
-        end = max(0.0, span.end * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
+        start = max(0.0, (span.start + frame_offset) * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
+        end = max(0.0, (span.end + frame_offset) * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
         m = index[owner]
         if m.start_sec < 0:
             m.start_sec = start
@@ -289,15 +291,26 @@ def align_moras_with_variants(
     *,
     emissions: CTCEmissions | None = None,
     phonetic_aliases: bool = False,
+    line_windows: list[tuple[float, float]] | None = None,
 ) -> tuple[list[AlignedMora], list[int]]:
     """行ごとの読み候補つきアライメント。
 
     line_variants[行] = 候補読みのモーラ列のリスト(先頭が既定)。
     候補が複数の行は、初回アライメントで得た行の時間範囲のlog_probsに
     候補ごとのforced_alignを掛け、尤度の高い読みを採用して最終アライメントする。
+    line_windowsを指定した場合は各行をその音響区間内で対応づけ、絶対時刻を返す。
+    区間は母音開始の観測ではなく、候補を支持した音声の範囲として扱う。
 
     戻り値: (全モーラの時刻列, 行ごとの採用候補index)
     """
+    if line_windows is not None:
+        if len(line_windows) != len(line_variants):
+            raise ValueError("line_windows must contain one window per lyric line")
+        previous_end = 0.0
+        for start, end in line_windows:
+            if not math.isfinite(start + end) or not 0 <= previous_end <= start < end:
+                raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+            previous_end = end
     try:
         import torch
     except ImportError as e:
@@ -311,6 +324,36 @@ def align_moras_with_variants(
     vocab, log_probs = emissions.vocab, emissions.log_probs
     if phonetic_aliases:
         log_probs = collapse_kana_aliases(emissions)
+
+    if line_windows is not None:
+        frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+        bounds = [(math.ceil((start + _PAD_SEC) / frame_sec),
+                   math.ceil((end + _PAD_SEC) / frame_sec)) for start, end in line_windows]
+        if any(first >= last or first < 0 or last > len(log_probs) for first, last in bounds):
+            raise ValueError("line_windows must contain available CTC frames")
+        aligned: list[AlignedMora] = []
+        choices: list[int] = []
+        for line, (variants, window, frames) in enumerate(
+            zip(line_variants, line_windows, bounds, strict=True)
+        ):
+            first, last = frames
+            local, chosen = _align_variants(
+                log_probs[first:last], vocab, [variants], frame_offset=first,
+            )
+            start, end = window
+            aligned.extend(replace(mora, line=line,
+                                   start_sec=max(start, mora.start_sec),
+                                   end_sec=min(end, mora.end_sec)) for mora in local)
+            choices.append(chosen[0])
+        return aligned, choices
+    return _align_variants(log_probs, vocab, line_variants)
+
+
+def _align_variants(
+    log_probs: Any, vocab: dict[str, int], line_variants: list[list[list[str]]], *,
+    frame_offset: int = 0,
+) -> tuple[list[AlignedMora], list[int]]:
+    """Use the same pronunciation selection and CTC decoder at either scope."""
 
     chosen = [0] * len(line_variants)
     line_moras = [variants[0] for variants in line_variants]
@@ -362,7 +405,7 @@ def align_moras_with_variants(
             if len(spans) != len(targets):
                 raise RuntimeError("再アライメントのトークン数が不一致")
 
-    return _spans_to_moras(spans, owners, line_moras), chosen
+    return _spans_to_moras(spans, owners, line_moras, frame_offset=frame_offset), chosen
 
 
 def align_moras(

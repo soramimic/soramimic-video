@@ -63,6 +63,7 @@ def analyze_audio(
     emissions = None
     recognition = None
     recognized_variants = None
+    recognized_windows = None
 
     last_progress = 0.0
 
@@ -111,6 +112,7 @@ def analyze_audio(
             )
         assessments = {item.hypothesis_id: item for item in recognition.assessments}
         line_texts = [hypothesis.surface for hypothesis in selected]
+        recognized_windows = [(hypothesis.start_sec, hypothesis.end_sec) for hypothesis in selected]
         recognized_variants = [
             [split_moras(hypothesis.readings[
                 assessments[hypothesis.id].selected_reading_index
@@ -149,6 +151,7 @@ def analyze_audio(
         audio_duration_sec = float(sf.info(vocals).duration)
         aligned, chosen = align_moras_with_variants(
             vocals, line_variants, device=device, emissions=emissions, phonetic_aliases=True,
+            line_windows=recognized_windows,
         )
     else:
         aligned, chosen = align_moras_with_variants(vocals, line_variants, device=device)
@@ -179,9 +182,13 @@ def analyze_audio(
         )
         if use_evidence:
             limit = min(limit, audio_duration_sec)
+            if recognized_windows is not None:
+                limit = min(limit, recognized_windows[m.line][1])
         m.end_sec = max(m.end_sec, voiced_end(track, m.start_sec, limit))
         if use_evidence:
             m.end_sec = min(m.end_sec, audio_duration_sec)
+            if recognized_windows is not None:
+                m.end_sec = min(m.end_sec, recognized_windows[m.line][1])
     midi_notes = mora_midi_notes(track, [(m.start_sec, m.end_sec) for m in aligned])
     report(0.62)
 
