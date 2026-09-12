@@ -19,6 +19,7 @@ import time
 import wave
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ from . import runproc
 from .kana import SMALL_TO_LARGE, split_moras, vowel_of
 from .octave import VOICEVOX_SAFE_KEY_MAX, VOICEVOX_SAFE_KEY_MIN, resolve_auto_shift
 from .octave import auto_octave_shift as _octave_shift
-from .project import Project
+from .project import Note, Project
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +263,66 @@ def _ensure_head_rest(
     return [{"key": None, "frame_length": rest, "lyric": ""}, *kept]
 
 
+def _minimum_spaced_frames(preferred: list[int], gaps: list[int]) -> list[int]:
+    """Nearest integer boundaries with fixed endpoints and minimum spacing.
+
+    Subtracting cumulative minimum gaps reduces this to bounded isotonic
+    regression. Pool adjacent decreasing means, round, then restore the gaps.
+    These are engine constraints, not new measurements of the performance.
+    """
+    if len(preferred) != len(gaps) + 1 or not gaps or any(gap < 0 for gap in gaps):
+        raise ValueError("invalid frame constraints")
+    offsets = [0]
+    for gap in gaps:
+        offsets.append(offsets[-1] + gap)
+    lower, upper = preferred[0], preferred[-1] - offsets[-1]
+    if upper < lower:
+        raise ValueError("全モーラの合成フレームが不足しています。歌詞は保持されています")
+    if all(b - a >= gap for a, b, gap in zip(preferred, preferred[1:], gaps, strict=False)):
+        return list(preferred)
+    # (sum, count) blocks; endpoints remain fixed, outside the fitted blocks.
+    blocks: list[tuple[int, int]] = []
+    for value, offset in zip(preferred[1:-1], offsets[1:-1], strict=True):
+        blocks.append((value - offset, 1))
+        while len(blocks) > 1:
+            left, right = blocks[-2:]
+            if left[0] * right[1] <= right[0] * left[1]:
+                break
+            blocks[-2:] = [(left[0] + right[0], left[1] + right[1])]
+    fitted = [lower]
+    for total, count in blocks:
+        fitted.extend([max(lower, min(upper, round(total / count)))] * count)
+    fitted.append(upper)
+    return [value + offset for value, offset in zip(fitted, offsets, strict=True)]
+
+
+def _layered_note_frames(
+    notes: list[Note], lyric_map: dict[int, str]
+) -> dict[int, tuple[int, int]]:
+    """Share frame capacity only within each contiguous lyric line, without edits."""
+    result: dict[int, tuple[int, int]] = {}
+    previous_end = 0
+    for line, members in groupby(notes, key=lambda n: n.line):
+        group = list(members)
+        preferred = [round(sec * FRAME_RATE) for n in group for sec in (n.start_sec, n.end_sec)]
+        if preferred[0] < previous_end:
+            raise ValueError("歌詞行の合成フレームが重なっています。歌詞は保持されています")
+        gaps = []
+        for n in group:
+            count = max(1, len(split_voicevox_moras(lyric_map.get(n.id) or "")))
+            minimum = count * MIN_ELEMENT_FRAMES
+            if n is notes[0] and preferred[0] < HEAD_REST_FRAMES:
+                minimum += HEAD_REST_FRAMES - preferred[0]
+            gaps.extend([minimum, 0])
+        fitted = _minimum_spaced_frames(preferred, gaps[:-1])
+        if fitted != preferred:
+            logger.info("歌詞行%sの合成フレームを再配分しました(元の推定時刻は保持)", line)
+        for i, n in enumerate(group):
+            result[n.id] = fitted[2 * i], fitted[2 * i + 1]
+        previous_end = fitted[-1]
+    return result
+
+
 def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     """projectからVOICEVOXのScore(dict)を作る。
 
@@ -275,8 +336,9 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     from .synthesize import build_lyric_map
 
     lyric_map = build_lyric_map(project)
-    notes = sorted(project.notes, key=lambda n: n.start_tick)
     preserve_units = project.lyric_layers is not None
+    notes = sorted(project.notes, key=lambda n: n.start_sec if preserve_units else n.start_tick)
+    layered_frames = _layered_note_frames(notes, lyric_map) if preserve_units else {}
 
     out_notes: list[dict[str, Any]] = []
     cursor = 0  # 出力済みの絶対フレーム位置
@@ -288,6 +350,8 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     for i, n in enumerate(notes):
         sf = frame(n.start_sec)
         ef = frame(n.end_sec)
+        if preserve_units:
+            sf, ef = layered_frames[n.id]
         if sf < cursor:  # 重なり: 前音に食い込む分を切り詰め
             sf = cursor
         if ef <= sf:  # 長さが無い(丸めで消えた)音符は捨てる
@@ -334,13 +398,11 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         total = ef - sf
         m = len(morae)
         bounds = mora_frame_bounds(total, m, note_mode)
-        if preserve_units and any(
-            right - left < MIN_ELEMENT_FRAMES
-            for left, right in zip(bounds, bounds[1:], strict=False)
-        ):
-            raise ValueError(
-                f"全モーラの合成フレームが不足しています(音符{n.id})。歌詞は保持されています"
-            )
+        if preserve_units:
+            minimums = [MIN_ELEMENT_FRAMES] * m
+            if not out_notes:
+                minimums[0] += HEAD_REST_FRAMES
+            bounds = _minimum_spaced_frames(bounds, minimums)
         for i, mora in enumerate(morae):
             length = bounds[i + 1] - bounds[i]
             if length <= 0:  # モーラが多すぎてフレームが足りない場合は最低1

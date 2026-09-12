@@ -161,12 +161,16 @@ def test_layered_voicevox_keeps_stacked_target_when_next_note_is_close():
     assert [n["lyric"] for n in score["notes"] if n["key"] is not None] == list("カキケク")
 
 
-def test_layered_voicevox_reports_unrenderable_mora_instead_of_dropping_it():
+def test_layered_voicevox_borrows_frames_inside_line_without_dropping_mora():
     value = project()
     apply_lyric_layers(value, layers())
     value.notes[1].end_sec = value.notes[1].start_sec + 0.001
-    with pytest.raises(ValueError, match="歌詞は保持"):
-        build_score(value)
+    before = copy.deepcopy(value)
+    score = build_score(value)
+    assert [n["lyric"] for n in score["notes"] if n["key"] is not None] == list("カキク")
+    assert all(n["frame_length"] >= 2 for n in score["notes"])
+    assert sum(n["frame_length"] for n in score["notes"]) == round(.9 * 93.75)
+    assert value == before
 
 
 def test_adjacent_ctc_windows_do_not_reuse_a_boundary_frame():
