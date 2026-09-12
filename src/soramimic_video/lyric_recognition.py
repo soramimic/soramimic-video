@@ -27,6 +27,7 @@ def _segment_pass_id(base: str, ends: list[float], start: float, end: float) -> 
 def require_lyric_pipeline() -> None:
     try:
         from wav_to_xf.cplus import from_cplus_assignments  # noqa: F401
+        from wav_to_xf.pipeline import run_stage3_document  # noqa: F401
         from wav_to_xf.realization import compile_realization  # noqa: F401
         from wav_to_xf.recognition import recognize_unknown_lyrics  # noqa: F401
     except ImportError as exc:
