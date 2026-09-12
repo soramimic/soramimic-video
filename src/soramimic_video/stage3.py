@@ -28,6 +28,7 @@ def build_stage3_layers(
         NoteCandidate,
         ObservedSingingUnit,
         ReadingCandidate,
+        boundaryless_correspondence_config,
         build_known_lyrics_document,
     )
     from wav_to_xf.pipeline import run_stage3_document
@@ -103,5 +104,8 @@ def build_stage3_layers(
         evidence=document.evidence + note_evidence,
         note_candidates=candidates,
     )
-    run = run_stage3_document(document)
+    run = run_stage3_document(
+        document,
+        config=boundaryless_correspondence_config(),
+    )
     return run.document, run.realization
