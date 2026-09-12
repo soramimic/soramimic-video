@@ -4410,19 +4410,18 @@ function loadThumbnailPreview(combo) {
     loadWordlistImage(combo.wordlistName, seq);
     return;
   }
-  // 持ち込み曲とWAVプリセットはMIDI由来の事前変換プレビューを作らず、
-  // 代表画像を即表示する。
-  if (combo.sampleId === OWN_SONG_VALUE || sampleInputKinds[combo.sampleId] === "audio") {
-    loadWordlistImage(combo.wordlistName, seq);
-    return;
-  }
   fig.hidden = false;
   $("builder-loading").hidden = false;
 
   const ctrl = new AbortController();
   previewAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), PREVIEW_TIMEOUT_MS);
-  const params = { sample: combo.sampleId, wordlist: combo.wordlistName };
+  // 持ち込み曲にはサンプルIDがないので、入力中の曲名(初期値はファイル名)を渡す。
+  // サムネ生成は音声そのものではなく曲名を同じ単語リストで変換するため、WAVでも
+  // 完成時と同じ経路で事前に作れる。登録済みの音声サンプルは従来どおりIDを渡す。
+  const params = combo.sampleId === OWN_SONG_VALUE
+    ? { title: songTitleOf(ownSongFile()), wordlist: combo.wordlistName }
+    : { sample: combo.sampleId, wordlist: combo.wordlistName };
   params.noncommercial_fanwork = "true";
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
@@ -4547,7 +4546,8 @@ function schedulePreview(force) {
   showBuilderMsg("");
   const c = currentCombo();
   const list = activeCustomList();
-  const combo = `${c.sampleId}\n${c.wordlistName}\n${list?.id || ""}:${list?.updatedAt || ""}`;
+  const ownTitle = c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "";
+  const combo = `${c.sampleId}\n${ownTitle}\n${c.wordlistName}\n${list?.id || ""}:${list?.updatedAt || ""}`;
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -4648,6 +4648,8 @@ $("wordlist").addEventListener("change", () => {
   syncBuilderValues();
   schedulePreview();
 });
+// 持ち込み曲は曲名そのものをサムネ変換に使う。入力を確定したら作り直す。
+$("song-title").addEventListener("change", () => schedulePreview(true));
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
   previewShowImages = true;

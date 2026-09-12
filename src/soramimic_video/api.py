@@ -2691,6 +2691,7 @@ def create_app(
     def thumbnail_preview(
         request: Request,
         sample: str = "",
+        title: str = "",
         wordlist: str = "",
         where: str = "",
         convert_params: str = "",
@@ -2699,9 +2700,10 @@ def create_app(
     ) -> FileResponse:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
-        サンプル曲の曲名をその単語リストで1フレーズだけ空耳変換し、実際の
-        サムネと同じ描画で小さめのPNG(既定640x360)を返す。結果はディスクに
-        キャッシュし、2回目以降は変換せずそのまま返す。
+        サンプル曲の曲名、または持ち込み曲の曲名(title)を、その単語リストで
+        1フレーズだけ空耳変換し、実際のサムネと同じ描画で小さめのPNG
+        (既定640x360)を返す。結果はディスクにキャッシュし、2回目以降は
+        変換せずそのまま返す。
         変換の入力には samples.json の title_kana(曲名の読み)を使う
         (「紅葉」を「コーヨー」と推定させないため)。見出しの曲名は title のまま。
 
@@ -2723,7 +2725,18 @@ def create_app(
         from .convert import parse_convert_params
         from .thumbnail_preview import PreviewSpec, render_slot
 
-        title, title_kana = _sample_title(sample)
+        if sample.strip():
+            title, title_kana = _sample_title(sample.strip())
+        else:
+            title = title.strip()
+            title_kana = ""
+            if not title:
+                raise HTTPException(
+                    status_code=400,
+                    detail="サンプル曲(sample)か曲名(title)が必要です",
+                )
+            if len(title) > 200:
+                raise HTTPException(status_code=400, detail="曲名は200文字以内です")
         wordlist = require_launch_wordlist(wordlist)
         if not wordlist:
             raise HTTPException(status_code=400, detail="単語リスト名(wordlist)が必要です")
