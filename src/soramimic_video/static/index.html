@@ -2896,7 +2896,8 @@ async function submitJob(previewSec, previewMode) {
       + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
     return;
   }
-  if (audio && !$("lyrics").value.trim() && !$("lyrics-file").files?.[0]) {
+  if (audio && !automaticLyricsEnabled()
+      && !$("lyrics").value.trim() && !$("lyrics-file").files?.[0]) {
     setBusy(false);
     showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
     $("lyrics").focus();
