@@ -193,6 +193,7 @@ def analyze_audio(
     report(0.62)
 
     # 5. モーラ音符列の確定
+    sheetsage_notes = None
     if melody_midi is not None:
         # メロディMIDIがあればピッチ・タイミングを楽譜に寄せる(issue #3)。
         # f0由来のmidi_notesは余りモーラのフォールバックと移調補正に使う
@@ -229,6 +230,10 @@ def analyze_audio(
         finally:
             # Never retain detailed model output after success, failure, or cancel.
             shutil.rmtree(raw_dir, ignore_errors=True)
+        if use_evidence and sheetsage_notes is None:
+            raise RuntimeError(
+                "evidence歌詞パイプラインにはSheetSage2モデル設定が必要です"
+            )
         capabilities = configured_capabilities()
         rmvpe = fcpe = None
         if sheetsage_notes is not None and capabilities["rmvpe"] and capabilities["fcpe"]:
@@ -300,6 +305,7 @@ def analyze_audio(
                     "official_lyrics": lyrics_path is not None,
                     "asr_used": lyrics_path is None,
                     "lyric_pipeline": lyric_pipeline,
+                    "stage3_correspondence": use_evidence,
                     "recognition_coverage": (
                         recognition.coverage if recognition is not None else None
                     ),
@@ -323,29 +329,25 @@ def analyze_audio(
         bpm=bpm,
     )
     if use_evidence:
-        from wav_to_xf.cplus import from_cplus_assignments
-
         from .lyric_layers import apply_lyric_layers
 
         if len(project.notes) != len(raw_alignment):
-            raise RuntimeError("C+の全モーラを歌詞レイヤーへ引き渡せませんでした")
-        assignments = [
-            {
-                "line": mora.line, "kana": mora.kana,
-                "start_sec": note.start_sec, "end_sec": note.end_sec,
-                "midi_note": note.midi_note, "source": note.source,
-                "pitch_confidence": note.pitch_confidence,
-                "alignment_score": float(mora.score),
-                "alignment_start_sec": mora.start_sec,
-                "alignment_end_sec": mora.end_sec,
-            }
-            for mora, note in zip(raw_alignment, project.notes, strict=True)
+            raise RuntimeError("全モーラをStage 3歌詞レイヤーへ引き渡せませんでした")
+        selected_readings = [
+            "".join(variants[index])
+            for variants, index in zip(line_variants, chosen, strict=True)
         ]
-        document, layers = from_cplus_assignments(
-            line_texts, ["".join(variants[index])
-                         for variants, index in zip(line_variants, chosen, strict=True)],
-            assignments,
+        if sheetsage_notes is None:
+            raise RuntimeError("Stage 3へ渡すSheetSage2ノート候補がありません")
+        from .stage3 import build_stage3_layers
+
+        document, layers = build_stage3_layers(
+            line_texts, selected_readings, raw_alignment, sheetsage_notes,
         )
+        if layers.unresolved_unit_ids:
+            raise RuntimeError(
+                "Stage 3でノート未解決のモーラがあります。タイミングを確認してください。"
+            )
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
         (out / "correspondence.json").write_text(document.to_json(), encoding="utf-8")
