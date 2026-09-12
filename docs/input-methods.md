@@ -6,8 +6,8 @@ soramimic-video は、利用できる楽譜・音源・歌詞に応じて次の�
 |---|---|---|
 | XF MIDI + 任意の元歌詞 | `analyze` | XF に含まれる読みと音符 timing を利用する確定的な経路 |
 | 歌唱音源 + メロディ MIDI + 歌詞 | `analyze-audio --melody-midi` | MIDI の音高・構造を優先し、音源に timing を合わせる |
-| 歌唱音源 + 歌詞 | `analyze-audio` | timing と pitch の推定を含む |
-| 歌唱音源のみ | `analyze-audio` | 音声認識した歌詞と推定結果を使うため、手直しを推奨 |
+| 歌唱音源 + 正式歌詞 | `analyze-audio` | 歌詞を正解文字列としてforced alignmentし、timingとpitchを推定 |
+| 歌唱音源のみ | `analyze-audio` | CLI互換経路。Web版では正式歌詞が必須 |
 | メロディ MIDI + 歌詞 | `analyze-midi` | 楽譜の音高・timing を使い、歌詞を音符へ割り当てる |
 
 ## 入力情報の優先順位
@@ -15,7 +15,10 @@ soramimic-video は、利用できる楽譜・音源・歌詞に応じて次の�
 - XF MIDI に読みと歌詞 timing がある場合は、その情報を優先します。
 - メロディ MIDI がある場合は、MIDI の音高と音符構造を優先します。
 - 歌詞の読みを明示できる場合は、自動読み推定より優先します。
+- 正式歌詞を指定した音源ではASRを使わず、文字列を変更しません。
 - 歌唱音源だけの経路は推定を含むため、timing editor で結果を確認・修正できます。
+- 音源由来ノートの `source` は `sheetsage_note`、`recovered_note`、`spoken`
+  を区別します。`spoken`も歌詞・時刻・字幕・空耳変換から除外しません。
 
 ## Output
 
