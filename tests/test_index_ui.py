@@ -1879,8 +1879,8 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'id="lyrics-file" accept=".txt,.md,text/plain,text/markdown"' in html
     assert "歌詞を自動認識し、音源からメロディーとタイミングを推定します" in html
     assert "音源解析 → 空耳変換 → 歌声/映像 → 完成" in html
-    assert 'audioAnalysis = conf.audio_analysis || {};' in script
-    assert "SheetSage2採譜＋RMVPE/FCPE空白補完" in script
+    assert 'id="audio-analysis-mode"' not in html
+    assert "SheetSage2採譜" not in script
     assert 'id="audio-lyrics"' not in html
     assert 'songUploadEntry.addEventListener("drop"' in script
     assert 'files.length !== 1' in script

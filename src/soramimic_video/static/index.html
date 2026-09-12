@@ -803,7 +803,6 @@
     <div id="audio-input-panel" class="field" hidden>
       <p><strong id="audio-filename"></strong></p>
       <p class="hint" id="audio-input-hint">歌詞を自動認識し、音源からメロディーとタイミングを推定します。</p>
-      <p class="hint" id="audio-analysis-mode"></p>
       <p class="hint"><strong>音源解析 → 空耳変換 → 歌声/映像 → 完成</strong></p>
       <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
     </div>
@@ -1521,7 +1520,6 @@ let launchWordlists = [];
 let fixedVoicevoxStyle = 6000;
 let maxAudioUploadBytes = 200 * 1024 * 1024;
 let audioInputReady = false;
-let audioAnalysis = {};
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
@@ -1537,7 +1535,6 @@ async function loadConfig() {
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   audioInputReady = conf.audio_input === true;
-  audioAnalysis = conf.audio_analysis || {};
   $("song-upload-hint").textContent = audioInputReady
     ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）。PCはここへドロップできます`
     : "XF MIDIに対応";
@@ -3381,11 +3378,6 @@ $("midi").addEventListener("change", () => {
   $("builder-edit").disabled = true;
   $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
-  $("audio-analysis-mode").textContent = audioAnalysis.sheetsage2
-    ? (audioAnalysis.rmvpe && audioAnalysis.fcpe
-      ? "SheetSage2採譜＋RMVPE/FCPE空白補完を使います。"
-      : "SheetSage2採譜を使います。高精度F0空白補完はこの環境では未対応です。")
-    : "この環境では既存pYIN経路を使います。SheetSage2採譜は未設定です。";
   syncLyricsRecognition();
   syncBuilderOptions();
   syncBuilderValues();
