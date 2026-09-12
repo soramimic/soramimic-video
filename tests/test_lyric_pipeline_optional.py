@@ -66,6 +66,33 @@ def test_cplus_runtime_rows_roundtrip_into_project():
     assert all(n.pitch_confidence is None for n in value.notes)
 
 
+def test_overlapping_asr_windows_keep_all_original_candidates(monkeypatch):
+    class Whisper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe(self, path, **kwargs):
+            return iter([SimpleNamespace(
+                start=start, end=end, text="か", avg_logprob=math.log(.8), no_speech_prob=.01,
+            ) for start, end in [(0., 2.), (1.5, 3.), (3., 5.)]]), SimpleNamespace(language="ja")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=5.)))
+    monkeypatch.setattr(lyric_recognition, "reading_candidates", lambda text: ["カ"])
+    monkeypatch.setattr(lyric_recognition, "decode_kana_window", lambda *args: ("カ", .9))
+    matrix = CTCEmissions(np.zeros((250, 2)), {"<pad>": 0, "カ": 1})
+    result, _ = lyric_recognition.transcribe_multiview(
+        Path("vocals.wav"), Path("vocals.wav"), emissions=matrix,
+    )
+    first_pass = [h for h in result.hypotheses if h.vad_enabled]
+    assert [(h.start_sec, h.end_sec) for h in first_pass] == [(0., 2.), (1.5, 3.), (3., 5.)]
+    assert first_pass[0].pass_id == first_pass[2].pass_id
+    assert first_pass[1].pass_id != first_pass[0].pass_id
+    by_id = {h.id: h for h in result.hypotheses}
+    assert all(a.stream_id == by_id[a.id.removeprefix("ctc:")].pass_id for a in result.acoustic)
+
+
 def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
     from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
