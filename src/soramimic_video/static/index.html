@@ -819,10 +819,6 @@
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
       </div>
     </div>
-    <div id="audio-input-panel" class="field" hidden>
-      <p class="hint" id="audio-input-hint">歌詞を自動認識し、音源からメロディーとタイミングを推定します。</p>
-      <p class="hint"><strong>音源解析 → 空耳変換 → 歌声/映像 → 完成</strong></p>
-    </div>
   </div>
   <div id="sample-picker" hidden>
     <div class="field builder-input-row" id="builder-sample-field">
@@ -3162,7 +3158,6 @@ function ownAudioFile() {
 }
 
 function clearAudioPresentation() {
-  $("audio-input-panel").hidden = true;
   const sampleAudio = selectedSampleIsAudio();
   document.querySelector('.stages li[data-stage="analyze"]').textContent =
     sampleAudio ? "音源解析" : "MIDI解析";
@@ -3223,9 +3218,6 @@ function syncLyricsRecognition() {
   $("lyrics-mode-hint").textContent = audio
     ? "この文字列を正解としてforced alignmentします。音声認識による書き換えはしません。"
     : "入力した歌詞を正解文字列として使います。";
-  $("audio-input-hint").textContent = automatic
-    ? "歌詞を自動認識し、音源からメロディーとタイミングを推定します。"
-    : "正式歌詞を一切書き換えず、音源からメロディーとタイミングを推定します。";
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
 }
 
@@ -3432,7 +3424,6 @@ $("midi").addEventListener("change", () => {
     schedulePreview(true);
     return;
   }
-  $("audio-input-panel").hidden = false;
   $("builder-edit").disabled = true;
   $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
