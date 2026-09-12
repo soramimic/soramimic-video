@@ -221,6 +221,7 @@
   summary { cursor: pointer; }
   details.card > summary { font-weight: 700; font-size: .95rem; color: var(--text); }
   details.card[open] > summary { margin-bottom: .7rem; }
+  #advanced.is-locked { opacity: .48; }
   #advanced > summary[aria-disabled="true"] { cursor: not-allowed; color: var(--muted); }
   .advanced-lock-hint { margin-left: .45rem; font-size: .78rem; font-weight: 400; }
   .sub-details > summary { font-size: .85rem; color: var(--muted); }
@@ -294,7 +295,7 @@
      二重カードに見える外枠・角丸・別背景を付けない。 */
   #advanced {
     margin: .6rem 0 0; padding: .15rem 0 0; border: 0; border-radius: 0;
-    background: transparent;
+    background: transparent; transition: opacity .15s ease;
   }
   .wordlist-filter-field { margin-bottom: 1rem; }
   .wordlist-facets { display: grid; gap: .45rem; margin-top: .45rem; }
@@ -3213,6 +3214,7 @@ function advancedSettingsAvailable() {
 function updateAdvancedSettingsAvailability() {
   const advanced = $("advanced");
   const available = advancedSettingsAvailable();
+  advanced.classList.toggle("is-locked", !available);
   advanced.querySelector(":scope > summary").setAttribute(
     "aria-disabled", String(!available),
   );
