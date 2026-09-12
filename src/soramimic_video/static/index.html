@@ -1553,7 +1553,7 @@ async function loadConfig() {
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   audioInputReady = conf.audio_input === true;
   $("song-upload-hint").textContent = audioInputReady
-    ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）。PCはここへドロップできます`
+    ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
     : "XF MIDIに対応";
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
