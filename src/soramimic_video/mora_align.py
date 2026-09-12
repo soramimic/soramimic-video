@@ -17,6 +17,7 @@ CTC のスパンはスパイク状で実際の歌唱区間より短いため、e
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,95 @@ class AlignedMora:
     start_sec: float
     end_sec: float
     score: float
+
+
+@dataclass
+class CTCEmissions:
+    """Shared model output; timing scores are not calibrated onset probabilities."""
+
+    log_probs: Any
+    vocab: dict[str, int]
+
+
+def compute_emissions(vocals_path: Path, device: str | None = None) -> CTCEmissions:
+    import torch
+    from transformers import Wav2Vec2CTCTokenizer
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    vocab = Wav2Vec2CTCTokenizer.from_pretrained(MODEL_NAME).get_vocab()
+    return CTCEmissions(_compute_log_probs(vocals_path, device), vocab)
+
+
+def decode_kana_window(
+    emissions: CTCEmissions, start_sec: float, end_sec: float,
+) -> tuple[str, float]:
+    """Greedy decode an audio window without any transcript or forced targets.
+
+    The returned score is the geometric mean emitted-token posterior, not a
+    calibrated transcript probability. Blank frames still belong to the analyzed
+    window, but are neither kana nor evidence of a vowel's duration.
+    """
+    if not 0 <= start_sec < end_sec:
+        raise ValueError("CTC window must have positive duration")
+    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+    # A half-open partition assigns a boundary frame to exactly one adjacent
+    # window. floor(start)/ceil(end) would decode that frame twice.
+    first = max(0, math.ceil((start_sec + _PAD_SEC) / frame_sec))
+    last = min(len(emissions.log_probs), math.ceil((end_sec + _PAD_SEC) / frame_sec))
+    values = emissions.log_probs[first:last]
+    if len(values) == 0:
+        return "", 0.0
+    # numpy makes this pure decode testable without model/runtime dependencies.
+    import numpy as np
+
+    matrix = np.asarray(values)
+    best = matrix.argmax(axis=-1)
+    vocabulary = {value: key for key, value in emissions.vocab.items()}
+    chars: list[str] = []
+    scores: list[float] = []
+    previous = -1
+    for index, token_id in enumerate(best):
+        token_id = int(token_id)
+        if token_id == 0 or token_id == previous:
+            previous = token_id
+            continue
+        previous = token_id
+        token = jaconv.hira2kata(vocabulary.get(token_id, ""))
+        if not token or not all("ァ" <= ch <= "ヺ" or ch == "ー" for ch in token):
+            continue
+        # A crop can start inside a syllable; do not invent its missing head.
+        if not chars and token[0] in "ァィゥェォャュョヮー":
+            continue
+        chars.append(token)
+        scores.append(float(matrix[index, token_id]))
+    return "".join(chars), math.exp(sum(scores) / len(scores)) if scores else 0.0
+
+
+def collapse_kana_aliases(emissions: CTCEmissions) -> Any:
+    """Sum mutually exclusive hiragana/katakana token probabilities.
+
+    The vocabulary contains both scripts. They have the same pronunciation but
+    need not have similar posteriors. Keep the original matrix unchanged for
+    independent decoding; canonical target IDs receive their combined mass.
+    """
+    import numpy as np
+
+    matrix = np.asarray(emissions.log_probs).copy()
+    groups: dict[str, list[int]] = {}
+    for token, token_id in emissions.vocab.items():
+        kana = jaconv.hira2kata(token)
+        if len(kana) == 1 and ("ァ" <= kana <= "ヺ" or kana == "ー"):
+            groups.setdefault(kana, []).append(token_id)
+    for kana, aliases in groups.items():
+        if len(aliases) < 2:
+            continue
+        target = emissions.vocab.get(kana, aliases[0])
+        combined = np.logaddexp.reduce(matrix[:, aliases], axis=1)
+        matrix[:, aliases] = -np.inf
+        matrix[:, target] = combined
+    if hasattr(emissions.log_probs, "new_tensor"):
+        return emissions.log_probs.new_tensor(matrix)
+    return matrix
 
 
 def build_targets(
@@ -196,6 +286,9 @@ def align_moras_with_variants(
     vocals_path: Path,
     line_variants: list[list[list[str]]],
     device: str | None = None,
+    *,
+    emissions: CTCEmissions | None = None,
+    phonetic_aliases: bool = False,
 ) -> tuple[list[AlignedMora], list[int]]:
     """行ごとの読み候補つきアライメント。
 
@@ -212,13 +305,12 @@ def align_moras_with_variants(
             "torch/torchaudio/transformers がインストールされていません"
             "(uv sync --extra audio)"
         ) from e
-    from transformers import Wav2Vec2CTCTokenizer
-
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    vocab = Wav2Vec2CTCTokenizer.from_pretrained(MODEL_NAME).get_vocab()
-    log_probs = _compute_log_probs(vocals_path, device)
+    emissions = emissions or compute_emissions(vocals_path, device)
+    vocab, log_probs = emissions.vocab, emissions.log_probs
+    if phonetic_aliases:
+        log_probs = collapse_kana_aliases(emissions)
 
     chosen = [0] * len(line_variants)
     line_moras = [variants[0] for variants in line_variants]

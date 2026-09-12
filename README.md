@@ -126,11 +126,27 @@ uv run soramimic-video serve
 | `SORAMIMIC_RMVPE_ROOT` | 未設定 | ローカルRMVPE実装root（SheetSage2空白補完） |
 | `SORAMIMIC_RMVPE_CHECKPOINT` | 未設定 | ローカルRMVPE checkpoint |
 | `SORAMIMIC_FCPE_CHECKPOINT` | package同梱値 | 任意のローカルFCPE checkpoint |
+| `SORAMIMIC_LYRIC_PIPELINE` | `cplus` | `evidence` で複数候補認識と歌詞レイヤーを有効化 |
 
 SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
 ローカルディレクトリだけをofflineで読みます。完全構成ではSheetSage2ノートを保持し、
 歌詞のある空白だけをRMVPE主・FCPE確認で補います。両者が一致しないモーラは
 `spoken`として歌詞と字幕に残します。モデル未設定時は既存pYIN実経路となり、画面に明示されます。
+
+`evidence` は任意追加の `wav-to-xf` パッケージを使用します。利用可能なローカル
+チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
+通常の `cplus` 経路と既存プロジェクトは追加パッケージなしで使用できます。
+
+```sh
+uv run --no-sync soramimic-video analyze-audio --audio song.wav --project work/song --lyric-pipeline evidence
+uv run soramimic-video apply-lyric-layers --project work/song --layers work/realization.json
+uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
+```
+
+未知歌詞では分離ボーカル・原音の認識候補をカナCTCと照合し、必要時にVADなしで再認識します。
+`analyze_audio/recognition.json` に候補と未解決箇所を保存します。対応範囲は日本語の主旋律で、
+曖昧な箇所や英語・会話・コーラスが完全に復元される保証はありません。正式歌詞の指定時は
+認識による書き換えを行いません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
 
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じ音声上限までmultipart requestを
