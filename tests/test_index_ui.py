@@ -1897,7 +1897,9 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert "if (audio && !automaticLyricsEnabled()" in submit
     assert "appendSongLyrics(form);" in submit
     append = _function_body(script, "function appendSongLyrics(")
-    assert 'form.append("lyrics", songLyricsForRequest());' in append
+    assert 'const lyrics = songLyricsForRequest();' in append
+    assert 'form.append("lyrics", lyrics);' in append
+    assert '!automaticLyricsEnabled() && !lyrics.trim()' in append
     assert 'form.append("lyrics_file", $("lyrics-file").files[0]);' in append
     assert 'form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");' in append
     automatic = _function_body(script, "function automaticLyricsEnabled()")
@@ -1971,6 +1973,60 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal(automaticLyricsEnabled(), false);
         assert.equal(songLyricsForRequest(), "manual lyrics");
         assert.match($("audio-input-hint").textContent, /正式歌詞/);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_lyrics_file_loads_into_editable_textarea_as_paste_alternative():
+    script = _script()
+    loader = _function_body(script, "async function loadLyricsFile(") + "\n}"
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        function $(id) {
+          if (!elements.has(id)) elements.set(id, {
+            files: [], value: "", textContent: "", hidden: false,
+            dispatchEvent(event) { this.lastEvent = event; },
+          });
+          return elements.get(id);
+        }
+        function syncLyricsRecognition() {}
+        let editorClears = 0;
+        function clearEditorFile() { ++editorClears; }
+        class Event {
+          constructor(type, options) { this.type = type; this.bubbles = options?.bubbles; }
+        }
+        let lyricsFileReadSequence = 0;
+        """
+    ) + loader + textwrap.dedent(
+        """
+        (async () => {
+          const file = {
+            name: "lemon.lyrics.txt",
+            size: 128,
+            async arrayBuffer() {
+              return new TextEncoder().encode(
+                "\\uFEFF夢ならばどれほどよかったでしょう\\n"
+                  + "未だにあなたのことを夢にみる",
+              ).buffer;
+            },
+          };
+          $("lyrics-file").files = [file];
+          await loadLyricsFile(file);
+          assert.equal(
+            $("lyrics").value,
+            "夢ならばどれほどよかったでしょう\\n未だにあなたのことを夢にみる",
+          );
+          assert.equal($("lyrics-file").files[0], file);
+          assert.match($("lyrics-file-name").textContent, /歌詞欄に読み込みました/);
+          assert.equal($("lyrics-file-name").hidden, false);
+          assert.equal($("lyrics").lastEvent.type, "change");
+          assert.equal($("lyrics").lastEvent.bubbles, true);
+          assert.equal(editorClears, 1);
+        })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
