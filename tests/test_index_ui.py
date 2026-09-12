@@ -1876,14 +1876,14 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '[".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".webm"]' in script
     assert 'name.endsWith(".mid") || name.endsWith(".midi")' in script
     assert '$("song-upload-button").addEventListener("click", () => $("midi").click());' in script
-    assert 'id="audio-input-panel"' in html
+    assert 'id="audio-input-panel"' not in html
     assert 'id="auto-lyrics"' in html
     assert 'id="auto-lyrics" aria-controls="lyrics-correction-panel" checked' in html
     assert 'id="lyrics-correction-panel" hidden' in html
     assert '<textarea id="lyrics"' in html
     assert 'id="lyrics-file" accept=".txt,.md,text/plain,text/markdown"' in html
-    assert "歌詞を自動認識し、音源からメロディーとタイミングを推定します" in html
-    assert "音源解析 → 空耳変換 → 歌声/映像 → 完成" in html
+    assert "歌詞を自動認識し、音源からメロディーとタイミングを推定します" not in html
+    assert "音源解析 → 空耳変換 → 歌声/映像 → 完成" not in html
     assert 'id="audio-analysis-mode"' not in html
     assert "SheetSage2採譜" not in script
     assert 'id="audio-lyrics"' not in html
@@ -1964,15 +1964,12 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal($("lyrics").required, false);
         assert.equal(automaticLyricsEnabled(), true);
         assert.equal(songLyricsForRequest(), "");
-        assert.match($("audio-input-hint").textContent, /自動認識/);
-
         $("auto-lyrics").checked = false;
         syncLyricsRecognition();
         assert.equal($("lyrics-correction-panel").hidden, false);
         assert.equal($("lyrics").required, true);
         assert.equal(automaticLyricsEnabled(), false);
         assert.equal(songLyricsForRequest(), "manual lyrics");
-        assert.match($("audio-input-hint").textContent, /正式歌詞/);
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
