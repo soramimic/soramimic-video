@@ -644,13 +644,28 @@
     padding: .8rem; border: 1px dashed var(--border); border-radius: 10px;
     background: var(--panel-2);
   }
-  .audio-upload-entry button {
+  #song-upload-button {
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
     width: 100%; min-height: 2.75rem;
     border-color: var(--accent); color: var(--link); font-weight: 700;
   }
   .audio-upload-entry .hint { margin: 0; }
-  #song-upload-filename { overflow-wrap: anywhere; color: var(--text); }
+  .song-upload-selection {
+    display: flex; align-items: center; gap: .5rem; min-height: 2.75rem;
+    padding: .15rem 0 .15rem .15rem;
+  }
+  .song-upload-selection[hidden] { display: none; }
+  #song-upload-filename {
+    min-width: 0; flex: 1; overflow-wrap: anywhere; color: var(--text); font-weight: 700;
+  }
+  #song-upload-clear {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: 50%;
+    background: transparent; color: var(--muted); font-size: 1.65rem; line-height: 1;
+  }
+  #song-upload-clear:hover, #song-upload-clear:focus-visible {
+    background: #ffffff0d; color: var(--text);
+  }
   .lyrics-recognition-toggle {
     display: flex; align-items: center; gap: .45rem; margin-top: .15rem;
   }
@@ -786,7 +801,11 @@
         <span aria-hidden="true">＋</span>曲をアップロード
       </button>
       <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
-      <p class="hint" id="song-upload-filename" role="status" hidden></p>
+      <div class="song-upload-selection" id="song-upload-selection" hidden>
+        <span id="song-upload-filename" role="status"></span>
+        <button type="button" id="song-upload-clear" aria-label="選択した曲を解除"
+          title="選択した曲を解除">&times;</button>
+      </div>
       <label class="lyrics-recognition-toggle" id="auto-lyrics-toggle" for="auto-lyrics">
         <input type="checkbox" id="auto-lyrics" aria-controls="lyrics-correction-panel" checked>
         歌詞を自動認識
@@ -801,10 +820,8 @@
       </div>
     </div>
     <div id="audio-input-panel" class="field" hidden>
-      <p><strong id="audio-filename"></strong></p>
       <p class="hint" id="audio-input-hint">歌詞を自動認識し、音源からメロディーとタイミングを推定します。</p>
       <p class="hint"><strong>音源解析 → 空耳変換 → 歌声/映像 → 完成</strong></p>
-      <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
     </div>
   </div>
   <div id="sample-picker" hidden>
@@ -3146,7 +3163,6 @@ function ownAudioFile() {
 
 function clearAudioPresentation() {
   $("audio-input-panel").hidden = true;
-  $("audio-filename").textContent = "";
   const sampleAudio = selectedSampleIsAudio();
   document.querySelector('.stages li[data-stage="analyze"]').textContent =
     sampleAudio ? "音源解析" : "MIDI解析";
@@ -3374,7 +3390,6 @@ $("midi").addEventListener("change", () => {
     schedulePreview(true);
     return;
   }
-  $("audio-filename").textContent = file.name;
   $("audio-input-panel").hidden = false;
   $("builder-edit").disabled = true;
   $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
@@ -3385,7 +3400,7 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
-$("audio-clear").addEventListener("click", () => {
+$("song-upload-clear").addEventListener("click", () => {
   $("midi").value = "";
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioInput();
@@ -4091,7 +4106,9 @@ function syncBuilderOptions() {
 function syncBuilderValues() {
   const file = ownSongFile();
   $("song-upload-filename").textContent = file ? file.name : "";
-  $("song-upload-filename").hidden = !file;
+  $("song-upload-selection").hidden = !file;
+  $("song-upload-button").hidden = !!file;
+  $("song-upload-hint").hidden = !!file;
   const sample = $("sample-select");
   showSongInputMode(sample.value ? "sample" : file ? "upload" : songInputMode);
   updateAdvancedSettingsAvailability();
