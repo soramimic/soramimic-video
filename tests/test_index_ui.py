@@ -1909,6 +1909,59 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'if (ownSongKind(f) !== "midi")' in save
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function ownSongFile()",
+            "function automaticLyricsEnabled()",
+            "function songLyricsForRequest()",
+            "function syncLyricsRecognition()",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        function $(id) {
+          if (!elements.has(id)) elements.set(id, {
+            checked: false, disabled: false, hidden: false, required: false,
+            files: [], value: "", textContent: "",
+            setAttribute(name, value) { this[name] = value; },
+          });
+          return elements.get(id);
+        }
+        let songInputMode = "upload";
+        $("midi").files = [{ name: "voice.wav" }];
+        $("auto-lyrics").checked = true;
+        $("lyrics").value = "manual lyrics";
+        """
+    ) + functions + textwrap.dedent(
+        """
+        syncLyricsRecognition();
+        assert.equal($("auto-lyrics").checked, true);
+        assert.equal($("auto-lyrics").disabled, false);
+        assert.equal($("auto-lyrics-toggle").hidden, false);
+        assert.equal($("lyrics-correction-panel").hidden, true);
+        assert.equal($("lyrics").required, false);
+        assert.equal(automaticLyricsEnabled(), true);
+        assert.equal(songLyricsForRequest(), "");
+        assert.match($("audio-input-hint").textContent, /自動認識/);
+
+        $("auto-lyrics").checked = false;
+        syncLyricsRecognition();
+        assert.equal($("lyrics-correction-panel").hidden, false);
+        assert.equal($("lyrics").required, true);
+        assert.equal(automaticLyricsEnabled(), false);
+        assert.equal(songLyricsForRequest(), "manual lyrics");
+        assert.match($("audio-input-hint").textContent, /正式歌詞/);
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_sample_picker_uses_each_manifest_title_as_is():
     """一番版とフル版の別項目名をsamples.jsonどおりプルダウンへ出す。"""
     load = _function_body(_script(), "async function loadSamples()")
