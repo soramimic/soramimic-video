@@ -238,6 +238,81 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_advanced_settings_require_both_song_and_wordlist():
+    """詳細設定は曲と単語リストが揃うまで開けず、選択解除時には閉じる。"""
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function advancedSettingsAvailable()",
+            "function updateAdvancedSettingsAvailability()",
+        )
+    )
+    start = script.index('$("advanced").querySelector(":scope > summary").addEventListener')
+    wiring = script[start:script.index("\n});", start) + len("\n});")]
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const summary = {
+          attrs: {}, clickHandler: null,
+          setAttribute(name, value) { this.attrs[name] = value; },
+          addEventListener(type, callback) { this.clickHandler = callback; },
+        };
+        const elements = {
+          advanced: { open: true, querySelector: () => summary },
+          auth: { hidden: true },
+          "sample-select": { value: "" },
+          "advanced-lock-hint": { hidden: false },
+        };
+        const $ = (id) => elements[id];
+        let file = null, wordlist = "", custom = null, editor = false, key = "";
+        const ownSongFile = () => file;
+        const currentWordlistName = () => wordlist;
+        const activeCustomList = () => custom;
+        const showsEditorWordlist = () => editor;
+        const apiKey = () => key;
+        """
+    ) + functions + "\n" + wiring + textwrap.dedent(
+        """
+        updateAdvancedSettingsAvailability();
+        assert.equal(elements.advanced.open, false);
+        assert.equal(summary.attrs["aria-disabled"], "true");
+        assert.equal(elements["advanced-lock-hint"].hidden, false);
+        let prevented = false;
+        summary.clickHandler({ preventDefault() { prevented = true; } });
+        assert.equal(prevented, true, "locked summary must not open");
+
+        elements["sample-select"].value = "furusato";
+        wordlist = "stations";
+        updateAdvancedSettingsAvailability();
+        assert.equal(summary.attrs["aria-disabled"], "false");
+        assert.equal(elements["advanced-lock-hint"].hidden, true);
+        prevented = false;
+        summary.clickHandler({ preventDefault() { prevented = true; } });
+        assert.equal(prevented, false, "complete selection must open");
+
+        elements.advanced.open = true;
+        wordlist = "";
+        updateAdvancedSettingsAvailability();
+        assert.equal(elements.advanced.open, false, "removing a selection must close details");
+
+        elements["sample-select"].value = "";
+        file = { name: "my-song.mid" };
+        custom = { name: "自作リスト" };
+        updateAdvancedSettingsAvailability();
+        assert.equal(summary.attrs["aria-disabled"], "false");
+
+        file = null;
+        custom = null;
+        elements.auth.hidden = false;
+        updateAdvancedSettingsAvailability();
+        assert.equal(summary.attrs["aria-disabled"], "false", "API key entry stays reachable");
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_plant_wordlist_is_available_in_every_selection_ui():
     """品質確認済みの植物を、通常UIと簡易UIの候補へ戻す。"""
     script = _script()
@@ -644,6 +719,7 @@ def _song_input_node_harness() -> str:
         const activeCustomList = () => null;
         const simpleMode = false;
         const updateNoncommercialFanworkNotice = () => {};
+        const updateAdvancedSettingsAvailability = () => {};
         const syncLuckyAvailability = () => {};
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
