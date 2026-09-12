@@ -41,8 +41,15 @@ audio = [
     "torch>=2.1",
     "torchaudio>=2.1",
     "torchcodec>=0.2",  # 新しめのtorchaudioは音声保存をtorchcodecに委譲する(要ffmpeg)
-    "transformers>=4.40",
+    # SheetSage2の検証済みcustom model APIと互換の範囲。
+    "transformers>=4.45.2,<4.46",
     "librosa>=0.10",
+    "soundfile>=0.12",
+    "scipy>=1.13",
+    "mir-eval>=0.8.2",
+    "pretty-midi>=0.2.10",
+    "pyworld>=0.3.5",
+    "torchfcpe==0.0.4",
     "faster-whisper>=1.0",
     "soramimic-yomi",
     "numpy>=1.24",

@@ -127,6 +127,7 @@ GET_CONCURRENCY = 4
 SIMPLE_MAX_REQUEST_BYTES_ENV = "SORAMIMIC_SIMPLE_MAX_REQUEST_BYTES"
 DEFAULT_MAX_AUDIO_UPLOAD_BYTES = 200 * 1024 * 1024
 DEFAULT_MAX_MIDI_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_LYRICS_UPLOAD_BYTES = 256 * 1024
 DEFAULT_SIMPLE_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_LIMIT = 5
 DEFAULT_DAILY_QUOTA = 5
@@ -261,9 +262,27 @@ def audio_input_available() -> bool:
             "torchaudio",
             "transformers",
             "librosa",
-            "faster_whisper",
         )
     )
+
+
+async def read_lyrics_upload(upload: UploadFile) -> str:
+    """Read a small UTF-8 lyric text file without trusting its filename as a path."""
+    suffix = Path(upload.filename or "lyrics.txt").suffix.lower()
+    if suffix not in (".txt", ".md"):
+        raise HTTPException(status_code=400, detail="歌詞ファイルはTXTまたはMarkdownです")
+    raw = await upload.read(MAX_LYRICS_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_LYRICS_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="歌詞ファイルが大きすぎます")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail="歌詞ファイルはUTF-8で保存してください"
+        ) from exc
+    if "\x00" in text:
+        raise HTTPException(status_code=400, detail="歌詞ファイルに使用できない文字があります")
+    return text
 
 
 def validate_wav_bytes(data: bytes, maximum: int | None = None) -> float:
@@ -598,8 +617,8 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     stage_started_at: float | None = None
-    stage_progress: int | None = None  # synthesizeの実進捗(%)。NEUTRINO出力から
-    stage_estimated_total: float | None = None  # synthesizeの所要秒の見積り
+    stage_progress: int | None = None  # 現在工程の実進捗(%)
+    stage_estimated_total: float | None = None  # 現在工程の所要秒の見積り
     log: deque[str] = field(default_factory=lambda: deque(maxlen=200))
     # videoステージが実際に使ったレイアウトの出どころ(resolve_layout が入れる)。
     # "name:<レイアウト名>" / "json:layout.json" など。あとから食い違いを追うため
@@ -614,13 +633,13 @@ class Job:
 
         return self.dir / THUMBNAIL_FILENAME
 
-    def _synth_progress(self, elapsed: float) -> tuple[int | None, float | None]:
-        """synthesizeステージの進捗率(%)と残り秒の目安を返す。
+    def _stage_progress(self, elapsed: float) -> tuple[int | None, float | None]:
+        """現在工程の進捗率(%)と残り秒の目安を返す。
 
         NEUTRINOが出す実進捗を優先し、まだ出ていなければ過去実績からの
         見積り(経過秒÷見積り総秒)で補う。どちらも無ければ (None, None)。
         """
-        if self.stage_progress:  # 実進捗(1%以上)が取れている
+        if self.stage_progress is not None and self.stage_progress > 0:
             pct = self.stage_progress
             eta = elapsed * (100 - pct) / pct if 0 < pct < 100 else 0.0
             return pct, eta
@@ -649,12 +668,11 @@ class Job:
         if self.status == "running" and self.stage_started_at:
             elapsed = round(time.time() - self.stage_started_at, 1)
             d["stage_elapsed"] = elapsed
-            if self.stage == "synthesize":
-                pct, eta = self._synth_progress(elapsed)
-                if pct is not None:
-                    d["stage_progress"] = pct
-                    if eta is not None:
-                        d["stage_eta_seconds"] = round(eta)
+            pct, eta = self._stage_progress(elapsed)
+            if pct is not None:
+                d["stage_progress"] = pct
+                if eta is not None:
+                    d["stage_eta_seconds"] = round(eta)
         if self.layout_source:
             d["layout_source"] = self.layout_source
         if self.started_at and self.finished_at:
@@ -1160,7 +1178,13 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         prepare_video,
     )
     d = job.dir
-    with _stage(job, "analyze"):
+    input_seconds = float(job.params.get("input_seconds") or 0)
+    analyze_estimate = (
+        max(30.0, input_seconds * 0.4)
+        if job.params.get("input_kind") == "audio"
+        else 2.0
+    )
+    with _stage(job, "analyze", estimated_total=analyze_estimate):
         lyrics_path = d / "lyrics.txt"
         correct_lyrics = (
             job.params.get("auto_lyrics") is False and lyrics_path.exists()
@@ -1171,18 +1195,12 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             project = analyze_audio(
                 d / "input.wav",
                 d,
-                # 手入力の正解歌詞がある場合も、まずWhisperの認識結果から
-                # ノート時刻を作る。後段でその認識列へ正解歌詞を対応付ける。
-                lyrics_path=(
-                    lyrics_path if lyrics_path.exists() and not correct_lyrics else None
-                ),
+                # 正式歌詞はASRで書き換えず、その全モーラを直接forced alignmentする。
+                lyrics_path=lyrics_path if lyrics_path.exists() else None,
                 whisper_model=str(config.get("whisper_model") or "small"),
                 device=config.get("audio_device"),
+                progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
             )
-            if correct_lyrics:
-                align_correct_lyrics(
-                    project, lyrics_path.read_text(encoding="utf-8").splitlines()
-                )
         else:
             from .xfparse import analyze_midi
 
@@ -1214,7 +1232,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         return _trim_wav_head(wav, max(0.0, start - 0.5))
 
     if (d / "editor.json").exists():
-        with _stage(job, "import-editor"):
+        with _stage(job, "import-editor", estimated_total=2.0):
             # 自作リストで作った替え歌は、単語リスト行(=単語画像)を
             # editorセッションのCSVから引く。
             # 字幕の元歌詞は analyze 段の align_lines が埋めたものをそのまま使う
@@ -1230,7 +1248,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         # 自作リストをアップロードしたジョブは、リスト名ではなくジョブ内の
         # CSVを使う。中身はこのジョブ限りなので単語DBの共有キャッシュには載せない
         custom_csv = custom_wordlist_path(job)
-        with _stage(job, "convert"):
+        with _stage(job, "convert", estimated_total=8.0):
             raw = convert_project(
                 project,
                 wordlist=str(custom_csv) if custom_csv else job.params["wordlist"],
@@ -1268,9 +1286,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     if not config.get("parallel_video", True):
         _run_synthesize(job, config, project, synthesize)
         project.save(d)
-        with _stage(job, "mix"):
+        with _stage(job, "mix", estimated_total=8.0):
             mix(project, d, soundfont=config.get("soundfont"))
-        with _stage(job, "video"):
+        with _stage(job, "video", estimated_total=45.0):
             return make_video(project, d, **video_options)
 
     # 映像側はキー変更(song.key_shift)を参照しない。合成側がprojectを更新しても
@@ -1305,7 +1323,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             _run_synthesize(job, config, project, synthesize)
             # 自動調整が決めたキー変更を保存し、伴奏も同じだけ移調する。
             project.save(d)
-            with _stage(job, "mix"):
+            with _stage(job, "mix", estimated_total=8.0):
                 audio_path = mix(project, d, soundfont=config.get("soundfont"))
         except Exception as audio_error:
             abort.set()
@@ -1318,7 +1336,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 raise visual_failure[0] from audio_error
             raise
 
-        with _stage(job, "video"):
+        with _stage(job, "video", estimated_total=8.0):
             silent_video = future.result()
             actual_total = actual_video_total_sec(
                 project, audio_path, video_options["midi_end_credit"]
@@ -1380,13 +1398,13 @@ def resolve_layout(job: Job, config: dict[str, Any]) -> tuple[str | None, str]:
 
 
 @contextmanager
-def _stage(job: Job, name: str):
+def _stage(job: Job, name: str, estimated_total: float | None = None):
     if job.cancel_event.is_set():
         raise runproc.Cancelled()
     job.stage = name
     job.stage_started_at = time.time()
     job.stage_progress = None
-    job.stage_estimated_total = None
+    job.stage_estimated_total = estimated_total
     logger.info("[job %s] ステージ開始: %s", job.id, name)
     yield
     seconds = round(time.time() - job.stage_started_at, 1)
@@ -1418,6 +1436,9 @@ def _run_synthesize(
             job.stage_estimated_total = synth_estimate.estimate_seconds(
                 store, score_seconds
             )
+        else:
+            # VOICEVOXにも工程内の概算を表示する。実進捗が届けばそちらを優先する。
+            job.stage_estimated_total = max(3.0, min(45.0, score_seconds * 0.07))
 
         def on_progress(frac: float) -> None:
             job.stage_progress = max(0, min(100, round(frac * 100)))
@@ -1672,9 +1693,27 @@ class JobManager:
             # ワーカーは1本なので、実行中プロセス=このジョブのもの
             runproc.kill_current()
         else:
+            self._cleanup_failed_artifacts(job)
             job.status = "canceled"
             self._save(job)
         return job
+
+    def _cleanup_failed_artifacts(self, job: Job) -> None:
+        """Remove uploads/intermediates after errors and cancellation, retaining status."""
+        root = job.dir.resolve()
+        if root.parent != self.jobs_dir.resolve() or not root.is_dir():
+            logger.error("[job %s] 不正なジョブ保存先のため清掃を拒否しました", job.id)
+            return
+        for child in root.iterdir():
+            if child.name in (STATUS_FILENAME, f"{STATUS_FILENAME}.tmp"):
+                continue
+            try:
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("[job %s] 失敗時の一時ファイル清掃に失敗", job.id)
 
     def _loop(self) -> None:
         while True:
@@ -1709,23 +1748,29 @@ class JobManager:
                 raise runproc.Cancelled()
             job.status = "done"
         except runproc.Cancelled:
-            job.status = "canceled"
             logger.info("[job %s] 中断されました", job.id)
+            self._cleanup_failed_artifacts(job)
+            job.status = "canceled"
         except Exception as exc:  # noqa: BLE001 - ジョブ失敗はAPI応答に載せる
             if job.cancel_event.is_set():
                 # 中断でプロセスをkillした結果のエラーは「中断」として扱う
-                job.status = "canceled"
+                final_status = "canceled"
                 logger.info("[job %s] 中断されました", job.id)
             else:
-                job.status = "error"
+                final_status = "error"
                 job.error = str(exc)
                 job.log.append(traceback.format_exc())
                 logger.exception("[job %s] 失敗", job.id)
+            # statusがAPIから観測可能になる前にuploadと中間物を消す。
+            self._cleanup_failed_artifacts(job)
+            job.status = final_status
         finally:
             runproc.set_cancel_check(None)
             job.stage = None
             job.finished_at = time.time()
             logging.getLogger("soramimic_video").removeHandler(handler)
+            if job.status in ("error", "canceled"):
+                self._cleanup_failed_artifacts(job)
             self._save(job)
 
 
@@ -2369,6 +2414,7 @@ def create_app(
 
     @app.get("/api/config")
     async def get_config(request: Request, response: Response) -> dict[str, Any]:
+        from .audio_melody import configured_capabilities
         from .convert import WORDLISTS_DIR
 
         response.headers["Cache-Control"] = "no-store"
@@ -2401,6 +2447,7 @@ def create_app(
             "max_wordlist_image_bytes": wordlist_zip_mod.max_image_bytes(),
             "max_wordlist_images": wordlist_zip_mod.max_images(),
             "audio_input": audio_input_available(),
+            "audio_analysis": configured_capabilities(),
             "max_audio_upload_bytes": max_audio_upload_bytes(),
         }
         if is_simple_ui():
@@ -2884,6 +2931,7 @@ def create_app(
         midi: UploadFile | None = File(None),
         audio: UploadFile | None = File(None),
         sample_id: str = Form(""),
+        lyrics_file: UploadFile | None = File(None),
         editor: UploadFile | None = None,
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
         wordlist_csv: UploadFile | None = None,
@@ -2893,8 +2941,7 @@ def create_app(
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
         lyrics: str = Form(""),
-        # True: XF内蔵歌詞 / Whisper認識歌詞をそのまま使う。
-        # False: 認識歌詞で作ったノートへ lyrics の正解歌詞を対応付ける。
+        # MIDIでは従来互換。音源アップロードは正式歌詞必須で常にFalseへ固定する。
         auto_lyrics: bool = Form(True),
         model: str = Form("MERROW"),
         # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
@@ -2930,6 +2977,14 @@ def create_app(
         input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
             await resolve_song_input(midi, audio, sample_id)
         )
+        if lyrics_file is not None and lyrics_file.filename:
+            uploaded_lyrics = await read_lyrics_upload(lyrics_file)
+            if lyrics.strip() and uploaded_lyrics.strip() != lyrics.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="歌詞は入力欄かファイルのどちらか一方にしてください",
+                )
+            lyrics = uploaded_lyrics
         if input_kind == "midi" and not input_bytes.startswith(b"MThd"):
             raise HTTPException(status_code=400, detail="MIDIファイルではありません")
         if input_kind == "midi":
@@ -2943,11 +2998,16 @@ def create_app(
                 raise HTTPException(
                     status_code=422, detail="選択した曲の歌詞が見つかりません"
                 ) from exc
-        if not auto_lyrics and not lyrics.strip():
+        if input_kind == "audio" and not lyrics.strip():
             raise HTTPException(
                 status_code=422,
-                detail="歌詞の自動認識をオフにした場合は正解歌詞を入力してください",
+                detail="音源解析には正式な元歌詞を入力またはアップロードしてください",
             )
+        if input_kind == "audio":
+            # 正式歌詞を正解文字列として直接forced alignmentする。ASRは使わない。
+            auto_lyrics = False
+        elif not auto_lyrics and not lyrics.strip():
+            raise HTTPException(status_code=422, detail="正解歌詞を入力してください")
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
@@ -3170,6 +3230,7 @@ def create_app(
             # 元ファイル名を入れる。入力種別は input_kind が正本。
             "midi_filename": input_filename,
             "input_kind": input_kind,
+            "input_seconds": round(input_seconds, 3) if input_seconds is not None else None,
             "auto_lyrics": auto_lyrics,
             "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),

@@ -787,19 +787,24 @@
       </button>
       <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
       <p class="hint" id="song-upload-filename" role="status" hidden></p>
-      <label class="lyrics-recognition-toggle" for="auto-lyrics">
+      <label class="lyrics-recognition-toggle" id="auto-lyrics-toggle" for="auto-lyrics">
         <input type="checkbox" id="auto-lyrics" aria-controls="lyrics-correction-panel" checked>
         歌詞を自動認識
       </label>
       <div id="lyrics-correction-panel" hidden>
         <label for="lyrics">正解歌詞</label>
         <textarea id="lyrics" rows="5" placeholder="正しい歌詞を行ごとに入力してください"></textarea>
-        <p class="hint">認識した歌詞をノートの基準にし、入力した歌詞を替え歌生成に使います。</p>
+        <label for="lyrics-file" class="hint">または歌詞ファイル（UTF-8 TXT / Markdown）</label>
+        <input type="file" id="lyrics-file" accept=".txt,.md,text/plain,text/markdown">
+        <p class="hint" id="lyrics-file-name" hidden></p>
+        <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
       </div>
     </div>
     <div id="audio-input-panel" class="field" hidden>
       <p><strong id="audio-filename"></strong></p>
-      <p class="hint">音源を解析してメロディーとタイミングを推定します。解析には時間がかかることがあります。</p>
+      <p class="hint">正式歌詞を一切書き換えず、音源からメロディーとタイミングを推定します。</p>
+      <p class="hint" id="audio-analysis-mode"></p>
+      <p class="hint"><strong>音源解析 → 空耳変換 → 歌声/映像 → 完成</strong></p>
       <button type="button" id="audio-clear" class="btn-sm">曲ファイルを解除</button>
     </div>
   </div>
@@ -1516,6 +1521,7 @@ let launchWordlists = [];
 let fixedVoicevoxStyle = 6000;
 let maxAudioUploadBytes = 200 * 1024 * 1024;
 let audioInputReady = false;
+let audioAnalysis = {};
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
@@ -1531,6 +1537,7 @@ async function loadConfig() {
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   audioInputReady = conf.audio_input === true;
+  audioAnalysis = conf.audio_analysis || {};
   $("song-upload-hint").textContent = audioInputReady
     ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）。PCはここへドロップできます`
     : "XF MIDIに対応";
@@ -2367,7 +2374,7 @@ function renderStages(job) {
 // 両方に出す。枠の中では英語のステージ名が唐突なので、日本語のラベルに直す。
 const STAGE_LABELS = {
   analyze: "MIDI解析", convert: "空耳変換", "import-editor": "編集の取り込み",
-  synthesize: "歌唱合成", mix: "ミックス", video: "動画生成",
+  synthesize: "歌声/映像", mix: "歌声/映像", video: "歌声/映像",
 };
 
 function setJobStatus(text, builderText) {
@@ -2378,6 +2385,17 @@ function setJobStatus(text, builderText) {
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
 // 分母は「このジョブで実際に走るステージ数」(stagePlan)。
 function renderBuilderBar(job) {
+  if (job?.params?.input_kind === "audio") {
+    const base = { analyze: 0, convert: 35, "import-editor": 35,
+      synthesize: 45, mix: 80, video: 90 };
+    const span = { analyze: 35, convert: 10, "import-editor": 10,
+      synthesize: 35, mix: 10, video: 9 };
+    const inside = job.stage_progress == null ? 0.35 : Number(job.stage_progress) / 100;
+    const pct = job.status === "done" ? 100
+      : Math.min(99, (base[job.stage] || 0) + (span[job.stage] || 0) * inside);
+    $("builder-bar-fill").style.width = Math.round(pct) + "%";
+    return;
+  }
   const total = stagePlan(job).length || 6;
   const done = job && job.stages ? job.stages.length : 0;
   const pct = job && job.status === "done" ? 100
@@ -2444,11 +2462,11 @@ async function poll(id, seq = pollSeq) {
   if (job.status === "running") {
     if (cancelPendingJob === id) {
       setJobStatus("中断しています…");
-    } else if (job.stage === "synthesize" && job.stage_progress != null) {
+    } else if (job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
-      setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);
+      setJobStatus(`${label}${tail}`, `${label}${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
       setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
@@ -2881,10 +2899,9 @@ async function submitJob(previewSec, previewMode) {
       + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
     return;
   }
-  if (songInputMode === "upload" && !$("auto-lyrics").checked
-      && !$("lyrics").value.trim()) {
+  if (audio && !$("lyrics").value.trim() && !$("lyrics-file").files?.[0]) {
     setBusy(false);
-    showSubmitMsg("歌詞の自動認識をオフにした場合は、正解歌詞を入力してください。");
+    showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
     $("lyrics").focus();
     return;
   }
@@ -3160,23 +3177,36 @@ function rejectOwnSongFile(message) {
 }
 
 function automaticLyricsEnabled() {
-  return songInputMode !== "upload" || $("auto-lyrics").checked;
+  return ownSongKind() !== "audio"
+    && (songInputMode !== "upload" || $("auto-lyrics").checked);
 }
 
 function songLyricsForRequest() {
   if (songInputMode !== "upload") return $("lyrics").value;
-  return $("auto-lyrics").checked ? "" : $("lyrics").value;
+  return automaticLyricsEnabled() ? "" : $("lyrics").value;
 }
 
 function appendSongLyrics(form) {
   form.append("lyrics", songLyricsForRequest());
+  if ($("lyrics-file").files?.[0]) {
+    form.append("lyrics_file", $("lyrics-file").files[0]);
+  }
   form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");
 }
 
 function syncLyricsRecognition() {
-  const automatic = $("auto-lyrics").checked;
+  const filename = (ownSongFile()?.name || "").toLowerCase();
+  const audio = songInputMode === "upload"
+    && [".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".webm"]
+      .some((ext) => filename.endsWith(ext));
+  const automatic = !audio && $("auto-lyrics").checked;
+  $("auto-lyrics").disabled = audio;
+  $("auto-lyrics-toggle").hidden = audio;
   $("lyrics-correction-panel").hidden = automatic;
-  $("lyrics").required = !automatic;
+  $("lyrics").required = audio && !$("lyrics-file").files?.[0];
+  $("lyrics-mode-hint").textContent = audio
+    ? "この文字列を正解としてforced alignmentします。音声認識による書き換えはしません。"
+    : "入力した歌詞を正解文字列として使います。";
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
 }
 
@@ -3184,6 +3214,21 @@ $("auto-lyrics").addEventListener("change", () => {
   syncLyricsRecognition();
   clearEditorFile();
   scheduleMidiCheck();
+});
+$("lyrics-file").addEventListener("change", () => {
+  const file = $("lyrics-file").files[0];
+  if (file) $("lyrics").value = "";
+  $("lyrics-file-name").textContent = file ? file.name : "";
+  $("lyrics-file-name").hidden = !file;
+  syncLyricsRecognition();
+  clearEditorFile();
+});
+$("lyrics").addEventListener("input", () => {
+  if ($("lyrics").value && $("lyrics-file").files[0]) {
+    $("lyrics-file").value = "";
+    $("lyrics-file-name").hidden = true;
+  }
+  syncLyricsRecognition();
 });
 syncLyricsRecognition();
 
@@ -3322,6 +3367,7 @@ $("midi").addEventListener("change", () => {
     $("builder-edit").disabled = false;
     $("builder-edit").title = "替え歌を編集";
     document.querySelector('.stages li[data-stage="analyze"]').textContent = "MIDI解析";
+    syncLyricsRecognition();
     syncBuilderOptions();
     syncBuilderValues();
     showBuilderMsg("");
@@ -3333,6 +3379,13 @@ $("midi").addEventListener("change", () => {
   $("builder-edit").disabled = true;
   $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
+  $("auto-lyrics").checked = false;
+  $("audio-analysis-mode").textContent = audioAnalysis.sheetsage2
+    ? (audioAnalysis.rmvpe && audioAnalysis.fcpe
+      ? "SheetSage2採譜＋RMVPE/FCPE空白補完を使います。"
+      : "SheetSage2採譜を使います。高精度F0空白補完はこの環境では未対応です。")
+    : "この環境では既存pYIN経路を使います。SheetSage2採譜は未設定です。";
+  syncLyricsRecognition();
   syncBuilderOptions();
   syncBuilderValues();
   showBuilderMsg("");

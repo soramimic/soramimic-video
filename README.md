@@ -108,8 +108,9 @@ uv run soramimic-video serve
 1ファイルをドラッグ＆ドロップできます。同梱曲は「サンプル曲で試す」で入力方法を切り替えて選べます。
 「曲をアップロード」で戻れます。入力方法を切り替えると前の曲選択は解除されます。
 形式は拡張子とファイル内容から自動で判定し、
-圧縮音声は解析前にPCM WAVへ変換します。音源の元歌詞は任意で、
-空欄の場合は音源から自動認識します。音源分離・歌詞認識・タイミング推定・音高推定を
+圧縮音声は解析前にPCM WAVへ変換します。持ち込み音源には正式な元歌詞を
+画面へ入力するか、UTF-8のTXT/Markdownで同時にアップロードします。正式歌詞は
+正解文字列としてforced alignmentし、ASRで書き換えません。音源分離・タイミング推定・音高推定を
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
 
@@ -120,6 +121,16 @@ uv run soramimic-video serve
 | `SORAMIMIC_MAX_AUDIO_UPLOAD_BYTES` | 200MB | 音声1ファイルの最大容量 |
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420秒 | MIDI/音声共通の曲長上限 |
 | `SORAMIMIC_JOB_TTL_HOURS` | 0（自動削除なし） | 完了後に入力・中間物・動画を自動削除するまでの時間 |
+| `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | ローカルSheetSage2モデル（設定時に主ノートとして使用） |
+| `SORAMIMIC_SHEETSAGE_BASE_DIR` | 未設定 | ローカルMERT-v2-FullSong親モデル |
+| `SORAMIMIC_RMVPE_ROOT` | 未設定 | ローカルRMVPE実装root（SheetSage2空白補完） |
+| `SORAMIMIC_RMVPE_CHECKPOINT` | 未設定 | ローカルRMVPE checkpoint |
+| `SORAMIMIC_FCPE_CHECKPOINT` | package同梱値 | 任意のローカルFCPE checkpoint |
+
+SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
+ローカルディレクトリだけをofflineで読みます。完全構成ではSheetSage2ノートを保持し、
+歌詞のある空白だけをRMVPE主・FCPE確認で補います。両者が一致しないモーラは
+`spoken`として歌詞と字幕に残します。モデル未設定時は既存pYIN実経路となり、画面に明示されます。
 
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じ音声上限までmultipart requestを
