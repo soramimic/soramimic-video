@@ -2047,9 +2047,9 @@ def test_audio_sample_skips_midi_check_and_disables_editor():
     assert '$("builder-edit").disabled = sampleAudio;' in apply
     assert 'link.textContent = "ライセンス";' in apply
     thumbnail = _function_body(script, "function loadThumbnailPreview(")
-    audio_fallback = thumbnail.index('combo.sampleId === OWN_SONG_VALUE')
-    assert audio_fallback < thumbnail.index('fetch(url, { headers: headers()')
-    assert "loadWordlistImage(combo.wordlistName, seq);" in thumbnail[audio_fallback:]
+    assert 'sampleInputKinds[combo.sampleId] === "audio"' not in thumbnail
+    assert '? { title: songTitleOf(ownSongFile()), wordlist: combo.wordlistName }' in thumbnail
+    assert ': { sample: combo.sampleId, wordlist: combo.wordlistName };' in thumbnail
     random = _function_body(script, "function luckyCandidatePools(")
     assert "o.value && !o.disabled" in random
     host_songs = _function_body(script, "function hostSongList(")

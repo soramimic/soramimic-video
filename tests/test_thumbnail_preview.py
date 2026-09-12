@@ -166,6 +166,27 @@ def test_preview_without_reading_converts_the_title(
     assert seen == [[SAMPLE_TITLE]]
 
 
+def test_uploaded_song_title_returns_preview(client: TestClient, monkeypatch):
+    """持ち込みWAV/MIDIはファイル名由来の曲名で完成時と同じサムネを作れる。"""
+    seen: list[list[str]] = []
+
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+        seen.append(list(phrases))
+        return {
+            "lines": [{"units": [], "words": [{"surface": "米原", "id": "1"}]}],
+            "tokensList": [],
+            "phrases": phrases,
+        }
+
+    monkeypatch.setattr(thumb_mod, "run_convert", fake)
+    res = client.get(
+        "/api/thumbnail-preview", params={"title": " marigold ", "wordlist": "mylist"}
+    )
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "image/png"
+    assert seen == [["marigold"]]
+
+
 def test_cache_key_changes_with_reading(wordlist_dir: Path):
     # 読みを足した/変えたら作り直す(古い読みのPNGを返し続けない)
     plain = preview_mod.PreviewSpec.create(SAMPLE_TITLE, "mylist")
@@ -191,6 +212,19 @@ def test_unknown_wordlist_is_404(client: TestClient):
 
 def test_missing_wordlist_is_400(client: TestClient):
     assert get_preview(client, wordlist="  ").status_code == 400
+
+
+def test_missing_sample_and_title_is_400(client: TestClient):
+    res = client.get("/api/thumbnail-preview", params={"wordlist": "mylist"})
+    assert res.status_code == 400
+    assert "曲名" in res.json()["detail"]
+
+
+def test_uploaded_song_title_is_limited(client: TestClient):
+    res = client.get(
+        "/api/thumbnail-preview", params={"title": "a" * 201, "wordlist": "mylist"}
+    )
+    assert res.status_code == 400
 
 
 # ---- レート制限 ----
