@@ -36,6 +36,7 @@ _VARIANT_MARGIN_FRAMES = 25  # 読み候補スコアリング時に行の前後�
 # 平均だと行の長さで差が薄まる(違いは1-2モーラでも行全体で平均される)ため合計を使う。
 # 実測: 正しい修正(アス,ヒガ)は約4-13、誤修正の例(ドッテ)は約1.2だった
 _VARIANT_SCORE_MARGIN = 2.0
+_MODEL_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
 @dataclass
@@ -96,9 +97,16 @@ def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (
     import torch
     from transformers import AutoProcessor, Wav2Vec2ForCTC
 
+    from . import runproc
+
     logger.info("wav2vec2(%s)でCTC確率を計算中...", MODEL_NAME)
-    model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME).to(device)  # type: ignore[arg-type]
-    processor = AutoProcessor.from_pretrained(MODEL_NAME)
+    cached = _MODEL_CACHE.get(device)
+    if cached is None:
+        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME).eval().to(device)  # type: ignore[arg-type]
+        processor = AutoProcessor.from_pretrained(MODEL_NAME)
+        _MODEL_CACHE[device] = (model, processor)
+    else:
+        model, processor = cached
 
     audio, _ = librosa.load(str(vocals_path), sr=SAMPLING_RATE, mono=True)
     audio = np.pad(audio, pad_width=int(_PAD_SEC * SAMPLING_RATE))
@@ -107,6 +115,7 @@ def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (
     pos = 0
     n = len(audio)
     while pos < n:
+        runproc.raise_if_cancelled()
         s0 = max(0, pos - _OVERLAP_SAMPLES)
         s1 = min(n, pos + _CHUNK_SAMPLES + _OVERLAP_SAMPLES)
         input_values = processor(
@@ -119,6 +128,7 @@ def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (
         keep_to = logits.shape[0] if s1 >= n else keep_from + _CHUNK_SAMPLES // FRAME_SAMPLES
         chunks.append(logits[keep_from:keep_to])
         pos += _CHUNK_SAMPLES
+    runproc.raise_if_cancelled()
     log_probs = torch.nn.functional.log_softmax(torch.cat(chunks), dim=-1)
     logger.debug("logits: %d frames x %d tokens", *log_probs.shape)
     return log_probs

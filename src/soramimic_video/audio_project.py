@@ -31,6 +31,8 @@ class MoraNote:
     start_sec: float
     end_sec: float
     midi_note: int
+    source: str = "recovered_note"
+    pitch_confidence: float | None = None
 
 
 def sec_to_tick(sec: float, bpm: float = DEFAULT_BPM, tpb: int = TICKS_PER_BEAT) -> int:
@@ -90,6 +92,8 @@ def build_project(
             surface="",
             kana=m.kana,
             raw=m.kana,
+            source=m.source,
+            pitch_confidence=m.pitch_confidence,
         )
         notes.append(note)
         note_ids_by_line.setdefault(line_id, []).append(note.id)

@@ -49,6 +49,11 @@ class Note:
     surface: str  # XF歌詞の表記部分(継続モーラでは空文字)
     kana: str  # 読み(カタカナ正規化)
     raw: str  # XFKMイベントの生テキスト
+    # 音源入力の音高由来。MIDI由来の既存projectは既定値のまま読み込める。
+    # sheetsage_note / recovered_note / spoken を区別し、spoken のmidi_noteは
+    # 合成互換のための代替値であって推定音高ではないことを明示する。
+    source: str = "midi_note"
+    pitch_confidence: float | None = None
 
 
 @dataclass

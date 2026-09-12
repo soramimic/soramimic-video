@@ -1,5 +1,18 @@
 # Third-party notices
 
+## Optional audio-analysis models
+
+The application can use operator-provided local copies of SheetSage2 and its
+MERT-v2-FullSong parent. Their checkpoint weights are licensed under Creative
+Commons Attribution-NonCommercial 4.0 and are neither bundled nor downloaded by
+this repository. Identify SheetSage2, MERT2, and their source when using them:
+https://huggingface.co/m-a-p/SheetSage2 and
+https://huggingface.co/m-a-p/MERT-v2-FullSong.
+
+Optional gap recovery can use RMVPE (MIT) and torchfcpe/FCPE (MIT). Their model
+code and checkpoints must be supplied or installed separately; this repository
+does not redistribute RMVPE assets.
+
 ## PJS pitch corrector
 
 The WAV pitch corrector parameters were learned from the PJS: Phoneme-balanced

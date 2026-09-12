@@ -1876,6 +1876,11 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'id="auto-lyrics" aria-controls="lyrics-correction-panel" checked' in html
     assert 'id="lyrics-correction-panel" hidden' in html
     assert '<textarea id="lyrics"' in html
+    assert 'id="lyrics-file" accept=".txt,.md,text/plain,text/markdown"' in html
+    assert "正式歌詞を一切書き換えず" in html
+    assert "音源解析 → 空耳変換 → 歌声/映像 → 完成" in html
+    assert 'audioAnalysis = conf.audio_analysis || {};' in script
+    assert "SheetSage2採譜＋RMVPE/FCPE空白補完" in script
     assert 'id="audio-lyrics"' not in html
     assert 'songUploadEntry.addEventListener("drop"' in script
     assert 'files.length !== 1' in script
@@ -1887,6 +1892,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert "appendSongLyrics(form);" in submit
     append = _function_body(script, "function appendSongLyrics(")
     assert 'form.append("lyrics", songLyricsForRequest());' in append
+    assert 'form.append("lyrics_file", $("lyrics-file").files[0]);' in append
     assert 'form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");' in append
     # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
     assert 'localStorage.setItem("audioFile"' not in script

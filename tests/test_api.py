@@ -118,7 +118,7 @@ def test_job_flow_accepts_wav_and_keeps_existing_playback(client):
     body = wait_done(client, job_id)
     assert body["status"] == "done"
     assert body["params"]["input_kind"] == "audio"
-    assert body["params"]["auto_lyrics"] is True
+    assert body["params"]["auto_lyrics"] is False
     assert body["song_label"] == "アップロードした曲"
     job = client.app.state.manager.jobs[job_id]
     assert (job.dir / "input.wav").read_bytes() == wav
@@ -151,7 +151,44 @@ def test_manual_correct_lyrics_mode_requires_lyrics(client):
         data={"wordlist": "stations", "auto_lyrics": "false", "lyrics": "  "},
     )
     assert res.status_code == 422
-    assert "正解歌詞を入力" in res.json()["detail"]
+    assert "正式な元歌詞" in res.json()["detail"]
+
+
+def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path):
+    escaped = tmp_path / "escaped.txt"
+    res = client.post(
+        "/api/jobs",
+        files={
+            "audio": ("voice.wav", fake_wav(), "audio/wav"),
+            "lyrics_file": ("../../escaped.txt", "正式な歌詞".encode(), "text/plain"),
+        },
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    job = client.app.state.manager.jobs[body["id"]]
+    assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正式な歌詞"
+    assert not escaped.exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "status"),
+    [
+        ("lyrics.pdf", b"words", 400),
+        ("lyrics.txt", b"\xff", 400),
+        ("lyrics.txt", b"a" * (api_mod.MAX_LYRICS_UPLOAD_BYTES + 1), 413),
+    ],
+)
+def test_rejects_unsafe_lyrics_upload(client, filename, content, status):
+    res = client.post(
+        "/api/jobs",
+        files={
+            "audio": ("voice.wav", fake_wav(), "audio/wav"),
+            "lyrics_file": (filename, content, "application/octet-stream"),
+        },
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == status
 
 
 def test_job_flow_accepts_bundled_wav_preset(client, tmp_path, monkeypatch):
@@ -264,7 +301,7 @@ def test_mp3_upload_is_stored_as_normalized_wav(client, tmp_path):
     res = client.post(
         "/api/jobs",
         files={"audio": ("voice.mp3", raw, "audio/mpeg")},
-        data={"wordlist": "stations"},
+        data={"wordlist": "stations", "lyrics": "あ"},
     )
     assert res.status_code == 200, res.text
     body = wait_done(client, res.json()["id"])
@@ -384,39 +421,31 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
         api_mod.run_pipeline(job, {})
 
 
-def test_manual_wav_lyrics_align_after_transcription(tmp_path, monkeypatch):
-    from soramimic_video import align as align_mod
+def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monkeypatch):
     from soramimic_video import analyze_audio as analyze_audio_mod
 
-    class ReachedCorrectLyricsAligner(Exception):
+    class ReachedAnalyzer(Exception):
         pass
 
     audio = tmp_path / "input.wav"
     audio.write_bytes(fake_wav())
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("正しい歌詞", encoding="utf-8")
-    recognized_project = object()
-
     def fake_analyze(audio_path, project_dir, **kwargs):
         assert audio_path == audio
         assert project_dir == tmp_path
-        assert kwargs["lyrics_path"] is None
-        return recognized_project
-
-    def fake_align(project, lines):
-        assert project is recognized_project
-        assert lines == ["正しい歌詞"]
-        raise ReachedCorrectLyricsAligner
+        assert kwargs["lyrics_path"] == lyrics
+        assert callable(kwargs["progress"])
+        raise ReachedAnalyzer
 
     monkeypatch.setattr(analyze_audio_mod, "analyze_audio", fake_analyze)
-    monkeypatch.setattr(align_mod, "align_correct_lyrics", fake_align)
     job = api_mod.Job(
         id="wav-correct-lyrics",
         dir=tmp_path,
         params={"input_kind": "audio", "auto_lyrics": False},
     )
 
-    with pytest.raises(ReachedCorrectLyricsAligner):
+    with pytest.raises(ReachedAnalyzer):
         api_mod.run_pipeline(job, {})
 
 
@@ -1103,14 +1132,33 @@ def test_cancel_running_and_queued(tmp_path, monkeypatch):
     res = client.post(f"/api/jobs/{queued}/cancel")
     assert res.status_code == 200
     assert res.json()["status"] == "canceled"
+    queued_dir = client.app.state.manager.jobs[queued].dir
+    assert [path.name for path in queued_dir.iterdir()] == [api_mod.STATUS_FILENAME]
 
     # 実行中のジョブは中断チェックで止まる
     client.post(f"/api/jobs/{running}/cancel")
     body = wait_done(client, running)
     assert body["status"] == "canceled"
+    running_dir = client.app.state.manager.jobs[running].dir
+    assert [path.name for path in running_dir.iterdir()] == [api_mod.STATUS_FILENAME]
     assert client.get(f"/api/jobs/{queued}").json()["status"] == "canceled"
     # 完了済みジョブへのcancelは何もしない
     assert client.post(f"/api/jobs/{running}/cancel").json()["status"] == "canceled"
+
+
+def test_failed_job_removes_uploaded_and_intermediate_files(tmp_path, monkeypatch):
+    def failing_pipeline(job, config):
+        (job.dir / "analyze").mkdir()
+        (job.dir / "analyze" / "private.tmp").write_bytes(b"intermediate")
+        raise RuntimeError("analysis failed")
+
+    monkeypatch.setattr(api_mod, "run_pipeline", failing_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    job_id = submit(client, editor=b"{}")
+    body = wait_done(client, job_id)
+    assert body["status"] == "error"
+    job_dir = client.app.state.manager.jobs[job_id].dir
+    assert [path.name for path in job_dir.iterdir()] == [api_mod.STATUS_FILENAME]
 
 
 def test_runproc_kill_current():
@@ -2608,7 +2656,7 @@ def test_index_html_progress_uses_the_active_stage_plan():
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
     assert 'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
-    assert "setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);" in html
+    assert "setJobStatus(`${label}${tail}`, `${label}${tail}`);" in html
 
 
 def test_index_html_stage_chips_match_the_step_count():

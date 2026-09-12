@@ -216,7 +216,7 @@ def test_wav_uses_the_same_public_song_length_limit(public_app, monkeypatch):
     res = TestClient(public_app).post(
         "/api/jobs",
         files={"audio": ("voice.wav", fake_wav(2), "audio/wav")},
-        data={"wordlist": "stations"},
+        data={"wordlist": "stations", "lyrics": "あ"},
     )
     assert res.status_code == 400
     assert "曲が長すぎます" in res.json()["detail"]
@@ -271,7 +271,7 @@ def test_job_ttl_cleanup_removes_uploaded_wav(tmp_path, monkeypatch):
     response = client.post(
         "/api/jobs",
         files={"audio": ("voice.wav", fake_wav(0.1), "audio/wav")},
-        data={"wordlist": "stations"},
+        data={"wordlist": "stations", "lyrics": "あ"},
     )
     assert response.status_code == 200
     job_id = response.json()["id"]
