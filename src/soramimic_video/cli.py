@@ -80,12 +80,32 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
         whisper_model=args.whisper_model,
         skip_separation=args.no_separation,
         device=args.device,
+        lyric_pipeline=args.lyric_pipeline,
     )
     path = project.save(Path(args.project))
     print(f"解析完了: {len(project.notes)}モーラ / {len(project.lines)}行 -> {path}")
     if not args.lyrics:
         print("元歌詞にWhisper認識結果を使用しました(誤認識は edit ステージで修正可能)")
     print(f"タイミングの目視検証用SRT: {Path(args.project) / ANALYZE_DIR}/")
+    return 0
+
+
+def cmd_apply_lyric_layers(args: argparse.Namespace) -> int:
+    from .lyric_layers import apply_lyric_layers
+
+    project = Project.load(Path(args.project))
+    layers = json.loads(Path(args.layers).read_text(encoding="utf-8"))
+    apply_lyric_layers(project, layers)
+    project.save(Path(args.project))
+    print(f"歌詞レイヤー適用完了: {len(project.notes)}ノート / {len(project.lines)}行")
+    return 0
+
+
+def cmd_export_xf(args: argparse.Namespace) -> int:
+    from .xfexport import export_xf_midi
+
+    path = export_xf_midi(Project.load(Path(args.project)), Path(args.output))
+    print(f"XF出力完了: {path} (由来情報: {path.name}.provenance.json)")
     return 0
 
 
@@ -472,7 +492,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="音源分離をスキップ(入力が既にボーカルのみの場合)",
     )
     p.add_argument("--device", help="torchデバイス(省略時はcuda→cpuの順で自動)")
+    p.add_argument(
+        "--lyric-pipeline", choices=("cplus", "evidence"),
+        help="evidence: 複数認識候補と3歌詞レイヤーを使用(wav-to-xf追加導入が必要)",
+    )
     p.set_defaults(func=cmd_analyze_audio)
+
+    p = sub.add_parser("apply-lyric-layers", help="歌詞と合成ノートのレイヤーを取り込む")
+    p.add_argument("--project", required=True, help="替え歌変換前のプロジェクト")
+    p.add_argument("--layers", required=True, help="version 1のrealization JSON")
+    p.set_defaults(func=cmd_apply_lyric_layers)
+
+    p = sub.add_parser("export-xf", help="選択した歌詞とノートを由来情報付きXF MIDIへ出力する")
+    p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
+    p.add_argument("--output", required=True, help="出力MIDIパス")
+    p.set_defaults(func=cmd_export_xf)
 
     p = sub.add_parser(
         "eval-audio", help="analyze-audioの出力をXF正解プロジェクトと突き合わせて評価する"

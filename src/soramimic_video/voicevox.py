@@ -276,6 +276,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
 
     lyric_map = build_lyric_map(project)
     notes = sorted(project.notes, key=lambda n: n.start_tick)
+    preserve_units = project.lyric_layers is not None
 
     out_notes: list[dict[str, Any]] = []
     cursor = 0  # 出力済みの絶対フレーム位置
@@ -290,6 +291,10 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         if sf < cursor:  # 重なり: 前音に食い込む分を切り詰め
             sf = cursor
         if ef <= sf:  # 長さが無い(丸めで消えた)音符は捨てる
+            if preserve_units:
+                raise ValueError(
+                    f"合成フレームを確保できません(音符{n.id})。歌詞は保持されています"
+                )
             continue
         if sf - cursor == 1:
             # 1フレームだけの休符はエンジンが500を返す(実測: 2フレーム以上は可)。
@@ -313,6 +318,10 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             notes[i + 1].start_sec - n.end_sec if i + 1 < len(notes) else float("inf")
         )
         note_mode = _resolve_stacked_mode(gap_after)
+        if preserve_units and note_mode == "first":
+            # Layered plans may omit only explicitly classified source omissions,
+            # already absent from the plan. A short following gap is not evidence.
+            note_mode = "back"
         if len(morae) > 1 and note_mode == "first":
             # 最初のモーラ以降の「発音」は落とす。ただし長音由来の母音継続
             # (ビー→[ビ,イ]のイ)は別アタックではないので残す(落とす意味もない)
@@ -325,6 +334,13 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         total = ef - sf
         m = len(morae)
         bounds = mora_frame_bounds(total, m, note_mode)
+        if preserve_units and any(
+            right - left < MIN_ELEMENT_FRAMES
+            for left, right in zip(bounds, bounds[1:], strict=False)
+        ):
+            raise ValueError(
+                f"全モーラの合成フレームが不足しています(音符{n.id})。歌詞は保持されています"
+            )
         for i, mora in enumerate(morae):
             length = bounds[i + 1] - bounds[i]
             if length <= 0:  # モーラが多すぎてフレームが足りない場合は最低1
@@ -337,6 +353,9 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
 
     if not out_notes:
         raise ValueError("音符がありません")
+    if (preserve_units and out_notes[0]["key"] is not None
+            and out_notes[0]["frame_length"] < HEAD_REST_FRAMES + MIN_ELEMENT_FRAMES):
+        raise ValueError("先頭休符と発音のフレームが不足しています。歌詞は保持されています")
     return {"notes": _ensure_head_rest(out_notes)}
 
 

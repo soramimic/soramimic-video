@@ -44,8 +44,13 @@ def build_lyric_map(project: Project) -> dict[int, str]:
             kana_list = w.note_kana
             if len(kana_list) != len(w.note_ids):
                 moras = split_moras(w.kana)
-                kana_list = moras[: len(w.note_ids)]
-                kana_list += ["ー"] * (len(w.note_ids) - len(kana_list))
+                count = len(w.note_ids)
+                if not count and moras:
+                    raise ValueError(f"歌唱先の音符がありません: {w.surface}")
+                kana_list = [""] * count
+                for index, mora in enumerate(moras):
+                    kana_list[min(index, count - 1)] += mora
+                kana_list = [kana or "ー" for kana in kana_list]
             for nid, kana in zip(w.note_ids, kana_list, strict=True):
                 if nid in assigned_by and assigned_by[nid] != w.surface:
                     logger.warning(
