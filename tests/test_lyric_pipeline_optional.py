@@ -17,10 +17,23 @@ from soramimic_video.mora_align import CTCEmissions  # noqa: E402
 from soramimic_video.project import Project, SongInfo  # noqa: E402
 
 
-def test_stage3_uses_each_mora_ctc_peak_and_every_sheetsage_candidate():
+def test_stage3_uses_boundaryless_weights_with_each_mora_ctc_peak(
+    monkeypatch,
+):
+    from wav_to_xf import pipeline
+
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
     from soramimic_video.stage3 import build_stage3_layers
+
+    captured = {}
+    original = pipeline.run_stage3_document
+
+    def run(document, *, config=None, **kwargs):
+        captured["config"] = config
+        return original(document, config=config, **kwargs)
+
+    monkeypatch.setattr(pipeline, "run_stage3_document", run)
 
     document, realization = build_stage3_layers(
         ["かき"], ["カキ"],
@@ -31,6 +44,9 @@ def test_stage3_uses_each_mora_ctc_peak_and_every_sheetsage_candidate():
 
     anchors = [item for item in document.evidence if item.kind == "mora-ctc-anchor"]
     assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
+    assert captured["config"].vowel_onset_weight == 0
+    assert captured["config"].interval_overlap_weight == 0
+    assert captured["config"].boundary_weight == 0
     assert [(item.kana, item.note_candidate_id) for item in realization.synthesis_plan] == [
         ("カ", "sheetsage-0"), ("キ", "sheetsage-1"),
     ]
