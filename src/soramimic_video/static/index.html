@@ -221,6 +221,8 @@
   summary { cursor: pointer; }
   details.card > summary { font-weight: 700; font-size: .95rem; color: var(--text); }
   details.card[open] > summary { margin-bottom: .7rem; }
+  #advanced > summary[aria-disabled="true"] { cursor: not-allowed; color: var(--muted); }
+  .advanced-lock-hint { margin-left: .45rem; font-size: .78rem; font-weight: 400; }
   .sub-details > summary { font-size: .85rem; color: var(--muted); }
   /* ---- 詳細設定の中のグループ分け ---- */
   /* 曲・歌詞・単語リスト・歌声・レイアウトがフラットに並ぶと、初見の人がどこから
@@ -962,7 +964,9 @@
      曲・元歌詞・単語リスト・変換のしかたはビルダーカードとエディタに一本化。
      歌声とレイアウトの既存DOMは機能を残すため保持するが、Web UIでは非表示にする。 -->
 <details class="card" id="advanced">
-  <summary>⚙️ 詳細設定</summary>
+  <summary aria-disabled="true">⚙️ 詳細設定
+    <span class="advanced-lock-hint" id="advanced-lock-hint">曲と単語リストを選ぶと開けます</span>
+  </summary>
 
   <!-- 選択中の単語リストに facets があるときだけ表示する。チェック状態は #where
        の正本と同期し、サムネイル・生成・替え歌エディタへ同じ条件を渡す。 -->
@@ -1516,6 +1520,7 @@ async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
+  updateAdvancedSettingsAvailability();
   simpleMode = !!conf.simple_ui;
   $("custom-wordlist-actions").hidden = simpleMode;
   try { await refreshCustomLists(); }
@@ -3195,6 +3200,30 @@ function showSongInputMode(mode) {
     ? "サンプル曲で試す" : "曲をアップロード";
 }
 
+function advancedSettingsAvailable() {
+  // 認証キーが必要な構成だけは、選択前でもキー入力のため開けるようにする。
+  const auth = $("auth");
+  if (!auth.hidden && !apiKey()) return true;
+  const songSelected = !!ownSongFile() || !!$("sample-select").value;
+  const wordlistSelected = !!currentWordlistName() || !!activeCustomList()
+    || showsEditorWordlist();
+  return songSelected && wordlistSelected;
+}
+
+function updateAdvancedSettingsAvailability() {
+  const advanced = $("advanced");
+  const available = advancedSettingsAvailable();
+  advanced.querySelector(":scope > summary").setAttribute(
+    "aria-disabled", String(!available),
+  );
+  $("advanced-lock-hint").hidden = available;
+  if (!available) advanced.open = false;
+}
+
+$("advanced").querySelector(":scope > summary").addEventListener("click", (event) => {
+  if (!advancedSettingsAvailable()) event.preventDefault();
+});
+
 function switchSongInputMode(mode) {
   if (mode === songInputMode) return;
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
@@ -4016,6 +4045,7 @@ function syncBuilderValues() {
   $("song-upload-filename").hidden = !file;
   const sample = $("sample-select");
   showSongInputMode(sample.value ? "sample" : file ? "upload" : songInputMode);
+  updateAdvancedSettingsAvailability();
   $("builder-sample").value = sample.value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const selectedCustom = activeCustomList();
