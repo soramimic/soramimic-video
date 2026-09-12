@@ -137,7 +137,8 @@ SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動�
 チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
 通常の `cplus` 経路と既存プロジェクトは追加パッケージなしで使用できます。
 `evidence` とSheetSage2を併用すると、全SheetSageノート候補と各モーラのかなCTC中心を
-Stage 3へ渡し、モーラ→ノート対応を決定します。CTC中心を含む後続ノートがある場合、その
+境界なし設定のStage 3へ渡し、モーラ→ノート対応を決定します。母音・子音境界は入力せず、
+CTC中心を含む後続ノートがある場合、その
 モーラを直前ノートのスタックやmelismaへ隠しません。`evidence` 経路はSheetSage2を必須とし、
 未設定時に別方式へ黙ってフォールバックしません。従来方式は明示的な `cplus` 経路です。
 
