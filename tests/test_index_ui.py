@@ -260,7 +260,10 @@ def test_advanced_settings_require_both_song_and_wordlist():
           addEventListener(type, callback) { this.clickHandler = callback; },
         };
         const elements = {
-          advanced: { open: true, querySelector: () => summary },
+          advanced: {
+            open: true, locked: false, querySelector: () => summary,
+            classList: { toggle(name, force) { elements.advanced.locked = force; } },
+          },
           auth: { hidden: true },
           "sample-select": { value: "" },
           "advanced-lock-hint": { hidden: false },
@@ -277,6 +280,7 @@ def test_advanced_settings_require_both_song_and_wordlist():
         """
         updateAdvancedSettingsAvailability();
         assert.equal(elements.advanced.open, false);
+        assert.equal(elements.advanced.locked, true);
         assert.equal(summary.attrs["aria-disabled"], "true");
         assert.equal(elements["advanced-lock-hint"].hidden, false);
         let prevented = false;
@@ -286,6 +290,7 @@ def test_advanced_settings_require_both_song_and_wordlist():
         elements["sample-select"].value = "furusato";
         wordlist = "stations";
         updateAdvancedSettingsAvailability();
+        assert.equal(elements.advanced.locked, false);
         assert.equal(summary.attrs["aria-disabled"], "false");
         assert.equal(elements["advanced-lock-hint"].hidden, true);
         prevented = false;
