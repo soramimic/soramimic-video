@@ -12,6 +12,18 @@ from .reading import reading_candidates
 from .transcribe import DEFAULT_WHISPER_MODEL
 
 
+def _segment_pass_id(base: str, ends: list[float], start: float, end: float) -> str:
+    """Keep overlapping ASR windows as separate compatible candidate streams."""
+    lane = next(
+        (i for i, previous_end in enumerate(ends) if previous_end <= start), len(ends),
+    )
+    if lane == len(ends):
+        ends.append(end)
+    else:
+        ends[lane] = end
+    return base if lane == 0 else f"{base}:overlap-{lane}"
+
+
 def require_lyric_pipeline() -> None:
     try:
         from wav_to_xf.cplus import from_cplus_assignments  # noqa: F401
@@ -62,6 +74,7 @@ def transcribe_multiview(
             str(paths[request.view]), language="ja", vad_filter=request.vad_enabled,
         )
         hypotheses, acoustic, evidence, diagnostics = [], [], [], []
+        lane_ends: list[float] = []
         for index, segment in enumerate(segments):
             runproc.raise_if_cancelled()
             start = max(0.0, float(segment.start))
@@ -69,6 +82,7 @@ def transcribe_multiview(
             if not math.isfinite(start + end) or end <= start:
                 diagnostics.append(f"invalid_segment:{pass_id}:{index}")
                 continue
+            segment_pass = _segment_pass_id(pass_id, lane_ends, start, end)
             hypothesis_id = f"{pass_id}:{index}"
             raw_score = float(segment.avg_logprob)
             confidence = math.exp(min(0.0, raw_score)) if math.isfinite(raw_score) else 0.0
@@ -79,7 +93,7 @@ def transcribe_multiview(
             readings = tuple(ReadingCandidate(kana, "dictionary-reading", 1.0)
                              for kana in reading_candidates(segment.text.strip()) if kana)
             hypotheses.append(RecognitionHypothesis(
-                hypothesis_id, pass_id, f"faster-whisper:{model_size}", request.view,
+                hypothesis_id, segment_pass, f"faster-whisper:{model_size}", request.view,
                 request.vad_enabled, str(index), start, end, info.language or "ja",
                 confidence, 0.0, segment.text.strip(), readings,
                 float(segment.no_speech_prob), (evidence_id,),
@@ -90,8 +104,10 @@ def transcribe_multiview(
                 # the decoder. Coverage means analyzed audio, not voiced time.
                 acoustic.append(AcousticPronunciation(
                     f"ctc:{hypothesis_id}", "reazon-kana-ctc", "vocals", start, end,
-                    ctc_score, 0.0, kana=kana, stream_id=pass_id,
+                    ctc_score, 0.0, kana=kana, stream_id=segment_pass,
                 ))
+        if len(lane_ends) > 1:
+            diagnostics.append(f"overlapping_segments_partitioned:{pass_id}:{len(lane_ends)}")
         return RecognitionBatch(tuple(hypotheses), tuple(acoustic), tuple(evidence),
                                 tuple(diagnostics))
 
