@@ -813,9 +813,9 @@
       <div id="lyrics-correction-panel" hidden>
         <label for="lyrics">正解歌詞</label>
         <textarea id="lyrics" rows="5" placeholder="正しい歌詞を行ごとに入力してください"></textarea>
-        <label for="lyrics-file" class="hint">または歌詞ファイル（UTF-8 TXT / Markdown）</label>
+        <label for="lyrics-file" class="hint">または歌詞ファイルから入力（UTF-8 TXT / Markdown）</label>
         <input type="file" id="lyrics-file" accept=".txt,.md,text/plain,text/markdown">
-        <p class="hint" id="lyrics-file-name" hidden></p>
+        <p class="hint" id="lyrics-file-name" role="status" hidden></p>
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
       </div>
     </div>
@@ -3200,8 +3200,11 @@ function songLyricsForRequest() {
 }
 
 function appendSongLyrics(form) {
-  form.append("lyrics", songLyricsForRequest());
-  if ($("lyrics-file").files?.[0]) {
+  const lyrics = songLyricsForRequest();
+  form.append("lyrics", lyrics);
+  // ファイル選択はコピペの代替入力。読み込みが終わるまではファイルを送り、
+  // 歌詞欄へ展開できた後は表示・編集されている文字列だけを正本として送る。
+  if (!automaticLyricsEnabled() && !lyrics.trim() && $("lyrics-file").files?.[0]) {
     form.append("lyrics_file", $("lyrics-file").files[0]);
   }
   form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");
@@ -3231,16 +3234,55 @@ $("auto-lyrics").addEventListener("change", () => {
   clearEditorFile();
   scheduleMidiCheck();
 });
+let lyricsFileReadSequence = 0;
+async function loadLyricsFile(file) {
+  const sequence = ++lyricsFileReadSequence;
+  if (!file) {
+    $("lyrics-file-name").textContent = "";
+    $("lyrics-file-name").hidden = true;
+    syncLyricsRecognition();
+    return;
+  }
+  const previousLyrics = $("lyrics").value;
+  try {
+    if (!/\.(txt|md)$/i.test(file.name)) {
+      throw new Error("歌詞ファイルはTXTまたはMarkdownを選んでください。");
+    }
+    if (file.size > 256 * 1024) {
+      throw new Error("歌詞ファイルは256KB以下にしてください。");
+    }
+    // 読み込み中に生成されても従来のファイル送信経路へフォールバックできる。
+    $("lyrics").value = "";
+    syncLyricsRecognition();
+    clearEditorFile();
+    const raw = await file.arrayBuffer();
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(raw).replace(/^\uFEFF/, "");
+    if (sequence !== lyricsFileReadSequence) return;
+    if (text.includes("\0")) {
+      throw new Error("歌詞ファイルに使用できない文字があります。");
+    }
+    $("lyrics").value = text;
+    $("lyrics-file-name").textContent = `${file.name} の内容を歌詞欄に読み込みました。`;
+    $("lyrics-file-name").hidden = false;
+    syncLyricsRecognition();
+    $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
+  } catch (error) {
+    if (sequence !== lyricsFileReadSequence) return;
+    $("lyrics").value = previousLyrics;
+    $("lyrics-file").value = "";
+    $("lyrics-file-name").textContent = error instanceof Error && error.message.startsWith("歌詞")
+      ? error.message
+      : "歌詞ファイルを読み込めませんでした。UTF-8で保存されているか確認してください。";
+    $("lyrics-file-name").hidden = false;
+    syncLyricsRecognition();
+  }
+}
 $("lyrics-file").addEventListener("change", () => {
-  const file = $("lyrics-file").files[0];
-  if (file) $("lyrics").value = "";
-  $("lyrics-file-name").textContent = file ? file.name : "";
-  $("lyrics-file-name").hidden = !file;
-  syncLyricsRecognition();
-  clearEditorFile();
+  loadLyricsFile($("lyrics-file").files[0]);
 });
 $("lyrics").addEventListener("input", () => {
-  if ($("lyrics").value && $("lyrics-file").files[0]) {
+  if ($("lyrics-file").files[0]) {
+    ++lyricsFileReadSequence;
     $("lyrics-file").value = "";
     $("lyrics-file-name").hidden = true;
   }
