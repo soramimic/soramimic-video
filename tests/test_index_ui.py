@@ -1877,7 +1877,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'id="lyrics-correction-panel" hidden' in html
     assert '<textarea id="lyrics"' in html
     assert 'id="lyrics-file" accept=".txt,.md,text/plain,text/markdown"' in html
-    assert "正式歌詞を一切書き換えず" in html
+    assert "歌詞を自動認識し、音源からメロディーとタイミングを推定します" in html
     assert "音源解析 → 空耳変換 → 歌声/映像 → 完成" in html
     assert 'audioAnalysis = conf.audio_analysis || {};' in script
     assert "SheetSage2採譜＋RMVPE/FCPE空白補完" in script
@@ -1894,6 +1894,15 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'form.append("lyrics", songLyricsForRequest());' in append
     assert 'form.append("lyrics_file", $("lyrics-file").files[0]);' in append
     assert 'form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");' in append
+    automatic = _function_body(script, "function automaticLyricsEnabled()")
+    assert 'ownSongKind() !== "audio"' not in automatic
+    recognition = _function_body(script, "function syncLyricsRecognition()")
+    assert 'const automatic = $("auto-lyrics").checked;' in recognition
+    assert '$("auto-lyrics").disabled = false;' in recognition
+    assert '$("auto-lyrics-toggle").hidden = false;' in recognition
+    audio_change = script[script.index('$("midi").addEventListener("change"') :]
+    audio_change = audio_change[: audio_change.index('$("audio-clear").addEventListener')]
+    assert '$("auto-lyrics").checked = false;' not in audio_change
     # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
     assert 'localStorage.setItem("audioFile"' not in script
     save = script[script.index('// 持ち込みMIDIはバイナリ') :]
