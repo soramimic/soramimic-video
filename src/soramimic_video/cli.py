@@ -476,7 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", help="torchデバイス(省略時はcuda→cpuの順で自動)")
     p.add_argument(
         "--lyric-pipeline", choices=("cplus", "evidence"),
-        help="evidence: 複数認識候補と3歌詞レイヤーを使用(wav-to-xf追加導入が必要)",
+        help="evidence: Whisper全文と3歌詞レイヤーを使用(wav-to-xf追加導入が必要)",
     )
     p.set_defaults(func=cmd_analyze_audio)
 

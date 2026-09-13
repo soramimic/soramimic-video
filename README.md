@@ -148,13 +148,11 @@ uv run soramimic-video apply-lyric-layers --project work/song --layers work/real
 uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
 ```
 
-未知歌詞では分離ボーカル・原音の認識候補をカナCTCと照合し、必要時にVADなしで再認識します。
-独立CTCで支持できなかった候補は、既採択区間と重ならない未回収区間に限り、同じ文字集合の
-並べ替え候補とのCTC尤度差でもう一度評価します。これは認識済み歌詞を置換せず、回収結果には
-文字列を条件にした証拠であることと未校正の時刻を明記します。
-`analyze_audio/recognition.json` に候補と未解決箇所を保存します。対応範囲は日本語の主旋律で、
-曖昧な箇所や英語・会話・コーラスが完全に復元される保証はありません。正式歌詞の指定時は
-認識による書き換えを行いません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
+未知歌詞では原音mixをWhisperのVADなし単一パスで認識し、その全文を元歌詞にします。
+辞書の第一読みを固定して、カナCTCは本文や読みを棄却・変更せずモーラ時刻の推定だけに使います。
+`analyze_audio/recognition.json` に採用したWhisperセグメントを保存します。対応範囲は日本語の
+主旋律で、英語・会話・コーラスが完全に復元される保証はありません。正式歌詞の指定時は
+Whisperによる書き換えを行いません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
 
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じ音声上限までmultipart requestを

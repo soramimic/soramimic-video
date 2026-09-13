@@ -35,6 +35,18 @@ SEPARATION_DIR = "separation"
 _MAX_LAST_NOTE_SEC = 4.0  # 後続モーラが無いときの音符長の上限
 
 
+def _require_evidence_pipeline() -> None:
+    try:
+        from wav_to_xf.cplus import from_cplus_assignments  # noqa: F401
+        from wav_to_xf.pipeline import run_stage3_document  # noqa: F401
+        from wav_to_xf.realization import compile_realization  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "evidence歌詞パイプラインにはwav-to-xfパッケージが必要です。"
+            "利用可能なローカルチェックアウトを uv pip install <checkout> で追加してください。"
+        ) from exc
+
+
 def analyze_audio(
     audio_path: Path,
     project_dir: Path,
@@ -57,13 +69,11 @@ def analyze_audio(
         raise ValueError("lyric_pipelineはcplusまたはevidenceです")
     use_evidence = lyric_pipeline == "evidence"
     if use_evidence:
-        from .lyric_recognition import require_lyric_pipeline
-
-        require_lyric_pipeline()
+        _require_evidence_pipeline()
     emissions = None
-    recognition = None
     recognized_variants = None
     recognized_windows = None
+    recognition_mode = None
 
     last_progress = 0.0
 
@@ -96,31 +106,51 @@ def analyze_audio(
         line_texts = [ln for ln in line_texts if ln]
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
     elif use_evidence:
-        from .lyric_recognition import transcribe_multiview
+        from .transcribe import transcribe_lines
 
-        recognition, emissions = transcribe_multiview(
-            vocals, audio_path, model_size=whisper_model, device=device,
+        # Unknown lyrics use one complete, deterministic Whisper transcript.
+        # CTC remains downstream for mora timing, not for deciding whether
+        # recognized text or its deterministic first reading is accepted.
+        lines = transcribe_lines(
+            audio_path,
+            whisper_model,
+            device or "auto",
+            vad_filter=False,
         )
+        if not lines:
+            raise RuntimeError("Whisperが歌詞を認識できませんでした")
+        line_texts = [line.text for line in lines]
+        recognized_windows = [(line.start_sec, line.end_sec) for line in lines]
+        recognized_variants = []
+        for line in lines:
+            readings = reading_candidates(line.text)
+            recognized_variants.append(
+                [split_moras(readings[0])] if readings else [[]]
+            )
+        recognition_mode = "whisper-mix-no-vad"
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
-        (out / "recognition.json").write_text(recognition.to_json(), encoding="utf-8")
-        selected = recognition.selected_hypotheses
-        if not selected:
-            raise RuntimeError(
-                "音響的に支持された歌詞候補がありません。recognition.jsonの候補を確認し、"
-                "歌詞を指定して再実行してください。"
-            )
-        assessments = {item.hypothesis_id: item for item in recognition.assessments}
-        line_texts = [hypothesis.surface for hypothesis in selected]
-        recognized_windows = [(hypothesis.start_sec, hypothesis.end_sec) for hypothesis in selected]
-        recognized_variants = [
-            [split_moras(hypothesis.readings[
-                assessments[hypothesis.id].selected_reading_index
-            ].kana)] for hypothesis in selected
-        ]
-        logger.info("複数認識候補から音響的に支持された%d行を採用", len(line_texts))
-        if recognition.flags:
-            logger.warning("歌詞認識の診断: %s", ", ".join(recognition.flags))
+        (out / "recognition.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": recognition_mode,
+                    "model": whisper_model,
+                    "segments": [
+                        {
+                            "start_sec": line.start_sec,
+                            "end_sec": line.end_sec,
+                            "surface": line.text,
+                        }
+                        for line in lines
+                    ],
+                },
+                ensure_ascii=False,
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+        logger.info("Whisper mix/no-VADの%d行を元歌詞として採用", len(line_texts))
     else:
         from .transcribe import transcribe_lines
 
@@ -293,9 +323,9 @@ def analyze_audio(
             limitations.append(
                 f"音高不定の{counts['spoken']}モーラをspokenとして保持しました。"
             )
-        if recognition is not None and recognition.flags:
+        if recognition_mode is not None:
             limitations.append(
-                "未知歌詞の認識に未解決箇所があります。候補はrecognition.jsonで確認できます。"
+                "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
             )
         (out / "analysis.json").write_text(
             json.dumps(
@@ -306,10 +336,9 @@ def analyze_audio(
                     "asr_used": lyrics_path is None,
                     "lyric_pipeline": lyric_pipeline,
                     "stage3_correspondence": use_evidence,
-                    "recognition_coverage": (
-                        recognition.coverage if recognition is not None else None
-                    ),
-                    "recognition_flags": list(recognition.flags) if recognition is not None else [],
+                    "recognition_mode": recognition_mode,
+                    "recognition_coverage": None,
+                    "recognition_flags": [],
                     "mora_count": len(mora_notes),
                     "sources": counts,
                     "limitations": limitations,

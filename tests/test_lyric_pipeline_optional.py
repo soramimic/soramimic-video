@@ -1,19 +1,14 @@
 """Integration contract tests, run when the optional local pipeline is installed."""
 
 import json
-import math
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 pytest.importorskip("wav_to_xf.cplus")
 
-from soramimic_video import lyric_recognition  # noqa: E402
 from soramimic_video.lyric_layers import apply_lyric_layers  # noqa: E402
-from soramimic_video.mora_align import CTCEmissions  # noqa: E402
 from soramimic_video.project import Project, SongInfo  # noqa: E402
 
 
@@ -53,91 +48,6 @@ def test_stage3_uses_boundaryless_weights_with_each_mora_ctc_peak(
     assert not realization.unresolved_unit_ids
 
 
-def test_multiview_runtime_reuses_models_and_retains_real_scores(monkeypatch):
-    calls = []
-    models = []
-
-    class Whisper:
-        def __init__(self, *args, **kwargs):
-            models.append(self)
-
-        def transcribe(self, path, **kwargs):
-            calls.append((path, kwargs["vad_filter"]))
-            return iter([SimpleNamespace(
-                start=0.0, end=1.0, text="か", avg_logprob=math.log(0.8), no_speech_prob=0.01,
-            )]), SimpleNamespace(language="ja")
-
-    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
-    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
-        info=lambda path: SimpleNamespace(duration=10.0)))
-    monkeypatch.setattr(lyric_recognition, "reading_candidates", lambda text: ["カ"])
-    monkeypatch.setattr(lyric_recognition, "decode_kana_window", lambda *args: ("カ", 0.9))
-    matrix = CTCEmissions(np.zeros((500, 2)), {"<pad>": 0, "カ": 1})
-    result, returned = lyric_recognition.transcribe_multiview(
-        Path("vocals.wav"), Path("mix.wav"), emissions=matrix,
-    )
-    assert returned is matrix
-    assert len(models) == 1
-    assert calls == [("vocals.wav", True), ("mix.wav", True),
-                     ("vocals.wav", False), ("mix.wav", False)]
-    assert len(result.hypotheses) == 4
-    assert all(x.confidence == pytest.approx(0.8) for x in result.hypotheses)
-    assert all(x.timing_confidence == 0 for x in result.acoustic)
-    assert result.selected_hypotheses
-
-
-def test_conditioned_ctc_recovers_only_uncovered_segments(monkeypatch):
-    from soramimic_video.mora_align import ConditionedCTCScore
-
-    calls = []
-
-    class Whisper:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def transcribe(self, path, **kwargs):
-            return iter([
-                SimpleNamespace(
-                    start=0.0, end=1.0, text="か", avg_logprob=math.log(0.8),
-                    no_speech_prob=0.01,
-                ),
-                SimpleNamespace(
-                    start=2.0, end=3.0, text="きく", avg_logprob=math.log(0.8),
-                    no_speech_prob=0.01,
-                ),
-            ]), SimpleNamespace(language="ja")
-
-    def conditioned(_emissions, start, end, kana):
-        calls.append((start, end, kana))
-        return ConditionedCTCScore(0.9, 0.8, -10.0, -20.0, 50, 2)
-
-    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
-    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
-        info=lambda path: SimpleNamespace(duration=4.0)))
-    monkeypatch.setattr(lyric_recognition, "reading_candidates", lambda text: [
-        {"か": "カ", "きく": "キク"}[text]
-    ])
-    monkeypatch.setattr(
-        lyric_recognition, "decode_kana_window",
-        lambda _emissions, start, end: ("カ", 0.9) if start == 0 else ("", 0.0),
-    )
-    monkeypatch.setattr(lyric_recognition, "collapse_kana_aliases", lambda value: value.log_probs)
-    monkeypatch.setattr(lyric_recognition, "score_kana_window", conditioned)
-    matrix = CTCEmissions(np.zeros((250, 4)), {"<pad>": 0, "カ": 1, "キ": 2, "ク": 3})
-
-    result, _ = lyric_recognition.transcribe_multiview(
-        Path("vocals.wav"), Path("vocals.wav"), emissions=matrix,
-    )
-
-    assert calls == [(2.0, 3.0, "キク"), (2.0, 3.0, "キク")]
-    assert [item.surface for item in result.selected_hypotheses] == ["か", "きく"]
-    assert result.coverage == pytest.approx(0.5)
-    # The competing no-VAD duplicate is evaluated but not retained because it
-    # would replace the already accepted VAD hypothesis.
-    assert len([item for item in result.acoustic if item.conditioned_on_hypothesis_id]) == 1
-    assert any(item.kind == "contrastive-forced-reading-score" for item in result.evidence)
-
-
 def test_cplus_runtime_rows_roundtrip_into_project():
     from wav_to_xf.cplus import from_cplus_assignments
 
@@ -155,33 +65,6 @@ def test_cplus_runtime_rows_roundtrip_into_project():
     assert all(n.pitch_confidence is None for n in value.notes)
 
 
-def test_overlapping_asr_windows_keep_all_original_candidates(monkeypatch):
-    class Whisper:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def transcribe(self, path, **kwargs):
-            return iter([SimpleNamespace(
-                start=start, end=end, text="か", avg_logprob=math.log(.8), no_speech_prob=.01,
-            ) for start, end in [(0., 2.), (1.5, 3.), (3., 5.)]]), SimpleNamespace(language="ja")
-
-    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
-    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
-        info=lambda path: SimpleNamespace(duration=5.)))
-    monkeypatch.setattr(lyric_recognition, "reading_candidates", lambda text: ["カ"])
-    monkeypatch.setattr(lyric_recognition, "decode_kana_window", lambda *args: ("カ", .9))
-    matrix = CTCEmissions(np.zeros((250, 2)), {"<pad>": 0, "カ": 1})
-    result, _ = lyric_recognition.transcribe_multiview(
-        Path("vocals.wav"), Path("vocals.wav"), emissions=matrix,
-    )
-    first_pass = [h for h in result.hypotheses if h.vad_enabled]
-    assert [(h.start_sec, h.end_sec) for h in first_pass] == [(0., 2.), (1.5, 3.), (3., 5.)]
-    assert first_pass[0].pass_id == first_pass[2].pass_id
-    assert first_pass[1].pass_id != first_pass[0].pass_id
-    by_id = {h.id: h for h in result.hypotheses}
-    assert all(a.stream_id == by_id[a.id.removeprefix("ctc:")].pass_id for a in result.acoustic)
-
-
 def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
     from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
@@ -192,7 +75,6 @@ def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
         pytest.fail("known lyrics must not call ASR")
 
     monkeypatch.setattr(transcribe, "transcribe_lines", forbidden)
-    monkeypatch.setattr(lyric_recognition, "transcribe_multiview", forbidden)
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
@@ -340,33 +222,28 @@ def test_known_lyrics_falls_back_when_stage3_leaves_unresolved_mora(
 
 
 def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monkeypatch, tmp_path):
-    from wav_to_xf import ReadingCandidate
-    from wav_to_xf.recognition import (
-        AcousticPronunciation,
-        RecognitionHypothesis,
-        fuse_unknown_lyrics,
-    )
-
-    from soramimic_video import audio_melody, mora_align, pitch, reading
+    from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
 
-    hypotheses = tuple(RecognitionHypothesis(
-        f"h{i}", "pass", "synthetic-asr", "vocals", True, str(i), start, start + 1,
-        "ja", .9, 0, kana, (ReadingCandidate(kana, "synthetic", 1),),
-    ) for i, (start, kana) in enumerate([(1., "カ"), (8., "キ")]))
-    acoustic = tuple(AcousticPronunciation(
-        f"a{i}", "synthetic-ctc", "vocals", h.start_sec, h.end_sec, .9, 0, kana=h.surface,
-    ) for i, h in enumerate(hypotheses))
-    result = fuse_unknown_lyrics(hypotheses, acoustic, duration_sec=10.)
     emissions = object()
-    monkeypatch.setattr(lyric_recognition, "transcribe_multiview",
-                        lambda *a, **kw: (result, emissions))
+    calls = []
+
+    def recognize(path, model, device, *, vad_filter):
+        calls.append((path, model, device, vad_filter))
+        return [TranscribedLine(1., 2., "か"), TranscribedLine(8., 9., "き")]
+
+    monkeypatch.setattr(transcribe, "transcribe_lines", recognize)
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=10.)))
-    monkeypatch.setattr(reading, "reading_candidates",
-                        lambda *a: pytest.fail("keep selected reading"))
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: [{"か": "カ", "き": "キ"}[text], "サ"],
+    )
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
 
     def align(path, variants, **kwargs):
         assert variants == [[["カ"]], [["キ"]]]
@@ -393,7 +270,14 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
     })
     value = analyze_audio(tmp_path / "input.wav", tmp_path / "project", device="cpu",
                           skip_separation=True, lyric_pipeline="evidence")
+    assert calls == [(tmp_path / "input.wav", "large-v3", "cpu", False)]
     assert extensions == [(1.2, 2.), (8.2, 9.)]
     assert [n.end_sec for n in value.notes] == [2., 9.]
     assert [n.kana for n in value.notes] == ["カ", "キ"]
-    assert value.lyric_layers["canonical_text"] == "カ\nキ"
+    assert value.lyric_layers["canonical_text"] == "か\nき"
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    assert recognition["schema_version"] == 2
+    assert recognition["mode"] == "whisper-mix-no-vad"
+    assert [item["surface"] for item in recognition["segments"]] == ["か", "き"]
