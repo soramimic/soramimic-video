@@ -1423,6 +1423,36 @@ def test_planned_video_total_includes_midi_render_tail(tmp_path: Path, monkeypat
     assert video_mod.planned_video_total_sec(project) >= 26.0
 
 
+def test_prepare_video_extends_stale_plan_to_required_endroll(
+    tmp_path: Path, monkeypatch,
+):
+    from soramimic_video import video as video_mod
+
+    project = _project(tmp_path)
+    sung_end = video_mod._sung_end_sec(project)
+    monkeypatch.setattr(video_mod, "build_image_cues", lambda *a, **k: ([], []))
+    monkeypatch.setattr(video_mod, "generate_thumbnail", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "build_section_cues", lambda *a, **k: [])
+    monkeypatch.setattr(video_mod, "render_idle_frame", lambda *a, **k: None)
+
+    def slideshow(*args, **kwargs):
+        path = tmp_path / "video/slideshow.txt"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(video_mod, "_write_slideshow_concat", slideshow)
+    monkeypatch.setattr(video_mod, "build_ass", lambda *a, **k: "")
+    monkeypatch.setattr(video_mod, "write_credits", lambda *a, **k: None)
+
+    prepared = video_mod.prepare_video(project, tmp_path, sung_end)
+
+    assert prepared.total_sec == video_mod.extend_for_endroll(
+        sung_end, sung_end, video_mod.used_words(project)
+    )
+    assert prepared.total_sec > sung_end
+
+
 def test_parallel_video_totals_reserve_midi_end_credit_page_without_words(
     tmp_path: Path, monkeypatch
 ):
