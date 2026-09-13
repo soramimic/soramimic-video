@@ -271,6 +271,39 @@ def test_auto_mode_sings_tail_when_gap_follows():
     assert lengths[1] == attack  # リは短い返し(末尾)
 
 
+def test_auto_mode_keeps_articulation_anchors_in_overcrowded_note():
+    # 289msの1音符へ「ブースター」相当を全部詰めると早口で潰れる。
+    # 長音母音を捨て、語の輪郭になる ブ・ス・タ を残す。
+    note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.289, "ブースター")
+    score = build_score(_project([note]))
+    pitched = [n for n in score["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["ブ", "ス", "タ"]
+    assert sum(n["frame_length"] for n in pitched) == round(0.289 * FRAME_RATE)
+
+
+def test_auto_mode_uses_one_anchor_for_extremely_dense_note():
+    # 142msへ4モーラなら、安全に明瞭化できるのは語頭1モーラだけ。
+    note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.142, "ワルビル")
+    score = build_score(_project([note]))
+    pitched = [n for n in score["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["ワ"]
+    assert pitched[0]["frame_length"] == round(0.142 * FRAME_RATE)
+
+
+def test_articulation_moras_spreads_anchors_across_word():
+    # 4つの子音付きモーラから3つ選ぶ場合は、語尾を落とさず全体へ散らす。
+    assert vv.articulation_moras(["マ", "フィ", "ティ", "フ"], 27) == [
+        "マ", "ティ", "フ"
+    ]
+
+
+def test_auto_mode_does_not_reduce_multimora_note_with_enough_time():
+    note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.5, "ワルビル")
+    score = build_score(_project([note]))
+    lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
+    assert lyrics == ["ワ", "ル", "ビ", "ル"]
+
+
 def test_mora_frame_bounds_edges():
     attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
     min_final = round(vv.MIN_LAST_MORA_SEC * FRAME_RATE)
