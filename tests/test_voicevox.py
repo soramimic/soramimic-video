@@ -253,12 +253,12 @@ def test_stacked_mora_mode_unknown_falls_back_to_default(monkeypatch):
     assert vv.stacked_mora_mode() == "auto"
 
 
-def test_auto_mode_drops_tail_when_next_note_is_close():
-    # 次の音符がすぐ続く(間<TAIL_GAP_MIN_SEC)複合ノートは first 相当(返しを落とす)
+def test_auto_mode_keeps_tail_when_next_note_is_close():
+    # 次の音符がすぐ続いても、既定では入力された全モーラをVOICEVOXへ渡す。
     notes = [_note(0, 68, HEAD_SEC, HEAD_SEC + 0.675, "タリ"), _note(1, 70, 0.7, 1.0, "ラ")]
     score = build_score(_project(notes))
     lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
-    assert lyrics == ["タ", "ラ"]
+    assert lyrics == ["タ", "リ", "ラ"]
 
 
 def test_auto_mode_sings_tail_when_gap_follows():
@@ -272,23 +272,23 @@ def test_auto_mode_sings_tail_when_gap_follows():
     assert lengths[1] == attack  # リは短い返し(末尾)
 
 
-def test_auto_mode_keeps_articulation_anchors_in_overcrowded_note():
-    # 289msの1音符へ「ブースター」相当を全部詰めると早口で潰れる。
-    # 長音母音を捨て、語の輪郭になる ブ・タ を残す。
+def test_auto_mode_keeps_all_moras_in_overcrowded_note():
+    # 過密でもスコア段階では長音を含む全モーラを残す。クエリで0フレームに
+    # なった音素は、合成直前の後処理で近隣音素から時間を融通する。
     note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.289, "ブースター")
     score = build_score(_project([note]))
     pitched = [n for n in score["notes"] if n["key"] is not None]
-    assert [n["lyric"] for n in pitched] == ["ブ", "タ"]
+    assert [n["lyric"] for n in pitched] == ["ブ", "ウ", "ス", "タ", "ア"]
     assert sum(n["frame_length"] for n in pitched) == round(0.289 * FRAME_RATE)
 
 
-def test_auto_mode_uses_one_anchor_for_extremely_dense_note():
-    # 142msへ4モーラなら、安全に明瞭化できるのは語頭1モーラだけ。
+def test_auto_mode_keeps_all_moras_in_extremely_dense_note():
+    # 142msへ4モーラでも文字を削除しない。
     note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.142, "ワルビル")
     score = build_score(_project([note]))
     pitched = [n for n in score["notes"] if n["key"] is not None]
-    assert [n["lyric"] for n in pitched] == ["ワ"]
-    assert pitched[0]["frame_length"] == round(0.142 * FRAME_RATE)
+    assert [n["lyric"] for n in pitched] == ["ワ", "ル", "ビ", "ル"]
+    assert sum(n["frame_length"] for n in pitched) == round(0.142 * FRAME_RATE)
 
 
 def test_auto_mode_borrows_following_rest_before_dropping_moras():
@@ -321,6 +321,51 @@ def test_articulation_moras_spreads_anchors_across_word():
     assert vv.articulation_moras(["マ", "フィ", "ティ", "フ"], 27) == [
         "マ", "フ"
     ]
+
+
+def test_repair_dropped_phonemes_restores_zero_lengths_without_changing_total():
+    query = {
+        "f0": [1.0] * 24,
+        "volume": [0.5] * 24,
+        "phonemes": [
+            {"phoneme": "pau", "frame_length": 4},
+            {"phoneme": "sh", "frame_length": 7},
+            {"phoneme": "i", "frame_length": 0},
+            {"phoneme": "w", "frame_length": 1},
+            {"phoneme": "a", "frame_length": 0},
+            {"phoneme": "pau", "frame_length": 12},
+        ],
+    }
+    before_total = sum(item["frame_length"] for item in query["phonemes"])
+
+    repaired = vv._repair_dropped_phonemes(query)
+
+    assert repaired is query
+    assert sum(item["frame_length"] for item in query["phonemes"]) == before_total
+    assert all(
+        item["frame_length"] >= 1
+        for item in query["phonemes"]
+        if item["phoneme"] != "pau"
+    )
+    assert next(item for item in query["phonemes"] if item["phoneme"] == "i")[
+        "frame_length"
+    ] == 2
+    assert next(item for item in query["phonemes"] if item["phoneme"] == "a")[
+        "frame_length"
+    ] == 2
+    assert len(query["f0"]) == len(query["volume"]) == before_total
+
+
+def test_repair_dropped_phonemes_leaves_normal_query_unchanged():
+    query = {
+        "phonemes": [
+            {"phoneme": "pau", "frame_length": 2},
+            {"phoneme": "k", "frame_length": 2},
+            {"phoneme": "a", "frame_length": 3},
+        ]
+    }
+    assert vv._repair_dropped_phonemes(query) == query
+    assert [item["frame_length"] for item in query["phonemes"]] == [2, 2, 3]
 
 
 def test_auto_mode_does_not_reduce_multimora_note_with_enough_time():
@@ -389,13 +434,12 @@ def test_build_score_head_rest_keeps_absolute_time():
     assert lengths[0] == vv.HEAD_REST_FRAMES
 
 
-def test_build_score_head_rest_absorbs_too_short_first_note():
-    # 頭を借りると潰れてしまう極短音符(2フレーム)は丸ごと休符にする
-    # (1フレームの音符・休符はエンジンが500を返すため)
+def test_build_score_head_rest_preserves_too_short_first_note():
+    # 先頭休符と発音を同じ歌詞行から確保し、極短の1音目も落とさない。
     short = 2 / FRAME_RATE
     notes = [_note(0, 60, 0.0, short, "シ"), _note(1, 62, short, 0.5, "ズ")]
     score = build_score(_project(notes))
-    assert [n["key"] for n in score["notes"]] == [None, 62]
+    assert [n["key"] for n in score["notes"]] == [None, 60, 62]
     assert score["notes"][0]["frame_length"] == 2
     assert sum(n["frame_length"] for n in score["notes"]) == round(0.5 * FRAME_RATE)
     assert all(n["frame_length"] >= vv.MIN_ELEMENT_FRAMES for n in score["notes"])
@@ -468,8 +512,18 @@ def test_run_voicevox_http_flow(tmp_path, monkeypatch):
         if "sing_frame_audio_query" in url:
             calls["query_speaker"] = params["speaker"]
             calls["score"] = json
-            return _FakeResp(json_data={"f0": [0.0], "phonemes": []})
+            return _FakeResp(json_data={
+                "f0": [0.0] * 8,
+                "volume": [1.0] * 8,
+                "phonemes": [
+                    {"phoneme": "pau", "frame_length": 2},
+                    {"phoneme": "d", "frame_length": 4},
+                    {"phoneme": "o", "frame_length": 0},
+                    {"phoneme": "pau", "frame_length": 2},
+                ],
+            })
         calls["synth_speaker"] = params["speaker"]
+        calls["synth_query"] = json
         return _FakeResp(content=wav)
 
     monkeypatch.setattr(vv.requests, "get", fake_get)
@@ -484,6 +538,9 @@ def test_run_voicevox_http_flow(tmp_path, monkeypatch):
     # frame_decodeを選んだので先生は歌の先生6000、合成は3003
     assert calls["query_speaker"] == 6000
     assert calls["synth_speaker"] == 3003
+    assert [item["frame_length"] for item in calls["synth_query"]["phonemes"]] == [
+        2, 2, 2, 2,
+    ]
 
 
 def test_run_voicevox_sing_style_is_its_own_teacher(tmp_path, monkeypatch):
