@@ -53,6 +53,14 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
     monkeypatch.setattr(transcribe, "_transcribe_lines_local", transcribe_local)
     app = create_audio_inference_app(tmp_path / "state", device="cpu")
     with TestClient(app) as client:
+        health = client.get("/healthz")
+        assert health.json()["jobs"] == {
+            "queued": 0,
+            "running": 0,
+            "done": 0,
+            "error": 0,
+            "cancelled": 0,
+        }
         submitted = client.post(
             "/v1/jobs",
             files={"audio": ("song.wav", b"wave", "audio/wav")},
