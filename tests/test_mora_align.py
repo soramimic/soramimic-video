@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 
 from soramimic_video import mora_align
-from soramimic_video.mora_align import AlignedMora, build_targets, interpolate_missing
+from soramimic_video.mora_align import (
+    AlignedMora,
+    build_targets,
+    interpolate_missing,
+    score_kana_window,
+)
 
 
 def test_build_targets_maps_tokens_to_moras():
@@ -28,6 +33,39 @@ def test_build_targets_skips_unknown_chars():
     targets, owners = build_targets([["ア", "ー"]], vocab)
     assert targets == [1]
     assert owners == [(0, 0)]
+
+
+def test_conditioned_score_compares_same_token_order_controls(monkeypatch):
+    matrix = np.zeros((200, 4))
+    emissions = mora_align.CTCEmissions(
+        matrix, {"<pad>": 0, "カ": 1, "キ": 2, "ク": 3},
+    )
+
+    def score(_values, targets):
+        return {
+            (1, 2, 3): -30.0,
+            (3, 2, 1): -60.0,
+            (2, 3, 1): -45.0,
+        }[tuple(targets)]
+
+    monkeypatch.setattr(mora_align, "_variant_score", score)
+    result = score_kana_window(emissions, 0.0, 2.0, "カキク")
+    assert result is not None
+    assert result.acoustic_score == pytest.approx(1 / (1 + np.exp(-5)))
+    assert result.confidence == pytest.approx(np.exp(-0.3))
+    assert result.target_log_likelihood == -30.0
+    assert result.competing_log_likelihood == -45.0
+    assert (result.frame_count, result.token_count) == (100, 3)
+
+
+def test_conditioned_score_requires_a_distinct_order_control(monkeypatch):
+    monkeypatch.setattr(
+        mora_align, "_variant_score", lambda *args: pytest.fail("no distinct control"),
+    )
+    emissions = mora_align.CTCEmissions(
+        np.zeros((200, 2)), {"<pad>": 0, "カ": 1},
+    )
+    assert score_kana_window(emissions, 0.0, 2.0, "カカ") is None
 
 
 def _m(line: int, mora: int, kana: str, start: float, end: float) -> AlignedMora:
