@@ -167,11 +167,18 @@ def analyze_audio(
     sheetsage_notes = None
     sheetsage_was_run = False
     actual_device = _audio_device(device) if melody_midi is None else "cpu"
+    sheetsage_device = actual_device
     capabilities = None
     if melody_midi is None:
+        from .audio_inference import configured_url
         from .audio_melody import configured_capabilities
 
         capabilities = configured_capabilities()
+        # GPU-less web environments still delegate SheetSage to the shared GPU.
+        # Preserve an explicit --device override, but let the inference service
+        # resolve the ordinary automatic case against its own hardware.
+        if configured_url() is not None and device is None:
+            sheetsage_device = "auto"
     parallel_models = (
         lyrics_path is None
         and melody_midi is None
@@ -201,7 +208,7 @@ def analyze_audio(
             sheetsage_notes = _run_sheetsage(
                 audio_path,
                 project_dir,
-                actual_device,
+                sheetsage_device,
                 lambda value: report(0.22 + value * 0.26),
             )
             prefetched_lines = future.result()
@@ -400,7 +407,7 @@ def analyze_audio(
             sheetsage_notes = _run_sheetsage(
                 audio_path,
                 project_dir,
-                actual_device,
+                sheetsage_device,
                 lambda value: report(0.62 + value * 0.18),
             )
         if use_evidence and sheetsage_notes is None:

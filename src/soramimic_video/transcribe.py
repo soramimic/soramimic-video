@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gc
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WHISPER_MODEL = "large-v3"
 _MIN_WHISPER_CUDA_FREE_BYTES = 5800 * 1024**2
+_WHISPER_MODEL_CACHE: dict[tuple[str, str, str | None], Any] = {}
 
 
 @dataclass
@@ -71,6 +73,7 @@ def _run_whisper(
     *,
     vad_filter: bool,
     condition_on_previous_text: bool,
+    cancel_check: Callable[[], Any] | None = None,
 ) -> tuple[list[TranscribedLine], Any]:
     segments, info = whisper_model.transcribe(
         str(vocals_path),
@@ -78,12 +81,41 @@ def _run_whisper(
         vad_filter=vad_filter,
         condition_on_previous_text=condition_on_previous_text,
     )
-    lines = [
-        TranscribedLine(start_sec=s.start, end_sec=s.end, text=s.text.strip())
-        for s in segments
-        if s.text.strip()
-    ]
+    lines = []
+    for segment in segments:
+        if cancel_check is not None:
+            cancel_check()
+        text = segment.text.strip()
+        if text:
+            lines.append(
+                TranscribedLine(
+                    start_sec=segment.start,
+                    end_sec=segment.end,
+                    text=text,
+                )
+            )
     return lines, info
+
+
+def _load_whisper_model(
+    model_size: str,
+    device: str,
+    compute_type: str | None,
+    *,
+    cache_model: bool,
+):
+    from faster_whisper import WhisperModel
+
+    key = (model_size, device, compute_type)
+    if cache_model and key in _WHISPER_MODEL_CACHE:
+        return _WHISPER_MODEL_CACHE[key]
+    model_kwargs = {"device": device}
+    if compute_type is not None:
+        model_kwargs["compute_type"] = compute_type
+    model = WhisperModel(model_size, **model_kwargs)
+    if cache_model:
+        _WHISPER_MODEL_CACHE[key] = model
+    return model
 
 
 def transcribe_lines(
@@ -94,8 +126,38 @@ def transcribe_lines(
     vad_filter: bool = True,
     condition_on_previous_text: bool = True,
 ) -> list[TranscribedLine]:
+    from .audio_inference import configured_url, transcribe_lines_remote
+
+    if configured_url() is not None:
+        logger.info("共有Whisperサービスで歌詞を認識中...")
+        return transcribe_lines_remote(
+            vocals_path,
+            model_size,
+            device,
+            vad_filter=vad_filter,
+            condition_on_previous_text=condition_on_previous_text,
+        )
+    return _transcribe_lines_local(
+        vocals_path,
+        model_size,
+        device,
+        vad_filter=vad_filter,
+        condition_on_previous_text=condition_on_previous_text,
+    )
+
+
+def _transcribe_lines_local(
+    vocals_path: Path,
+    model_size: str = DEFAULT_WHISPER_MODEL,
+    device: str = "auto",
+    *,
+    vad_filter: bool = True,
+    condition_on_previous_text: bool = True,
+    cache_model: bool = False,
+    cancel_check: Callable[[], Any] | None = None,
+) -> list[TranscribedLine]:
     try:
-        from faster_whisper import WhisperModel
+        import faster_whisper  # noqa: F401
     except ImportError as e:
         raise RuntimeError(
             "faster-whisper がインストールされていません(uv sync --extra audio)"
@@ -113,16 +175,16 @@ def transcribe_lines(
         compute_type = "int8"
 
     logger.info("Whisper(%s, %s)で歌詞を認識中...", model_size, device)
-    model_kwargs = {"device": device}
-    if compute_type is not None:
-        model_kwargs["compute_type"] = compute_type
     try:
-        model = WhisperModel(model_size, **model_kwargs)
+        model = _load_whisper_model(
+            model_size, device, compute_type, cache_model=cache_model,
+        )
         lines, info = _run_whisper(
             model,
             vocals_path,
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
+            cancel_check=cancel_check,
         )
     except RuntimeError as exc:
         if device == "cpu" or not _is_cuda_oom(exc):
@@ -130,14 +192,19 @@ def transcribe_lines(
         logger.warning(
             "WhisperのCUDAメモリが不足したためCPUで再実行します"
         )
+        if cache_model:
+            _WHISPER_MODEL_CACHE.pop((model_size, device, compute_type), None)
         model = None
         _release_cuda_cache()
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        model = _load_whisper_model(
+            model_size, "cpu", "int8", cache_model=cache_model,
+        )
         lines, info = _run_whisper(
             model,
             vocals_path,
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
+            cancel_check=cancel_check,
         )
     logger.info("認識結果: %d行 (言語確度 %.2f)", len(lines), info.language_probability)
     for ln in lines:

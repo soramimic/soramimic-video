@@ -57,8 +57,8 @@ class MoraPitch:
     confidence: float | None = None
 
 
-def configured_capabilities() -> dict[str, bool]:
-    """Return model capability flags without importing or downloading models."""
+def _configured_local_capabilities() -> dict[str, bool]:
+    """Return local model capability flags without importing or downloading models."""
     def configured_path(name: str) -> Path | None:
         value = os.environ.get(name, "").strip()
         return Path(value).expanduser() if value else None
@@ -90,6 +90,16 @@ def configured_capabilities() -> dict[str, bool]:
         ),
         "fcpe": bool(fcpe_checkpoint is not None and fcpe_checkpoint.is_file()),
     }
+
+
+def configured_capabilities() -> dict[str, bool]:
+    """Return local and shared-service model capabilities."""
+    from .audio_inference import configured_url
+
+    capabilities = _configured_local_capabilities()
+    if configured_url() is not None:
+        capabilities["sheetsage2"] = True
+    return capabilities
 
 
 def read_sheetsage_notes(path: Path) -> list[MelodyNote]:
@@ -133,8 +143,33 @@ def transcribe_sheetsage(
     device: str,
     on_progress: Callable[[float], None] | None = None,
 ) -> list[MelodyNote] | None:
+    """Run SheetSage2 through the shared service when configured."""
+    from .audio_inference import configured_url, transcribe_sheetsage_remote
+
+    if configured_url() is not None:
+        logger.info("共有SheetSage2サービスでボーカルノートを抽出中")
+        return transcribe_sheetsage_remote(
+            audio_path,
+            device,
+            on_progress=on_progress,
+        )
+    return _transcribe_sheetsage_local(
+        audio_path,
+        output_dir,
+        device=device,
+        on_progress=on_progress,
+    )
+
+
+def _transcribe_sheetsage_local(
+    audio_path: Path,
+    output_dir: Path,
+    *,
+    device: str,
+    on_progress: Callable[[float], None] | None = None,
+) -> list[MelodyNote] | None:
     """Run a configured local SheetSage2 model, or return None when unconfigured."""
-    capabilities = configured_capabilities()
+    capabilities = _configured_local_capabilities()
     if not capabilities["sheetsage2"]:
         return None
     try:
