@@ -1872,10 +1872,17 @@ def prepare_video(
         sung_end,
         endroll_words or ([""] if midi_end_credit.strip() else []),
     )
-    if midi_end_credit.strip():
-        total_sec = max(total_sec, minimum)
     if total_sec + 1e-6 < minimum:
-        raise ValueError(f"動画予定尺が短すぎます({total_sec:.3f} < {minimum:.3f})")
+        # The planned duration is an optimization hint computed before audio
+        # synthesis.  Rendering must remain safe if a later lyric/timing detail
+        # requires a longer tail; padding a silent video is lossless, while
+        # rejecting the whole job discards otherwise valid audio and lyrics.
+        logger.warning(
+            "動画予定尺を必要最小尺まで延長します(%.3f -> %.3f)",
+            total_sec,
+            minimum,
+        )
+        total_sec = minimum
     if total_sec > sung_end:
         logger.info("動画予定尺: %.1f秒 (歌唱終端+余韻 %.1f秒)", total_sec, sung_end)
 

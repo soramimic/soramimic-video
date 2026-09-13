@@ -167,8 +167,9 @@ def test_known_lyrics_evidence_path_runs_stage3_for_sheetsage(monkeypatch, tmp_p
     assert analysis["stage3_correspondence"] is True
 
 
-def test_known_lyrics_falls_back_when_stage3_leaves_unresolved_mora(
-    monkeypatch, tmp_path,
+@pytest.mark.parametrize("failure", ["unresolved", "invalid-plan"])
+def test_known_lyrics_falls_back_when_stage3_cannot_supply_a_complete_plan(
+    monkeypatch, tmp_path, failure,
 ):
     import soramimic_video.stage3 as stage3
     from soramimic_video import audio_melody, mora_align, pitch, reading
@@ -204,7 +205,15 @@ def test_known_lyrics_falls_back_when_stage3_leaves_unresolved_mora(
         def to_dict(self):
             pytest.fail("unresolved Stage 3 layers must not replace the complete project")
 
-    monkeypatch.setattr(stage3, "build_stage3_layers", lambda *args: (Document(), Layers()))
+    if failure == "unresolved":
+        monkeypatch.setattr(
+            stage3, "build_stage3_layers", lambda *args: (Document(), Layers())
+        )
+    else:
+        def invalid_plan(*args):
+            raise ValueError("invalid synthesis slot timing, pitch, or confidence")
+
+        monkeypatch.setattr(stage3, "build_stage3_layers", invalid_plan)
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("かき", encoding="utf-8")
 
@@ -219,6 +228,8 @@ def test_known_lyrics_falls_back_when_stage3_leaves_unresolved_mora(
     analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert analysis["stage3_correspondence"] is False
     assert "CTC整列結果" in analysis["limitations"][-1]
+    if failure == "invalid-plan":
+        assert not (tmp_path / "project/analyze_audio/correspondence.json").exists()
 
 
 def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monkeypatch, tmp_path):

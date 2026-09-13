@@ -32,22 +32,40 @@ def test_short_notes_keep_all_units_keys_and_outer_bounds(start):
     assert value == before
 
 
-def test_capacity_does_not_cross_line_boundary():
+def test_short_line_borrows_from_idle_time_without_crossing_next_line():
     value = layered([(20, 21, "カ", 0), (21, 40, "キ", 1)])
-    with pytest.raises(ValueError, match="歌詞は保持"):
-        vv.build_score(value)
+    score = vv.build_score(value)["notes"]
+    sung = [note for note in score if note["key"] is not None]
+    assert [note["lyric"] for note in sung] == ["カ", "キ"]
+    assert [note["frame_length"] for note in sung] == [2, 19]
+    assert sum(note["frame_length"] for note in score) == 40
 
 
 @pytest.mark.parametrize("specs", [
     [(20, 23, "カキ", 0)], [(0, 3, "カ", 0)],
     [(20, 21, "カ", 0), (21, 23, "キ", 0)],
 ])
-def test_truly_insufficient_line_capacity_is_explicit(specs):
+def test_insufficient_line_capacity_preserves_every_mora(specs):
     value = layered(specs)
     before = copy.deepcopy(value)
-    with pytest.raises(ValueError, match="歌詞は保持"):
-        vv.build_score(value)
+    score = vv.build_score(value)["notes"]
+    expected = [mora for _start, _end, kana, _line in specs
+                for mora in vv.split_voicevox_moras(kana)]
+    assert [note["lyric"] for note in score if note["key"] is not None] == expected
+    assert all(note["frame_length"] >= vv.MIN_ELEMENT_FRAMES for note in score)
     assert value == before
+
+
+def test_capacity_extension_shifts_only_until_a_later_rest_absorbs_it():
+    value = layered([
+        (0, 2, "カ", 0),
+        (2, 4, "キ", 1),
+        (10, 12, "ク", 2),
+    ])
+    score = vv.build_score(value)["notes"]
+    assert [note["lyric"] for note in score if note["key"] is not None] == list("カキク")
+    assert all(note["frame_length"] >= vv.MIN_ELEMENT_FRAMES for note in score)
+    assert sum(note["frame_length"] for note in score) == 12
 
 
 @pytest.mark.parametrize("mode", ["front", "back", "first", "auto"])
