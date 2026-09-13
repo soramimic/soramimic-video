@@ -47,6 +47,18 @@ def _require_evidence_pipeline() -> None:
         ) from exc
 
 
+def _record_stage3_fallback(project_dir: Path, detail: str) -> None:
+    """Mark that the complete CTC project replaced an unusable Stage 3 refinement."""
+    analysis_path = project_dir / ANALYZE_DIR / "analysis.json"
+    analysis_data = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis_data["stage3_correspondence"] = False
+    analysis_data["limitations"].append(detail)
+    analysis_path.write_text(
+        json.dumps(analysis_data, ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+
+
 def analyze_audio(
     audio_path: Path,
     project_dir: Path,
@@ -393,13 +405,32 @@ def analyze_audio(
             raise RuntimeError("Stage 3へ渡すSheetSage2ノート候補がありません")
         from .stage3 import build_stage3_layers
 
-        document, layers = build_stage3_layers(
-            line_texts, selected_readings, raw_alignment, sheetsage_notes,
-        )
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
-        (out / "correspondence.json").write_text(document.to_json(), encoding="utf-8")
-        if layers.unresolved_unit_ids:
+        layers = None
+        try:
+            document, layers = build_stage3_layers(
+                line_texts, selected_readings, raw_alignment, sheetsage_notes,
+            )
+        except ValueError as exc:
+            # Stage 3 is a refinement of the complete CTC/pitch project built
+            # above.  A malformed derived slot must not discard valid lyrics or
+            # turn an otherwise renderable upload into a failed job.
+            logger.warning(
+                "Stage 3の合成計画を適用できないため、"
+                "全モーラを保持したCTC整列結果へフォールバックします: %s",
+                exc,
+            )
+            _record_stage3_fallback(
+                project_dir,
+                "Stage 3の合成計画を適用できなかったため、"
+                "全モーラを保持したCTC整列結果を使用しました。",
+            )
+        else:
+            (out / "correspondence.json").write_text(
+                document.to_json(), encoding="utf-8"
+            )
+        if layers is not None and layers.unresolved_unit_ids:
             # Stage 3 may have no SheetSage candidate in a short or densely sung
             # lyric line.  The preceding CTC/pitch path already produced one
             # ordered, non-dropping note per official-lyrics mora, so retain that
@@ -410,18 +441,12 @@ def analyze_audio(
                 "全モーラを保持したCTC整列結果へフォールバックします",
                 len(layers.unresolved_unit_ids),
             )
-            analysis_path = out / "analysis.json"
-            analysis_data = json.loads(analysis_path.read_text(encoding="utf-8"))
-            analysis_data["stage3_correspondence"] = False
-            analysis_data["limitations"].append(
+            _record_stage3_fallback(
+                project_dir,
                 "Stage 3で未解決のモーラがあったため、"
-                "全モーラを保持したCTC整列結果を使用しました。"
+                "全モーラを保持したCTC整列結果を使用しました。",
             )
-            analysis_path.write_text(
-                json.dumps(analysis_data, ensure_ascii=False, indent=1),
-                encoding="utf-8",
-            )
-        else:
+        elif layers is not None:
             apply_lyric_layers(project, layers.to_dict())
 
     # 目視検証用SRT
