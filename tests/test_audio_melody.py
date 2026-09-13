@@ -63,7 +63,16 @@ def test_sheetsage_lab_validation(tmp_path: Path):
         MelodyNote(0.4, 0.8, 67),
     ]
     lab.write_text("0.1\t0.5\t64\n0.4\t0.8\t67\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="重複"):
+    assert read_sheetsage_notes(lab) == [
+        MelodyNote(0.1, 0.4, 64),
+        MelodyNote(0.4, 0.8, 67),
+    ]
+
+
+def test_sheetsage_lab_rejects_ambiguous_simultaneous_notes(tmp_path: Path):
+    lab = tmp_path / "melody_vocal.lab"
+    lab.write_text("0.1\t0.5\t64\n0.1\t0.8\t67\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="同時刻"):
         read_sheetsage_notes(lab)
 
 

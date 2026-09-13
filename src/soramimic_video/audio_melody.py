@@ -13,7 +13,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -93,7 +93,7 @@ def configured_capabilities() -> dict[str, bool]:
 
 
 def read_sheetsage_notes(path: Path) -> list[MelodyNote]:
-    """Read SheetSage2's vocal LAB output and validate its song-clock geometry."""
+    """Read SheetSage2's vocal LAB output and normalize its song-clock geometry."""
     notes: list[MelodyNote] = []
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not raw.strip():
@@ -108,12 +108,22 @@ def read_sheetsage_notes(path: Path) -> list[MelodyNote]:
             raise ValueError(f"SheetSage2の音高が不正です({number}行目)")
         notes.append(MelodyNote(start, end, pitch))
     notes.sort(key=lambda note: (note.start_sec, note.end_sec, note.midi_note))
-    if any(
-        a.end_sec > b.start_sec + 1e-6
-        for a, b in zip(notes, notes[1:], strict=False)
-    ):
-        raise ValueError("SheetSage2のボーカルノートが重複しています")
-    return notes
+    normalized: list[MelodyNote] = []
+    clipped = 0
+    for note in notes:
+        if normalized and normalized[-1].end_sec > note.start_sec + 1e-6:
+            previous = normalized[-1]
+            if note.start_sec <= previous.start_sec + 1e-6:
+                raise ValueError("SheetSage2の同時刻ボーカルノートが競合しています")
+            # Windowed inference can repeat a short part of a pitch transition.
+            # Preserve both onsets and pitches, and assign the shared time to the
+            # later note just as the downstream monophonic renderer does.
+            normalized[-1] = replace(previous, end_sec=note.start_sec)
+            clipped += 1
+        normalized.append(note)
+    if clipped:
+        logger.warning("SheetSage2の重複ノート境界を%d件整理しました", clipped)
+    return normalized
 
 
 def transcribe_sheetsage(
