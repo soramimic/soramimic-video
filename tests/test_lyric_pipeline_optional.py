@@ -285,6 +285,60 @@ def test_known_lyrics_evidence_path_runs_stage3_for_sheetsage(monkeypatch, tmp_p
     assert analysis["stage3_correspondence"] is True
 
 
+def test_known_lyrics_falls_back_when_stage3_leaves_unresolved_mora(
+    monkeypatch, tmp_path,
+):
+    import soramimic_video.stage3 as stage3
+    from soramimic_video import audio_melody, mora_align, pitch, reading
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=1.0)))
+    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
+        [AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8),
+         AlignedMora(0, 1, "キ", 0.3, 0.4, 0.7)], [0],
+    ))
+    monkeypatch.setattr(pitch, "extract_pitch", lambda *args: None)
+    monkeypatch.setattr(pitch, "voiced_end", lambda track, start, limit: start + 0.1)
+    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *args: [60, 62])
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: [
+        MelodyNote(0.0, 0.5, 60),
+    ])
+    monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {
+        "sheetsage2": True, "rmvpe": False, "fcpe": False,
+    })
+
+    class Document:
+        def to_json(self):
+            return "{}"
+
+    class Layers:
+        unresolved_unit_ids = ("singing-unit-1",)
+
+        def to_dict(self):
+            pytest.fail("unresolved Stage 3 layers must not replace the complete project")
+
+    monkeypatch.setattr(stage3, "build_stage3_layers", lambda *args: (Document(), Layers()))
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("かき", encoding="utf-8")
+
+    value = analyze_audio(
+        tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
+        device="cpu", skip_separation=True, lyric_pipeline="evidence",
+    )
+
+    assert value.lyric_layers is None
+    assert [note.kana for note in value.notes] == ["カ", "キ"]
+    assert [note.midi_note for note in value.notes] == [60, 60]
+    analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
+    assert analysis["stage3_correspondence"] is False
+    assert "CTC整列結果" in analysis["limitations"][-1]
+
+
 def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monkeypatch, tmp_path):
     from wav_to_xf import ReadingCandidate
     from wav_to_xf.recognition import (

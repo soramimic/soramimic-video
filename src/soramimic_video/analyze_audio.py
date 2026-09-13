@@ -344,14 +344,33 @@ def analyze_audio(
         document, layers = build_stage3_layers(
             line_texts, selected_readings, raw_alignment, sheetsage_notes,
         )
-        if layers.unresolved_unit_ids:
-            raise RuntimeError(
-                "Stage 3でノート未解決のモーラがあります。タイミングを確認してください。"
-            )
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
         (out / "correspondence.json").write_text(document.to_json(), encoding="utf-8")
-        apply_lyric_layers(project, layers.to_dict())
+        if layers.unresolved_unit_ids:
+            # Stage 3 may have no SheetSage candidate in a short or densely sung
+            # lyric line.  The preceding CTC/pitch path already produced one
+            # ordered, non-dropping note per official-lyrics mora, so retain that
+            # complete project instead of turning an optional refinement into a
+            # fatal generation error.
+            logger.warning(
+                "Stage 3で%dモーラのノートが未解決のため、"
+                "全モーラを保持したCTC整列結果へフォールバックします",
+                len(layers.unresolved_unit_ids),
+            )
+            analysis_path = out / "analysis.json"
+            analysis_data = json.loads(analysis_path.read_text(encoding="utf-8"))
+            analysis_data["stage3_correspondence"] = False
+            analysis_data["limitations"].append(
+                "Stage 3で未解決のモーラがあったため、"
+                "全モーラを保持したCTC整列結果を使用しました。"
+            )
+            analysis_path.write_text(
+                json.dumps(analysis_data, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+        else:
+            apply_lyric_layers(project, layers.to_dict())
 
     # 目視検証用SRT
     out = project_dir / ANALYZE_DIR
