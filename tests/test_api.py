@@ -406,7 +406,7 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
         assert audio_path == audio
         assert project_dir == tmp_path
         assert kwargs["lyrics_path"] is None
-        assert kwargs["whisper_model"] == "small"
+        assert kwargs["whisper_model"] == "large-v3"
         raise ReachedAnalyzer
 
     monkeypatch.setattr(analyze_audio_mod, "analyze_audio", fake_analyze)

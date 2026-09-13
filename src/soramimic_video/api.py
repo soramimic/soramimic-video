@@ -75,6 +75,7 @@ from .layout import (
 )
 from .soramimic_engine import start_warmup_thread
 from .thumbnail_preview import RateLimiter, preview_cache_dir
+from .transcribe import DEFAULT_WHISPER_MODEL
 from .wordlist_catalog import (
     default_launch_wordlists,
     load_wordlist_image_policies,
@@ -1191,7 +1192,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
                 # アップロード音源の自動認識時はWhisperで歌詞行を決める。
                 lyrics_path=supplied_audio_lyrics,
-                whisper_model=str(config.get("whisper_model") or "small"),
+                whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
                 device=config.get("audio_device"),
                 progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
             )
