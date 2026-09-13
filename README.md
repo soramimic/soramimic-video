@@ -148,7 +148,7 @@ uv run soramimic-video apply-lyric-layers --project work/song --layers work/real
 uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
 ```
 
-未知歌詞では原音mixをWhisper large-v3（既定）のVADなし単一パスで認識します。
+未知歌詞では原音mixをWhisper large-v3（既定）のVADなし・前セグメント文脈なしの単一パスで認識します。
 分離ボーカルの音響活動が全くないWhisperセグメントだけを無音ハルシネーションとして除外し、
 それ以外の認識全文を元歌詞にします。
 辞書の第一読みを固定して、カナCTCは本文や読みを棄却・変更せずモーラ時刻の推定だけに使います。

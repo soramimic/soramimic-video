@@ -29,6 +29,7 @@ def transcribe_lines(
     device: str = "auto",
     *,
     vad_filter: bool = True,
+    condition_on_previous_text: bool = True,
 ) -> list[TranscribedLine]:
     try:
         from faster_whisper import WhisperModel
@@ -40,7 +41,10 @@ def transcribe_lines(
     logger.info("Whisper(%s)で歌詞を認識中...", model_size)
     model = WhisperModel(model_size, device=device)
     segments, info = model.transcribe(
-        str(vocals_path), language="ja", vad_filter=vad_filter
+        str(vocals_path),
+        language="ja",
+        vad_filter=vad_filter,
+        condition_on_previous_text=condition_on_previous_text,
     )
     lines = [
         TranscribedLine(start_sec=s.start, end_sec=s.end, text=s.text.strip())
