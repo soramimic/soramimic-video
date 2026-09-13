@@ -677,13 +677,62 @@ def test_run_voicevox_explains_unsplittable_query_500(tmp_path, monkeypatch):
 
     with pytest.raises(
         RuntimeError,
-        match="歌詞「ラ」、1音符.*該当箇所の単語を変更.*休符で分けて",
+        match="歌詞「ラ」、1音符.*短音符の自動補正後も合成できませんでした",
     ):
         run_voicevox(
             _project([_note(0, 60, 0.5, 1.0, "ラ")]),
             tmp_path,
             style_id=6000,
         )
+
+
+def test_run_voicevox_isolates_unsplittable_short_notes(tmp_path, monkeypatch):
+    singers = [
+        {"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}
+    ]
+    monkeypatch.setattr(
+        vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers)
+    )
+    posts = {"query": 0, "synth": 0}
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        if "sing_frame_audio_query" in url:
+            posts["query"] += 1
+            sung = [n for n in json["notes"] if n["key"] is not None]
+            if len(sung) > 1:
+                return _FakeResp(status=500)
+            return _FakeResp(json_data=json)
+        posts["synth"] += 1
+        frames = sum(n["frame_length"] for n in json["notes"])
+        return _FakeResp(content=_wav_const(frames * 256, 1000 * posts["synth"]))
+
+    monkeypatch.setattr(vv.requests, "post", fake_post)
+    # Every sung note is only two frames, so the existing split cannot borrow
+    # two frames for a new leading rest without deleting a mora.
+    score = {
+        "notes": [
+            {"key": None, "frame_length": 3, "lyric": ""},
+            {"key": 60, "frame_length": 2, "lyric": "ド"},
+            {"key": 62, "frame_length": 2, "lyric": "リ"},
+            {"key": 64, "frame_length": 2, "lyric": "ミ"},
+        ]
+    }
+    monkeypatch.setattr(vv, "build_score", lambda project, transpose=0: score)
+
+    out = run_voicevox(
+        _project([_note(0, 60, 0.0, 0.1, "ド")]),
+        tmp_path,
+        style_id=6000,
+        chunk_sec=0,
+    )
+
+    assert posts == {"query": 4, "synth": 3}
+    samples = _read_samples(out)
+    assert len(samples) == 9 * 256
+    assert set(samples[: 3 * 256]) == {0}
+    assert set(samples[3 * 256 : 5 * 256]) == {1000}
+    assert set(samples[5 * 256 : 7 * 256]) == {2000}
+    assert set(samples[7 * 256 :]) == {3000}
 
 
 def test_run_voicevox_engine_aborted_midrequest(tmp_path, monkeypatch):
