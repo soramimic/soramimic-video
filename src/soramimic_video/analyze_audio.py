@@ -106,6 +106,7 @@ def analyze_audio(
         line_texts = [ln for ln in line_texts if ln]
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
     elif use_evidence:
+        from .audio_activity import activity_overlap_seconds, detect_audio_activity
         from .transcribe import transcribe_lines
 
         # Unknown lyrics use one complete, deterministic Whisper transcript.
@@ -117,6 +118,13 @@ def analyze_audio(
             device or "auto",
             vad_filter=False,
         )
+        activity = detect_audio_activity(vocals)
+        discarded_silence = [
+            line
+            for line in lines
+            if activity_overlap_seconds(line.start_sec, line.end_sec, activity) < 0.1
+        ]
+        lines = [line for line in lines if line not in discarded_silence]
         if not lines:
             raise RuntimeError("Whisperが歌詞を認識できませんでした")
         line_texts = [line.text for line in lines]
@@ -127,7 +135,7 @@ def analyze_audio(
             recognized_variants.append(
                 [split_moras(readings[0])] if readings else [[]]
             )
-        recognition_mode = "whisper-mix-no-vad"
+        recognition_mode = "whisper-mix-silence-guard"
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
         (out / "recognition.json").write_text(
@@ -136,6 +144,17 @@ def analyze_audio(
                     "schema_version": 2,
                     "mode": recognition_mode,
                     "model": whisper_model,
+                    "silence_guard": {
+                        "source": "separated-vocals" if not skip_separation else "input-audio",
+                        "discarded_segments": [
+                            {
+                                "start_sec": line.start_sec,
+                                "end_sec": line.end_sec,
+                                "surface": line.text,
+                            }
+                            for line in discarded_silence
+                        ],
+                    },
                     "segments": [
                         {
                             "start_sec": line.start_sec,
@@ -150,7 +169,11 @@ def analyze_audio(
             ),
             encoding="utf-8",
         )
-        logger.info("Whisper mix/no-VADの%d行を元歌詞として採用", len(line_texts))
+        logger.info(
+            "Whisper mix/no-VADの%d行を元歌詞として採用 (無音区間の誤認識を%d行除外)",
+            len(line_texts),
+            len(discarded_silence),
+        )
     else:
         from .transcribe import transcribe_lines
 

@@ -222,7 +222,7 @@ def test_known_lyrics_falls_back_when_stage3_leaves_unresolved_mora(
 
 
 def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monkeypatch, tmp_path):
-    from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
+    from soramimic_video import audio_activity, audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
@@ -236,6 +236,12 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
         return [TranscribedLine(1., 2., "か"), TranscribedLine(8., 9., "き")]
 
     monkeypatch.setattr(transcribe, "transcribe_lines", recognize)
+    monkeypatch.setattr(
+        audio_activity,
+        "detect_audio_activity",
+        lambda path: [audio_activity.ActivityInterval(1., 2.),
+                      audio_activity.ActivityInterval(8., 9.)],
+    )
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=10.)))
     monkeypatch.setattr(
@@ -279,5 +285,43 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
     assert recognition["schema_version"] == 2
-    assert recognition["mode"] == "whisper-mix-no-vad"
+    assert recognition["mode"] == "whisper-mix-silence-guard"
+    assert recognition["silence_guard"]["discarded_segments"] == []
     assert [item["surface"] for item in recognition["segments"]] == ["か", "き"]
+
+
+def test_silence_guard_discards_only_fully_inactive_whisper_segment(monkeypatch, tmp_path):
+    from soramimic_video import audio_activity, audio_melody, mora_align, pitch, reading, transcribe
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: [
+        TranscribedLine(1., 2., "歌"), TranscribedLine(8., 9., "幻覚")])
+    monkeypatch.setattr(audio_activity, "detect_audio_activity", lambda path: [
+        audio_activity.ActivityInterval(1.5, 1.7)])
+    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["ウタ"])
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: object())
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *a, **kw: (
+        [AlignedMora(0, 0, "ウ", 1.2, 1.3, .8),
+         AlignedMora(0, 1, "タ", 1.4, 1.5, .8)], [0]))
+    monkeypatch.setattr(pitch, "extract_pitch", lambda *a: None)
+    monkeypatch.setattr(pitch, "voiced_end", lambda track, start, limit: limit)
+    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *a: [60, 60])
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: [
+        MelodyNote(1., 2., 60)])
+    monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {
+        "sheetsage2": True, "rmvpe": False, "fcpe": False})
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=10.)))
+
+    value = analyze_audio(tmp_path / "input.wav", tmp_path / "project", device="cpu",
+                          skip_separation=True, lyric_pipeline="evidence")
+
+    assert value.lyric_layers["canonical_text"] == "歌"
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text())
+    assert [item["surface"] for item in recognition["segments"]] == ["歌"]
+    assert [item["surface"] for item in
+            recognition["silence_guard"]["discarded_segments"]] == ["幻覚"]
