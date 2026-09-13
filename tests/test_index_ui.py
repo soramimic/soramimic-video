@@ -176,12 +176,33 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_uploaded_xf_midi_title_defaults_to_song_file_stem():
+    """XFを表す複合拡張子は曲名の初期値へ含めない。"""
+    function = _function_body(_script(), "function songFileStem(file)") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        {function}
+        assert.equal(songFileStem({{ name: "夜に駆ける.xf.mid" }}), "夜に駆ける");
+        assert.equal(songFileStem({{ name: "夜に駆ける.XF.MIDI" }}), "夜に駆ける");
+        assert.equal(songFileStem({{ name: "夜に駆ける.mid" }}), "夜に駆ける");
+        assert.equal(songFileStem({{ name: "夜に.駆ける.mp3" }}), "夜に.駆ける");
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_song_text_previews_follow_title_credits_and_wordlist():
     """3つのプレビューは入力値と本番のクレジット優先順位に即時追随する。"""
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
-        for head in ("function songTitleOf(file)", "function updateSongTextPreviews()")
+        for head in (
+            "function songFileStem(file)",
+            "function songTitleOf(file)",
+            "function updateSongTextPreviews()",
+        )
     )
     node = textwrap.dedent(
         """

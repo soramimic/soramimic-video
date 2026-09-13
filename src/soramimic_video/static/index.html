@@ -3012,9 +3012,14 @@ async function submitJob(previewSec, previewMode) {
 // samples.json の曲名を、自分の曲は入力欄(空ならファイル名)から送る。
 // 来歴(midiSampleId)があるときはそれを正とする——MIDIと曲名を同じ出どころから
 // 決めることで、「別の曲のMIDI + 選んだ曲の曲名」のような食い違いを作らない。
+function songFileStem(file) {
+  const name = (file && file.name) || "";
+  return name.replace(/\.xf\.(?:mid|midi)$/i, "").replace(/\.[^.]+$/, "");
+}
+
 function songTitleOf(file) {
   if (midiSampleId) return sampleTitleOf(midiSampleId);
-  const base = ((file && file.name) || "").replace(/\.[^.]+$/, "");
+  const base = songFileStem(file);
   return $("song-title").value.trim() || base;
 }
 
@@ -3409,7 +3414,7 @@ $("midi").addEventListener("change", () => {
   }
   $("sample-select").value = "";
   midiSampleId = "";
-  if (!restoring) $("song-title").value = file.name.replace(/\.[^.]+$/, "");
+  if (!restoring) $("song-title").value = songFileStem(file);
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   clearEditorFile();
   if (kind === "midi") {
