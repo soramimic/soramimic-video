@@ -8,6 +8,7 @@ run_voicevoxのフローを確認する。エンジンが起動していれば�
 from __future__ import annotations
 
 import io
+import math
 import wave
 
 import pytest
@@ -273,11 +274,11 @@ def test_auto_mode_sings_tail_when_gap_follows():
 
 def test_auto_mode_keeps_articulation_anchors_in_overcrowded_note():
     # 289msの1音符へ「ブースター」相当を全部詰めると早口で潰れる。
-    # 長音母音を捨て、語の輪郭になる ブ・ス・タ を残す。
+    # 長音母音を捨て、語の輪郭になる ブ・タ を残す。
     note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.289, "ブースター")
     score = build_score(_project([note]))
     pitched = [n for n in score["notes"] if n["key"] is not None]
-    assert [n["lyric"] for n in pitched] == ["ブ", "ス", "タ"]
+    assert [n["lyric"] for n in pitched] == ["ブ", "タ"]
     assert sum(n["frame_length"] for n in pitched) == round(0.289 * FRAME_RATE)
 
 
@@ -290,10 +291,35 @@ def test_auto_mode_uses_one_anchor_for_extremely_dense_note():
     assert pitched[0]["frame_length"] == round(0.142 * FRAME_RATE)
 
 
+def test_auto_mode_borrows_following_rest_before_dropping_moras():
+    # 142msの音符単体では1モーラしか明瞭にできないが、直後に十分な空白があれば
+    # そこへ音価を伸ばして4モーラを保持する。次の音符前の短い休符は残す。
+    notes = [
+        _note(0, 68, HEAD_SEC, HEAD_SEC + 0.142, "ワルビル"),
+        _note(1, 70, HEAD_SEC + 0.58, HEAD_SEC + 0.88, "ラ"),
+    ]
+    score = build_score(_project(notes))
+    assert [n["lyric"] for n in score["notes"] if n["key"] is not None] == [
+        "ワ", "ル", "ビ", "ル", "ラ",
+    ]
+    rests = [n for n in score["notes"] if n["key"] is None]
+    assert rests[-1]["frame_length"] >= round(vv.BORROWED_REST_MIN_SEC * FRAME_RATE)
+
+
+def test_expanded_note_end_borrows_only_required_capacity():
+    required = math.ceil(4 * vv.MIN_ARTICULATION_MORA_SEC * FRAME_RATE)
+    assert vv._expanded_note_end(100, 113, 160, 4) == 100 + required
+
+
+def test_expanded_note_end_keeps_minimum_rest():
+    keep = math.ceil(vv.BORROWED_REST_MIN_SEC * FRAME_RATE)
+    assert vv._expanded_note_end(100, 113, 140, 4) == 140 - keep
+
+
 def test_articulation_moras_spreads_anchors_across_word():
-    # 4つの子音付きモーラから3つ選ぶ場合は、語尾を落とさず全体へ散らす。
+    # 子音付きモーラを絞る場合は、語尾を落とさず全体へ散らす。
     assert vv.articulation_moras(["マ", "フィ", "ティ", "フ"], 27) == [
-        "マ", "ティ", "フ"
+        "マ", "フ"
     ]
 
 

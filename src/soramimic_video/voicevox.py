@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 import time
 import wave
@@ -66,7 +67,10 @@ MIN_LAST_MORA_SEC = 0.06
 TAIL_GAP_MIN_SEC = 0.1
 # 1音符へ複数モーラを積む場合に、独立した発音として確保する最短時間。
 # これより過密なら、全部を早口で潰す代わりに語を聞き分けやすいモーラを残す。
-MIN_ARTICULATION_MORA_SEC = 0.09
+MIN_ARTICULATION_MORA_SEC = 0.12
+# 過密ノートへ直後の空白を貸す場合も、次の音符との分離感とVOICEVOXの休符要件を
+# 保つため、この長さは休符として残す。
+BORROWED_REST_MIN_SEC = TAIL_GAP_MIN_SEC
 # 歌唱用の「歌の先生」スタイル(sing型)。クエリ生成に使う。frame_synthesisは
 # 選んだスタイル(frame_decode/sing)で行う。現状 sing型は 波音リツ ノーマル(6000)のみ。
 SING_TEACHER_ID = 6000
@@ -217,7 +221,7 @@ def articulation_moras(morae: list[str], total_frames: int) -> list[str]:
     """
     if len(morae) <= 1:
         return morae
-    budget = max(1, int((total_frames / FRAME_RATE) / MIN_ARTICULATION_MORA_SEC))
+    budget = max(1, round((total_frames / FRAME_RATE) / MIN_ARTICULATION_MORA_SEC))
     if len(morae) <= budget:
         return morae
 
@@ -228,6 +232,20 @@ def articulation_moras(morae: list[str], total_frames: int) -> list[str]:
         extras = [i for i in range(len(morae)) if i not in chosen]
         chosen.extend(_evenly_spaced_indices(extras, budget - len(chosen)))
     return [morae[i] for i in sorted(chosen)]
+
+
+def _expanded_note_end(
+    start_frame: int, end_frame: int, next_start_frame: int, mora_count: int
+) -> int:
+    """過密ノートの不足時間を直後の休符から借りた終端を返す。"""
+    if mora_count <= 1:
+        return end_frame
+    required = math.ceil(mora_count * MIN_ARTICULATION_MORA_SEC * FRAME_RATE)
+    if end_frame - start_frame >= required:
+        return end_frame
+    keep_rest = max(MIN_ELEMENT_FRAMES, math.ceil(BORROWED_REST_MIN_SEC * FRAME_RATE))
+    latest = next_start_frame - keep_rest
+    return max(end_frame, min(start_frame + required, latest))
 
 
 def mora_frame_bounds(total: int, m: int, mode: str | None = None) -> list[int]:
@@ -459,9 +477,16 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         morae = split_voicevox_moras(kana)
         if not morae:  # カナが無い継続モーラ等: 直前の母音を引き継ぐ
             morae = [prev_vowel]
-        gap_after = (
-            notes[i + 1].start_sec - n.end_sec if i + 1 < len(notes) else float("inf")
-        )
+        next_sf = frame(notes[i + 1].start_sec) if i + 1 < len(notes) else None
+        if not preserve_units and next_sf is not None:
+            expanded_ef = _expanded_note_end(sf, ef, next_sf, len(morae))
+            if expanded_ef > ef:
+                logger.debug(
+                    "音符%d: 発音時間を直後の休符から%dフレーム借用 (%d -> %d)",
+                    n.id, expanded_ef - ef, ef - sf, expanded_ef - sf,
+                )
+                ef = expanded_ef
+        gap_after = float("inf") if next_sf is None else (next_sf - ef) / FRAME_RATE
         note_mode = _resolve_stacked_mode(gap_after)
         if preserve_units and note_mode == "first":
             # Layered plans may omit only explicitly classified source omissions,
