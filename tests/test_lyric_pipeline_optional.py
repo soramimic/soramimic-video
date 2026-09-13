@@ -86,6 +86,58 @@ def test_multiview_runtime_reuses_models_and_retains_real_scores(monkeypatch):
     assert result.selected_hypotheses
 
 
+def test_conditioned_ctc_recovers_only_uncovered_segments(monkeypatch):
+    from soramimic_video.mora_align import ConditionedCTCScore
+
+    calls = []
+
+    class Whisper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe(self, path, **kwargs):
+            return iter([
+                SimpleNamespace(
+                    start=0.0, end=1.0, text="か", avg_logprob=math.log(0.8),
+                    no_speech_prob=0.01,
+                ),
+                SimpleNamespace(
+                    start=2.0, end=3.0, text="きく", avg_logprob=math.log(0.8),
+                    no_speech_prob=0.01,
+                ),
+            ]), SimpleNamespace(language="ja")
+
+    def conditioned(_emissions, start, end, kana):
+        calls.append((start, end, kana))
+        return ConditionedCTCScore(0.9, 0.8, -10.0, -20.0, 50, 2)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=4.0)))
+    monkeypatch.setattr(lyric_recognition, "reading_candidates", lambda text: [
+        {"か": "カ", "きく": "キク"}[text]
+    ])
+    monkeypatch.setattr(
+        lyric_recognition, "decode_kana_window",
+        lambda _emissions, start, end: ("カ", 0.9) if start == 0 else ("", 0.0),
+    )
+    monkeypatch.setattr(lyric_recognition, "collapse_kana_aliases", lambda value: value.log_probs)
+    monkeypatch.setattr(lyric_recognition, "score_kana_window", conditioned)
+    matrix = CTCEmissions(np.zeros((250, 4)), {"<pad>": 0, "カ": 1, "キ": 2, "ク": 3})
+
+    result, _ = lyric_recognition.transcribe_multiview(
+        Path("vocals.wav"), Path("vocals.wav"), emissions=matrix,
+    )
+
+    assert calls == [(2.0, 3.0, "キク"), (2.0, 3.0, "キク")]
+    assert [item.surface for item in result.selected_hypotheses] == ["か", "きく"]
+    assert result.coverage == pytest.approx(0.5)
+    # The competing no-VAD duplicate is evaluated but not retained because it
+    # would replace the already accepted VAD hypothesis.
+    assert len([item for item in result.acoustic if item.conditioned_on_hypothesis_id]) == 1
+    assert any(item.kind == "contrastive-forced-reading-score" for item in result.evidence)
+
+
 def test_cplus_runtime_rows_roundtrip_into_project():
     from wav_to_xf.cplus import from_cplus_assignments
 

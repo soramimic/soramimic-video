@@ -69,6 +69,18 @@ class CTCEmissions:
     vocab: dict[str, int]
 
 
+@dataclass(frozen=True)
+class ConditionedCTCScore:
+    """Contrastive forced-alignment support for one proposed kana reading."""
+
+    acoustic_score: float
+    confidence: float
+    target_log_likelihood: float
+    competing_log_likelihood: float
+    frame_count: int
+    token_count: int
+
+
 def compute_emissions(vocals_path: Path, device: str | None = None) -> CTCEmissions:
     import torch
     from transformers import Wav2Vec2CTCTokenizer
@@ -120,6 +132,51 @@ def decode_kana_window(
         chars.append(token)
         scores.append(float(matrix[index, token_id]))
     return "".join(chars), math.exp(sum(scores) / len(scores)) if scores else 0.0
+
+
+def score_kana_window(
+    emissions: CTCEmissions, start_sec: float, end_sec: float, kana: str,
+) -> ConditionedCTCScore | None:
+    """Score a proposed reading against deterministic same-token controls.
+
+    This is transcript-conditioned evidence, not an independent transcription.
+    The target and controls use the same window, token count, and token multiset;
+    their per-token log-likelihood difference becomes the acoustic score.  A
+    one-token or uniform-token reading has no distinct ordering control and is
+    deliberately left to independent evidence.
+    """
+    if not 0 <= start_sec < end_sec:
+        raise ValueError("CTC window must have positive duration")
+    first = max(0, _frame_ceiling(start_sec))
+    last = min(len(emissions.log_probs), _frame_ceiling(end_sec))
+    targets, _owners = build_targets([[kana]], emissions.vocab)
+    frame_count = last - first
+    if len(targets) < 2 or frame_count < len(targets):
+        return None
+    controls = []
+    for candidate in (tuple(reversed(targets)), tuple(targets[1:] + targets[:1])):
+        if candidate != tuple(targets) and candidate not in controls:
+            controls.append(candidate)
+    if not controls:
+        return None
+    values = emissions.log_probs[first:last]
+    target_score = _variant_score(values, targets)
+    control_scores = [_variant_score(values, list(candidate)) for candidate in controls]
+    finite_controls = [value for value in control_scores if math.isfinite(value)]
+    if not math.isfinite(target_score) or not finite_controls:
+        return None
+    competing = max(finite_controls)
+    delta = max(-60.0, min(60.0, (target_score - competing) / len(targets)))
+    acoustic_score = 1.0 / (1.0 + math.exp(-delta))
+    confidence = math.exp(min(0.0, target_score / frame_count))
+    return ConditionedCTCScore(
+        acoustic_score,
+        confidence,
+        target_score,
+        competing,
+        frame_count,
+        len(targets),
+    )
 
 
 def collapse_kana_aliases(emissions: CTCEmissions) -> Any:

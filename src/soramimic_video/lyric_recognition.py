@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from . import runproc
-from .mora_align import CTCEmissions, compute_emissions, decode_kana_window
+from .mora_align import (
+    CTCEmissions,
+    collapse_kana_aliases,
+    compute_emissions,
+    decode_kana_window,
+    score_kana_window,
+)
 from .reading import reading_candidates
 from .transcribe import DEFAULT_WHISPER_MODEL
 
@@ -114,4 +121,97 @@ def transcribe_multiview(
 
     views = ("vocals",) if vocals_path.resolve() == mix_path.resolve() else ("vocals", "mix")
     result = recognize_unknown_lyrics(produce, duration_sec=duration_sec, views=views)
-    return result, emissions
+
+    return recover_conditioned_ctc(result, emissions), emissions
+
+
+def recover_conditioned_ctc(result: Any, emissions: CTCEmissions) -> Any:
+    """Add contrastive reading support only inside fully uncovered gaps."""
+    from wav_to_xf.recognition import AcousticPronunciation, Evidence, fuse_unknown_lyrics
+
+    # Preserve every independently supported decision, then attempt bounded
+    # transcript-conditioned recovery only inside its fully uncovered gaps.
+    # This makes recovery monotonic: it cannot join or replace an already
+    # selected competition region.
+    assessments = {item.hypothesis_id: item for item in result.assessments}
+
+    def gap_fraction(start: float, end: float) -> float:
+        covered = sum(
+            max(0.0, min(end, right) - max(start, left))
+            for left, right in result.uncovered_intervals
+        )
+        return covered / (end - start)
+
+    candidates = [
+        hypothesis for hypothesis in result.hypotheses
+        if assessments[hypothesis.id].status == "unresolved"
+        and gap_fraction(hypothesis.start_sec, hypothesis.end_sec) >= 0.999
+    ]
+    if not candidates:
+        return result
+
+    conditioned_emissions = CTCEmissions(
+        collapse_kana_aliases(emissions), emissions.vocab,
+    )
+    current = result
+    required_ids = {item.id for item in result.selected_hypotheses}
+    for hypothesis in candidates:
+        recovery_acoustic = []
+        recovery_evidence = []
+        for reading_index, reading in enumerate(hypothesis.readings):
+            score = score_kana_window(
+                conditioned_emissions,
+                hypothesis.start_sec,
+                hypothesis.end_sec,
+                reading.kana,
+            )
+            if score is None:
+                continue
+            if (score.confidence < result.config.minimum_confidence
+                    or score.acoustic_score < result.config.minimum_pronunciation_score):
+                continue
+            evidence_id = f"forced-score:{hypothesis.id}:{reading_index}"
+            recovery_evidence.append(Evidence(
+                evidence_id,
+                "reazon-kana-ctc",
+                "contrastive-forced-reading-score",
+                score.confidence,
+                {
+                    "score_kind": "same-token-order-contrast",
+                    "acoustic_score": score.acoustic_score,
+                    "target_log_likelihood": score.target_log_likelihood,
+                    "competing_log_likelihood": score.competing_log_likelihood,
+                    "frame_count": score.frame_count,
+                    "token_count": score.token_count,
+                    "timing_calibrated": False,
+                },
+            ))
+            recovery_acoustic.append(AcousticPronunciation(
+                f"forced:{hypothesis.id}:{reading_index}",
+                "reazon-kana-ctc-forced",
+                "vocals",
+                hypothesis.start_sec,
+                hypothesis.end_sec,
+                score.confidence,
+                0.0,
+                kana=reading.kana,
+                stream_id=hypothesis.pass_id,
+                evidence_ids=(evidence_id,),
+                conditioned_on_hypothesis_id=hypothesis.id,
+                conditioned_on_reading_index=reading_index,
+                acoustic_score=score.acoustic_score,
+            ))
+        if not recovery_acoustic:
+            continue
+        trial = fuse_unknown_lyrics(
+            current.hypotheses,
+            current.acoustic + tuple(recovery_acoustic),
+            duration_sec=current.duration_sec,
+            evidence=current.evidence + tuple(recovery_evidence),
+            config=current.config,
+        )
+        selected_ids = {item.id for item in trial.selected_hypotheses}
+        if required_ids < selected_ids:
+            current = replace(trial, runs=result.runs)
+            required_ids = selected_ids
+    return current
