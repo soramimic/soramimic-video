@@ -695,6 +695,72 @@ def _split_failed_score(score: dict[str, Any]) -> list[ScoreChunk] | None:
     ]
 
 
+def _trim_wav_to_score_frames(
+    wav_bytes: bytes, *, leading_frames: int, score_frames: int
+) -> bytes:
+    """Remove compatibility padding from one isolated-note synthesis."""
+    sample_rate, sampwidth, nchannels, sample_frames, pcm = _read_wav(wav_bytes)
+    samples_per_frame = _samples_per_frame(sample_rate)
+    first = leading_frames * samples_per_frame
+    wanted = score_frames * samples_per_frame
+    if sample_frames < first + wanted:
+        raise RuntimeError(
+            "VOICEVOXの短音符合成結果が要求フレーム数より短くなりました"
+        )
+    bytes_per_sample = sampwidth * nchannels
+    pcm = pcm[first * bytes_per_sample : (first + wanted) * bytes_per_sample]
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as output:
+        output.setnchannels(nchannels)
+        output.setsampwidth(sampwidth)
+        output.setframerate(sample_rate)
+        output.writeframes(pcm)
+    return buf.getvalue()
+
+
+def _synthesize_failed_score_per_note(
+    base: str,
+    engine_url: str,
+    teacher: int,
+    style_id: int,
+    score: dict[str, Any],
+) -> bytes:
+    """Synthesize each note with disposable rests, preserving the score timeline.
+
+    Some engine versions return 500 for a particular contiguous score even though
+    every mora is valid in isolation.  Very short notes cannot donate frames to
+    ``_split_failed_score``.  Give each sung note its own leading/trailing rest,
+    remove that padding from the returned WAV, and place it at the original
+    absolute frame.  Original rests remain silence in the combined output.
+    """
+    chunks: list[ScoreChunk] = []
+    parts: list[bytes] = []
+    cursor = 0
+    for note in score["notes"]:
+        length = int(note["frame_length"])
+        if note["key"] is not None:
+            padded = {
+                "notes": [
+                    {"key": None, "frame_length": HEAD_REST_FRAMES, "lyric": ""},
+                    dict(note),
+                    {"key": None, "frame_length": HEAD_REST_FRAMES, "lyric": ""},
+                ]
+            }
+            part = _synthesize_chunk_resilient(
+                base, engine_url, teacher, style_id, padded
+            )
+            parts.append(
+                _trim_wav_to_score_frames(
+                    part, leading_frames=HEAD_REST_FRAMES, score_frames=length
+                )
+            )
+            chunks.append(ScoreChunk(start_frame=cursor, notes=[dict(note)]))
+        cursor += length
+    if not parts:
+        raise RuntimeError("VOICEVOXへ渡す歌唱音符がありません")
+    return _concat_chunks(parts, chunks, cursor)
+
+
 def _score_summary(score: dict[str, Any]) -> str:
     sung = [n for n in score["notes"] if n["key"] is not None]
     lyrics = "".join(str(n.get("lyric") or "") for n in sung)
@@ -720,11 +786,21 @@ def _synthesize_chunk_with_score_fallback(
             raise
         chunks = _split_failed_score(score)
         if chunks is None:
-            raise RuntimeError(
-                "VOICEVOXが歌唱スコアを処理できませんでした"
-                f"({_score_summary(score)})。該当箇所の単語を変更するか、"
-                "その音符列を休符で分けてください。"
-            ) from exc
+            try:
+                logger.warning(
+                    "VOICEVOXが短い音符列を処理できなかったため、"
+                    "音符ごとに休符を補って再試行します: %s",
+                    _score_summary(score),
+                )
+                return _synthesize_failed_score_per_note(
+                    base, engine_url, teacher, style_id, score
+                )
+            except VoicevoxScoreError as isolated_exc:
+                raise RuntimeError(
+                    "VOICEVOXが歌唱スコアを処理できませんでした"
+                    f"({_score_summary(score)})。短音符の自動補正後も"
+                    "合成できませんでした。"
+                ) from isolated_exc
         logger.warning(
             "VOICEVOXが音符列を処理できなかったため二分して再試行します: %s",
             _score_summary(score),
