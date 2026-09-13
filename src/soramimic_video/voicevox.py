@@ -61,10 +61,12 @@ STACKED_MORA_ATTACK_MAX_RATIO = 0.3
 # 伸ばしを持つモーラの最短長(秒)。短いモーラぶんを引いてこれを確保できない
 # 短い音符では音節が潰れるので均等割りへフォールバックする
 MIN_LAST_MORA_SEC = 0.06
-# 複合ノートの発音時間を直後の休符から借りる際、分離感のために残す最短秒。
+# autoモードで2モーラ目以降を歌う(back)条件となる、音符の後ろの無音の最短秒。
+# 実際の歌でも複合ノートの返し(たいの「イ」)を歌うのは後ろに間があるときで、
+# 次の音符がすぐ続く詰まったパッセージでは返しを挟む余裕がなく耳にも残らない
 TAIL_GAP_MIN_SEC = 0.1
 # 1音符へ複数モーラを積む場合に、独立した発音として確保する最短時間。
-# 明示的な比較モードでは、これより過密な場合に発音核を選べる。
+# これより過密なら、全部を早口で潰す代わりに語を聞き分けやすいモーラを残す。
 MIN_ARTICULATION_MORA_SEC = 0.12
 # 過密ノートへ直後の空白を貸す場合も、次の音符との分離感とVOICEVOXの休符要件を
 # 保つため、この長さは休符として残す。
@@ -179,7 +181,8 @@ def split_voicevox_moras(kana: str) -> list[str]:
 def stacked_mora_mode() -> str:
     """1音符複数モーラ時の配分方式。環境変数で聴き比べ実験ができる。
 
-    - auto(既定): backと同じ配分で、過密箇所も全モーラを保持する
+    - auto(既定): 音符の後ろの無音で per-note に切り替える。間(TAIL_GAP_MIN_SEC
+      以上)があれば back、次の音符がすぐ続くなら first
     - back: 後ろ寄せ。先頭モーラが伸ばしを持ち、2モーラ目以降を短く末尾に
       置く(「たーい」型)。Lemon「嘘みたい」の聴き比べで自然だった
     - front: 前詰め。非最終モーラを短く頭に並べ、最終モーラの母音を伸ばす
@@ -191,16 +194,12 @@ def stacked_mora_mode() -> str:
     return mode if mode in ("front", "back", "first") else "auto"
 
 
-def _resolve_stacked_mode(_gap_after_sec: float) -> str:
-    """この音符に適用する配分方式。
-
-    autoは発音容量を再配分したうえで全モーラを後ろ寄せにする。意図的に後続を
-    省略する旧挙動は、聴き比べ用の明示的な ``first`` 指定にだけ残す。
-    """
+def _resolve_stacked_mode(gap_after_sec: float) -> str:
+    """この音符に適用する配分方式。autoは後ろの無音の長さでback/firstを選ぶ。"""
     mode = stacked_mora_mode()
     if mode != "auto":
         return mode
-    return "back"
+    return "back" if gap_after_sec >= TAIL_GAP_MIN_SEC else "first"
 
 
 def _evenly_spaced_indices(indices: list[int], count: int) -> list[int]:
@@ -484,10 +483,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     lyric_map = build_lyric_map(project)
     preserve_units = project.lyric_layers is not None
     notes = sorted(project.notes, key=lambda n: n.start_sec if preserve_units else n.start_tick)
-    # Legacy/score-derived projects also need the same two-frame capacity projection.
-    # Without it, rapid one-frame moras make the engine return 500 or disappear from
-    # the generated query before the phoneme repair step can run.
-    layered_frames = _layered_note_frames(notes, lyric_map)
+    layered_frames = _layered_note_frames(notes, lyric_map) if preserve_units else {}
     continuations = {} if preserve_units else melody_continuations(project)
 
     out_notes: list[dict[str, Any]] = []
@@ -500,7 +496,8 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     for i, n in enumerate(notes):
         sf = frame(n.start_sec)
         ef = frame(n.end_sec)
-        sf, ef = layered_frames[n.id]
+        if preserve_units:
+            sf, ef = layered_frames[n.id]
         if sf < cursor:  # 重なり: 前音に食い込む分を切り詰め
             sf = cursor
         if ef <= sf:  # 長さが無い(丸めで消えた)音符は捨てる
@@ -591,13 +588,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             # already absent from the plan. A short following gap is not evidence.
             note_mode = "back"
         total = active_total
-        # autoは歌詞を一切落とさない。過密時に発音核だけを試す旧挙動は、明示的な
-        # front/back/first比較モードに限って残す。
-        articulated = (
-            articulation_moras(morae, total)
-            if not preserve_units and stacked_mora_mode() != "auto"
-            else morae
-        )
+        articulated = articulation_moras(morae, total) if not preserve_units else morae
         if articulated != morae:
             logger.debug(
                 "音符%d: %dフレームに%dモーラは過密なため発音核を%dモーラに削減 (%s -> %s)",
@@ -635,10 +626,11 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             if not assigned:
                 assigned = [continued_vowel]
             bounds = mora_frame_bounds(segment_total, len(assigned), note_mode)
-            minimums = [MIN_ELEMENT_FRAMES] * len(assigned)
-            if not out_notes:
-                minimums[0] += HEAD_REST_FRAMES
-            bounds = _minimum_spaced_frames(bounds, minimums)
+            if preserve_units:
+                minimums = [MIN_ELEMENT_FRAMES] * len(assigned)
+                if not out_notes:
+                    minimums[0] += HEAD_REST_FRAMES
+                bounds = _minimum_spaced_frames(bounds, minimums)
             for mora_index, mora in enumerate(assigned):
                 length = bounds[mora_index + 1] - bounds[mora_index]
                 if length <= 0:  # モーラが多すぎてフレームが足りない場合は最低1
@@ -1172,64 +1164,6 @@ def _synthesize_chunk_resilient(
     raise RuntimeError("VOICEVOXチャンク合成が予期せず終了しました")
 
 
-_MORA_NUCLEUS_PHONEMES = {"a", "i", "u", "e", "o", "A", "I", "U", "E", "O", "N", "cl"}
-
-
-def _repair_dropped_phonemes(query: dict[str, Any]) -> dict[str, Any]:
-    """VOICEVOXが0フレームにした音素を、総尺を変えずに発音可能へ戻す。
-
-    速い連続音では ``sing_frame_audio_query`` が、入力スコアに全モーラがあっても
-    一部の母音へ0フレームを割り当てることがある。その音素は合成時に完全に脱落する。
-    近い長音素から1フレームを移し、まず全音素を1フレーム以上にする。さらに容量が
-    あればモーラ核を2フレームへ広げる。フレーム総数、f0、音量配列は変えないため、
-    曲尺と音高タイミングは維持される。
-    """
-    phonemes = query.get("phonemes")
-    if not isinstance(phonemes, list):
-        return query
-    usable = [
-        i
-        for i, item in enumerate(phonemes)
-        if isinstance(item, dict)
-        and isinstance(item.get("frame_length"), int)
-        and item.get("phoneme") != "pau"
-    ]
-
-    def donor_minimum(index: int) -> int:
-        return 2 if phonemes[index].get("phoneme") == "pau" else 1
-
-    def transfer_one(target: int) -> bool:
-        donors = [
-            i
-            for i, item in enumerate(phonemes)
-            if isinstance(item, dict)
-            and isinstance(item.get("frame_length"), int)
-            and item["frame_length"] > donor_minimum(i)
-        ]
-        if not donors:
-            return False
-        donor = min(
-            donors,
-            key=lambda i: (abs(i - target), -phonemes[i]["frame_length"]),
-        )
-        phonemes[donor]["frame_length"] -= 1
-        phonemes[target]["frame_length"] += 1
-        return True
-
-    repaired = 0
-    for target in usable:
-        while phonemes[target]["frame_length"] < 1 and transfer_one(target):
-            repaired += 1
-    for target in usable:
-        if phonemes[target].get("phoneme") not in _MORA_NUCLEUS_PHONEMES:
-            continue
-        while phonemes[target]["frame_length"] < 2 and transfer_one(target):
-            repaired += 1
-    if repaired:
-        logger.debug("VOICEVOX歌唱クエリの脱落音素へ%dフレームを再配分しました", repaired)
-    return query
-
-
 def _synthesize_chunk(
     base: str,
     engine_url: str,
@@ -1255,7 +1189,7 @@ def _synthesize_chunk(
         raise VoicevoxScoreError(
             "sing_frame_audio_query", r.status_code, r.text
         )
-    query = _repair_dropped_phonemes(r.json())
+    query = r.json()
 
     try:
         r2 = requests.post(
