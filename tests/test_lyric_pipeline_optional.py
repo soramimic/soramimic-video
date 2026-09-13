@@ -231,8 +231,8 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
     emissions = object()
     calls = []
 
-    def recognize(path, model, device, *, vad_filter):
-        calls.append((path, model, device, vad_filter))
+    def recognize(path, model, device, *, vad_filter, condition_on_previous_text):
+        calls.append((path, model, device, vad_filter, condition_on_previous_text))
         return [TranscribedLine(1., 2., "か"), TranscribedLine(8., 9., "き")]
 
     monkeypatch.setattr(transcribe, "transcribe_lines", recognize)
@@ -276,7 +276,7 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
     })
     value = analyze_audio(tmp_path / "input.wav", tmp_path / "project", device="cpu",
                           skip_separation=True, lyric_pipeline="evidence")
-    assert calls == [(tmp_path / "input.wav", "large-v3", "cpu", False)]
+    assert calls == [(tmp_path / "input.wav", "large-v3", "cpu", False, False)]
     assert extensions == [(1.2, 2.), (8.2, 9.)]
     assert [n.end_sec for n in value.notes] == [2., 9.]
     assert [n.kana for n in value.notes] == ["カ", "キ"]
@@ -286,6 +286,10 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
     )
     assert recognition["schema_version"] == 2
     assert recognition["mode"] == "whisper-mix-silence-guard"
+    assert recognition["transcription_options"] == {
+        "vad_filter": False,
+        "condition_on_previous_text": False,
+    }
     assert recognition["silence_guard"]["discarded_segments"] == []
     assert [item["surface"] for item in recognition["segments"]] == ["か", "き"]
 

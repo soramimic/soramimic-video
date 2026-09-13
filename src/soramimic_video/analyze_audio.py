@@ -117,6 +117,7 @@ def analyze_audio(
             whisper_model,
             device or "auto",
             vad_filter=False,
+            condition_on_previous_text=False,
         )
         activity = detect_audio_activity(vocals)
         discarded_silence = [
@@ -144,6 +145,10 @@ def analyze_audio(
                     "schema_version": 2,
                     "mode": recognition_mode,
                     "model": whisper_model,
+                    "transcription_options": {
+                        "vad_filter": False,
+                        "condition_on_previous_text": False,
+                    },
                     "silence_guard": {
                         "source": "separated-vocals" if not skip_separation else "input-audio",
                         "discarded_segments": [
