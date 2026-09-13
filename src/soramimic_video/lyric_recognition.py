@@ -64,6 +64,7 @@ def transcribe_multiview(
     from wav_to_xf.recognition import (
         AcousticPronunciation,
         RecognitionBatch,
+        RecognitionConfig,
         RecognitionHypothesis,
         recognize_unknown_lyrics,
     )
@@ -120,7 +121,16 @@ def transcribe_multiview(
                                 tuple(diagnostics))
 
     views = ("vocals",) if vocals_path.resolve() == mix_path.resolve() else ("vocals", "mix")
-    result = recognize_unknown_lyrics(produce, duration_sec=duration_sec, views=views)
+    # Independent decoder agreement and transcript-conditioned contrast use
+    # different score domains, so retain separate evidence gates.
+    config = RecognitionConfig(
+        minimum_conditioned_acoustic_confidence=0.25,
+        minimum_conditioned_pronunciation_score=0.55,
+        ambiguity_margin=0.0,
+    )
+    result = recognize_unknown_lyrics(
+        produce, duration_sec=duration_sec, views=views, config=config,
+    )
 
     return recover_conditioned_ctc(result, emissions), emissions
 
@@ -153,6 +163,9 @@ def recover_conditioned_ctc(result: Any, emissions: CTCEmissions) -> Any:
     conditioned_emissions = CTCEmissions(
         collapse_kana_aliases(emissions), emissions.vocab,
     )
+    minimum_confidence, minimum_pronunciation_score = (
+        result.config.acoustic_thresholds(conditioned=True)
+    )
     current = result
     required_ids = {item.id for item in result.selected_hypotheses}
     for hypothesis in candidates:
@@ -167,8 +180,8 @@ def recover_conditioned_ctc(result: Any, emissions: CTCEmissions) -> Any:
             )
             if score is None:
                 continue
-            if (score.confidence < result.config.minimum_confidence
-                    or score.acoustic_score < result.config.minimum_pronunciation_score):
+            if (score.confidence < minimum_confidence
+                    or score.acoustic_score < minimum_pronunciation_score):
                 continue
             evidence_id = f"forced-score:{hypothesis.id}:{reading_index}"
             recovery_evidence.append(Evidence(

@@ -83,6 +83,9 @@ def test_multiview_runtime_reuses_models_and_retains_real_scores(monkeypatch):
     assert len(result.hypotheses) == 4
     assert all(x.confidence == pytest.approx(0.8) for x in result.hypotheses)
     assert all(x.timing_confidence == 0 for x in result.acoustic)
+    assert result.config.minimum_conditioned_acoustic_confidence == 0.25
+    assert result.config.minimum_conditioned_pronunciation_score == 0.55
+    assert result.config.ambiguity_margin == 0.0
     assert result.selected_hypotheses
 
 
