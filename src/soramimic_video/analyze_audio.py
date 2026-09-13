@@ -86,6 +86,7 @@ def analyze_audio(
     recognized_variants = None
     recognized_windows = None
     recognition_mode = None
+    recognition_windows_fallback = False
 
     last_progress = 0.0
 
@@ -219,10 +220,31 @@ def analyze_audio(
 
         emissions = emissions or compute_emissions(vocals, device)
         audio_duration_sec = float(sf.info(vocals).duration)
-        aligned, chosen = align_moras_with_variants(
-            vocals, line_variants, device=device, emissions=emissions, phonetic_aliases=True,
-            line_windows=recognized_windows,
-        )
+        try:
+            aligned, chosen = align_moras_with_variants(
+                vocals,
+                line_variants,
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=True,
+                line_windows=recognized_windows,
+            )
+        except ValueError as exc:
+            if recognized_windows is None:
+                raise
+            recognition_windows_fallback = True
+            logger.warning(
+                "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s", exc
+            )
+            recognized_windows = None
+            aligned, chosen = align_moras_with_variants(
+                vocals,
+                line_variants,
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=True,
+                line_windows=None,
+            )
     else:
         aligned, chosen = align_moras_with_variants(vocals, line_variants, device=device)
     raw_alignment = [replace(mora) for mora in aligned]
@@ -366,6 +388,11 @@ def analyze_audio(
         if recognition_mode is not None:
             limitations.append(
                 "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
+            )
+        if recognition_windows_fallback:
+            limitations.append(
+                "Whisperの行時刻をCTC整列に使えなかったため、"
+                "CTC全体整列でモーラ時刻を保持しました。"
             )
         (out / "analysis.json").write_text(
             json.dumps(

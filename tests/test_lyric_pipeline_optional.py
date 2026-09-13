@@ -305,6 +305,56 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
     assert [item["surface"] for item in recognition["segments"]] == ["か", "き"]
 
 
+def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyrics(
+    monkeypatch, tmp_path, caplog,
+):
+    from soramimic_video import audio_activity, audio_melody, mora_align, pitch, reading, transcribe
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: [
+        TranscribedLine(1., 3., "か"), TranscribedLine(2., 4., "き")])
+    monkeypatch.setattr(audio_activity, "detect_audio_activity", lambda path: [
+        audio_activity.ActivityInterval(1., 4.)])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda text: [{"か": "カ", "き": "キ"}[text]])
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
+    calls = []
+
+    def align(path, variants, **kwargs):
+        calls.append(kwargs["line_windows"])
+        assert kwargs["emissions"] is emissions
+        if kwargs["line_windows"] is not None:
+            raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+        return ([AlignedMora(0, 0, "カ", 1.2, 1.3, .8),
+                 AlignedMora(1, 0, "キ", 3.2, 3.3, .7)], [0, 0])
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    monkeypatch.setattr(pitch, "extract_pitch", lambda *a: None)
+    monkeypatch.setattr(pitch, "voiced_end", lambda track, start, limit: limit)
+    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *a: [60, 62])
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: [
+        MelodyNote(1., 2., 60), MelodyNote(3., 4., 62)])
+    monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {
+        "sheetsage2": True, "rmvpe": False, "fcpe": False})
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=5.)))
+
+    value = analyze_audio(tmp_path / "input.wav", tmp_path / "project", device="cpu",
+                          skip_separation=True, lyric_pipeline="evidence")
+
+    assert calls == [[(1., 3.), (2., 4.)], None]
+    assert [note.kana for note in value.notes] == ["カ", "キ"]
+    assert value.lyric_layers["canonical_text"] == "か\nき"
+    assert "全体整列へ切替" in caplog.text
+    analysis = json.loads(
+        (tmp_path / "project/analyze_audio/analysis.json").read_text())
+    assert any("CTC全体整列" in item for item in analysis["limitations"])
+
+
 def test_silence_guard_discards_only_fully_inactive_whisper_segment(monkeypatch, tmp_path):
     from soramimic_video import audio_activity, audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
