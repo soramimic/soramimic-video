@@ -672,7 +672,14 @@ class Job:
             pct, eta = self._stage_progress(elapsed)
             if pct is not None:
                 d["stage_progress"] = pct
-                if eta is not None:
+                # 音源解析は性質の異なる複数工程をまとめた進捗なので、現在の
+                # 進捗率から逆算した残り時間は途中で増えることがある。進捗率と
+                # 経過時間だけを表示し、不正確な ETA は公開しない。
+                audio_analysis = (
+                    self.stage == "analyze"
+                    and self.params.get("input_kind") == "audio"
+                )
+                if eta is not None and not audio_analysis:
                     d["stage_eta_seconds"] = round(eta)
         if self.layout_source:
             d["layout_source"] = self.layout_source
