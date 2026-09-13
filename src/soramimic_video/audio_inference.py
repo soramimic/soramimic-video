@@ -317,6 +317,14 @@ class InferenceScheduler:
     def healthy(self) -> bool:
         return self._worker is not None and self._worker.is_alive()
 
+    def status_counts(self) -> dict[str, int]:
+        counts = {status: 0 for status in ("queued", "running", "done", "error", "cancelled")}
+        with self._lock:
+            for job in self._jobs.values():
+                if job.status in counts:
+                    counts[job.status] += 1
+        return counts
+
     def _check_cancelled(self, job: InferenceJob) -> None:
         if self._stop.is_set() or job.cancel_event.is_set():
             raise InferenceCancelled()
@@ -459,6 +467,7 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
 
         return {
             "status": "ok" if scheduler.healthy() else "starting",
+            "jobs": scheduler.status_counts(),
             "capabilities": {
                 "whisper": importlib.util.find_spec("faster_whisper") is not None,
                 "sheetsage2": _configured_local_capabilities()["sheetsage2"],
