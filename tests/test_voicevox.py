@@ -14,6 +14,7 @@ import wave
 import pytest
 
 import soramimic_video.voicevox as vv
+from helpers import build_xf_midi
 from soramimic_video.project import Note, Project, SongInfo
 from soramimic_video.voicevox import (
     FRAME_RATE,
@@ -23,6 +24,7 @@ from soramimic_video.voicevox import (
     split_score,
     split_voicevox_moras,
 )
+from soramimic_video.xfparse import analyze_midi
 
 ENGINE_URL = "http://127.0.0.1:50021"
 
@@ -304,6 +306,67 @@ def test_auto_mode_borrows_following_rest_before_dropping_moras():
     ]
     rests = [n for n in score["notes"] if n["key"] is None]
     assert rests[-1]["frame_length"] >= round(vv.BORROWED_REST_MIN_SEC * FRAME_RATE)
+
+
+def test_auto_mode_uses_unlyriced_melody_notes_before_borrowing_rest(tmp_path):
+    # XFの1歌詞イベントが複数の旋律音符にまたがる場合、間を空白とせず、後続の
+    # 無歌詞音符へ残りのモーラを載せる。音高変化も元MIDIどおり保持する。
+    midi = build_xf_midi(
+        tmp_path / "bridge.mid",
+        notes=[(480, 230, 60), (720, 230, 62), (960, 230, 64)],
+        lyric_events=[(480, "ワル"), (960, "ラ")],
+    )
+    score = build_score(analyze_midi(midi))
+    pitched = [note for note in score["notes"] if note["key"] is not None]
+
+    assert [note["lyric"] for note in pitched] == ["ワ", "ル", "ラ"]
+    assert [note["key"] for note in pitched] == [60, 62, 64]
+
+
+def test_recovered_melody_limits_each_source_note_to_one_syllable(tmp_path):
+    midi = build_xf_midi(
+        tmp_path / "bridge-capacity.mid",
+        notes=[
+            (480, 230, 60),
+            (720, 230, 62),
+            (960, 230, 64),
+            (1200, 230, 65),
+        ],
+        lyric_events=[(480, "ワルビル"), (1200, "ラ")],
+    )
+    score = build_score(analyze_midi(midi))
+    pitched = [note for note in score["notes"] if note["key"] is not None]
+
+    # 4実音節を3つの元MIDI音へ詰めず、語頭・語尾を含む3音節だけを1つずつ載せる。
+    assert [note["lyric"] for note in pitched] == ["ワ", "ビ", "ル", "ラ"]
+    assert [note["key"] for note in pitched] == [60, 62, 64, 65]
+
+
+def test_long_vowels_and_codas_stay_in_the_same_syllable_group():
+    morae = ["ブ", "ウ", "ス", "タ", "ア"]
+    assert vv._one_syllable_per_segment(morae, 3) == morae
+    assert vv._syllables_by_pitch_segment(morae, 3) == [
+        ["ブ", "ウ"], ["ス"], ["タ", "ア"]
+    ]
+
+
+def test_unused_recovered_note_attaches_to_previous_syllable(tmp_path):
+    midi = build_xf_midi(
+        tmp_path / "bridge-absorption.mid",
+        notes=[
+            (480, 230, 60),
+            (720, 230, 62),
+            (960, 230, 64),
+            (1200, 230, 65),
+        ],
+        lyric_events=[(480, "ワル"), (1200, "ラ")],
+    )
+    score = build_score(analyze_midi(midi))
+    pitched = [note for note in score["notes"] if note["key"] is not None]
+
+    # 2音節に対して元MIDI音が3つある。中央の余り音は休符にせず、ワの母音へ吸着。
+    assert [note["lyric"] for note in pitched] == ["ワ", "ア", "ル", "ラ"]
+    assert [note["key"] for note in pitched] == [60, 62, 64, 65]
 
 
 def test_expanded_note_end_borrows_only_required_capacity():
