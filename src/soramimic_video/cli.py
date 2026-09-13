@@ -440,6 +440,25 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve_audio_inference(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from .audio_inference import create_audio_inference_app
+    except ImportError:
+        print(
+            "共有音声推論サーバーの依存が足りません。"
+            "`pip install -e '.[api,audio]'` で入れてください",
+            file=sys.stderr,
+        )
+        return 1
+
+    app = create_audio_inference_app(Path(args.state_dir), device=args.device)
+    print(f"http://{args.host}:{args.port}/ で共有音声推論を待ち受けます")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="soramimic-video", description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -817,6 +836,24 @@ def build_parser() -> argparse.ArgumentParser:
         "scripts/build-editor.sh で生成する",
     )
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser(
+        "serve-audio-inference",
+        help="Whisper/SheetSage2の共有ローカル推論サーバーを起動する",
+    )
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="待ち受けアドレス(共有ホストでは127.0.0.1のまま使用)",
+    )
+    p.add_argument("--port", type=int, default=8320)
+    p.add_argument(
+        "--state-dir",
+        default="work/audio-inference",
+        help="アップロード音源を一時保存するディレクトリ",
+    )
+    p.add_argument("--device", default="cuda", help="共有モデルのtorchデバイス")
+    p.set_defaults(func=cmd_serve_audio_inference)
 
     return parser
 

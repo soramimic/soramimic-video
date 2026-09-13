@@ -120,3 +120,29 @@ def test_transcribe_lines_does_not_hide_non_oom_cuda_errors(monkeypatch):
         assert str(exc) == "CUDA driver is unavailable"
     else:
         raise AssertionError("non-OOM CUDA errors must remain visible")
+
+
+def test_shared_server_reuses_whisper_model(monkeypatch):
+    calls = []
+
+    class Whisper:
+        def __init__(self, model, **kwargs):
+            calls.append((model, kwargs))
+
+        def transcribe(self, path, **kwargs):
+            return iter([]), SimpleNamespace(language_probability=1.0)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
+    monkeypatch.setattr(transcribe_module, "_cuda_free_bytes", lambda device: None)
+    transcribe_module._WHISPER_MODEL_CACHE.clear()
+
+    for _ in range(2):
+        transcribe_module._transcribe_lines_local(
+            Path("vocals.wav"),
+            "large-v3",
+            "cpu",
+            cache_model=True,
+        )
+
+    assert calls == [("large-v3", {"device": "cpu"})]
+    transcribe_module._WHISPER_MODEL_CACHE.clear()
