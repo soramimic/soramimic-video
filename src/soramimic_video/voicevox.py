@@ -236,17 +236,62 @@ def articulation_moras(morae: list[str], total_frames: int) -> list[str]:
 
 
 def _expanded_note_end(
-    start_frame: int, end_frame: int, next_start_frame: int, mora_count: int
+    start_frame: int,
+    end_frame: int,
+    next_start_frame: int,
+    mora_count: int,
+    active_frames: int | None = None,
 ) -> int:
     """過密ノートの不足時間を直後の休符から借りた終端を返す。"""
     if mora_count <= 1:
         return end_frame
     required = math.ceil(mora_count * MIN_ARTICULATION_MORA_SEC * FRAME_RATE)
-    if end_frame - start_frame >= required:
+    occupied = end_frame - start_frame if active_frames is None else active_frames
+    if occupied >= required:
         return end_frame
     keep_rest = max(MIN_ELEMENT_FRAMES, math.ceil(BORROWED_REST_MIN_SEC * FRAME_RATE))
     latest = next_start_frame - keep_rest
-    return max(end_frame, min(start_frame + required, latest))
+    return max(end_frame, min(end_frame + required - occupied, latest))
+
+
+def _syllable_groups(morae: list[str]) -> list[list[str]]:
+    """長音母音・撥音・促音を直前の子音アタックと同じ音節へまとめる。"""
+    groups: list[list[str]] = []
+    for mora in morae:
+        if groups and (
+            mora in {"ン", "ッ"} or mora == vowel_of(groups[-1][0])
+        ):
+            groups[-1].append(mora)
+        else:
+            groups.append([mora])
+    return groups
+
+
+def _one_syllable_per_segment(morae: list[str], segment_count: int) -> list[str]:
+    """復元した旋律音符ごとに、子音アタックを最大1音節へ制限する。
+
+    長音母音・撥音・促音は直前音節の一部なので同じ音符に残す。実音節の方が
+    旋律音符より多い場合だけ、語頭・語尾を含む音節を全体から均等に選ぶ。
+    """
+    if segment_count <= 0:
+        return []
+    groups = _syllable_groups(morae)
+    if len(groups) <= segment_count:
+        return morae
+    chosen = _evenly_spaced_indices(list(range(len(groups))), segment_count)
+    return [mora for index in chosen for mora in groups[index]]
+
+
+def _syllables_by_pitch_segment(
+    morae: list[str], segment_count: int
+) -> list[list[str]]:
+    """最大1音節を各旋律音符へ順序どおり、全区間に広げて配置する。"""
+    assigned: list[list[str]] = [[] for _ in range(segment_count)]
+    groups = _syllable_groups(morae)
+    positions = _evenly_spaced_indices(list(range(segment_count)), len(groups))
+    for position, group in zip(positions, groups, strict=True):
+        assigned[position] = group
+    return assigned
 
 
 def mora_frame_bounds(total: int, m: int, mode: str | None = None) -> list[int]:
@@ -434,6 +479,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     - transposeは非休符のkeyに半音単位で加算。
     """
     from .synthesize import build_lyric_map
+    from .xfparse import melody_continuations, tick_to_sec
 
     lyric_map = build_lyric_map(project)
     preserve_units = project.lyric_layers is not None
@@ -442,6 +488,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
     # Without it, rapid one-frame moras make the engine return 500 or disappear from
     # the generated query before the phoneme repair step can run.
     layered_frames = _layered_note_frames(notes, lyric_map)
+    continuations = {} if preserve_units else melody_continuations(project)
 
     out_notes: list[dict[str, Any]] = []
     cursor = 0  # 出力済みの絶対フレーム位置
@@ -480,22 +527,70 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         morae = split_voicevox_moras(kana)
         if not morae:  # カナが無い継続モーラ等: 直前の母音を引き継ぐ
             morae = [prev_vowel]
+        pitch_segments = [(sf, ef, n.midi_note)]
+        raw_continuations = continuations.get(n.id, [])
+        if raw_continuations:
+            midi_time_offset = n.start_sec - tick_to_sec(
+                n.start_tick, project.song.tempo_map, project.song.ticks_per_beat
+            )
+        for raw in raw_continuations:
+            continuation_sf = frame(
+                tick_to_sec(
+                    raw.start_tick, project.song.tempo_map, project.song.ticks_per_beat
+                )
+                + midi_time_offset
+            )
+            continuation_ef = frame(
+                tick_to_sec(
+                    raw.end_tick, project.song.tempo_map, project.song.ticks_per_beat
+                )
+                + midi_time_offset
+            )
+            if continuation_ef > continuation_sf:
+                pitch_segments.append((continuation_sf, continuation_ef, raw.note))
+
+        has_pitch_continuations = len(pitch_segments) > 1
+        if has_pitch_continuations:
+            one_per_segment = _one_syllable_per_segment(morae, len(pitch_segments))
+            if one_per_segment != morae:
+                logger.debug(
+                    "音符%d: 復元旋律%d音に実音節を1つずつ配置 (%s -> %s)",
+                    n.id,
+                    len(pitch_segments),
+                    morae,
+                    one_per_segment,
+                )
+                morae = one_per_segment
+
         next_sf = frame(notes[i + 1].start_sec) if i + 1 < len(notes) else None
+        active_total = sum(end - start for start, end, _key in pitch_segments)
         if not preserve_units and next_sf is not None:
-            expanded_ef = _expanded_note_end(sf, ef, next_sf, len(morae))
-            if expanded_ef > ef:
+            last_sf, last_ef, last_key = pitch_segments[-1]
+            expanded_ef = _expanded_note_end(
+                last_sf, last_ef, next_sf, len(morae), active_total
+            )
+            if expanded_ef > last_ef:
                 logger.debug(
                     "音符%d: 発音時間を直後の休符から%dフレーム借用 (%d -> %d)",
-                    n.id, expanded_ef - ef, ef - sf, expanded_ef - sf,
+                    n.id,
+                    expanded_ef - last_ef,
+                    active_total,
+                    active_total + expanded_ef - last_ef,
                 )
-                ef = expanded_ef
-        gap_after = float("inf") if next_sf is None else (next_sf - ef) / FRAME_RATE
+                pitch_segments[-1] = (last_sf, expanded_ef, last_key)
+                active_total += expanded_ef - last_ef
+        last_ef = pitch_segments[-1][1]
+        gap_after = float("inf") if next_sf is None else (next_sf - last_ef) / FRAME_RATE
         note_mode = _resolve_stacked_mode(gap_after)
+        if len(pitch_segments) > 1 and stacked_mora_mode() == "auto":
+            # 歌詞イベントのない継続旋律音符は、独立した発音容量として使える。
+            # 次の歌詞付き音符が近くても first に落とさない。
+            note_mode = "back"
         if preserve_units and note_mode == "first":
             # Layered plans may omit only explicitly classified source omissions,
             # already absent from the plan. A short following gap is not evidence.
             note_mode = "back"
-        total = ef - sf
+        total = active_total
         # autoは歌詞を一切落とさない。過密時に発音核だけを試す旧挙動は、明示的な
         # front/back/first比較モードに限って残す。
         articulated = (
@@ -518,21 +613,42 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
                     break
                 kept.append(mora)
             morae = kept
-        m = len(morae)
-        bounds = mora_frame_bounds(total, m, note_mode)
-        minimums = [MIN_ELEMENT_FRAMES] * m
-        if not out_notes:
-            minimums[0] += HEAD_REST_FRAMES
-        bounds = _minimum_spaced_frames(bounds, minimums)
-        for i, mora in enumerate(morae):
-            length = bounds[i + 1] - bounds[i]
-            if length <= 0:  # モーラが多すぎてフレームが足りない場合は最低1
-                length = 1
-            out_notes.append(
-                {"key": n.midi_note + transpose, "frame_length": length, "lyric": mora}
-            )
+        if preserve_units:
+            segment_morae = [morae]
+        elif has_pitch_continuations:
+            segment_morae = _syllables_by_pitch_segment(morae, len(pitch_segments))
+        else:
+            segment_morae = [morae]
+
+        continued_vowel = prev_vowel
+        for segment_index, ((segment_sf, segment_ef, key), assigned) in enumerate(
+            zip(pitch_segments, segment_morae, strict=True)
+        ):
+            if segment_index:
+                if segment_sf - cursor == 1 and out_notes:
+                    out_notes[-1]["frame_length"] += 1
+                elif segment_sf > cursor:
+                    out_notes.append(
+                        {"key": None, "frame_length": segment_sf - cursor, "lyric": ""}
+                    )
+            segment_total = segment_ef - segment_sf
+            if not assigned:
+                assigned = [continued_vowel]
+            bounds = mora_frame_bounds(segment_total, len(assigned), note_mode)
+            minimums = [MIN_ELEMENT_FRAMES] * len(assigned)
+            if not out_notes:
+                minimums[0] += HEAD_REST_FRAMES
+            bounds = _minimum_spaced_frames(bounds, minimums)
+            for mora_index, mora in enumerate(assigned):
+                length = bounds[mora_index + 1] - bounds[mora_index]
+                if length <= 0:  # モーラが多すぎてフレームが足りない場合は最低1
+                    length = 1
+                out_notes.append(
+                    {"key": key + transpose, "frame_length": length, "lyric": mora}
+                )
+                continued_vowel = vowel_of(mora) or continued_vowel
+            cursor = segment_ef
         prev_vowel = vowel_of(morae[-1]) or prev_vowel
-        cursor = ef
 
     if not out_notes:
         raise ValueError("音符がありません")
