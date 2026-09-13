@@ -2139,6 +2139,10 @@ def create_app(
             ),
             "particle_reading": particle_reading,
         }
+        from .audio_inference import configured_url, service_available
+
+        if configured_url() is not None:
+            checks["audio_inference"] = service_available()
         if _quota_exemption_allowlist():
             checks["access"] = _access_config_valid()
         ready = all(checks.values())
