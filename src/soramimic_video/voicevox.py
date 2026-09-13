@@ -64,6 +64,9 @@ MIN_LAST_MORA_SEC = 0.06
 # 実際の歌でも複合ノートの返し(たいの「イ」)を歌うのは後ろに間があるときで、
 # 次の音符がすぐ続く詰まったパッセージでは返しを挟む余裕がなく耳にも残らない
 TAIL_GAP_MIN_SEC = 0.1
+# 1音符へ複数モーラを積む場合に、独立した発音として確保する最短時間。
+# これより過密なら、全部を早口で潰す代わりに語を聞き分けやすいモーラを残す。
+MIN_ARTICULATION_MORA_SEC = 0.09
 # 歌唱用の「歌の先生」スタイル(sing型)。クエリ生成に使う。frame_synthesisは
 # 選んだスタイル(frame_decode/sing)で行う。現状 sing型は 波音リツ ノーマル(6000)のみ。
 SING_TEACHER_ID = 6000
@@ -193,6 +196,38 @@ def _resolve_stacked_mode(gap_after_sec: float) -> str:
     if mode != "auto":
         return mode
     return "back" if gap_after_sec >= TAIL_GAP_MIN_SEC else "first"
+
+
+def _evenly_spaced_indices(indices: list[int], count: int) -> list[int]:
+    """順序を保ち、両端を優先して count 個をほぼ等間隔に選ぶ。"""
+    if count >= len(indices):
+        return indices
+    if count <= 1:
+        return indices[:1]
+    last = len(indices) - 1
+    return [indices[round(i * last / (count - 1))] for i in range(count)]
+
+
+def articulation_moras(morae: list[str], total_frames: int) -> list[str]:
+    """過密な1音符から、明瞭に歌わせる発音核だけを選ぶ。
+
+    時間から発音可能数を決め、語頭と子音付きモーラを優先して全体から均等に選ぶ。
+    長音由来の母音、撥音・促音は空きがある場合だけ戻す。十分な時間がある通常の
+    複合ノートは変更しない。
+    """
+    if len(morae) <= 1:
+        return morae
+    budget = max(1, int((total_frames / FRAME_RATE) / MIN_ARTICULATION_MORA_SEC))
+    if len(morae) <= budget:
+        return morae
+
+    weak = {"ア", "イ", "ウ", "エ", "オ", "ン", "ッ"}
+    anchors = [i for i, mora in enumerate(morae) if i == 0 or mora not in weak]
+    chosen = _evenly_spaced_indices(anchors, min(budget, len(anchors)))
+    if len(chosen) < budget:
+        extras = [i for i in range(len(morae)) if i not in chosen]
+        chosen.extend(_evenly_spaced_indices(extras, budget - len(chosen)))
+    return [morae[i] for i in sorted(chosen)]
 
 
 def mora_frame_bounds(total: int, m: int, mode: str | None = None) -> list[int]:
@@ -432,7 +467,15 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             # Layered plans may omit only explicitly classified source omissions,
             # already absent from the plan. A short following gap is not evidence.
             note_mode = "back"
-        if len(morae) > 1 and note_mode == "first":
+        total = ef - sf
+        articulated = articulation_moras(morae, total) if not preserve_units else morae
+        if articulated != morae:
+            logger.debug(
+                "音符%d: %dフレームに%dモーラは過密なため発音核を%dモーラに削減 (%s -> %s)",
+                n.id, total, len(morae), len(articulated), morae, articulated,
+            )
+            morae = articulated
+        elif len(morae) > 1 and note_mode == "first":
             # 最初のモーラ以降の「発音」は落とす。ただし長音由来の母音継続
             # (ビー→[ビ,イ]のイ)は別アタックではないので残す(落とす意味もない)
             kept = [morae[0]]
@@ -441,7 +484,6 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
                     break
                 kept.append(mora)
             morae = kept
-        total = ef - sf
         m = len(morae)
         bounds = mora_frame_bounds(total, m, note_mode)
         if preserve_units:
