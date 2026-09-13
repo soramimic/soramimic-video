@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 ANALYZE_DIR = "analyze_audio"
 SEPARATION_DIR = "separation"
 _MAX_LAST_NOTE_SEC = 4.0  # 後続モーラが無いときの音符長の上限
+_PARALLEL_AUDIO_MIN_FREE_BYTES = 5800 * 1024**2
 
 
 def _require_evidence_pipeline() -> None:
@@ -57,6 +59,54 @@ def _record_stage3_fallback(project_dir: Path, detail: str) -> None:
         json.dumps(analysis_data, ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
+
+
+def _audio_device(device: str | None) -> str:
+    if device is not None:
+        return device
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
+def _has_parallel_cuda_capacity(device: str) -> bool:
+    if not device.startswith("cuda"):
+        return False
+    try:
+        import torch
+
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+    except (ImportError, RuntimeError):
+        logger.warning("GPU空き容量を確認できないため音声解析を直列実行します")
+        return False
+    if free_bytes < _PARALLEL_AUDIO_MIN_FREE_BYTES:
+        logger.info(
+            "GPU空き容量が%.1fGiBのためWhisper/SheetSage2を直列実行します",
+            free_bytes / 1024**3,
+        )
+        return False
+    return True
+
+
+def _run_sheetsage(
+    audio_path: Path,
+    project_dir: Path,
+    device: str,
+    on_progress: Callable[[float], None],
+):
+    from .audio_melody import transcribe_sheetsage
+
+    raw_dir = project_dir / ANALYZE_DIR / "sheetsage-work"
+    try:
+        return transcribe_sheetsage(
+            audio_path, raw_dir, device=device, on_progress=on_progress,
+        )
+    finally:
+        # Never retain detailed model output after success, failure, or cancel.
+        shutil.rmtree(raw_dir, ignore_errors=True)
 
 
 def analyze_audio(
@@ -111,6 +161,51 @@ def analyze_audio(
         vocals, accompaniment = separate(audio_path, project_dir / SEPARATION_DIR)
     report(0.22)
 
+    # Both models can start after Demucs. A measured free-memory floor keeps their
+    # combined peak inside the GPU budget; low-memory hosts retain the serial path.
+    prefetched_lines = None
+    sheetsage_notes = None
+    sheetsage_was_run = False
+    actual_device = _audio_device(device) if melody_midi is None else "cpu"
+    capabilities = None
+    if melody_midi is None:
+        from .audio_melody import configured_capabilities
+
+        capabilities = configured_capabilities()
+    parallel_models = (
+        lyrics_path is None
+        and melody_midi is None
+        and capabilities is not None
+        and capabilities["sheetsage2"]
+        and _has_parallel_cuda_capacity(actual_device)
+    )
+    if parallel_models:
+        from .transcribe import transcribe_lines
+
+        whisper_audio = audio_path if use_evidence else vocals
+        whisper_kwargs = (
+            {"vad_filter": False, "condition_on_previous_text": False}
+            if use_evidence
+            else {}
+        )
+        logger.info("WhisperとSheetSage2を並列実行します")
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper") as executor:
+            future = executor.submit(
+                transcribe_lines,
+                whisper_audio,
+                whisper_model,
+                device or "auto",
+                **whisper_kwargs,
+            )
+            sheetsage_was_run = True
+            sheetsage_notes = _run_sheetsage(
+                audio_path,
+                project_dir,
+                actual_device,
+                lambda value: report(0.22 + value * 0.26),
+            )
+            prefetched_lines = future.result()
+
     # 2. 歌詞行の決定
     if lyrics_path is not None:
         line_texts = [
@@ -125,11 +220,8 @@ def analyze_audio(
         # Unknown lyrics use one complete, deterministic Whisper transcript.
         # CTC remains downstream for mora timing, not for deciding whether
         # recognized text or its deterministic first reading is accepted.
-        lines = transcribe_lines(
-            audio_path,
-            whisper_model,
-            device or "auto",
-            vad_filter=False,
+        lines = prefetched_lines if prefetched_lines is not None else transcribe_lines(
+            audio_path, whisper_model, device or "auto", vad_filter=False,
             condition_on_previous_text=False,
         )
         activity = detect_audio_activity(vocals)
@@ -195,7 +287,10 @@ def analyze_audio(
     else:
         from .transcribe import transcribe_lines
 
-        line_texts = [seg.text for seg in transcribe_lines(vocals, whisper_model)]
+        lines = prefetched_lines if prefetched_lines is not None else transcribe_lines(
+            vocals, whisper_model,
+        )
+        line_texts = [seg.text for seg in lines]
         if not line_texts:
             raise RuntimeError("Whisperが歌詞を認識できませんでした")
         logger.info("Whisper認識結果を元歌詞として使用: %d行", len(line_texts))
@@ -285,7 +380,6 @@ def analyze_audio(
     report(0.62)
 
     # 5. モーラ音符列の確定
-    sheetsage_notes = None
     if melody_midi is not None:
         # メロディMIDIがあればピッチ・タイミングを楽譜に寄せる(issue #3)。
         # f0由来のmidi_notesは余りモーラのフォールバックと移調補正に使う
@@ -300,33 +394,20 @@ def analyze_audio(
             configured_capabilities,
             extract_fcpe,
             extract_rmvpe,
-            transcribe_sheetsage,
         )
 
-        actual_device = device
-        if actual_device is None:
-            try:
-                import torch
-
-                actual_device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                actual_device = "cpu"
-        raw_dir = project_dir / ANALYZE_DIR / "sheetsage-work"
-        try:
-            sheetsage_notes = transcribe_sheetsage(
+        if not sheetsage_was_run:
+            sheetsage_notes = _run_sheetsage(
                 audio_path,
-                raw_dir,
-                device=actual_device,
-                on_progress=lambda value: report(0.62 + value * 0.18),
+                project_dir,
+                actual_device,
+                lambda value: report(0.62 + value * 0.18),
             )
-        finally:
-            # Never retain detailed model output after success, failure, or cancel.
-            shutil.rmtree(raw_dir, ignore_errors=True)
         if use_evidence and sheetsage_notes is None:
             raise RuntimeError(
                 "evidence歌詞パイプラインにはSheetSage2モデル設定が必要です"
             )
-        capabilities = configured_capabilities()
+        capabilities = capabilities or configured_capabilities()
         rmvpe = fcpe = None
         if sheetsage_notes is not None and capabilities["rmvpe"] and capabilities["fcpe"]:
             logger.info("SheetSage2空白をRMVPE主・FCPE確認で検査中")
