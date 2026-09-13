@@ -1109,6 +1109,19 @@ def test_to_dict_no_progress_for_other_stages():
     assert "stage_eta_seconds" not in d
 
 
+def test_to_dict_hides_unreliable_audio_analysis_eta():
+    job = _running_synth_job(
+        stage="analyze",
+        params={"input_kind": "audio"},
+        stage_started_at=time.time() - 10,
+        stage_progress=25,
+    )
+    d = job.to_dict(with_log=False)
+    assert d["stage_progress"] == 25
+    assert d["stage_elapsed"] >= 9
+    assert "stage_eta_seconds" not in d
+
+
 def test_cancel_running_and_queued(tmp_path, monkeypatch):
     from soramimic_video import runproc
 
