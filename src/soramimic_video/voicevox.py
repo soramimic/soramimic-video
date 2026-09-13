@@ -299,14 +299,31 @@ def _minimum_spaced_frames(preferred: list[int], gaps: list[int]) -> list[int]:
 def _layered_note_frames(
     notes: list[Note], lyric_map: dict[int, str]
 ) -> dict[int, tuple[int, int]]:
-    """Share frame capacity only within each contiguous lyric line, without edits."""
+    """Share frame capacity without dropping canonical lyric units.
+
+    Stage 3 timings are acoustic observations, while VOICEVOX requires every score
+    element to occupy at least two integer frames.  Rounding can therefore leave a
+    densely sung line one frame short even though an adjacent rest has ample room.
+    Borrow from the following rest first, then the preceding rest.  If neither has
+    enough capacity, extend this line and shift only the immediately following
+    material; a later rest naturally absorbs that shift.  The Project itself stays
+    unchanged and every canonical mora remains represented.
+    """
     result: dict[int, tuple[int, int]] = {}
+    groups = [list(members) for _line, members in groupby(notes, key=lambda n: n.line)]
     previous_end = 0
-    for line, members in groupby(notes, key=lambda n: n.line):
-        group = list(members)
+    original_previous_end = 0
+    for group_index, group in enumerate(groups):
+        line = group[0].line
         preferred = [round(sec * FRAME_RATE) for n in group for sec in (n.start_sec, n.end_sec)]
-        if preferred[0] < previous_end:
+        original_start, original_end = preferred[0], preferred[-1]
+        if original_start < original_previous_end:
             raise ValueError("歌詞行の合成フレームが重なっています。歌詞は保持されています")
+        # A preceding under-capacity line may have been extended.  Move this line
+        # just enough to remain ordered; an existing later rest absorbs the shift.
+        shift = max(0, previous_end - original_start)
+        if shift:
+            preferred = [value + shift for value in preferred]
         gaps = []
         for n in group:
             count = max(1, len(split_voicevox_moras(lyric_map.get(n.id) or "")))
@@ -314,12 +331,41 @@ def _layered_note_frames(
             if n is notes[0] and preferred[0] < HEAD_REST_FRAMES:
                 minimum += HEAD_REST_FRAMES - preferred[0]
             gaps.extend([minimum, 0])
+        required = sum(gaps[:-1])
+        available = preferred[-1] - preferred[0]
+        shortage = max(0, required - available)
+        if shortage:
+            next_start = (
+                round(groups[group_index + 1][0].start_sec * FRAME_RATE)
+                if group_index + 1 < len(groups)
+                else None
+            )
+            after = shortage if next_start is None else max(0, next_start - preferred[-1])
+            take_after = min(shortage, after)
+            preferred[-1] += take_after
+            shortage -= take_after
+
+            before = max(0, preferred[0] - previous_end)
+            take_before = min(shortage, before)
+            preferred[0] -= take_before
+            shortage -= take_before
+
+            # No idle frames remain.  Extending is safer than deleting a mora;
+            # the next group is shifted above and the final mixed-audio duration
+            # makes the video pipeline extend as needed.
+            preferred[-1] += shortage
+            logger.info(
+                "歌詞行%sのVOICEVOX用フレームを%dフレーム拡張しました",
+                line,
+                required - available,
+            )
         fitted = _minimum_spaced_frames(preferred, gaps[:-1])
         if fitted != preferred:
             logger.info("歌詞行%sの合成フレームを再配分しました(元の推定時刻は保持)", line)
         for i, n in enumerate(group):
             result[n.id] = fitted[2 * i], fitted[2 * i + 1]
         previous_end = fitted[-1]
+        original_previous_end = original_end
     return result
 
 
