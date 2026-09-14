@@ -100,6 +100,7 @@ def test_known_lyrics_evidence_path_never_calls_whisper(monkeypatch, tmp_path):
                           device="cpu", skip_separation=True, lyric_pipeline="evidence")
     assert value.lyric_layers["canonical_text"] == "かき"
     assert [n.kana for n in value.notes] == ["カ", "キ"]
+    assert all(note.pitch_confidence is None for note in value.notes)
     assert [x["confidence"] for x in value.lyric_layers["performed"]] == [0.75, 0.65]
 
 
@@ -122,7 +123,7 @@ def test_evidence_path_requires_sheetsage(monkeypatch, tmp_path):
 
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("か", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="SheetSage2モデル設定"):
+    with pytest.raises(RuntimeError, match="SheetSage2.*ノート候補"):
         analyze_audio(
             tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
             device="cpu", skip_separation=True, lyric_pipeline="evidence",
@@ -165,10 +166,19 @@ def test_known_lyrics_evidence_path_runs_stage3_for_sheetsage(monkeypatch, tmp_p
     assert '"mora-ctc-anchor"' in correspondence
     analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert analysis["stage3_correspondence"] is True
+    assert analysis["mode"] == "sheetsage2_stage3"
+    assert analysis["inference_roles"] == {
+        "lyrics": "known-lyrics",
+        "mora_timing": "reazon-kana-ctc-input-audio",
+        "notes": "sheetsage2-original-mix",
+        "separation": "skipped-input-as-vocals",
+    }
+    assert set(analysis["sources"]) == {"sheetsage2-vocal"}
+    assert all(note.pitch_confidence is None for note in value.notes)
 
 
 @pytest.mark.parametrize("failure", ["unresolved", "invalid-plan"])
-def test_known_lyrics_falls_back_when_stage3_cannot_supply_a_complete_plan(
+def test_known_lyrics_fails_truthfully_when_stage3_cannot_supply_a_complete_plan(
     monkeypatch, tmp_path, failure,
 ):
     import soramimic_video.stage3 as stage3
@@ -217,23 +227,22 @@ def test_known_lyrics_falls_back_when_stage3_cannot_supply_a_complete_plan(
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("かき", encoding="utf-8")
 
-    value = analyze_audio(
-        tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
-        device="cpu", skip_separation=True, lyric_pipeline="evidence",
-    )
+    with pytest.raises(RuntimeError, match="歌詞や音高を補わず"):
+        analyze_audio(
+            tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
+            device="cpu", skip_separation=True, lyric_pipeline="evidence",
+        )
 
-    assert value.lyric_layers is None
-    assert [note.kana for note in value.notes] == ["カ", "キ"]
-    assert [note.midi_note for note in value.notes] == [60, 60]
     analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert analysis["stage3_correspondence"] is False
-    assert "CTC整列結果" in analysis["limitations"][-1]
+    assert analysis["diagnostics"][-1]["status"] == "unresolved"
+    assert "補わず" in analysis["limitations"][-1]
     if failure == "invalid-plan":
         assert not (tmp_path / "project/analyze_audio/correspondence.json").exists()
 
 
-def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monkeypatch, tmp_path):
-    from soramimic_video import audio_activity, audio_melody, mora_align, pitch, reading, transcribe
+def test_partial_recognition_windows_survive_alignment_without_pyin(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
@@ -248,14 +257,6 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
 
     monkeypatch.setattr(transcribe, "transcribe_lines", recognize)
     monkeypatch.setattr(
-        audio_activity,
-        "detect_audio_activity",
-        lambda path: [audio_activity.ActivityInterval(1., 2.),
-                      audio_activity.ActivityInterval(8., 9.)],
-    )
-    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
-        info=lambda path: SimpleNamespace(duration=10.)))
-    monkeypatch.setattr(
         reading,
         "reading_candidates",
         lambda text: [{"か": "カ", "き": "キ"}[text], "サ"],
@@ -269,16 +270,13 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
         return ([AlignedMora(0, 0, "カ", 1.2, 1.3, .75),
                  AlignedMora(1, 0, "キ", 8.2, 8.3, .65)], [0, 0])
 
-    extensions = []
-
-    def extend(track, start, limit):
-        extensions.append((start, limit))
-        return limit + .25
+    def forbidden(*args, **kwargs):
+        pytest.fail("evidence mode must not invoke pYIN")
 
     monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
-    monkeypatch.setattr(pitch, "extract_pitch", lambda *a: None)
-    monkeypatch.setattr(pitch, "voiced_end", extend)
-    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *a: [60, 62])
+    monkeypatch.setattr(pitch, "extract_pitch", forbidden)
+    monkeypatch.setattr(pitch, "voiced_end", forbidden)
+    monkeypatch.setattr(pitch, "mora_midi_notes", forbidden)
     monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: [
         MelodyNote(1.0, 2.0, 60), MelodyNote(8.0, 9.0, 62),
     ])
@@ -288,27 +286,28 @@ def test_partial_recognition_windows_survive_alignment_and_voiced_extension(monk
     value = analyze_audio(tmp_path / "input.wav", tmp_path / "project", device="cpu",
                           skip_separation=True, lyric_pipeline="evidence")
     assert calls == [(tmp_path / "input.wav", "large-v3", "cpu", False, False)]
-    assert extensions == [(1.2, 2.), (8.2, 9.)]
     assert [n.end_sec for n in value.notes] == [2., 9.]
     assert [n.kana for n in value.notes] == ["カ", "キ"]
     assert value.lyric_layers["canonical_text"] == "か\nき"
     recognition = json.loads(
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
-    assert recognition["schema_version"] == 2
-    assert recognition["mode"] == "whisper-mix-silence-guard"
+    assert recognition["schema_version"] == 3
+    assert recognition["mode"] == "whisper-mix-semantic-gate"
     assert recognition["transcription_options"] == {
         "vad_filter": False,
         "condition_on_previous_text": False,
     }
-    assert recognition["silence_guard"]["discarded_segments"] == []
+    assert [item["status"] for item in recognition["semantic_gate"]["decisions"]] == [
+        "accepted", "accepted",
+    ]
     assert [item["surface"] for item in recognition["segments"]] == ["か", "き"]
 
 
 def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyrics(
     monkeypatch, tmp_path, caplog,
 ):
-    from soramimic_video import audio_activity, audio_melody, mora_align, pitch, reading, transcribe
+    from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
@@ -316,8 +315,6 @@ def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyric
 
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: [
         TranscribedLine(1., 3., "か"), TranscribedLine(2., 4., "き")])
-    monkeypatch.setattr(audio_activity, "detect_audio_activity", lambda path: [
-        audio_activity.ActivityInterval(1., 4.)])
     monkeypatch.setattr(reading, "reading_candidates",
                         lambda text: [{"か": "カ", "き": "キ"}[text]])
     emissions = object()
@@ -355,17 +352,18 @@ def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyric
     assert any("CTC全体整列" in item for item in analysis["limitations"])
 
 
-def test_silence_guard_discards_only_fully_inactive_whisper_segment(monkeypatch, tmp_path):
-    from soramimic_video import audio_activity, audio_melody, mora_align, pitch, reading, transcribe
+def test_semantic_gate_discards_only_no_melody_template_segment(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, mora_align, pitch, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
     from soramimic_video.transcribe import TranscribedLine
 
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: [
-        TranscribedLine(1., 2., "歌"), TranscribedLine(8., 9., "幻覚")])
-    monkeypatch.setattr(audio_activity, "detect_audio_activity", lambda path: [
-        audio_activity.ActivityInterval(1.5, 1.7)])
+        TranscribedLine(1., 2., "歌"),
+        TranscribedLine(8., 9., "ご視聴ありがとうございました"),
+    ])
+    monkeypatch.setitem(sys.modules, "soramimic_video.audio_activity", None)
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["ウタ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: object())
     monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *a, **kw: (
@@ -388,5 +386,12 @@ def test_silence_guard_discards_only_fully_inactive_whisper_segment(monkeypatch,
     recognition = json.loads(
         (tmp_path / "project/analyze_audio/recognition.json").read_text())
     assert [item["surface"] for item in recognition["segments"]] == ["歌"]
-    assert [item["surface"] for item in
-            recognition["silence_guard"]["discarded_segments"]] == ["幻覚"]
+    decisions = recognition["semantic_gate"]["decisions"]
+    assert [(item["surface"], item["status"]) for item in decisions] == [
+        ("歌", "accepted"),
+        ("ご視聴ありがとうございました", "rejected"),
+    ]
+    analysis = json.loads(
+        (tmp_path / "project/analyze_audio/analysis.json").read_text()
+    )
+    assert analysis["diagnostics"][0]["status"] == "rejected"

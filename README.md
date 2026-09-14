@@ -123,15 +123,11 @@ uv run soramimic-video serve
 | `SORAMIMIC_JOB_TTL_HOURS` | 0（自動削除なし） | 完了後に入力・中間物・動画を自動削除するまでの時間 |
 | `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | ローカルSheetSage2モデル（設定時に主ノートとして使用） |
 | `SORAMIMIC_SHEETSAGE_BASE_DIR` | 未設定 | ローカルMERT-v2-FullSong親モデル |
-| `SORAMIMIC_RMVPE_ROOT` | 未設定 | ローカルRMVPE実装root（SheetSage2空白補完） |
-| `SORAMIMIC_RMVPE_CHECKPOINT` | 未設定 | ローカルRMVPE checkpoint |
-| `SORAMIMIC_FCPE_CHECKPOINT` | package同梱値 | 任意のローカルFCPE checkpoint |
-| `SORAMIMIC_LYRIC_PIPELINE` | `cplus` | `evidence` で複数候補認識と歌詞レイヤーを有効化 |
+| `SORAMIMIC_LYRIC_PIPELINE` | `cplus` | `evidence` でWhisper/CTC/SheetSage2の歌詞レイヤーを有効化 |
 
 SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
-ローカルディレクトリだけをofflineで読みます。完全構成ではSheetSage2ノートを保持し、
-歌詞のある空白だけをRMVPE主・FCPE確認で補います。両者が一致しないモーラは
-`spoken`として歌詞と字幕に残します。モデル未設定時は既存pYIN実経路となり、画面に明示されます。
+ローカルディレクトリだけをofflineで読みます。`evidence` 経路の音高候補は
+SheetSage2だけから取得し、候補のない歌唱単位へ別の音高を補いません。
 
 `evidence` は任意追加の `wav-to-xf` パッケージを使用します。利用可能なローカル
 チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
@@ -149,12 +145,14 @@ uv run soramimic-video export-xf --project work/song --output work/song/selected
 ```
 
 未知歌詞では原音mixをWhisper large-v3（既定）のVADなし・前セグメント文脈なしの単一パスで認識します。
-分離ボーカルの音響活動が全くないWhisperセグメントだけを無音ハルシネーションとして除外し、
-それ以外の認識全文を元歌詞にします。
+対応区間にSheetSage2ノートがなく、かつ認識全文が限定的な視聴案内・字幕・クレジット文型に
+一致するときだけ除外します。ノートがないだけでは除外せず、非旋律の声も未解決として診断に残します。
 辞書の第一読みを固定して、カナCTCは本文や読みを棄却・変更せずモーラ時刻の推定だけに使います。
 `analyze_audio/recognition.json` に採用したWhisperセグメントを保存します。対応範囲は日本語の
 主旋律で、英語・会話・コーラスが完全に復元される保証はありません。正式歌詞の指定時は
 Whisperによる書き換えを行いません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
+Demucs、Whisper、SheetSage2は入力取得後に独立ジョブとして投入されます。共有推論サービスは
+優先度付きワーカーとGPU容量ゲートで必要な実行を安全に直列化し、Demucs vocalsの完了後にCTCを開始します。
 
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じ音声上限までmultipart requestを
