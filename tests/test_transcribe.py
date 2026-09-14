@@ -146,3 +146,26 @@ def test_shared_server_reuses_whisper_model(monkeypatch):
 
     assert calls == [("large-v3", {"device": "cpu"})]
     transcribe_module._WHISPER_MODEL_CACHE.clear()
+
+
+def test_shared_gpu_reservation_avoids_conflicting_free_memory_fallback(monkeypatch):
+    calls = []
+
+    class Whisper:
+        def __init__(self, model, **kwargs):
+            calls.append((model, kwargs))
+
+        def transcribe(self, path, **kwargs):
+            return iter([]), SimpleNamespace(language_probability=1.0)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
+    monkeypatch.setattr(transcribe_module, "_cuda_free_bytes", lambda device: 1024**3)
+
+    transcribe_module._transcribe_lines_local(
+        Path("vocals.wav"),
+        "large-v3",
+        "cuda",
+        cuda_capacity_reserved=True,
+    )
+
+    assert calls == [("large-v3", {"device": "cuda"})]
