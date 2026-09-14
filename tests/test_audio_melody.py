@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -37,3 +38,11 @@ def test_capabilities_are_false_for_unset_local_models(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
     assert configured_capabilities() == {"sheetsage2": False}
+
+
+def test_audio_extra_installs_sheetsage_tokenizer_runtime_dependency():
+    pyproject = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    audio_dependencies = pyproject["project"]["optional-dependencies"]["audio"]
+    assert any(dependency.startswith("mir-eval") for dependency in audio_dependencies)
