@@ -839,7 +839,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "serve-audio-inference",
-        help="Whisper/SheetSage2の共有ローカル推論サーバーを起動する",
+        help="Demucs/Whisper/SheetSage2の共有ローカル推論サーバーを起動する",
     )
     p.add_argument(
         "--host",

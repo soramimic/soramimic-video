@@ -1,3 +1,4 @@
+import threading
 import time
 
 import pytest
@@ -88,6 +89,92 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
     assert calls == [(b"wave", "large-v3", "cpu", True)]
 
 
+def test_inference_api_runs_demucs_and_serves_stems(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, separation, transcribe
+
+    calls = []
+    transcribe._WHISPER_MODEL_CACHE[("large-v3", "cuda", None)] = object()
+    audio_melody._MODEL_CACHE[("sheetsage2",)] = object()
+
+    def separate_local(path, output_dir, *, model, device):
+        calls.append((path.read_bytes(), model, device))
+        assert not transcribe._WHISPER_MODEL_CACHE
+        assert not audio_melody._MODEL_CACHE
+        output_dir.mkdir(parents=True)
+        (output_dir / "vocals.wav").write_bytes(b"vocals")
+        (output_dir / "no_vocals.wav").write_bytes(b"accompaniment")
+
+    monkeypatch.setattr(separation, "_separate_local", separate_local)
+    app = create_audio_inference_app(tmp_path / "state", device="cpu")
+    with TestClient(app) as client:
+        submitted = client.post(
+            "/v1/jobs",
+            files={"audio": ("song.wav", b"wave", "audio/wav")},
+            data={
+                "kind": "demucs",
+                "priority": "public",
+                "parameters": '{"model":"htdemucs","device":"auto"}',
+            },
+        )
+        assert submitted.status_code == 202
+        job_id = submitted.json()["id"]
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            response = client.get(f"/v1/jobs/{job_id}")
+            if response.json()["status"] == "done":
+                break
+            time.sleep(0.01)
+
+        assert response.json()["status"] == "done"
+        assert response.json()["result"] == {
+            "artifacts": ["no_vocals.wav", "vocals.wav"]
+        }
+        vocals = client.get(f"/v1/jobs/{job_id}/artifacts/vocals.wav")
+        accompaniment = client.get(
+            f"/v1/jobs/{job_id}/artifacts/no_vocals.wav"
+        )
+        assert vocals.content == b"vocals"
+        assert accompaniment.content == b"accompaniment"
+        assert client.get(
+            f"/v1/jobs/{job_id}/artifacts/../input.audio"
+        ).status_code == 404
+        assert client.delete(f"/v1/jobs/{job_id}").status_code == 204
+
+    assert calls == [(b"wave", "htdemucs", "cpu")]
+
+
+def test_running_demucs_is_killed_when_cancelled(monkeypatch, tmp_path):
+    from soramimic_video import runproc, separation
+
+    started = threading.Event()
+    killed = threading.Event()
+
+    def separate_local(_path, _output_dir, *, model, device):
+        started.set()
+        assert killed.wait(2)
+
+    monkeypatch.setattr(separation, "_separate_local", separate_local)
+    monkeypatch.setattr(runproc, "kill_current", lambda: killed.set() or True)
+    app = create_audio_inference_app(tmp_path / "state", device="cpu")
+    with TestClient(app) as client:
+        submitted = client.post(
+            "/v1/jobs",
+            files={"audio": ("song.wav", b"wave")},
+            data={"kind": "demucs", "priority": "dev", "parameters": "{}"},
+        )
+        job_id = submitted.json()["id"]
+        assert started.wait(2)
+        assert client.delete(f"/v1/jobs/{job_id}").status_code == 204
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if client.get(f"/v1/jobs/{job_id}").status_code == 404:
+                break
+            time.sleep(0.01)
+
+        assert killed.is_set()
+        assert client.get(f"/v1/jobs/{job_id}").status_code == 404
+
+
 def test_inference_api_rejects_invalid_priority(tmp_path):
     app = create_audio_inference_app(tmp_path / "state", device="cpu")
     with TestClient(app) as client:
@@ -166,3 +253,30 @@ def test_sheetsage_delegates_and_reports_shared_capability(monkeypatch, tmp_path
         on_progress=progress.append,
     ) == []
     assert progress == [1.0]
+
+
+def test_separation_delegates_to_configured_shared_service(monkeypatch, tmp_path):
+    from soramimic_video import audio_inference, separation
+
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"wave")
+    output = tmp_path / "separation"
+    calls = []
+    monkeypatch.setenv("SORAMIMIC_AUDIO_INFERENCE_URL", "http://127.0.0.1:8320")
+
+    def separate_remote(audio_path, out_dir, *, model, device):
+        calls.append((audio_path, out_dir, model, device))
+        out_dir.mkdir()
+        vocals = out_dir / "vocals.wav"
+        accompaniment = out_dir / "no_vocals.wav"
+        vocals.write_bytes(b"vocals")
+        accompaniment.write_bytes(b"accompaniment")
+        return vocals, accompaniment
+
+    monkeypatch.setattr(audio_inference, "separate_remote", separate_remote)
+
+    vocals, accompaniment = separation.separate(audio, output)
+
+    assert vocals.read_bytes() == b"vocals"
+    assert accompaniment.read_bytes() == b"accompaniment"
+    assert calls == [(audio, output, "htdemucs", "auto")]
