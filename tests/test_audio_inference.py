@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from soramimic_video.audio_inference import (
     InferenceScheduler,
     create_audio_inference_app,
+    service_available,
 )
 from soramimic_video.transcribe import TranscribedLine
 
@@ -20,6 +21,23 @@ def _queued_job(scheduler, tmp_path, name, priority):
     audio = work / "input.audio"
     audio.write_bytes(b"audio")
     return scheduler.add("whisper", priority, {}, audio, work)
+
+
+def test_service_readiness_allows_staggered_demucs_rollout(monkeypatch):
+    class Response:
+        ok = True
+
+        @staticmethod
+        def json():
+            return {
+                "status": "ok",
+                "capabilities": {"whisper": True, "sheetsage2": True},
+            }
+
+    monkeypatch.setenv("SORAMIMIC_AUDIO_INFERENCE_URL", "http://127.0.0.1:8320")
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: Response())
+
+    assert service_available()
 
 
 def test_scheduler_orders_queued_work_by_environment_priority(monkeypatch, tmp_path):
