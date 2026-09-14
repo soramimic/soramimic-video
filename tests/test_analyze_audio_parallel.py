@@ -57,13 +57,16 @@ def test_shared_demucs_whisper_and_sheetsage_overlap(monkeypatch, tmp_path):
     monkeypatch.setattr(transcribe, "transcribe_lines", whisper)
     monkeypatch.setattr(audio_melody, "transcribe_sheetsage", sheetsage)
 
-    result = analyze_audio._run_shared_analysis_models(
+    result = analyze_audio._run_evidence_models(
         tmp_path / "input.wav",
         tmp_path / "project",
         "large-v3",
         "auto",
         "auto",
         lambda _value: None,
+        run_separation=True,
+        run_whisper=True,
+        shared_inference=True,
     )
 
     assert result == (
@@ -74,12 +77,61 @@ def test_shared_demucs_whisper_and_sheetsage_overlap(monkeypatch, tmp_path):
     )
 
 
+def test_known_lyrics_submit_demucs_and_sheetsage_without_whisper(
+    monkeypatch, tmp_path,
+):
+    from soramimic_video import analyze_audio, audio_melody, separation, transcribe
+
+    started = set()
+    both_started = threading.Event()
+    lock = threading.Lock()
+
+    def mark(kind):
+        with lock:
+            started.add(kind)
+            if started == {"demucs", "sheetsage"}:
+                both_started.set()
+        assert both_started.wait(2)
+
+    def separate(_audio, output_dir):
+        mark("demucs")
+        return output_dir / "vocals.wav", output_dir / "no_vocals.wav"
+
+    def sheetsage(*args, **kwargs):
+        mark("sheetsage")
+        return [MelodyNote(0.0, 0.6, 60)]
+
+    monkeypatch.setattr(separation, "separate", separate)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", sheetsage)
+    monkeypatch.setattr(
+        transcribe,
+        "transcribe_lines",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("known lyrics must bypass Whisper")
+        ),
+    )
+
+    result = analyze_audio._run_evidence_models(
+        tmp_path / "input.wav",
+        tmp_path / "project",
+        "large-v3",
+        "auto",
+        "auto",
+        lambda _value: None,
+        run_separation=True,
+        run_whisper=False,
+        shared_inference=True,
+    )
+
+    assert result[2] is None
+    assert started == {"demucs", "sheetsage"}
+
+
 def test_evidence_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     from soramimic_video import (
         analyze_audio as analyze_audio_module,
     )
     from soramimic_video import (
-        audio_activity,
         audio_melody,
         mora_align,
         pitch,
@@ -87,10 +139,10 @@ def test_evidence_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     )
 
     calls = []
-    shared_notes = [MelodyNote(0.0, 0.6, 60)]
+    shared_notes = [MelodyNote(0.6, 0.8, 60)]
 
-    def run_shared(*args):
-        calls.append(args)
+    def run_shared(*args, **kwargs):
+        calls.append((args, kwargs))
         return (
             tmp_path / "project/separation/vocals.wav",
             tmp_path / "project/separation/no_vocals.wav",
@@ -103,28 +155,11 @@ def test_evidence_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         "http://127.0.0.1:8320",
     )
     monkeypatch.setattr(analyze_audio_module, "_require_evidence_pipeline", lambda: None)
-    monkeypatch.setattr(analyze_audio_module, "_run_shared_analysis_models", run_shared)
+    monkeypatch.setattr(analyze_audio_module, "_run_evidence_models", run_shared)
     monkeypatch.setattr(
         audio_melody,
         "configured_capabilities",
         lambda: {"sheetsage2": True, "rmvpe": False, "fcpe": False},
-    )
-    monkeypatch.setattr(
-        audio_melody,
-        "assign_mora_pitches",
-        lambda *args, **kwargs: [
-            SimpleNamespace(
-                midi_note=60,
-                source="sheetsage_note",
-                confidence=0.9,
-            )
-        ],
-    )
-    monkeypatch.setattr(audio_activity, "detect_audio_activity", lambda _path: object())
-    monkeypatch.setattr(
-        audio_activity,
-        "activity_overlap_seconds",
-        lambda *_args: 0.4,
     )
     monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
@@ -136,14 +171,15 @@ def test_evidence_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
             [0],
         ),
     )
-    monkeypatch.setattr(pitch, "extract_pitch", lambda *_args: None)
-    monkeypatch.setattr(pitch, "voiced_end", lambda *_args: 0.3)
-    monkeypatch.setattr(pitch, "mora_midi_notes", lambda *_args: [60])
-    monkeypatch.setitem(
-        sys.modules,
-        "soundfile",
-        SimpleNamespace(info=lambda _path: SimpleNamespace(duration=1.0)),
-    )
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("evidence mode must not invoke pYIN pitch helpers")
+
+    monkeypatch.setattr(pitch, "extract_pitch", forbidden)
+    monkeypatch.setattr(pitch, "voiced_end", forbidden)
+    monkeypatch.setattr(pitch, "mora_midi_notes", forbidden)
+    monkeypatch.setattr(audio_melody, "extract_rmvpe", forbidden)
+    monkeypatch.setattr(audio_melody, "extract_fcpe", forbidden)
+    monkeypatch.setitem(sys.modules, "soramimic_video.audio_activity", None)
 
     def reject_stage3(*_args):
         raise ValueError("test fallback")
@@ -154,22 +190,38 @@ def test_evidence_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         SimpleNamespace(build_stage3_layers=reject_stage3),
     )
 
-    project = analyze_audio_module.analyze_audio(
-        tmp_path / "input.wav",
-        tmp_path / "project",
-        device="cuda",
-        lyric_pipeline="evidence",
-    )
+    import pytest
+
+    with pytest.raises(RuntimeError, match="歌詞や音高を補わず"):
+        analyze_audio_module.analyze_audio(
+            tmp_path / "input.wav",
+            tmp_path / "project",
+            device="cuda",
+            lyric_pipeline="evidence",
+        )
 
     assert len(calls) == 1
-    assert calls[0][:5] == (
+    assert calls[0][0][:5] == (
         tmp_path / "input.wav",
         tmp_path / "project",
         "large-v3",
         "cuda",
         "cuda",
     )
-    assert [(note.kana, note.midi_note) for note in project.notes] == [("カ", 60)]
+    assert calls[0][1] == {
+        "run_separation": True,
+        "run_whisper": True,
+        "shared_inference": True,
+    }
+    import json
+
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    assert recognition["semantic_gate"]["decisions"][0]["status"] == "unresolved"
+    assert [item["status"] for item in json.loads(
+        (tmp_path / "project/analyze_audio/analysis.json").read_text()
+    )["diagnostics"]] == ["unresolved", "unresolved"]
 
 
 def test_sheetsage_and_whisper_overlap_after_separation(monkeypatch, tmp_path):
