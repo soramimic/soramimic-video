@@ -2445,6 +2445,12 @@ def create_app(
             _require_api_key(request)
         except HTTPException:
             return {"auth_required": True}
+        audio_analysis = configured_capabilities()
+        if os.environ.get("SORAMIMIC_LYRIC_PIPELINE", "cplus") == "evidence":
+            # Evidence mode delegates pitch entirely to SheetSage/Stage 3.  Keep
+            # legacy estimator availability private to the cplus path that can
+            # actually use it rather than advertising it as active analysis.
+            audio_analysis = {"sheetsage2": audio_analysis["sheetsage2"]}
         conf: dict[str, Any] = {
             "auth_required": auth_required,
             "models": list_models(),
@@ -2469,7 +2475,7 @@ def create_app(
             "max_wordlist_image_bytes": wordlist_zip_mod.max_image_bytes(),
             "max_wordlist_images": wordlist_zip_mod.max_images(),
             "audio_input": audio_input_available(),
-            "audio_analysis": configured_capabilities(),
+            "audio_analysis": audio_analysis,
             "max_audio_upload_bytes": max_audio_upload_bytes(),
         }
         if is_simple_ui():
