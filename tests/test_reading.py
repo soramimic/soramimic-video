@@ -76,6 +76,25 @@ def test_reading_candidates_nonempty_first():
     assert cands and cands[0]
 
 
+def test_reading_candidates_include_unidic_nbest_pronunciations():
+    cands = reading_candidates("あんなに側にいたのに")
+    assert cands[0] == "アンナニガワニイタノニ"
+    assert "アンナニソバニイタノニ" in cands
+    assert len(cands) == 2
+
+
+def test_reading_candidates_include_nani_for_naniwo():
+    cands = reading_candidates("何をしていたの")
+    assert any(candidate.startswith("ナニ") for candidate in cands)
+
+
+def test_reading_candidates_keep_explicit_ruby_across_unidic_nbest():
+    cands = reading_candidates("あんなに｜側《そば》にいたのに")
+    assert cands
+    assert all("ソバニ" in candidate for candidate in cands)
+    assert all("ガワニ" not in candidate for candidate in cands)
+
+
 def test_reading_tokens_uses_pronunciation_for_particles():
     """助詞は発音形(は→ワ、へ→エ)。XFカナ側(xfparse)と揃える必要がある。"""
     pytest.importorskip("soramimic_yomi")
