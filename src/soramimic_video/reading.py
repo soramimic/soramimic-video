@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import logging
 import re
+import threading
 from typing import Any
 
 import jaconv
@@ -30,8 +31,11 @@ logger = logging.getLogger(__name__)
 
 _KATAKANA_RE = re.compile(r"[ァ-ヶー]+")
 _PRON_FIELD = 9  # unidic: 発音形(出現形)
+_UNIDIC_NBEST_PATHS = 8
+_UNIDIC_MAX_READINGS = 2
 
 _tagger: Any = None
+_tagger_lock = threading.Lock()
 _yomi_available: bool | None = None
 
 
@@ -43,8 +47,7 @@ def _get_tagger() -> Any:
             import unidic_lite
         except ImportError as e:
             raise RuntimeError(
-                "mecab-python3 / unidic-lite がインストールされていません"
-                "(uv sync --extra audio)"
+                "mecab-python3 / unidic-lite がインストールされていません(uv sync --extra audio)"
             ) from e
         _tagger = MeCab.Tagger("-d " + unidic_lite.DICDIR)
     return _tagger
@@ -86,12 +89,13 @@ def _kana_with_ruby(text: str, to_kana: Any) -> str | None:
     return "".join(out)
 
 
-def _unidic_kana(text: str) -> str:
-    """MeCab + unidic-lite の発音形によるカタカナ読み(素テキスト前提)。"""
-    node = _get_tagger().parseToNode(text)
+def _unidic_node_reading(node: Any, *, warn_unknown: bool = True) -> tuple[tuple[str, ...], str]:
+    """MeCab の1解析経路から表層分割と UniDic 発音形を返す。"""
+    surfaces: list[str] = []
     parts: list[str] = []
     while node:
         if node.surface:
+            surfaces.append(node.surface)
             fields = _feature_fields(node.feature)
             reading = (
                 fields[_PRON_FIELD]
@@ -101,11 +105,62 @@ def _unidic_kana(text: str) -> str:
             if reading is None:
                 # 未知語: 既にカナならそのまま読みにする
                 reading = jaconv.hira2kata(node.surface)
-                if not _KATAKANA_RE.fullmatch(reading):
+                if warn_unknown and not _KATAKANA_RE.fullmatch(reading):
                     logger.warning("読みが取れないため無視: %r", node.surface)
             parts.append(reading)
         node = node.next
-    return _kana_only("".join(parts))
+    return tuple(surfaces), _kana_only("".join(parts))
+
+
+def _unidic_kana_candidates(text: str) -> list[str]:
+    """MeCab + unidic-lite の上位解析経路から異なる読みを返す。"""
+    readings: list[str] = []
+    seen: set[str] = set()
+    best_surfaces: tuple[str, ...] | None = None
+    # parseNBestInit/nextNode は Tagger 内に列挙状態を持つ。同一プロセスの
+    # 並行解析で経路が混ざらないよう、列挙全体を直列化する。
+    with _tagger_lock:
+        tagger = _get_tagger()
+        if not tagger.parseNBestInit(text):
+            return []
+        for path_index in range(_UNIDIC_NBEST_PATHS):
+            node = tagger.nextNode()
+            if node is None:
+                break
+            surfaces, kana = _unidic_node_reading(node, warn_unknown=path_index == 0)
+            if best_surfaces is None:
+                best_surfaces = surfaces
+            # N-best には「沈/むよう」のような別の単語分割も含まれる。
+            # ここで必要なのは同じ表記トークンの読み違いなので、分割が
+            # 1-best と異なる経路は音響候補に混ぜない。
+            if surfaces != best_surfaces:
+                continue
+            normalized = normalize_long_vowels(kana)
+            if kana and normalized not in seen:
+                seen.add(normalized)
+                readings.append(kana)
+                if len(readings) >= _UNIDIC_MAX_READINGS:
+                    break
+    return readings
+
+
+def _unidic_kana(text: str) -> str:
+    """MeCab + unidic-lite の1-best発音形(素テキスト前提)。"""
+    with _tagger_lock:
+        node = _get_tagger().parseToNode(text)
+        _surfaces, kana = _unidic_node_reading(node)
+    return kana
+
+
+def _unidic_candidates_with_ruby(text: str) -> list[str]:
+    """明示ルビを守りつつ、UniDic N-best の行読み候補を作る。"""
+    parts = ruby.segments(text)
+    if len(parts) == 1 and parts[0][1] is None:
+        return _unidic_kana_candidates(parts[0][0])
+    # 明示ルビはその区間の読みを固定する入力。ルビ前後を別々に N-best
+    # 列挙すると文全体の接続コストを失うため、従来どおり1-bestだけを使う。
+    kana = text_to_kana_unidic(text)
+    return [kana] if kana else []
 
 
 def text_to_kana_unidic(text: str) -> str:
@@ -138,21 +193,22 @@ def particle_pronunciations(text: str) -> list[tuple[int, str]]:
     if hira != text:
         variants.append(hira)
     for variant in variants:
-        node = _get_tagger().parseToNode(variant)
-        cur = 0
-        while node:
-            surface = node.surface
-            if surface:
-                pos = variant.find(surface, cur)
-                if pos < 0:
-                    pos = cur
-                cur = pos + len(surface)
-                if len(surface) == 1 and surface in _PARTICLE_SURFACES:
-                    fields = _feature_fields(node.feature)
-                    pron = _PARTICLE_PRON.get(jaconv.hira2kata(surface))
-                    if pron and fields and fields[0] == "助詞":
-                        found.setdefault(pos, pron)
-            node = node.next
+        with _tagger_lock:
+            node = _get_tagger().parseToNode(variant)
+            cur = 0
+            while node:
+                surface = node.surface
+                if surface:
+                    pos = variant.find(surface, cur)
+                    if pos < 0:
+                        pos = cur
+                    cur = pos + len(surface)
+                    if len(surface) == 1 and surface in _PARTICLE_SURFACES:
+                        fields = _feature_fields(node.feature)
+                        pron = _PARTICLE_PRON.get(jaconv.hira2kata(surface))
+                        if pron and fields and fields[0] == "助詞":
+                            found.setdefault(pos, pron)
+                node = node.next
     return sorted(found.items())
 
 
@@ -236,13 +292,14 @@ def text_to_kana(text: str) -> str:
 def reading_candidates(text: str) -> list[str]:
     """行の読み候補(重複除去済み、第1候補が既定)。
 
-    yomi と unidic の発音形が長音正規化後も異なる場合のみ複数候補になる。
+    yomi の既定読みと UniDic N-best の発音形を候補にする。
+    N-best は上限付きで、長音正規化後の重複を除く。
     候補が複数の行は音響スコア(CTC)で判定する(mora_align.align_moras_with_variants)。
     ルビ注釈のある区間は両エンジンで同じ(指定)読みになるので、候補は増えない。
     """
     yomi = text_to_kana_yomi(text)
-    unidic = text_to_kana_unidic(text)
-    candidates = [k for k in (yomi, unidic) if k]
+    unidic = _unidic_candidates_with_ruby(text)
+    candidates = [k for k in [yomi, *unidic] if k]
     unique: list[str] = []
     seen: set[str] = set()
     for k in candidates:
