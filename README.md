@@ -28,9 +28,9 @@ uv sync
 uv run soramimic-video analyze \
   --midi song.mid --lyrics lyrics.txt --project work/song
 
-# または歌唱音源を解析（任意でメロディ MIDI を併用）
+# または歌唱音源を解析
 uv run soramimic-video analyze-audio \
-  --audio song.wav --lyrics lyrics.txt --melody-midi song.mid \
+  --audio song.wav --lyrics lyrics.txt \
   --project work/song
 
 # 替え歌へ変換
@@ -123,23 +123,21 @@ uv run soramimic-video serve
 | `SORAMIMIC_JOB_TTL_HOURS` | 0（自動削除なし） | 完了後に入力・中間物・動画を自動削除するまでの時間 |
 | `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | ローカルSheetSage2モデル（設定時に主ノートとして使用） |
 | `SORAMIMIC_SHEETSAGE_BASE_DIR` | 未設定 | ローカルMERT-v2-FullSong親モデル |
-| `SORAMIMIC_LYRIC_PIPELINE` | `cplus` | `evidence` でWhisper/CTC/SheetSage2の歌詞レイヤーを有効化 |
 
 SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
-ローカルディレクトリだけをofflineで読みます。`evidence` 経路の音高候補は
+ローカルディレクトリだけをofflineで読みます。音源解析の音高候補は
 SheetSage2だけから取得し、候補のない歌唱単位へ別の音高を補いません。
 
-`evidence` は任意追加の `wav-to-xf` パッケージを使用します。利用可能なローカル
+音源解析は `wav-to-xf` パッケージを使用します。利用可能なローカル
 チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
-通常の `cplus` 経路と既存プロジェクトは追加パッケージなしで使用できます。
-`evidence` とSheetSage2を併用すると、全SheetSageノート候補と各モーラのかなCTC中心を
+全SheetSageノート候補と各モーラのかなCTC中心を
 境界なし設定のStage 3へ渡し、モーラ→ノート対応を決定します。母音・子音境界は入力せず、
 CTC中心を含む後続ノートがある場合、その
-モーラを直前ノートのスタックやmelismaへ隠しません。`evidence` 経路はSheetSage2を必須とし、
-未設定時に別方式へ黙ってフォールバックしません。従来方式は明示的な `cplus` 経路です。
+モーラを直前ノートのスタックやmelismaへ隠しません。SheetSage2を必須とし、
+未設定時に別方式へ黙ってフォールバックしません。
 
 ```sh
-uv run --no-sync soramimic-video analyze-audio --audio song.wav --project work/song --lyric-pipeline evidence
+uv run --no-sync soramimic-video analyze-audio --audio song.wav --project work/song
 uv run soramimic-video apply-lyric-layers --project work/song --layers work/realization.json
 uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
 ```

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -32,18 +31,27 @@ logger = logging.getLogger(__name__)
 
 ANALYZE_DIR = "analyze_audio"
 SEPARATION_DIR = "separation"
-_MAX_LAST_NOTE_SEC = 4.0  # 後続モーラが無いときの音符長の上限
-_PARALLEL_AUDIO_MIN_FREE_BYTES = 5800 * 1024**2
 
 
-def _require_evidence_pipeline() -> None:
+def _torch_device(device: str | None) -> str:
+    """Resolve local torch inference placement without loading an audio model."""
+    if device is not None:
+        return device
     try:
-        from wav_to_xf.cplus import from_cplus_assignments  # noqa: F401
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
+def _require_audio_pipeline() -> None:
+    try:
         from wav_to_xf.pipeline import run_stage3_document  # noqa: F401
         from wav_to_xf.realization import compile_realization  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
-            "evidence歌詞パイプラインにはwav-to-xfパッケージが必要です。"
+            "音源解析にはwav-to-xfパッケージが必要です。"
             "利用可能なローカルチェックアウトを uv pip install <checkout> で追加してください。"
         ) from exc
 
@@ -61,36 +69,6 @@ def _record_stage3_failure(project_dir: Path, detail: str) -> None:
         json.dumps(analysis_data, ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
-
-
-def _audio_device(device: str | None) -> str:
-    if device is not None:
-        return device
-    try:
-        import torch
-
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    except ImportError:
-        return "cpu"
-
-
-def _has_parallel_cuda_capacity(device: str) -> bool:
-    if not device.startswith("cuda"):
-        return False
-    try:
-        import torch
-
-        free_bytes, _ = torch.cuda.mem_get_info(device)
-    except (ImportError, RuntimeError):
-        logger.warning("GPU空き容量を確認できないため音声解析を直列実行します")
-        return False
-    if free_bytes < _PARALLEL_AUDIO_MIN_FREE_BYTES:
-        logger.info(
-            "GPU空き容量が%.1fGiBのためWhisper/SheetSage2を直列実行します",
-            free_bytes / 1024**3,
-        )
-        return False
-    return True
 
 
 def _run_sheetsage(
@@ -111,7 +89,7 @@ def _run_sheetsage(
         shutil.rmtree(raw_dir, ignore_errors=True)
 
 
-def _run_evidence_models(
+def _run_audio_models(
     audio_path: Path,
     project_dir: Path,
     whisper_model: str,
@@ -123,7 +101,7 @@ def _run_evidence_models(
     run_whisper: bool,
     shared_inference: bool,
 ):
-    """Submit independent evidence jobs before waiting on their dependencies.
+    """Submit independent audio-analysis jobs before waiting on dependencies.
 
     The shared loopback service performs its own priority/capacity admission. Local
     fallback uses one worker so this dependency-level concurrency cannot overlap CUDA
@@ -174,24 +152,16 @@ def analyze_audio(
     audio_path: Path,
     project_dir: Path,
     lyrics_path: Path | None = None,
-    melody_midi: Path | None = None,
-    melody_channel: int | None = None,
     bpm: float = DEFAULT_BPM,
     whisper_model: str = DEFAULT_WHISPER_MODEL,
     skip_separation: bool = False,
     device: str | None = None,
     progress: Callable[[float], None] | None = None,
-    lyric_pipeline: str | None = None,
 ) -> Project:
     from .mora_align import align_moras_with_variants
     from .reading import reading_candidates
 
-    lyric_pipeline = lyric_pipeline or os.environ.get("SORAMIMIC_LYRIC_PIPELINE", "cplus")
-    if lyric_pipeline not in {"cplus", "evidence"}:
-        raise ValueError("lyric_pipelineはcplusまたはevidenceです")
-    use_evidence = lyric_pipeline == "evidence"
-    if use_evidence:
-        _require_evidence_pipeline()
+    _require_audio_pipeline()
     emissions = None
     recognized_variants = None
     recognized_windows = None
@@ -213,35 +183,27 @@ def analyze_audio(
     prefetched_lines = None
     sheetsage_notes = None
     sheetsage_was_run = False
-    actual_device = _audio_device(device) if melody_midi is None else "cpu"
-    sheetsage_device = actual_device
-    capabilities = None
+    sheetsage_device = _torch_device(device)
     from .audio_inference import configured_url
 
     shared_inference = configured_url() is not None
-    if melody_midi is None:
-        from .audio_melody import configured_capabilities
+    from .audio_melody import configured_capabilities
 
-        capabilities = configured_capabilities()
-        # The shared service resolves automatic placement against its own GPU.
-        if shared_inference and device is None:
-            sheetsage_device = "auto"
+    capabilities = configured_capabilities()
+    # The shared service resolves automatic placement against its own GPU.
+    if shared_inference and device is None:
+        sheetsage_device = "auto"
 
-    # Evidence jobs depend only on the uploaded mix. Submit them all before waiting:
+    # Audio-analysis jobs depend only on the uploaded mix. Submit them before waiting:
     # Demucs vocals unblock CTC later, while its no_vocals output is retained for mix.
     # Known lyrics deliberately omit Whisper. The loopback service serializes CUDA
     # work according to its existing single-worker priority/capacity policy.
     accompaniment: Path | None = None
-    prefetch_evidence_pipeline = (
-        use_evidence
-        and melody_midi is None
-        and capabilities is not None
-        and capabilities["sheetsage2"]
-    )
-    if prefetch_evidence_pipeline:
+    prefetch_audio_models = capabilities["sheetsage2"]
+    if prefetch_audio_models:
         logger.info("Demucs/Whisper/SheetSage2の独立ジョブを投入します")
         vocals, accompaniment, prefetched_lines, sheetsage_notes = (
-            _run_evidence_models(
+            _run_audio_models(
                 audio_path,
                 project_dir,
                 whisper_model,
@@ -263,45 +225,6 @@ def analyze_audio(
         vocals, accompaniment = separate(audio_path, project_dir / SEPARATION_DIR)
     report(0.22)
 
-    # Local inference can overlap Whisper and SheetSage after Demucs when the
-    # local CUDA device has enough free memory. The shared path was prefetched
-    # above and applies its own server-side admission policy.
-    parallel_models = (
-        not prefetch_evidence_pipeline
-        and not use_evidence
-        and lyrics_path is None
-        and melody_midi is None
-        and capabilities is not None
-        and capabilities["sheetsage2"]
-        and (shared_inference or _has_parallel_cuda_capacity(actual_device))
-    )
-    if parallel_models:
-        from .transcribe import transcribe_lines
-
-        whisper_audio = audio_path if use_evidence else vocals
-        whisper_kwargs = (
-            {"vad_filter": False, "condition_on_previous_text": False}
-            if use_evidence
-            else {}
-        )
-        logger.info("WhisperとSheetSage2を並列実行します")
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper") as executor:
-            future = executor.submit(
-                transcribe_lines,
-                whisper_audio,
-                whisper_model,
-                device or "auto",
-                **whisper_kwargs,
-            )
-            sheetsage_was_run = True
-            sheetsage_notes = _run_sheetsage(
-                audio_path,
-                project_dir,
-                sheetsage_device,
-                lambda value: report(0.22 + value * 0.26),
-            )
-            prefetched_lines = future.result()
-
     # 2. 歌詞行の決定
     if lyrics_path is not None:
         line_texts = [
@@ -309,7 +232,7 @@ def analyze_audio(
         ]
         line_texts = [ln for ln in line_texts if ln]
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
-    elif use_evidence:
+    else:
         from .semantic_lyrics import decide_recognized_line
         from .transcribe import transcribe_lines
 
@@ -331,7 +254,7 @@ def analyze_audio(
                 sheetsage_was_run = True
             if sheetsage_notes is None:
                 raise RuntimeError(
-                    "evidence歌詞パイプラインにはSheetSage2モデル設定が必要です"
+                    "音源解析にはSheetSage2モデル設定が必要です"
                 )
         decisions = [decide_recognized_line(line, sheetsage_notes) for line in lines]
         retained = [
@@ -399,17 +322,6 @@ def analyze_audio(
             sum(decision.status == "rejected" for decision in decisions),
             sum(decision.status == "unresolved" for decision in decisions),
         )
-    else:
-        from .transcribe import transcribe_lines
-
-        lines = prefetched_lines if prefetched_lines is not None else transcribe_lines(
-            vocals, whisper_model,
-        )
-        line_texts = [seg.text for seg in lines]
-        if not line_texts:
-            raise RuntimeError("Whisperが歌詞を認識できませんでした")
-        logger.info("Whisper認識結果を元歌詞として使用: %d行", len(line_texts))
-
     # 3. カナ化 + forced alignment。正式歌詞がある場合、Whisper/ASRを通さず
     # その文字列の読みだけを時刻へ対応づける。読み候補は文字列を書き換えず、
     # ルビ・辞書から得た発音候補の音響スコア選択に限る。
@@ -423,37 +335,34 @@ def analyze_audio(
         if not variants[0]:
             logger.warning("カナ読みが得られない行をスキップ: %r", text)
     line_texts = [strip_ruby(text) for text in line_texts]
-    if use_evidence:
-        from .mora_align import compute_emissions
+    from .mora_align import compute_emissions
 
-        emissions = emissions or compute_emissions(vocals, device)
-        try:
-            aligned, chosen = align_moras_with_variants(
-                vocals,
-                line_variants,
-                device=device,
-                emissions=emissions,
-                phonetic_aliases=True,
-                line_windows=recognized_windows,
-            )
-        except ValueError as exc:
-            if recognized_windows is None:
-                raise
-            recognition_windows_fallback = True
-            logger.warning(
-                "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s", exc
-            )
-            recognized_windows = None
-            aligned, chosen = align_moras_with_variants(
-                vocals,
-                line_variants,
-                device=device,
-                emissions=emissions,
-                phonetic_aliases=True,
-                line_windows=None,
-            )
-    else:
-        aligned, chosen = align_moras_with_variants(vocals, line_variants, device=device)
+    emissions = emissions or compute_emissions(vocals, device)
+    try:
+        aligned, chosen = align_moras_with_variants(
+            vocals,
+            line_variants,
+            device=device,
+            emissions=emissions,
+            phonetic_aliases=True,
+            line_windows=recognized_windows,
+        )
+    except ValueError as exc:
+        if recognized_windows is None:
+            raise
+        recognition_windows_fallback = True
+        logger.warning(
+            "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s", exc
+        )
+        recognized_windows = None
+        aligned, chosen = align_moras_with_variants(
+            vocals,
+            line_variants,
+            device=device,
+            emissions=emissions,
+            phonetic_aliases=True,
+            line_windows=None,
+        )
     raw_alignment = [replace(mora) for mora in aligned]
     expected_moras = sum(
         len(line[choice])
@@ -470,214 +379,73 @@ def analyze_audio(
 
     report(0.48)
 
-    # Evidence mode keeps the CTC interval as measured and delegates pitch entirely
-    # to SheetSage/Stage 3. pYIN remains only in the separately supported cplus/MIDI
-    # path, including its voiced-end extension and melody-MIDI fallback.
-    midi_notes: list[int] = []
-    if not use_evidence:
-        from .pitch import extract_pitch, mora_midi_notes, voiced_end
-
-        track = extract_pitch(vocals)
-        for i, m in enumerate(aligned):
-            limit = (
-                aligned[i + 1].start_sec
-                if i + 1 < len(aligned)
-                else m.end_sec + _MAX_LAST_NOTE_SEC
-            )
-            m.end_sec = max(m.end_sec, voiced_end(track, m.start_sec, limit))
-        midi_notes = mora_midi_notes(
-            track, [(m.start_sec, m.end_sec) for m in aligned]
-        )
+    # Keep the measured CTC interval and delegate pitch entirely to SheetSage/Stage 3.
     report(0.62)
 
     # 5. モーラ音符列の確定
-    if use_evidence:
-        if sheetsage_notes is None:
-            raise RuntimeError("Stage 3へ渡すSheetSage2ノート候補がありません")
-        mora_notes = []
-        mode = "sheetsage2_stage3"
-    elif melody_midi is not None:
-        # メロディMIDIがあればピッチ・タイミングを楽譜に寄せる(issue #3)。
-        # f0由来のmidi_notesは余りモーラのフォールバックと移調補正に使う
-        from .melody_align import apply_melody_midi
-
-        mora_notes = apply_melody_midi(
-            audio_path, melody_midi, melody_channel, aligned, midi_notes
-        )
-    else:
-        from .audio_melody import (
-            assign_mora_pitches,
-            configured_capabilities,
-            extract_fcpe,
-            extract_rmvpe,
-        )
-
-        if not sheetsage_was_run:
-            sheetsage_notes = _run_sheetsage(
-                audio_path,
-                project_dir,
-                sheetsage_device,
-                lambda value: report(0.62 + value * 0.18),
-            )
-        capabilities = capabilities or configured_capabilities()
-        rmvpe = fcpe = None
-        if sheetsage_notes is not None and capabilities["rmvpe"] and capabilities["fcpe"]:
-            logger.info("SheetSage2空白をRMVPE主・FCPE確認で検査中")
-            rmvpe = extract_rmvpe(vocals, device=actual_device)
-            report(0.86)
-            fcpe = extract_fcpe(vocals, device=actual_device)
-            report(0.94)
-        if sheetsage_notes is None:
-            # モデル未配置でも従来のpYIN経路は実際に動く。高度な由来を装わず、
-            # analysis.json とUIで pyin_only と明示する。
-            pitches: list[tuple[int, str, float | None]] = [
-                (note, "recovered_note", None) for note in midi_notes
-            ]
-            mode = "pyin_only"
-        else:
-            assigned = assign_mora_pitches(
-                aligned,
-                sheetsage_notes,
-                rmvpe=rmvpe,
-                fcpe=fcpe,
-                fallback_midi=midi_notes,
-            )
-            pitches = [(p.midi_note, p.source, p.confidence) for p in assigned]
-            mode = (
-                "sheetsage2_rmvpe_fcpe"
-                if rmvpe is not None and fcpe is not None
-                else "sheetsage2_only"
-            )
-        mora_notes = [
-            MoraNote(
-                line=m.line,
-                kana=m.kana,
-                start_sec=m.start_sec,
-                end_sec=m.end_sec,
-                midi_note=note,
-                source=source,
-                pitch_confidence=confidence,
-            )
-            for m, (note, source, confidence) in zip(aligned, pitches, strict=True)
-        ]
-        # SheetSageの詳細出力には入力由来の時刻列が含まれる。必要な由来集計だけを
-        # projectへ残し、ジョブ内の一時推論出力は成功時にも保持しない。
-        out = project_dir / ANALYZE_DIR
-        out.mkdir(parents=True, exist_ok=True)
-        counts = {
-            source: sum(1 for note in mora_notes if note.source == source)
-            for source in ("sheetsage_note", "recovered_note", "spoken")
+    if sheetsage_notes is None:
+        raise RuntimeError("Stage 3へ渡すSheetSage2ノート候補がありません")
+    mora_notes: list[MoraNote] = []
+    mode = "sheetsage2_stage3"
+    out = project_dir / ANALYZE_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    recognition_flags = [
+        {
+            "status": decision.status,
+            "normalized_surface": decision.normalized_text,
+            "template_family": decision.template_family,
+            "melodic_support": decision.melodic_support,
         }
-        limitations = []
-        if not use_evidence and mode != "sheetsage2_rmvpe_fcpe":
-            limitations.append(
-                "SheetSage2/RMVPE/FCPEの完全構成ではありません。"
-                "音高推定結果はタイミングエディタで確認してください。"
-            )
-        if counts["spoken"]:
-            limitations.append(
-                f"音高不定の{counts['spoken']}モーラをspokenとして保持しました。"
-            )
-        if recognition_mode is not None:
-            limitations.append(
-                "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
-            )
-        if recognition_windows_fallback:
-            limitations.append(
-                "Whisperの行時刻をCTC整列に使えなかったため、"
-                "CTC全体整列でモーラ時刻を保持しました。"
-            )
-        (out / "analysis.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "mode": mode,
-                    "official_lyrics": lyrics_path is not None,
-                    "asr_used": lyrics_path is None,
-                    "lyric_pipeline": lyric_pipeline,
-                    "stage3_correspondence": use_evidence,
-                    "recognition_mode": recognition_mode,
-                    "recognition_coverage": None,
-                    "recognition_flags": [
-                        {
-                            "status": decision.status,
-                            "normalized_surface": decision.normalized_text,
-                            "template_family": decision.template_family,
-                            "melodic_support": decision.melodic_support,
-                        }
-                        for decision in (decisions if recognition_mode is not None else [])
-                        if decision.status != "accepted"
-                    ],
-                    "mora_count": len(mora_notes),
-                    "sources": counts,
-                    "limitations": limitations,
-                    "diagnostics": [],
-                },
-                ensure_ascii=False,
-                indent=1,
-            ),
-            encoding="utf-8",
+        for decision in (decisions if recognition_mode is not None else [])
+        if decision.status != "accepted"
+    ]
+    limitations = []
+    if recognition_mode is not None:
+        limitations.append(
+            "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
         )
-    if use_evidence:
-        out = project_dir / ANALYZE_DIR
-        out.mkdir(parents=True, exist_ok=True)
-        recognition_flags = [
+    if recognition_windows_fallback:
+        limitations.append(
+            "Whisperの行時刻をCTC整列に使えなかったため、"
+            "CTC全体整列でモーラ時刻を保持しました。"
+        )
+    (out / "analysis.json").write_text(
+        json.dumps(
             {
-                "status": decision.status,
-                "normalized_surface": decision.normalized_text,
-                "template_family": decision.template_family,
-                "melodic_support": decision.melodic_support,
-            }
-            for decision in (decisions if recognition_mode is not None else [])
-            if decision.status != "accepted"
-        ]
-        limitations = []
-        if recognition_mode is not None:
-            limitations.append(
-                "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
-            )
-        if recognition_windows_fallback:
-            limitations.append(
-                "Whisperの行時刻をCTC整列に使えなかったため、"
-                "CTC全体整列でモーラ時刻を保持しました。"
-            )
-        (out / "analysis.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "mode": mode,
-                    "official_lyrics": lyrics_path is not None,
-                    "asr_used": lyrics_path is None,
-                    "lyric_pipeline": lyric_pipeline,
-                    "inference_roles": {
-                        "lyrics": f"whisper-{whisper_model}-original-mix"
-                        if lyrics_path is None
-                        else "known-lyrics",
-                        "mora_timing": (
-                            "reazon-kana-ctc-input-audio"
-                            if skip_separation
-                            else "reazon-kana-ctc-separated-vocals"
-                        ),
-                        "notes": "sheetsage2-original-mix",
-                        "separation": "skipped-input-as-vocals"
+                "schema_version": 3,
+                "mode": mode,
+                "official_lyrics": lyrics_path is not None,
+                "asr_used": lyrics_path is None,
+                "audio_pipeline": "stage3",
+                "inference_roles": {
+                    "lyrics": f"whisper-{whisper_model}-original-mix"
+                    if lyrics_path is None
+                    else "known-lyrics",
+                    "mora_timing": (
+                        "reazon-kana-ctc-input-audio"
                         if skip_separation
-                        else "demucs",
-                    },
-                    "stage3_correspondence": True,
-                    "recognition_mode": recognition_mode,
-                    "recognition_flags": recognition_flags,
-                    "mora_count": len(raw_alignment),
-                    "sources": {},
-                    "limitations": limitations,
-                    "diagnostics": [
-                        {"stage": "recognition", **flag} for flag in recognition_flags
-                    ],
+                        else "reazon-kana-ctc-separated-vocals"
+                    ),
+                    "notes": "sheetsage2-original-mix",
+                    "separation": "skipped-input-as-vocals"
+                    if skip_separation
+                    else "demucs",
                 },
-                ensure_ascii=False,
-                indent=1,
-            ),
-            encoding="utf-8",
-        )
+                "stage3_correspondence": True,
+                "recognition_mode": recognition_mode,
+                "recognition_flags": recognition_flags,
+                "mora_count": len(raw_alignment),
+                "sources": {},
+                "limitations": limitations,
+                "diagnostics": [
+                    {"stage": "recognition", **flag} for flag in recognition_flags
+                ],
+            },
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
     report(0.97)
     project = build_project(
         audio_path=audio_path,
@@ -687,68 +455,57 @@ def analyze_audio(
         mora_notes=mora_notes,
         bpm=bpm,
     )
-    if use_evidence:
-        from .lyric_layers import apply_lyric_layers
+    from .lyric_layers import apply_lyric_layers
 
-        selected_readings = [
-            "".join(variants[index])
-            for variants, index in zip(line_variants, chosen, strict=True)
-        ]
-        if sheetsage_notes is None:
-            raise RuntimeError("Stage 3へ渡すSheetSage2ノート候補がありません")
-        from .stage3 import build_stage3_layers
+    selected_readings = [
+        "".join(variants[index])
+        for variants, index in zip(line_variants, chosen, strict=True)
+    ]
+    from .stage3 import build_stage3_layers
 
-        out = project_dir / ANALYZE_DIR
-        out.mkdir(parents=True, exist_ok=True)
-        try:
-            document, layers = build_stage3_layers(
-                line_texts, selected_readings, raw_alignment, sheetsage_notes,
-            )
-        except ValueError as exc:
-            detail = (
-                "Stage 3の合成計画を確定できませんでした。"
-                "歌詞や音高を補わず処理を停止します。"
-            )
-            _record_stage3_failure(
-                project_dir,
-                detail,
-            )
-            raise RuntimeError(detail) from exc
-        else:
-            (out / "correspondence.json").write_text(
-                document.to_json(), encoding="utf-8"
-            )
-        if layers.unresolved_unit_ids:
-            detail = (
-                f"Stage 3で{len(layers.unresolved_unit_ids)}歌唱単位の音高が未解決です。"
-                "歌詞や音高を補わず処理を停止します。"
-            )
-            _record_stage3_failure(
-                project_dir,
-                detail,
-            )
-            raise RuntimeError(detail)
-        layer_data = layers.to_dict()
-        for slot in layer_data["synthesis_plan"]:
-            # SheetSage does not expose calibrated pitch confidence. Preserve the
-            # candidate source but do not turn its schema-required score into one.
-            if "sheetsage2-vocal" in slot.get("pitch_sources", []):
-                slot["pitch_confidence"] = None
-        apply_lyric_layers(project, layer_data)
-        analysis_path = out / "analysis.json"
-        analysis_data = json.loads(analysis_path.read_text(encoding="utf-8"))
-        analysis_data["sources"] = dict(
-            sorted(
-                {
-                    source: sum(note.source == source for note in project.notes)
-                    for source in {note.source for note in project.notes}
-                }.items()
-            )
+    try:
+        document, layers = build_stage3_layers(
+            line_texts, selected_readings, raw_alignment, sheetsage_notes,
         )
-        analysis_path.write_text(
-            json.dumps(analysis_data, ensure_ascii=False, indent=1),
-            encoding="utf-8",
+    except ValueError as exc:
+        detail = (
+            "Stage 3の合成計画を確定できませんでした。"
+            "歌詞や音高を補わず処理を停止します。"
         )
+        _record_stage3_failure(project_dir, detail)
+        raise RuntimeError(detail) from exc
+    else:
+        (out / "correspondence.json").write_text(
+            document.to_json(), encoding="utf-8"
+        )
+    if layers.unresolved_unit_ids:
+        detail = (
+            f"Stage 3で{len(layers.unresolved_unit_ids)}歌唱単位の音高が未解決です。"
+            "歌詞や音高を補わず処理を停止します。"
+        )
+        _record_stage3_failure(project_dir, detail)
+        raise RuntimeError(detail)
+    layer_data = layers.to_dict()
+    for slot in layer_data["synthesis_plan"]:
+        # SheetSage does not expose calibrated pitch confidence. Preserve the
+        # candidate source but do not turn its schema-required score into one.
+        if "sheetsage2-vocal" in slot.get("pitch_sources", []):
+            slot["pitch_confidence"] = None
+    apply_lyric_layers(project, layer_data)
+    analysis_path = out / "analysis.json"
+    analysis_data = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis_data["sources"] = dict(
+        sorted(
+            {
+                source: sum(note.source == source for note in project.notes)
+                for source in {note.source for note in project.notes}
+            }.items()
+        )
+    )
+    analysis_path.write_text(
+        json.dumps(analysis_data, ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
 
     # 目視検証用SRT
     out = project_dir / ANALYZE_DIR
