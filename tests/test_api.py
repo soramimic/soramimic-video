@@ -1362,29 +1362,16 @@ def test_config_lists_layouts(client):
     assert "default" in conf["layouts"] and "caption" in conf["layouts"]
 
 
-def test_config_evidence_lists_only_active_analysis_capability(client, monkeypatch):
+def test_config_lists_only_active_analysis_capability(client, monkeypatch):
     from soramimic_video import audio_melody
 
-    monkeypatch.setenv("SORAMIMIC_LYRIC_PIPELINE", "evidence")
     monkeypatch.setattr(
         audio_melody,
         "configured_capabilities",
-        lambda: {"sheetsage2": True, "rmvpe": True, "fcpe": True},
+        lambda: {"sheetsage2": True},
     )
 
-    assert client.get("/api/config").json()["audio_analysis"] == {
-        "sheetsage2": True
-    }
-
-
-def test_config_cplus_keeps_legacy_analysis_capabilities(client, monkeypatch):
-    from soramimic_video import audio_melody
-
-    monkeypatch.setenv("SORAMIMIC_LYRIC_PIPELINE", "cplus")
-    capabilities = {"sheetsage2": True, "rmvpe": True, "fcpe": True}
-    monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: capabilities)
-
-    assert client.get("/api/config").json()["audio_analysis"] == capabilities
+    assert client.get("/api/config").json()["audio_analysis"] == {"sheetsage2": True}
 
 
 def test_config_lists_wordlist_phrases_for_text_previews(client):

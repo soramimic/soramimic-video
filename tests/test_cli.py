@@ -1,3 +1,5 @@
+import pytest
+
 from soramimic_video import asset_store, cli
 from soramimic_video.cli import build_parser
 
@@ -10,6 +12,25 @@ def test_edit_timing_accepts_full_audio_overlay_options():
 
     assert args.full_audio == "source.wav"
     assert args.full_audio_gain == 0.4
+
+
+@pytest.mark.parametrize(
+    "removed_option",
+    ["--lyric-pipeline", "--melody-midi", "--melody-channel"],
+)
+def test_analyze_audio_rejects_removed_legacy_options(removed_option):
+    parser = build_parser()
+    argv = [
+        "analyze-audio",
+        "--audio",
+        "song.wav",
+        "--project",
+        "work/song",
+        removed_option,
+        "cplus" if removed_option == "--lyric-pipeline" else "song.mid",
+    ]
+    with pytest.raises(SystemExit):
+        parser.parse_args(argv)
 
 
 def test_video_image_lead_defaults_and_can_be_disabled():

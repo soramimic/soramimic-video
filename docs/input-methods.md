@@ -5,19 +5,17 @@ soramimic-video は、利用できる楽譜・音源・歌詞に応じて次の�
 | 入力 | command | 特徴 |
 |---|---|---|
 | XF MIDI + 任意の元歌詞 | `analyze` | XF に含まれる読みと音符 timing を利用する確定的な経路 |
-| 歌唱音源 + メロディ MIDI + 歌詞 | `analyze-audio --melody-midi` | MIDI の音高・構造を優先し、音源に timing を合わせる |
 | 歌唱音源 + 正式歌詞 | `analyze-audio` | 歌詞を正解文字列としてforced alignmentし、timingとpitchを推定 |
-| 歌唱音源のみ | `analyze-audio` | CLI互換経路。Web版では正式歌詞が必須 |
+| 歌唱音源のみ | `analyze-audio` | Whisperで歌詞候補を取得し、timingとpitchを推定 |
 | メロディ MIDI + 歌詞 | `analyze-midi` | 楽譜の音高・timing を使い、歌詞を音符へ割り当てる |
 
 ## 入力情報の優先順位
 
 - XF MIDI に読みと歌詞 timing がある場合は、その情報を優先します。
-- メロディ MIDI がある場合は、MIDI の音高と音符構造を優先します。
 - 歌詞の読みを明示できる場合は、自動読み推定より優先します。
 - 正式歌詞を指定した音源ではASRを使わず、文字列を変更しません。
 - 歌唱音源だけの経路は推定を含むため、timing editor で結果を確認・修正できます。
-- `evidence` 経路の音源由来ノートはSheetSage2候補だけを使います。候補のない
+- 音源由来ノートはSheetSage2候補だけを使います。候補のない
   非旋律音声は歌詞・時刻を診断に残し、推定音高を作らず明示的に未解決とします。
 
 ## Output
