@@ -15,12 +15,12 @@ from soramimic_video.audio_inference import (
 from soramimic_video.transcribe import TranscribedLine
 
 
-def _queued_job(scheduler, tmp_path, name, priority):
+def _queued_job(scheduler, tmp_path, name, priority, kind="whisper"):
     work = tmp_path / "state/jobs" / name
     work.mkdir(parents=True)
     audio = work / "input.audio"
     audio.write_bytes(b"audio")
-    return scheduler.add("whisper", priority, {}, audio, work)
+    return scheduler.add(kind, priority, {}, audio, work)
 
 
 def test_service_readiness_allows_staggered_demucs_rollout(monkeypatch):
@@ -60,13 +60,98 @@ def test_scheduler_orders_queued_work_by_environment_priority(monkeypatch, tmp_p
     assert order == ["public", "dev"]
 
 
+def test_scheduler_overlaps_distinct_model_families_when_capacity_allows(
+    monkeypatch, tmp_path
+):
+    scheduler = InferenceScheduler(tmp_path / "state", device="cuda")
+    monkeypatch.setattr(
+        scheduler._gpu_admission,
+        "_free_bytes",
+        lambda _device: 12 * 1024**3,
+    )
+    started = set()
+    lock = threading.Lock()
+    all_started = threading.Event()
+
+    def run(job):
+        assert job.cuda_capacity_reserved
+        with lock:
+            started.add(job.kind)
+            if started == {"demucs", "whisper", "sheetsage"}:
+                all_started.set()
+        assert all_started.wait(2), "distinct model workers did not overlap"
+        return {}
+
+    monkeypatch.setattr(scheduler, "_run", run)
+    jobs = [
+        _queued_job(scheduler, tmp_path, f"{kind}-job", "dev", kind)
+        for kind in ("demucs", "whisper", "sheetsage")
+    ]
+    scheduler.start()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and any(job.status != "done" for job in jobs):
+        time.sleep(0.01)
+    scheduler.stop()
+
+    assert all(job.status == "done" for job in jobs)
+
+
+def test_scheduler_serializes_distinct_models_when_gpu_budget_is_low(
+    monkeypatch, tmp_path
+):
+    scheduler = InferenceScheduler(tmp_path / "state", device="cuda")
+    monkeypatch.setattr(
+        scheduler._gpu_admission,
+        "_free_bytes",
+        lambda _device: 1024**3,
+    )
+    active = 0
+    max_active = 0
+    capacity_reservations = []
+    lock = threading.Lock()
+
+    def run(job):
+        nonlocal active, max_active
+        capacity_reservations.append(job.cuda_capacity_reserved)
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return {}
+
+    monkeypatch.setattr(scheduler, "_run", run)
+    jobs = [
+        _queued_job(scheduler, tmp_path, f"{kind}-job", "dev", kind)
+        for kind in ("demucs", "whisper", "sheetsage")
+    ]
+    scheduler.start()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and any(job.status != "done" for job in jobs):
+        time.sleep(0.01)
+    scheduler.stop()
+
+    assert all(job.status == "done" for job in jobs)
+    assert max_active == 1
+    assert capacity_reservations == [False, False, False]
+
+
 def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_path):
     from soramimic_video import transcribe
 
     calls = []
 
     def transcribe_local(path, model_size, device, **kwargs):
-        calls.append((path.read_bytes(), model_size, device, kwargs["cache_model"]))
+        calls.append(
+            (
+                path.read_bytes(),
+                model_size,
+                device,
+                kwargs["cache_model"],
+                kwargs["cuda_capacity_reserved"],
+            )
+        )
         return [TranscribedLine(0.1, 0.8, "歌詞")]
 
     monkeypatch.setattr(transcribe, "_transcribe_lines_local", transcribe_local)
@@ -104,20 +189,16 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
         assert client.delete(f"/v1/jobs/{job_id}").status_code == 204
         assert client.get(f"/v1/jobs/{job_id}").status_code == 404
 
-    assert calls == [(b"wave", "large-v3", "cpu", True)]
+    assert calls == [(b"wave", "large-v3", "cpu", True, False)]
 
 
 def test_inference_api_runs_demucs_and_serves_stems(monkeypatch, tmp_path):
-    from soramimic_video import audio_melody, separation, transcribe
+    from soramimic_video import separation
 
     calls = []
-    transcribe._WHISPER_MODEL_CACHE[("large-v3", "cuda", None)] = object()
-    audio_melody._MODEL_CACHE[("sheetsage2",)] = object()
 
     def separate_local(path, output_dir, *, model, device):
         calls.append((path.read_bytes(), model, device))
-        assert not transcribe._WHISPER_MODEL_CACHE
-        assert not audio_melody._MODEL_CACHE
         output_dir.mkdir(parents=True)
         (output_dir / "vocals.wav").write_bytes(b"vocals")
         (output_dir / "no_vocals.wav").write_bytes(b"accompaniment")

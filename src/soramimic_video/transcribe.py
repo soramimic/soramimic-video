@@ -154,6 +154,7 @@ def _transcribe_lines_local(
     vad_filter: bool = True,
     condition_on_previous_text: bool = True,
     cache_model: bool = False,
+    cuda_capacity_reserved: bool = False,
     cancel_check: Callable[[], Any] | None = None,
 ) -> list[TranscribedLine]:
     try:
@@ -166,7 +167,11 @@ def _transcribe_lines_local(
     requested_device = device
     free_bytes = _cuda_free_bytes(requested_device)
     compute_type: str | None = None
-    if free_bytes is not None and free_bytes < _MIN_WHISPER_CUDA_FREE_BYTES:
+    if (
+        not cuda_capacity_reserved
+        and free_bytes is not None
+        and free_bytes < _MIN_WHISPER_CUDA_FREE_BYTES
+    ):
         logger.warning(
             "GPU空き容量が%.1fGiBのためWhisperをCPUで実行します",
             free_bytes / 1024**3,
