@@ -65,7 +65,6 @@ def service_available(timeout: float = 2.0) -> bool:
     return bool(
         response.ok
         and body.get("status") == "ok"
-        and capabilities.get("demucs")
         and capabilities.get("whisper")
         and capabilities.get("sheetsage2")
     )
