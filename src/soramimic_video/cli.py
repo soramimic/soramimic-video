@@ -74,13 +74,10 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
         Path(args.audio),
         Path(args.project),
         lyrics_path=Path(args.lyrics) if args.lyrics else None,
-        melody_midi=Path(args.melody_midi) if args.melody_midi else None,
-        melody_channel=args.melody_channel,
         bpm=args.bpm,
         whisper_model=args.whisper_model,
         skip_separation=args.no_separation,
         device=args.device,
-        lyric_pipeline=args.lyric_pipeline,
     )
     path = project.save(Path(args.project))
     print(f"解析完了: {len(project.notes)}モーラ / {len(project.lines)}行 -> {path}")
@@ -472,15 +469,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="元歌詞テキスト(1行1フレーズ)。省略時はWhisperの認識結果を元歌詞にする",
     )
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
-    p.add_argument(
-        "--melody-midi",
-        help="メロディ入りMIDI(非XFでよい)。あればピッチ・タイミングを楽譜に寄せる",
-    )
-    p.add_argument(
-        "--melody-channel",
-        type=int,
-        help="メロディのMIDIチャンネル(0始まり)。省略時は自動選択",
-    )
     p.add_argument("--bpm", type=float, default=120.0, help="tick換算用の固定BPM")
     p.add_argument(
         "--whisper-model",
@@ -493,10 +481,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="音源分離をスキップ(入力が既にボーカルのみの場合)",
     )
     p.add_argument("--device", help="torchデバイス(省略時はcuda→cpuの順で自動)")
-    p.add_argument(
-        "--lyric-pipeline", choices=("cplus", "evidence"),
-        help="evidence: Whisper全文と3歌詞レイヤーを使用(wav-to-xf追加導入が必要)",
-    )
     p.set_defaults(func=cmd_analyze_audio)
 
     p = sub.add_parser("apply-lyric-layers", help="歌詞と合成ノートのレイヤーを取り込む")
