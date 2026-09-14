@@ -28,6 +28,26 @@ def separate(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
         logger.info("分離済みの出力を再利用: %s", out_dir)
         return vocals, accompaniment
 
+    from .audio_inference import configured_url, separate_remote
+
+    if configured_url() is not None:
+        logger.info("共有Demucsサービスで音源を分離中")
+        return separate_remote(audio_path, out_dir, model=DEMUCS_MODEL, device="auto")
+
+    return _separate_local(audio_path, out_dir, model=DEMUCS_MODEL)
+
+
+def _separate_local(
+    audio_path: Path,
+    out_dir: Path,
+    *,
+    model: str = DEMUCS_MODEL,
+    device: str | None = None,
+) -> tuple[Path, Path]:
+    """Run Demucs in a subprocess and return its two stable output paths."""
+    vocals = out_dir / "vocals.wav"
+    accompaniment = out_dir / "no_vocals.wav"
+
     if importlib.util.find_spec("demucs") is None:
         raise RuntimeError(
             "demucs がインストールされていません(uv sync --extra audio)"
@@ -38,18 +58,22 @@ def separate(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
     cmd = [
         sys.executable, "-m", "demucs.separate",
         "--two-stems", "vocals",
-        "-n", DEMUCS_MODEL,
+        "-n", model,
         "-o", str(work),
-        str(audio_path),
     ]
+    if device is not None:
+        cmd.extend(["--device", device])
+    cmd.append(str(audio_path))
     logger.info("demucs実行中(数分かかります): %s", " ".join(cmd))
     proc = runproc.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"demucsが失敗しました:\n{proc.stderr[-2000:]}")
 
-    stem_dir = work / DEMUCS_MODEL / audio_path.stem
-    for src, dst in [(stem_dir / "vocals.wav", vocals),
-                     (stem_dir / "no_vocals.wav", accompaniment)]:
+    stem_dir = work / model / audio_path.stem
+    for src, dst in [
+        (stem_dir / "vocals.wav", vocals),
+        (stem_dir / "no_vocals.wav", accompaniment),
+    ]:
         if not src.exists():
             raise RuntimeError(f"demucsの出力が見つかりません: {src}")
         shutil.move(str(src), str(dst))
