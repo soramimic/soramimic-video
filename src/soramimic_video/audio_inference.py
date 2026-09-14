@@ -1,13 +1,13 @@
 """Shared, loopback-only Demucs, Whisper, and SheetSage inference service.
 
 Application environments submit short-lived jobs to one process so heavyweight
-models are loaded only once.  The server runs one model invocation at a time and
-orders queued work by environment priority.
+models are loaded only once.  One worker per model family allows Demucs, Whisper,
+and SheetSage to overlap when the measured GPU budget is large enough, while work
+within each family remains priority ordered.
 """
 
 from __future__ import annotations
 
-import gc
 import importlib.util
 import json
 import logging
@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,10 +37,77 @@ PRIORITIES = {"public": 0, "preview": 10, "dev": 20, "eval": 30}
 POLL_SECONDS = 0.5
 ALLOWED_DEVICES = {"auto", "cpu", "cuda", "cuda:0"}
 DEMUCS_ARTIFACTS = {"vocals.wav", "no_vocals.wav"}
+INFERENCE_KINDS = ("demucs", "whisper", "sheetsage")
+_GPU_HEADROOM_BYTES = 1024**3
+_GPU_RESERVE_BYTES = {
+    "demucs": 2 * 1024**3,
+    "whisper": 3 * 1024**3,
+    "sheetsage": 3 * 1024**3,
+}
 
 
 class InferenceCancelled(Exception):  # noqa: N818 - internal control flow
     """The caller cancelled a queued or running inference request."""
+
+
+class _GpuAdmission:
+    """Reserve a conservative per-wave GPU budget before models may overlap."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._active: dict[str, int] = {}
+        self._wave_budget = 0
+
+    @staticmethod
+    def _free_bytes(device: str) -> int | None:
+        try:
+            import torch
+
+            free_bytes, _ = torch.cuda.mem_get_info(device)
+        except (ImportError, RuntimeError):
+            return None
+        return int(free_bytes)
+
+    @contextmanager
+    def acquire(
+        self,
+        job: InferenceJob,
+        device: str,
+        stop: threading.Event,
+    ):
+        if not device.startswith("cuda"):
+            yield False
+            return
+
+        reservation = _GPU_RESERVE_BYTES[job.kind]
+        capacity_reserved = False
+        with self._condition:
+            while True:
+                if stop.is_set() or job.cancel_event.is_set():
+                    raise InferenceCancelled()
+                if not self._active:
+                    free_bytes = self._free_bytes(device)
+                    self._wave_budget = max(
+                        0,
+                        (free_bytes or 0) - _GPU_HEADROOM_BYTES,
+                    )
+                    self._active[job.id] = reservation
+                    capacity_reserved = reservation <= self._wave_budget
+                    break
+                reserved = sum(self._active.values())
+                if reserved + reservation <= self._wave_budget:
+                    self._active[job.id] = reservation
+                    capacity_reserved = True
+                    break
+                self._condition.wait(timeout=0.1)
+        try:
+            yield capacity_reserved
+        finally:
+            with self._condition:
+                self._active.pop(job.id, None)
+                if not self._active:
+                    self._wave_budget = 0
+                self._condition.notify_all()
 
 
 def configured_url() -> str | None:
@@ -274,10 +342,11 @@ class InferenceJob:
     progress: float = 0.0
     cancel_event: threading.Event = field(default_factory=threading.Event)
     remove_when_done: bool = False
+    cuda_capacity_reserved: bool = False
 
 
 class InferenceScheduler:
-    """Single-worker priority scheduler for GPU model inference."""
+    """Priority scheduler with one capacity-gated worker per model family."""
 
     def __init__(self, state_dir: Path, *, device: str = "cuda") -> None:
         self.state_dir = state_dir
@@ -285,24 +354,32 @@ class InferenceScheduler:
         self._jobs: dict[str, InferenceJob] = {}
         self._lock = threading.Lock()
         self._sequence = 0
-        self._queue: queue.PriorityQueue[tuple[int, int, str]] = queue.PriorityQueue()
+        self._queues: dict[
+            str, queue.PriorityQueue[tuple[int, int, str]]
+        ] = {kind: queue.PriorityQueue() for kind in INFERENCE_KINDS}
         self._stop = threading.Event()
-        self._worker: threading.Thread | None = None
+        self._workers: dict[str, threading.Thread] = {}
+        self._gpu_admission = _GpuAdmission()
 
     def start(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        if self._worker is not None and self._worker.is_alive():
+        if self._workers and all(worker.is_alive() for worker in self._workers.values()):
             return
         if not self._jobs:
             shutil.rmtree(self.state_dir / "jobs", ignore_errors=True)
         (self.state_dir / "jobs").mkdir(parents=True, exist_ok=True)
         self._stop.clear()
-        self._worker = threading.Thread(
-            target=self._loop,
-            name="audio-inference",
-            daemon=True,
-        )
-        self._worker.start()
+        self._workers = {
+            kind: threading.Thread(
+                target=self._loop,
+                args=(kind,),
+                name=f"audio-inference-{kind}",
+                daemon=True,
+            )
+            for kind in INFERENCE_KINDS
+        }
+        for worker in self._workers.values():
+            worker.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -310,9 +387,10 @@ class InferenceScheduler:
             for job in self._jobs.values():
                 if job.status in {"queued", "running"}:
                     job.cancel_event.set()
-        self._queue.put((-1, -1, ""))
-        if self._worker is not None:
-            self._worker.join(timeout=30)
+        for pending in self._queues.values():
+            pending.put((-1, -1, ""))
+        for worker in self._workers.values():
+            worker.join(timeout=30)
         with self._lock:
             jobs = list(self._jobs.values())
             self._jobs.clear()
@@ -343,7 +421,7 @@ class InferenceScheduler:
             self._jobs[job.id] = job
             self._sequence += 1
             sequence = self._sequence
-        self._queue.put((PRIORITIES[priority], sequence, job.id))
+        self._queues[kind].put((PRIORITIES[priority], sequence, job.id))
         return job
 
     def get(self, job_id: str) -> InferenceJob | None:
@@ -380,7 +458,9 @@ class InferenceScheduler:
             }
 
     def healthy(self) -> bool:
-        return self._worker is not None and self._worker.is_alive()
+        return bool(self._workers) and all(
+            worker.is_alive() for worker in self._workers.values()
+        )
 
     def status_counts(self) -> dict[str, int]:
         counts = {status: 0 for status in ("queued", "running", "done", "error", "cancelled")}
@@ -399,6 +479,10 @@ class InferenceScheduler:
         with self._lock:
             job.progress = max(job.progress, min(1.0, max(0.0, value)))
 
+    def _job_device(self, job: InferenceJob) -> str:
+        requested = str(job.parameters.get("device") or self.device)
+        return self.device if requested == "auto" else requested
+
     def _run(self, job: InferenceJob) -> Any:
         self._check_cancelled(job)
         if job.kind == "demucs":
@@ -407,8 +491,7 @@ class InferenceScheduler:
             from .transcribe import _transcribe_lines_local
 
             model_size = str(job.parameters.get("model_size") or "large-v3")
-            requested_device = str(job.parameters.get("device") or self.device)
-            device = self.device if requested_device == "auto" else requested_device
+            device = self._job_device(job)
             lines = _transcribe_lines_local(
                 job.audio_path,
                 model_size,
@@ -418,6 +501,7 @@ class InferenceScheduler:
                     job.parameters.get("condition_on_previous_text", True)
                 ),
                 cache_model=True,
+                cuda_capacity_reserved=job.cuda_capacity_reserved,
                 cancel_check=lambda: self._check_cancelled(job),
             )
             return {
@@ -433,8 +517,7 @@ class InferenceScheduler:
 
         from .audio_melody import _transcribe_sheetsage_local
 
-        requested_device = str(job.parameters.get("device") or self.device)
-        device = self.device if requested_device == "auto" else requested_device
+        device = self._job_device(job)
         notes = _transcribe_sheetsage_local(
             job.audio_path,
             job.work_dir / "output",
@@ -455,21 +538,8 @@ class InferenceScheduler:
         }
 
     def _run_demucs(self, job: InferenceJob) -> dict[str, list[str]]:
-        from . import audio_melody, runproc, transcribe
+        from . import runproc
         from .separation import DEMUCS_MODEL, _separate_local
-
-        # Demucs has its own CUDA process. Drop resident Python model references
-        # first so its peak cannot overlap cached Whisper/SheetSage allocations.
-        transcribe._WHISPER_MODEL_CACHE.clear()
-        audio_melody._MODEL_CACHE.clear()
-        gc.collect()
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except (ImportError, RuntimeError):
-            pass
 
         finished = threading.Event()
 
@@ -485,8 +555,7 @@ class InferenceScheduler:
             daemon=True,
         )
         watcher.start()
-        requested_device = str(job.parameters.get("device") or self.device)
-        device = self.device if requested_device == "auto" else requested_device
+        device = self._job_device(job)
         model = str(job.parameters.get("model") or DEMUCS_MODEL)
         try:
             try:
@@ -505,21 +574,26 @@ class InferenceScheduler:
             watcher.join(timeout=1)
         return {"artifacts": sorted(DEMUCS_ARTIFACTS)}
 
-    def _loop(self) -> None:
+    def _loop(self, kind: str) -> None:
         while not self._stop.is_set():
-            _priority, _sequence, job_id = self._queue.get()
+            _priority, _sequence, job_id = self._queues[kind].get()
             if not job_id:
                 continue
             job = self.get(job_id)
             if job is None or job.status != "queued":
                 continue
-            with self._lock:
-                if job.cancel_event.is_set():
-                    job.status = "cancelled"
-                    continue
-                job.status = "running"
             try:
-                result = self._run(job)
+                with self._gpu_admission.acquire(
+                    job,
+                    self._job_device(job),
+                    self._stop,
+                ) as capacity_reserved:
+                    job.cuda_capacity_reserved = capacity_reserved
+                    with self._lock:
+                        if job.cancel_event.is_set():
+                            raise InferenceCancelled()
+                        job.status = "running"
+                    result = self._run(job)
             except InferenceCancelled:
                 with self._lock:
                     job.status = "cancelled"

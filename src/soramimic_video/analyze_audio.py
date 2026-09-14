@@ -109,6 +109,48 @@ def _run_sheetsage(
         shutil.rmtree(raw_dir, ignore_errors=True)
 
 
+def _run_shared_analysis_models(
+    audio_path: Path,
+    project_dir: Path,
+    whisper_model: str,
+    whisper_device: str,
+    sheetsage_device: str,
+    on_sheetsage_progress: Callable[[float], None],
+):
+    """Submit the three independent mix-input models to the shared service."""
+    from .separation import separate
+    from .transcribe import transcribe_lines
+
+    with ThreadPoolExecutor(
+        max_workers=3,
+        thread_name_prefix="audio-analysis",
+    ) as executor:
+        separation_future = executor.submit(
+            separate,
+            audio_path,
+            project_dir / SEPARATION_DIR,
+        )
+        whisper_future = executor.submit(
+            transcribe_lines,
+            audio_path,
+            whisper_model,
+            whisper_device,
+            vad_filter=False,
+            condition_on_previous_text=False,
+        )
+        sheetsage_future = executor.submit(
+            _run_sheetsage,
+            audio_path,
+            project_dir,
+            sheetsage_device,
+            on_sheetsage_progress,
+        )
+        vocals, accompaniment = separation_future.result()
+        lines = whisper_future.result()
+        notes = sheetsage_future.result()
+    return vocals, accompaniment, lines, notes
+
+
 def analyze_audio(
     audio_path: Path,
     project_dir: Path,
@@ -150,9 +192,51 @@ def analyze_audio(
             progress(last_progress)
 
     report(0.01)
-    # 1. 音源分離
+    prefetched_lines = None
+    sheetsage_notes = None
+    sheetsage_was_run = False
+    actual_device = _audio_device(device) if melody_midi is None else "cpu"
+    sheetsage_device = actual_device
+    capabilities = None
+    from .audio_inference import configured_url
+
+    shared_inference = configured_url() is not None
+    if melody_midi is None:
+        from .audio_melody import configured_capabilities
+
+        capabilities = configured_capabilities()
+        # The shared service resolves automatic placement against its own GPU.
+        if shared_inference and device is None:
+            sheetsage_device = "auto"
+
+    # The evidence pipeline sends the original mix to both Whisper and
+    # SheetSage, so neither model depends on Demucs output. Submit all three to
+    # the shared service together; its capacity gate serializes only when the
+    # current GPU budget is too small.
     accompaniment: Path | None = None
-    if skip_separation:
+    prefetch_shared_pipeline = (
+        shared_inference
+        and not skip_separation
+        and use_evidence
+        and lyrics_path is None
+        and melody_midi is None
+        and capabilities is not None
+        and capabilities["sheetsage2"]
+    )
+    if prefetch_shared_pipeline:
+        logger.info("共有Demucs/Whisper/SheetSage2を並列投入します")
+        vocals, accompaniment, prefetched_lines, sheetsage_notes = (
+            _run_shared_analysis_models(
+                audio_path,
+                project_dir,
+                whisper_model,
+                device or "auto",
+                sheetsage_device,
+                lambda value: report(0.01 + value * 0.47),
+            )
+        )
+        sheetsage_was_run = True
+    elif skip_separation:
         vocals = audio_path
         logger.info("音源分離をスキップ(入力をそのままボーカルとして扱います)")
     else:
@@ -161,30 +245,16 @@ def analyze_audio(
         vocals, accompaniment = separate(audio_path, project_dir / SEPARATION_DIR)
     report(0.22)
 
-    # Both models can start after Demucs. A measured free-memory floor keeps their
-    # combined peak inside the GPU budget; low-memory hosts retain the serial path.
-    prefetched_lines = None
-    sheetsage_notes = None
-    sheetsage_was_run = False
-    actual_device = _audio_device(device) if melody_midi is None else "cpu"
-    sheetsage_device = actual_device
-    capabilities = None
-    if melody_midi is None:
-        from .audio_inference import configured_url
-        from .audio_melody import configured_capabilities
-
-        capabilities = configured_capabilities()
-        # GPU-less web environments still delegate SheetSage to the shared GPU.
-        # Preserve an explicit --device override, but let the inference service
-        # resolve the ordinary automatic case against its own hardware.
-        if configured_url() is not None and device is None:
-            sheetsage_device = "auto"
+    # Local inference can overlap Whisper and SheetSage after Demucs when the
+    # local CUDA device has enough free memory. The shared path was prefetched
+    # above and applies its own server-side admission policy.
     parallel_models = (
-        lyrics_path is None
+        not prefetch_shared_pipeline
+        and lyrics_path is None
         and melody_midi is None
         and capabilities is not None
         and capabilities["sheetsage2"]
-        and _has_parallel_cuda_capacity(actual_device)
+        and (shared_inference or _has_parallel_cuda_capacity(actual_device))
     )
     if parallel_models:
         from .transcribe import transcribe_lines
