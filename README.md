@@ -145,12 +145,16 @@ uv run soramimic-video export-xf --project work/song --output work/song/selected
 未知歌詞では原音mixをWhisper large-v3（既定）のVADなし・前セグメント文脈なしの単一パスで認識します。
 対応区間にSheetSage2ノートがなく、かつ認識全文が限定的な視聴案内・字幕・クレジット文型に
 一致するときだけ除外します。ノートがないだけでは除外せず、非旋律の声も未解決として診断に残します。
-辞書の第一読みを固定して、カナCTCは本文や読みを棄却・変更せずモーラ時刻の推定だけに使います。
-`analyze_audio/recognition.json` に採用したWhisperセグメントを保存します。対応範囲は日本語の
+確定した表層から yomi と UniDic N-best の読み候補を作り、同じモーラ数・文字数の候補だけを
+KanaWhisperの原音mix／分離ボーカル結果で保守的に再順位付けします。KanaWhisperの自由認識結果を
+歌詞として採用することはありません。ReazonかなCTCは、選択済みの読みを変更せずモーラ時刻だけを
+推定します。`analyze_audio/recognition.json` に通常Whisperの歌詞認識を、
+`analyze_audio/reading.json` に読み候補・KanaWhisper根拠・選択結果を保存します。対応範囲は日本語の
 主旋律で、英語・会話・コーラスが完全に復元される保証はありません。正式歌詞の指定時は
-Whisperによる書き換えを行いません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
+通常Whisperによる表層認識を行わず、指定文字列も書き換えません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
 Demucs、Whisper、SheetSage2は入力取得後に独立ジョブとして投入されます。共有推論サービスは
-優先度付きワーカーとGPU容量ゲートで必要な実行を安全に直列化し、Demucs vocalsの完了後にCTCを開始します。
+優先度付きワーカーとGPU容量ゲートで必要な実行を安全に直列化します。KanaWhisperは歌詞行区間の
+確定後にだけ実行し、同じモデルを共有プロセス内で再利用します。
 
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じ音声上限までmultipart requestを
