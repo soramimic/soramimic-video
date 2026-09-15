@@ -6,7 +6,7 @@ soramimic-video は、利用できる楽譜・音源・歌詞に応じて次の�
 |---|---|---|
 | XF MIDI + 任意の元歌詞 | `analyze` | XF に含まれる読みと音符 timing を利用する確定的な経路 |
 | 歌唱音源 + 正式歌詞 | `analyze-audio` | 歌詞を正解文字列としてforced alignmentし、timingとpitchを推定 |
-| 歌唱音源のみ | `analyze-audio` | Whisperで歌詞候補を取得し、timingとpitchを推定 |
+| 歌唱音源のみ | `analyze-audio` | Whisperで歌詞表層を取得し、KanaWhisperで辞書読み候補を再順位付けしてtimingとpitchを推定 |
 | メロディ MIDI + 歌詞 | `analyze-midi` | 楽譜の音高・timing を使い、歌詞を音符へ割り当てる |
 
 ## 入力情報の優先順位

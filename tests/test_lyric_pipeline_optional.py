@@ -139,12 +139,13 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
     assert '"mora-ctc-anchor"' in correspondence
     analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert analysis["stage3_correspondence"] is True
-    assert analysis["schema_version"] == 3
+    assert analysis["schema_version"] == 4
     assert analysis["audio_pipeline"] == "stage3"
     assert analysis["mode"] == "sheetsage2_stage3"
     assert analysis["inference_roles"] == {
         "lyrics": "known-lyrics",
         "mora_timing": "reazon-kana-ctc-input-audio",
+        "reading": "yomi-unidic-default-reading",
         "notes": "sheetsage2-original-mix",
         "separation": "skipped-input-as-vocals",
     }
@@ -214,7 +215,7 @@ def test_known_lyrics_fails_truthfully_when_stage3_cannot_supply_a_complete_plan
 
 
 def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
-    from soramimic_video import audio_melody, mora_align, reading, transcribe
+    from soramimic_video import audio_melody, kana_whisper, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
@@ -222,6 +223,11 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
 
     emissions = object()
     calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=10.0)),
+    )
 
     def recognize(path, model, device, *, vad_filter, condition_on_previous_text):
         calls.append((path, model, device, vad_filter, condition_on_previous_text))
@@ -232,6 +238,11 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
         reading,
         "reading_candidates",
         lambda text: [{"か": "カ", "き": "キ"}[text], "サ"],
+    )
+    monkeypatch.setattr(
+        kana_whisper,
+        "transcribe_kana_windows",
+        lambda path, windows, device: ["カキ" for _window in windows],
     )
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
 
@@ -270,6 +281,11 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
         "accepted", "accepted",
     ]
     assert [item["surface"] for item in recognition["segments"]] == ["か", "き"]
+    reading_evidence = json.loads(
+        (tmp_path / "project/analyze_audio/reading.json").read_text()
+    )
+    assert reading_evidence["mode"] == "closed-reading-candidate-rerank"
+    assert [line["selected_index"] for line in reading_evidence["lines"]] == [0, 0]
 
 
 def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyrics(

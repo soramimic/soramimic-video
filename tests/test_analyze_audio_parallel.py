@@ -121,6 +121,49 @@ def test_known_lyrics_submit_demucs_and_sheetsage_without_whisper(
     assert started == {"demucs", "sheetsage"}
 
 
+def test_kana_evidence_reranks_closed_candidates_from_mix_and_vocals(
+    monkeypatch,
+    tmp_path,
+):
+    from soramimic_video import analyze_audio, kana_whisper
+
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=10.0)),
+    )
+    mix = tmp_path / "mix.wav"
+    vocals = tmp_path / "vocals.wav"
+
+    def transcribe(path, windows, device):
+        assert windows == [(0.0, 5.5)]
+        assert device == "auto"
+        return [
+            "ウタビアフレテナニオシテイタノ" if path == mix else "ウタビアフレテナニモシテイタノ"
+        ]
+
+    monkeypatch.setattr(kana_whisper, "transcribe_kana_windows", transcribe)
+    chosen, receipt = analyze_audio._choose_readings_with_kana(
+        mix,
+        vocals,
+        ["何をしていたの"],
+        [
+            [
+                ["ナ", "ン", "オ", "シ", "テ", "イ", "タ", "ノ"],
+                ["ナ", "ニ", "オ", "シ", "テ", "イ", "タ", "ノ"],
+            ]
+        ],
+        [(1.5, 4.0)],
+        device="auto",
+        shared_inference=True,
+    )
+
+    assert chosen == [1]
+    assert receipt["sources"] == ["original-mix", "separated-vocals"]
+    assert receipt["lines"][0]["selected_index"] == 1
+
+
+
 def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     from soramimic_video import (
         analyze_audio as analyze_audio_module,

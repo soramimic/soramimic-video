@@ -1,4 +1,4 @@
-"""Shared, loopback-only Demucs, Whisper, and SheetSage inference service.
+"""Shared, loopback-only audio-model inference service.
 
 Application environments submit short-lived jobs to one process so heavyweight
 models are loaded only once.  One worker per model family allows Demucs, Whisper,
@@ -11,13 +11,14 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import math
 import os
 import queue
 import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,11 +38,12 @@ PRIORITIES = {"public": 0, "preview": 10, "dev": 20, "eval": 30}
 POLL_SECONDS = 0.5
 ALLOWED_DEVICES = {"auto", "cpu", "cuda", "cuda:0"}
 DEMUCS_ARTIFACTS = {"vocals.wav", "no_vocals.wav"}
-INFERENCE_KINDS = ("demucs", "whisper", "sheetsage")
+INFERENCE_KINDS = ("demucs", "whisper", "kana-whisper", "sheetsage")
 _GPU_HEADROOM_BYTES = 1024**3
 _GPU_RESERVE_BYTES = {
     "demucs": 2 * 1024**3,
     "whisper": 3 * 1024**3,
+    "kana-whisper": 3 * 1024**3,
     "sheetsage": 3 * 1024**3,
 }
 
@@ -300,6 +302,27 @@ def transcribe_lines_remote(
     ]
 
 
+def transcribe_kana_windows_remote(
+    audio_path: Path,
+    windows: Sequence[tuple[float, float]],
+    device: str,
+) -> list[str]:
+    result = _remote_inference(
+        "kana-whisper",
+        audio_path,
+        {
+            "device": device,
+            "windows": [[start, end] for start, end in windows],
+        },
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("texts"), list):
+        raise RuntimeError("共有KanaWhisperの応答形式が不正です")
+    texts = result["texts"]
+    if len(texts) != len(windows) or not all(isinstance(text, str) for text in texts):
+        raise RuntimeError("共有KanaWhisperの応答件数が不正です")
+    return texts
+
+
 def transcribe_sheetsage_remote(
     audio_path: Path,
     device: str,
@@ -405,8 +428,10 @@ class InferenceScheduler:
         audio_path: Path,
         work_dir: Path,
     ) -> InferenceJob:
-        if kind not in {"demucs", "whisper", "sheetsage"}:
-            raise ValueError("kindはdemucs、whisper、sheetsageのいずれかです")
+        if kind not in INFERENCE_KINDS:
+            raise ValueError(
+                "kindはdemucs、whisper、kana-whisper、sheetsageのいずれかです"
+            )
         if priority not in PRIORITIES:
             raise ValueError("priorityはpublic、preview、dev、evalのいずれかです")
         job = InferenceJob(
@@ -513,6 +538,21 @@ class InferenceScheduler:
                     }
                     for line in lines
                 ]
+            }
+
+        if job.kind == "kana-whisper":
+            from .kana_whisper import _transcribe_kana_windows_local
+
+            raw_windows = job.parameters.get("windows")
+            assert isinstance(raw_windows, list)
+            windows = [(float(item[0]), float(item[1])) for item in raw_windows]
+            return {
+                "texts": _transcribe_kana_windows_local(
+                    job.audio_path,
+                    windows,
+                    self._job_device(job),
+                    cancel_check=lambda: self._check_cancelled(job),
+                )
             }
 
         from .audio_melody import _transcribe_sheetsage_local
@@ -658,6 +698,7 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
         from .audio_melody import _configured_local_capabilities
+        from .kana_whisper import model_available
 
         return {
             "status": "ok" if scheduler.healthy() else "starting",
@@ -665,6 +706,7 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
             "capabilities": {
                 "demucs": importlib.util.find_spec("demucs") is not None,
                 "whisper": importlib.util.find_spec("faster_whisper") is not None,
+                "kana_whisper": model_available(),
                 "sheetsage2": _configured_local_capabilities()["sheetsage2"],
             },
         }
@@ -676,10 +718,10 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
         priority: str = Form("dev"),
         parameters: str = Form("{}"),
     ) -> dict[str, str]:
-        if kind not in {"demucs", "whisper", "sheetsage"}:
+        if kind not in INFERENCE_KINDS:
             raise HTTPException(
                 422,
-                "kindはdemucs、whisper、sheetsageのいずれかです",
+                "kindはdemucs、whisper、kana-whisper、sheetsageのいずれかです",
             )
         if priority not in PRIORITIES:
             raise HTTPException(422, "priorityが不正です")
@@ -699,6 +741,34 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
             for option in ("vad_filter", "condition_on_previous_text"):
                 if option in parsed and not isinstance(parsed[option], bool):
                     raise HTTPException(422, f"{option}はbooleanで指定してください")
+        elif kind == "kana-whisper":
+            from .kana_whisper import KANA_CONTEXT_MAX_SEC, KANA_MAX_WINDOWS
+
+            windows = parsed.get("windows")
+            if not isinstance(windows, list) or not 1 <= len(windows) <= KANA_MAX_WINDOWS:
+                raise HTTPException(422, "KanaWhisperのwindowsが不正です")
+            previous_start = -1.0
+            for window in windows:
+                if (
+                    not isinstance(window, list)
+                    or len(window) != 2
+                    or isinstance(window[0], bool)
+                    or isinstance(window[1], bool)
+                ):
+                    raise HTTPException(422, "KanaWhisperのwindowが不正です")
+                try:
+                    start, end = float(window[0]), float(window[1])
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(422, "KanaWhisperのwindowが不正です") from exc
+                if (
+                    not math.isfinite(start + end)
+                    or start < 0
+                    or end <= start
+                    or end - start > KANA_CONTEXT_MAX_SEC
+                    or start < previous_start
+                ):
+                    raise HTTPException(422, "KanaWhisperのwindowが不正です")
+                previous_start = start
         elif kind == "demucs":
             from .separation import DEMUCS_MODEL
 

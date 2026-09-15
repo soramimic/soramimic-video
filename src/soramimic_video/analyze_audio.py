@@ -4,9 +4,10 @@ XF MIDI の代わりに歌唱音源(wav/mp3)を入力の起点にする(issue #1
 
 1. demucs でボーカル/伴奏に分離(伴奏は mix ステージでそのまま使う)
 2. 正式歌詞があれば、その文字列を一切書き換えず forced alignment する
-3. Reazon kana CTC は選択済みの歌詞を変えず、モーラ時刻だけを整列する
-4. SheetSage2 の原音mixノート候補を Stage 3 でモーラへ対応づける
-5. 固定BPMの tick に換算して project.json を組み立てる
+3. KanaWhisper は表層を変えず、yomi / UniDic N-best の読み候補だけを選ぶ
+4. Reazon kana CTC は選択済みの読みを変えず、モーラ時刻だけを整列する
+5. SheetSage2 の原音mixノート候補を Stage 3 でモーラへ対応づける
+6. 固定BPMの tick に換算して project.json を組み立てる
 
 目視検証用に moras.srt / lines.srt も書き出す。
 """
@@ -148,6 +149,116 @@ def _run_audio_models(
     return vocals, accompaniment, lines, notes
 
 
+def _alignment_line_windows(aligned, line_count: int) -> list[tuple[float, float]]:
+    bounds: list[tuple[float, float] | None] = [None] * line_count
+    for mora in aligned:
+        current = bounds[mora.line]
+        if current is None:
+            bounds[mora.line] = (mora.start_sec, mora.end_sec)
+        else:
+            bounds[mora.line] = (
+                min(current[0], mora.start_sec),
+                max(current[1], mora.end_sec),
+            )
+    if any(bound is None for bound in bounds):
+        raise RuntimeError("KanaWhisper用の歌詞行区間を取得できませんでした")
+    return [bound for bound in bounds if bound is not None]
+
+
+def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
+    return any(
+        len(options) > 1 and any(len(candidate) == len(options[0]) for candidate in options[1:])
+        for options in variants
+    )
+
+
+def _choose_readings_with_kana(
+    audio_path: Path,
+    vocals_path: Path,
+    line_texts: list[str],
+    line_variants: list[list[list[str]]],
+    line_windows: list[tuple[float, float]],
+    *,
+    device: str,
+    shared_inference: bool,
+) -> tuple[list[int], dict[str, object]]:
+    import soundfile as sf
+
+    from .kana_whisper import (
+        KANA_WHISPER_MODEL,
+        KANA_WHISPER_REVISION,
+        build_kana_contexts,
+        choose_reading,
+        transcribe_kana_windows,
+    )
+
+    duration = float(sf.info(str(audio_path)).duration)
+    contexts, assignments = build_kana_contexts(
+        line_windows,
+        audio_duration=duration,
+    )
+    windows = [(context.start_sec, context.end_sec) for context in contexts]
+    sources = [("original-mix", audio_path)]
+    if vocals_path != audio_path:
+        sources.append(("separated-vocals", vocals_path))
+    outputs: dict[str, list[str]] = {}
+    if windows:
+        with ThreadPoolExecutor(
+            max_workers=len(sources) if shared_inference else 1,
+            thread_name_prefix="kana-whisper",
+        ) as executor:
+            pending = {
+                name: executor.submit(transcribe_kana_windows, path, windows, device)
+                for name, path in sources
+            }
+            outputs = {name: future.result() for name, future in pending.items()}
+
+    selected: list[int] = []
+    lines = []
+    for index, (text, variants, context_index) in enumerate(
+        zip(line_texts, line_variants, assignments, strict=True)
+    ):
+        candidate_texts = ["".join(candidate) for candidate in variants]
+        evidence = (
+            [outputs[name][context_index] for name, _path in sources]
+            if context_index is not None
+            else []
+        )
+        decision = choose_reading(candidate_texts, evidence)
+        selected.append(decision.selected_index)
+        lines.append(
+            {
+                "line": index,
+                "surface": strip_ruby(text),
+                "candidates": candidate_texts,
+                "selected_index": decision.selected_index,
+                "reason": decision.reason,
+                "context_index": context_index,
+                "normalized_evidence": list(decision.normalized_evidence),
+                "distances": [list(row) for row in decision.distances],
+            }
+        )
+    return selected, {
+        "schema_version": 1,
+        "mode": "closed-reading-candidate-rerank",
+        "model": {
+            "id": KANA_WHISPER_MODEL,
+            "revision": KANA_WHISPER_REVISION,
+        },
+        "sources": [name for name, _path in sources],
+        "contexts": [
+            {
+                "start_sec": context.start_sec,
+                "end_sec": context.end_sec,
+                "line_indices": list(context.line_indices),
+                "transcripts": {name: outputs[name][context_index] for name, _path in sources},
+            }
+            for context_index, context in enumerate(contexts)
+        ],
+        "lines": lines,
+    }
+
+
 def analyze_audio(
     audio_path: Path,
     project_dir: Path,
@@ -163,7 +274,6 @@ def analyze_audio(
 
     _require_audio_pipeline()
     emissions = None
-    recognized_variants = None
     recognized_windows = None
     recognition_mode = None
     recognition_windows_fallback = False
@@ -264,12 +374,6 @@ def analyze_audio(
         ]
         line_texts = [line.text for line in retained]
         recognized_windows = [(line.start_sec, line.end_sec) for line in retained]
-        recognized_variants = []
-        for line in retained:
-            readings = reading_candidates(line.text)
-            recognized_variants.append(
-                [split_moras(readings[0])] if readings else [[]]
-            )
         recognition_mode = "whisper-mix-semantic-gate"
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
@@ -322,12 +426,12 @@ def analyze_audio(
             sum(decision.status == "rejected" for decision in decisions),
             sum(decision.status == "unresolved" for decision in decisions),
         )
-    # 3. カナ化 + forced alignment。正式歌詞がある場合、Whisper/ASRを通さず
-    # その文字列の読みだけを時刻へ対応づける。読み候補は文字列を書き換えず、
-    # ルビ・辞書から得た発音候補の音響スコア選択に限る。
+    # 3. カナ化 + forced alignment。正式歌詞がある場合、通常Whisperによる
+    # 表層認識を通さない。KanaWhisperは文字列を書き換えず、ルビ・辞書から
+    # 得た閉じた発音候補の再順位付けだけに使う。
     # 元歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。カナ化には記法つきの
     # 行を渡し、字幕・表示に使うテキスト(line_texts)は素テキストに直しておく。
-    line_variants = recognized_variants or [
+    line_variants = [
         [split_moras(kana) for kana in reading_candidates(text)] or [[]]
         for text in line_texts
     ]
@@ -338,31 +442,64 @@ def analyze_audio(
     from .mora_align import compute_emissions
 
     emissions = emissions or compute_emissions(vocals, device)
-    try:
-        aligned, chosen = align_moras_with_variants(
+    default_variants = [[variants[0]] for variants in line_variants]
+    initial_alignment = None
+    if recognized_windows is None:
+        initial_alignment, _ = align_moras_with_variants(
             vocals,
-            line_variants,
-            device=device,
-            emissions=emissions,
-            phonetic_aliases=True,
-            line_windows=recognized_windows,
-        )
-    except ValueError as exc:
-        if recognized_windows is None:
-            raise
-        recognition_windows_fallback = True
-        logger.warning(
-            "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s", exc
-        )
-        recognized_windows = None
-        aligned, chosen = align_moras_with_variants(
-            vocals,
-            line_variants,
+            default_variants,
             device=device,
             emissions=emissions,
             phonetic_aliases=True,
             line_windows=None,
         )
+        evidence_windows = _alignment_line_windows(initial_alignment, len(line_variants))
+    else:
+        evidence_windows = recognized_windows
+
+    reading_evidence = None
+    chosen = [0] * len(line_variants)
+    if _has_kana_choice(line_variants):
+        chosen, reading_evidence = _choose_readings_with_kana(
+            audio_path,
+            vocals,
+            line_texts,
+            line_variants,
+            evidence_windows,
+            device=device or "auto",
+            shared_inference=shared_inference,
+        )
+    selected_variants = [
+        [variants[index]] for variants, index in zip(line_variants, chosen, strict=True)
+    ]
+    if initial_alignment is not None and not any(chosen):
+        aligned = initial_alignment
+    else:
+        try:
+            aligned, _fixed_choices = align_moras_with_variants(
+                vocals,
+                selected_variants,
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=True,
+                line_windows=recognized_windows,
+            )
+        except ValueError as exc:
+            if recognized_windows is None:
+                raise
+            recognition_windows_fallback = True
+            logger.warning(
+                "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s", exc
+            )
+            recognized_windows = None
+            aligned, _fixed_choices = align_moras_with_variants(
+                vocals,
+                selected_variants,
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=True,
+                line_windows=None,
+            )
     raw_alignment = [replace(mora) for mora in aligned]
     expected_moras = sum(
         len(line[choice])
@@ -382,13 +519,19 @@ def analyze_audio(
     # Keep the measured CTC interval and delegate pitch entirely to SheetSage/Stage 3.
     report(0.62)
 
-    # 5. モーラ音符列の確定
+    # 6. モーラ音符列の確定
     if sheetsage_notes is None:
         raise RuntimeError("Stage 3へ渡すSheetSage2ノート候補がありません")
     mora_notes: list[MoraNote] = []
     mode = "sheetsage2_stage3"
     out = project_dir / ANALYZE_DIR
     out.mkdir(parents=True, exist_ok=True)
+    if reading_evidence is not None:
+        (out / "reading.json").write_text(
+            json.dumps(reading_evidence, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+    reading_asr_used = bool(reading_evidence is not None and reading_evidence["contexts"])
     recognition_flags = [
         {
             "status": decision.status,
@@ -412,10 +555,12 @@ def analyze_audio(
     (out / "analysis.json").write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "mode": mode,
                 "official_lyrics": lyrics_path is not None,
-                "asr_used": lyrics_path is None,
+                "asr_used": lyrics_path is None or reading_asr_used,
+                "lyric_asr_used": lyrics_path is None,
+                "reading_asr_used": reading_asr_used,
                 "audio_pipeline": "stage3",
                 "inference_roles": {
                     "lyrics": f"whisper-{whisper_model}-original-mix"
@@ -425,6 +570,11 @@ def analyze_audio(
                         "reazon-kana-ctc-input-audio"
                         if skip_separation
                         else "reazon-kana-ctc-separated-vocals"
+                    ),
+                    "reading": (
+                        "kana-whisper-closed-candidate-rerank"
+                        if reading_asr_used
+                        else "yomi-unidic-default-reading"
                     ),
                     "notes": "sheetsage2-original-mix",
                     "separation": "skipped-input-as-vocals"
