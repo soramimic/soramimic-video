@@ -192,6 +192,43 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
     assert calls == [(b"wave", "large-v3", "cpu", True, False)]
 
 
+def test_inference_api_runs_kana_whisper_windows(monkeypatch, tmp_path):
+    from soramimic_video import kana_whisper
+
+    calls = []
+
+    def transcribe_local(path, windows, device, **kwargs):
+        calls.append((path.read_bytes(), windows, device, kwargs["cancel_check"]))
+        return ["ナニオシテイタノ", "ナニオミテイタノ"]
+
+    monkeypatch.setattr(kana_whisper, "_transcribe_kana_windows_local", transcribe_local)
+    app = create_audio_inference_app(tmp_path / "state", device="cpu")
+    with TestClient(app) as client:
+        submitted = client.post(
+            "/v1/jobs",
+            files={"audio": ("song.wav", b"wave", "audio/wav")},
+            data={
+                "kind": "kana-whisper",
+                "priority": "dev",
+                "parameters": '{"device":"auto","windows":[[1,4],[5,9]]}',
+            },
+        )
+        assert submitted.status_code == 202
+        job_id = submitted.json()["id"]
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            response = client.get(f"/v1/jobs/{job_id}")
+            if response.json()["status"] == "done":
+                break
+            time.sleep(0.01)
+        assert response.json()["result"] == {"texts": ["ナニオシテイタノ", "ナニオミテイタノ"]}
+        assert client.delete(f"/v1/jobs/{job_id}").status_code == 204
+
+    assert calls[0][:3] == (b"wave", [(1.0, 4.0), (5.0, 9.0)], "cpu")
+    assert callable(calls[0][3])
+
+
+
 def test_inference_api_runs_demucs_and_serves_stems(monkeypatch, tmp_path):
     from soramimic_video import separation
 
@@ -300,6 +337,27 @@ def test_inference_api_rejects_unconfigured_model(tmp_path):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "windows",
+    [[], [[-1, 2]], [[2, 1]], [[0, 25]], [[2, 3], [1, 2]], [[0, "later"]]],
+)
+def test_inference_api_rejects_invalid_kana_windows(tmp_path, windows):
+    import json
+
+    app = create_audio_inference_app(tmp_path / "state", device="cpu")
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/jobs",
+            files={"audio": ("song.wav", b"wave")},
+            data={
+                "kind": "kana-whisper",
+                "priority": "dev",
+                "parameters": json.dumps({"windows": windows}),
+            },
+        )
+    assert response.status_code == 422
+
+
 def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path):
     from soramimic_video import audio_inference, transcribe
 
@@ -329,6 +387,24 @@ def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path
             {"vad_filter": False, "condition_on_previous_text": False},
         )
     ]
+
+
+def test_kana_whisper_delegates_to_configured_shared_service(monkeypatch, tmp_path):
+    from soramimic_video import audio_inference, kana_whisper
+
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"wave")
+    calls = []
+    monkeypatch.setenv("SORAMIMIC_AUDIO_INFERENCE_URL", "http://127.0.0.1:8320")
+    monkeypatch.setattr(
+        audio_inference,
+        "transcribe_kana_windows_remote",
+        lambda *args: calls.append(args) or ["カナ"],
+    )
+
+    assert kana_whisper.transcribe_kana_windows(audio, [(1.0, 2.0)], "auto") == ["カナ"]
+    assert calls == [(audio, [(1.0, 2.0)], "auto")]
+
 
 
 def test_sheetsage_delegates_and_reports_shared_capability(monkeypatch, tmp_path):
