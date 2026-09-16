@@ -40,9 +40,10 @@ def test_capabilities_are_false_for_unset_local_models(monkeypatch):
     assert configured_capabilities() == {"sheetsage2": False}
 
 
-def test_audio_extra_installs_sheetsage_tokenizer_runtime_dependency():
+@pytest.mark.parametrize("package", ["mir-eval", "pretty-midi"])
+def test_audio_extra_installs_sheetsage_runtime_dependencies(package: str):
     pyproject = tomllib.loads(
         (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     )
     audio_dependencies = pyproject["project"]["optional-dependencies"]["audio"]
-    assert any(dependency.startswith("mir-eval") for dependency in audio_dependencies)
+    assert any(dependency.startswith(package) for dependency in audio_dependencies)
