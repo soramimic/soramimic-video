@@ -25,6 +25,7 @@ dependencies = [
     # 欠けると処理自体は継続するが、同じMIDI・変換パラメータでも選択語が変わる。
     "mecab-python3>=1.0",
     "unidic-lite>=1.0",
+    "kanasim==0.0.11",
 ]
 
 [project.optional-dependencies]

@@ -353,7 +353,9 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
     reading_evidence = json.loads(
         (tmp_path / "project/analyze_audio/reading.json").read_text()
     )
+    assert reading_evidence["schema_version"] == 3
     assert reading_evidence["mode"] == "closed-reading-candidate-rerank"
+    assert reading_evidence["distance_metric"] == "kanasim-weighted-substring-0.0.11"
     assert [line["selected_index"] for line in reading_evidence["lines"]] == [0, 0]
 
 

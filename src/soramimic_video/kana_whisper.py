@@ -14,9 +14,10 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import jaconv
+from kanasim import WeightedLevenshtein, create_kana_distance_calculator
 
 from .kana import normalize_long_vowels
 
@@ -30,6 +31,13 @@ KANA_CONTEXT_MAX_SEC = 24.0
 KANA_MAX_WINDOWS = 256
 _KATAKANA_RE = re.compile(r"[ァ-ヶー]+")
 _MODEL_CACHE: dict[tuple[str, str], Any] = {}
+_KANA_DISTANCE = cast(
+    WeightedLevenshtein,
+    create_kana_distance_calculator(symmetric=True, normalize=True),
+)
+# Kanasim's normalization scales acoustic cost tables; it does not divide by
+# candidate length. Retain a small dictionary-order prior for marginal evidence.
+_MIN_TOTAL_DISTANCE_GAIN = 0.25
 
 
 @dataclass(frozen=True)
@@ -44,7 +52,7 @@ class ReadingDecision:
     selected_index: int
     reason: str
     normalized_evidence: tuple[str, ...]
-    distances: tuple[tuple[int, ...], ...]
+    distances: tuple[tuple[float, ...], ...]
     normalized_distances: tuple[tuple[float, ...], ...] = ()
 
 
@@ -83,23 +91,46 @@ def _candidate_key(reading: str) -> str:
     return normalize_long_vowels(jaconv.hira2kata(reading).replace("ヲ", "オ"))
 
 
-def _substring_distance(needle: str, haystack: str) -> int:
-    """Levenshtein distance to the best substring of ``haystack``."""
-    if not needle:
-        return 0
-    if not haystack:
-        return len(needle)
-    previous = [0] * (len(haystack) + 1)
-    for row, left in enumerate(needle, 1):
-        current = [row]
-        for column, right in enumerate(haystack, 1):
-            current.append(
-                min(
-                    previous[column] + 1,
-                    current[column - 1] + 1,
-                    previous[column - 1] + (left != right),
-                )
+def _kanasim_moras(text: str) -> list[str]:
+    # Consecutive long-vowel marks occur in expressive singing transcripts, but
+    # Kanasim's mora table represents a prolonged mora with a single mark.
+    return _KANA_DISTANCE.preprocess_func(re.sub("ー+", "ー", text))
+
+
+def _phonetic_substring_distance(needle: str, haystack: str) -> float:
+    """Return raw Kanasim distance to the best substring of ``haystack``.
+
+    KanaWhisper evidence covers a multi-line context, so a whole-string distance
+    would charge unrelated surrounding lyrics. This uses Kanasim's weighted mora
+    costs with free evidence prefixes/suffixes; candidate edits keep their full
+    summed costs.
+    """
+    left_moras = _kanasim_moras(needle)
+    right_moras = _kanasim_moras(haystack)
+    if not left_moras:
+        return 0.0
+
+    previous = [0.0] * (len(right_moras) + 1)
+    for left in left_moras:
+        delete_cost = (
+            _KANA_DISTANCE.delete_cost_func(left)
+            if _KANA_DISTANCE.delete_cost_func else _KANA_DISTANCE.delete_cost
+        )
+        current = [previous[0] + delete_cost]
+        for column, right in enumerate(right_moras, 1):
+            insert_cost = (
+                _KANA_DISTANCE.insert_cost_func(right)
+                if _KANA_DISTANCE.insert_cost_func else _KANA_DISTANCE.insert_cost
             )
+            replace_cost = (
+                _KANA_DISTANCE.replace_cost_func(left, right)
+                if _KANA_DISTANCE.replace_cost_func else _KANA_DISTANCE.replace_cost
+            )
+            current.append(min(
+                previous[column] + delete_cost,
+                current[column - 1] + insert_cost,
+                previous[column - 1] + replace_cost,
+            ))
         previous = current
     return min(previous)
 
@@ -107,11 +138,10 @@ def _substring_distance(needle: str, haystack: str) -> int:
 def choose_reading(candidates: Sequence[str], evidence: Sequence[str]) -> ReadingDecision:
     """Conservatively rerank bounded candidates using mix/vocal kana evidence.
 
-    A non-default candidate must beat the default in at least one reliable view,
-    lose in none, and clear conservative acoustic and dictionary-order priors. This
-    keeps raw ASR mistakes from becoming lyric edits. Distances are normalized by
-    candidate length so shorter dictionary readings do not win merely because they
-    have fewer characters that can differ.
+    A non-default candidate must beat the default in at least one view, lose in
+    none, and clear a conservative dictionary-order prior. This keeps raw ASR
+    mistakes from becoming lyric edits. Candidates are ranked by raw summed
+    Kanasim distance; candidate-length-normalized values are diagnostic only.
     """
     normalized = tuple(filter(None, (normalize_kana_evidence(text) for text in evidence)))
     if len(candidates) < 2:
@@ -128,21 +158,17 @@ def choose_reading(candidates: Sequence[str], evidence: Sequence[str]) -> Readin
         return ReadingDecision(0, reason, normalized, ())
 
     distances = tuple(
-        tuple(_substring_distance(key, transcript) for transcript in normalized) for key in keys
+        tuple(_phonetic_substring_distance(key, transcript) for transcript in normalized)
+        for key in keys
     )
     normalized_distances = tuple(
-        tuple(distance / max(1, len(key)) for distance in row)
+        tuple(distance / max(1, len(_kanasim_moras(key))) for distance in row)
         for key, row in zip(keys, distances, strict=True)
     )
-    totals = {index: sum(normalized_distances[index]) for index in eligible}
+    totals = {index: sum(distances[index]) for index in eligible}
     best_total = min(totals.values())
-    best_index = next(index for index in eligible if totals[index] == best_total)
-    # Candidate order is a linguistic prior (yomi, then UniDic paths).  When two
-    # pronunciations are within one edit across both acoustic views, keep the
-    # earlier dictionary path instead of overfitting a KanaWhisper consonant error.
-    tie_margin = 1 / len(keys[best_index])
     selected = next(
-        index for index in eligible if totals[index] <= best_total + tie_margin
+        index for index in eligible if math.isclose(totals[index], best_total, abs_tol=1e-12)
     )
     if selected == 0:
         return ReadingDecision(
@@ -150,27 +176,24 @@ def choose_reading(candidates: Sequence[str], evidence: Sequence[str]) -> Readin
         )
     supports = 0
     for view in range(len(normalized)):
-        default_distance = normalized_distances[0][view]
-        selected_distance = normalized_distances[selected][view]
-        reliable = (
-            default_distance <= max(0.3, 2 / len(keys[0]))
-            or selected_distance <= max(0.3, 2 / len(keys[selected]))
-        )
-        if not reliable:
-            continue
-        if selected_distance > default_distance:
+        default_distance = distances[0][view]
+        selected_distance = distances[selected][view]
+        if selected_distance > default_distance and not math.isclose(
+            selected_distance, default_distance, abs_tol=1e-12
+        ):
             return ReadingDecision(
                 0, "conflicting-evidence", normalized, distances, normalized_distances
             )
-        if selected_distance < default_distance:
+        if selected_distance < default_distance and not math.isclose(
+            selected_distance, default_distance, abs_tol=1e-12
+        ):
             supports += 1
     if supports == 0:
         return ReadingDecision(
             0, "insufficient-evidence", normalized, distances, normalized_distances
         )
     total_gain = totals[0] - totals[selected]
-    weak_gain = 3 / max(len(keys[0]), len(keys[selected]))
-    if total_gain < weak_gain and 0.0 not in normalized_distances[selected]:
+    if total_gain < _MIN_TOTAL_DISTANCE_GAIN and 0.0 not in distances[selected]:
         return ReadingDecision(
             0, "weak-evidence", normalized, distances, normalized_distances
         )
