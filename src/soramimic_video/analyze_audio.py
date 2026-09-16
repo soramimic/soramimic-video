@@ -438,7 +438,10 @@ def analyze_audio(
                     },
                     "semantic_gate": {
                         "melody_source": "sheetsage2-original-mix",
-                        "rule": "reject-only-when-no-melody-and-template-match",
+                        "rule": (
+                            "reject-only-when-melody-time-is-insufficient-and-"
+                            "template-matches"
+                        ),
                         "decisions": [
                             {
                                 "start_sec": line.start_sec,
