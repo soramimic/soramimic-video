@@ -48,6 +48,8 @@ audio = [
     "scipy>=1.13",
     # SheetSage2's tokenizer imports mir_eval.chord while loading the custom model.
     "mir-eval>=0.8.2",
+    # SheetSage2's custom model exports MIDI through pretty_midi during inference.
+    "pretty-midi>=0.2.10",
     "faster-whisper>=1.0",
     "soramimic-yomi",
     "numpy>=1.24",
