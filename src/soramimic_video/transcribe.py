@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,6 +145,50 @@ def transcribe_lines(
         vad_filter=vad_filter,
         condition_on_previous_text=condition_on_previous_text,
     )
+
+
+def transcribe_window(
+    audio_path: Path,
+    start_sec: float,
+    end_sec: float,
+    model_size: str = DEFAULT_WHISPER_MODEL,
+    device: str = "auto",
+) -> list[TranscribedLine]:
+    """Transcribe one hard-bounded audio interval and restore song-clock times."""
+    if start_sec < 0 or end_sec <= start_sec:
+        raise ValueError("Whisper局所再認識区間が不正です")
+    import soundfile as sf
+
+    with sf.SoundFile(str(audio_path)) as source:
+        start_frame = max(0, round(start_sec * source.samplerate))
+        end_frame = min(len(source), round(end_sec * source.samplerate))
+        if end_frame <= start_frame:
+            return []
+        source.seek(start_frame)
+        samples = source.read(end_frame - start_frame, dtype="float32", always_2d=True)
+        actual_start = start_frame / source.samplerate
+        actual_end = end_frame / source.samplerate
+        samplerate = source.samplerate
+    with tempfile.TemporaryDirectory(prefix="soramimic-whisper-window-") as temporary:
+        clip = Path(temporary) / "clip.wav"
+        sf.write(clip, samples, samplerate, subtype="FLOAT")
+        local_lines = transcribe_lines(
+            clip,
+            model_size,
+            device,
+            vad_filter=False,
+            condition_on_previous_text=False,
+        )
+    return [
+        TranscribedLine(
+            max(actual_start, actual_start + line.start_sec),
+            min(actual_end, actual_start + line.end_sec),
+            line.text,
+        )
+        for line in local_lines
+        if min(actual_end, actual_start + line.end_sec)
+        > max(actual_start, actual_start + line.start_sec)
+    ]
 
 
 def _transcribe_lines_local(
