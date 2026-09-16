@@ -153,18 +153,22 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
     assert all(note.pitch_confidence is None for note in value.notes)
 
 
-@pytest.mark.parametrize("failure", ["unresolved", "invalid-plan"])
-def test_known_lyrics_fails_truthfully_when_stage3_cannot_supply_a_complete_plan(
-    monkeypatch, tmp_path, failure,
+@pytest.mark.parametrize("known_lyrics", [True, False])
+def test_unresolved_stage3_unit_is_omitted_for_known_and_automatic_lyrics(
+    monkeypatch, tmp_path, known_lyrics,
 ):
     import soramimic_video.stage3 as stage3
-    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
 
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *args, **kwargs: [
+        TranscribedLine(0.0, 0.5, "かき"),
+    ])
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
@@ -186,17 +190,83 @@ def test_known_lyrics_fails_truthfully_when_stage3_cannot_supply_a_complete_plan
         unresolved_unit_ids = ("singing-unit-1",)
 
         def to_dict(self):
-            pytest.fail("unresolved Stage 3 layers must not replace the complete project")
+            return {
+                "schema_version": 1,
+                "canonical_text": "かき",
+                "canonical": [{
+                    "utterance_id": "utterance-0", "text": "かき", "kana": "カキ",
+                    "mora_ids": ["mora-0", "mora-1"],
+                }],
+                "performed": [
+                    {
+                        "singing_unit_id": f"singing-unit-{index}",
+                        "mora_ids": [f"mora-{index}"], "status": "observed",
+                        "start_sec": index * 0.2, "end_sec": (index + 1) * 0.2,
+                        "confidence": 0.7, "link_ids": [f"link-{index}"],
+                        "evidence_ids": [],
+                    }
+                    for index in range(2)
+                ],
+                "synthesis_plan": [{
+                    "id": "slot-0", "utterance_id": "utterance-0",
+                    "singing_unit_id": "singing-unit-0", "mora_ids": ["mora-0"],
+                    "note_candidate_id": "note-0", "link_ids": ["link-0"],
+                    "kana": "カ", "start_sec": 0.0, "end_sec": 0.2,
+                    "midi_pitch": 60, "operation": "match",
+                    "timing_source": "aligned_boundary", "confidence": 0.7,
+                    "evidence_ids": [], "pitch_sources": ["sheetsage2-vocal"],
+                    "continuation": False,
+                }],
+                "omissions": [], "unresolved_unit_ids": ["singing-unit-1"],
+                "diagnostics": [], "evidence": [],
+            }
 
-    if failure == "unresolved":
-        monkeypatch.setattr(
-            stage3, "build_stage3_layers", lambda *args: (Document(), Layers())
-        )
-    else:
-        def invalid_plan(*args):
-            raise ValueError("invalid synthesis slot timing, pitch, or confidence")
+    monkeypatch.setattr(stage3, "build_stage3_layers", lambda *args: (Document(), Layers()))
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("かき", encoding="utf-8")
 
-        monkeypatch.setattr(stage3, "build_stage3_layers", invalid_plan)
+    value = analyze_audio(
+        tmp_path / "input.wav", tmp_path / "project",
+        lyrics_path=lyrics if known_lyrics else None,
+        device="cpu", skip_separation=True,
+    )
+
+    assert [note.kana for note in value.notes] == ["カ"]
+    assert value.lines[0].original_text == "かき"
+    assert value.lyric_layers["unresolved_unit_ids"] == []
+    assert value.lyric_layers["omissions"][0]["singing_unit_id"] == "singing-unit-1"
+    analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
+    assert analysis["stage3_correspondence"] is True
+    assert analysis["lyric_asr_used"] is not known_lyrics
+    assert analysis["diagnostics"][-1]["status"] == "synthesis-omission"
+
+
+def test_known_lyrics_fails_truthfully_when_stage3_plan_is_invalid(monkeypatch, tmp_path):
+    import soramimic_video.stage3 as stage3
+    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=1.0)))
+    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
+        [AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8),
+         AlignedMora(0, 1, "キ", 0.3, 0.4, 0.7)], [0],
+    ))
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: [
+        MelodyNote(0.0, 0.5, 60),
+    ])
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+
+    def invalid_plan(*args):
+        raise ValueError("invalid synthesis slot timing, pitch, or confidence")
+
+    monkeypatch.setattr(stage3, "build_stage3_layers", invalid_plan)
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("かき", encoding="utf-8")
 
@@ -210,8 +280,7 @@ def test_known_lyrics_fails_truthfully_when_stage3_cannot_supply_a_complete_plan
     assert analysis["stage3_correspondence"] is False
     assert analysis["diagnostics"][-1]["status"] == "unresolved"
     assert "補わず" in analysis["limitations"][-1]
-    if failure == "invalid-plan":
-        assert not (tmp_path / "project/analyze_audio/correspondence.json").exists()
+    assert not (tmp_path / "project/analyze_audio/correspondence.json").exists()
 
 
 def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):

@@ -72,6 +72,55 @@ def _record_stage3_failure(project_dir: Path, detail: str) -> None:
     )
 
 
+def _omit_unresolved_synthesis_units(layers: dict) -> int:
+    """Turn pitchless Stage 3 units into explicit, provenance-backed omissions."""
+    unresolved = list(dict.fromkeys(layers.get("unresolved_unit_ids", [])))
+    if not unresolved:
+        return 0
+    units = {item["singing_unit_id"] for item in layers.get("performed", [])}
+    rendered = {item["singing_unit_id"] for item in layers.get("synthesis_plan", [])}
+    existing = {item["singing_unit_id"] for item in layers.get("omissions", [])}
+    if any(unit_id not in units or unit_id in rendered for unit_id in unresolved):
+        raise ValueError("Stage 3の未解決歌唱単位が合成計画と矛盾しています")
+
+    evidence = list(layers.get("evidence", []))
+    layers["evidence"] = evidence
+    occupied = {item["id"] for item in evidence}
+    omissions = list(layers.get("omissions", []))
+    layers["omissions"] = omissions
+    for unit_id in unresolved:
+        if unit_id in existing:
+            continue
+        base = f"stage3-synthesis-omission-{unit_id}"
+        evidence_id = base
+        suffix = 1
+        while evidence_id in occupied:
+            evidence_id = f"{base}-{suffix}"
+            suffix += 1
+        occupied.add(evidence_id)
+        evidence.append({
+            "id": evidence_id,
+            "source": "stage3",
+            "kind": "synthesis-omission",
+            "confidence": 1.0,
+            "detail": {"reason": "pitch-unresolved"},
+        })
+        omissions.append({
+            "singing_unit_id": unit_id,
+            "reason": "Stage 3で音高を確定できないため合成から省略",
+            "evidence_ids": [evidence_id],
+        })
+    layers["unresolved_unit_ids"] = []
+    diagnostics = list(layers.get("diagnostics", []))
+    layers["diagnostics"] = diagnostics
+    diagnostics.append({
+        "stage": "stage3",
+        "status": "synthesis-omission",
+        "unit_count": len(unresolved),
+    })
+    return len(unresolved)
+
+
 def _run_sheetsage(
     audio_path: Path,
     project_dir: Path,
@@ -628,14 +677,8 @@ def analyze_audio(
         (out / "correspondence.json").write_text(
             document.to_json(), encoding="utf-8"
         )
-    if layers.unresolved_unit_ids:
-        detail = (
-            f"Stage 3で{len(layers.unresolved_unit_ids)}歌唱単位の音高が未解決です。"
-            "歌詞や音高を補わず処理を停止します。"
-        )
-        _record_stage3_failure(project_dir, detail)
-        raise RuntimeError(detail)
     layer_data = layers.to_dict()
+    omitted_units = _omit_unresolved_synthesis_units(layer_data)
     for slot in layer_data["synthesis_plan"]:
         # SheetSage does not expose calibrated pitch confidence. Preserve the
         # candidate source but do not turn its schema-required score into one.
@@ -652,6 +695,18 @@ def analyze_audio(
             }.items()
         )
     )
+    if omitted_units:
+        detail = (
+            f"Stage 3で音高を確定できなかった{omitted_units}歌唱単位を"
+            "推測で補わず、合成から省略しました。"
+        )
+        analysis_data["limitations"].append(detail)
+        analysis_data["diagnostics"].append({
+            "stage": "stage3",
+            "status": "synthesis-omission",
+            "unit_count": omitted_units,
+            "detail": detail,
+        })
     analysis_path.write_text(
         json.dumps(analysis_data, ensure_ascii=False, indent=1),
         encoding="utf-8",

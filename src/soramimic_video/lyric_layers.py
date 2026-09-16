@@ -39,9 +39,12 @@ def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
     evidence = {item["id"]: item for item in layers.get("evidence", [])}
     for item in layers["omissions"]:
         if (not item["reason"].strip() or not item["evidence_ids"]
-                or any(eid not in evidence or evidence[eid]["kind"] != "performance-omission"
+                or any(eid not in evidence
+                       or evidence[eid]["kind"] not in {
+                           "performance-omission", "synthesis-omission",
+                       }
                        or evidence[eid]["confidence"] <= 0 for eid in item["evidence_ids"])):
-            raise ValueError("実演の省略には明示的な根拠が必要です")
+            raise ValueError("歌唱単位の省略には明示的な根拠が必要です")
     rendered = {slot["singing_unit_id"] for slot in plan}
     if rendered & omissions or rendered | omissions != set(by_unit):
         raise ValueError("歌詞の各単位を合成または根拠付き省略として保持してください")
