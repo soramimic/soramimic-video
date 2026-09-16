@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("wav_to_xf.pipeline")
 
 
-def test_stage3_uses_boundaryless_weights_with_each_mora_ctc_peak(
+def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
     monkeypatch,
 ):
     from wav_to_xf import pipeline
@@ -36,11 +36,15 @@ def test_stage3_uses_boundaryless_weights_with_each_mora_ctc_peak(
 
     anchors = [item for item in document.evidence if item.kind == "mora-ctc-anchor"]
     assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
-    assert captured["config"].vowel_onset_weight == 0
-    assert captured["config"].interval_overlap_weight == 0
-    assert captured["config"].boundary_weight == 0
-    assert [(item.kana, item.note_candidate_id) for item in realization.synthesis_plan] == [
-        ("カ", "sheetsage-0"), ("キ", "sheetsage-1"),
+    from wav_to_xf import NoteRunConfig
+
+    assert captured["config"] == NoteRunConfig()
+    notes = {item.id: item for item in document.note_candidates}
+    assert [
+        (item.kana, notes[item.note_candidate_id].midi_pitch)
+        for item in realization.synthesis_plan
+    ] == [
+        ("カ", 60), ("キ", 62),
     ]
     assert not realization.unresolved_unit_ids
 
