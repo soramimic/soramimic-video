@@ -73,11 +73,13 @@ def public_app(tmp_path, monkeypatch):
 
 
 def test_session_cookie_issued_once(public_app):
-    client = TestClient(public_app)
+    client = TestClient(public_app, base_url="https://testserver")
     res = client.get("/api/config")
     assert api_mod.SESSION_COOKIE in res.cookies
     sid = res.cookies[api_mod.SESSION_COOKIE]
     assert len(sid) == 32
+    assert "Secure" in res.headers["set-cookie"]
+    assert "HttpOnly" in res.headers["set-cookie"]
     # 2回目は既存のcookieを使い回すので発行し直さない
     res2 = client.get("/api/config")
     assert api_mod.SESSION_COOKIE not in res2.cookies
@@ -104,6 +106,12 @@ def test_jobs_are_isolated_per_session(public_app):
     playback = alice.get(f"/api/jobs/{a_id}/playback")
     assert playback.content == FAKE_MP4
     assert playback.headers["content-disposition"].startswith("inline;")
+    listing = alice.get("/api/jobs")
+    assert listing.headers["cache-control"] == "private, no-store"
+    assert listing.headers["vary"] == "Cookie"
+    detail = alice.get(f"/api/jobs/{a_id}")
+    assert detail.headers["cache-control"] == "private, no-store"
+    assert detail.headers["vary"] == "Cookie"
 
 
 def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
@@ -169,6 +177,35 @@ def test_owner_is_persisted_across_restart(tmp_path, monkeypatch):
     again.cookies.set(api_mod.SESSION_COOKIE, sid)
     assert [j["id"] for j in again.get("/api/jobs").json()] == [job_id]
     assert TestClient(app2).get("/api/jobs").json() == []
+
+
+def test_restart_scrubs_private_artifacts_left_by_older_release(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+    jobs_dir = tmp_path / "jobs"
+    first = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    job_id = submit(first).json()["id"]
+    wait_done(first, job_id)
+    old_job = first.app.state.manager.jobs[job_id]
+    (old_job.dir / "private-input.wav").write_bytes(b"private")
+    (old_job.dir / "analysis").mkdir()
+    (old_job.dir / "analysis" / "lyrics.json").write_text("private")
+
+    restarted = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    loaded = restarted.app.state.manager.jobs[job_id]
+    assert loaded.status == "done"
+    assert loaded.video is not None and loaded.video.exists()
+    assert not (loaded.dir / "private-input.wav").exists()
+    assert not (loaded.dir / "analysis").exists()
+
+
+def test_simple_ui_refuses_to_start_without_public_isolation(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.REQUIRE_PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
+    with pytest.raises(RuntimeError, match=api_mod.REQUIRE_PUBLIC_ENV):
+        api_mod.create_app(jobs_dir=tmp_path / "jobs")
 
 
 def test_queue_limit_returns_429(tmp_path, monkeypatch):
@@ -262,7 +299,35 @@ def test_job_ttl_cleanup(tmp_path, monkeypatch):
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
 
 
-def test_job_ttl_cleanup_removes_uploaded_wav(tmp_path, monkeypatch):
+def test_expired_jobs_are_removed_during_startup(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+    jobs_dir = tmp_path / "jobs"
+    first = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    job_id = submit(first).json()["id"]
+    wait_done(first, job_id)
+    job = first.app.state.manager.jobs[job_id]
+    job.finished_at = time.time() - 2 * 3600
+    first.app.state.manager._save(job)
+
+    restarted = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+
+    assert job_id not in restarted.app.state.manager.jobs
+    assert not job.dir.exists()
+
+
+def test_public_config_reports_result_retention(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "24")
+    conf = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs")).get(
+        "/api/config"
+    ).json()
+    assert conf["result_retention_hours"] == 24
+
+
+def test_job_ttl_cleanup_removes_retained_result_after_wav_is_scrubbed(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "1")
     monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
@@ -278,11 +343,19 @@ def test_job_ttl_cleanup_removes_uploaded_wav(tmp_path, monkeypatch):
     wait_done(client, job_id)
     manager = client.app.state.manager
     wav_path = manager.jobs[job_id].dir / "input.wav"
-    assert wav_path.exists()
+    result_path = manager.jobs[job_id].video
+    assert not wav_path.exists()
+    assert result_path is not None and result_path.exists()
+    assert sorted(
+        path.relative_to(manager.jobs[job_id].dir).as_posix()
+        for path in manager.jobs[job_id].dir.rglob("*")
+        if path.is_file()
+    ) == ["song.mp4", "status.json"]
     manager.jobs[job_id].finished_at = time.time() - 2 * 3600
 
     assert manager.cleanup_expired() == [job_id]
     assert not wav_path.exists()
+    assert not result_path.exists()
 
 
 def test_job_ttl_cleanup_removes_stale_editor_sessions(tmp_path, monkeypatch):
@@ -634,7 +707,17 @@ def test_thumbnail_is_owner_checked(tmp_path, monkeypatch):
     assert bob.get(f"/api/jobs/{a_id}/thumbnail").status_code == 404
 
 
-def test_public_accepts_named_text_wordlist_and_strips_images(public_app, tmp_path):
+def test_public_accepts_named_text_wordlist_and_strips_images(
+    public_app, tmp_path, monkeypatch
+):
+    captured: dict[str, str] = {}
+
+    def inspect_pipeline(job, config):
+        saved = job.dir / api_mod.WORDLIST_DIRNAME / "庭の鳥.csv"
+        captured["wordlist"] = saved.read_text(encoding="utf-8")
+        return fast_pipeline(job, config)
+
+    monkeypatch.setattr(api_mod, "run_pipeline", inspect_pipeline)
     client = TestClient(public_app)
     response = submit(
         client, wordlist="unused-list-name", wordlist_name="庭の鳥",
@@ -650,9 +733,10 @@ def test_public_accepts_named_text_wordlist_and_strips_images(public_app, tmp_pa
     assert params["where"] == ""
     assert params["wordlist_rows"] == 1
     saved = (tmp_path / "jobs" / job["id"] / api_mod.WORDLIST_DIRNAME / "庭の鳥.csv")
-    assert saved.read_text(encoding="utf-8") == (
+    assert captured["wordlist"] == (
         "id,original,surface,pronunciation\n1,雀,雀,スズメ"
     )
+    assert not saved.exists()
 
 
 @pytest.mark.parametrize("endpoint", ["/api/jobs", "/api/editor-session"])

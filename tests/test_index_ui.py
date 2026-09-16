@@ -2524,6 +2524,13 @@ def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
     assert "clearEditorFile();" in body
 
 
+def test_upload_notice_explains_private_data_retention():
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'id="upload-privacy"' in html
+    assert "元の音源・歌詞と解析用データは処理終了時に削除します" in html
+    assert "入力内容をAIモデルの学習には使用しません" in html
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_image_credits_interactions():
     subprocess.run(

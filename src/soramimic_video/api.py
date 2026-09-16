@@ -91,6 +91,7 @@ API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 # ---- 公開モード(一般公開インスタンス)向けの環境変数 ----
 # いずれも未設定なら従来どおりの挙動(制限なし・ジョブは全員から見える)。
 PUBLIC_ENV = "SORAMIMIC_PUBLIC"  # 1/true で公開モード
+REQUIRE_PUBLIC_ENV = "SORAMIMIC_REQUIRE_PUBLIC"  # 1/true なら公開モード設定漏れで起動しない
 SIMPLE_UI_ENV = "SORAMIMIC_SIMPLE_UI"  # 初回公開用の選択肢を絞ったUI
 QUEUE_LIMIT_ENV = "SORAMIMIC_QUEUE_LIMIT"  # 待機+実行中ジョブの上限
 DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の投入上限
@@ -173,6 +174,13 @@ def resolve_soundfont(soundfont: str | None) -> str | None:
 def is_public_mode() -> bool:
     """公開モード(SORAMIMIC_PUBLIC)かどうか。未設定なら従来どおりの非公開モード。"""
     return os.environ.get(PUBLIC_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("", "0", "false", "no")
 
 
 def is_simple_ui() -> bool:
@@ -1499,6 +1507,10 @@ class JobManager:
         self._lock = threading.Lock()
         self._queue: queue.Queue[Job] = queue.Queue()
         self._load_existing()
+        self._scrub_terminal_jobs()
+        # Do not leave already-expired uploads on disk for another hour after a
+        # restart.  The periodic cleaner below remains the steady-state backstop.
+        self.cleanup_expired()
         self._worker = threading.Thread(target=self._loop, daemon=True)
         self._worker.start()
         # 自動削除はTTLが正のときだけ。無効なら従来どおりスレッドも作らない
@@ -1537,6 +1549,27 @@ class JobManager:
             if data.get("video") and video.exists():
                 job.video = video
             self.jobs[job.id] = job
+
+    def _scrub_terminal_jobs(self) -> None:
+        """Remove private inputs left by older releases from terminal jobs."""
+        for job in list(self.jobs.values()):
+            if job.status in {"error", "canceled"}:
+                self._cleanup_failed_artifacts(job)
+                continue
+            if (
+                not self.config.get("scrub_private_artifacts")
+                or job.status != "done"
+                or job.video is None
+            ):
+                continue
+            try:
+                self._cleanup_completed_artifacts(job)
+            except Exception as exc:  # noqa: BLE001 - fail closed on private data
+                logger.exception("[job %s] 完了済みジョブの機密データ清掃に失敗", job.id)
+                job.error = f"完了後の一時データ削除に失敗しました: {exc}"
+                job.status = "error"
+                self._cleanup_failed_artifacts(job)
+                self._save(job)
 
     def create(
         self,
@@ -1755,6 +1788,60 @@ class JobManager:
             except OSError:
                 logger.exception("[job %s] 失敗時の一時ファイル清掃に失敗", job.id)
 
+    def _cleanup_completed_artifacts(self, job: Job) -> None:
+        """Keep only downloadable results; remove uploads and work products.
+
+        A completed job may retain its final video (or audio preview), thumbnail,
+        and human-readable/source-credit sidecars.  Raw uploads, lyrics, separated
+        stems, synthesized audio, analysis JSON, and rendered frames are removed
+        before the job becomes observable as ``done``.
+        """
+        root = job.dir.resolve()
+        if root.parent != self.jobs_dir.resolve() or not root.is_dir():
+            raise RuntimeError("不正なジョブ保存先のため清掃できません")
+        if job.video is None or job.video.is_symlink() or not job.video.is_file():
+            raise RuntimeError("完成ファイルを確認できません")
+        video = job.video.resolve()
+        try:
+            video.relative_to(root)
+        except ValueError as exc:
+            raise RuntimeError("完成ファイルがジョブ保存先の外にあります") from exc
+
+        keep = {
+            video,
+            (root / STATUS_FILENAME).resolve(),
+            (root / f"{STATUS_FILENAME}.tmp").resolve(),
+        }
+        if job.thumbnail.is_file() and not job.thumbnail.is_symlink():
+            keep.add(job.thumbnail.resolve())
+        if video.suffix != ".wav":
+            from .video import VIDEO_DIR
+
+            for name in ("credits.json", "credits.md"):
+                sidecar = root / VIDEO_DIR / name
+                if sidecar.is_file() and not sidecar.is_symlink():
+                    keep.add(sidecar.resolve())
+
+        failures: list[str] = []
+        for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    path.rmdir()
+                elif path.resolve() not in keep:
+                    path.unlink(missing_ok=True)
+            except OSError as exc:
+                # Non-empty parents of retained files are expected.  Any other
+                # failure means private data may still be present, so fail closed.
+                if path.is_dir() and any(
+                    retained == path.resolve()
+                    or path.resolve() in retained.parents
+                    for retained in keep
+                ):
+                    continue
+                failures.append(f"{path.name}: {exc}")
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
     def _loop(self) -> None:
         while True:
             job = self._queue.get()
@@ -1773,6 +1860,7 @@ class JobManager:
 
     def _run_one(self, job: Job) -> None:
         if job.cancel_event.is_set():
+            self._cleanup_failed_artifacts(job)
             job.status = "canceled"
             self._save(job)
             return
@@ -1786,6 +1874,8 @@ class JobManager:
             job.video = run_pipeline(job, self.config)
             if job.cancel_event.is_set():
                 raise runproc.Cancelled()
+            if self.config.get("scrub_private_artifacts"):
+                self._cleanup_completed_artifacts(job)
             job.status = "done"
         except runproc.Cancelled:
             logger.info("[job %s] 中断されました", job.id)
@@ -1838,7 +1928,19 @@ def create_app(
     logging.getLogger("soramimic_video").setLevel(logging.INFO)
     from .editor_io import editor_sessions_dir
 
+    if _env_bool(REQUIRE_PUBLIC_ENV, False) and not is_public_mode():
+        raise RuntimeError(
+            f"{REQUIRE_PUBLIC_ENV}=1 requires {PUBLIC_ENV}=1 so anonymous jobs stay isolated"
+        )
     jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Older releases kept user-derived title previews and rendered lyric frames in
+    # cross-job caches.  New requests no longer write either kind of private data
+    # there; remove the legacy locations before accepting traffic.
+    shutil.rmtree(jobs_dir.resolve() / "thumbnail-preview-cache", ignore_errors=True)
+    shutil.rmtree(
+        jobs_dir.resolve() / "image-cache" / "rendered-frames", ignore_errors=True
+    )
 
     configured_ip_hash_key = os.environ.get(IP_HASH_KEY_ENV, "").strip()
 
@@ -1860,6 +1962,9 @@ def create_app(
         "video_fps": video_fps,
         "video_image_lead_sec": video_image_lead_sec,
         "parallel_video": parallel_video,
+        # Local/private workspaces intentionally retain projects for resuming and
+        # editing.  Public instances discard uploads and intermediates at terminal.
+        "scrub_private_artifacts": is_public_mode(),
         # 合成の所要時間の目安(曲秒あたりの実処理秒)を実行ごとに記録して次回に使う
         "throughput_store": jobs_dir.resolve() / THROUGHPUT_FILENAME,
         # Missing configuration still enforces an in-process IP backstop, but
@@ -1983,13 +2088,24 @@ def create_app(
             "/logo-soramimic-video-v1.png",
             "/logo-soramimic-video-v2.png",
         }:
-            return await call_next(request)
+            response = await call_next(request)
+            if request.url.path == "/api/jobs" or request.url.path.startswith(
+                "/api/jobs/"
+            ):
+                response.headers["Cache-Control"] = "private, no-store"
+                response.headers["Vary"] = "Cookie"
+            return response
         session = request.cookies.get(SESSION_COOKIE) or ""
         issued = not re.fullmatch(r"[0-9a-f]{32}", session)
         if issued:
             session = uuid.uuid4().hex
         request.state.session = session
         response = await call_next(request)
+        if request.url.path == "/api/jobs" or request.url.path.startswith(
+            "/api/jobs/"
+        ):
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Vary"] = "Cookie"
         if issued:
             response.set_cookie(
                 SESSION_COOKIE,
@@ -1997,6 +2113,9 @@ def create_app(
                 max_age=SESSION_MAX_AGE,
                 httponly=True,
                 samesite="lax",
+                # Public traffic is HTTPS at the edge.  Keeping direct loopback
+                # HTTP usable matters for health checks and local/private servers.
+                secure=request.url.scheme == "https",
             )
         return response
 
@@ -2506,6 +2625,9 @@ def create_app(
         # 公開モードのときだけ、フロントに制限値とクレジット表示の要否を伝える
         if is_public_mode():
             conf["public"] = True
+            retention_hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
+            if retention_hours > 0:
+                conf["result_retention_hours"] = retention_hours
             quota_exempt = await _quota_exempt(request)
             conf["quota_exempt"] = quota_exempt
             if not quota_exempt:
@@ -2732,13 +2854,13 @@ def create_app(
         convert_params: str = "",
         images: bool = True,
         noncommercial_fanwork: bool = False,
-    ) -> FileResponse:
+    ) -> Response:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
         サンプル曲の曲名、または持ち込み曲の曲名(title)を、その単語リストで
         1フレーズだけ空耳変換し、実際のサムネと同じ描画で小さめのPNG
-        (既定640x360)を返す。結果はディスクにキャッシュし、2回目以降は
-        変換せずそのまま返す。
+        (既定640x360)を返す。同梱サンプルの結果だけディスクにキャッシュし、
+        利用者が入力した曲名の結果はPrivateTmpから応答した直後に削除する。
         変換の入力には samples.json の title_kana(曲名の読み)を使う
         (「紅葉」を「コーヨー」と推定させないため)。見出しの曲名は title のまま。
 
@@ -2746,7 +2868,7 @@ def create_app(
         初期非表示にしている単語リスト(index.html の HIDDEN_PREVIEW_WORDLISTS)
         で、モーダルが「画像を表示する」を押されるまで使う。
 
-        単語画像は数秒だけ待って貼る。間に合わなかったときは文字だけのPNGを
+        同梱サンプルでは単語画像を数秒だけ待って貼る。間に合わなかったときは文字だけのPNGを
         X-Preview-Images: pending で返し、裏で画像を取り切って同じキャッシュキーを
         絵入りに作り直す。UIは pending を見て数秒後に1回だけ取り直す
         (そのときには作り直し済み=キャッシュヒットなので生成miss枠も変換も
@@ -2760,7 +2882,8 @@ def create_app(
         from .convert import parse_convert_params
         from .thumbnail_preview import PreviewSpec, render_slot
 
-        if sample.strip():
+        catalog_sample = bool(sample.strip())
+        if catalog_sample:
             title, title_kana = _sample_title(sample.strip())
         else:
             title = title.strip()
@@ -2790,6 +2913,46 @@ def create_app(
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # A user-supplied title is private input.  Render it in PrivateTmp and
+        # return bytes so neither the title nor its derived PNG enters a shared
+        # on-disk cache.  Catalog samples remain safe to cache across sessions.
+        if not catalog_sample:
+            if not _allow_expensive_get(request, preview_session_limiter):
+                raise HTTPException(
+                    status_code=429,
+                    detail="プレビューの作成が続いています。少し待ってからお試しください。",
+                )
+            import tempfile
+
+            try:
+                with render_slot(), tempfile.TemporaryDirectory(
+                    prefix="soramimic-private-preview-"
+                ) as temporary:
+                    path = spec.render(
+                        Path(temporary),
+                        image_cache=config["image_cache"],
+                        refresh=False,
+                    )
+                    if path is None:
+                        raise HTTPException(
+                            status_code=500, detail="プレビューを作成できませんでした"
+                        )
+                    content = path.read_bytes()
+            except TimeoutError as exc:
+                raise HTTPException(
+                    status_code=429,
+                    detail="プレビューの作成が混み合っています。少し待ってからお試しください。",
+                ) from exc
+            return Response(
+                content=content,
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "X-Preview-Cache": "private",
+                    "X-Preview-Images": "ready",
+                },
+            )
 
         cache_dir = config["preview_cache"]
         hit = spec.cached(cache_dir)
