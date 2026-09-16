@@ -37,6 +37,15 @@ _VARIANT_MARGIN_FRAMES = 25  # 読み候補スコアリング時に行の前後�
 # 平均だと行の長さで差が薄まる(違いは1-2モーラでも行全体で平均される)ため合計を使う。
 # 実測: 正しい修正(アス,ヒガ)は約4-13、誤修正の例(ドッテ)は約1.2だった
 _VARIANT_SCORE_MARGIN = 2.0
+# Whisper emits adjacent decimal timestamps that can differ by a few ULPs after
+# JSON/Python round trips.  One microsecond is still far below a CTC frame (20 ms).
+_WINDOW_BOUNDARY_EPSILON_SEC = 1e-6
+# CTC evidence is spike-like.  These conservative physical guards detect a line
+# assigned to a distant repeated phrase without treating an early ASR boundary as
+# wrong (Whisper can legitimately begin after the first sung mora).
+PATHOLOGICAL_MORA_SPAN_SEC = 1.2
+PATHOLOGICAL_WINDOW_START_UNDERRUN_SEC = 0.75
+PATHOLOGICAL_WINDOW_END_OVERRUN_SEC = 0.75
 _MODEL_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
@@ -67,6 +76,27 @@ class CTCEmissions:
 
     log_probs: Any
     vocab: dict[str, int]
+
+
+def _validated_line_windows(
+    line_windows: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Validate windows while folding floating-point dust into a shared boundary."""
+    normalized: list[tuple[float, float]] = []
+    previous_end = 0.0
+    for raw_start, end in line_windows:
+        start = raw_start
+        if not math.isfinite(start + end):
+            raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+        if start < previous_end:
+            if previous_end - start > _WINDOW_BOUNDARY_EPSILON_SEC:
+                raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+            start = previous_end
+        if not 0 <= previous_end <= start < end:
+            raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+        normalized.append((start, end))
+        previous_end = end
+    return normalized
 
 
 def compute_emissions(vocals_path: Path, device: str | None = None) -> CTCEmissions:
@@ -316,11 +346,7 @@ def align_moras_with_variants(
     if line_windows is not None:
         if len(line_windows) != len(line_variants):
             raise ValueError("line_windows must contain one window per lyric line")
-        previous_end = 0.0
-        for start, end in line_windows:
-            if not math.isfinite(start + end) or not 0 <= previous_end <= start < end:
-                raise ValueError("line_windows must be finite, positive, and nonoverlapping")
-            previous_end = end
+        line_windows = _validated_line_windows(line_windows)
     try:
         import torch
     except ImportError as e:
@@ -356,6 +382,123 @@ def align_moras_with_variants(
             choices.append(chosen[0])
         return aligned, choices
     return _align_variants(log_probs, vocab, line_variants)
+
+
+def _pathological_reasons(
+    moras: list[AlignedMora], window: tuple[float, float],
+) -> list[str]:
+    if not moras:
+        return []
+    reasons = []
+    longest = max(moras, key=lambda mora: mora.end_sec - mora.start_sec)
+    if (
+        longest.end_sec - longest.start_sec > PATHOLOGICAL_MORA_SPAN_SEC
+        and window[0] - longest.start_sec > PATHOLOGICAL_WINDOW_START_UNDERRUN_SEC
+    ):
+        reasons.append("mora-span-before-whisper-window")
+    if max(mora.end_sec for mora in moras) - window[1] > PATHOLOGICAL_WINDOW_END_OVERRUN_SEC:
+        reasons.append("after-whisper-window")
+    return reasons
+
+
+def retry_pathological_line_alignments(
+    vocals_path: Path,
+    line_variants: list[list[list[str]]],
+    aligned: list[AlignedMora],
+    line_windows: list[tuple[float, float]],
+    device: str | None = None,
+    *,
+    emissions: CTCEmissions,
+    phonetic_aliases: bool = False,
+) -> tuple[list[AlignedMora], list[dict[str, object]]]:
+    """Retry physically implausible whole-song assignments inside their ASR window.
+
+    This is a safety net for a genuine overlap or other invalid line-window layout
+    that forced the caller to use whole-song CTC.  A retry is published only when
+    every pathology that triggered it is gone; otherwise the original alignment is
+    retained.
+    """
+    if len(line_variants) != len(line_windows):
+        raise ValueError("line_windows must contain one window per lyric line")
+    grouped: list[list[AlignedMora]] = [[] for _ in line_variants]
+    for mora in aligned:
+        if not 0 <= mora.line < len(grouped):
+            raise ValueError("aligned mora line is outside line_variants")
+        grouped[mora.line].append(mora)
+
+    replacements: dict[int, list[AlignedMora]] = {}
+    diagnostics: list[dict[str, object]] = []
+    for line, (variants, window, previous) in enumerate(
+        zip(line_variants, line_windows, grouped, strict=True)
+    ):
+        reasons = _pathological_reasons(previous, window)
+        if not reasons:
+            continue
+        before_max_span = max(
+            (mora.end_sec - mora.start_sec for mora in previous), default=0.0
+        )
+        record: dict[str, object] = {
+            "line": line,
+            "window_start_sec": window[0],
+            "window_end_sec": window[1],
+            "reasons": reasons,
+            "before_max_mora_span_sec": before_max_span,
+            "before_line_end_sec": max(
+                (mora.end_sec for mora in previous), default=window[0]
+            ),
+        }
+        try:
+            local, _choices = align_moras_with_variants(
+                vocals_path,
+                [variants],
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=phonetic_aliases,
+                line_windows=[window],
+            )
+        except (RuntimeError, ValueError) as exc:
+            record.update(status="failed", detail=str(exc))
+            diagnostics.append(record)
+            logger.warning("行%dの病的CTC整列を局所再試行できませんでした: %s", line, exc)
+            continue
+        local = [replace(mora, line=line) for mora in local]
+        after_max_span = max(
+            (mora.end_sec - mora.start_sec for mora in local), default=0.0
+        )
+        remaining = _pathological_reasons(local, window)
+        record.update(
+            after_max_mora_span_sec=after_max_span,
+            after_line_end_sec=max(
+                (mora.end_sec for mora in local), default=window[0]
+            ),
+        )
+        if len(local) != len(previous) or remaining:
+            record.update(
+                status="unresolved",
+                detail=(
+                    "localized alignment did not preserve the mora count"
+                    if len(local) != len(previous)
+                    else f"remaining pathologies: {', '.join(remaining)}"
+                ),
+            )
+            diagnostics.append(record)
+            continue
+        replacements[line] = local
+        record["status"] = "replaced"
+        diagnostics.append(record)
+        logger.warning(
+            "行%dの病的CTC整列をWhisper区間 %.3f–%.3f秒で再整列しました (%s)",
+            line, window[0], window[1], ", ".join(reasons),
+        )
+
+    if not replacements:
+        return aligned, diagnostics
+    repaired = [
+        mora
+        for line in range(len(grouped))
+        for mora in replacements.get(line, grouped[line])
+    ]
+    return repaired, diagnostics
 
 
 def _align_variants(
