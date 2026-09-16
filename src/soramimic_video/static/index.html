@@ -2283,6 +2283,9 @@ window.addEventListener("pagehide", () => {
 
 let currentJob = null;
 let cancelPendingJob = null;
+// サーバーにジョブが作られる前の音源送信も、枠内の中断ボタンから止める。
+// ジョブ作成後は従来どおり currentJob のキャンセルAPIへ切り替わる。
+let submitAbort = null;
 
 // ---- 進捗ポーリング ----
 // iOSでアプリを切り替えるとタイマーが凍り、通信も切られる。復帰したときに
@@ -2858,7 +2861,7 @@ function showSubmitMsg(text) {
 
 // Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
 // Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
-async function postJobWithTurnstileRetry(form) {
+async function postJobWithTurnstileRetry(form, signal = null) {
   const hasAudio = !!(form.has && form.has("audio"));
   const jobHeaders = () => ({
     ...headers(),
@@ -2868,6 +2871,10 @@ async function postJobWithTurnstileRetry(form) {
   // rejectも完了もせず「送信中」のまま残る。音源だけXHRを使い、進捗が動くたびに
   // watchdogを延長する。遅い回線は許容しつつ、停止した送信だけを再試行へ渡す。
   const uploadAudio = () => new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("音源送信を中断しました", "AbortError"));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     let finished = false;
     let stalled = false;
@@ -2876,8 +2883,11 @@ async function postJobWithTurnstileRetry(form) {
       if (finished) return;
       finished = true;
       if (stallTimer !== null) clearTimeout(stallTimer);
+      signal?.removeEventListener("abort", abortUpload);
       callback();
     };
+    const abortUpload = () => xhr.abort();
+    signal?.addEventListener("abort", abortUpload, { once: true });
     const armStallWatchdog = () => {
       if (stallTimer !== null) clearTimeout(stallTimer);
       stallTimer = setTimeout(() => {
@@ -2909,21 +2919,39 @@ async function postJobWithTurnstileRetry(form) {
     armStallWatchdog();
     xhr.send(form);
   });
+  const waitBeforeRetry = () => new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("音源送信を中断しました", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("音源送信を中断しました", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, 750);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
   const send = async () => {
     try {
       return await (hasAudio
         ? uploadAudio()
-        : fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() }));
+        : fetch("/api/jobs", {
+          method: "POST", body: form, headers: jobHeaders(), signal,
+        }));
     } catch (firstError) {
       // iOS Safariは4G/VPNで大きなmultipart送信が一度切れると "Load failed" だけを
       // 返すか、エラーなしで停止する。音源だけは同じ送信IDのまま
       // 一度再送し、サーバー側で重複を抑止する。
-      if (!hasAudio) throw firstError;
+      if (!hasAudio || signal?.aborted || firstError?.name === "AbortError") throw firstError;
       setJobStatus("通信が切れたため、音源を再送しています…");
-      await new Promise(resolve => setTimeout(resolve, 750));
+      await waitBeforeRetry();
       try {
         return await uploadAudio();
-      } catch {
+      } catch (retryError) {
+        if (signal?.aborted || retryError?.name === "AbortError") throw retryError;
         throw new Error(
           "音源の送信中に通信が切れました。通信を確認して、もう一度動画をタップしてください。"
         );
@@ -3049,9 +3077,11 @@ async function submitJob(previewSec, previewMode) {
   $("result").hidden = true;
   showProgress();
   setJobStatus("送信中…");
+  const submitController = new AbortController();
+  submitAbort = submitController;
   let keepTurnstilePrompt = false;
   try {
-    const res = await postJobWithTurnstileRetry(form);
+    const res = await postJobWithTurnstileRetry(form, submitController.signal);
     const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
     if (turnstileRejected) {
       keepTurnstilePrompt = true;
@@ -3068,12 +3098,19 @@ async function submitJob(previewSec, previewMode) {
     // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
     // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
     if (!keepTurnstilePrompt) hideTurnstilePrompt();
-    $("status-line").innerHTML = `<span class="error">${err.message}</span>`;
+    const canceled = submitController.signal.aborted && err?.name === "AbortError";
+    $("status-line").innerHTML = canceled
+      ? "音源の送信を中断しました"
+      : `<span class="error">${err.message}</span>`;
     setBuilderState("preview");
-    showBuilderMsg("生成を開始できませんでした: " + err.message);
+    showBuilderMsg(canceled
+      ? "音源の送信を中断しました。"
+      : "生成を開始できませんでした: " + err.message);
     openJobDetails();
     setBusy(false);
   } finally {
+    if (submitAbort === submitController) submitAbort = null;
+    setCancelPending(false);
     // Turnstileのトークンは1回きり。次の投入用に取り直す
     resetTurnstile(!keepTurnstilePrompt);
   }
@@ -4789,6 +4826,13 @@ function setCancelPending(pending) {
 
 async function cancelJob() {
   const id = currentJob;
+  if (!id && submitAbort && !submitAbort.signal.aborted) {
+    setCancelPending(true);
+    setJobStatus("中断しています…");
+    showBuilderMsg("");
+    submitAbort.abort();
+    return;
+  }
   if (!id || cancelPendingJob === id) return;
   cancelPendingJob = id;
   setCancelPending(true);
