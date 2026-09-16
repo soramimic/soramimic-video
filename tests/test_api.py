@@ -13,6 +13,7 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 import time
 import wave
 from pathlib import Path
@@ -1141,6 +1142,64 @@ def test_to_dict_hides_unreliable_audio_analysis_eta():
     assert d["stage_progress"] == 25
     assert d["stage_elapsed"] >= 9
     assert "stage_eta_seconds" not in d
+
+
+def test_queued_job_reports_input_aware_start_wait(tmp_path):
+    """前方のWAVはXF MIDIより長い幅で足し、他人の詳細は返さない。"""
+    now = time.time()
+    running_audio = api_mod.Job(
+        id="audio",
+        dir=tmp_path / "audio",
+        params={"input_kind": "audio"},
+        status="running",
+        created_at=now - 60,
+        started_at=now - 30,
+    )
+    queued_midi = api_mod.Job(
+        id="midi",
+        dir=tmp_path / "midi",
+        params={"input_kind": "midi"},
+        status="queued",
+        created_at=now - 10,
+    )
+    manager = object.__new__(api_mod.JobManager)
+    manager.jobs = {running_audio.id: running_audio, queued_midi.id: queued_midi}
+    manager._lock = threading.Lock()
+
+    body = manager.job_dict(queued_midi, with_log=False)
+
+    assert body["queue_ahead"] == 1
+    assert 89 <= body["queue_wait_min_seconds"] <= 91
+    assert 269 <= body["queue_wait_max_seconds"] <= 271
+    assert 9 <= body["queued_elapsed_seconds"] <= 11
+    assert "audio" not in body
+
+
+def test_queued_wait_estimate_distinguishes_midi_from_audio(tmp_path):
+    now = time.time()
+    first_midi = api_mod.Job(
+        id="first-midi", dir=tmp_path / "first-midi",
+        params={"input_kind": "midi"}, status="running",
+        created_at=now - 20, started_at=now - 10,
+    )
+    second_audio = api_mod.Job(
+        id="second-audio", dir=tmp_path / "second-audio",
+        params={"input_kind": "audio"}, status="queued", created_at=now - 5,
+    )
+    last = api_mod.Job(
+        id="last", dir=tmp_path / "last",
+        params={"input_kind": "midi"}, status="queued", created_at=now,
+    )
+    manager = object.__new__(api_mod.JobManager)
+    manager.jobs = {job.id: job for job in (first_midi, second_audio, last)}
+    manager._lock = threading.Lock()
+
+    body = manager.job_dict(last, with_log=False)
+
+    assert body["queue_ahead"] == 2
+    # 実行中MIDIの残り35〜170秒 + 待機WAVの120〜300秒。
+    assert 154 <= body["queue_wait_min_seconds"] <= 156
+    assert 469 <= body["queue_wait_max_seconds"] <= 471
 
 
 def test_cancel_running_and_queued(tmp_path, monkeypatch):

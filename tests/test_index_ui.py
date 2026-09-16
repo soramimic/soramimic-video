@@ -382,10 +382,23 @@ def test_history_uses_cards_and_only_safe_display_fields():
     assert 'title.textContent = job.song_label || "曲"' in card
     assert "historyStatusLabel(job)" in card
     for status, label in {
-        "queued": "待機中", "running": "作成中", "done": "完成",
+        "queued": "開始待ち", "running": "作成中", "done": "完成",
         "error": "失敗", "canceled": "中止",
     }.items():
         assert f'{status}: "{label}"' in script
+
+
+def test_queued_progress_shows_position_and_rounded_start_range():
+    script = _script()
+    label = _function_body(script, "function queueWaitLabel(job)")
+    assert 'return "開始待ち：まもなく開始します"' in label
+    assert "job.queue_ahead" in label
+    assert "job.queue_wait_min_seconds" in label
+    assert "job.queue_wait_max_seconds" in label
+    assert "開始まで約" in label
+    progress = _function_body(script, "function renderBuilderBar(job)")
+    assert 'job?.status === "queued"' in progress
+    assert 'style.width = "0%"' in progress
 
 
 def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
