@@ -26,9 +26,9 @@ def build_stage3_layers(
         Evidence,
         LyricSpan,
         NoteCandidate,
+        NoteRunConfig,
         ObservedSingingUnit,
         ReadingCandidate,
-        boundaryless_correspondence_config,
         build_known_lyrics_document,
     )
     from wav_to_xf.pipeline import run_stage3_document
@@ -106,6 +106,6 @@ def build_stage3_layers(
     )
     run = run_stage3_document(
         document,
-        config=boundaryless_correspondence_config(),
+        config=NoteRunConfig(),
     )
     return run.document, run.realization
