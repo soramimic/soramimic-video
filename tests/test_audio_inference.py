@@ -279,6 +279,34 @@ def test_inference_api_runs_demucs_and_serves_stems(monkeypatch, tmp_path):
     assert calls == [(b"wave", "htdemucs", "cpu")]
 
 
+def test_demucs_releases_idle_model_caches_before_spawning(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, kana_whisper, separation, transcribe
+
+    whisper_cache = {("large-v3", "cpu", "int8"): object()}
+    sheetsage_cache = {("sheetsage2", "cuda"): object()}
+    kana_cache = {("cuda", "bfloat16"): object()}
+    monkeypatch.setattr(transcribe, "_WHISPER_MODEL_CACHE", whisper_cache)
+    monkeypatch.setattr(audio_melody, "_MODEL_CACHE", sheetsage_cache)
+    monkeypatch.setattr(kana_whisper, "_MODEL_CACHE", kana_cache)
+
+    scheduler = InferenceScheduler(tmp_path / "state", device="cpu")
+    job = _queued_job(scheduler, tmp_path, "demucs-job", "dev", "demucs")
+
+    def separate_local(_path, output_dir, *, model, device):
+        assert not whisper_cache
+        assert not sheetsage_cache
+        assert not kana_cache
+        output_dir.mkdir(parents=True)
+        (output_dir / "vocals.wav").write_bytes(b"vocals")
+        (output_dir / "no_vocals.wav").write_bytes(b"accompaniment")
+
+    monkeypatch.setattr(separation, "_separate_local", separate_local)
+
+    assert scheduler._run_demucs(job) == {
+        "artifacts": ["no_vocals.wav", "vocals.wav"]
+    }
+
+
 def test_running_demucs_is_killed_when_cancelled(monkeypatch, tmp_path):
     from soramimic_video import runproc, separation
 

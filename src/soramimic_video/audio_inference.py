@@ -8,6 +8,7 @@ within each family remains priority ordered.
 
 from __future__ import annotations
 
+import gc
 import importlib.util
 import json
 import logging
@@ -578,8 +579,25 @@ class InferenceScheduler:
         }
 
     def _run_demucs(self, job: InferenceJob) -> dict[str, list[str]]:
-        from . import runproc
+        from . import audio_melody, kana_whisper, runproc, transcribe
         from .separation import DEMUCS_MODEL, _separate_local
+
+        # Demucs runs in a child process, but the shared server may still retain
+        # large Whisper, KanaWhisper, and SheetSage models from earlier jobs.
+        # Drop those cache references before forking the Demucs process.  A
+        # concurrently running model remains alive through its worker's local
+        # reference, while idle models release both host and CUDA memory.
+        transcribe._WHISPER_MODEL_CACHE.clear()
+        audio_melody._MODEL_CACHE.clear()
+        kana_whisper.release_kana_whisper_cache()
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except (ImportError, RuntimeError):
+            pass
 
         finished = threading.Event()
 
