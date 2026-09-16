@@ -135,6 +135,13 @@ DEFAULT_QUEUE_LIMIT = 5
 DEFAULT_DAILY_QUOTA = 5
 DEFAULT_IP_DAILY_QUOTA = 30
 DEFAULT_MAX_SONG_SECONDS = 420.0
+# dev実績の中央付近から外れにくい、開始待ち表示用の粗い幅。厳密な完了ETAでは
+# なく、前にいるジョブの入力種別を区別して「数分」の尺度を伝えるために使う。
+# XF MIDIは音源解析がほぼ不要なので、WAVと同じ時間を一律に足さない。
+QUEUE_JOB_SECONDS: dict[str, tuple[int, int]] = {
+    "midi": (45, 180),
+    "audio": (120, 300),
+}
 SESSION_COOKIE = "sv_session"
 SESSION_MAX_AGE = 30 * 24 * 3600  # 30日
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
@@ -1655,6 +1662,54 @@ class JobManager:
     def active_count(self) -> int:
         """待機中+実行中のジョブ数(キュー上限の判定用。ワーカーは1本で全員共用)。"""
         return sum(1 for j in self.jobs.values() if j.status in ("queued", "running"))
+
+    @staticmethod
+    def _remaining_range(job: Job, now: float) -> tuple[int, int]:
+        """Return a deliberately broad remaining-time range for one job."""
+        low, high = QUEUE_JOB_SECONDS.get(
+            str(job.params.get("input_kind")), QUEUE_JOB_SECONDS["midi"]
+        )
+        if job.status != "running" or job.started_at is None:
+            return low, high
+        elapsed = max(0, round(now - job.started_at))
+        # 長尾に入った実行中ジョブを「残り0秒」とは表示しない。幅の上限を越えた
+        # あとは少なくとももう1分あり得る、とだけ案内する。
+        return max(0, low - elapsed), max(60, high - elapsed)
+
+    def job_dict(self, job: Job, *, with_log: bool = True) -> dict[str, Any]:
+        """Serialize a job and add live queue information for queued jobs."""
+        data = job.to_dict(with_log=with_log)
+        if job.status != "queued":
+            return data
+        now = time.time()
+        with self._lock:
+            active = sorted(
+                (
+                    candidate
+                    for candidate in self.jobs.values()
+                    if candidate.status in {"queued", "running"}
+                ),
+                key=lambda candidate: (candidate.created_at, candidate.id),
+            )
+        ahead: list[Job] = []
+        for candidate in active:
+            if candidate is job:
+                break
+            ahead.append(candidate)
+        low = high = 0
+        for candidate in ahead:
+            candidate_low, candidate_high = self._remaining_range(candidate, now)
+            low += candidate_low
+            high += candidate_high
+        data.update(
+            {
+                "queue_ahead": len(ahead),
+                "queue_wait_min_seconds": low,
+                "queue_wait_max_seconds": high,
+                "queued_elapsed_seconds": max(0, round(now - job.created_at)),
+            }
+        )
+        return data
 
     def recent_count(self, owner: str, since: float) -> int:
         """since 以降にこのセッションが投入したジョブ数(日次クォータの判定用)。"""
@@ -3584,15 +3639,17 @@ def create_app(
     @app.get("/api/jobs", dependencies=[Depends(_require_api_key)])
     def list_jobs(request: Request) -> list[dict[str, Any]]:
         jobs = manager.visible_jobs(owner_of(request))
-        return [j.to_dict(with_log=False) for j in jobs[:30]]
+        return [manager.job_dict(j, with_log=False) for j in jobs[:30]]
 
     @app.get("/api/jobs/{job_id}", dependencies=[Depends(_require_api_key)])
     def get_job(job_id: str, request: Request) -> dict[str, Any]:
-        return manager.get(job_id, owner_of(request)).to_dict()
+        return manager.job_dict(manager.get(job_id, owner_of(request)))
 
     @app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(_require_api_key)])
     def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
-        return manager.cancel(job_id, owner_of(request)).to_dict(with_log=False)
+        return manager.job_dict(
+            manager.cancel(job_id, owner_of(request)), with_log=False
+        )
 
     @app.get("/api/jobs/{job_id}/credits", dependencies=[Depends(_require_api_key)])
     def get_credits(job_id: str, request: Request, download: bool = False) -> FileResponse:
