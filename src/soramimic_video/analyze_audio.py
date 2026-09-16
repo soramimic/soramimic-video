@@ -21,6 +21,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
 from .kana import split_moras
@@ -28,6 +29,9 @@ from .project import Project
 from .ruby import strip_ruby
 from .semantic_lyrics import SemanticLyricDecision
 from .transcribe import DEFAULT_WHISPER_MODEL, TranscribedLine
+
+if TYPE_CHECKING:
+    from .audio_melody import MelodyNote
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +131,7 @@ def _run_sheetsage(
     project_dir: Path,
     device: str,
     on_progress: Callable[[float], None],
-):
+) -> list[MelodyNote] | None:
     from .audio_melody import transcribe_sheetsage
 
     raw_dir = project_dir / ANALYZE_DIR / "sheetsage-work"
@@ -151,7 +155,12 @@ def _run_audio_models(
     run_separation: bool,
     run_whisper: bool,
     shared_inference: bool,
-):
+) -> tuple[
+    Path,
+    Path | None,
+    list[TranscribedLine] | None,
+    list[MelodyNote] | None,
+]:
     """Submit independent audio-analysis jobs before waiting on dependencies.
 
     The shared loopback service performs its own priority/capacity admission. Local
@@ -557,6 +566,8 @@ def analyze_audio(
     if recognition_mode is not None:
         from .semantic_lyrics import MIN_CTC_MEDIAN_SCORE, apply_ctc_support
 
+        if sheetsage_notes is None:
+            raise RuntimeError("自動歌詞認識にSheetSage2ノートがありません")
         updated = list(decisions)
         for local_index, original_index in enumerate(retained_indices):
             updated[original_index] = apply_ctc_support(
