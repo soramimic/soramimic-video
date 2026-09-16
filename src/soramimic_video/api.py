@@ -2415,8 +2415,21 @@ def create_app(
         if not links:
             links = terms_links(list(policies.values()))
         content = f'<ul class="guidelines">{links}</ul>' if links else ""
-        return (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8").replace(
-            "<!-- guideline-links -->", content
+        data_handling = ""
+        retention_hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
+        if is_public_mode() and retention_hours > 0:
+            retention_label = f"{retention_hours:g}時間"
+            data_handling = (
+                '<section aria-labelledby="data-handling-title">'
+                '<h2 id="data-handling-title">データの取り扱い</h2>'
+                '<p>元の音源・歌詞と解析用データは処理終了時に削除します。'
+                f'完成動画は{retention_label}後に自動削除します。'
+                '入力内容をAIモデルの学習には使用しません。</p>'
+                '</section>'
+            )
+        page = (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8")
+        return page.replace("<!-- guideline-links -->", content).replace(
+            "<!-- data-handling -->", data_handling
         )
 
     @app.get("/image-credits.js", include_in_schema=False)

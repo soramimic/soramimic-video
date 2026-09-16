@@ -95,6 +95,25 @@ def test_guidelines_tolerate_an_empty_catalog(client):
     assert '<ul class="guidelines">' not in response.text
 
 
+def test_public_guidelines_explain_data_handling(client, monkeypatch):
+    browser, _ = client
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "24")
+
+    response = browser.get("/guidelines")
+
+    assert '<h2 id="data-handling-title">データの取り扱い</h2>' in response.text
+    assert "元の音源・歌詞と解析用データは処理終了時に削除します。" in response.text
+    assert "完成動画は24時間後に自動削除します。" in response.text
+    assert "入力内容をAIモデルの学習には使用しません。" in response.text
+
+
+def test_private_guidelines_do_not_claim_public_retention_policy(client):
+    browser, _ = client
+    response = browser.get("/guidelines")
+    assert 'id="data-handling-title"' not in response.text
+
+
 def test_guidelines_keep_distinct_terms_urls(client):
     browser, policies = client
     policies["people"] = {"terms_pages": [

@@ -2135,6 +2135,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal($("auto-lyrics").disabled, false);
         assert.equal($("auto-lyrics-toggle").hidden, false);
         assert.equal($("lyrics-correction-panel").hidden, true);
+        assert.equal($("lyrics-mode-hint").hidden, true);
         assert.equal($("lyrics").required, false);
         assert.equal(automaticLyricsEnabled(), true);
         assert.equal(songLyricsForRequest(), "");
@@ -2517,11 +2518,12 @@ def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
     assert "clearEditorFile();" in body
 
 
-def test_upload_notice_explains_private_data_retention():
+def test_upload_form_keeps_long_processing_explanations_out_of_the_main_flow():
     html = INDEX.read_text(encoding="utf-8")
-    assert 'id="upload-privacy"' in html
-    assert "元の音源・歌詞と解析用データは処理終了時に削除します" in html
-    assert "入力内容をAIモデルの学習には使用しません" in html
+    assert 'id="upload-privacy"' not in html
+    assert "この文字列を正解としてforced alignmentします" not in html
+    assert "元の音源・歌詞と解析用データは処理終了時に削除します" not in html
+    assert "入力内容をAIモデルの学習には使用しません" not in html
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
