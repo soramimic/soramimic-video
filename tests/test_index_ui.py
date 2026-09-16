@@ -2526,6 +2526,12 @@ def test_upload_form_keeps_long_processing_explanations_out_of_the_main_flow():
     assert "入力内容をAIモデルの学習には使用しません" not in html
 
 
+def test_footer_labels_image_specific_guidance_explicitly():
+    html = INDEX.read_text(encoding="utf-8")
+    assert '<a href="/guidelines">画像の利用ガイドライン</a>' in html
+    assert '<a href="/guidelines#contact-title">画像の権利をお持ちの方へ</a>' in html
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_image_credits_interactions():
     subprocess.run(
