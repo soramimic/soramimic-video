@@ -2035,11 +2035,14 @@ let activeHistoryPlayback = null;
 let preparedHistoryShare = null;
 
 const HISTORY_STATUS_LABELS = {
-  queued: "待機中", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
+  queued: "開始待ち", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
 };
 
 function historyStatusLabel(job) {
   const base = HISTORY_STATUS_LABELS[job.status] || "状態を確認中";
+  if (job.status === "queued" && Number(job.queue_ahead) > 0) {
+    return `${base}（前に${Number(job.queue_ahead)}件）`;
+  }
   return job.status === "done" && job.total_seconds
     ? `${base}（${Math.round(job.total_seconds)}秒）` : base;
 }
@@ -2378,9 +2381,28 @@ function setJobStatus(text, builderText) {
   $("builder-status").textContent = builderText || text;
 }
 
+// 開始時刻は処理内容で大きくぶれるので、秒単位の精密そうな表示にはしない。
+// APIが前方のWAV/XF MIDIを区別して積み上げた幅を、分単位へ丸めて見せる。
+function queueWaitLabel(job) {
+  const ahead = Math.max(0, Number(job.queue_ahead) || 0);
+  if (!ahead) return "開始待ち：まもなく開始します";
+  const low = Math.max(0, Number(job.queue_wait_min_seconds) || 0);
+  const high = Math.max(low, Number(job.queue_wait_max_seconds) || 0);
+  if (high < 60) return `開始待ち：前に${ahead}件・開始まで1分以内`;
+  const lowMinutes = Math.max(1, Math.floor(low / 60));
+  const highMinutes = Math.max(lowMinutes, Math.ceil(high / 60));
+  const estimate = lowMinutes === highMinutes
+    ? `${highMinutes}分ほど` : `${lowMinutes}〜${highMinutes}分`;
+  return `開始待ち：前に${ahead}件・開始まで約${estimate}`;
+}
+
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
 // 分母は「このジョブで実際に走るステージ数」(stagePlan)。
 function renderBuilderBar(job) {
+  if (job?.status === "queued") {
+    $("builder-bar-fill").style.width = "0%";
+    return;
+  }
   if (job?.params?.input_kind === "audio") {
     const base = { analyze: 0, convert: 35, "import-editor": 35,
       synthesize: 45, mix: 80, video: 90 };
@@ -2469,7 +2491,8 @@ async function poll(id, seq = pollSeq) {
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
-    setJobStatus(cancelPendingJob === id ? "中断しています…" : "順番待ち…");
+    const waiting = queueWaitLabel(job);
+    setJobStatus(cancelPendingJob === id ? "中断しています…" : waiting, waiting);
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "done") {
     setJobStatus(`完成!(合計 ${Math.round(job.total_seconds)}秒)`);
