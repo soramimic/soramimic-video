@@ -2864,21 +2864,70 @@ function showSubmitMsg(text) {
 // Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
 // Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
 async function postJobWithTurnstileRetry(form) {
+  const hasAudio = !!(form.has && form.has("audio"));
   const jobHeaders = () => ({
     ...headers(),
-    ...(form.has && form.has("audio") ? { "X-Soramimic-Audio-Upload": "1" } : {}),
+    ...(hasAudio ? { "X-Soramimic-Audio-Upload": "1" } : {}),
+  });
+  // fetchには送信進捗がなく、iOS SafariがFile Providerから音源を読み出せなくなると
+  // rejectも完了もせず「送信中」のまま残る。音源だけXHRを使い、進捗が動くたびに
+  // watchdogを延長する。遅い回線は許容しつつ、停止した送信だけを再試行へ渡す。
+  const uploadAudio = () => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let finished = false;
+    let stalled = false;
+    let stallTimer = null;
+    const finish = (callback) => {
+      if (finished) return;
+      finished = true;
+      if (stallTimer !== null) clearTimeout(stallTimer);
+      callback();
+    };
+    const armStallWatchdog = () => {
+      if (stallTimer !== null) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        xhr.abort();
+        finish(() => reject(new Error("音源の送信が60秒間進みませんでした")));
+      }, 60_000);
+    };
+    xhr.open("POST", "/api/jobs");
+    for (const [name, value] of Object.entries(jobHeaders())) {
+      xhr.setRequestHeader(name, value);
+    }
+    xhr.upload.onprogress = (event) => {
+      armStallWatchdog();
+      if (event.lengthComputable && event.total > 0) {
+        const percent = Math.min(99, Math.floor(event.loaded * 100 / event.total));
+        setJobStatus(`音源を送信中… ${percent}%`);
+      }
+    };
+    xhr.onload = () => finish(() => resolve({
+      status: xhr.status,
+      ok: xhr.status >= 200 && xhr.status < 300,
+      json: async () => JSON.parse(xhr.responseText || "{}"),
+    }));
+    xhr.onerror = () => finish(() => reject(new TypeError("音源を送信できませんでした")));
+    xhr.onabort = () => {
+      if (!stalled) finish(() => reject(new DOMException("音源送信を中断しました", "AbortError")));
+    };
+    armStallWatchdog();
+    xhr.send(form);
   });
   const send = async () => {
     try {
-      return await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
+      return await (hasAudio
+        ? uploadAudio()
+        : fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() }));
     } catch (firstError) {
       // iOS Safariは4G/VPNで大きなmultipart送信が一度切れると "Load failed" だけを
-      // 返す。音源だけは同じ送信IDのまま一度再送し、サーバー側で重複を抑止する。
-      if (!(form.has && form.has("audio"))) throw firstError;
+      // 返すか、エラーなしで停止する。音源だけは同じ送信IDのまま
+      // 一度再送し、サーバー側で重複を抑止する。
+      if (!hasAudio) throw firstError;
       setJobStatus("通信が切れたため、音源を再送しています…");
       await new Promise(resolve => setTimeout(resolve, 750));
       try {
-        return await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
+        return await uploadAudio();
       } catch {
         throw new Error(
           "音源の送信中に通信が切れました。通信を確認して、もう一度動画をタップしてください。"

@@ -920,21 +920,86 @@ def test_audio_job_post_retries_one_mobile_network_failure():
         f"""
         const assert = require("node:assert/strict");
         let calls = 0;
+        const statuses = [];
+        let turnstileSiteKey = "";
+        const form = {{ has: (key) => key === "audio" }};
+        const headers = () => ({{}});
+        const setJobStatus = (value) => {{ statuses.push(value); }};
+        const setTimeout = (callback, delay) => {{ if (delay === 750) callback(); return 1; }};
+        const clearTimeout = () => {{}};
+        class XMLHttpRequest {{
+          constructor() {{ this.upload = {{}}; this.requestHeaders = {{}}; }}
+          open(method, url) {{ assert.equal(method, "POST"); assert.equal(url, "/api/jobs"); }}
+          setRequestHeader(name, value) {{ this.requestHeaders[name] = value; }}
+          abort() {{ if (this.onabort) this.onabort(); }}
+          send(body) {{
+            calls += 1;
+            assert.equal(body, form);
+            assert.equal(this.requestHeaders["X-Soramimic-Audio-Upload"], "1");
+            if (calls === 1) this.onerror();
+            else {{
+              this.upload.onprogress({{ lengthComputable: true, loaded: 50, total: 100 }});
+              this.status = 200;
+              this.responseText = "{{}}";
+              this.onload();
+            }}
+          }}
+        }}
+        const fetch = async () => assert.fail("audio uploads must use XMLHttpRequest");
+        {post}
+        (async () => {{
+          const response = await postJobWithTurnstileRetry(form);
+          assert.equal(response.status, 200);
+          assert.equal(calls, 2);
+          assert.ok(statuses.some((value) => /音源を再送/.test(value)));
+          assert.equal(statuses.at(-1), "音源を送信中… 50%");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_stalled_audio_upload_is_aborted_and_retried():
+    """エラーを返さず停止するiOS送信もwatchdogで回復する。"""
+    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let calls = 0;
         let status = "";
         let turnstileSiteKey = "";
         const form = {{ has: (key) => key === "audio" }};
         const headers = () => ({{}});
         const setJobStatus = (value) => {{ status = value; }};
-        const setTimeout = (callback) => {{ callback(); }};
-        const fetch = async (_url, options) => {{
-          calls += 1;
-          assert.equal(options.headers["X-Soramimic-Audio-Upload"], "1");
-          if (calls === 1) throw new TypeError("Load failed");
-          return {{ status: 200 }};
+        const watchdogs = [];
+        const setTimeout = (callback, delay) => {{
+          if (delay === 750) callback();
+          else watchdogs.push(callback);
+          return watchdogs.length;
         }};
+        const clearTimeout = () => {{}};
+        class XMLHttpRequest {{
+          constructor() {{ this.upload = {{}}; }}
+          open() {{}}
+          setRequestHeader() {{}}
+          abort() {{ if (this.onabort) this.onabort(); }}
+          send() {{
+            calls += 1;
+            if (calls === 2) {{
+              this.status = 200;
+              this.responseText = "{{}}";
+              this.onload();
+            }}
+          }}
+        }}
+        const fetch = async () => assert.fail("audio uploads must use XMLHttpRequest");
         {post}
         (async () => {{
-          const response = await postJobWithTurnstileRetry(form);
+          const pending = postJobWithTurnstileRetry(form);
+          assert.equal(calls, 1);
+          watchdogs.shift()();
+          const response = await pending;
           assert.equal(response.status, 200);
           assert.equal(calls, 2);
           assert.match(status, /音源を再送/);
