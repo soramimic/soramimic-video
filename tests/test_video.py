@@ -915,6 +915,27 @@ def test_subtitle_timing_is_not_shifted_with_image_cues(tmp_path: Path):
     assert abs(spans_h[1][1] - (4.75 + SUB_PAD_SEC)) < 0.01
 
 
+def test_subtitle_clears_when_interlude_frame_starts(tmp_path: Path):
+    project = _two_word_project()
+    cap, _hold = _text_layouts(tmp_path)
+    cues, _ = build_image_cues(project, tmp_path / "cap", 320, 180, layout=cap)
+
+    # 間奏カードは直前の単語カードが消えた瞬間から始まる。字幕側の通常の余韻が
+    # それより長くても、専用画面へ切り替わる時刻で歌詞を消す。
+    interlude_start = cues[0].end
+    ass = build_ass(
+        project,
+        1280,
+        720,
+        "Font",
+        cap,
+        clear_ranges=[(interlude_start, cues[1].start)],
+    )
+    spans = _dialogue_spans(ass)
+    assert abs(spans[0][1] - interlude_start) < 0.01
+    assert spans[1][0] >= cues[1].start
+
+
 def test_subtitle_end_kept_when_next_line_is_close(tmp_path: Path):
     # 次の行がすぐ来る通常の並びでは、従来どおり次の行の開始で詰める
     from soramimic_video.video import SUB_PAD_SEC
