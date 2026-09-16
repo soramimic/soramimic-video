@@ -518,3 +518,73 @@ def test_semantic_gate_realigns_after_ctc_rejects_melodic_template(
     assert decision["melodic_support"] is True
     assert decision["ctc_support"] is False
     assert decision["ctc_median_score"] == pytest.approx(.00055)
+
+
+def test_semantic_gate_recovers_singing_island_before_final_ctc(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: [
+        TranscribedLine(0., 5., "作曲"), TranscribedLine(8., 9., "歌")])
+    recovered_calls = []
+
+    def recover(path, start, end, model, device):
+        recovered_calls.append((start, end, model, device))
+        return [TranscribedLine(start, end, "空")]
+
+    monkeypatch.setattr(transcribe, "transcribe_window", recover)
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: {"作曲": ["サッキョク"], "空": ["ソラ"], "歌": ["ウタ"]}[text],
+    )
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
+    calls = []
+
+    def align(path, variants, **kwargs):
+        calls.append(kwargs["line_windows"])
+        if len(variants[0][0]) == 4:
+            return ([
+                AlignedMora(0, 0, "サ", 1.1, 1.2, .0004),
+                AlignedMora(0, 1, "ッ", 1.2, 1.3, .0005),
+                AlignedMora(0, 2, "キョ", 1.3, 1.4, .0006),
+                AlignedMora(0, 3, "ク", 1.4, 1.5, .0005),
+                AlignedMora(1, 0, "ウ", 8.2, 8.3, .8),
+                AlignedMora(1, 1, "タ", 8.4, 8.5, .7),
+            ], [0, 0])
+        return ([
+            AlignedMora(0, 0, "ソ", 1.2, 1.3, .8),
+            AlignedMora(0, 1, "ラ", 3.5, 3.7, .8),
+            AlignedMora(1, 0, "ウ", 8.2, 8.3, .8),
+            AlignedMora(1, 1, "タ", 8.4, 8.5, .7),
+        ], [0, 0])
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: [
+        MelodyNote(1., 4., 60), MelodyNote(8., 9., 62)])
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=10.)))
+
+    value = analyze_audio(
+        tmp_path / "input.wav", tmp_path / "project", device="cpu",
+        skip_separation=True,
+    )
+
+    assert recovered_calls == [(1., 4., "large-v3", "cpu")]
+    assert calls == [[(0., 5.), (8., 9.)], [(1., 4.), (8., 9.)]]
+    assert value.lyric_layers["canonical_text"] == "空\n歌"
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text())
+    recovery = recognition["semantic_gate"]["localized_recoveries"]
+    assert recovery[0]["status"] == "accepted"
+    assert [item["surface"] for item in recognition["segments"]] == ["空", "歌"]
+    analysis = json.loads(
+        (tmp_path / "project/analyze_audio/analysis.json").read_text())
+    assert not any("CTC全体整列" in item for item in analysis["limitations"])

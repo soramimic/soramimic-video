@@ -4,6 +4,7 @@ from soramimic_video.audio_melody import MelodyNote
 from soramimic_video.mora_align import AlignedMora
 from soramimic_video.semantic_lyrics import (
     apply_ctc_support,
+    credit_recovery_windows,
     decide_recognized_line,
     non_lyric_template_family,
     normalize_recognized_text,
@@ -76,6 +77,22 @@ def test_credit_gate_rejects_clearly_insufficient_melody_time():
     assert not sparse.melodic_support
     assert supported.status == "accepted"
     assert supported.melodic_support
+
+
+def test_credit_recovery_windows_join_only_substantial_note_islands():
+    line = TranscribedLine(0.0, 30.0, "作詞・作曲・編曲 初音ミク")
+    notes = [
+        MelodyNote(2.0, 2.2, 60),
+        MelodyNote(21.27, 24.1, 62),
+        MelodyNote(24.95, 28.625, 64),
+    ]
+
+    assert credit_recovery_windows(line, notes) == [(21.27, 28.625)]
+
+
+def test_recovery_windows_do_not_apply_to_ordinary_lyrics():
+    line = TranscribedLine(0.0, 10.0, "この歌を届ける")
+    assert credit_recovery_windows(line, [MelodyNote(1.0, 9.0, 60)]) == []
 
 
 def test_short_melody_time_does_not_reject_ordinary_lyrics():

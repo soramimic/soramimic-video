@@ -215,6 +215,19 @@ def _alignment_line_windows(aligned, line_count: int) -> list[tuple[float, float
     return [bound for bound in bounds if bound is not None]
 
 
+def _recognized_line_windows(
+    lines: list[TranscribedLine],
+) -> list[tuple[float, float]]:
+    """Remove only floating-point dust from otherwise touching Whisper lines."""
+    windows = [(line.start_sec, line.end_sec) for line in lines]
+    for index in range(len(windows) - 1):
+        start, end = windows[index]
+        next_start, _next_end = windows[index + 1]
+        if next_start < end and end - next_start <= 1e-6:
+            windows[index] = (start, next_start)
+    return windows
+
+
 def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
     return any(
         len(options) > 1 and any(len(candidate) == len(options[0]) for candidate in options[1:])
@@ -361,6 +374,8 @@ def analyze_audio(
     decisions: list[SemanticLyricDecision] = []
     recognition_lines: list[TranscribedLine] = []
     retained_indices: list[int] = []
+    retained_lines: list[TranscribedLine] = []
+    localized_recoveries: list[dict[str, object]] = []
 
     last_progress = 0.0
 
@@ -457,6 +472,7 @@ def analyze_audio(
             if decision.status != "rejected"
         ]
         retained = [lines[index] for index in retained_indices]
+        retained_lines = retained
         line_texts = [line.text for line in retained]
         recognized_windows = [(line.start_sec, line.end_sec) for line in retained]
         recognition_mode = "whisper-mix-semantic-gate"
@@ -553,33 +569,116 @@ def analyze_audio(
             if decisions[original_index].status != "rejected"
         ]
         if len(kept_local_indices) != len(retained_indices):
-            line_texts = [line_texts[index] for index in kept_local_indices]
-            line_variants = [line_variants[index] for index in kept_local_indices]
-            chosen = [chosen[index] for index in kept_local_indices]
-            if recognized_windows is not None:
-                recognized_windows = [
-                    recognized_windows[index] for index in kept_local_indices
-                ]
-            if reading_evidence is not None:
-                reading_evidence = _filter_reading_evidence(
-                    reading_evidence, kept_local_indices
-                )
-            retained_indices = [retained_indices[index] for index in kept_local_indices]
-            if not line_texts:
+            from .semantic_lyrics import (
+                credit_recovery_windows,
+                decide_recognized_line,
+            )
+            from .transcribe import transcribe_window
+
+            recovered_lines: list[TranscribedLine] = []
+            for original_index in retained_indices:
+                decision = decisions[original_index]
+                if decision.status != "rejected" or decision.ctc_support is not False:
+                    continue
+                original_line = recognition_lines[original_index]
+                for start_sec, end_sec in credit_recovery_windows(
+                    original_line, sheetsage_notes
+                ):
+                    candidates = transcribe_window(
+                        audio_path,
+                        start_sec,
+                        end_sec,
+                        whisper_model,
+                        device or "auto",
+                    )
+                    accepted = []
+                    for candidate in candidates:
+                        candidate_decision = decide_recognized_line(
+                            candidate, sheetsage_notes
+                        )
+                        if (
+                            candidate_decision.template_family is None
+                            and candidate_decision.melodic_support
+                        ):
+                            accepted.append(candidate)
+                    recovered_lines.extend(accepted)
+                    localized_recoveries.append({
+                        "source_segment_index": original_index,
+                        "start_sec": start_sec,
+                        "end_sec": end_sec,
+                        "status": "accepted" if accepted else "unresolved",
+                        "segments": [
+                            {
+                                "start_sec": item.start_sec,
+                                "end_sec": item.end_sec,
+                                "surface": item.text,
+                            }
+                            for item in accepted
+                        ],
+                    })
+
+            retained_indices = [
+                index for index in retained_indices
+                if decisions[index].status != "rejected"
+            ]
+            retained_lines = sorted(
+                [recognition_lines[index] for index in retained_indices]
+                + recovered_lines,
+                key=lambda line: (line.start_sec, line.end_sec),
+            )
+            if not retained_lines:
                 raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
-            # Re-run without rejected targets so they cannot consume CTC frames.
+            line_texts = [line.text for line in retained_lines]
+            recognized_windows = _recognized_line_windows(retained_lines)
+            line_variants = [
+                [split_moras(kana) for kana in reading_candidates(text)] or [[]]
+                for text in line_texts
+            ]
+            line_texts = [strip_ruby(text) for text in line_texts]
+            chosen = [0] * len(line_variants)
+            reading_evidence = None
+            if _has_kana_choice(line_variants):
+                chosen, reading_evidence = _choose_readings_with_kana(
+                    audio_path,
+                    vocals,
+                    line_texts,
+                    line_variants,
+                    recognized_windows,
+                    device=device or "auto",
+                    shared_inference=shared_inference,
+                )
             selected_variants = [
                 [variants[index]]
                 for variants, index in zip(line_variants, chosen, strict=True)
             ]
-            aligned, _fixed_choices = align_moras_with_variants(
-                vocals,
-                selected_variants,
-                device=device,
-                emissions=emissions,
-                phonetic_aliases=True,
-                line_windows=recognized_windows,
-            )
+            try:
+                aligned, _fixed_choices = align_moras_with_variants(
+                    vocals,
+                    selected_variants,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                    line_windows=recognized_windows,
+                )
+                # The final alignment, rather than the discarded screening pass,
+                # determines the provenance recorded in analysis.json.
+                recognition_windows_fallback = False
+            except ValueError as exc:
+                recognition_windows_fallback = True
+                logger.warning(
+                    "局所再認識後のWhisper行時刻をCTC整列に使えないため"
+                    "全体整列へ切替: %s",
+                    exc,
+                )
+                recognized_windows = None
+                aligned, _fixed_choices = align_moras_with_variants(
+                    vocals,
+                    selected_variants,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                    line_windows=None,
+                )
 
     expected_moras = sum(
         len(line[choice])
@@ -591,7 +690,7 @@ def analyze_audio(
     if recognition_mode is not None:
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
-        retained = [recognition_lines[index] for index in retained_indices]
+        retained = retained_lines
         (out / "recognition.json").write_text(
             json.dumps(
                 {
@@ -628,6 +727,7 @@ def analyze_audio(
                                 recognition_lines, decisions, strict=True
                             )
                         ],
+                        "localized_recoveries": localized_recoveries,
                     },
                     "segments": [
                         {
