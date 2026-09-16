@@ -38,10 +38,10 @@ def test_conflicting_views_keep_default():
     assert decision.reason == "default-or-tie"
 
 
-def test_different_mora_count_cannot_be_selected():
-    decision = choose_reading(["ヨル", "ヨ"], ["ヨ", "ヨ"])
-    assert decision.selected_index == 0
-    assert decision.reason == "different-mora-count"
+def test_different_mora_count_can_be_selected_from_closed_candidates():
+    decision = choose_reading(["ヨルヨル", "ヨ"], ["ヨ", "ヨ"])
+    assert decision.selected_index == 1
+    assert decision.reason == "kana-evidence"
 
 
 def test_weak_voicing_evidence_keeps_default():
@@ -53,13 +53,37 @@ def test_weak_voicing_evidence_keeps_default():
     assert decision.reason == "weak-evidence"
 
 
-def test_dropped_long_vowel_cannot_change_candidate_length():
+def test_dropped_long_vowel_can_select_different_length_candidate():
     decision = choose_reading(
         ["ホントウワダキアッテ", "ホントワダキアッテ"],
         ["ホントワダキアッテ", "ホントワダキアッテ"],
     )
+    assert decision.selected_index == 1
+    assert decision.reason == "kana-evidence"
+
+
+def test_marigold_reading_uses_exact_kana_evidence_across_mora_counts():
+    decision = choose_reading(
+        ["キボーノコーハ", "キボーノヒカリワ", "キボーノヒカルワ"],
+        [
+            "アシタニワキボーノヒカリワ",
+            "キボーノヒカリワソソグ",
+        ],
+    )
+
+    assert decision.selected_index == 1
+    assert decision.reason == "kana-evidence"
+    assert decision.normalized_distances[1] == (0.0, 0.0)
+
+
+def test_normalized_distance_does_not_prefer_short_incidental_substring():
+    decision = choose_reading(
+        ["カキクケコ", "カ"],
+        ["カキクケサ", "カキクケサ"],
+    )
+
     assert decision.selected_index == 0
-    assert decision.reason == "different-mora-count"
+    assert decision.reason == "default-or-tie"
 
 
 def test_earlier_dictionary_path_wins_when_nbest_paths_are_one_edit_apart():

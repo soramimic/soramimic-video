@@ -18,7 +18,7 @@ from typing import Any
 
 import jaconv
 
-from .kana import normalize_long_vowels, split_moras
+from .kana import normalize_long_vowels
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ class ReadingDecision:
     reason: str
     normalized_evidence: tuple[str, ...]
     distances: tuple[tuple[int, ...], ...]
+    normalized_distances: tuple[tuple[float, ...], ...] = ()
 
 
 def model_available() -> bool:
@@ -104,62 +105,78 @@ def _substring_distance(needle: str, haystack: str) -> int:
 
 
 def choose_reading(candidates: Sequence[str], evidence: Sequence[str]) -> ReadingDecision:
-    """Conservatively rerank equal-mora candidates using mix/vocal kana evidence.
+    """Conservatively rerank bounded candidates using mix/vocal kana evidence.
 
     A non-default candidate must beat the default in at least one reliable view,
     lose in none, and clear conservative acoustic and dictionary-order priors. This
-    keeps raw ASR mistakes from becoming lyric edits and avoids the shorter-reading
-    bias seen in whole-line CTC scores.
+    keeps raw ASR mistakes from becoming lyric edits. Distances are normalized by
+    candidate length so shorter dictionary readings do not win merely because they
+    have fewer characters that can differ.
     """
     normalized = tuple(filter(None, (normalize_kana_evidence(text) for text in evidence)))
     if len(candidates) < 2:
         return ReadingDecision(0, "single-candidate", normalized, ())
     keys = tuple(_candidate_key(candidate) for candidate in candidates)
-    default_moras = len(split_moras(candidates[0]))
     eligible = []
     seen_keys: set[str] = set()
-    for index, candidate in enumerate(candidates):
-        if (
-            len(split_moras(candidate)) == default_moras
-            and len(keys[index]) == len(keys[0])
-            and keys[index] not in seen_keys
-        ):
+    for index, key in enumerate(keys):
+        if key and key not in seen_keys:
             eligible.append(index)
-            seen_keys.add(keys[index])
+            seen_keys.add(key)
     if len(eligible) < 2 or not normalized:
-        reason = "different-mora-count" if len(eligible) < 2 else "no-evidence"
+        reason = "no-distinct-candidates" if len(eligible) < 2 else "no-evidence"
         return ReadingDecision(0, reason, normalized, ())
 
     distances = tuple(
         tuple(_substring_distance(key, transcript) for transcript in normalized) for key in keys
     )
-    totals = {index: sum(distances[index]) for index in eligible}
+    normalized_distances = tuple(
+        tuple(distance / max(1, len(key)) for distance in row)
+        for key, row in zip(keys, distances, strict=True)
+    )
+    totals = {index: sum(normalized_distances[index]) for index in eligible}
     best_total = min(totals.values())
+    best_index = next(index for index in eligible if totals[index] == best_total)
     # Candidate order is a linguistic prior (yomi, then UniDic paths).  When two
     # pronunciations are within one edit across both acoustic views, keep the
     # earlier dictionary path instead of overfitting a KanaWhisper consonant error.
-    selected = next(index for index in eligible if totals[index] <= best_total + 1)
+    tie_margin = 1 / len(keys[best_index])
+    selected = next(
+        index for index in eligible if totals[index] <= best_total + tie_margin
+    )
     if selected == 0:
-        return ReadingDecision(0, "default-or-tie", normalized, distances)
+        return ReadingDecision(
+            0, "default-or-tie", normalized, distances, normalized_distances
+        )
     supports = 0
     for view in range(len(normalized)):
-        default_distance = distances[0][view]
-        selected_distance = distances[selected][view]
-        reliable = min(default_distance, selected_distance) <= max(
-            2, math.ceil(len(keys[selected]) * 0.3)
+        default_distance = normalized_distances[0][view]
+        selected_distance = normalized_distances[selected][view]
+        reliable = (
+            default_distance <= max(0.3, 2 / len(keys[0]))
+            or selected_distance <= max(0.3, 2 / len(keys[selected]))
         )
         if not reliable:
             continue
         if selected_distance > default_distance:
-            return ReadingDecision(0, "conflicting-evidence", normalized, distances)
+            return ReadingDecision(
+                0, "conflicting-evidence", normalized, distances, normalized_distances
+            )
         if selected_distance < default_distance:
             supports += 1
     if supports == 0:
-        return ReadingDecision(0, "insufficient-evidence", normalized, distances)
-    total_gain = sum(distances[0]) - sum(distances[selected])
-    if total_gain < 3 and 0 not in distances[selected]:
-        return ReadingDecision(0, "weak-evidence", normalized, distances)
-    return ReadingDecision(selected, "kana-evidence", normalized, distances)
+        return ReadingDecision(
+            0, "insufficient-evidence", normalized, distances, normalized_distances
+        )
+    total_gain = totals[0] - totals[selected]
+    weak_gain = 3 / max(len(keys[0]), len(keys[selected]))
+    if total_gain < weak_gain and 0.0 not in normalized_distances[selected]:
+        return ReadingDecision(
+            0, "weak-evidence", normalized, distances, normalized_distances
+        )
+    return ReadingDecision(
+        selected, "kana-evidence", normalized, distances, normalized_distances
+    )
 
 
 def build_kana_contexts(
