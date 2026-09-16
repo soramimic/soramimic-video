@@ -313,10 +313,13 @@ def _choose_readings_with_kana(
                 "context_index": context_index,
                 "normalized_evidence": list(decision.normalized_evidence),
                 "distances": [list(row) for row in decision.distances],
+                "normalized_distances": [
+                    list(row) for row in decision.normalized_distances
+                ],
             }
         )
     return selected, {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "closed-reading-candidate-rerank",
         "model": {
             "id": KANA_WHISPER_MODEL,
