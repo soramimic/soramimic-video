@@ -1648,6 +1648,7 @@ def build_ass(
     font: str,
     layout: Layout | None = None,
     granularity: dict[str, str] | None = None,
+    clear_ranges: list[tuple[float, float]] | None = None,
 ) -> str:
     """歌詞字幕(替え歌/元歌詞)のASSを作る。行の歌唱区間で表示する。
 
@@ -1656,6 +1657,8 @@ def build_ass(
     決める。subtitle要素のないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
     表示粒度(行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
     (Web UIの一括指定)、それも無ければ source 既定に従う。
+    clear_ranges は間奏・後奏など専用画面の表示区間。この区間に入る字幕は
+    専用画面の開始時刻で消し、直前の歌詞が画面上に残らないようにする。
     """
     from .align import build_subtitle_segments, resolve_granularity
 
@@ -1704,6 +1707,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         spans[j][1] = min(spans[j][1], spans[j + 1][0])
         spans[j][1] = max(spans[j][1], spans[j][0] + 0.2)  # 行の重なりが極端でも一瞬は出す
         spans[j + 1][0] = max(spans[j + 1][0], spans[j][1])
+    # 間奏カード等は画像キューの隙間へ差し込まれるが、字幕は歌唱時刻から別に
+    # 作るため、カードの先行表示ぶんだけ直前の歌詞と重なり得る。専用画面が
+    # 始まったら字幕をそこで切る。通常の短い歌間(専用画面なし)は従来どおり。
+    # 行同士の最短表示時間調整より後に適用し、そこで再び間奏へはみ出させない。
+    for span in spans:
+        for clear_start, clear_end in clear_ranges or []:
+            if clear_end <= span[0] or clear_start >= span[1]:
+                continue
+            if span[0] < clear_start:
+                span[1] = clear_start
+            else:
+                # 専用画面内から始まる字幕は、その画面が終わるまで出さない。
+                span[0] = min(span[1], clear_end)
 
     font_path = resolve_font_path(layout.font if layout else None)
     # 行ごとの素材(グループ化・切り出し・マージは align 側の共通ロジックで行う)
@@ -1935,7 +1951,11 @@ def prepare_video(
     )
     ass_path = work / "subtitles.ass"
     ass_path.write_text(
-        build_ass(project, width, height, font, layout_obj, granularity), encoding="utf-8"
+        build_ass(
+            project, width, height, font, layout_obj, granularity,
+            [(cue.start, cue.end) for cue in section_cues],
+        ),
+        encoding="utf-8",
     )
     credits_path = write_credits(credits, work)
     if credits_path:
@@ -2110,7 +2130,11 @@ def make_video(
 
     ass_path = work / "subtitles.ass"
     ass_path.write_text(
-        build_ass(project, width, height, font, layout_obj, granularity), encoding="utf-8"
+        build_ass(
+            project, width, height, font, layout_obj, granularity,
+            [(cue.start, cue.end) for cue in section_cues],
+        ),
+        encoding="utf-8",
     )
 
     credits_path = write_credits(credits, work)
