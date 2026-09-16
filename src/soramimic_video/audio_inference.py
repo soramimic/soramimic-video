@@ -8,6 +8,7 @@ within each family remains priority ordered.
 
 from __future__ import annotations
 
+import gc
 import importlib.util
 import json
 import logging
@@ -53,12 +54,13 @@ class InferenceCancelled(Exception):  # noqa: N818 - internal control flow
 
 
 class _GpuAdmission:
-    """Reserve a conservative per-wave GPU budget before models may overlap."""
+    """Reserve GPU capacity while keeping Demucs isolated from resident models."""
 
     def __init__(self) -> None:
         self._condition = threading.Condition()
-        self._active: dict[str, int] = {}
+        self._active: dict[str, tuple[str, int]] = {}
         self._wave_budget = 0
+        self._exclusive_waiters = 0
 
     @staticmethod
     def _free_bytes(device: str) -> int | None:
@@ -77,31 +79,50 @@ class _GpuAdmission:
         device: str,
         stop: threading.Event,
     ):
-        if not device.startswith("cuda"):
-            yield False
-            return
-
-        reservation = _GPU_RESERVE_BYTES[job.kind]
+        uses_cuda = device.startswith("cuda")
+        reservation = _GPU_RESERVE_BYTES[job.kind] if uses_cuda else 0
         capacity_reserved = False
         with self._condition:
-            while True:
-                if stop.is_set() or job.cancel_event.is_set():
-                    raise InferenceCancelled()
-                if not self._active:
-                    free_bytes = self._free_bytes(device)
-                    self._wave_budget = max(
-                        0,
-                        (free_bytes or 0) - _GPU_HEADROOM_BYTES,
+            exclusive = job.kind == "demucs"
+            if exclusive:
+                self._exclusive_waiters += 1
+            try:
+                while True:
+                    if stop.is_set() or job.cancel_event.is_set():
+                        raise InferenceCancelled()
+                    demucs_active = any(
+                        kind == "demucs" for kind, _reserved in self._active.values()
                     )
-                    self._active[job.id] = reservation
-                    capacity_reserved = reservation <= self._wave_budget
-                    break
-                reserved = sum(self._active.values())
-                if reserved + reservation <= self._wave_budget:
-                    self._active[job.id] = reservation
-                    capacity_reserved = True
-                    break
-                self._condition.wait(timeout=0.1)
+                    if exclusive:
+                        admitted = not self._active
+                    else:
+                        # Once Demucs is waiting, drain the current wave instead of
+                        # allowing a steady stream of model jobs to starve it.
+                        admitted = not demucs_active and self._exclusive_waiters == 0
+                    if not admitted:
+                        self._condition.wait(timeout=0.1)
+                        continue
+                    if not uses_cuda:
+                        self._active[job.id] = (job.kind, reservation)
+                        break
+                    if not self._active:
+                        free_bytes = self._free_bytes(device)
+                        self._wave_budget = max(
+                            0,
+                            (free_bytes or 0) - _GPU_HEADROOM_BYTES,
+                        )
+                        self._active[job.id] = (job.kind, reservation)
+                        capacity_reserved = reservation <= self._wave_budget
+                        break
+                    reserved = sum(value for _kind, value in self._active.values())
+                    if reserved + reservation <= self._wave_budget:
+                        self._active[job.id] = (job.kind, reservation)
+                        capacity_reserved = True
+                        break
+                    self._condition.wait(timeout=0.1)
+            finally:
+                if exclusive:
+                    self._exclusive_waiters -= 1
         try:
             yield capacity_reserved
         finally:
@@ -578,8 +599,25 @@ class InferenceScheduler:
         }
 
     def _run_demucs(self, job: InferenceJob) -> dict[str, list[str]]:
-        from . import runproc
+        from . import audio_melody, kana_whisper, runproc, transcribe
         from .separation import DEMUCS_MODEL, _separate_local
+
+        # Demucs runs in a separate CUDA process.  The admission gate guarantees
+        # that no model invocation is active here, so cached model references can
+        # be released without invalidating another worker.  Without this step,
+        # successive song jobs retain Whisper, KanaWhisper, and SheetSage on the
+        # GPU and can leave Demucs stalled behind several gigabytes of idle models.
+        transcribe._WHISPER_MODEL_CACHE.clear()
+        kana_whisper._MODEL_CACHE.clear()
+        audio_melody._MODEL_CACHE.clear()
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except (ImportError, RuntimeError):
+            pass
 
         finished = threading.Event()
 
