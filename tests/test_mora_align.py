@@ -109,6 +109,102 @@ def test_recognition_window_on_frame_grid_excludes_frame_at_end(monkeypatch):
     assert (result[0].start_sec, result[0].end_sec) == pytest.approx((37.82, 37.84))
 
 
+def test_recognition_windows_fold_floating_point_dust_into_shared_boundary():
+    previous_end = 56.900000000000006
+    assert mora_align._validated_line_windows([
+        (53.48, previous_end), (56.9, 59.58),
+    ]) == [
+        (53.48, previous_end), (previous_end, 59.58),
+    ]
+
+
+def test_pathological_whole_song_span_is_retried_inside_whisper_window(monkeypatch):
+    emissions = object()
+    global_alignment = [
+        _m(0, 0, "ジ", 17.46, 17.48),
+        _m(0, 1, "ツ", 18.22, 18.24),
+        _m(0, 2, "リョ", 18.92, 26.04),
+        _m(0, 3, "ク", 26.14, 26.16),
+    ]
+    local_alignment = [
+        _m(0, 0, "ジ", 26.02, 26.04),
+        _m(0, 1, "ツ", 26.12, 26.14),
+        _m(0, 2, "リョ", 26.14, 26.18),
+        _m(0, 3, "ク", 26.18, 26.20),
+    ]
+    calls = []
+
+    def align(*args, **kwargs):
+        calls.append(kwargs["line_windows"])
+        assert kwargs["emissions"] is emissions
+        return local_alignment, [0]
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    repaired, diagnostics = mora_align.retry_pathological_line_alignments(
+        Path("unused.wav"),
+        [[["ジ", "ツ", "リョ", "ク"]]],
+        global_alignment,
+        [(26.0, 29.0)],
+        device="cpu",
+        emissions=emissions,
+        phonetic_aliases=True,
+    )
+
+    assert calls == [[(26.0, 29.0)]]
+    assert [(m.kana, m.start_sec, m.end_sec) for m in repaired] == [
+        (m.kana, m.start_sec, m.end_sec) for m in local_alignment
+    ]
+    assert diagnostics == [{
+        "line": 0,
+        "window_start_sec": 26.0,
+        "window_end_sec": 29.0,
+        "reasons": ["mora-span-before-whisper-window"],
+        "before_max_mora_span_sec": pytest.approx(7.12),
+        "before_line_end_sec": 26.16,
+        "after_max_mora_span_sec": pytest.approx(.04),
+        "after_line_end_sec": 26.2,
+        "status": "replaced",
+    }]
+
+
+def test_alignment_before_whisper_window_alone_does_not_trigger_retry(monkeypatch):
+    aligned = [_m(0, 0, "ア", 28.3, 28.32), _m(0, 1, "イ", 29.2, 29.22)]
+    monkeypatch.setattr(
+        mora_align,
+        "align_moras_with_variants",
+        lambda *args, **kwargs: pytest.fail("early-only alignment must stay unchanged"),
+    )
+    repaired, diagnostics = mora_align.retry_pathological_line_alignments(
+        Path("unused.wav"),
+        [[["ア", "イ"]]],
+        aligned,
+        [(30.0, 32.7)],
+        device="cpu",
+        emissions=object(),
+    )
+    assert repaired is aligned
+    assert diagnostics == []
+
+
+def test_long_mora_inside_whisper_window_is_not_treated_as_pathological(monkeypatch):
+    aligned = [_m(0, 0, "アー", 31.0, 33.0)]
+    monkeypatch.setattr(
+        mora_align,
+        "align_moras_with_variants",
+        lambda *args, **kwargs: pytest.fail("in-window long tone must stay unchanged"),
+    )
+    repaired, diagnostics = mora_align.retry_pathological_line_alignments(
+        Path("unused.wav"),
+        [[["アー"]]],
+        aligned,
+        [(30.0, 34.0)],
+        device="cpu",
+        emissions=object(),
+    )
+    assert repaired is aligned
+    assert diagnostics == []
+
+
 @pytest.mark.parametrize("windows", [
     [], [(0, 1)], [(1, 2), (1.5, 3)], [(2, 3), (0, 1)],
     [(-1, 1), (2, 3)], [(0, float("inf")), (2, 3)], [(1, 1), (2, 3)],

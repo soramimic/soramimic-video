@@ -372,7 +372,10 @@ def analyze_audio(
     device: str | None = None,
     progress: Callable[[float], None] | None = None,
 ) -> Project:
-    from .mora_align import align_moras_with_variants
+    from .mora_align import (
+        align_moras_with_variants,
+        retry_pathological_line_alignments,
+    )
     from .reading import reading_candidates
 
     _require_audio_pipeline()
@@ -385,6 +388,7 @@ def analyze_audio(
     retained_indices: list[int] = []
     retained_lines: list[TranscribedLine] = []
     localized_recoveries: list[dict[str, object]] = []
+    localized_alignment_retries: list[dict[str, object]] = []
 
     last_progress = 0.0
 
@@ -483,7 +487,7 @@ def analyze_audio(
         retained = [lines[index] for index in retained_indices]
         retained_lines = retained
         line_texts = [line.text for line in retained]
-        recognized_windows = [(line.start_sec, line.end_sec) for line in retained]
+        recognized_windows = _recognized_line_windows(retained)
         recognition_mode = "whisper-mix-semantic-gate"
         if not retained:
             raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
@@ -550,6 +554,7 @@ def analyze_audio(
             if recognized_windows is None:
                 raise
             recognition_windows_fallback = True
+            fallback_windows = recognized_windows
             logger.warning(
                 "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s", exc
             )
@@ -562,6 +567,16 @@ def analyze_audio(
                 phonetic_aliases=True,
                 line_windows=None,
             )
+            aligned, retries = retry_pathological_line_alignments(
+                vocals,
+                selected_variants,
+                aligned,
+                fallback_windows,
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=True,
+            )
+            localized_alignment_retries.extend(retries)
 
     if recognition_mode is not None:
         from .semantic_lyrics import MIN_CTC_MEDIAN_SCORE, apply_ctc_support
@@ -662,6 +677,9 @@ def analyze_audio(
                 [variants[index]]
                 for variants, index in zip(line_variants, chosen, strict=True)
             ]
+            # The final retained-line alignment replaces the screening pass and
+            # therefore owns the retry provenance recorded below.
+            localized_alignment_retries = []
             try:
                 aligned, _fixed_choices = align_moras_with_variants(
                     vocals,
@@ -676,6 +694,8 @@ def analyze_audio(
                 recognition_windows_fallback = False
             except ValueError as exc:
                 recognition_windows_fallback = True
+                fallback_windows = recognized_windows
+                assert fallback_windows is not None
                 logger.warning(
                     "局所再認識後のWhisper行時刻をCTC整列に使えないため"
                     "全体整列へ切替: %s",
@@ -690,6 +710,16 @@ def analyze_audio(
                     phonetic_aliases=True,
                     line_windows=None,
                 )
+                aligned, retries = retry_pathological_line_alignments(
+                    vocals,
+                    selected_variants,
+                    aligned,
+                    fallback_windows,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                )
+                localized_alignment_retries.extend(retries)
 
     expected_moras = sum(
         len(line[choice])
@@ -739,6 +769,7 @@ def analyze_audio(
                             )
                         ],
                         "localized_recoveries": localized_recoveries,
+                        "localized_alignment_retries": localized_alignment_retries,
                     },
                     "segments": [
                         {
@@ -804,9 +835,17 @@ def analyze_audio(
             "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
         )
     if recognition_windows_fallback:
+        repaired_count = sum(
+            item.get("status") == "replaced"
+            for item in localized_alignment_retries
+        )
+        detail = (
+            f" 病的な{repaired_count}行はWhisper区間内で局所再整列しました。"
+            if repaired_count else ""
+        )
         limitations.append(
             "Whisperの行時刻をCTC整列に使えなかったため、"
-            "CTC全体整列でモーラ時刻を保持しました。"
+            f"CTC全体整列へ切り替えました。{detail}"
         )
     (out / "analysis.json").write_text(
         json.dumps(
@@ -840,11 +879,15 @@ def analyze_audio(
                 "stage3_correspondence": True,
                 "recognition_mode": recognition_mode,
                 "recognition_flags": recognition_flags,
+                "localized_alignment_retries": localized_alignment_retries,
                 "mora_count": len(raw_alignment),
                 "sources": {},
                 "limitations": limitations,
                 "diagnostics": [
                     {"stage": "recognition", **flag} for flag in recognition_flags
+                ] + [
+                    {"stage": "mora-ctc-local-retry", **item}
+                    for item in localized_alignment_retries
                 ],
             },
             ensure_ascii=False,
