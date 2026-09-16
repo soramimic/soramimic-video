@@ -123,10 +123,10 @@ def test_static_hints_in_advanced_are_all_folded():
         assert "data-info" in attrs or "id=" in attrs, m.group(0)
 
 
-def test_editor_entry_point_is_a_single_button():
+def test_builder_omits_editor_entry_button():
     ids = [a.get("id") for tag, a in _tags() if tag == "button" and a.get("id")]
-    # エディタを開く導線はこれ1つ(モーダル側の閉じる/取り込みは別物)
-    assert ids.count("builder-edit") == 1
+    assert "builder-edit" not in ids
+    assert "lucky" not in ids
     # 保存済みがあるときの2択+右上の×。「やめる」の文字ボタンは置かない
     # (×・背景クリック・Escに吸収)
     for btn in ("editor-resume-continue", "editor-resume-regen", "editor-resume-close"):
@@ -746,7 +746,6 @@ def _song_input_node_harness() -> str:
         const simpleMode = false;
         const updateNoncommercialFanworkNotice = () => {};
         const updateAdvancedSettingsAvailability = () => {};
-        const syncLuckyAvailability = () => {};
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
         const clearAudioInput = clearAudioPresentation;
@@ -1367,28 +1366,11 @@ def test_turnstile_old_widget_callbacks_are_ignored_after_rebuild():
     assert 'console.warn("Turnstileの再描画に失敗しました", err);' in rebuild
 
 
-def test_random_button_always_changes_both_choices():
-    """ランダム抽選は現在の曲と現在の単語リストを同時に選び直す。"""
-    body = _function_body(_script(), "function luckyRandomCombo()")
-    assert "luckyCandidatePools()" in body
-    # 片方でも別候補がなければ、現在値を再選択して条件を破らない
-    assert 'if (!samples.length || !alternatives.length) return null;' in body
-    assert 'pickRandom(samples)' in body
-    assert 'pickRandom(alternatives)' in body
-    assert "SLOW_WORDLISTS" not in body
-
-
-def test_random_button_is_disabled_until_both_choices_can_change():
-    """候補不足や初期化中に、押せるのに何も変わらない状態を作らない。"""
-    lucky = next(a for tag, a in _tags() if a.get("id") == "lucky")
-    assert "disabled" in lucky
-    pools = _function_body(_script(), "function luckyCandidatePools()")
-    assert 'o.value !== currentSampleId' in pools
-    assert 'nameOf(o) !== currentWordlist' in pools
-    availability = _function_body(_script(), "function syncLuckyAvailability()")
-    assert '$("lucky").disabled = !samples.length || !alternatives.length;' in availability
-    sync = _function_body(_script(), "function syncBuilderValues()")
-    assert "syncLuckyAvailability();" in sync
+def test_random_button_and_behavior_are_removed():
+    script = _script()
+    assert not any(a.get("id") == "lucky" for _tag, a in _tags())
+    assert "function luckyRandomCombo()" not in script
+    assert "function luckyCandidatePools()" not in script
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -2218,19 +2200,17 @@ def test_sample_picker_uses_each_manifest_title_as_is():
     assert "s.edition" not in load
 
 
-def test_audio_sample_skips_midi_check_and_disables_editor():
+def test_audio_sample_skips_midi_check():
     script = _script()
     check = _function_body(script, "async function checkMidi(")
     assert 'selectedSampleIsAudio() || ownSongKind() === "audio"' in check
     apply = _function_body(script, "async function applySample(")
-    assert '$("builder-edit").disabled = sampleAudio;' in apply
+    assert '$("builder-edit")' not in script
     assert 'link.textContent = "ライセンス";' in apply
     thumbnail = _function_body(script, "function loadThumbnailPreview(")
     assert 'sampleInputKinds[combo.sampleId] === "audio"' not in thumbnail
     assert '? { title: songTitleOf(ownSongFile()), wordlist: combo.wordlistName }' in thumbnail
     assert ': { sample: combo.sampleId, wordlist: combo.wordlistName };' in thumbnail
-    random = _function_body(script, "function luckyCandidatePools(")
-    assert "o.value && !o.disabled" in random
     host_songs = _function_body(script, "function hostSongList(")
     assert 'sampleInputKinds[o.value] !== "audio"' in host_songs
     init = _function_body(script, "async function initBuilder(")
