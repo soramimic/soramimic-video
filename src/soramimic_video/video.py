@@ -103,9 +103,6 @@ DEFAULT_VIDEO_FPS = 30
 # カードは発声と同時よりわずかに先に見せる方が、知覚上の遅れを感じにくい。
 # 30fpsでは3フレーム。音声・字幕の時刻は動かさない。
 DEFAULT_IMAGE_LEAD_SEC = 0.1
-RENDERED_FRAME_CACHE_DIR = "rendered-frames"
-RENDERED_FRAME_CACHE_TTL_SEC = 30 * 24 * 3600
-RENDERED_FRAME_CACHE_MAX = 4000
 IMAGE_CACHE_METADATA_DIR = ".metadata"
 IMAGE_CACHE_REVALIDATE_SEC = 24 * 3600
 
@@ -495,35 +492,6 @@ def image_cache_dir(work: Path, image_cache: Path | None = None) -> Path:
     return image_cache or Path(
         os.environ.get("SORAMIMIC_VIDEO_IMAGE_CACHE") or work / "images"
     )
-
-
-def prune_rendered_frame_cache(
-    cache_dir: Path,
-    ttl_sec: float = RENDERED_FRAME_CACHE_TTL_SEC,
-    max_entries: int = RENDERED_FRAME_CACHE_MAX,
-    now: float | None = None,
-) -> list[Path]:
-    """共有フレームPNGをTTL超過→上限超過の順で古いものから刈る。"""
-    if not cache_dir.is_dir():
-        return []
-    current = time.time() if now is None else now
-    entries: list[tuple[float, Path]] = []
-    for path in cache_dir.glob("frame_*.png"):
-        try:
-            entries.append((path.stat().st_mtime, path))
-        except OSError:
-            continue
-    removed = {path for mtime, path in entries if current - mtime > ttl_sec}
-    kept = sorted(
-        ((mtime, path) for mtime, path in entries if path not in removed),
-        reverse=True,
-    )
-    removed.update(path for _, path in kept[max_entries:])
-    for path in removed:
-        path.unlink(missing_ok=True)
-    if removed:
-        logger.info("共有フレームキャッシュを%d件削除しました", len(removed))
-    return sorted(removed)
 
 
 def _black_frame(out_dir: Path, width: int, height: int) -> Path:
@@ -1189,11 +1157,9 @@ def build_image_cues(
     cues: list[ImageCue] = []
     credits: dict[tuple[str, ...], dict] = {}
     cache = image_cache_dir(work, image_cache)
-    # 画像と同じ共有キャッシュ配下へ置き、同じ単語・レイアウトのPNGをジョブ間で再利用する
-    norm = cache / RENDERED_FRAME_CACHE_DIR
-    # 描画前に刈る。描画後だと、上限を超える巨大ジョブでこのあとffmpegが読む
-    # フレームまで削除しかねない。
-    prune_rendered_frame_cache(norm)
+    # 描画PNGには元歌詞など利用者由来の文字が入り得るため、共有画像キャッシュへ
+    # 置かずジョブ内だけで再利用する。完了時に動画へ焼き込み済みなので削除される。
+    norm = work / "rendered-frames"
     # 逐次ループが読む画像/クレジットを先に並列で温める(キャッシュが冷えていると
     # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
     _prefetch_image_assets(frames, cache)

@@ -23,7 +23,6 @@ from soramimic_video.video import (
     download_image,
     layout_column_mismatch,
     layout_template_columns,
-    prune_rendered_frame_cache,
     word_frame_data,
     write_slideshow,
 )
@@ -555,26 +554,6 @@ def test_black_frame_creates_missing_dir(tmp_path: Path):
     assert out.exists() and out.stat().st_size > 0
 
 
-def test_prune_rendered_frame_cache(tmp_path: Path):
-    cache = tmp_path / "rendered-frames"
-    cache.mkdir()
-    old = cache / "frame_old.png"
-    recent = cache / "frame_recent.png"
-    newest = cache / "frame_newest.png"
-    unrelated = cache / "other.png"
-    for path in (old, recent, newest, unrelated):
-        path.touch()
-    os.utime(old, (10, 10))
-    os.utime(recent, (80, 80))
-    os.utime(newest, (90, 90))
-
-    removed = prune_rendered_frame_cache(cache, ttl_sec=50, max_entries=1, now=100)
-
-    assert removed == [old, recent]
-    assert newest.exists()
-    assert unrelated.exists()
-
-
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
 def test_image_cues_and_slideshow(tmp_path: Path):
     project = _project(tmp_path)
@@ -597,13 +576,14 @@ def test_image_cues_and_slideshow(tmp_path: Path):
     assert credits[0]["image_page"] == "https://example.com/page"
     # カードは単語の歌唱開始(tick480 @120bpm = 0.5s)より0.1秒早く出る
     assert abs(cues[0].start - (0.5 - DEFAULT_IMAGE_LEAD_SEC)) < 0.01
-    assert cues[0].frame.parent == cache / "rendered-frames"
+    assert cues[0].frame.parent == work / "rendered-frames"
 
-    # 作業ディレクトリが違っても、明示した画像キャッシュが同じなら描画PNGを再利用する
+    # 元歌詞などが焼き込まれる描画PNGは、画像キャッシュが同じでもジョブ間共有しない
     reused, _ = build_image_cues(
         project, tmp_path / "other-video", 320, 180, image_cache=cache
     )
-    assert reused[0].frame == cues[0].frame
+    assert reused[0].frame != cues[0].frame
+    assert reused[0].frame.parent == tmp_path / "other-video" / "rendered-frames"
 
     # 先行表示は無効化でき、音符の元時刻には影響しない
     unshifted, _ = build_image_cues(

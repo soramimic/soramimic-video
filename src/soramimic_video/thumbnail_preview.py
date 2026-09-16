@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # モーダルに出すだけなので本番(1280x720)より小さくてよい。描画も軽くなる
 PREVIEW_WIDTH = 640
 PREVIEW_HEIGHT = 360
-CACHE_DIRNAME = "thumbnail-preview-cache"
+CACHE_DIRNAME = "thumbnail-preview-cache-v2"
 CACHE_TTL_SECONDS = 7 * 24 * 3600  # これより古いPNGは捨てる
 CACHE_MAX_ENTRIES = 300  # 件数上限(超過ぶんは古い順に捨てる)
 # 生成は同時に1本だけ通す(変換はCPUを食うので連打で並列に走らせない)。

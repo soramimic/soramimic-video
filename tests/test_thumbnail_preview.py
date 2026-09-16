@@ -166,8 +166,10 @@ def test_preview_without_reading_converts_the_title(
     assert seen == [[SAMPLE_TITLE]]
 
 
-def test_uploaded_song_title_returns_preview(client: TestClient, monkeypatch):
-    """持ち込みWAV/MIDIはファイル名由来の曲名で完成時と同じサムネを作れる。"""
+def test_uploaded_song_title_returns_uncached_private_preview(
+    client: TestClient, monkeypatch, tmp_path: Path
+):
+    """持ち込み曲名の派生PNGを共有ディスクキャッシュへ残さない。"""
     seen: list[list[str]] = []
 
     def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
@@ -184,7 +186,10 @@ def test_uploaded_song_title_returns_preview(client: TestClient, monkeypatch):
     )
     assert res.status_code == 200
     assert res.headers["content-type"] == "image/png"
+    assert res.headers["x-preview-cache"] == "private"
+    assert res.headers["cache-control"] == "private, no-store"
     assert seen == [["marigold"]]
+    assert not list(preview_mod.preview_cache_dir(tmp_path / "jobs").glob("*.png"))
 
 
 def test_cache_key_changes_with_reading(wordlist_dir: Path):
