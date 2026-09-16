@@ -128,6 +128,50 @@ def test_demucs_releases_idle_model_caches_before_start(monkeypatch, tmp_path):
     }
 
 
+def test_scheduler_rechecks_free_gpu_memory_and_releases_idle_caches(
+    monkeypatch, tmp_path
+):
+    scheduler = InferenceScheduler(tmp_path / "state", device="cuda")
+    free_bytes = [12 * 1024**3]
+    releases = []
+
+    monkeypatch.setattr(
+        scheduler._gpu_admission,
+        "_free_bytes",
+        lambda _device: free_bytes[0],
+    )
+
+    def release_idle():
+        releases.append(True)
+        free_bytes[0] = 8 * 1024**3
+
+    scheduler._gpu_admission._release_idle = release_idle
+    first = _queued_job(scheduler, tmp_path, "first", "dev", "whisper")
+    second = _queued_job(scheduler, tmp_path, "second", "dev", "sheetsage")
+
+    with scheduler._gpu_admission.acquire(first, "cuda", scheduler._stop) as reserved:
+        assert reserved
+    free_bytes[0] = 3 * 1024**3
+    with scheduler._gpu_admission.acquire(second, "cuda", scheduler._stop) as reserved:
+        assert reserved
+
+    assert releases == [True]
+
+
+def test_auto_device_falls_back_to_cpu_when_gpu_capacity_is_not_reserved(tmp_path):
+    scheduler = InferenceScheduler(tmp_path / "state", device="cuda")
+    automatic = _queued_job(scheduler, tmp_path, "automatic", "dev", "sheetsage")
+    automatic.parameters["device"] = "auto"
+    explicit = _queued_job(scheduler, tmp_path, "explicit", "dev", "sheetsage")
+    explicit.parameters["device"] = "cuda"
+
+    assert scheduler._admission_device(automatic) == "cuda"
+    assert scheduler._job_device(automatic) == "cpu"
+    automatic.cuda_capacity_reserved = True
+    assert scheduler._job_device(automatic) == "cuda"
+    assert scheduler._job_device(explicit) == "cuda"
+
+
 def test_scheduler_serializes_distinct_models_when_gpu_budget_is_low(
     monkeypatch, tmp_path
 ):
