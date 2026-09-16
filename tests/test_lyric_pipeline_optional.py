@@ -340,7 +340,7 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
     recognition = json.loads(
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
-    assert recognition["schema_version"] == 3
+    assert recognition["schema_version"] == 4
     assert recognition["mode"] == "whisper-mix-semantic-gate"
     assert recognition["transcription_options"] == {
         "vad_filter": False,
@@ -447,3 +447,72 @@ def test_semantic_gate_discards_only_no_melody_template_segment(monkeypatch, tmp
         (tmp_path / "project/analyze_audio/analysis.json").read_text()
     )
     assert analysis["diagnostics"][0]["status"] == "rejected"
+
+
+def test_semantic_gate_realigns_after_ctc_rejects_melodic_template(
+    monkeypatch, tmp_path,
+):
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: [
+        TranscribedLine(1., 2., "作曲"),
+        TranscribedLine(8., 9., "歌"),
+    ])
+    monkeypatch.setattr(
+        reading, "reading_candidates",
+        lambda text: {"作曲": ["サッキョク"], "歌": ["ウタ"]}[text],
+    )
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
+    calls = []
+
+    def align(path, variants, **kwargs):
+        calls.append((variants, kwargs["line_windows"]))
+        assert kwargs["emissions"] is emissions
+        if len(variants) == 2:
+            return ([
+                AlignedMora(0, 0, "サ", 1.1, 1.2, .0004),
+                AlignedMora(0, 1, "ッ", 1.2, 1.3, .0006),
+                AlignedMora(0, 2, "キョ", 1.3, 1.4, .0008),
+                AlignedMora(0, 3, "ク", 1.4, 1.5, .0005),
+                AlignedMora(1, 0, "ウ", 8.2, 8.3, .8),
+                AlignedMora(1, 1, "タ", 8.4, 8.5, .7),
+            ], [0, 0])
+        assert variants == [[["ウ", "タ"]]]
+        return ([
+            AlignedMora(0, 0, "ウ", 8.2, 8.3, .8),
+            AlignedMora(0, 1, "タ", 8.4, 8.5, .7),
+        ], [0])
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: [
+        MelodyNote(1., 2., 60), MelodyNote(8., 9., 62),
+    ])
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=10.)))
+
+    value = analyze_audio(
+        tmp_path / "input.wav", tmp_path / "project", device="cpu",
+        skip_separation=True,
+    )
+
+    assert [windows for _variants, windows in calls] == [
+        [(1., 2.), (8., 9.)], [(8., 9.)],
+    ]
+    assert value.lyric_layers["canonical_text"] == "歌"
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    assert [item["surface"] for item in recognition["segments"]] == ["歌"]
+    decision = recognition["semantic_gate"]["decisions"][0]
+    assert decision["status"] == "rejected"
+    assert decision["melodic_support"] is True
+    assert decision["ctc_support"] is False
+    assert decision["ctc_median_score"] == pytest.approx(.00055)

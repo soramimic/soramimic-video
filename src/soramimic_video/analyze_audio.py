@@ -26,7 +26,8 @@ from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
 from .kana import split_moras
 from .project import Project
 from .ruby import strip_ruby
-from .transcribe import DEFAULT_WHISPER_MODEL
+from .semantic_lyrics import SemanticLyricDecision
+from .transcribe import DEFAULT_WHISPER_MODEL, TranscribedLine
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,33 @@ def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
     )
 
 
+def _filter_reading_evidence(
+    evidence: dict[str, object], kept_line_indices: list[int]
+) -> dict[str, object]:
+    """Reindex KanaWhisper diagnostics after the semantic gate removes lines."""
+    payload = json.loads(json.dumps(evidence))
+    line_map = {old: new for new, old in enumerate(kept_line_indices)}
+    lines = [payload["lines"][index] for index in kept_line_indices]
+    used_contexts = sorted({
+        item["context_index"] for item in lines if item["context_index"] is not None
+    })
+    context_map = {old: new for new, old in enumerate(used_contexts)}
+    contexts = [payload["contexts"][index] for index in used_contexts]
+    for new_index, item in enumerate(lines):
+        item["line"] = new_index
+        if item["context_index"] is not None:
+            item["context_index"] = context_map[item["context_index"]]
+    for context in contexts:
+        context["line_indices"] = [
+            line_map[index]
+            for index in context["line_indices"]
+            if index in line_map
+        ]
+    payload["lines"] = lines
+    payload["contexts"] = contexts
+    return payload
+
+
 def _choose_readings_with_kana(
     audio_path: Path,
     vocals_path: Path,
@@ -326,6 +354,9 @@ def analyze_audio(
     recognized_windows = None
     recognition_mode = None
     recognition_windows_fallback = False
+    decisions: list[SemanticLyricDecision] = []
+    recognition_lines: list[TranscribedLine] = []
+    retained_indices: list[int] = []
 
     last_progress = 0.0
 
@@ -415,69 +446,18 @@ def analyze_audio(
                 raise RuntimeError(
                     "音源解析にはSheetSage2モデル設定が必要です"
                 )
+        recognition_lines = lines
         decisions = [decide_recognized_line(line, sheetsage_notes) for line in lines]
-        retained = [
-            line
-            for line, decision in zip(lines, decisions, strict=True)
+        retained_indices = [
+            index for index, decision in enumerate(decisions)
             if decision.status != "rejected"
         ]
+        retained = [lines[index] for index in retained_indices]
         line_texts = [line.text for line in retained]
         recognized_windows = [(line.start_sec, line.end_sec) for line in retained]
         recognition_mode = "whisper-mix-semantic-gate"
-        out = project_dir / ANALYZE_DIR
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "recognition.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 3,
-                    "mode": recognition_mode,
-                    "model": whisper_model,
-                    "transcription_options": {
-                        "vad_filter": False,
-                        "condition_on_previous_text": False,
-                    },
-                    "semantic_gate": {
-                        "melody_source": "sheetsage2-original-mix",
-                        "rule": (
-                            "reject-only-when-melody-time-is-insufficient-and-"
-                            "template-matches"
-                        ),
-                        "decisions": [
-                            {
-                                "start_sec": line.start_sec,
-                                "end_sec": line.end_sec,
-                                "surface": line.text,
-                                "normalized_surface": decision.normalized_text,
-                                "status": decision.status,
-                                "template_family": decision.template_family,
-                                "melodic_support": decision.melodic_support,
-                            }
-                            for line, decision in zip(lines, decisions, strict=True)
-                        ],
-                    },
-                    "segments": [
-                        {
-                            "start_sec": line.start_sec,
-                            "end_sec": line.end_sec,
-                            "surface": line.text,
-                        }
-                        for line in retained
-                    ],
-                },
-                ensure_ascii=False,
-                indent=1,
-            ),
-            encoding="utf-8",
-        )
         if not retained:
             raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
-        logger.info(
-            "Whisper mix/no-VADの%d行を元歌詞として採用 "
-            "(非歌詞テンプレートを%d行除外、非旋律音声を%d行保持)",
-            len(line_texts),
-            sum(decision.status == "rejected" for decision in decisions),
-            sum(decision.status == "unresolved" for decision in decisions),
-        )
     # 3. カナ化 + forced alignment。正式歌詞がある場合、通常Whisperによる
     # 表層認識を通さない。KanaWhisperは文字列を書き換えず、ルビ・辞書から
     # 得た閉じた発音候補の再順位付けだけに使う。
@@ -505,6 +485,7 @@ def analyze_audio(
             phonetic_aliases=True,
             line_windows=None,
         )
+    if recognized_windows is None:
         evidence_windows = _alignment_line_windows(initial_alignment, len(line_variants))
     else:
         evidence_windows = recognized_windows
@@ -552,13 +533,119 @@ def analyze_audio(
                 phonetic_aliases=True,
                 line_windows=None,
             )
-    raw_alignment = [replace(mora) for mora in aligned]
+
+    if recognition_mode is not None:
+        from .semantic_lyrics import MIN_CTC_MEDIAN_SCORE, apply_ctc_support
+
+        updated = list(decisions)
+        for local_index, original_index in enumerate(retained_indices):
+            updated[original_index] = apply_ctc_support(
+                updated[original_index], local_index, aligned
+            )
+        decisions = updated
+        kept_local_indices = [
+            local_index
+            for local_index, original_index in enumerate(retained_indices)
+            if decisions[original_index].status != "rejected"
+        ]
+        if len(kept_local_indices) != len(retained_indices):
+            line_texts = [line_texts[index] for index in kept_local_indices]
+            line_variants = [line_variants[index] for index in kept_local_indices]
+            chosen = [chosen[index] for index in kept_local_indices]
+            if recognized_windows is not None:
+                recognized_windows = [
+                    recognized_windows[index] for index in kept_local_indices
+                ]
+            if reading_evidence is not None:
+                reading_evidence = _filter_reading_evidence(
+                    reading_evidence, kept_local_indices
+                )
+            retained_indices = [retained_indices[index] for index in kept_local_indices]
+            if not line_texts:
+                raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
+            # Re-run without rejected targets so they cannot consume CTC frames.
+            selected_variants = [
+                [variants[index]]
+                for variants, index in zip(line_variants, chosen, strict=True)
+            ]
+            aligned, _fixed_choices = align_moras_with_variants(
+                vocals,
+                selected_variants,
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=True,
+                line_windows=recognized_windows,
+            )
+
     expected_moras = sum(
         len(line[choice])
         for line, choice in zip(line_variants, chosen, strict=True)
     )
     if len(aligned) != expected_moras:
         raise RuntimeError("正式歌詞のモーラをすべてアライメントできませんでした")
+    raw_alignment = [replace(mora) for mora in aligned]
+    if recognition_mode is not None:
+        out = project_dir / ANALYZE_DIR
+        out.mkdir(parents=True, exist_ok=True)
+        retained = [recognition_lines[index] for index in retained_indices]
+        (out / "recognition.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 4,
+                    "mode": recognition_mode,
+                    "model": whisper_model,
+                    "transcription_options": {
+                        "vad_filter": False,
+                        "condition_on_previous_text": False,
+                    },
+                    "semantic_gate": {
+                        "melody_source": "sheetsage2-original-mix",
+                        "ctc_source": "reazon-kana-ctc-separated-vocals"
+                        if not skip_separation
+                        else "reazon-kana-ctc-input-audio",
+                        "rule": (
+                            "reject-full-line-non-lyric-pattern-unless-melody-and-"
+                            "ctc-median-support"
+                        ),
+                        "ctc_median_threshold": MIN_CTC_MEDIAN_SCORE,
+                        "decisions": [
+                            {
+                                "start_sec": line.start_sec,
+                                "end_sec": line.end_sec,
+                                "surface": line.text,
+                                "normalized_surface": decision.normalized_text,
+                                "status": decision.status,
+                                "template_family": decision.template_family,
+                                "melodic_support": decision.melodic_support,
+                                "ctc_support": decision.ctc_support,
+                                "ctc_median_score": decision.ctc_median_score,
+                            }
+                            for line, decision in zip(
+                                recognition_lines, decisions, strict=True
+                            )
+                        ],
+                    },
+                    "segments": [
+                        {
+                            "start_sec": line.start_sec,
+                            "end_sec": line.end_sec,
+                            "surface": line.text,
+                        }
+                        for line in retained
+                    ],
+                },
+                ensure_ascii=False,
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+        logger.info(
+            "Whisper mix/no-VADの%d行を元歌詞として採用 "
+            "(非歌詞テンプレートを%d行除外、非旋律音声を%d行保持)",
+            len(line_texts),
+            sum(decision.status == "rejected" for decision in decisions),
+            sum(decision.status == "unresolved" for decision in decisions),
+        )
     n_ambiguous = sum(1 for v in line_variants if len(v) > 1)
     if n_ambiguous:
         logger.info(
@@ -590,6 +677,8 @@ def analyze_audio(
             "normalized_surface": decision.normalized_text,
             "template_family": decision.template_family,
             "melodic_support": decision.melodic_support,
+            "ctc_support": decision.ctc_support,
+            "ctc_median_score": decision.ctc_median_score,
         }
         for decision in (decisions if recognition_mode is not None else [])
         if decision.status != "accepted"

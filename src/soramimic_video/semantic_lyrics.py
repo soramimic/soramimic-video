@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+import statistics
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .audio_melody import MelodyNote
+    from .mora_align import AlignedMora
     from .transcribe import TranscribedLine
 
 
@@ -23,12 +25,16 @@ class SemanticLyricDecision:
     normalized_text: str
     template_family: str | None
     melodic_support: bool
+    ctc_support: bool | None = None
+    ctc_median_score: float | None = None
 
 
 _CREDIT_LABEL = r"(?:作詞|作曲|編曲|原作|監督|制作|製作|出演|翻訳|歌唱|動画制作|イラスト)"
+_CREDIT_VALUE_LABEL = rf"(?:{_CREDIT_LABEL}|サブタイトル)"
 _CREDIT_WITH_VALUE = re.compile(
-    rf"^\s*{_CREDIT_LABEL}(?:担当|協力|提供|制作|作成)?"
-    r"\s*[:：/／|｜]\s*[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー]{1,32}\s*$"
+    rf"^\s*{_CREDIT_VALUE_LABEL}(?:担当|協力|提供|制作|作成)?"
+    r"(?:\s*[:：/／|｜]\s*|\s+)"
+    r"[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32}\s*$"
 )
 _COMPOUND_CREDIT_WITH_VALUE = re.compile(
     rf"^\s*{_CREDIT_LABEL}"
@@ -38,7 +44,16 @@ _COMPOUND_CREDIT_WITH_VALUE = re.compile(
 )
 _MIN_MELODY_COVERAGE = 0.25
 _MIN_MELODY_SECONDS_PER_CHARACTER = 0.05
+# Forced-alignment span scores are acoustic posteriors, not calibrated transcript
+# probabilities.  Keep the floor near zero so normal music-degraded alignments are
+# not treated as absent.  The median prevents one coincidental kana peak from
+# validating a whole line.
+MIN_CTC_MEDIAN_SCORE = 0.00075
 _TEMPLATES = (
+    (
+        "closing-greeting",
+        re.compile(r"(?:お疲れさま|お疲れ様|おつかれさま)(?:です|でした)?"),
+    ),
     (
         "viewing-thanks",
         re.compile(
@@ -127,3 +142,26 @@ def decide_recognized_line(
     else:
         status = "accepted"
     return SemanticLyricDecision(status, normalized, family, supported)
+
+
+def apply_ctc_support(
+    decision: SemanticLyricDecision,
+    line: int,
+    aligned: list[AlignedMora],
+) -> SemanticLyricDecision:
+    """Resolve a melody-supported template using text-conditioned CTC evidence.
+
+    Ordinary recognized text is deliberately outside this gate.  A narrow non-lyric
+    template is retained only when its own kana have sustained acoustic support.
+    """
+    if decision.template_family is None or not decision.melodic_support:
+        return decision
+    scores = [item.score for item in aligned if item.line == line]
+    median_score = statistics.median(scores) if scores else 0.0
+    supported = median_score >= MIN_CTC_MEDIAN_SCORE
+    return replace(
+        decision,
+        status="accepted" if supported else "rejected",
+        ctc_support=supported,
+        ctc_median_score=median_score,
+    )
