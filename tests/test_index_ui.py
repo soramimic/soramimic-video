@@ -912,6 +912,44 @@ def test_job_post_retries_one_server_rejected_turnstile_token():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_audio_job_post_retries_one_mobile_network_failure():
+    """iOSのLoad failedは同じ送信IDのまま一度だけ再送する。"""
+    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let calls = 0;
+        let status = "";
+        let turnstileSiteKey = "";
+        const form = {{ has: (key) => key === "audio" }};
+        const headers = () => ({{}});
+        const setJobStatus = (value) => {{ status = value; }};
+        const setTimeout = (callback) => {{ callback(); }};
+        const fetch = async (_url, options) => {{
+          calls += 1;
+          assert.equal(options.headers["X-Soramimic-Audio-Upload"], "1");
+          if (calls === 1) throw new TypeError("Load failed");
+          return {{ status: 200 }};
+        }};
+        {post}
+        (async () => {{
+          const response = await postJobWithTurnstileRetry(form);
+          assert.equal(response.status, 200);
+          assert.equal(calls, 2);
+          assert.match(status, /音源を再送/);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+def test_audio_submission_uses_an_idempotency_key():
+    submit = _function_body(_script(), "async function submitJob(")
+    assert 'form.append("submission_id", submissionId);' in submit
+    assert "globalThis.crypto?.randomUUID" in submit
+
+
 def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()

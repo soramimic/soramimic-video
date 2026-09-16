@@ -610,6 +610,9 @@ class Job:
     # 公開モードの日次IP枠だけに使う短いHMAC。接続元IPそのものは保存しない。
     # Accessで免除されたジョブはNoneのままにしてIP枠を消費させない。
     client_hash: str | None = None
+    # 大きな音源の送信が端末側で切れ、同じmultipartを再送したときの重複防止ID。
+    # APIレスポンスには出さず、status.jsonにだけ保存する。
+    submission_id: str | None = None
     status: str = "queued"  # queued / running / done / canceled / error
     stage: str | None = None
     stages: list[dict[str, Any]] = field(default_factory=list)
@@ -1518,6 +1521,7 @@ class JobManager:
                 params=data.get("params", {}),
                 owner=data.get("owner"),
                 client_hash=data.get("client_hash"),
+                submission_id=data.get("submission_id"),
                 status=data.get("status", "error"),
                 stages=data.get("stages", []),
                 error=data.get("error"),
@@ -1543,6 +1547,7 @@ class JobManager:
         layout_json: str = "",
         owner: str | None = None,
         client_hash: str | None = None,
+        submission_id: str | None = None,
         wordlist_csv: str = "",
         wordlist_images: dict[str, bytes] | None = None,
         audio: bytes | None = None,
@@ -1578,6 +1583,7 @@ class JobManager:
             params=params,
             owner=owner,
             client_hash=client_hash,
+            submission_id=submission_id,
         )
         with self._lock:
             self.jobs[job_id] = job
@@ -1598,6 +1604,20 @@ class JobManager:
         if owner is not None:
             jobs = [j for j in jobs if j.owner == owner]
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
+
+    def find_submission(self, submission_id: str, owner: str | None) -> Job | None:
+        """Return an already-created job for an idempotent browser submission."""
+        if not submission_id:
+            return None
+        with self._lock:
+            return next(
+                (
+                    job
+                    for job in self.jobs.values()
+                    if job.submission_id == submission_id and job.owner == owner
+                ),
+                None,
+            )
 
     def active_count(self) -> int:
         """待機中+実行中のジョブ数(キュー上限の判定用。ワーカーは1本で全員共用)。"""
@@ -1679,6 +1699,8 @@ class JobManager:
             data["owner"] = job.owner
         if job.client_hash:
             data["client_hash"] = job.client_hash
+        if job.submission_id:
+            data["submission_id"] = job.submission_id
         if job.finished_at:
             data["finished_at"] = job.finished_at
         if job.video:
@@ -3007,7 +3029,17 @@ def create_app(
         subtitle_granularity: str = Form(""),
         # Cloudflare Turnstile(TURNSTILE_SECRET_KEY 設定時のみ検証する)
         turnstile_token: str = Form(""),
+        # モバイル回線で大きな音源送信が切れた場合の安全な再送ID。
+        submission_id: str = Form(""),
     ) -> dict[str, Any]:
+        submission_id = submission_id.strip()
+        if submission_id and not re.fullmatch(r"[0-9a-f]{32}", submission_id):
+            raise HTTPException(status_code=400, detail="送信IDが不正です")
+        owner = owner_of(request)
+        if submission_id:
+            existing = manager.find_submission(submission_id, owner)
+            if existing is not None:
+                return {"id": existing.id}
         _check_turnstile(request, turnstile_token)
         quota_exempt = await _quota_exempt(request)
         input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
@@ -3059,7 +3091,6 @@ def create_app(
                 status_code=422,
                 detail="この入力形式は現在利用できません",
             )
-        owner = owner_of(request)
         client_hash = None if quota_exempt or not is_public_mode() else _client_hash(request)
         editor_bytes = None
         editor_payload: Any = None
@@ -3303,6 +3334,12 @@ def create_app(
         if params["sample_id"]:
             params["sample_midi_end_credit"] = midi_end_credit_of(params)
         with quota_submit_lock:
+            # 1回目の応答だけが失われ、再送が並行して到着した場合もここで直列化して
+            # 同じ音源のジョブを2本作らない。
+            if submission_id:
+                existing = manager.find_submission(submission_id, owner)
+                if existing is not None:
+                    return {"id": existing.id}
             _check_public_limits(
                 owner,
                 client_hash,
@@ -3314,6 +3351,7 @@ def create_app(
                 input_bytes if input_kind == "midi" else None,
                 editor_bytes, lyrics, params,
                 layout_json=layout_json, owner=owner, client_hash=client_hash,
+                submission_id=submission_id or None,
                 wordlist_csv=custom.csv.text if custom is not None else "",
                 wordlist_images=custom.images if custom is not None else None,
                 audio=input_bytes if input_kind == "audio" else None,
