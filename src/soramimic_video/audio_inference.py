@@ -56,11 +56,11 @@ class InferenceCancelled(Exception):  # noqa: N818 - internal control flow
 class _GpuAdmission:
     """Reserve GPU capacity while keeping Demucs isolated from resident models."""
 
-    def __init__(self) -> None:
+    def __init__(self, release_idle: Callable[[], None] | None = None) -> None:
         self._condition = threading.Condition()
         self._active: dict[str, tuple[str, int]] = {}
-        self._wave_budget = 0
         self._exclusive_waiters = 0
+        self._release_idle = release_idle
 
     @staticmethod
     def _free_bytes(device: str) -> int | None:
@@ -105,17 +105,31 @@ class _GpuAdmission:
                     if not uses_cuda:
                         self._active[job.id] = (job.kind, reservation)
                         break
+                    active_reservations = sum(
+                        value for _kind, value in self._active.values()
+                    )
+                    free_bytes = self._free_bytes(device)
+                    available = max(
+                        0,
+                        (free_bytes or 0)
+                        - _GPU_HEADROOM_BYTES
+                        - active_reservations,
+                    )
                     if not self._active:
-                        free_bytes = self._free_bytes(device)
-                        self._wave_budget = max(
-                            0,
-                            (free_bytes or 0) - _GPU_HEADROOM_BYTES,
-                        )
+                        if reservation > available and self._release_idle is not None:
+                            logger.info(
+                                "GPU空き容量が不足しているため待機中のモデルキャッシュを解放します"
+                            )
+                            self._release_idle()
+                            free_bytes = self._free_bytes(device)
+                            available = max(
+                                0,
+                                (free_bytes or 0) - _GPU_HEADROOM_BYTES,
+                            )
                         self._active[job.id] = (job.kind, reservation)
-                        capacity_reserved = reservation <= self._wave_budget
+                        capacity_reserved = reservation <= available
                         break
-                    reserved = sum(value for _kind, value in self._active.values())
-                    if reserved + reservation <= self._wave_budget:
+                    if reservation <= available:
                         self._active[job.id] = (job.kind, reservation)
                         capacity_reserved = True
                         break
@@ -128,8 +142,6 @@ class _GpuAdmission:
         finally:
             with self._condition:
                 self._active.pop(job.id, None)
-                if not self._active:
-                    self._wave_budget = 0
                 self._condition.notify_all()
 
 
@@ -403,7 +415,7 @@ class InferenceScheduler:
         ] = {kind: queue.PriorityQueue() for kind in INFERENCE_KINDS}
         self._stop = threading.Event()
         self._workers: dict[str, threading.Thread] = {}
-        self._gpu_admission = _GpuAdmission()
+        self._gpu_admission = _GpuAdmission(self._release_idle_model_caches)
 
     def start(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -525,9 +537,39 @@ class InferenceScheduler:
         with self._lock:
             job.progress = max(job.progress, min(1.0, max(0.0, value)))
 
-    def _job_device(self, job: InferenceJob) -> str:
+    def _admission_device(self, job: InferenceJob) -> str:
         requested = str(job.parameters.get("device") or self.device)
         return self.device if requested == "auto" else requested
+
+    def _job_device(self, job: InferenceJob) -> str:
+        requested = str(job.parameters.get("device") or self.device)
+        device = self.device if requested == "auto" else requested
+        if (
+            requested == "auto"
+            and device.startswith("cuda")
+            and not job.cuda_capacity_reserved
+        ):
+            logger.warning(
+                "GPU空き容量が不足しているため%sをCPUで実行します", job.kind
+            )
+            return "cpu"
+        return device
+
+    @staticmethod
+    def _release_idle_model_caches() -> None:
+        from . import audio_melody, kana_whisper, transcribe
+
+        transcribe._WHISPER_MODEL_CACHE.clear()
+        kana_whisper._MODEL_CACHE.clear()
+        audio_melody._MODEL_CACHE.clear()
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except (ImportError, RuntimeError):
+            pass
 
     def _run(self, job: InferenceJob) -> Any:
         self._check_cancelled(job)
@@ -599,7 +641,7 @@ class InferenceScheduler:
         }
 
     def _run_demucs(self, job: InferenceJob) -> dict[str, list[str]]:
-        from . import audio_melody, kana_whisper, runproc, transcribe
+        from . import runproc
         from .separation import DEMUCS_MODEL, _separate_local
 
         # Demucs runs in a separate CUDA process.  The admission gate guarantees
@@ -607,17 +649,7 @@ class InferenceScheduler:
         # be released without invalidating another worker.  Without this step,
         # successive song jobs retain Whisper, KanaWhisper, and SheetSage on the
         # GPU and can leave Demucs stalled behind several gigabytes of idle models.
-        transcribe._WHISPER_MODEL_CACHE.clear()
-        kana_whisper._MODEL_CACHE.clear()
-        audio_melody._MODEL_CACHE.clear()
-        gc.collect()
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except (ImportError, RuntimeError):
-            pass
+        self._release_idle_model_caches()
 
         finished = threading.Event()
 
@@ -663,7 +695,7 @@ class InferenceScheduler:
             try:
                 with self._gpu_admission.acquire(
                     job,
-                    self._job_device(job),
+                    self._admission_device(job),
                     self._stop,
                 ) as capacity_reserved:
                     job.cuda_capacity_reserved = capacity_reserved
