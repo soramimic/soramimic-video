@@ -2868,7 +2868,25 @@ async function postJobWithTurnstileRetry(form) {
     ...headers(),
     ...(form.has && form.has("audio") ? { "X-Soramimic-Audio-Upload": "1" } : {}),
   });
-  let res = await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
+  const send = async () => {
+    try {
+      return await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
+    } catch (firstError) {
+      // iOS Safariは4G/VPNで大きなmultipart送信が一度切れると "Load failed" だけを
+      // 返す。音源だけは同じ送信IDのまま一度再送し、サーバー側で重複を抑止する。
+      if (!(form.has && form.has("audio"))) throw firstError;
+      setJobStatus("通信が切れたため、音源を再送しています…");
+      await new Promise(resolve => setTimeout(resolve, 750));
+      try {
+        return await fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
+      } catch {
+        throw new Error(
+          "音源の送信中に通信が切れました。通信を確認して、もう一度動画をタップしてください。"
+        );
+      }
+    }
+  };
+  let res = await send();
   if (res.status !== 403 || !turnstileSiteKey) return res;
   // resetだけでは前回実行の遅延callbackと新しい実行を区別できない。widgetを世代ごと
   // 作り直し、拒否されたtokenの実行から届くcallbackを無効化してから再確認する。
@@ -2879,7 +2897,7 @@ async function postJobWithTurnstileRetry(form) {
   rebuildTurnstileWidget();
   if (!await ensureTurnstileToken()) return res;
   form.set("turnstile_token", turnstileToken());
-  return fetch("/api/jobs", { method: "POST", body: form, headers: jobHeaders() });
+  return send();
 }
 
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
@@ -2953,6 +2971,10 @@ async function submitJob(previewSec, previewMode) {
     }
   }
   const form = new FormData();
+  const submissionId = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID().replace(/-/g, "")
+    : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  form.append("submission_id", submissionId);
   // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
   if (audio) form.append("audio", audio);
   else if (sampleId) form.append("sample_id", sampleId);
