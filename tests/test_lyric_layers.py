@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from soramimic_video.analyze_audio import _omit_unresolved_synthesis_units
 from soramimic_video.convert import engine_phrases
 from soramimic_video.lyric_layers import apply_lyric_layers
 from soramimic_video.mora_align import CTCEmissions, collapse_kana_aliases, decode_kana_window
@@ -70,6 +71,29 @@ def test_omitted_performance_does_not_remove_canonical_subtitles_or_parody_input
     assert value.lines[0].xf_kana == "カク"
     assert engine_phrases(value) == ["カキク"]
     assert value.line_time_range(value.lines[0]) == pytest.approx((0, 0.9))
+
+
+def test_unresolved_optimizer_unit_becomes_explicit_synthesis_omission():
+    data = layers()
+    data["synthesis_plan"].pop(1)
+    data["unresolved_unit_ids"] = ["s1"]
+    data["evidence"] = tuple(data["evidence"])
+    data["omissions"] = tuple(data["omissions"])
+    data["diagnostics"] = tuple(data["diagnostics"])
+
+    assert _omit_unresolved_synthesis_units(data) == 1
+    assert data["unresolved_unit_ids"] == []
+    assert data["omissions"] == [{
+        "singing_unit_id": "s1",
+        "reason": "Stage 3で音高を確定できないため合成から省略",
+        "evidence_ids": ["stage3-synthesis-omission-s1"],
+    }]
+    assert data["evidence"][-1]["kind"] == "synthesis-omission"
+
+    value = project()
+    apply_lyric_layers(value, data)
+    assert [note.kana for note in value.notes] == ["カ", "ク"]
+    assert value.lines[0].original_text == "かきく"
 
 
 def test_wholly_omitted_line_retains_text_and_observed_subtitle_window():
