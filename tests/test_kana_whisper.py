@@ -73,17 +73,41 @@ def test_marigold_reading_uses_exact_kana_evidence_across_mora_counts():
 
     assert decision.selected_index == 1
     assert decision.reason == "kana-evidence"
-    assert decision.normalized_distances[1] == (0.0, 0.0)
+    assert decision.distances[1] == (0.0, 0.0)
 
 
-def test_normalized_distance_does_not_prefer_short_incidental_substring():
+def test_raw_distance_can_select_short_exact_candidate():
     decision = choose_reading(
         ["カキクケコ", "カ"],
         ["カキクケサ", "カキクケサ"],
     )
 
+    assert decision.selected_index == 1
+    assert decision.reason == "kana-evidence"
+
+
+def test_raw_distance_does_not_prefer_lower_candidate_normalized_error():
+    decision = choose_reading(
+        ["カキクケコ", "カキクケサタチツテト"],
+        ["カキクケサタチツセソ", "カキクケサタチツセソ"],
+    )
+
+    assert sum(decision.distances[0]) < sum(decision.distances[1])
+    assert sum(decision.normalized_distances[0]) > sum(decision.normalized_distances[1])
     assert decision.selected_index == 0
-    assert decision.reason == "default-or-tie"
+
+
+def test_kanasim_prefers_phonetically_closer_candidate_when_edit_counts_tie():
+    decision = choose_reading(["マ", "ツ"], ["ス", "ス"])
+
+    assert decision.selected_index == 1
+    assert decision.distances[1][0] < decision.distances[0][0]
+
+
+def test_kanasim_accepts_expressive_repeated_long_vowel_marks():
+    decision = choose_reading(["キレー", "キロ"], ["キレーー", "キレー"])
+
+    assert decision.distances[0] == (0.0, 0.0)
 
 
 def test_earlier_dictionary_path_wins_when_nbest_paths_are_one_edit_apart():

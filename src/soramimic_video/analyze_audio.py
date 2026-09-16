@@ -319,8 +319,9 @@ def _choose_readings_with_kana(
             }
         )
     return selected, {
-        "schema_version": 2,
+        "schema_version": 3,
         "mode": "closed-reading-candidate-rerank",
+        "distance_metric": "kanasim-weighted-substring-0.0.11",
         "model": {
             "id": KANA_WHISPER_MODEL,
             "revision": KANA_WHISPER_REVISION,
