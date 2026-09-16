@@ -383,10 +383,12 @@ def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyric
     def align(path, variants, **kwargs):
         calls.append(kwargs["line_windows"])
         assert kwargs["emissions"] is emissions
-        if kwargs["line_windows"] is not None:
+        if kwargs["line_windows"] == [(1., 3.), (2., 4.)]:
             raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+        if kwargs["line_windows"] == [(2., 4.)]:
+            return ([AlignedMora(0, 0, "キ", 3.2, 3.3, .9)], [0])
         return ([AlignedMora(0, 0, "カ", 1.2, 1.3, .8),
-                 AlignedMora(1, 0, "キ", 3.2, 3.3, .7)], [0, 0])
+                 AlignedMora(1, 0, "キ", 3.2, 4.9, .7)], [0, 0])
 
     monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
     monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: [
@@ -402,13 +404,24 @@ def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyric
         skip_separation=True,
     )
 
-    assert calls == [[(1., 3.), (2., 4.)], None]
+    assert calls == [[(1., 3.), (2., 4.)], None, [(2., 4.)]]
     assert [note.kana for note in value.notes] == ["カ", "キ"]
     assert value.lyric_layers["canonical_text"] == "か\nき"
     assert "全体整列へ切替" in caplog.text
     analysis = json.loads(
         (tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert any("CTC全体整列" in item for item in analysis["limitations"])
+    assert analysis["localized_alignment_retries"] == [{
+        "line": 1,
+        "window_start_sec": 2.0,
+        "window_end_sec": 4.0,
+        "reasons": ["after-whisper-window"],
+        "before_max_mora_span_sec": pytest.approx(1.7),
+        "before_line_end_sec": 4.9,
+        "after_max_mora_span_sec": pytest.approx(.1),
+        "after_line_end_sec": 3.3,
+        "status": "replaced",
+    }]
 
 
 def test_semantic_gate_discards_only_no_melody_template_segment(monkeypatch, tmp_path):
