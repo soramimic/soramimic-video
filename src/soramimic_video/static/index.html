@@ -564,19 +564,7 @@
   .turnstile-title { margin: 0; font-weight: 700; }
   .turnstile-copy .hint { margin: .2rem 0 .5rem; }
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
-  /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー + ⚙と🎲 ---- */
-  /* ⚙(替え歌を編集)と🎲(ランダム)はプルダウンの隣人。主役はサムネ枠なので
-     右上に小さく置く。ただしアイコンだけだと気づかれないので、文字ラベルを添えた
-     ピルにして「押せるもの」だと一目で分かるようにする(主張しすぎない大きさに留める) */
-  .builder-topbar {
-    display: flex; justify-content: flex-end; gap: .4rem; margin-bottom: .3rem;
-  }
-  #lucky, #builder-edit {
-    display: inline-flex; align-items: center; gap: .3rem;
-    padding: .25rem .7rem; min-height: 0; line-height: 1.4;
-    border-radius: 999px; background: var(--panel-2);
-  }
-  .lucky-icon { font-size: 1rem; line-height: 1; }
+  /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー ---- */
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
   body.custom-wordlist-open { overflow: hidden; }
   .custom-wordlist-dialog {
@@ -772,28 +760,10 @@
      その枠(#builder-play)をタップすればそのまま生成が走る。
      プルダウンは正本(#sample-select / #wordlist-select)の写しで、選択は双方向に
      同期する(syncBuilderOptions / syncBuilderValues)。
-     右上には⚙(替え歌を編集)と🎲(ランダム)。単語リストの絞り込みは直下の詳細設定、
-     変換のしかたは⚙で開く同梱エディタにある。自作リストはこのカードで管理する
+     単語リストの絞り込みは直下の詳細設定にある。自作リストはこのカードで管理する
      (エディタの中で選び直した結果は正本を経由してこのプルダウンにも出る)。
      見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
-  <!-- ⚙(編集)と🎲(ランダム)。主役ではないので右上に小さく置く。
-       アイコンだけだと気づかれないので、どちらも文字ラベルを添える(読み上げは
-       文字の方だけでよいので、絵文字は aria-hidden にする) -->
-  <div class="builder-topbar">
-    <!-- 替え歌エディタへの導線。押したときの流れは詳細設定にあった編集ボタンと
-         同じ openEditorFlow(保存済みがあればモーダル #editor-resume で選んでもらう)。
-         エディタを同梱していないサーバーでは loadConfig がこの枠ごと隠す -->
-    <div id="editor-embed-controls" hidden>
-      <button type="button" id="builder-edit" class="btn-sm"
-        aria-label="替え歌を編集" title="替え歌を編集">
-        <span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>
-    </div>
-    <button type="button" id="lucky" class="btn-sm" disabled
-      title="曲と単語リストをランダムに選ぶ">
-      <span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>
-  </div>
-  <!-- ⚙を押したときの応答。押したボタンのすぐ下に出す -->
   <span id="open-editor-msg" class="error"></span>
   <div id="song-upload-panel">
     <div class="audio-upload-entry" id="song-upload-entry">
@@ -940,10 +910,10 @@
 </section>
 
 <!-- 単語リストの「正本」の置き場。選ぶ操作はビルダーカードのプルダウンと
-     エディタの⚙モーダルにあるのでここは画面に出さないが、値そのもの(リスト名と
-     絞り込み)はサーバー送信・サムネプレビュー・🎲の抽選・単語画像の解決に使う。
+     エディタ内にあるのでここは画面に出さないが、値そのもの(リスト名と
+     絞り込み)はサーバー送信・サムネプレビュー・単語画像の解決に使う。
      - #wordlist-select … /editor/conf/setting.json から作った選択肢の一覧。
-       カードのプルダウンはこれの写しで、🎲の抽選対象と表示名の引き当ても兼ねる。
+       カードのプルダウンはこれの写しで、表示名の引き当ても兼ねる。
        conf が取れない構成では hidden のまま(=カード側のプルダウンも出ない)
      - #wordlist … リスト名(stem)。自作リストのときは空
      - #where … 選んだリストの絞り込み条件(詳細設定・エディタの変更が入る) -->
@@ -1504,7 +1474,7 @@ function setupInfoHints() {
     if (anchor) anchor.appendChild(btn);
     else body.parentNode.insertBefore(btn, body);
     // 説明の本体は body 直下へ移す。ⓘ だけが見える場所(ラベル)に残り、本体は
-    // hidden の親(#editor-embed-controls など)や details の中に置かれることが
+    // hidden の親や details の中に置かれることが
     // あって、そのままでは開いても描画されない。重ね順も他に巻き込まれなくなる。
     document.body.appendChild(body);
   });
@@ -1587,7 +1557,6 @@ async function loadConfig() {
   setChoice("layout", $("layout").value || "");
   wordlistLayouts = conf.wordlist_layouts || {};
   wordlistPhrases = conf.wordlist_phrases || {};
-  $("editor-embed-controls").hidden = !conf.editor;
   setupPublicMode(conf);
   setupTurnstile(conf.turnstile_site_key || "");
   await loadWordlistSelect(conf.wordlist_config ?? conf.editor);
@@ -2832,7 +2801,7 @@ function setBusy(busy) {
   $("preview").disabled = busy;
   $("preview-high").disabled = busy;
   $("preview-low").disabled = busy;
-  // カードの選択(プルダウンと🎲)は生成中も触れる。走っているジョブは投入時の
+  // カードのプルダウンは生成中も触れる。走っているジョブは投入時の
   // 選択で確定していて影響しないし、それは説明しなくても分かる(押しても無反応の
   // 方が不親切)。サムネ枠は進捗表示が使っているので、プレビューの作り直しだけ
   // renderBuilder 側で生成が終わるまで先送りする
@@ -3283,10 +3252,6 @@ function clearAudioPresentation() {
   const sampleAudio = selectedSampleIsAudio();
   document.querySelector('.stages li[data-stage="analyze"]').textContent =
     sampleAudio ? "音源解析" : "MIDI解析";
-  $("builder-edit").disabled = sampleAudio;
-  $("builder-edit").title = sampleAudio
-    ? "WAVサンプルは音源解析後に自動変換して動画を生成します"
-    : "替え歌を編集";
   syncBuilderOptions();
 }
 
@@ -3536,8 +3501,6 @@ $("midi").addEventListener("change", () => {
   clearEditorFile();
   if (kind === "midi") {
     clearAudioPresentation();
-    $("builder-edit").disabled = false;
-    $("builder-edit").title = "替え歌を編集";
     document.querySelector('.stages li[data-stage="analyze"]').textContent = "MIDI解析";
     syncLyricsRecognition();
     syncBuilderOptions();
@@ -3546,8 +3509,6 @@ $("midi").addEventListener("change", () => {
     schedulePreview(true);
     return;
   }
-  $("builder-edit").disabled = true;
-  $("builder-edit").title = "音声入力は音源解析後に自動変換して動画を生成します";
   document.querySelector('.stages li[data-stage="analyze"]').textContent = "音源解析";
   syncLyricsRecognition();
   syncBuilderOptions();
@@ -3603,10 +3564,6 @@ async function applySample(opts = {}) {
     }
     $("midi-restore-hint").hidden = true;
     const sampleAudio = selectedSampleIsAudio();
-    $("builder-edit").disabled = sampleAudio;
-    $("builder-edit").title = sampleAudio
-      ? "WAVサンプルは音源解析後に自動変換して動画を生成します"
-      : "替え歌を編集";
     document.querySelector('.stages li[data-stage="analyze"]').textContent =
       sampleAudio ? "音源解析" : "MIDI解析";
     const creditHint = $("audio-sample-credit");
@@ -4152,8 +4109,6 @@ $("custom-wordlist-delete").addEventListener("click", async () => {
   if (deleted) closeCustomList();
 });
 
-const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
-
 // 単語リスト(ファイル名)に対応する #wordlist-select の option。無ければ null。
 // (editor conf が取れない構成ではセレクト自体が出ないので常に null になる)
 function wordlistOptionByName(name) {
@@ -4162,44 +4117,6 @@ function wordlistOptionByName(name) {
   const i = wordlistGroups.findIndex((g) => g.name === name);
   if (i < 0) return null;
   return [...sel.options].find((o) => o.value === String(i)) || null;
-}
-
-// 選択肢から1つの「組み合わせ」を組む。戻り値は { sampleId, wordlistName }。
-// wordlistName が空なら単語リストは触らない(現在の設定のまま生成する)。
-function luckyCombo(sampleId, wordlistName) {
-  return {
-    sampleId,
-    wordlistName: wordlistName || "",
-  };
-}
-
-// 現在値と異なるランダム候補。初期化前や候補が1つしかないときは
-// 空になり、「押せるのに変わらない」状態を作らない。
-function luckyCandidatePools() {
-  const currentSampleId = $("sample-select").value;
-  const samples = [...$("sample-select").options]
-    .filter((o) => o.value && !o.disabled && o.value !== currentSampleId);
-  const sel = $("wordlist-select");
-  const all = sel.hidden ? [] : [...sel.options].filter((o) => o.value);
-  const nameOf = (o) => (wordlistGroups[Number(o.value)] || {}).name || "";
-  const currentWordlist = currentWordlistName();
-  const alternatives = all.filter((o) => nameOf(o) !== currentWordlist);
-  return { samples, alternatives, nameOf };
-}
-
-function syncLuckyAvailability() {
-  const { samples, alternatives } = luckyCandidatePools();
-  $("lucky").disabled = !samples.length || !alternatives.length;
-}
-
-// ランダム抽選。現在の曲・単語リストをそれぞれ候補から外し、1回の抽選で
-// 必ず両方を変える。
-function luckyRandomCombo() {
-  const { samples, alternatives, nameOf } = luckyCandidatePools();
-  if (!samples.length || !alternatives.length) return null;
-  const song = pickRandom(samples);
-  const wl = pickRandom(alternatives);
-  return luckyCombo(song.value, nameOf(wl));
 }
 
 // ---- カードのプルダウンと詳細設定の双方向同期 ----
@@ -4224,7 +4141,7 @@ const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";
 const OWN_SONG_VALUE = "__own_song__";
 
 // 正本がいま「エディタで書いた自作リスト」を指している状態か。
-// 正本に名前が入っていれば(カードや🎲で選び直した直後など)そちらが優先で、
+// 正本に名前が入っていれば(カードで選び直した直後など)そちらが優先で、
 // エディタのセッションに古い ORIGINAL が残っていても合成の選択肢は出さない。
 function showsEditorWordlist() {
   return !currentWordlistName() && usesEditorWordlist();
@@ -4284,7 +4201,6 @@ function syncBuilderValues() {
     : own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
   $("custom-wordlist-edit").hidden = simpleMode || !(selectedCustom || own);
   updateNoncommercialFanworkNotice();
-  syncLuckyAvailability();
 }
 
 function currentImagePolicy() {
@@ -4464,8 +4380,10 @@ function currentWordlistName() {
 }
 
 // いま選ばれている組み合わせ
-const currentCombo = () => luckyCombo(
-  ownSongFile() ? OWN_SONG_VALUE : $("sample-select").value, currentWordlistName());
+const currentCombo = () => ({
+  sampleId: ownSongFile() ? OWN_SONG_VALUE : $("sample-select").value,
+  wordlistName: currentWordlistName() || "",
+});
 
 // 単語リストの代表画像(サムネプレビューが取れなかったときのフォールバック)。
 // どちらも取れなければ画像なしで成立させる(枠ごと隠す)。
@@ -4680,8 +4598,6 @@ function schedulePreview(force) {
   previewTimer = setTimeout(renderBuilder, force ? 0 : PREVIEW_DEBOUNCE_MS);
 }
 
-// ---- 組み合わせをフォームへ反映する ----
-
 // 前回の編集済み替え歌が残っていると単語リストより優先されてしまうので外す
 function clearEditorFile() {
   if ($("editor").files[0]) {
@@ -4703,35 +4619,6 @@ function selectWordlist(name) {
   } else {
     $("wordlist").value = name;
     $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
-  }
-}
-
-// 組み合わせ(🎲ランダム・初期表示の既定)をカードとフォームへ反映する。
-// 曲のMIDI取得まで待ち、成功したかを返す。
-async function applyCombo(c) {
-  clearAudioInput();
-  if (c.wordlistName) {
-    selectWordlist(c.wordlistName);
-    clearEditorFile();
-  }
-  $("sample-select").value = c.sampleId;
-  syncBuilderValues();
-  schedulePreview();
-  return await trackSample(applySample());
-}
-
-// 🎲ランダムの反映。失敗はカードの案内に出す。
-async function pickCombo(c) {
-  if (!c) {
-    showBuilderMsg("現在と異なる曲と単語リストの候補がありません。");
-    return;
-  }
-  try {
-    if (!await applyCombo(c)) {
-      showBuilderMsg("サンプル曲の取得に失敗しました。もう一度お試しください。");
-    }
-  } catch (err) {
-    showBuilderMsg("組み合わせの準備に失敗しました: " + err.message);
   }
 }
 
@@ -4778,9 +4665,6 @@ $("builder-show-image").addEventListener("click", () => {
   schedulePreview(true);
 });
 
-// 🎲ランダム: カードの選択そのものをランダムな組み合わせに差し替える(生成はしない)
-$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));
-
 // カードの初期選択を決めて最初のプレビューを出す。restoreForm より後に呼ばれるので、
 // 前回の入力があればそれが既定になる。曲はMIDIファイルとして保存されているので、
 // 復元されたファイル名からサンプルIDを引き当てて選択に戻す。
@@ -4811,9 +4695,6 @@ async function initBuilder() {
   builderLive = true;
   schedulePreview();
 }
-
-// カードの⚙: 詳細設定にあった「✏️ 替え歌を編集」と同じ導線(openEditorFlow)
-$("builder-edit").addEventListener("click", openEditorFlow);
 
 // サムネ枠そのものが唯一の生成ボタン(カード下の青い生成ボタンは廃止した)
 $("builder-play").addEventListener("click", () => submitJob(0));
@@ -6734,10 +6615,6 @@ async function convertAndOpenEditor() {
   form.append("song_title", songTitleOf(midi));
   form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
   appendCustomWordlist(form);
-  const btn = $("builder-edit");
-  btn.disabled = true;
-  const label = btn.textContent;
-  btn.textContent = "準備中…";
   try {
     const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
     const body = await res.json();
@@ -6751,9 +6628,6 @@ async function convertAndOpenEditor() {
     showEditorFrame();
   } catch (err) {
     msg.textContent = "編集の準備に失敗しました: " + err.message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
   }
 }
 
@@ -6781,8 +6655,8 @@ function closeEditor() {
   // 閉じても編集は生きている(その旨を出す)。エディタの中で単語リストを
   // 選び直していたら、ここで最後に親の正本へ書き戻してから表示を作り直す
   syncEditorSession();
-  // モーダルを開く前の場所へ戻す(押したボタンにフォーカスを返す)
-  if (!$("builder-edit").disabled) $("builder-edit").focus();
+  // モーダルを開く前のカードへフォーカスを戻す
+  $("builder-sample").focus();
 }
 
 function showEditorFrame() {
@@ -6853,10 +6727,10 @@ async function reEditParodyFile() {
 $("editor-resume-continue").addEventListener("click", resumeEditor);
 $("editor-resume-regen").addEventListener("click", regenerateEditor);
 // やめる(どちらも選ばず閉じる)は右上の×・背景クリック・Esc。
-// フォーカスは開いたときのボタン(⚙編集)に返す
+// フォーカスはビルダーカードへ返す
 function cancelEditorResume() {
   hideEditorResume();
-  $("builder-edit").focus();
+  $("builder-sample").focus();
 }
 $("editor-resume-close").addEventListener("click", cancelEditorResume);
 // Escは説明ポップを閉じるのに使われたもの(defaultPrevented)なら見送る
@@ -6881,7 +6755,7 @@ document.addEventListener("keydown", (ev) => {
 // ---- 単語リストの一覧(同梱editorのconfを唯一の情報源に) ----
 // editorが使えるときは /editor/conf/setting.json の wordlist から選択肢を組む。
 // この <select> 自体は画面に出さない(カードのプルダウンがその写し)。
-// 🎲の抽選対象・表示名の引き当て・選択状態の置き場も兼ねている。
+// 表示名の引き当て・選択状態の置き場も兼ねている。
 // 選択は canonical な #wordlist に name(filepathのstem)を書き込み、
 // #where に絞り込みを反映する。これで既存の読み手($("wordlist"))は変えずに済む。
 // 各項目が指す単語リスト。同じ value(なければ名前)の

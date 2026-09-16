@@ -707,25 +707,22 @@ def test_index_html_builder_card_has_selects():
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
         "synthesizer", "model-select", "voicevox-style",
     ]
-    # 🎲ランダムはカードの選択を差し替える
-    assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
+    # 不要なランダム・編集ボタンはカードに置かない
+    assert 'id="lucky"' not in card
+    assert 'id="builder-edit"' not in card
     # 進捗・結果は畳んである詳細(ビルダーカードの中の控えめなテキストリンク)
     assert '<details class="sub-details" id="job-card" hidden>' in html
 
 
-def test_index_html_builder_card_has_gear_and_editor_status():
-    """カードの右上は⚙(替え歌を編集)と🎲(ランダム)。替え歌の状態表示もカードに置く。"""
+def test_index_html_builder_card_keeps_editor_status_without_action_buttons():
+    """替え歌の状態表示は残し、ランダム・編集ボタンは置かない。"""
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
     card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
-    # ⚙は🎲と同じ topbar に置き、押すと従来と同じ導線(openEditorFlow)で開く
-    assert '<button type="button" id="builder-edit" class="btn-sm"' in card
-    assert 'aria-label="替え歌を編集" title="替え歌を編集"' in card
-    assert card.index('id="builder-edit"') < card.index('id="lucky"')
-    assert '$("builder-edit").addEventListener("click", openEditorFlow);' in html
-    # エディタを同梱していないサーバーでは⚙ごと出さない
-    assert card.index('id="editor-embed-controls"') < card.index('id="builder-edit"')
+    assert 'id="builder-edit"' not in card
+    assert 'id="lucky"' not in card
+    assert 'class="builder-topbar"' not in card
     # 替え歌の状態表示もカードに移した(エディタの導線がカードにあるので)
     assert 'id="parody-status"' in card
     # 「保存済みの替え歌があります」の選択はカード内に展開せず(サムネ枠が押し
@@ -775,17 +772,13 @@ def test_index_html_keeps_form_restore_and_file_hint():
     assert 'id="midi-restore-hint"' in html
 
 
-def test_index_html_builder_card_has_labeled_topbar_actions():
+def test_index_html_builder_card_omits_random_and_edit_actions():
     html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
         encoding="utf-8"
     )
-    # ⚙と🎲はカードの右上に小さく置くだけ。ただしアイコンだけだと気づかれない
-    # ので、文字ラベルを添えたピルにする(絵文字は読み上げ対象から外す)
-    assert '<div class="builder-topbar">' in html
-    assert '<button type="button" id="lucky" class="btn-sm"' in html
-    assert '<span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>' in html
-    assert '<span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>' in html
-    assert "border-radius: 999px; background: var(--panel-2);" in html
+    assert '<div class="builder-topbar">' not in html
+    assert 'id="lucky"' not in html
+    assert 'id="builder-edit"' not in html
 
 
 def test_index_html_builder_frame_runs_the_whole_flow():
@@ -2323,8 +2316,8 @@ def test_index_html_song_values_keep_hidden_file_canonicals_and_visible_correct_
     ):
         assert f'id="{dynamic_id}"' in store
 
-    # 正本をhiddenへ移してもカード・🎲・エディタとの既存経路は維持する
-    assert '$("sample-select").value = c.sampleId;' in html
+    # 正本をhiddenへ移してもカード・エディタとの既存経路は維持する
+    assert '$("sample-select").value = $("builder-sample").value;' in html
     assert '$("sample-select").addEventListener("change", () => {' in html
     assert "const pending = trackSample(applySample());" in html
     assert "pending.then((ok) => {" in html
@@ -2483,7 +2476,7 @@ def test_index_html_wordlist_values_are_hidden_canonicals():
     """単語リストの選択UIは無くし、値(名前・絞り込み)だけを隠して持つ。"""
     html = _index_html()
     store = html.split('<div id="wordlist-store" hidden>')[1].split("</div>")[0]
-    # 選択肢の一覧(🎲の抽選・表示名の引き当てに使う)と、送信値の正本
+    # 選択肢の一覧(表示名の引き当てに使う)と、送信値の正本
     assert '<select id="wordlist-select" hidden></select>' in store
     assert '<input type="hidden" id="wordlist">' in store
     assert '<input type="hidden" id="where">' in store
