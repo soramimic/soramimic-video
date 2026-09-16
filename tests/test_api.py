@@ -127,6 +127,34 @@ def test_job_flow_accepts_wav_with_auto_lyrics_by_default(client):
     assert client.get(body["playback_url"]).content == FAKE_MP4
 
 
+def test_retried_audio_submission_returns_the_same_job(client):
+    fields = {
+        "wordlist": "stations",
+        "submission_id": "a" * 32,
+    }
+    files = {"audio": ("voice.wav", fake_wav(), "audio/wav")}
+    first = client.post("/api/jobs", files=files, data=fields)
+    second = client.post("/api/jobs", files=files, data=fields)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert len(client.app.state.manager.jobs) == 1
+    job = client.app.state.manager.jobs[first.json()["id"]]
+    saved = json.loads((job.dir / api_mod.STATUS_FILENAME).read_text(encoding="utf-8"))
+    assert saved["submission_id"] == fields["submission_id"]
+    assert "submission_id" not in client.get(f"/api/jobs/{job.id}").json()["params"]
+
+
+def test_rejects_invalid_audio_submission_id(client):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations", "submission_id": "not-a-valid-id"},
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "送信IDが不正です"
+
+
 def test_manual_correct_lyrics_mode_is_persisted(client):
     wav = fake_wav()
     res = client.post(
