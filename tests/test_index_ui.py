@@ -1009,6 +1009,61 @@ def test_stalled_audio_upload_is_aborted_and_retried():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_audio_upload_retry_can_be_canceled_before_job_creation():
+    """再送中はジョブIDがまだ無くても、中断ボタンでXHRを止められる。"""
+    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
+    cancel = _function_body(_script(), "async function cancelJob()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let calls = 0;
+        let aborted = 0;
+        let currentJob = null;
+        let cancelPendingJob = null;
+        let turnstileSiteKey = "";
+        const controller = new AbortController();
+        let submitAbort = controller;
+        const form = {{ has: (key) => key === "audio" }};
+        const headers = () => ({{}});
+        const statuses = [];
+        const setJobStatus = (value) => statuses.push(value);
+        const showBuilderMsg = () => {{}};
+        const setCancelPending = () => {{}};
+        const setTimeout = (callback, delay) => {{
+          if (delay === 750) callback();
+          return 1;
+        }};
+        const clearTimeout = () => {{}};
+        class XMLHttpRequest {{
+          constructor() {{ this.upload = {{}}; }}
+          open() {{}}
+          setRequestHeader() {{}}
+          abort() {{ aborted += 1; if (this.onabort) this.onabort(); }}
+          send() {{
+            calls += 1;
+            if (calls === 1) this.onerror();
+          }}
+        }}
+        const fetch = async () => assert.fail("cancel must not call the job API before creation");
+        {post}
+        {cancel}
+        (async () => {{
+          const pending = postJobWithTurnstileRetry(form, controller.signal);
+          await Promise.resolve();
+          await Promise.resolve();
+          assert.equal(calls, 2, "the retry upload must be active");
+          await cancelJob();
+          await assert.rejects(pending, (error) => error.name === "AbortError");
+          assert.equal(aborted, 1);
+          assert.equal(controller.signal.aborted, true);
+          assert.equal(statuses.at(-1), "中断しています…");
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_audio_submission_uses_an_idempotency_key():
     submit = _function_body(_script(), "async function submitJob(")
     assert 'form.append("submission_id", submissionId);' in submit
@@ -2275,7 +2330,9 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
         const activeCustomList = () => selected === "custom" ? {} : null;
         const showsEditorWordlist = () => false;
+        let submitAbort = null;
         const showProgress = () => {}, setJobStatus = () => {}, resetTurnstile = () => {};
+        const setCancelPending = () => {};
         const watch = () => { submitBusy = false; };
         const requests = [];
         const postJobWithTurnstileRetry = async (form) => {
