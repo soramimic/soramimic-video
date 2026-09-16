@@ -60,7 +60,7 @@ def test_scheduler_orders_queued_work_by_environment_priority(monkeypatch, tmp_p
     assert order == ["public", "dev"]
 
 
-def test_scheduler_overlaps_distinct_model_families_when_capacity_allows(
+def test_scheduler_overlaps_python_models_but_runs_demucs_exclusively(
     monkeypatch, tmp_path
 ):
     scheduler = InferenceScheduler(tmp_path / "state", device="cuda")
@@ -69,17 +69,26 @@ def test_scheduler_overlaps_distinct_model_families_when_capacity_allows(
         "_free_bytes",
         lambda _device: 12 * 1024**3,
     )
-    started = set()
+    active = set()
     lock = threading.Lock()
-    all_started = threading.Event()
+    python_models_started = threading.Event()
 
     def run(job):
         assert job.cuda_capacity_reserved
         with lock:
-            started.add(job.kind)
-            if started == {"demucs", "whisper", "sheetsage"}:
-                all_started.set()
-        assert all_started.wait(2), "distinct model workers did not overlap"
+            if job.kind == "demucs":
+                assert not active
+            else:
+                assert "demucs" not in active
+            active.add(job.kind)
+            if {"whisper", "sheetsage"}.issubset(active):
+                python_models_started.set()
+        if job.kind == "demucs":
+            time.sleep(0.03)
+        else:
+            assert python_models_started.wait(2), "Python model workers did not overlap"
+        with lock:
+            active.remove(job.kind)
         return {}
 
     monkeypatch.setattr(scheduler, "_run", run)
@@ -94,6 +103,29 @@ def test_scheduler_overlaps_distinct_model_families_when_capacity_allows(
     scheduler.stop()
 
     assert all(job.status == "done" for job in jobs)
+
+
+def test_demucs_releases_idle_model_caches_before_start(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, kana_whisper, separation, transcribe
+
+    scheduler = InferenceScheduler(tmp_path / "state", device="cpu")
+    job = _queued_job(scheduler, tmp_path, "demucs-job", "dev", "demucs")
+    transcribe._WHISPER_MODEL_CACHE[("large-v3", "cuda", None)] = object()
+    kana_whisper._MODEL_CACHE[("cuda", "float16")] = object()
+    audio_melody._MODEL_CACHE[("sheetsage",)] = object()
+
+    def separate_local(_path, _output_dir, *, model, device):
+        assert model == "htdemucs"
+        assert device == "cpu"
+        assert not transcribe._WHISPER_MODEL_CACHE
+        assert not kana_whisper._MODEL_CACHE
+        assert not audio_melody._MODEL_CACHE
+
+    monkeypatch.setattr(separation, "_separate_local", separate_local)
+
+    assert scheduler._run_demucs(job) == {
+        "artifacts": ["no_vocals.wav", "vocals.wav"]
+    }
 
 
 def test_scheduler_serializes_distinct_models_when_gpu_budget_is_low(
