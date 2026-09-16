@@ -44,6 +44,9 @@ _COMPOUND_CREDIT_WITH_VALUE = re.compile(
 )
 _MIN_MELODY_COVERAGE = 0.25
 _MIN_MELODY_SECONDS_PER_CHARACTER = 0.05
+_RECOVERY_MAX_NOTE_GAP_SEC = 1.0
+_RECOVERY_MIN_SPAN_SEC = 1.5
+_RECOVERY_MIN_MELODY_SEC = 0.5
 # Forced-alignment span scores are acoustic posteriors, not calibrated transcript
 # probabilities.  Keep the floor near zero so normal music-degraded alignments are
 # not treated as absent.  The median prevents one coincidental kana peak from
@@ -122,6 +125,47 @@ def interval_has_melodic_support(
         for note in notes
     )
     return required_duration > 0.0 and overlap_duration >= required_duration
+
+
+def credit_recovery_windows(
+    line: TranscribedLine,
+    notes: list[MelodyNote],
+) -> list[tuple[float, float]]:
+    """Return substantial SheetSage singing islands inside a credit candidate.
+
+    This deliberately applies only to exact credit templates.  The returned hard
+    bounds let a second Whisper pass hear the singing without the long silent or
+    instrumental context that can induce a credit hallucination.
+    """
+    if non_lyric_template_family(line.text) != "credits":
+        return []
+    clipped = [
+        (max(line.start_sec, note.start_sec), min(line.end_sec, note.end_sec))
+        for note in notes
+        if note.end_sec > line.start_sec and note.start_sec < line.end_sec
+    ]
+    clipped = [(start, end) for start, end in clipped if end > start]
+    if not clipped:
+        return []
+    clipped.sort()
+    islands: list[tuple[float, float, float]] = []
+    start, end = clipped[0]
+    melody_seconds = end - start
+    for note_start, note_end in clipped[1:]:
+        if note_start - end <= _RECOVERY_MAX_NOTE_GAP_SEC:
+            melody_seconds += max(0.0, note_end - max(note_start, end))
+            end = max(end, note_end)
+        else:
+            islands.append((start, end, melody_seconds))
+            start, end = note_start, note_end
+            melody_seconds = end - start
+    islands.append((start, end, melody_seconds))
+    return [
+        (start, end)
+        for start, end, melody_seconds in islands
+        if end - start >= _RECOVERY_MIN_SPAN_SEC
+        and melody_seconds >= _RECOVERY_MIN_MELODY_SEC
+    ]
 
 
 def decide_recognized_line(
