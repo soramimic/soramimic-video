@@ -40,6 +40,24 @@ def test_service_readiness_allows_staggered_demucs_rollout(monkeypatch):
     assert service_available()
 
 
+def test_service_readiness_rejects_incompatible_inference_api(monkeypatch):
+    class Response:
+        ok = True
+
+        @staticmethod
+        def json():
+            return {
+                "status": "ok",
+                "api": {"name": "soramimic-audio-inference", "version": 2},
+                "capabilities": {"whisper": True, "sheetsage2": True},
+            }
+
+    monkeypatch.setenv("SORAMIMIC_AUDIO_INFERENCE_URL", "http://127.0.0.1:8320")
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: Response())
+
+    assert not service_available()
+
+
 def test_scheduler_orders_queued_work_by_environment_priority(monkeypatch, tmp_path):
     scheduler = InferenceScheduler(tmp_path / "state", device="cpu")
     order = []
@@ -234,6 +252,10 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
     app = create_audio_inference_app(tmp_path / "state", device="cpu")
     with TestClient(app) as client:
         health = client.get("/healthz")
+        assert health.json()["api"] == {
+            "name": "soramimic-audio-inference",
+            "version": 1,
+        }
         assert health.json()["jobs"] == {
             "queued": 0,
             "running": 0,
