@@ -117,6 +117,7 @@ def _two_line_project(tmp_path: Path):
     align_lines(project, ["沈むように 溶けるように"])
     # 2つのXF行(=2フレーズ)が同じ元歌詞行に対応する
     assert [ln.original_text for ln in project.lines] == ["沈むように 溶けるように"] * 2
+    assert [ln.original_line_index for ln in project.lines] == [0, 0]
     project.parody = Parody(
         wordlist="test",
         lines=[
@@ -151,17 +152,24 @@ def test_build_ass_original_line_merges_group(tmp_path: Path):
               if ln.startswith("Dialogue:") and ",Original," in ln]
     # 1枚だけ: 開始=1フレーズ目の頭、終了=2フレーズ目の終わり(通しタイミング)
     assert len(starts) == 1
-    assert _parody_texts(ass) == ["静", "川"]  # 未指定の替え歌は既定どおり1行ずつ
+    assert _parody_texts(ass) == ["静  川"]
 
 
-def test_build_ass_default_keeps_repeated_originals_as_separate_cues(tmp_path: Path):
-    # 既定: 同じ元歌詞に対応するXF行も結合せず、上下を1行ずつ表示する
+def test_build_ass_default_merges_fragments_of_same_original_line(tmp_path: Path):
+    # 既定: 1つの元歌詞行に対応するXF断片はまとめる
     project = _two_line_project(tmp_path)
     ass = build_ass(project, 1280, 720, "Font")
-    assert _orig_texts(ass) == [
-        "沈むように 溶けるように",
-        "沈むように 溶けるように",
-    ]
+    assert _orig_texts(ass) == ["沈むように 溶けるように"]
+    assert _parody_texts(ass) == ["静  川"]
+
+
+def test_build_ass_default_keeps_identical_lyric_occurrences_separate(tmp_path: Path):
+    project = _two_line_project(tmp_path)
+    for index, line in enumerate(project.lines):
+        line.original_text = "同じ歌詞"
+        line.original_line_index = index
+    ass = build_ass(project, 1280, 720, "Font")
+    assert _orig_texts(ass) == ["同じ歌詞", "同じ歌詞"]
     assert _parody_texts(ass) == ["静", "川"]
 
 

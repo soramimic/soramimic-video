@@ -287,8 +287,8 @@ class SubtitleElement:
     # 第1段階では source="parody" のみ有効(元歌詞ではカナ対応付けに課題があり無視する)。
     ruby: bool = False
     ruby_size: float = 0.5  # ルビの文字サイズ(本文フォントサイズに対する比)
-    # 表示粒度。"line"(行) / "phrase"(フレーズ)。None は source 既定
-    # (original=line, parody=phrase)。詳細は align.build_subtitle_segments。
+    # 表示粒度。"line"(元歌詞行) / "cue"(対応行) / "phrase"(フレーズ)。None は source 既定
+    # (original=line, parody=line)。詳細は align.build_subtitle_segments。
     granularity: str | None = None
 
 

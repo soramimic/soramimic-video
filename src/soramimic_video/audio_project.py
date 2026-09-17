@@ -110,6 +110,7 @@ def build_project(
                 xf_kana="".join(notes[i].kana for i in ids),
                 note_ids=ids,
                 original_text=text,
+                original_line_index=orig_line,
             )
         )
     skipped = len(line_texts) - len(lines)

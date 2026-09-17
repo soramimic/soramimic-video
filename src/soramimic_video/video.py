@@ -1690,7 +1690,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     font_path = resolve_font_path(layout.font if layout else None)
     # 行ごとの素材(グループ化・切り出し・マージは align 側の共通ロジックで行う)
     plines = [parody_lines.get(line.id) for line in shown]
-    originals = [line.original_text for line in shown]  # グループ化キー(未対応はNone)
+    originals = [line.original_text for line in shown]
+    # 新しいprojectは元歌詞側の行番号でグループ化し、同文の別出現を区別する。
+    # 古いprojectは番号を持たないため、従来どおり本文を互換キーにする。
+    original_groups: list[int | str | None] = [
+        line.original_line_index
+        if line.original_line_index is not None
+        else line.original_text
+        for line in shown
+    ]
     # 元歌詞のフレーズ切り出しは読み(かな)どうしで突き合わせるので XFカナを優先
     xf_texts = [line.xf_kana or line.xf_surface for line in shown]
     original_full = [(line.original_text or line.xf_surface) for line in shown]
@@ -1706,7 +1714,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         gran = resolve_granularity(el.source, getattr(el, "granularity", None), granularity)
         full_texts = parody_full if el.source == "parody" else original_full
         segments = build_subtitle_segments(
-            el.source, gran, originals, full_texts, xf_texts, span_pairs, sep=WORD_SEP
+            el.source,
+            gran,
+            originals,
+            full_texts,
+            xf_texts,
+            span_pairs,
+            sep=WORD_SEP,
+            original_groups=original_groups,
         )
         # \posで固定配置(boxのalign/valign側の辺が基準点)。
         # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
