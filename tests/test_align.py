@@ -138,9 +138,9 @@ def test_split_lyric_falls_back_to_proportional():
 
 
 def test_resolve_granularity_precedence():
-    # 要素の指定 > override > source既定。既定は元歌詞の行境界を尊重する
-    assert resolve_granularity("original", None, None) == "line"
-    assert resolve_granularity("parody", None, None) == "line"
+    # 要素の指定 > override > source既定。既定は上下ともXF行ごとに表示する
+    assert resolve_granularity("original", None, None) == "cue"
+    assert resolve_granularity("parody", None, None) == "phrase"
     assert resolve_granularity("original", "line", None) == "line"
     assert resolve_granularity("original", None, {"original": "line"}) == "line"
     assert resolve_granularity("original", "line", {"original": "phrase"}) == "line"  # 要素優先
@@ -153,6 +153,7 @@ def test_parse_granularity_override():
     assert parse_granularity_override("") is None
     assert parse_granularity_override("bogus|parody:nope") is None
     assert parse_granularity_override("parody:line|junk") == {"parody": "line"}
+    assert parse_granularity_override("original:cue") == {"original": "cue"}
 
 
 def test_build_subtitle_segments_original_line_merges_group():
@@ -199,8 +200,8 @@ def test_build_subtitle_segments_none_never_merges():
     assert [s.text for s in segs] == ["あ", "い"]
 
 
-def test_default_line_granularity_ignores_broken_xf_word_boundary():
-    """XFの語中改行で「る」だけの字幕を作らない。"""
+def test_default_granularity_keeps_each_cue_without_splitting_original():
+    """XFの語中改行でも元歌詞を分割せず、上下を対応行ごとに出す。"""
     original = "止めるほどの意思の強さ 出来てすぐのボクは持たず"
     originals = [original, original, original]
     xf = ["止め", "る", "るほどのい意思の強さ出来すぐのボクは持たず"]
@@ -215,10 +216,14 @@ def test_default_line_granularity_ignores_broken_xf_word_boundary():
     )
 
     assert [(s.text, s.start, s.end, s.indices) for s in original_segs] == [
-        (original, 128.76, 130.76, [0, 1, 2])
+        (original, 128.76, 128.96, [0]),
+        (original, 128.96, 129.16, [1]),
+        (original, 129.16, 130.76, [2]),
     ]
     assert [(s.text, s.start, s.end, s.indices) for s in parody_segs] == [
-        ("止めの替え歌  球  後ろの替え歌", 128.76, 130.76, [0, 1, 2])
+        ("止めの替え歌", 128.76, 128.96, [0]),
+        ("球", 128.96, 129.16, [1]),
+        ("後ろの替え歌", 129.16, 130.76, [2]),
     ]
 
 

@@ -1621,7 +1621,7 @@ def build_ass(
     消灯はその行の最後の単語画像の余韻(frame_show_end)に合わせる(次の行の
     表示が始まればそこで交代)。位置・サイズ・色はレイアウトのsubtitle要素から
     決める。subtitle要素のないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
-    表示粒度(行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
+    表示粒度(元歌詞行/対応行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
     (Web UIの一括指定)、それも無ければ source 既定に従う。
     clear_ranges は間奏・後奏など専用画面の表示区間。この区間に入る字幕は
     専用画面の開始時刻で消し、直前の歌詞が画面上に残らないようにする。
