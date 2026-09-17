@@ -34,22 +34,10 @@ _KATAKANA_RE = re.compile(r"[ァ-ヶー]+")
 _PRON_FIELD = 9  # unidic: 発音形(出現形)
 _UNIDIC_NBEST_PATHS = 8
 _UNIDIC_MAX_READINGS = 2
-_LATIN_RE = re.compile(r"[A-Za-z\uff21-\uff3a\uff41-\uff5a]")
-_STRUCTURED_RE = re.compile(
-    r"[0-9\uff10-\uff19]+|[&+#%@=\u00d7\u00f7\uff06\uff0b\uff03\uff05\uff20\uff1d]"
+_YOMI_VARIANT_RE = re.compile(
+    r"[0-9\uff10-\uff19A-Za-z\uff21-\uff3a\uff41-\uff5a]"
 )
-_DIGIT_READINGS = {
-    "0": "\u30bc\u30ed",
-    "1": "\u30a4\u30c1",
-    "2": "\u30cb",
-    "3": "\u30b5\u30f3",
-    "4": "\u30e8\u30f3",
-    "5": "\u30b4",
-    "6": "\u30ed\u30af",
-    "7": "\u30ca\u30ca",
-    "8": "\u30cf\u30c1",
-    "9": "\u30ad\u30e5\u30fc",
-}
+_STRUCTURED_RE = re.compile(r"[&+#%@=\u00d7\u00f7\uff06\uff0b\uff03\uff05\uff20\uff1d]")
 _SYMBOL_READINGS = {
     "&": "\u30a2\u30f3\u30c9",
     "+": "\u30d7\u30e9\u30b9",
@@ -303,9 +291,46 @@ def _yomi_kana(text: str) -> str | None:
     return _kana_only(result)
 
 
+def _yomi_kana_candidates(text: str) -> list[str]:
+    """Return soramimic-yomi's ordered readings for plain text."""
+    global _yomi_available
+    if _yomi_available is False:
+        return []
+    try:
+        import soramimic_yomi
+    except ImportError:
+        if _yomi_available is None:
+            logger.warning(
+                "soramimic-yomi が無いため unidic-lite の読みを使います"
+                "(英語・数字の読みが弱くなります)"
+            )
+        _yomi_available = False
+        return []
+    _yomi_available = True
+    with runproc.suppress_native_output_in_public_mode():
+        generate = getattr(soramimic_yomi, "get_yomi_candidates", None)
+        if generate is None:
+            return [_kana_only(soramimic_yomi.get_yomi(text))]
+        generated = generate(text, nbest=8)
+    return [
+        kana
+        for candidate in generated
+        if (kana := _kana_only(candidate.reading))
+    ]
+
+
 def text_to_kana_yomi(text: str) -> str | None:
     """soramimic-yomi によるカタカナ読み(ルビ記法対応)。未インストールなら None。"""
     return _kana_with_ruby(text, _yomi_kana)
+
+
+def _yomi_candidates_with_ruby(text: str) -> list[str]:
+    """Keep forced ruby fixed; otherwise expose soramimic-yomi's N-best."""
+    parts = ruby.segments(text)
+    if len(parts) == 1 and parts[0][1] is None:
+        return _yomi_kana_candidates(parts[0][0])
+    kana = text_to_kana_yomi(text)
+    return [kana] if kana else []
 
 
 def text_to_kana(text: str) -> str:
@@ -324,9 +349,9 @@ def reading_candidates(text: str) -> list[str]:
     候補が複数の行は音響スコア(CTC)で判定する(mora_align.align_moras_with_variants)。
     ルビ注釈のある区間は両エンジンで同じ(指定)読みになるので、候補は増えない。
     """
-    yomi = text_to_kana_yomi(text)
+    yomi = _yomi_candidates_with_ruby(text)
     unidic = _unidic_candidates_with_ruby(text)
-    candidates = [k for k in [yomi, *unidic] if k]
+    candidates = [*yomi, *unidic]
     unique: list[str] = []
     seen: set[str] = set()
     for k in candidates:
@@ -339,8 +364,6 @@ def reading_candidates(text: str) -> list[str]:
 
 def _structured_reading(surface: str) -> str:
     normalized = unicodedata.normalize("NFKC", surface)
-    if normalized.isascii() and normalized.isdigit():
-        return "".join(_DIGIT_READINGS[digit] for digit in normalized)
     return _SYMBOL_READINGS.get(normalized, "")
 
 
@@ -371,31 +394,32 @@ def _vowel_sequence(reading: str) -> tuple[str, ...]:
 def automatic_reading_candidates(text: str) -> list[str]:
     """Conservative readings for automatically transcribed surface text.
 
-    The dictionary-first reading is always the default. Digit strings and a small
-    explicit symbol set gain deterministic spoken-form alternatives. Latin text
-    otherwise stays dictionary-only. Japanese dictionary alternatives are kept
-    when their vowel sequence differs, preventing consonant-only ambiguity from
-    reaching the acoustic selector while allowing genuine length alternatives.
+    The dictionary-first reading is always the default.  soramimic-yomi supplies
+    bounded number, Latin-letter, and connected-English alternatives; this layer
+    adds a small explicit symbol set. Candidates whose vowel sequence differs are
+    kept, preventing consonant-only ambiguity from reaching the acoustic selector.
     """
-    dictionary = reading_candidates(text)
+    uses_yomi_variants = bool(_YOMI_VARIANT_RE.search(text))
+    yomi = _yomi_candidates_with_ruby(text) if uses_yomi_variants else []
+    dictionary = yomi or reading_candidates(text)
     if not dictionary:
         # An empty default would make an added spoken symbol form win trivially.
         return []
     default = dictionary[0]
     structured = list(_STRUCTURED_RE.finditer(text))
+    default_vowels = _vowel_sequence(default)
     candidates = [default]
+    linguistic = dictionary[1:] if not uses_yomi_variants or yomi else []
+    candidates.extend(
+        candidate
+        for candidate in linguistic
+        if _vowel_sequence(candidate) != default_vowels
+    )
     if structured:
         for index in range(len(structured)):
             candidates.append(_structured_variant(text, {index}))
         if len(structured) > 1:
             candidates.append(_structured_variant(text, set(range(len(structured)))))
-    elif not _LATIN_RE.search(text):
-        default_vowels = _vowel_sequence(default)
-        candidates.extend(
-            candidate
-            for candidate in dictionary[1:]
-            if _vowel_sequence(candidate) != default_vowels
-        )
 
     unique: list[str] = []
     seen: set[str] = set()

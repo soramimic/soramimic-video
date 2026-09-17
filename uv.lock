@@ -2739,7 +2739,7 @@ dev = [
 [[package]]
 name = "soramimic-yomi"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-yomi#fb94060596a71842cff8cfe8e08c85d6792e7f77" }
+source = { git = "https://github.com/soramimic/soramimic-yomi#8b89e52fe7b8a9d00754535e149997eb10d578aa" }
 dependencies = [
     { name = "e2k" },
     { name = "pyopenjtalk-plus" },
