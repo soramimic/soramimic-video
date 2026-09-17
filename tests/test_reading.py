@@ -6,11 +6,50 @@ pytest.importorskip("MeCab")
 pytest.importorskip("unidic_lite")
 
 from soramimic_video.reading import (  # noqa: E402
+    automatic_reading_candidates,
     reading_candidates,
     reading_tokens,
     text_to_kana,
     text_to_kana_unidic,
 )
+
+
+def test_automatic_candidates_add_digitwise_reading():
+    candidates = automatic_reading_candidates("4443で外れる炭酸水")
+    assert candidates[0].startswith("ヨンセンヨンヒャクヨンジューサン")
+    assert "ヨンヨンヨンサンデハズレルタンサンスイ" in candidates
+
+
+def test_automatic_digitwise_candidate_can_win_with_kana_evidence():
+    from soramimic_video.kana_whisper import choose_reading
+
+    candidates = automatic_reading_candidates("4443で外れる炭酸水")
+    decision = choose_reading(
+        candidates,
+        ["ヨーヨーヨーダンベラズ", "ヨーヨーヨーゼンベンハズレ"],
+    )
+    assert candidates[decision.selected_index].startswith("ヨンヨンヨンサン")
+    assert decision.reason == "kana-evidence"
+
+
+def test_automatic_candidates_keep_english_dictionary_first():
+    assert automatic_reading_candidates("reason") == [reading_candidates("reason")[0]]
+
+
+def test_automatic_candidates_filter_japanese_by_vowels_not_length(monkeypatch):
+    monkeypatch.setattr(
+        "soramimic_video.reading.reading_candidates",
+        lambda _text: ["カサ", "ガタ", "キサ", "カサラ"],
+    )
+    assert automatic_reading_candidates("仮") == ["カサ", "キサ", "カサラ"]
+
+
+def test_automatic_candidates_add_supported_symbol_reading(monkeypatch):
+    monkeypatch.setattr(
+        "soramimic_video.reading.reading_candidates", lambda _text: ["タス"]
+    )
+    assert automatic_reading_candidates("+") == ["タス", "プラス"]
+    assert automatic_reading_candidates("＋") == ["タス", "プラス"]
 
 
 def test_public_yomi_hides_native_dictionary_path(monkeypatch, capfd):

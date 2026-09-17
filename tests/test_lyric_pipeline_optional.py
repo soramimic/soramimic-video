@@ -310,7 +310,7 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
     monkeypatch.setattr(
         reading,
         "reading_candidates",
-        lambda text: [{"か": "カ", "き": "キ"}[text], "サ"],
+        lambda text: [{"か": "カ", "き": "キ"}[text], {"か": "キ", "き": "ク"}[text]],
     )
     monkeypatch.setattr(
         kana_whisper,

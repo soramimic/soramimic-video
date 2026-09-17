@@ -240,9 +240,15 @@ def _recognized_line_windows(
     return windows
 
 
-def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
+def _has_kana_choice(
+    variants: list[list[list[str]]], *, allow_different_lengths: bool = False
+) -> bool:
     return any(
-        len(options) > 1 and any(len(candidate) == len(options[0]) for candidate in options[1:])
+        len(options) > 1
+        and (
+            allow_different_lengths
+            or any(len(candidate) == len(options[0]) for candidate in options[1:])
+        )
         for options in variants
     )
 
@@ -379,7 +385,7 @@ def analyze_audio(
         align_moras_with_variants,
         retry_pathological_line_alignments,
     )
-    from .reading import reading_candidates
+    from .reading import automatic_reading_candidates, reading_candidates
 
     _require_audio_pipeline()
     emissions = None
@@ -500,8 +506,11 @@ def analyze_audio(
     # 得た閉じた発音候補の再順位付けだけに使う。
     # 元歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。カナ化には記法つきの
     # 行を渡し、字幕・表示に使うテキスト(line_texts)は素テキストに直しておく。
+    candidate_builder = (
+        automatic_reading_candidates if recognition_mode is not None else reading_candidates
+    )
     line_variants = [
-        [split_moras(kana) for kana in reading_candidates(text)] or [[]]
+        [split_moras(kana) for kana in candidate_builder(text)] or [[]]
         for text in line_texts
     ]
     for text, variants in zip(line_texts, line_variants, strict=True):
@@ -529,7 +538,9 @@ def analyze_audio(
 
     reading_evidence = None
     chosen = [0] * len(line_variants)
-    if _has_kana_choice(line_variants):
+    if _has_kana_choice(
+        line_variants, allow_different_lengths=recognition_mode is not None
+    ):
         chosen, reading_evidence = _choose_readings_with_kana(
             audio_path,
             vocals,
@@ -661,13 +672,15 @@ def analyze_audio(
             line_texts = [line.text for line in retained_lines]
             recognized_windows = _recognized_line_windows(retained_lines)
             line_variants = [
-                [split_moras(kana) for kana in reading_candidates(text)] or [[]]
+                [split_moras(kana) for kana in candidate_builder(text)] or [[]]
                 for text in line_texts
             ]
             line_texts = [strip_ruby(text) for text in line_texts]
             chosen = [0] * len(line_variants)
             reading_evidence = None
-            if _has_kana_choice(line_variants):
+            if _has_kana_choice(
+                line_variants, allow_different_lengths=recognition_mode is not None
+            ):
                 chosen, reading_evidence = _choose_readings_with_kana(
                     audio_path,
                     vocals,
@@ -773,7 +786,7 @@ def analyze_audio(
             ):
                 rejection_reasons.append("repeated-vocalization")
             recovered_variants = [
-                [split_moras(kana) for kana in reading_candidates(line.text)] or [[]]
+                [split_moras(kana) for kana in candidate_builder(line.text)] or [[]]
                 for line in recovered_lines
             ]
             if any(not variants[0] for variants in recovered_variants):
@@ -868,13 +881,15 @@ def analyze_audio(
             line_texts = [line.text for line in retained_lines]
             recognized_windows = _recognized_line_windows(retained_lines)
             line_variants = [
-                [split_moras(kana) for kana in reading_candidates(text)] or [[]]
+                [split_moras(kana) for kana in candidate_builder(text)] or [[]]
                 for text in line_texts
             ]
             line_texts = [strip_ruby(text) for text in line_texts]
             chosen = [0] * len(line_variants)
             reading_evidence = None
-            if _has_kana_choice(line_variants):
+            if _has_kana_choice(
+                line_variants, allow_different_lengths=recognition_mode is not None
+            ):
                 chosen, reading_evidence = _choose_readings_with_kana(
                     audio_path,
                     vocals,

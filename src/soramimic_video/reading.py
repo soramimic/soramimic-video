@@ -20,12 +20,13 @@ import csv
 import logging
 import re
 import threading
+import unicodedata
 from typing import Any
 
 import jaconv
 
 from . import ruby, runproc
-from .kana import normalize_long_vowels
+from .kana import normalize_long_vowels, split_moras, vowel_of
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,32 @@ _KATAKANA_RE = re.compile(r"[ァ-ヶー]+")
 _PRON_FIELD = 9  # unidic: 発音形(出現形)
 _UNIDIC_NBEST_PATHS = 8
 _UNIDIC_MAX_READINGS = 2
+_LATIN_RE = re.compile(r"[A-Za-z\uff21-\uff3a\uff41-\uff5a]")
+_STRUCTURED_RE = re.compile(
+    r"[0-9\uff10-\uff19]+|[&+#%@=\u00d7\u00f7\uff06\uff0b\uff03\uff05\uff20\uff1d]"
+)
+_DIGIT_READINGS = {
+    "0": "\u30bc\u30ed",
+    "1": "\u30a4\u30c1",
+    "2": "\u30cb",
+    "3": "\u30b5\u30f3",
+    "4": "\u30e8\u30f3",
+    "5": "\u30b4",
+    "6": "\u30ed\u30af",
+    "7": "\u30ca\u30ca",
+    "8": "\u30cf\u30c1",
+    "9": "\u30ad\u30e5\u30fc",
+}
+_SYMBOL_READINGS = {
+    "&": "\u30a2\u30f3\u30c9",
+    "+": "\u30d7\u30e9\u30b9",
+    "#": "\u30b7\u30e3\u30fc\u30d7",
+    "%": "\u30d1\u30fc\u30bb\u30f3\u30c8",
+    "@": "\u30a2\u30c3\u30c8",
+    "=": "\u30a4\u30b3\u30fc\u30eb",
+    "\u00d7": "\u30ab\u30b1\u30eb",
+    "\u00f7": "\u30ef\u30eb",
+}
 
 _tagger: Any = None
 _tagger_lock = threading.Lock()
@@ -307,4 +334,74 @@ def reading_candidates(text: str) -> list[str]:
         if norm not in seen:
             seen.add(norm)
             unique.append(k)
+    return unique
+
+
+def _structured_reading(surface: str) -> str:
+    normalized = unicodedata.normalize("NFKC", surface)
+    if normalized.isascii() and normalized.isdigit():
+        return "".join(_DIGIT_READINGS[digit] for digit in normalized)
+    return _SYMBOL_READINGS.get(normalized, "")
+
+
+def _structured_variant(text: str, target_indices: set[int]) -> str:
+    """Build a reading while replacing only selected structured spans."""
+    parts: list[str] = []
+    cursor = 0
+    for index, match in enumerate(_STRUCTURED_RE.finditer(text)):
+        parts.append(text_to_kana(text[cursor:match.start()]))
+        surface = match.group()
+        if index in target_indices:
+            parts.append(_structured_reading(surface))
+        else:
+            parts.append(text_to_kana(surface))
+        cursor = match.end()
+    parts.append(text_to_kana(text[cursor:]))
+    return "".join(parts)
+
+
+def _vowel_sequence(reading: str) -> tuple[str, ...]:
+    return tuple(
+        vowel
+        for mora in split_moras(normalize_long_vowels(reading))
+        if (vowel := vowel_of(mora)) is not None
+    )
+
+
+def automatic_reading_candidates(text: str) -> list[str]:
+    """Conservative readings for automatically transcribed surface text.
+
+    The dictionary-first reading is always the default. Digit strings and a small
+    explicit symbol set gain deterministic spoken-form alternatives. Latin text
+    otherwise stays dictionary-only. Japanese dictionary alternatives are kept
+    when their vowel sequence differs, preventing consonant-only ambiguity from
+    reaching the acoustic selector while allowing genuine length alternatives.
+    """
+    dictionary = reading_candidates(text)
+    if not dictionary:
+        # An empty default would make an added spoken symbol form win trivially.
+        return []
+    default = dictionary[0]
+    structured = list(_STRUCTURED_RE.finditer(text))
+    candidates = [default]
+    if structured:
+        for index in range(len(structured)):
+            candidates.append(_structured_variant(text, {index}))
+        if len(structured) > 1:
+            candidates.append(_structured_variant(text, set(range(len(structured)))))
+    elif not _LATIN_RE.search(text):
+        default_vowels = _vowel_sequence(default)
+        candidates.extend(
+            candidate
+            for candidate in dictionary[1:]
+            if _vowel_sequence(candidate) != default_vowels
+        )
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = normalize_long_vowels(candidate)
+        if candidate and normalized not in seen:
+            seen.add(normalized)
+            unique.append(candidate)
     return unique
