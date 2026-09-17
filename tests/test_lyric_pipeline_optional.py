@@ -605,3 +605,107 @@ def test_semantic_gate_recovers_singing_island_before_final_ctc(monkeypatch, tmp
     analysis = json.loads(
         (tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert not any("CTC全体整列" in item for item in analysis["limitations"])
+
+
+def test_note_lyric_deficit_recovery_replaces_only_acoustically_supported_detail(
+    monkeypatch, tmp_path,
+):
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    original = [
+        TranscribedLine(0.0, 2.0, "かきくけ"),
+        TranscribedLine(3.0, 5.0, "こさしす"),
+        TranscribedLine(6.0, 8.0, "せそたち"),
+        TranscribedLine(10.0, 13.0, "つてとな"),
+    ]
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: original)
+    retry_calls = []
+
+    def recover(path, start, end, model, device):
+        retry_calls.append((start, end))
+        text = "にぬねの" if start < 11.0 else "はひふへ"
+        return [TranscribedLine(start, end, text)]
+
+    monkeypatch.setattr(transcribe, "transcribe_window", recover)
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: [{
+            "かきくけ": "カキクケ",
+            "こさしす": "コサシス",
+            "せそたち": "セソタチ",
+            "つてとな": "ツテトナ",
+            "にぬねの": "ニヌネノ",
+            "はひふへ": "ハヒフヘ",
+        }[text]],
+    )
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
+
+    def align(path, variants, **kwargs):
+        windows = kwargs["line_windows"]
+        assert windows is not None
+        aligned = []
+        for line_index, (options, window) in enumerate(zip(variants, windows, strict=True)):
+            moras = options[0]
+            for mora_index, mora in enumerate(moras):
+                start = window[0] + (window[1] - window[0]) * mora_index / len(moras)
+                end = window[0] + (window[1] - window[0]) * (mora_index + 1) / len(moras)
+                aligned.append(
+                    AlignedMora(line_index, mora_index, mora, start, end, 0.8)
+                )
+        return aligned, [0] * len(variants)
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    notes = []
+    for base in (0.0, 3.0, 6.0):
+        notes.extend(
+            MelodyNote(base + index * 0.2, base + index * 0.2 + 0.1, 60)
+            for index in range(4)
+        )
+    notes.extend(
+        MelodyNote(10.0 + index * 0.2, 10.1 + index * 0.2, 62)
+        for index in range(5)
+    )
+    notes.extend(
+        MelodyNote(11.4 + index * 0.2, 11.5 + index * 0.2, 64)
+        for index in range(5)
+    )
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: notes)
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=13.0)),
+    )
+
+    value = analyze_audio(
+        tmp_path / "input.wav",
+        tmp_path / "project",
+        device="cpu",
+        skip_separation=True,
+    )
+
+    assert retry_calls[0] == pytest.approx((10.0, 11.15))
+    assert retry_calls[1] == pytest.approx((11.15, 12.8))
+    assert value.lyric_layers["canonical_text"].splitlines()[-2:] == [
+        "にぬねの", "はひふへ",
+    ]
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    recovery = recognition["semantic_gate"]["localized_deficit_recoveries"]
+    assert len(recovery) == 1
+    assert recovery[0]["status"] == "accepted"
+    assert recovery[0]["source_surface"] == "つてとな"
+    assert recovery[0]["source_mora_count"] == 4
+    assert recovery[0]["recovered_mora_count"] == 8
+    assert [item["surface"] for item in recognition["segments"][-2:]] == [
+        "にぬねの", "はひふへ",
+    ]
