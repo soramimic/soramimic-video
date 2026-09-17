@@ -32,8 +32,22 @@ def test_automatic_digitwise_candidate_can_win_with_kana_evidence():
     assert decision.reason == "kana-evidence"
 
 
-def test_automatic_candidates_keep_english_dictionary_first():
-    assert automatic_reading_candidates("reason") == [reading_candidates("reason")[0]]
+def test_automatic_candidates_keep_english_dictionary_first_and_add_spelling():
+    candidates = automatic_reading_candidates("reason")
+    assert candidates[0] == reading_candidates("reason")[0] == "リーズン"
+    assert "アールイーエーエスオーエヌ" in candidates
+
+
+def test_reading_candidates_include_yomi_connected_english():
+    candidates = reading_candidates("did you")
+    assert candidates[0] == "ディドユー"
+    assert "デジュ" in candidates
+
+
+def test_automatic_candidates_include_yomi_letter_names():
+    candidates = automatic_reading_candidates("AI")
+    assert candidates[0] == "アイ"
+    assert "エーアイ" in candidates
 
 
 def test_automatic_candidates_filter_japanese_by_vowels_not_length(monkeypatch):

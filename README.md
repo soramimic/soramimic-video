@@ -150,9 +150,10 @@ uv run soramimic-video export-xf --project work/song --output work/song/selected
 未知歌詞では原音mixをWhisper large-v3（既定）のVADなし・前セグメント文脈なしの単一パスで認識します。
 対応区間にSheetSage2ノートがなく、かつ認識全文が限定的な視聴案内・字幕・クレジット文型に
 一致するときだけ除外します。ノートがないだけでは除外せず、非旋律の声も未解決として診断に残します。
-確定した表層から yomi と UniDic N-best の読み候補を作ります。自動認識した数字列と限定的な記号には
-定義済みの読み候補も加え、日本語の辞書候補は母音列が異なるものだけに絞ります。
-英字は辞書の既定読みだけを使います。候補はKanaWhisperの原音mix／分離ボーカル結果で保守的に
+確定した表層から soramimic-yomi と UniDic N-best の読み候補を作ります。soramimic-yomiは
+数字の通常読み／桁読み、英字の単語読み／文字名読み、短い英語句の連結発音を上限付きで返し、
+この層では限定的な記号読みを加えます。音響選択へ渡すのは母音列が異なる候補に絞ります。
+候補はKanaWhisperの原音mix／分離ボーカル結果で保守的に
 再順位付けします。KanaWhisperの自由認識結果を
 歌詞として採用することはありません。ReazonかなCTCは、選択済みの読みを変更せずモーラ時刻だけを
 推定します。`analyze_audio/recognition.json` に通常Whisperの歌詞認識を、
