@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
+import statistics
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -32,6 +34,7 @@ from .transcribe import DEFAULT_WHISPER_MODEL, TranscribedLine
 
 if TYPE_CHECKING:
     from .audio_melody import MelodyNote
+    from .mora_align import AlignedMora
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +391,7 @@ def analyze_audio(
     retained_indices: list[int] = []
     retained_lines: list[TranscribedLine] = []
     localized_recoveries: list[dict[str, object]] = []
+    localized_deficit_recoveries: list[dict[str, object]] = []
     localized_alignment_retries: list[dict[str, object]] = []
 
     last_progress = 0.0
@@ -721,6 +725,208 @@ def analyze_audio(
                 )
                 localized_alignment_retries.extend(retries)
 
+        from .semantic_lyrics import lyric_deficit_recoveries, vocalization_only
+        from .transcribe import transcribe_window
+
+        deficit_candidates = lyric_deficit_recoveries(
+            retained_lines,
+            [
+                len(variants[choice])
+                for variants, choice in zip(line_variants, chosen, strict=True)
+            ],
+            sheetsage_notes,
+        )
+        replacements: dict[int, list[TranscribedLine]] = {}
+        for recovery in deficit_candidates:
+            source_line = retained_lines[recovery.line]
+            recovered_lines = []
+            for start_sec, end_sec in recovery.windows:
+                recovered_lines.extend(
+                    transcribe_window(
+                        audio_path,
+                        start_sec,
+                        end_sec,
+                        whisper_model,
+                        device or "auto",
+                    )
+                )
+            recovered_lines.sort(key=lambda line: (line.start_sec, line.end_sec))
+            rejection_reasons = []
+            recovered_decisions = [
+                decide_recognized_line(line, sheetsage_notes)
+                for line in recovered_lines
+            ]
+            if not recovered_lines:
+                rejection_reasons.append("empty-transcript")
+            if any(
+                decision.template_family is not None
+                for decision in recovered_decisions
+            ):
+                rejection_reasons.append("non-lyric-template")
+            if any(
+                not decision.melodic_support
+                for decision in recovered_decisions
+            ):
+                rejection_reasons.append("insufficient-melodic-support")
+            if recovered_lines and all(
+                vocalization_only(line.text) for line in recovered_lines
+            ):
+                rejection_reasons.append("repeated-vocalization")
+            recovered_variants = [
+                [split_moras(kana) for kana in reading_candidates(line.text)] or [[]]
+                for line in recovered_lines
+            ]
+            if any(not variants[0] for variants in recovered_variants):
+                rejection_reasons.append("missing-reading")
+            recovered_aligned: list[AlignedMora] = []
+            recovered_choices = [0] * len(recovered_variants)
+            if not rejection_reasons:
+                try:
+                    recovered_aligned, recovered_choices = align_moras_with_variants(
+                        vocals,
+                        recovered_variants,
+                        device=device,
+                        emissions=emissions,
+                        phonetic_aliases=True,
+                        line_windows=_recognized_line_windows(recovered_lines),
+                    )
+                except (RuntimeError, ValueError) as exc:
+                    rejection_reasons.append(f"ctc-alignment-failed:{exc}")
+            recovered_moras = sum(
+                len(variants[choice])
+                for variants, choice in zip(
+                    recovered_variants, recovered_choices, strict=True
+                )
+            )
+            required_moras = recovery.effective_mora_count + max(
+                2, math.ceil(recovery.effective_mora_count * 0.25)
+            )
+            if recovered_moras < required_moras:
+                rejection_reasons.append("insufficient-detail-gain")
+            if recovered_moras > recovery.note_count * 3:
+                rejection_reasons.append("pathological-detail-gain")
+            recovered_scores = [mora.score for mora in recovered_aligned]
+            source_scores = [
+                mora.score for mora in aligned if mora.line == recovery.line
+            ]
+            recovered_ctc_median = (
+                statistics.median(recovered_scores) if recovered_scores else 0.0
+            )
+            source_ctc_median = (
+                statistics.median(source_scores) if source_scores else 0.0
+            )
+            if recovered_ctc_median < MIN_CTC_MEDIAN_SCORE:
+                rejection_reasons.append("insufficient-ctc-support")
+            if (
+                source_ctc_median > 0.0
+                and recovered_ctc_median < source_ctc_median * 0.5
+            ):
+                rejection_reasons.append("ctc-weaker-than-source")
+            candidate_accepted = not rejection_reasons
+            if candidate_accepted:
+                replacements[recovery.line] = recovered_lines
+            source_segment_index = next(
+                (
+                    index
+                    for index, original in enumerate(recognition_lines)
+                    if original is source_line
+                ),
+                None,
+            )
+            localized_deficit_recoveries.append({
+                "source_segment_index": source_segment_index,
+                "source_retained_index": recovery.line,
+                "source_surface": source_line.text,
+                "source_mora_count": recovery.mora_count,
+                "source_effective_mora_count": recovery.effective_mora_count,
+                "raw_note_count": recovery.note_count,
+                "median_notes_per_mora": recovery.median_notes_per_mora,
+                "residual_notes": recovery.residual_notes,
+                "retry_windows": [list(window) for window in recovery.windows],
+                "status": "accepted" if candidate_accepted else "rejected",
+                "rejection_reasons": rejection_reasons,
+                "recovered_mora_count": recovered_moras,
+                "source_ctc_median_score": source_ctc_median,
+                "recovered_ctc_median_score": recovered_ctc_median,
+                "segments": [
+                    {
+                        "start_sec": line.start_sec,
+                        "end_sec": line.end_sec,
+                        "surface": line.text,
+                    }
+                    for line in recovered_lines
+                ],
+            })
+
+        if replacements:
+            retained_lines = [
+                replacement
+                for index, line in enumerate(retained_lines)
+                for replacement in replacements.get(index, [line])
+            ]
+            retained_lines.sort(key=lambda line: (line.start_sec, line.end_sec))
+            line_texts = [line.text for line in retained_lines]
+            recognized_windows = _recognized_line_windows(retained_lines)
+            line_variants = [
+                [split_moras(kana) for kana in reading_candidates(text)] or [[]]
+                for text in line_texts
+            ]
+            line_texts = [strip_ruby(text) for text in line_texts]
+            chosen = [0] * len(line_variants)
+            reading_evidence = None
+            if _has_kana_choice(line_variants):
+                chosen, reading_evidence = _choose_readings_with_kana(
+                    audio_path,
+                    vocals,
+                    line_texts,
+                    line_variants,
+                    recognized_windows,
+                    device=device or "auto",
+                    shared_inference=shared_inference,
+                )
+            selected_variants = [
+                [variants[index]]
+                for variants, index in zip(line_variants, chosen, strict=True)
+            ]
+            localized_alignment_retries = []
+            try:
+                aligned, _fixed_choices = align_moras_with_variants(
+                    vocals,
+                    selected_variants,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                    line_windows=recognized_windows,
+                )
+                recognition_windows_fallback = False
+            except ValueError as exc:
+                recognition_windows_fallback = True
+                fallback_windows = recognized_windows
+                logger.warning(
+                    "歌詞不足の局所再認識後にWhisper行時刻をCTC整列に使えないため"
+                    "全体整列へ切替: %s",
+                    exc,
+                )
+                recognized_windows = None
+                aligned, _fixed_choices = align_moras_with_variants(
+                    vocals,
+                    selected_variants,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                    line_windows=None,
+                )
+                aligned, retries = retry_pathological_line_alignments(
+                    vocals,
+                    selected_variants,
+                    aligned,
+                    fallback_windows,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                )
+                localized_alignment_retries.extend(retries)
+
     expected_moras = sum(
         len(line[choice])
         for line, choice in zip(line_variants, chosen, strict=True)
@@ -769,6 +975,7 @@ def analyze_audio(
                             )
                         ],
                         "localized_recoveries": localized_recoveries,
+                        "localized_deficit_recoveries": localized_deficit_recoveries,
                         "localized_alignment_retries": localized_alignment_retries,
                     },
                     "segments": [

@@ -29,6 +29,19 @@ class SemanticLyricDecision:
     ctc_median_score: float | None = None
 
 
+@dataclass(frozen=True)
+class LyricDeficitRecovery:
+    """A retained Whisper line whose melody carries substantially more detail."""
+
+    line: int
+    windows: tuple[tuple[float, float], ...]
+    note_count: int
+    mora_count: int
+    effective_mora_count: int
+    median_notes_per_mora: float
+    residual_notes: float
+
+
 _CREDIT_LABEL = r"(?:作詞|作曲|編曲|原作|監督|制作|製作|出演|翻訳|歌唱|動画制作|イラスト)"
 _CREDIT_VALUE_LABEL = rf"(?:{_CREDIT_LABEL}|サブタイトル)"
 _CREDIT_WITH_VALUE = re.compile(
@@ -47,11 +60,19 @@ _MIN_MELODY_SECONDS_PER_CHARACTER = 0.05
 _RECOVERY_MAX_NOTE_GAP_SEC = 1.0
 _RECOVERY_MIN_SPAN_SEC = 1.5
 _RECOVERY_MIN_MELODY_SEC = 0.5
+_DEFICIT_MIN_NOTES = 7
+_DEFICIT_MIN_NOTES_PER_MORA = 1.5
+_DEFICIT_MIN_RESIDUAL_NOTES = 4.0
+_DEFICIT_SPLIT_NOTE_GAP_SEC = 0.32
+_DEFICIT_MIN_GROUP_NOTES = 4
+_DEFICIT_MIN_GROUP_SPAN_SEC = 0.6
+_DEFICIT_WINDOW_PADDING_SEC = 0.5
 # Forced-alignment span scores are acoustic posteriors, not calibrated transcript
 # probabilities.  Keep the floor near zero so normal music-degraded alignments are
 # not treated as absent.  The median prevents one coincidental kana peak from
 # validating a whole line.
 MIN_CTC_MEDIAN_SCORE = 0.00075
+_ALWAYS_REJECT_TEMPLATE_FAMILIES = frozenset({"stock-media-credit"})
 _TEMPLATES = (
     (
         "closing-greeting",
@@ -76,6 +97,13 @@ _TEMPLATES = (
         re.compile(r"字幕(?:制作|作成|提供|協力|担当)?"),
     ),
     (
+        "stock-media-credit",
+        re.compile(
+            r"(?:🐯?soundhodori사운드호돌이サウンドゥ?ホドリ|"
+            r"instagramtwitterホドリ)"
+        ),
+    ),
+    (
         "credits",
         re.compile(rf"{_CREDIT_LABEL}(?:担当|協力|提供|制作|作成)?"),
     ),
@@ -90,6 +118,130 @@ def normalize_recognized_text(text: str) -> str:
         for character in normalized
         if unicodedata.category(character)[0] not in {"P", "Z"}
     )
+
+
+def vocalization_only(text: str) -> bool:
+    """Return true for short repeated non-lexical syllables such as ``la``/``ah``."""
+    normalized = normalize_recognized_text(text)
+    if not normalized:
+        return False
+    compact = normalized.replace("ー", "")
+    if all(character.isascii() or "ぁ" <= character <= "ヶ" for character in compact):
+        for width in range(1, min(3, len(compact) // 2) + 1):
+            if width > 1 and len(compact) < width * 3:
+                continue
+            if all(character == compact[index % width] for index, character in enumerate(compact)):
+                return True
+    tokens = re.findall(r"[a-z]+|[ぁ-んァ-ヶー]+", normalized)
+    if not tokens or "".join(tokens) != normalized:
+        return False
+    latin = re.compile(r"(?:(?:a+h*|o+h*|u+h*|la|na|da|fa|ha|ya|wow))+")
+    kana = frozenset("あぁアァいぃイィうぅウゥえぇエェおぉオォらラなナだダふフはハやヤわワー")
+    return all(
+        bool(latin.fullmatch(token)) if token.isascii()
+        else all(character in kana for character in token)
+        for token in tokens
+    )
+
+
+def lyric_deficit_recoveries(
+    lines: list[TranscribedLine],
+    mora_counts: list[int],
+    notes: list[MelodyNote],
+) -> list[LyricDeficitRecovery]:
+    """Rank conservative local retries from notes missing matching lyric detail.
+
+    The song-local median absorbs normal note splitting and melisma.  Retry windows
+    are then divided at substantial internal SheetSage rests and clipped to the
+    source Whisper line, so accepted replacements cannot duplicate adjacent lines.
+    """
+    if len(lines) != len(mora_counts):
+        raise ValueError("mora_counts must contain one value per lyric line")
+    rows: list[tuple[int, TranscribedLine, int, int, list[MelodyNote]]] = []
+    for index, (line, mora_count) in enumerate(zip(lines, mora_counts, strict=True)):
+        line_notes = sorted(
+            (
+                note
+                for note in notes
+                if line.start_sec
+                <= (note.start_sec + note.end_sec) / 2
+                < line.end_sec
+            ),
+            key=lambda note: note.start_sec,
+        )
+        # Some reading backends omit unknown Latin tokens.  Counting each Latin
+        # word once is deliberately modest, but prevents ordinary mixed-language
+        # lyrics from looking like wholesale omissions.  A severe collapse such
+        # as one short phrase covering several refrains still clears the gate.
+        effective_mora_count = mora_count + len(re.findall(r"[A-Za-z]+", line.text))
+        rows.append((index, line, mora_count, effective_mora_count, line_notes))
+    ratios = [
+        len(line_notes) / effective_mora_count
+        for _index, _line, _mora_count, effective_mora_count, line_notes in rows
+        if effective_mora_count >= 4 and len(line_notes) >= 2
+    ]
+    if not ratios:
+        return []
+    median_ratio = statistics.median(ratios)
+    recoveries = []
+    for index, line, mora_count, effective_mora_count, line_notes in rows:
+        note_count = len(line_notes)
+        ratio = note_count / max(effective_mora_count, 1)
+        residual = note_count - median_ratio * effective_mora_count
+        if (
+            vocalization_only(line.text)
+            or note_count < _DEFICIT_MIN_NOTES
+            or ratio < _DEFICIT_MIN_NOTES_PER_MORA
+            or residual < _DEFICIT_MIN_RESIDUAL_NOTES
+        ):
+            continue
+        groups: list[list[MelodyNote]] = []
+        for note in line_notes:
+            if (
+                not groups
+                or note.start_sec - groups[-1][-1].end_sec
+                > _DEFICIT_SPLIT_NOTE_GAP_SEC
+            ):
+                groups.append([note])
+            else:
+                groups[-1].append(note)
+        groups = [
+            group
+            for group in groups
+            if len(group) >= _DEFICIT_MIN_GROUP_NOTES
+            and group[-1].end_sec - group[0].start_sec
+            >= _DEFICIT_MIN_GROUP_SPAN_SEC
+        ]
+        if not groups:
+            continue
+        windows = []
+        for group_index, group in enumerate(groups):
+            start = max(line.start_sec, group[0].start_sec - _DEFICIT_WINDOW_PADDING_SEC)
+            end = min(line.end_sec, group[-1].end_sec + _DEFICIT_WINDOW_PADDING_SEC)
+            if group_index:
+                previous = groups[group_index - 1]
+                boundary = (previous[-1].end_sec + group[0].start_sec) / 2
+                start = max(start, boundary)
+            if group_index + 1 < len(groups):
+                following = groups[group_index + 1]
+                boundary = (group[-1].end_sec + following[0].start_sec) / 2
+                end = min(end, boundary)
+            if end > start:
+                windows.append((start, end))
+        if not windows:
+            continue
+        recoveries.append(
+            LyricDeficitRecovery(
+                line=index,
+                windows=tuple(windows),
+                note_count=note_count,
+                mora_count=mora_count,
+                effective_mora_count=effective_mora_count,
+                median_notes_per_mora=median_ratio,
+                residual_notes=residual,
+            )
+        )
+    return recoveries
 
 
 def non_lyric_template_family(text: str) -> str | None:
@@ -131,13 +283,13 @@ def credit_recovery_windows(
     line: TranscribedLine,
     notes: list[MelodyNote],
 ) -> list[tuple[float, float]]:
-    """Return substantial SheetSage singing islands inside a credit candidate.
+    """Return substantial SheetSage singing islands inside a template candidate.
 
-    This deliberately applies only to exact credit templates.  The returned hard
+    This deliberately applies only to exact non-lyric templates.  The returned hard
     bounds let a second Whisper pass hear the singing without the long silent or
     instrumental context that can induce a credit hallucination.
     """
-    if non_lyric_template_family(line.text) != "credits":
+    if non_lyric_template_family(line.text) is None:
         return []
     clipped = [
         (max(line.start_sec, note.start_sec), min(line.end_sec, note.end_sec))
@@ -202,7 +354,10 @@ def apply_ctc_support(
         return decision
     scores = [item.score for item in aligned if item.line == line]
     median_score = statistics.median(scores) if scores else 0.0
-    supported = median_score >= MIN_CTC_MEDIAN_SCORE
+    supported = (
+        decision.template_family not in _ALWAYS_REJECT_TEMPLATE_FAMILIES
+        and median_score >= MIN_CTC_MEDIAN_SCORE
+    )
     return replace(
         decision,
         status="accepted" if supported else "rejected",
