@@ -151,15 +151,18 @@ def test_build_ass_original_line_merges_group(tmp_path: Path):
               if ln.startswith("Dialogue:") and ",Original," in ln]
     # 1枚だけ: 開始=1フレーズ目の頭、終了=2フレーズ目の終わり(通しタイミング)
     assert len(starts) == 1
-    assert _parody_texts(ass) == ["静  川"]  # 替え歌も元歌詞の行に合わせる
+    assert _parody_texts(ass) == ["静", "川"]  # 未指定の替え歌は既定どおり1行ずつ
 
 
-def test_build_ass_default_follows_original_lyric_lines(tmp_path: Path):
-    # 既定(override・要素指定なし): 替え歌・元歌詞とも元歌詞の行単位
+def test_build_ass_default_keeps_repeated_originals_as_separate_cues(tmp_path: Path):
+    # 既定: 同じ元歌詞に対応するXF行も結合せず、上下を1行ずつ表示する
     project = _two_line_project(tmp_path)
     ass = build_ass(project, 1280, 720, "Font")
-    assert _orig_texts(ass) == ["沈むように 溶けるように"]
-    assert _parody_texts(ass) == ["静  川"]
+    assert _orig_texts(ass) == [
+        "沈むように 溶けるように",
+        "沈むように 溶けるように",
+    ]
+    assert _parody_texts(ass) == ["静", "川"]
 
 
 def test_build_ass_original_phrase_splits(tmp_path: Path):

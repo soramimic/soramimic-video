@@ -5522,7 +5522,8 @@ function leRenderProps() {
     add("太字", checkbox("bold"));
     // 粒度: 「既定」はgranularityキーなし(入力欄のプルダウン/source既定に従う)
     const granSel = document.createElement("select");
-    granSel.innerHTML = [["", "既定"], ["line", "行"], ["phrase", "フレーズ"]]
+    granSel.innerHTML = [["", "既定"], ["line", "元歌詞行"], ["cue", "1行ずつ"],
+      ["phrase", "フレーズ"]]
       .map(([v, t]) =>
         `<option value="${v}"${v === (e.granularity ?? "") ? " selected" : ""}>${t}</option>`)
       .join("");

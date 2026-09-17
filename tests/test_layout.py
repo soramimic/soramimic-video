@@ -322,12 +322,15 @@ def test_load_subtitle_granularity(tmp_path):
         "elements": [
             {"type": "subtitle", "source": "parody", "box": [0, 0.7, 1, 0.1],
              "granularity": "line"},
+            {"type": "subtitle", "source": "original", "box": [0, 0.8, 1, 0.05],
+             "granularity": "cue"},
             {"type": "subtitle", "source": "original", "box": [0, 0.9, 1, 0.05]},
         ],
     }), encoding="utf-8")
     layout = load_layout(str(p))
     assert layout.subtitles[0].granularity == "line"
-    assert layout.subtitles[1].granularity is None  # 省略=既定
+    assert layout.subtitles[1].granularity == "cue"
+    assert layout.subtitles[2].granularity is None  # 省略=既定
 
 
 def test_load_subtitle_bad_granularity(tmp_path):
