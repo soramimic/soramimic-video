@@ -34,6 +34,12 @@ AUDIO_INFERENCE_PRIORITY_ENV = "SORAMIMIC_AUDIO_INFERENCE_PRIORITY"
 AUDIO_INFERENCE_MAX_UPLOAD_BYTES_ENV = "SORAMIMIC_AUDIO_INFERENCE_MAX_UPLOAD_BYTES"
 AUDIO_INFERENCE_WHISPER_MODELS_ENV = "SORAMIMIC_AUDIO_INFERENCE_WHISPER_MODELS"
 
+# Keep this contract independent from the application release.  The shared model
+# service is intentionally pinned while dev/preview/public orchestration advances.
+# Version 1 also covers legacy workers deployed before they reported the field.
+AUDIO_INFERENCE_API_NAME = "soramimic-audio-inference"
+AUDIO_INFERENCE_API_VERSION = 1
+
 DEFAULT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 PRIORITIES = {"public": 0, "preview": 10, "dev": 20, "eval": 30}
 POLL_SECONDS = 0.5
@@ -165,9 +171,21 @@ def service_available(timeout: float = 2.0) -> bool:
     except (requests.RequestException, ValueError):
         return False
     capabilities = body.get("capabilities", {})
+    api = body.get("api")
+    if api is None:
+        # The original shared worker already implements the v1 job contract.  This
+        # compatibility path permits a rolling migration to explicit versioning.
+        api_compatible = AUDIO_INFERENCE_API_VERSION == 1
+    else:
+        api_compatible = bool(
+            isinstance(api, dict)
+            and api.get("name") == AUDIO_INFERENCE_API_NAME
+            and api.get("version") == AUDIO_INFERENCE_API_VERSION
+        )
     return bool(
         response.ok
         and body.get("status") == "ok"
+        and api_compatible
         and capabilities.get("whisper")
         and capabilities.get("sheetsage2")
     )
@@ -772,6 +790,10 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
 
         return {
             "status": "ok" if scheduler.healthy() else "starting",
+            "api": {
+                "name": AUDIO_INFERENCE_API_NAME,
+                "version": AUDIO_INFERENCE_API_VERSION,
+            },
             "jobs": scheduler.status_counts(),
             "capabilities": {
                 "demucs": importlib.util.find_spec("demucs") is not None,
