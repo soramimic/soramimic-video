@@ -209,8 +209,8 @@ def _granularity_payload(csv_path: Path) -> dict:
     }
 
 
-def test_granularity_default_follows_one_original_lyric_line(client, tmp_path):
-    """1つの元歌詞行を分けたXF行は既定でまとめる。"""
+def test_granularity_default_keeps_project_lines_separate(client, tmp_path):
+    """同じ元歌詞行に対応していても、既定ではProject.Lineごとに表示する。"""
     payload = _granularity_payload(_wordlist(tmp_path))
     layout_json = json.dumps(_LAYOUT_SHOW_ALL)
     lyrics = "沈むように 溶けるように"
@@ -219,8 +219,8 @@ def test_granularity_default_follows_one_original_lyric_line(client, tmp_path):
     second = _post(client, payload, cue="1", layout_json=layout_json, lyrics=lyrics).json()
     assert first["original_text"] == "沈むように 溶けるように"
     assert second["original_text"] == "沈むように 溶けるように"
-    assert first["parody_text"] == "静  川"
-    assert second["parody_text"] == "静  川"
+    assert first["parody_text"] == "静"
+    assert second["parody_text"] == "川"
 
 
 def test_granularity_default_keeps_identical_lyric_occurrences_separate(client, tmp_path):
