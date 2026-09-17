@@ -288,7 +288,7 @@ class SubtitleElement:
     ruby: bool = False
     ruby_size: float = 0.5  # ルビの文字サイズ(本文フォントサイズに対する比)
     # 表示粒度。"line"(元歌詞行) / "cue"(対応行) / "phrase"(フレーズ)。None は source 既定
-    # (original=cue, parody=cue)。詳細は align.build_subtitle_segments。
+    # (original=line, parody=line)。詳細は align.build_subtitle_segments。
     granularity: str | None = None
 
 
