@@ -209,17 +209,29 @@ def _granularity_payload(csv_path: Path) -> dict:
     }
 
 
-def test_granularity_default_keeps_repeated_originals_as_separate_cues(client, tmp_path):
-    """既定は同じ元歌詞に対応する行も結合せず、上下を1行ずつ表示する。"""
+def test_granularity_default_follows_one_original_lyric_line(client, tmp_path):
+    """1つの元歌詞行を分けたXF行は既定でまとめる。"""
     payload = _granularity_payload(_wordlist(tmp_path))
     layout_json = json.dumps(_LAYOUT_SHOW_ALL)
     lyrics = "沈むように 溶けるように"
 
-    # 未指定 → 2つのXF行を別々に出し、元歌詞は全文を各行に保つ
     first = _post(client, payload, cue="0", layout_json=layout_json, lyrics=lyrics).json()
     second = _post(client, payload, cue="1", layout_json=layout_json, lyrics=lyrics).json()
     assert first["original_text"] == "沈むように 溶けるように"
     assert second["original_text"] == "沈むように 溶けるように"
+    assert first["parody_text"] == "静  川"
+    assert second["parody_text"] == "静  川"
+
+
+def test_granularity_default_keeps_identical_lyric_occurrences_separate(client, tmp_path):
+    payload = _granularity_payload(_wordlist(tmp_path))
+    payload["phrases"] = ["同じ歌詞", "同じ歌詞"]
+    layout_json = json.dumps(_LAYOUT_SHOW_ALL)
+    lyrics = "同じ歌詞\n同じ歌詞"
+
+    first = _post(client, payload, cue="0", layout_json=layout_json, lyrics=lyrics).json()
+    second = _post(client, payload, cue="1", layout_json=layout_json, lyrics=lyrics).json()
+    assert first["original_text"] == second["original_text"] == "同じ歌詞"
     assert first["parody_text"] == "静"
     assert second["parody_text"] == "川"
 

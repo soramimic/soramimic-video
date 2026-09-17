@@ -1,5 +1,6 @@
 from soramimic_video.align import (
     align_correct_lyrics,
+    align_lines,
     align_texts,
     build_subtitle_segments,
     parse_granularity_override,
@@ -13,6 +14,21 @@ def test_align_one_to_one():
     xf = ["沈むように", "溶けてゆくように"]
     lyrics = ["沈むように", "溶けてゆくように"]
     assert align_texts(xf, lyrics) == [0, 1]
+
+
+def test_align_repeated_identical_lines_use_distinct_occurrences():
+    assert align_texts(["同じ歌詞", "同じ歌詞"], ["同じ歌詞", "同じ歌詞"]) == [0, 1]
+
+    project = Project(
+        song=SongInfo(midi_path="song.mid", ticks_per_beat=480),
+        lines=[
+            Line(0, "同じ歌詞", "オナジカシ", []),
+            Line(1, "同じ歌詞", "オナジカシ", []),
+        ],
+    )
+    align_lines(project, ["同じ歌詞", "同じ歌詞"])
+    assert [line.original_text for line in project.lines] == ["同じ歌詞", "同じ歌詞"]
+    assert [line.original_line_index for line in project.lines] == [0, 1]
 
 
 def test_correct_lyrics_rebuild_lines_on_recognized_note_timing(monkeypatch):
@@ -48,6 +64,7 @@ def test_correct_lyrics_rebuild_lines_on_recognized_note_timing(monkeypatch):
         ("ソラ", "ソラ", [3, 4]),
     ]
     assert [line.original_text for line in project.lines] == ["ハルノ", "ソラ"]
+    assert [line.original_line_index for line in project.lines] == [0, 1]
     assert [(note.midi_note, note.start_sec, note.end_sec, note.kana) for note in notes] == before
     assert [note.line for note in notes] == [0, 0, 0, 1, 1]
 
@@ -138,9 +155,9 @@ def test_split_lyric_falls_back_to_proportional():
 
 
 def test_resolve_granularity_precedence():
-    # 要素の指定 > override > source既定。既定は上下ともXF行ごとに表示する
-    assert resolve_granularity("original", None, None) == "cue"
-    assert resolve_granularity("parody", None, None) == "phrase"
+    # 要素の指定 > override > source既定。既定は元歌詞の行境界を尊重する
+    assert resolve_granularity("original", None, None) == "line"
+    assert resolve_granularity("parody", None, None) == "line"
     assert resolve_granularity("original", "line", None) == "line"
     assert resolve_granularity("original", None, {"original": "line"}) == "line"
     assert resolve_granularity("original", "line", {"original": "phrase"}) == "line"  # 要素優先
@@ -161,7 +178,8 @@ def test_build_subtitle_segments_original_line_merges_group():
     originals = ["沈むように 溶けてゆくように", "沈むように 溶けてゆくように"]
     spans = [(0.0, 1.0), (1.0, 2.0)]
     segs = build_subtitle_segments(
-        "original", "line", originals, originals, ["沈むように", "溶けてゆくように"], spans
+        "original", "line", originals, originals, ["沈むように", "溶けてゆくように"],
+        spans, original_groups=[0, 0],
     )
     assert len(segs) == 1
     assert segs[0].text == "沈むように 溶けてゆくように"
@@ -173,7 +191,8 @@ def test_build_subtitle_segments_original_phrase_splits():
     originals = ["沈むように 溶けてゆくように", "沈むように 溶けてゆくように"]
     spans = [(0.0, 1.0), (1.0, 2.0)]
     segs = build_subtitle_segments(
-        "original", "phrase", originals, originals, ["沈むように", "溶けてゆくように"], spans
+        "original", "phrase", originals, originals, ["沈むように", "溶けてゆくように"],
+        spans, original_groups=[0, 0],
     )
     assert [s.text for s in segs] == ["沈むように", "溶けてゆくように"]
     assert [(s.start, s.end) for s in segs] == [(0.0, 1.0), (1.0, 2.0)]
@@ -184,11 +203,29 @@ def test_build_subtitle_segments_parody_line_concatenates():
     parody_full = ["静", "川"]
     spans = [(0.0, 1.0), (1.0, 2.0)]
     segs = build_subtitle_segments(
-        "parody", "line", originals, parody_full, ["a", "b"], spans, sep="  "
+        "parody", "line", originals, parody_full, ["a", "b"], spans, sep="  ",
+        original_groups=[0, 0],
     )
     assert len(segs) == 1
     assert segs[0].text == "静  川"
     assert (segs[0].start, segs[0].end) == (0.0, 2.0)
+
+
+def test_build_subtitle_segments_same_text_different_occurrences_stay_separate():
+    originals = ["同じ歌詞", "同じ歌詞"]
+    spans = [(0.0, 1.0), (1.0, 2.0)]
+    original = build_subtitle_segments(
+        "original", "line", originals, originals, originals, spans,
+        original_groups=[0, 1],
+    )
+    parody = build_subtitle_segments(
+        "parody", "line", originals, ["静", "川"], originals, spans,
+        original_groups=[0, 1],
+    )
+    assert [(s.text, s.indices) for s in original] == [
+        ("同じ歌詞", [0]), ("同じ歌詞", [1])
+    ]
+    assert [(s.text, s.indices) for s in parody] == [("静", [0]), ("川", [1])]
 
 
 def test_build_subtitle_segments_none_never_merges():
@@ -200,30 +237,28 @@ def test_build_subtitle_segments_none_never_merges():
     assert [s.text for s in segs] == ["あ", "い"]
 
 
-def test_default_granularity_keeps_each_cue_without_splitting_original():
-    """XFの語中改行でも元歌詞を分割せず、上下を対応行ごとに出す。"""
+def test_default_line_granularity_merges_broken_xf_word_boundary():
+    """同じ元歌詞行に属するXFの語中改行をまとめ、「る」だけに分けない。"""
     original = "止めるほどの意思の強さ 出来てすぐのボクは持たず"
     originals = [original, original, original]
     xf = ["止め", "る", "るほどのい意思の強さ出来すぐのボクは持たず"]
     spans = [(128.76, 128.96), (128.96, 129.16), (129.16, 130.76)]
 
     original_segs = build_subtitle_segments(
-        "original", resolve_granularity("original", None), originals, originals, xf, spans
+        "original", resolve_granularity("original", None), originals, originals, xf, spans,
+        original_groups=[0, 0, 0],
     )
     parody_segs = build_subtitle_segments(
         "parody", resolve_granularity("parody", None), originals,
         ["止めの替え歌", "球", "後ろの替え歌"], xf, spans,
+        original_groups=[0, 0, 0],
     )
 
     assert [(s.text, s.start, s.end, s.indices) for s in original_segs] == [
-        (original, 128.76, 128.96, [0]),
-        (original, 128.96, 129.16, [1]),
-        (original, 129.16, 130.76, [2]),
+        (original, 128.76, 130.76, [0, 1, 2]),
     ]
     assert [(s.text, s.start, s.end, s.indices) for s in parody_segs] == [
-        ("止めの替え歌", 128.76, 128.96, [0]),
-        ("球", 128.96, 129.16, [1]),
-        ("後ろの替え歌", 129.16, 130.76, [2]),
+        ("止めの替え歌  球  後ろの替え歌", 128.76, 130.76, [0, 1, 2]),
     ]
 
 

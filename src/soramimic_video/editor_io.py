@@ -478,6 +478,7 @@ def build_editor_preview(
     # 正とする(editor.json の originalLines はエディタの表示用)。実動画
     # (import_editor)も同じ方針なので、プレビューと本番の字幕が揃う。
     aligned: list[str | None] = [None] * len(phrases)
+    assignments: list[int | None] = [None] * len(phrases)
     # フォームに元歌詞が無ければ、JSONが持つ生テキストで対応づける
     # (editor.json だけを持ち込んだケース。import_editor と同じ考え方)
     source = lyrics if lyrics.strip() else (editor_lyrics(payload) or "")
@@ -493,6 +494,7 @@ def build_editor_preview(
     n_lines = len(results)
     grans = effective_granularities(layout.subtitles, granularity)
     originals: list[str | None] = [aligned[i] if i < len(aligned) else None for i in range(n_lines)]
+    original_groups = [assignments[i] if i < len(assignments) else None for i in range(n_lines)]
     xf_texts = [str(phrases[i]) if i < len(phrases) else "" for i in range(n_lines)]
     original_full = [
         (originals[i] or (str(phrases[i]) if i < len(phrases) else "")) for i in range(n_lines)
@@ -505,14 +507,14 @@ def build_editor_preview(
     original_by_line = segment_text_by_line(
         build_subtitle_segments(
             "original", grans["original"], originals, original_full, xf_texts,
-            dummy_spans, sep=WORD_SEP,
+            dummy_spans, sep=WORD_SEP, original_groups=original_groups,
         ),
         n_lines,
     )
     parody_by_line = segment_text_by_line(
         build_subtitle_segments(
             "parody", grans["parody"], originals, parody_full, xf_texts,
-            dummy_spans, sep=WORD_SEP,
+            dummy_spans, sep=WORD_SEP, original_groups=original_groups,
         ),
         n_lines,
     )

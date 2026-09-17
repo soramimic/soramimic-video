@@ -65,6 +65,9 @@ class Line:
     xf_kana: str
     note_ids: list[int]
     original_text: str | None = None  # アライメントで対応づいた元歌詞の行
+    # 同じ文字列の別行と、1つの元歌詞行を分割したXF行を区別する元歌詞側の行番号。
+    # 古いproject.jsonでは欠けるためNoneを許す。
+    original_line_index: int | None = None
     canonical_kana: str | None = None  # 完全な読み。実演/合成の省略で削らない
     canonical_start_sec: float | None = None
     canonical_end_sec: float | None = None

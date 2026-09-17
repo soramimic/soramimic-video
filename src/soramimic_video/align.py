@@ -29,6 +29,10 @@ from .ruby import strip_ruby
 MATCH_THRESHOLD = 0.35
 # 元歌詞側の行を読み飛ばすときのペナルティ(1行あたり)
 SKIP_PENALTY = 0.05
+# 同じ歌詞が連続する場合、XF行が元歌詞行のほぼ全文を覆うなら次の出現へ進む。
+# 通常の類似度を変えず、同点だけを解消する十分小さな値にする。
+OCCURRENCE_ADVANCE_BONUS = 1e-6
+FULL_LINE_COVERAGE = 0.8
 
 _STRIP_RE = re.compile(r"[\s、。,.!?!?・「」『』()()〜~-]")
 
@@ -96,6 +100,15 @@ def align_texts(xf_lines: list[str], lyric_lines: list[str]) -> list[int | None]
         ]
         for x, xp in zip(xf_norm, xf_pron, strict=True)
     ]
+    # 元歌詞側を分母にした被覆率。短いXF断片を別の同文行へ進めず、同じ歌詞の
+    # 完全な繰り返しだけを別出現として割り当てるための同点解消に使う。
+    lyric_coverage = [
+        [
+            max(_containment(y, x), _containment(yp, xp) if yp else 0.0)
+            for y, yp in zip(lyr_norm, lyr_pron, strict=True)
+        ]
+        for x, xp in zip(xf_norm, xf_pron, strict=True)
+    ]
 
     NEG = float("-inf")
     # dp[i][j+1] = XF行 0..i-1 を割り当て済みで、最後に使った元歌詞行が j
@@ -122,6 +135,8 @@ def align_texts(xf_lines: list[str], lyric_lines: list[str]) -> list[int | None]
                     continue
                 skipped = max(0, k - j - 1) if j >= 0 else k
                 score = dp[i][jj] + sim[i][k] - SKIP_PENALTY * skipped
+                if j >= 0 and k > j and lyric_coverage[i][k] >= FULL_LINE_COVERAGE:
+                    score += OCCURRENCE_ADVANCE_BONUS
                 if score > dp[i + 1][k + 1]:
                     dp[i + 1][k + 1] = score
                     back[i + 1][k + 1] = (jj, k)
@@ -138,7 +153,7 @@ def align_texts(xf_lines: list[str], lyric_lines: list[str]) -> list[int | None]
 
 
 def align_lines(project: Project, lyric_lines: list[str]) -> None:
-    """project.lines の original_text を埋める(破壊的)。
+    """project.lines の original_text / original_line_index を埋める(破壊的)。
 
     元歌詞にルビ記法が含まれていても、original_text には素テキストだけを入れる
     (字幕・フレーズ切り出しに ``｜``/``《》`` が漏れない)。読みは注釈を尊重する。
@@ -149,6 +164,7 @@ def align_lines(project: Project, lyric_lines: list[str]) -> None:
     assignments = align_texts(xf_texts, lyrics)
     for line, a in zip(project.lines, assignments, strict=True):
         line.original_text = strip_ruby(lyrics[a]) if a is not None else None
+        line.original_line_index = a
 
 
 def _map_correct_offset_to_recognized(
@@ -262,6 +278,7 @@ def align_correct_lyrics(project: Project, lyric_lines: list[str]) -> None:
                 xf_kana=kana,
                 note_ids=note_ids,
                 original_text=surface,
+                original_line_index=line_id,
             )
         )
     project.lines = new_lines
@@ -272,16 +289,15 @@ def align_correct_lyrics(project: Project, lyric_lines: list[str]) -> None:
 # 字幕は「元歌詞行」「対応行」または「フレーズ」の粒度で出せる。
 #   original: "line"(元歌詞の行を通しで) / "phrase"(そのXF行に対応する部分文字列)
 #   parody:   "phrase"(XF行ごとの替え歌) / "line"(同一元歌詞行の替え歌を連結)
-#   cue:      XF行ごとに full_texts をそのまま表示(同じ元歌詞も結合しない)
+#   cue:      XF行ごとに full_texts をそのまま表示(結合しない明示設定)
 # subtitle要素ごとに指定でき、未指定なら source 既定(下記)にフォールバックする。
 
 GRANULARITIES = ("line", "cue", "phrase")
 # source ごとの既定粒度(subtitle要素・override いずれも未指定のとき)。
-# 替え歌はXF行ごとに、元歌詞は全文を保ったまま対応するXF行ごとに表示する。
-# 同じ元歌詞へ複数のXF行が対応しても、上下の字幕を一対一に保つため結合しない。
-# 元歌詞を部分文字列へ切る ``phrase`` は、語中(例: 「止め/る」)で不自然に
-# 分かれる実データがあるため既定にはしない。
-DEFAULT_GRANULARITY = {"parody": "phrase", "original": "cue"}
+# 1つの元歌詞行に属するXF MIDIの ``/`` 分割はまとめる。語中(例: 「止め/る」)
+# に入る実データでも不自然に切れない。一方、同じ文字列でも元歌詞側の別行なら
+# original_line_index が異なるため、別の字幕として表示する。
+DEFAULT_GRANULARITY = {"parody": "line", "original": "line"}
 
 
 def resolve_granularity(
@@ -496,14 +512,26 @@ class SubtitleSegment:
     indices: list[int] = field(default_factory=list)
 
 
-def _group_by_original(originals: list[str | None]) -> list[tuple[int, int]]:
-    """連続する同一元歌詞行を [start, end) グループにまとめる。None は隣と結合しない。"""
+def _group_by_original(
+    originals: list[str | None], original_groups: Sequence[int | str | None] | None = None
+) -> list[tuple[int, int]]:
+    """同じ元歌詞行の連続XF断片を [start, end) にまとめる。
+
+    ``original_groups`` は元歌詞側の行番号。文字列が同じでも番号が違えば別出現
+    として扱う。省略時は古いprojectとの互換用に本文をキーにする。
+    None は未対応なので隣と結合しない。
+    """
+    keys: Sequence[int | str | None] = (
+        original_groups if original_groups is not None else originals
+    )
+    if len(keys) != len(originals):
+        raise ValueError("元歌詞グループ数が行数と一致しません")
     groups: list[tuple[int, int]] = []
     i, n = 0, len(originals)
     while i < n:
         j = i + 1
-        if originals[i] is not None:
-            while j < n and originals[j] == originals[i]:
+        if keys[i] is not None:
+            while j < n and keys[j] == keys[i]:
                 j += 1
         groups.append((i, j))
         i = j
@@ -518,17 +546,20 @@ def build_subtitle_segments(
     xf_texts: list[str],
     spans: list[tuple[float, float]],
     sep: str = "  ",
+    original_groups: Sequence[int | str | None] | None = None,
 ) -> list[SubtitleSegment]:
     """粒度に応じた字幕セグメント列を作る(video/preview 共通)。
 
     - originals: 各行に対応づいた元歌詞の行(未対応は None)。グループ化のキー。
+    - original_groups: 元歌詞側の行番号。同文の別出現を区別する。省略時は本文で
+      グループ化する(古いproject・呼び出し元との互換用)。
     - full_texts: 各行の「行粒度」表示テキスト。original はフォールバック込みの表示文、
       parody は単語 surface を連結した行の替え歌。
     - xf_texts: 各行のXF表記(元歌詞のフレーズ切り出しに使う)。
     - spans: 各行の表示区間 [start, end]。
     """
     segments: list[SubtitleSegment] = []
-    for a, b in _group_by_original(originals):
+    for a, b in _group_by_original(originals, original_groups):
         idxs = list(range(a, b))
         if granularity == "line":
             # グループを1枚に畳む(通しタイミング=チラつき防止/替え歌の行連結)
@@ -545,7 +576,7 @@ def build_subtitle_segments(
                 pieces = [full_texts[k] for k in idxs]
             for k, piece in zip(idxs, pieces, strict=True):
                 segments.append(SubtitleSegment(piece, spans[k][0], spans[k][1], [k]))
-        elif granularity == "cue":  # 結合・分割せず、対応するXF行ごとに出す
+        elif granularity == "cue":
             for k in idxs:
                 segments.append(
                     SubtitleSegment(full_texts[k], spans[k][0], spans[k][1], [k])
