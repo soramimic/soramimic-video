@@ -554,9 +554,10 @@ def _parse_elements(
                     f"subtitle の source は parody / original です: {source!r} ({origin})"
                 )
             granularity = e.get("granularity")
-            if granularity is not None and granularity not in ("line", "phrase"):
+            if granularity is not None and granularity not in ("line", "cue", "phrase"):
                 raise ValueError(
-                    f"subtitle の granularity は line / phrase です: {granularity!r} ({origin})"
+                    "subtitle の granularity は line / cue / phrase です: "
+                    f"{granularity!r} ({origin})"
                 )
             subtitles.append(
                 SubtitleElement(

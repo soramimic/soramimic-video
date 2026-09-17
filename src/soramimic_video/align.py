@@ -269,18 +269,19 @@ def align_correct_lyrics(project: Project, lyric_lines: list[str]) -> None:
 
 # ---- 字幕の表示粒度(granularity) ----
 #
-# 字幕は「行」または「フレーズ」の粒度で出せる。
+# 字幕は「元歌詞行」「対応行」または「フレーズ」の粒度で出せる。
 #   original: "line"(元歌詞の行を通しで) / "phrase"(そのXF行に対応する部分文字列)
 #   parody:   "phrase"(XF行ごとの替え歌) / "line"(同一元歌詞行の替え歌を連結)
+#   cue:      XF行ごとに full_texts をそのまま表示(同じ元歌詞も結合しない)
 # subtitle要素ごとに指定でき、未指定なら source 既定(下記)にフォールバックする。
 
-GRANULARITIES = ("line", "phrase")
+GRANULARITIES = ("line", "cue", "phrase")
 # source ごとの既定粒度(subtitle要素・override いずれも未指定のとき)。
-# 元歌詞があるときはその行境界を正本にする。XF MIDI の ``/`` はカラオケ
-# 表示用の分割であり、語中(例: 「止め/る」)に入っている実データもあるため、
-# 既定の字幕境界には使わない。元歌詞未対応行(None)は隣と結合しないので、
-# 元歌詞が無い場合は従来どおり XF 行単位になる。
-DEFAULT_GRANULARITY = {"parody": "line", "original": "line"}
+# 替え歌はXF行ごとに、元歌詞は全文を保ったまま対応するXF行ごとに表示する。
+# 同じ元歌詞へ複数のXF行が対応しても、上下の字幕を一対一に保つため結合しない。
+# 元歌詞を部分文字列へ切る ``phrase`` は、語中(例: 「止め/る」)で不自然に
+# 分かれる実データがあるため既定にはしない。
+DEFAULT_GRANULARITY = {"parody": "phrase", "original": "cue"}
 
 
 def resolve_granularity(
@@ -536,7 +537,7 @@ def build_subtitle_segments(
             else:
                 text = full_texts[a]  # 元歌詞行はグループ内で同一
             segments.append(SubtitleSegment(text, spans[a][0], spans[b - 1][1], idxs))
-        else:  # phrase
+        elif granularity == "phrase":
             lyric_line = originals[a]
             if kind == "original" and lyric_line is not None and (b - a) > 1:
                 pieces = split_lyric_to_phrases([xf_texts[k] for k in idxs], lyric_line)
@@ -544,6 +545,13 @@ def build_subtitle_segments(
                 pieces = [full_texts[k] for k in idxs]
             for k, piece in zip(idxs, pieces, strict=True):
                 segments.append(SubtitleSegment(piece, spans[k][0], spans[k][1], [k]))
+        elif granularity == "cue":  # 結合・分割せず、対応するXF行ごとに出す
+            for k in idxs:
+                segments.append(
+                    SubtitleSegment(full_texts[k], spans[k][0], spans[k][1], [k])
+                )
+        else:
+            raise ValueError(f"不正な字幕粒度です: {granularity!r}")
     return segments
 
 
