@@ -289,15 +289,15 @@ def align_correct_lyrics(project: Project, lyric_lines: list[str]) -> None:
 # 字幕は「元歌詞行」「対応行」または「フレーズ」の粒度で出せる。
 #   original: "line"(元歌詞の行を通しで) / "phrase"(そのXF行に対応する部分文字列)
 #   parody:   "phrase"(XF行ごとの替え歌) / "line"(同一元歌詞行の替え歌を連結)
-#   cue:      XF行ごとに full_texts をそのまま表示(結合しない)
+#   cue:      XF行ごとに full_texts をそのまま表示(結合しない明示設定)
 # subtitle要素ごとに指定でき、未指定なら source 既定(下記)にフォールバックする。
 
 GRANULARITIES = ("line", "cue", "phrase")
 # source ごとの既定粒度(subtitle要素・override いずれも未指定のとき)。
-# Project.Line は入力上の独立した字幕キューなので、元歌詞側の同じ行に対応していても
-# 自動ではまとめない。不自然なXF行境界の修正は字幕表示とは別の前処理で扱う。
-# ``line`` は同じ元歌詞行を明示的にまとめたい既存レイアウト向けに残す。
-DEFAULT_GRANULARITY = {"parody": "cue", "original": "cue"}
+# 1つの元歌詞行に属するXF MIDIの ``/`` 分割はまとめる。語中(例: 「止め/る」)
+# に入る実データでも不自然に切れない。一方、同じ文字列でも元歌詞側の別行なら
+# original_line_index が異なるため、別の字幕として表示する。
+DEFAULT_GRANULARITY = {"parody": "line", "original": "line"}
 
 
 def resolve_granularity(
