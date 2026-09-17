@@ -42,6 +42,17 @@ class LyricDeficitRecovery:
     residual_notes: float
 
 
+@dataclass(frozen=True)
+class RecognitionBoundaryMerge:
+    """A short ASR suffix rejoined using repetition elsewhere in the song."""
+
+    left_index: int
+    right_index: int
+    left_surface: str
+    right_surface: str
+    merged_surface: str
+
+
 _CREDIT_LABEL = r"(?:作詞|作曲|編曲|原作|監督|制作|製作|出演|翻訳|歌唱|動画制作|イラスト)"
 _CREDIT_VALUE_LABEL = rf"(?:{_CREDIT_LABEL}|サブタイトル)"
 _CREDIT_WITH_VALUE = re.compile(
@@ -67,12 +78,16 @@ _DEFICIT_SPLIT_NOTE_GAP_SEC = 0.32
 _DEFICIT_MIN_GROUP_NOTES = 4
 _DEFICIT_MIN_GROUP_SPAN_SEC = 0.6
 _DEFICIT_WINDOW_PADDING_SEC = 0.5
+_BOUNDARY_FRAGMENT_MAX_SEC = 1.25
+_BOUNDARY_FRAGMENT_MAX_CHARS = 4
+_BOUNDARY_ADJACENCY_SEC = 0.15
+_BOUNDARY_COMBINED_MAX_SEC = 6.0
 # Forced-alignment span scores are acoustic posteriors, not calibrated transcript
 # probabilities.  Keep the floor near zero so normal music-degraded alignments are
 # not treated as absent.  The median prevents one coincidental kana peak from
 # validating a whole line.
 MIN_CTC_MEDIAN_SCORE = 0.00075
-_ALWAYS_REJECT_TEMPLATE_FAMILIES = frozenset({"stock-media-credit"})
+_ALWAYS_REJECT_TEMPLATE_FAMILIES = frozenset({"credits", "stock-media-credit"})
 _TEMPLATES = (
     (
         "closing-greeting",
@@ -118,6 +133,78 @@ def normalize_recognized_text(text: str) -> str:
         for character in normalized
         if unicodedata.category(character)[0] not in {"P", "Z"}
     )
+
+
+def coalesce_repeated_suffix_fragments(
+    lines: list[TranscribedLine],
+) -> tuple[list[TranscribedLine], list[RecognitionBoundaryMerge]]:
+    """Rejoin a short contiguous suffix when another refrain keeps it attached.
+
+    Whisper sometimes emits the final word of a lyric line as its own segment.  A
+    timing-only merge would also collapse legitimate short responses, so require
+    song-internal structural evidence: the same short Japanese text must occur as
+    the suffix of another, longer ASR line, and the combined phrase lengths must be
+    comparable.  This uses no supplied or evaluation lyrics.
+    """
+    normalized = [normalize_recognized_text(line.text) for line in lines]
+    candidates: set[int] = set()
+    for index in range(1, len(lines)):
+        line = lines[index]
+        previous = lines[index - 1]
+        fragment = normalized[index]
+        previous_text = normalized[index - 1]
+        if not re.fullmatch(
+            rf"[ぁ-んァ-ヶ一-龯々〆ヵヶー]{{2,{_BOUNDARY_FRAGMENT_MAX_CHARS}}}",
+            fragment,
+        ):
+            continue
+        if line.end_sec - line.start_sec > _BOUNDARY_FRAGMENT_MAX_SEC:
+            continue
+        if abs(line.start_sec - previous.end_sec) > _BOUNDARY_ADJACENCY_SEC:
+            continue
+        if line.end_sec - previous.start_sec > _BOUNDARY_COMBINED_MAX_SEC:
+            continue
+        combined_length = len(previous_text) + len(fragment)
+        has_parallel_suffix = any(
+            other_index not in {index - 1, index}
+            and len(other_text) > len(fragment)
+            and other_text.endswith(fragment)
+            and 0.67 <= combined_length / len(other_text) <= 1.5
+            for other_index, other_text in enumerate(normalized)
+        )
+        if has_parallel_suffix:
+            candidates.add(index)
+
+    merged_lines: list[TranscribedLine] = []
+    merges: list[RecognitionBoundaryMerge] = []
+    index = 0
+    while index < len(lines):
+        if index + 1 in candidates:
+            left = lines[index]
+            right = lines[index + 1]
+            separator = (
+                " "
+                if left.text[-1:].isascii() and right.text[:1].isascii()
+                else ""
+            )
+            surface = left.text.rstrip() + separator + right.text.lstrip()
+            merged_lines.append(
+                type(left)(left.start_sec, right.end_sec, surface)
+            )
+            merges.append(
+                RecognitionBoundaryMerge(
+                    left_index=index,
+                    right_index=index + 1,
+                    left_surface=left.text,
+                    right_surface=right.text,
+                    merged_surface=surface,
+                )
+            )
+            index += 2
+            continue
+        merged_lines.append(lines[index])
+        index += 1
+    return merged_lines, merges
 
 
 def vocalization_only(text: str) -> bool:
@@ -347,8 +434,10 @@ def apply_ctc_support(
 ) -> SemanticLyricDecision:
     """Resolve a melody-supported template using text-conditioned CTC evidence.
 
-    Ordinary recognized text is deliberately outside this gate.  A narrow non-lyric
-    template is retained only when its own kana have sustained acoustic support.
+    Ordinary recognized text is deliberately outside this gate.  Generic stock
+    phrases may be retained when their own kana have sustained acoustic support,
+    but exact credit templates are a strong Whisper prior and always go through the
+    bounded recovery path instead of trusting a coincidental forced alignment.
     """
     if decision.template_family is None or not decision.melodic_support:
         return decision
