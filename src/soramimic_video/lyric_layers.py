@@ -83,7 +83,7 @@ def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
         ends = [unit["end_sec"] for unit in units if unit["end_sec"] is not None]
         lines.append(Line(
             i, line["text"], "".join(notes[n].kana for n in note_ids[i]), note_ids[i],
-            original_text=line["text"], canonical_kana=line["kana"],
+            original_text=line["text"], original_line_index=i, canonical_kana=line["kana"],
             canonical_start_sec=min(starts, default=None),
             canonical_end_sec=max(ends, default=None),
         ))
