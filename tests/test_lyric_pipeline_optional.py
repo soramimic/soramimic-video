@@ -566,10 +566,12 @@ def test_semantic_gate_recovers_singing_island_before_final_ctc(monkeypatch, tmp
         calls.append(kwargs["line_windows"])
         if len(variants[0][0]) == 4:
             return ([
-                AlignedMora(0, 0, "サ", 1.1, 1.2, .0004),
-                AlignedMora(0, 1, "ッ", 1.2, 1.3, .0005),
-                AlignedMora(0, 2, "キョ", 1.3, 1.4, .0006),
-                AlignedMora(0, 3, "ク", 1.4, 1.5, .0005),
+                # Even strong coincidental CTC support cannot validate an exact
+                # credit template; the bounded Whisper recovery must still run.
+                AlignedMora(0, 0, "サ", 1.1, 1.2, .8),
+                AlignedMora(0, 1, "ッ", 1.2, 1.3, .8),
+                AlignedMora(0, 2, "キョ", 1.3, 1.4, .8),
+                AlignedMora(0, 3, "ク", 1.4, 1.5, .8),
                 AlignedMora(1, 0, "ウ", 8.2, 8.3, .8),
                 AlignedMora(1, 1, "タ", 8.4, 8.5, .7),
             ], [0, 0])
@@ -601,6 +603,9 @@ def test_semantic_gate_recovers_singing_island_before_final_ctc(monkeypatch, tmp
         (tmp_path / "project/analyze_audio/recognition.json").read_text())
     recovery = recognition["semantic_gate"]["localized_recoveries"]
     assert recovery[0]["status"] == "accepted"
+    decision = recognition["semantic_gate"]["decisions"][0]
+    assert decision["ctc_median_score"] == pytest.approx(.8)
+    assert decision["ctc_support"] is False
     assert [item["surface"] for item in recognition["segments"]] == ["空", "歌"]
     analysis = json.loads(
         (tmp_path / "project/analyze_audio/analysis.json").read_text())

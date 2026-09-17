@@ -4,6 +4,7 @@ from soramimic_video.audio_melody import MelodyNote
 from soramimic_video.mora_align import AlignedMora
 from soramimic_video.semantic_lyrics import (
     apply_ctc_support,
+    coalesce_repeated_suffix_fragments,
     credit_recovery_windows,
     decide_recognized_line,
     lyric_deficit_recoveries,
@@ -36,6 +37,39 @@ def test_template_normalization_is_width_case_and_punctuation_stable():
     assert non_lyric_template_family(
         "🐯 Sound Hodori 사운드 호돌이 サウンドゥ ホドリ"
     ) == "stock-media-credit"
+
+
+def test_repeated_short_suffix_fragment_rejoins_previous_asr_line():
+    lines = [
+        TranscribedLine(0.0, 2.9, "どんなに長い葛藤も"),
+        TranscribedLine(3.0, 4.98, "見たと知れ"),
+        TranscribedLine(4.98, 5.90, "残響"),
+        TranscribedLine(8.0, 10.9, "かき消して残響"),
+    ]
+
+    merged, evidence = coalesce_repeated_suffix_fragments(lines)
+
+    assert [line.text for line in merged] == [
+        "どんなに長い葛藤も",
+        "見たと知れ残響",
+        "かき消して残響",
+    ]
+    assert evidence[0].left_index == 1
+    assert evidence[0].right_index == 2
+    assert evidence[0].merged_surface == "見たと知れ残響"
+
+
+def test_short_standalone_line_is_not_merged_without_parallel_suffix():
+    lines = [
+        TranscribedLine(0.0, 2.0, "君へ歌う"),
+        TranscribedLine(2.0, 2.8, "未来"),
+        TranscribedLine(3.0, 5.0, "明日へ進む"),
+    ]
+
+    merged, evidence = coalesce_repeated_suffix_fragments(lines)
+
+    assert merged == lines
+    assert evidence == []
 
 
 @pytest.mark.parametrize(
@@ -223,9 +257,9 @@ def test_ctc_support_is_required_only_for_melody_supported_template():
     assert untouched == ordinary
 
 
-def test_ctc_support_retains_sung_template_when_most_moras_are_supported():
+def test_ctc_support_retains_sung_noncredit_template_when_most_moras_are_supported():
     decision = decide_recognized_line(
-        TranscribedLine(1.0, 2.0, "作曲"), [MelodyNote(1.0, 2.0, 60)]
+        TranscribedLine(1.0, 2.0, "字幕"), [MelodyNote(1.0, 2.0, 60)]
     )
     aligned = [
         AlignedMora(0, 0, "サ", 1.1, 1.2, 0.001),
@@ -238,6 +272,20 @@ def test_ctc_support_retains_sung_template_when_most_moras_are_supported():
     assert accepted.status == "accepted"
     assert accepted.ctc_support is True
     assert accepted.ctc_median_score == pytest.approx(0.0009)
+
+
+def test_credit_is_rejected_even_with_coincidental_ctc_support():
+    decision = decide_recognized_line(
+        TranscribedLine(0.0, 21.0, "作詞・作曲・編曲 初音ミク"),
+        [MelodyNote(9.0, 21.0, 60)],
+    )
+    aligned = [AlignedMora(0, 0, "サ", 9.1, 9.2, 0.01)]
+
+    rejected = apply_ctc_support(decision, 0, aligned)
+
+    assert rejected.status == "rejected"
+    assert rejected.ctc_support is False
+    assert rejected.ctc_median_score == pytest.approx(0.01)
 
 
 def test_stock_media_credit_is_rejected_even_with_coincidental_ctc_support():

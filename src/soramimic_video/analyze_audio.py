@@ -29,7 +29,7 @@ from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
 from .kana import split_moras
 from .project import Project
 from .ruby import strip_ruby
-from .semantic_lyrics import SemanticLyricDecision
+from .semantic_lyrics import RecognitionBoundaryMerge, SemanticLyricDecision
 from .transcribe import DEFAULT_WHISPER_MODEL, TranscribedLine
 
 if TYPE_CHECKING:
@@ -396,6 +396,7 @@ def analyze_audio(
     recognition_lines: list[TranscribedLine] = []
     retained_indices: list[int] = []
     retained_lines: list[TranscribedLine] = []
+    boundary_merges: list[RecognitionBoundaryMerge] = []
     localized_recoveries: list[dict[str, object]] = []
     localized_deficit_recoveries: list[dict[str, object]] = []
     localized_alignment_retries: list[dict[str, object]] = []
@@ -465,7 +466,10 @@ def analyze_audio(
         line_texts = [ln for ln in line_texts if ln]
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
     else:
-        from .semantic_lyrics import decide_recognized_line
+        from .semantic_lyrics import (
+            coalesce_repeated_suffix_fragments,
+            decide_recognized_line,
+        )
         from .transcribe import transcribe_lines
 
         # Unknown lyrics use one complete, deterministic Whisper transcript.
@@ -475,6 +479,7 @@ def analyze_audio(
             audio_path, whisper_model, device or "auto", vad_filter=False,
             condition_on_previous_text=False,
         )
+        lines, boundary_merges = coalesce_repeated_suffix_fragments(lines)
         if sheetsage_notes is None:
             if not sheetsage_was_run:
                 sheetsage_notes = _run_sheetsage(
@@ -969,10 +974,20 @@ def analyze_audio(
                         if not skip_separation
                         else "reazon-kana-ctc-input-audio",
                         "rule": (
-                            "reject-full-line-non-lyric-pattern-unless-melody-and-"
-                            "ctc-median-support"
+                            "always-recover-exact-credit-patterns; require-melody-"
+                            "and-ctc-median-support-for-other-non-lyric-patterns"
                         ),
                         "ctc_median_threshold": MIN_CTC_MEDIAN_SCORE,
+                        "boundary_merges": [
+                            {
+                                "left_index": item.left_index,
+                                "right_index": item.right_index,
+                                "left_surface": item.left_surface,
+                                "right_surface": item.right_surface,
+                                "merged_surface": item.merged_surface,
+                            }
+                            for item in boundary_merges
+                        ],
                         "decisions": [
                             {
                                 "start_sec": line.start_sec,
