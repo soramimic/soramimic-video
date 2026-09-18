@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("MeCab")
 pytest.importorskip("unidic_lite")
 
+from soramimic_video.kana import split_moras  # noqa: E402
 from soramimic_video.reading import (  # noqa: E402
     automatic_reading_candidates,
     reading_candidates,
@@ -42,6 +43,14 @@ def test_reading_candidates_include_yomi_connected_english():
     candidates = reading_candidates("did you")
     assert candidates[0] == "ディドユー"
     assert "ディジュー" in candidates
+
+
+def test_reading_candidates_keep_connected_english_with_fewer_moras():
+    candidates = reading_candidates("Shout it out")
+
+    assert candidates[0] == "シャウトイットアウト"
+    assert "シャウティタウト" in candidates
+    assert len(split_moras("シャウティタウト")) < len(split_moras(candidates[0]))
 
 
 def test_automatic_candidates_include_yomi_letter_names():
