@@ -207,7 +207,7 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
             [0],
         ),
     )
-    def reject_stage3(*_args):
+    def reject_stage3(*_args, **_kwargs):
         raise ValueError("test fallback")
 
     monkeypatch.setitem(

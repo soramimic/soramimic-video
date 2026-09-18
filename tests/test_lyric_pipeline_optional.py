@@ -23,6 +23,9 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
 
     def run(document, *, config=None, **kwargs):
         captured["config"] = config
+        captured["line_windows_by_utterance"] = kwargs.get(
+            "line_windows_by_utterance"
+        )
         return original(document, config=config, **kwargs)
 
     monkeypatch.setattr(pipeline, "run_stage3_document", run)
@@ -32,13 +35,15 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
         [AlignedMora(0, 0, "カ", 0.09, 0.11, 0.1),
          AlignedMora(0, 1, "キ", 0.39, 0.41, 0.1)],
         [MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.5, 62)],
+        whisper_line_windows=[(0.0, 0.5)],
     )
 
     anchors = [item for item in document.evidence if item.kind == "mora-ctc-anchor"]
     assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
     from wav_to_xf import NoteRunConfig
 
-    assert captured["config"] == NoteRunConfig()
+    assert captured["config"] == NoteRunConfig(whisper_ownership_weight=0.001)
+    assert captured["line_windows_by_utterance"] == {"u0": (0.0, 0.5)}
     notes = {item.id: item for item in document.note_candidates}
     assert [
         (item.kana, notes[item.note_candidate_id].midi_pitch)
@@ -225,7 +230,10 @@ def test_unresolved_stage3_unit_is_omitted_for_known_and_automatic_lyrics(
                 "diagnostics": [], "evidence": [],
             }
 
-    monkeypatch.setattr(stage3, "build_stage3_layers", lambda *args: (Document(), Layers()))
+    monkeypatch.setattr(
+        stage3, "build_stage3_layers",
+        lambda *args, **kwargs: (Document(), Layers()),
+    )
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("かき", encoding="utf-8")
 
@@ -267,7 +275,7 @@ def test_known_lyrics_fails_truthfully_when_stage3_plan_is_invalid(monkeypatch, 
         audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
     )
 
-    def invalid_plan(*args):
+    def invalid_plan(*args, **kwargs):
         raise ValueError("invalid synthesis slot timing, pitch, or confidence")
 
     monkeypatch.setattr(stage3, "build_stage3_layers", invalid_plan)
