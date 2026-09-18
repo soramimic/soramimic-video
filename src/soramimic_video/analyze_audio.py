@@ -262,6 +262,39 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
     return len(recovered)
 
 
+def _generation_quality_assessment(layers: dict) -> dict[str, object]:
+    """Summarize whether missing melody evidence affects much of the song."""
+    performed = {
+        item.get("singing_unit_id")
+        for item in layers.get("performed", [])
+        if item.get("singing_unit_id")
+    }
+    unsupported = {
+        item.get("singing_unit_id")
+        for item in layers.get("synthesis_plan", [])
+        if item.get("singing_unit_id")
+        and "sheetsage2-vocal" not in item.get("pitch_sources", [])
+    }
+    unsupported.update(
+        item.get("singing_unit_id")
+        for item in layers.get("omissions", [])
+        if item.get("singing_unit_id")
+    )
+    affected = len(unsupported & performed)
+    total = len(performed)
+    affected_ratio = affected / total if total else 0.0
+    # One isolated gap should not condemn a whole song. Warn when melody evidence
+    # is absent for multiple units and a material share of the performance.
+    warning = affected >= 2 and affected_ratio >= 0.2
+    return {
+        "status": "warning" if warning else "ok",
+        "reason": "insufficient-melody-coverage" if warning else None,
+        "affected_singing_units": affected,
+        "total_singing_units": total,
+        "affected_ratio": round(affected_ratio, 4),
+    }
+
+
 def _run_sheetsage(
     audio_path: Path,
     project_dir: Path,
@@ -1314,6 +1347,7 @@ def analyze_audio(
             }.items()
         )
     )
+    analysis_data["generation_quality"] = _generation_quality_assessment(layer_data)
     if recovered_units:
         detail = (
             f"SheetSage2ノートに前後を挟まれた{recovered_units}歌唱単位を、"

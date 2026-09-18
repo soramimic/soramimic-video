@@ -2548,6 +2548,14 @@ def test_footer_labels_guidance_links():
     assert '<a href="/guidelines#contact-title">画像の権利をお持ちの方へ</a>' in html
 
 
+def test_difficult_audio_result_links_to_song_generation_tips():
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'id="generation-quality-warning"' in html
+    assert "全体的にうまく生成できていない可能性があります。" in html
+    assert 'href="/guidelines#generation-tips"' in html
+    assert '$("generation-quality-warning").hidden = !job.generation_quality_warning;' in html
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_image_credits_interactions():
     subprocess.run(

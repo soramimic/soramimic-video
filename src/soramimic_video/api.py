@@ -643,6 +643,7 @@ class Job:
     # "name:<レイアウト名>" / "json:layout.json" など。あとから食い違いを追うため
     layout_source: str | None = None
     video: Path | None = None
+    generation_quality_warning: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -711,6 +712,8 @@ class Job:
                 d["credits_url"] = f"/api/jobs/{self.id}/credits"
             if self.thumbnail.exists():
                 d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
+            if self.generation_quality_warning:
+                d["generation_quality_warning"] = True
         if with_log and not is_public_mode():
             d["log"] = list(self.log)
         return d
@@ -1529,6 +1532,9 @@ class JobManager:
                 stages=data.get("stages", []),
                 error=data.get("error"),
                 layout_source=data.get("layout_source"),
+                generation_quality_warning=bool(
+                    data.get("generation_quality_warning", False)
+                ),
             )
             if data.get("created_at"):
                 job.created_at = datetime.fromisoformat(data["created_at"]).timestamp()
@@ -1913,6 +1919,11 @@ class JobManager:
             job.video = run_pipeline(job, self.config)
             if job.cancel_event.is_set():
                 raise runproc.Cancelled()
+            analysis_path = job.dir / "analyze_audio" / "analysis.json"
+            if job.params.get("input_kind") == "audio" and analysis_path.is_file():
+                analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+                quality = analysis.get("generation_quality", {})
+                job.generation_quality_warning = quality.get("status") == "warning"
             if self.config.get("scrub_private_artifacts"):
                 self._cleanup_completed_artifacts(job)
             job.status = "done"
