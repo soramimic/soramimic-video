@@ -726,6 +726,16 @@
     display: block; height: 100%; width: 0; background: var(--accent);
     transition: width .3s ease;
   }
+  /* 音源解析の最初のモデル処理は細かな実進捗を返さない。1%の細い線を
+     固定する代わりに、処理が続いていることだけを動きで示す。 */
+  .builder-bar span.indeterminate {
+    transition: none;
+    animation: builder-progress-slide 1.4s ease-in-out infinite;
+  }
+  @keyframes builder-progress-slide {
+    from { transform: translateX(-110%); }
+    to { transform: translateX(320%); }
+  }
   /* プレビュー画像を初期非表示にしている単語リストの説明+「見る」ボタン */
   .builder-figure.hidden-preview { padding: 1rem; }
   .builder-figure.hidden-preview .hint { margin: 0 0 .6rem; }
@@ -740,7 +750,10 @@
     animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation-duration: 2.4s; }
+    .builder-bar span.indeterminate { animation-duration: 3s; }
+  }
   /* 完成後のダウンロード・共有ボタンを横並びに(狭い画面では折り返す) */
   .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 </style>
@@ -2382,14 +2395,30 @@ function queueWaitLabel(job) {
   return `開始待ち：前に${ahead}件・開始まで約${estimate}`;
 }
 
+// 音源解析の最初のモデル処理は開始(1%)と完了(48%)の間に進捗通知が
+// 来ないことがある。この区間だけは数値ではなく不定進捗として見せる。
+function audioAnalysisIsStarting(job) {
+  return job?.status === "running"
+    && job.stage === "analyze"
+    && job.params?.input_kind === "audio"
+    && Number(job.stage_progress || 0) <= 1;
+}
+
 // 枠内のプログレスバー。済んだステージ数のおおよその割合で伸ばす。
 // 分母は「このジョブで実際に走るステージ数」(stagePlan)。
 function renderBuilderBar(job) {
+  const fill = $("builder-bar-fill");
+  const analysisStarting = audioAnalysisIsStarting(job);
+  fill.classList.toggle("indeterminate", analysisStarting);
   if (job?.status === "queued") {
-    $("builder-bar-fill").style.width = "0%";
+    fill.style.width = "0%";
     return;
   }
   if (job?.params?.input_kind === "audio") {
+    if (analysisStarting) {
+      fill.style.width = "32%";
+      return;
+    }
     const base = { analyze: 0, convert: 35, "import-editor": 35,
       synthesize: 45, mix: 80, video: 90 };
     const span = { analyze: 35, convert: 10, "import-editor": 10,
@@ -2397,14 +2426,14 @@ function renderBuilderBar(job) {
     const inside = job.stage_progress == null ? 0.35 : Number(job.stage_progress) / 100;
     const pct = job.status === "done" ? 100
       : Math.min(99, (base[job.stage] || 0) + (span[job.stage] || 0) * inside);
-    $("builder-bar-fill").style.width = Math.round(pct) + "%";
+    fill.style.width = Math.round(pct) + "%";
     return;
   }
   const total = stagePlan(job).length || 6;
   const done = job && job.stages ? job.stages.length : 0;
   const pct = job && job.status === "done" ? 100
     : Math.min(95, Math.round((done + (job && job.stage ? 0.5 : 0)) / total * 100));
-  $("builder-bar-fill").style.width = pct + "%";
+  fill.style.width = pct + "%";
 }
 
 // 通信の失敗は「まだ続けてよい失敗」として扱い、間隔を伸ばしながら取り直す。
@@ -2466,6 +2495,9 @@ async function poll(id, seq = pollSeq) {
   if (job.status === "running") {
     if (cancelPendingJob === id) {
       setJobStatus("中断しています…");
+    } else if (audioAnalysisIsStarting(job)) {
+      const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
+      setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`);
     } else if (job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;

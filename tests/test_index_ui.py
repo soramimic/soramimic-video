@@ -401,6 +401,22 @@ def test_queued_progress_shows_position_and_rounded_start_range():
     assert 'style.width = "0%"' in progress
 
 
+def test_initial_audio_analysis_uses_live_indeterminate_progress():
+    script = _script()
+    starting = _function_body(script, "function audioAnalysisIsStarting(job)")
+    progress = _function_body(script, "function renderBuilderBar(job)")
+    poll = _function_body(script, "async function poll(id, seq = pollSeq)")
+    assert 'job.params?.input_kind === "audio"' in starting
+    assert "Number(job.stage_progress || 0) <= 1" in starting
+    assert 'fill.classList.toggle("indeterminate", analysisStarting)' in progress
+    assert 'fill.style.width = "32%"' in progress
+    assert "audioAnalysisIsStarting(job)" in poll
+    assert "setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`)" in poll
+    html = INDEX.read_text(encoding="utf-8")
+    assert ".builder-bar span.indeterminate" in html
+    assert "@keyframes builder-progress-slide" in html
+
+
 def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
     script = _script()
     load = _function_body(script, "async function loadHistory()")
