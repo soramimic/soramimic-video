@@ -45,11 +45,13 @@ def test_guidelines_are_public_and_deduplicate_existing_terms(client):
     response = browser.get("/guidelines")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "画像の利用ガイドライン" in response.text
-    assert "動画内で使用される画像・キャラクターなどの利用条件をご確認ください。" in response.text
+    assert '<h1 id="guidelines-title">利用ガイドライン</h1>' in response.text
+    assert "曲の選び方や、動画内で使用される画像・キャラクター" in response.text
     assert response.text.count('href="https://example.com/shared"') == 1
     assert "規約1" in response.text and "規約2" in response.text
     assert 'href="/"' in response.text
+    assert '<h2 id="generation-tips">生成しやすい曲のヒント</h2>' in response.text
+    assert "主旋律の歌声がはっきり聞こえる、日本語のソロ歌唱曲" in response.text
 
 
 @pytest.mark.parametrize("wordlist", ["first", "second", "unknown", "empty", ""])
@@ -91,7 +93,7 @@ def test_guidelines_tolerate_an_empty_catalog(client):
     policies.clear()
     response = browser.get("/guidelines")
     assert response.status_code == 200
-    assert "画像の利用ガイドライン" in response.text
+    assert '<h1 id="guidelines-title">利用ガイドライン</h1>' in response.text
     assert '<ul class="guidelines">' not in response.text
 
 
@@ -106,15 +108,15 @@ def test_public_guidelines_explain_data_handling(client, monkeypatch):
     assert "元の音源・歌詞と解析用データは処理終了時に削除します。" in response.text
     assert "完成動画は24時間後に自動削除します。" in response.text
     assert "入力内容をAIモデルの学習には使用しません。" in response.text
-    assert response.text.index('id="data-handling-title"') < response.text.index(
-        'id="guidelines-title"'
+    assert response.text.index('id="guidelines-title"') < response.text.index(
+        'id="data-handling-title"'
     )
 
 
 def test_image_sections_make_their_scope_explicit(client):
     browser, _ = client
     response = browser.get("/guidelines")
-    assert '<h1 id="guidelines-title">画像の利用ガイドライン</h1>' in response.text
+    assert '<h2 id="image-guidelines-title">画像の利用ガイドライン</h2>' in response.text
     assert '<h2 id="contact-title">画像の権利をお持ちの方へ</h2>' in response.text
     assert "動画内で使用される画像に関するご連絡・ご要望は、" in response.text
 

@@ -756,6 +756,10 @@
   }
   /* 完成後のダウンロード・共有ボタンを横並びに(狭い画面では折り返す) */
   .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+  .generation-quality-warning {
+    margin: .75rem 0 0; padding: .75rem; border: 1px solid #f59e0b;
+    border-radius: 8px; background: color-mix(in srgb, #f59e0b 10%, transparent);
+  }
 </style>
 </head>
 <body>
@@ -868,6 +872,10 @@
   <p class="hint" id="builder-preview-pending" hidden>プレビューを準備中…</p>
   <!-- 完成した動画のシェア導線。枠のすぐ下に出す(中身は SHARE_HTML) -->
   <div id="builder-share" hidden></div>
+  <p class="generation-quality-warning" id="generation-quality-warning" role="status" hidden>
+    この曲は音声解析の難易度が高く、全体的にうまく生成できていない可能性があります。
+    <a href="/guidelines#generation-tips" target="_blank" rel="noopener noreferrer">生成しやすい曲のヒント</a>
+  </p>
   <!-- プレビュー画像を初期非表示にする単語リスト(HIDDEN_PREVIEW_WORDLISTS)では、
        黙って出さずに理由を書き、見たい人だけがボタンで表示できるようにする -->
   <div class="builder-figure hidden-preview" id="builder-image-hidden" hidden>
@@ -2105,6 +2113,15 @@ function historyCard(job, index) {
   status.className = `history-status history-status-${job.status || "unknown"}`;
   status.textContent = historyStatusLabel(job);
   copy.append(title, wordlist, created, status);
+  if (job.generation_quality_warning) {
+    const warning = document.createElement("p");
+    warning.className = "history-meta";
+    warning.append("全体的にうまく生成できていない可能性があります。", Object.assign(document.createElement("a"), {
+      href: "/guidelines#generation-tips", textContent: "生成しやすい曲のヒント",
+      target: "_blank", rel: "noopener noreferrer",
+    }));
+    copy.appendChild(warning);
+  }
   if (complete) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
@@ -2524,6 +2541,7 @@ async function poll(id, seq = pollSeq) {
     $("result").hidden = !$("result").innerHTML;
     if (job.result_kind === "audio") setBuilderState("preview");
     else showBuilderVideo(job);
+    $("generation-quality-warning").hidden = !job.generation_quality_warning;
     finish();
   } else if (job.status === "canceled") {
     setJobStatus("中断しました");
@@ -2861,6 +2879,7 @@ function setBusy(busy) {
 // 自動的に開いて警告色になっていた場合もここでリセットされる)。
 function showProgress() {
   showBuilderMsg("");
+  $("generation-quality-warning").hidden = true;
   $("job-card").hidden = false;
   $("job-card").open = false;
   $("job-card").classList.remove("attention");
@@ -4318,6 +4337,7 @@ function setBuilderState(state) {
     resetVideoSharePreparation();
     $("builder-share").hidden = true;
     $("builder-share").innerHTML = "";
+    $("generation-quality-warning").hidden = true;
   }
   if (state === "running") {
     $("builder-figure").hidden = false;   // サムネが無い組み合わせでも進捗は枠に出す

@@ -128,6 +128,33 @@ def test_job_flow_accepts_wav_with_auto_lyrics_by_default(client):
     assert client.get(body["playback_url"]).content == FAKE_MP4
 
 
+def test_audio_job_persists_generation_quality_warning(tmp_path, monkeypatch):
+    def difficult_pipeline(job, config):
+        analysis_dir = job.dir / "analyze_audio"
+        analysis_dir.mkdir()
+        (analysis_dir / "analysis.json").write_text(
+            json.dumps({"generation_quality": {"status": "warning"}}),
+            encoding="utf-8",
+        )
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", difficult_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
+    browser = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    response = browser.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+
+    body = wait_done(browser, response.json()["id"])
+
+    assert body["status"] == "done"
+    assert body["generation_quality_warning"] is True
+
+
 def test_retried_audio_submission_returns_the_same_job(client):
     fields = {
         "wordlist": "stations",
@@ -1142,6 +1169,21 @@ def test_to_dict_hides_unreliable_audio_analysis_eta():
     assert d["stage_progress"] == 25
     assert d["stage_elapsed"] >= 9
     assert "stage_eta_seconds" not in d
+
+
+def test_done_job_exposes_generation_quality_warning(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    job = api_mod.Job(
+        id="difficult-song",
+        dir=tmp_path,
+        params={"input_kind": "audio"},
+        status="done",
+        video=video,
+        generation_quality_warning=True,
+    )
+
+    assert job.to_dict(with_log=False)["generation_quality_warning"] is True
 
 
 def test_queued_job_reports_input_aware_start_wait(tmp_path):

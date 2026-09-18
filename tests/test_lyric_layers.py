@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from soramimic_video.analyze_audio import (
+    _generation_quality_assessment,
     _omit_unresolved_synthesis_units,
     _recover_bracketed_synthesis_units,
 )
@@ -97,6 +98,37 @@ def test_unresolved_optimizer_unit_becomes_explicit_synthesis_omission():
     apply_lyric_layers(value, data)
     assert [note.kana for note in value.notes] == ["カ", "ク"]
     assert value.lines[0].original_text == "かきく"
+
+
+def test_generation_quality_warns_when_sheet_sage_gaps_cover_much_of_song():
+    data = layers()
+    for slot in data["synthesis_plan"]:
+        slot["pitch_sources"] = ["sheetsage2-vocal"]
+    data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
+    data["synthesis_plan"].pop(1)
+    data["omissions"] = [{"singing_unit_id": "s1"}]
+
+    assessment = _generation_quality_assessment(data)
+
+    assert assessment == {
+        "status": "warning",
+        "reason": "insufficient-melody-coverage",
+        "affected_singing_units": 2,
+        "total_singing_units": 3,
+        "affected_ratio": 0.6667,
+    }
+
+
+def test_generation_quality_ignores_one_isolated_sheet_sage_gap():
+    data = layers()
+    for slot in data["synthesis_plan"]:
+        slot["pitch_sources"] = ["sheetsage2-vocal"]
+    data["synthesis_plan"][1]["pitch_sources"] = ["spoken"]
+
+    assessment = _generation_quality_assessment(data)
+
+    assert assessment["status"] == "ok"
+    assert assessment["affected_singing_units"] == 1
 
 
 def test_internal_pitch_gap_is_retained_as_explicit_spoken_synthesis():
