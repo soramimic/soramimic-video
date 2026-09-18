@@ -130,8 +130,10 @@ uv run soramimic-video serve
 | `SORAMIMIC_SHEETSAGE_BASE_DIR` | 未設定 | ローカルMERT-v2-FullSong親モデル |
 
 SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
-ローカルディレクトリだけをofflineで読みます。音源解析の音高候補は
-SheetSage2だけから取得し、候補のない歌唱単位へ別の音高を補いません。
+ローカルディレクトリだけをofflineで読みます。音源解析の推定音高候補は
+SheetSage2だけから取得します。前後をSheetSage2ノートに挟まれたラップ・台詞調の内部空白は、
+歌詞を無音化しないためCTCのモーラ時刻を保持し、近い側のノート音高を合成専用の
+`spoken` 値として使います。この値は推定音高とは扱わず、解析結果に由来を記録します。
 
 音源解析は `wav-to-xf` パッケージを使用します。利用可能なローカル
 チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
