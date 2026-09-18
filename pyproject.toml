@@ -53,7 +53,8 @@ audio = [
     "pretty-midi>=0.2.10",
     "faster-whisper>=1.0",
     "soramimic-yomi",
-    "numpy>=1.24",
+    # librosa imports Numba, whose current runtime rejects NumPy 2.5.
+    "numpy>=1.24,<2.5",
 ]
 # 同梱WAVサンプルの再生成用。実行時サーバーには不要
 sample-audio = [
