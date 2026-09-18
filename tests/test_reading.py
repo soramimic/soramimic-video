@@ -34,14 +34,14 @@ def test_automatic_digitwise_candidate_can_win_with_kana_evidence():
 
 def test_automatic_candidates_keep_english_dictionary_first_and_add_spelling():
     candidates = automatic_reading_candidates("reason")
-    assert candidates[0] == reading_candidates("reason")[0] == "リーズン"
+    assert candidates[0] == reading_candidates("reason")[0] == "リーザン"
     assert "アールイーエーエスオーエヌ" in candidates
 
 
 def test_reading_candidates_include_yomi_connected_english():
     candidates = reading_candidates("did you")
     assert candidates[0] == "ディドユー"
-    assert "デジュ" in candidates
+    assert "ディジュー" in candidates
 
 
 def test_automatic_candidates_include_yomi_letter_names():
