@@ -78,6 +78,44 @@ class CTCEmissions:
     vocab: dict[str, int]
 
 
+class CTCWindowCapacityError(RuntimeError):
+    """A transcript cannot fit into its fixed CTC frame window."""
+
+    def __init__(
+        self,
+        *,
+        available_frames: int,
+        target_count: int,
+        adjacent_repeats: int,
+        line: int | None = None,
+    ) -> None:
+        self.line = line
+        self.available_frames = available_frames
+        self.target_count = target_count
+        self.adjacent_repeats = adjacent_repeats
+        self.required_frames = target_count + adjacent_repeats
+        super().__init__(
+            "CTC window has insufficient capacity: "
+            f"{available_frames} frames for {target_count} targets "
+            f"and {adjacent_repeats} adjacent repeats"
+        )
+
+
+def _require_ctc_capacity(
+    available_frames: int, targets: list[int], *, line: int | None = None,
+) -> None:
+    adjacent_repeats = sum(
+        left == right for left, right in zip(targets, targets[1:], strict=False)
+    )
+    if available_frames < len(targets) + adjacent_repeats:
+        raise CTCWindowCapacityError(
+            line=line,
+            available_frames=available_frames,
+            target_count=len(targets),
+            adjacent_repeats=adjacent_repeats,
+        )
+
+
 def _validated_line_windows(
     line_windows: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
@@ -372,6 +410,8 @@ def align_moras_with_variants(
             zip(line_variants, line_windows, bounds, strict=True)
         ):
             first, last = frames
+            targets, _owners = build_targets([variants[0]], vocab)
+            _require_ctc_capacity(last - first, targets, line=line)
             local, chosen = _align_variants(
                 log_probs[first:last], vocab, [variants], frame_offset=first,
             )
@@ -512,6 +552,7 @@ def _align_variants(
     targets, owners = build_targets(line_moras, vocab)
     if not targets:
         raise ValueError("アライメント可能なカナがありません")
+    _require_ctc_capacity(len(log_probs), targets)
     logger.info("forced alignment実行中(%dトークン)...", len(targets))
     spans = _forced_align(log_probs, targets)
     if len(spans) != len(targets):
@@ -553,6 +594,7 @@ def _align_variants(
         if changed:
             line_moras = [v[k] for v, k in zip(line_variants, chosen, strict=True)]
             targets, owners = build_targets(line_moras, vocab)
+            _require_ctc_capacity(len(log_probs), targets)
             spans = _forced_align(log_probs, targets)
             if len(spans) != len(targets):
                 raise RuntimeError("再アライメントのトークン数が不一致")
