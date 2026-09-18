@@ -33,10 +33,7 @@
 - Use [README.md](README.md) for setup and [DESIGN.md](DESIGN.md) for public interfaces.
   Initialize the recorded submodule commits recursively; change their pointers only
   when the requested change requires it.
-- Preserve bounded pronunciation N-best candidates across mora-count changes. Connected
-  speech, weak forms, and reductions may legitimately contain fewer or more morae than
-  the dictionary-first reading; compare them with KanaWhisper evidence before passing
-  the selected reading to kana-CTC timing alignment.
+- 読み候補は、候補生成後にモーラ数で足切りしない。
 - For code changes, install with `uv sync --extra api` and run the relevant tests.
   The CI checks are `uv run ruff check .`, `uv run mypy src`, and `uv run pytest -q`.
 - For documentation-only changes, check links, command names, and `git diff --check`.
