@@ -1150,8 +1150,14 @@ def analyze_audio(
     from .stage3 import build_stage3_layers
 
     try:
+        whisper_line_windows = (
+            _recognized_line_windows(retained_lines)
+            if recognition_mode is not None and not recognition_windows_fallback
+            else None
+        )
         document, layers = build_stage3_layers(
             line_texts, selected_readings, raw_alignment, sheetsage_notes,
+            whisper_line_windows=whisper_line_windows,
         )
     except ValueError as exc:
         detail = (
