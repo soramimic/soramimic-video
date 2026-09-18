@@ -140,6 +140,9 @@ SheetSage2だけから取得し、候補のない歌唱単位へ別の音高を�
 CTC中心を含む後続ノートがある場合、その
 モーラを直前ノートのスタックやmelismaへ隠しません。SheetSage2を必須とし、
 未設定時に別方式へ黙ってフォールバックしません。
+未知歌詞では、隣接するWhisper行の境界を近傍のSheetSage2ノート間休符へ補正してから、
+行外から始まるノートへ小さな所有コストを加えます。ノート内のCTC位置やXF正解データは
+この境界補正に使用しません。
 
 ```sh
 uv run --no-sync soramimic-video analyze-audio --audio song.wav --project work/song
