@@ -6,7 +6,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from soramimic_video.analyze_audio import _omit_unresolved_synthesis_units
+from soramimic_video.analyze_audio import (
+    _omit_unresolved_synthesis_units,
+    _recover_bracketed_synthesis_units,
+)
 from soramimic_video.convert import engine_phrases
 from soramimic_video.lyric_layers import apply_lyric_layers
 from soramimic_video.mora_align import CTCEmissions, collapse_kana_aliases, decode_kana_window
@@ -94,6 +97,76 @@ def test_unresolved_optimizer_unit_becomes_explicit_synthesis_omission():
     apply_lyric_layers(value, data)
     assert [note.kana for note in value.notes] == ["カ", "ク"]
     assert value.lines[0].original_text == "かきく"
+
+
+def test_internal_pitch_gap_is_retained_as_explicit_spoken_synthesis():
+    data = layers()
+    data["synthesis_plan"].pop(1)
+    data["unresolved_unit_ids"] = ["s1"]
+
+    assert _recover_bracketed_synthesis_units(data) == 1
+    assert data["unresolved_unit_ids"] == []
+    recovered = next(
+        slot for slot in data["synthesis_plan"]
+        if slot["singing_unit_id"] == "s1"
+    )
+    assert recovered["kana"] == "キ"
+    assert recovered["midi_pitch"] == 60
+    assert recovered["pitch_sources"] == ["spoken"]
+    assert recovered["operation"] == "spoken_pitch_carry"
+    assert data["evidence"][-1]["kind"] == "spoken-synthesis-fallback"
+
+    value = project()
+    apply_lyric_layers(value, data)
+    assert [note.kana for note in value.notes] == ["カ", "キ", "ク"]
+    assert [note.source for note in value.notes] == ["synthetic", "spoken", "synthetic"]
+
+
+def test_unbracketed_pitch_gap_stays_unresolved_for_omission():
+    data = layers()
+    data["synthesis_plan"].pop(0)
+    data["unresolved_unit_ids"] = ["s0"]
+
+    assert _recover_bracketed_synthesis_units(data) == 0
+    assert data["unresolved_unit_ids"] == ["s0"]
+    assert _omit_unresolved_synthesis_units(data) == 1
+    assert data["omissions"][0]["singing_unit_id"] == "s0"
+
+
+def test_spoken_recovery_preserves_fine_long_vowel_mora_ids():
+    data = layers()
+    data["canonical"][0]["kana"] = "オーケイ"
+    data["canonical"][0]["mora_ids"] = ["m0", "m1", "m2", "m3"]
+    data["performed"] = [
+        {
+            "singing_unit_id": f"s{i}", "mora_ids": [f"m{i}"],
+            "status": "observed", "start_sec": i * 0.2,
+            "end_sec": (i + 1) * 0.2, "confidence": 0.7,
+            "link_ids": [f"l{i}"], "evidence_ids": [],
+        }
+        for i in range(4)
+    ]
+    data["synthesis_plan"] = [
+        {
+            "id": f"slot-{i}", "utterance_id": "u0",
+            "singing_unit_id": f"s{i}", "mora_ids": [f"m{i}"],
+            "note_candidate_id": f"n{i}", "link_ids": [f"l{i}"],
+            "kana": kana, "start_sec": i * 0.2, "end_sec": (i + 1) * 0.2,
+            "midi_pitch": 60 + i, "operation": "match",
+            "timing_source": "aligned_boundary", "confidence": 0.7,
+            "evidence_ids": [], "pitch_sources": ["synthetic"],
+            "continuation": False,
+        }
+        for i, kana in ((0, "オ"), (3, "イ"))
+    ]
+    data["unresolved_unit_ids"] = ["s1", "s2"]
+
+    assert _recover_bracketed_synthesis_units(data) == 2
+    recovered = {
+        slot["singing_unit_id"]: slot["kana"]
+        for slot in data["synthesis_plan"]
+    }
+    assert recovered == {"s0": "オ", "s1": "ー", "s2": "ケ", "s3": "イ"}
 
 
 def test_wholly_omitted_line_retains_text_and_observed_subtitle_window():
