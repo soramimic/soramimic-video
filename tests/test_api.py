@@ -2759,6 +2759,7 @@ def test_index_html_progress_uses_the_active_stage_plan():
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
     assert 'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
+    assert "setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`);" in html
     assert "setJobStatus(`${label}${tail}`, `${label}${tail}`);" in html
 
 
