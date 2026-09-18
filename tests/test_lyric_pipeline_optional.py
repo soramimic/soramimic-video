@@ -92,6 +92,81 @@ def test_known_lyrics_audio_path_never_calls_whisper(monkeypatch, tmp_path):
     assert [x["confidence"] for x in value.lyric_layers["performed"]] == [0.75, 0.65]
 
 
+def test_known_lyrics_reranks_connected_english_with_fewer_moras(
+    monkeypatch, tmp_path,
+):
+    import soramimic_video.stage3 as stage3
+    from soramimic_video import analyze_audio as analyze_audio_module
+    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+
+    canonical = ["シャ", "ウ", "ト", "イ", "ッ", "ト", "ア", "ウ", "ト"]
+    connected = ["シャ", "ウ", "ティ", "タ", "ウ", "ト"]
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda path: SimpleNamespace(duration=2.0)))
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: ["シャウトイットアウト", "シャウティタウト"],
+    )
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
+    aligned_calls = []
+
+    def align(_path, variants, **kwargs):
+        selected = variants[0][0]
+        aligned_calls.append(selected)
+        return ([
+            AlignedMora(0, index, mora, index * 0.2, (index + 1) * 0.2, 0.8)
+            for index, mora in enumerate(selected)
+        ], [0])
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    rerank_calls = []
+
+    def rerank(_mix, _vocals, texts, variants, windows, **kwargs):
+        rerank_calls.append((texts, variants, windows))
+        return [1], {"contexts": [{"start_sec": 0.0, "end_sec": 1.8}]}
+
+    monkeypatch.setattr(analyze_audio_module, "_choose_readings_with_kana", rerank)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: [
+        MelodyNote(index * 0.2, (index + 1) * 0.2, 60)
+        for index in range(len(connected))
+    ])
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    stage3_calls = []
+
+    class StopAfterReadingSelection(Exception):
+        pass
+
+    def stop_after_reading_selection(
+        line_texts, selected_readings, aligned, melody_notes, **kwargs,
+    ):
+        stage3_calls.append((line_texts, selected_readings, [m.kana for m in aligned]))
+        raise StopAfterReadingSelection
+
+    monkeypatch.setattr(stage3, "build_stage3_layers", stop_after_reading_selection)
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("Shout it out", encoding="utf-8")
+
+    with pytest.raises(StopAfterReadingSelection):
+        analyze_audio(
+            tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
+            device="cpu", skip_separation=True,
+        )
+
+    assert rerank_calls == [
+        (["Shout it out"], [[canonical, connected]], [(0.0, 1.8)])
+    ]
+    assert aligned_calls == [canonical, connected]
+    assert stage3_calls == [
+        (["Shout it out"], ["シャウティタウト"], connected)
+    ]
+
+
 def test_known_lyrics_ctc_capacity_error_is_not_turned_into_lyric_deletion(
     monkeypatch, tmp_path,
 ):
