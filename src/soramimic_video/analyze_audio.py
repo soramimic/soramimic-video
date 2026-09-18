@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
-from .kana import split_moras
+from .kana import split_fine_moras, split_moras
 from .project import Project
 from .ruby import strip_ruby
 from .semantic_lyrics import RecognitionBoundaryMerge, SemanticLyricDecision
@@ -127,6 +127,139 @@ def _omit_unresolved_synthesis_units(layers: dict) -> int:
         "unit_count": len(unresolved),
     })
     return len(unresolved)
+
+
+def _recover_bracketed_synthesis_units(layers: dict) -> int:
+    """Voice internal pitch gaps without pretending they are measured notes.
+
+    Stage 3 deliberately leaves a unit unresolved when SheetSage has no candidate.
+    Short spoken/rap passages can nevertheless have reliable CTC mora intervals
+    between two measured melody notes. Keep those intervals and borrow the pitch
+    of the nearer bracketing slot solely as a synthesis-compatible ``spoken``
+    value. Leading/trailing gaps stay unresolved because they are not bracketed.
+    """
+    unresolved = list(dict.fromkeys(layers.get("unresolved_unit_ids", [])))
+    if not unresolved:
+        return 0
+
+    performed = {
+        item["singing_unit_id"]: item for item in layers.get("performed", [])
+    }
+    plan = list(layers.get("synthesis_plan", []))
+    layers["synthesis_plan"] = plan
+    anchors = sorted(
+        plan, key=lambda item: (item["start_sec"], item["end_sec"], item["id"])
+    )
+    if not anchors:
+        return 0
+
+    mora_details: dict[str, tuple[str, str]] = {}
+    for line in layers.get("canonical", []):
+        moras = split_fine_moras(line["kana"])
+        mora_ids = line["mora_ids"]
+        if len(moras) != len(mora_ids):
+            raise ValueError("完全歌詞のモーラIDと読みが一致しません")
+        for mora_id, kana in zip(mora_ids, moras, strict=True):
+            mora_details[mora_id] = (line["utterance_id"], kana)
+
+    omitted = {
+        item["singing_unit_id"] for item in layers.get("omissions", [])
+    }
+    occupied = [
+        (float(item["start_sec"]), float(item["end_sec"])) for item in plan
+    ]
+    evidence = list(layers.get("evidence", []))
+    layers["evidence"] = evidence
+    evidence_ids = {item["id"] for item in evidence}
+    recovered: list[str] = []
+
+    for unit_id in unresolved:
+        unit = performed.get(unit_id)
+        if unit is None or unit_id in omitted:
+            continue
+        start, end = unit.get("start_sec"), unit.get("end_sec")
+        if (not isinstance(start, (int, float))
+                or not isinstance(end, (int, float))
+                or not math.isfinite(start + end) or end <= start):
+            continue
+        if any(left < end and start < right for left, right in occupied):
+            continue
+        before = [item for item in anchors if item["end_sec"] <= start]
+        after = [item for item in anchors if item["start_sec"] >= end]
+        if not before or not after:
+            continue
+        left, right = before[-1], after[0]
+        center = (start + end) / 2
+        anchor = min(
+            (left, right),
+            key=lambda item: abs(
+                center - (float(item["start_sec"]) + float(item["end_sec"])) / 2
+            ),
+        )
+        details = [mora_details.get(mora_id) for mora_id in unit["mora_ids"]]
+        if not details or any(item is None for item in details):
+            continue
+        utterances = {item[0] for item in details if item is not None}
+        if len(utterances) != 1:
+            continue
+        utterance_id = utterances.pop()
+        kana = "".join(item[1] for item in details if item is not None)
+
+        evidence_id = f"stage3-spoken-recovery-{unit_id}"
+        suffix = 1
+        while evidence_id in evidence_ids:
+            evidence_id = f"stage3-spoken-recovery-{unit_id}-{suffix}"
+            suffix += 1
+        evidence_ids.add(evidence_id)
+        evidence.append({
+            "id": evidence_id,
+            "source": "soramimic-video",
+            "kind": "spoken-synthesis-fallback",
+            "confidence": 1.0,
+            "detail": {
+                "reason": "bracketed-sheet-sage-gap",
+                "anchor_slot_id": anchor["id"],
+                "left_slot_id": left["id"],
+                "right_slot_id": right["id"],
+            },
+        })
+        plan.append({
+            "id": f"spoken-slot-{unit_id}",
+            "utterance_id": utterance_id,
+            "singing_unit_id": unit_id,
+            "mora_ids": list(unit["mora_ids"]),
+            "note_candidate_id": anchor.get("note_candidate_id"),
+            "link_ids": list(unit.get("link_ids", [])),
+            "kana": kana,
+            "start_sec": float(start),
+            "end_sec": float(end),
+            "midi_pitch": anchor["midi_pitch"],
+            "operation": "spoken_pitch_carry",
+            "timing_source": "mora_ctc_interval",
+            "confidence": 0.0,
+            "evidence_ids": [evidence_id],
+            "pitch_sources": ["spoken"],
+            "pitch_confidence": None,
+            "continuation": False,
+        })
+        occupied.append((float(start), float(end)))
+        recovered.append(unit_id)
+
+    if not recovered:
+        return 0
+    plan.sort(key=lambda item: (item["start_sec"], item["end_sec"], item["id"]))
+    recovered_set = set(recovered)
+    layers["unresolved_unit_ids"] = [
+        unit_id for unit_id in unresolved if unit_id not in recovered_set
+    ]
+    diagnostics = list(layers.get("diagnostics", []))
+    layers["diagnostics"] = diagnostics
+    diagnostics.append({
+        "stage": "stage3",
+        "status": "spoken-synthesis-recovery",
+        "unit_count": len(recovered),
+    })
+    return len(recovered)
 
 
 def _run_sheetsage(
@@ -1163,6 +1296,7 @@ def analyze_audio(
             document.to_json(), encoding="utf-8"
         )
     layer_data = layers.to_dict()
+    recovered_units = _recover_bracketed_synthesis_units(layer_data)
     omitted_units = _omit_unresolved_synthesis_units(layer_data)
     for slot in layer_data["synthesis_plan"]:
         # SheetSage does not expose calibrated pitch confidence. Preserve the
@@ -1180,6 +1314,18 @@ def analyze_audio(
             }.items()
         )
     )
+    if recovered_units:
+        detail = (
+            f"SheetSage2ノートに前後を挟まれた{recovered_units}歌唱単位を、"
+            "CTC時刻とspoken合成用の近傍音高で保持しました。"
+        )
+        analysis_data["limitations"].append(detail)
+        analysis_data["diagnostics"].append({
+            "stage": "stage3",
+            "status": "spoken-synthesis-recovery",
+            "unit_count": recovered_units,
+            "detail": detail,
+        })
     if omitted_units:
         detail = (
             f"Stage 3で音高を確定できなかった{omitted_units}歌唱単位を"
