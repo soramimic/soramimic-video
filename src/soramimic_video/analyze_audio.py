@@ -240,17 +240,14 @@ def _recognized_line_windows(
     return windows
 
 
-def _has_kana_choice(
-    variants: list[list[list[str]]], *, allow_different_lengths: bool = False
-) -> bool:
-    return any(
-        len(options) > 1
-        and (
-            allow_different_lengths
-            or any(len(candidate) == len(options[0]) for candidate in options[1:])
-        )
-        for options in variants
-    )
+def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
+    """Whether KanaWhisper has more than one closed reading to compare.
+
+    Connected speech, weak forms, and other real pronunciation variants may change
+    the mora count.  Candidate length is therefore evidence to compare, not a gate
+    on whether comparison is allowed.
+    """
+    return any(len(options) > 1 for options in variants)
 
 
 def _filter_reading_evidence(
@@ -551,9 +548,7 @@ def analyze_audio(
             current_texts = [strip_ruby(text) for text in current_texts]
             current_choices = [0] * len(current_variants)
             current_reading_evidence = None
-            if _has_kana_choice(
-                current_variants, allow_different_lengths=True
-            ):
+            if _has_kana_choice(current_variants):
                 current_choices, current_reading_evidence = _choose_readings_with_kana(
                     audio_path,
                     vocals,
@@ -678,7 +673,7 @@ def analyze_audio(
         )
         reading_evidence = None
         chosen = [0] * len(line_variants)
-        if _has_kana_choice(line_variants, allow_different_lengths=False):
+        if _has_kana_choice(line_variants):
             chosen, reading_evidence = _choose_readings_with_kana(
                 audio_path,
                 vocals,

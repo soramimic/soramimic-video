@@ -163,6 +163,16 @@ def test_kana_evidence_reranks_closed_candidates_from_mix_and_vocals(
     assert receipt["lines"][0]["selected_index"] == 1
 
 
+def test_kana_choice_keeps_candidates_with_different_mora_counts():
+    from soramimic_video import analyze_audio
+
+    assert analyze_audio._has_kana_choice(
+        [[
+            ["シャ", "ウ", "ト", "イ", "ッ", "ト", "ア", "ウ", "ト"],
+            ["シャ", "ウ", "ティ", "タ", "ウ", "ト"],
+        ]]
+    )
+
 
 def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     from soramimic_video import (
