@@ -382,6 +382,7 @@ def analyze_audio(
     progress: Callable[[float], None] | None = None,
 ) -> Project:
     from .mora_align import (
+        CTCWindowCapacityError,
         align_moras_with_variants,
         retry_pathological_line_alignments,
     )
@@ -400,6 +401,7 @@ def analyze_audio(
     localized_recoveries: list[dict[str, object]] = []
     localized_deficit_recoveries: list[dict[str, object]] = []
     localized_alignment_retries: list[dict[str, object]] = []
+    ctc_capacity_rejections: list[dict[str, object]] = []
 
     last_progress = 0.0
 
@@ -525,9 +527,144 @@ def analyze_audio(
     from .mora_align import compute_emissions
 
     emissions = emissions or compute_emissions(vocals, device)
-    default_variants = [[variants[0]] for variants in line_variants]
-    initial_alignment = None
-    if recognized_windows is None:
+    def prepare_automatic_alignment(
+        current_lines: list[TranscribedLine], phase: str,
+    ) -> tuple[
+        list[TranscribedLine], list[str], list[tuple[float, float]] | None,
+        list[list[list[str]]], list[int], dict[str, object] | None,
+        list[list[list[str]]], list[AlignedMora],
+    ]:
+        """Reject whole infeasible ASR lines and align only the survivors."""
+        nonlocal decisions, retained_indices, recognition_windows_fallback
+        while current_lines:
+            current_texts = [line.text for line in current_lines]
+            current_windows = _recognized_line_windows(current_lines)
+            current_variants = [
+                [split_moras(kana) for kana in candidate_builder(text)] or [[]]
+                for text in current_texts
+            ]
+            for text, variants in zip(
+                current_texts, current_variants, strict=True
+            ):
+                if not variants[0]:
+                    logger.warning("カナ読みが得られない行をスキップ: %r", text)
+            current_texts = [strip_ruby(text) for text in current_texts]
+            current_choices = [0] * len(current_variants)
+            current_reading_evidence = None
+            if _has_kana_choice(
+                current_variants, allow_different_lengths=True
+            ):
+                current_choices, current_reading_evidence = _choose_readings_with_kana(
+                    audio_path,
+                    vocals,
+                    current_texts,
+                    current_variants,
+                    current_windows,
+                    device=device or "auto",
+                    shared_inference=shared_inference,
+                )
+            current_selected = [
+                [variants[index]]
+                for variants, index in zip(
+                    current_variants, current_choices, strict=True
+                )
+            ]
+            try:
+                current_aligned, _fixed_choices = align_moras_with_variants(
+                    vocals,
+                    current_selected,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                    line_windows=current_windows,
+                )
+            except CTCWindowCapacityError as exc:
+                if exc.line is None or not 0 <= exc.line < len(current_lines):
+                    raise
+                rejected_line = current_lines[exc.line]
+                original_index = next(
+                    (
+                        index for index, original in enumerate(recognition_lines)
+                        if original is rejected_line
+                    ),
+                    None,
+                )
+                ctc_capacity_rejections.append({
+                    "phase": phase,
+                    "source_segment_index": original_index,
+                    "source_retained_index": exc.line,
+                    "start_sec": rejected_line.start_sec,
+                    "end_sec": rejected_line.end_sec,
+                    "surface": rejected_line.text,
+                    "status": "rejected",
+                    "reason": "ctc-window-capacity-insufficient",
+                    "available_frames": exc.available_frames,
+                    "required_frames": exc.required_frames,
+                    "target_count": exc.target_count,
+                    "adjacent_repeats": exc.adjacent_repeats,
+                })
+                if original_index is not None:
+                    decisions[original_index] = replace(
+                        decisions[original_index], status="rejected"
+                    )
+                    retained_indices = [
+                        index for index in retained_indices
+                        if index != original_index
+                    ]
+                logger.warning(
+                    "Whisper行%dをCTC容量不足のため不採用にします "
+                    "(%d/%dフレーム)",
+                    exc.line, exc.available_frames, exc.required_frames,
+                )
+                current_lines = [
+                    line for index, line in enumerate(current_lines)
+                    if index != exc.line
+                ]
+                continue
+            except ValueError as exc:
+                recognition_windows_fallback = True
+                logger.warning(
+                    "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s",
+                    exc,
+                )
+                current_aligned, _fixed_choices = align_moras_with_variants(
+                    vocals,
+                    current_selected,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                    line_windows=None,
+                )
+                current_aligned, retries = retry_pathological_line_alignments(
+                    vocals,
+                    current_selected,
+                    current_aligned,
+                    current_windows,
+                    device=device,
+                    emissions=emissions,
+                    phonetic_aliases=True,
+                )
+                localized_alignment_retries.extend(retries)
+                return (
+                    current_lines, current_texts, None, current_variants,
+                    current_choices, current_reading_evidence, current_selected,
+                    current_aligned,
+                )
+            recognition_windows_fallback = False
+            return (
+                current_lines, current_texts, current_windows, current_variants,
+                current_choices, current_reading_evidence, current_selected,
+                current_aligned,
+            )
+        raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
+
+    if recognition_mode is not None:
+        (
+            retained_lines, line_texts, recognized_windows, line_variants,
+            chosen, reading_evidence, selected_variants, aligned,
+        ) = prepare_automatic_alignment(retained_lines, "initial")
+    else:
+        default_variants = [[variants[0]] for variants in line_variants]
         initial_alignment, _ = align_moras_with_variants(
             vocals,
             default_variants,
@@ -536,49 +673,28 @@ def analyze_audio(
             phonetic_aliases=True,
             line_windows=None,
         )
-    if recognized_windows is None:
-        evidence_windows = _alignment_line_windows(initial_alignment, len(line_variants))
-    else:
-        evidence_windows = recognized_windows
-
-    reading_evidence = None
-    chosen = [0] * len(line_variants)
-    if _has_kana_choice(
-        line_variants, allow_different_lengths=recognition_mode is not None
-    ):
-        chosen, reading_evidence = _choose_readings_with_kana(
-            audio_path,
-            vocals,
-            line_texts,
-            line_variants,
-            evidence_windows,
-            device=device or "auto",
-            shared_inference=shared_inference,
+        evidence_windows = _alignment_line_windows(
+            initial_alignment, len(line_variants)
         )
-    selected_variants = [
-        [variants[index]] for variants, index in zip(line_variants, chosen, strict=True)
-    ]
-    if initial_alignment is not None and not any(chosen):
-        aligned = initial_alignment
-    else:
-        try:
-            aligned, _fixed_choices = align_moras_with_variants(
+        reading_evidence = None
+        chosen = [0] * len(line_variants)
+        if _has_kana_choice(line_variants, allow_different_lengths=False):
+            chosen, reading_evidence = _choose_readings_with_kana(
+                audio_path,
                 vocals,
-                selected_variants,
-                device=device,
-                emissions=emissions,
-                phonetic_aliases=True,
-                line_windows=recognized_windows,
+                line_texts,
+                line_variants,
+                evidence_windows,
+                device=device or "auto",
+                shared_inference=shared_inference,
             )
-        except ValueError as exc:
-            if recognized_windows is None:
-                raise
-            recognition_windows_fallback = True
-            fallback_windows = recognized_windows
-            logger.warning(
-                "Whisper行時刻をCTC整列に使えないため全体整列へ切替: %s", exc
-            )
-            recognized_windows = None
+        selected_variants = [
+            [variants[index]]
+            for variants, index in zip(line_variants, chosen, strict=True)
+        ]
+        if not any(chosen):
+            aligned = initial_alignment
+        else:
             aligned, _fixed_choices = align_moras_with_variants(
                 vocals,
                 selected_variants,
@@ -587,16 +703,6 @@ def analyze_audio(
                 phonetic_aliases=True,
                 line_windows=None,
             )
-            aligned, retries = retry_pathological_line_alignments(
-                vocals,
-                selected_variants,
-                aligned,
-                fallback_windows,
-                device=device,
-                emissions=emissions,
-                phonetic_aliases=True,
-            )
-            localized_alignment_retries.extend(retries)
 
     if recognition_mode is not None:
         from .semantic_lyrics import MIN_CTC_MEDIAN_SCORE, apply_ctc_support
@@ -674,74 +780,13 @@ def analyze_audio(
             )
             if not retained_lines:
                 raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
-            line_texts = [line.text for line in retained_lines]
-            recognized_windows = _recognized_line_windows(retained_lines)
-            line_variants = [
-                [split_moras(kana) for kana in candidate_builder(text)] or [[]]
-                for text in line_texts
-            ]
-            line_texts = [strip_ruby(text) for text in line_texts]
-            chosen = [0] * len(line_variants)
-            reading_evidence = None
-            if _has_kana_choice(
-                line_variants, allow_different_lengths=recognition_mode is not None
-            ):
-                chosen, reading_evidence = _choose_readings_with_kana(
-                    audio_path,
-                    vocals,
-                    line_texts,
-                    line_variants,
-                    recognized_windows,
-                    device=device or "auto",
-                    shared_inference=shared_inference,
-                )
-            selected_variants = [
-                [variants[index]]
-                for variants, index in zip(line_variants, chosen, strict=True)
-            ]
             # The final retained-line alignment replaces the screening pass and
             # therefore owns the retry provenance recorded below.
             localized_alignment_retries = []
-            try:
-                aligned, _fixed_choices = align_moras_with_variants(
-                    vocals,
-                    selected_variants,
-                    device=device,
-                    emissions=emissions,
-                    phonetic_aliases=True,
-                    line_windows=recognized_windows,
-                )
-                # The final alignment, rather than the discarded screening pass,
-                # determines the provenance recorded in analysis.json.
-                recognition_windows_fallback = False
-            except ValueError as exc:
-                recognition_windows_fallback = True
-                fallback_windows = recognized_windows
-                assert fallback_windows is not None
-                logger.warning(
-                    "局所再認識後のWhisper行時刻をCTC整列に使えないため"
-                    "全体整列へ切替: %s",
-                    exc,
-                )
-                recognized_windows = None
-                aligned, _fixed_choices = align_moras_with_variants(
-                    vocals,
-                    selected_variants,
-                    device=device,
-                    emissions=emissions,
-                    phonetic_aliases=True,
-                    line_windows=None,
-                )
-                aligned, retries = retry_pathological_line_alignments(
-                    vocals,
-                    selected_variants,
-                    aligned,
-                    fallback_windows,
-                    device=device,
-                    emissions=emissions,
-                    phonetic_aliases=True,
-                )
-                localized_alignment_retries.extend(retries)
+            (
+                retained_lines, line_texts, recognized_windows, line_variants,
+                chosen, reading_evidence, selected_variants, aligned,
+            ) = prepare_automatic_alignment(retained_lines, "semantic-recovery")
 
         from .semantic_lyrics import lyric_deficit_recoveries, vocalization_only
         from .transcribe import transcribe_window
@@ -883,69 +928,11 @@ def analyze_audio(
                 for replacement in replacements.get(index, [line])
             ]
             retained_lines.sort(key=lambda line: (line.start_sec, line.end_sec))
-            line_texts = [line.text for line in retained_lines]
-            recognized_windows = _recognized_line_windows(retained_lines)
-            line_variants = [
-                [split_moras(kana) for kana in candidate_builder(text)] or [[]]
-                for text in line_texts
-            ]
-            line_texts = [strip_ruby(text) for text in line_texts]
-            chosen = [0] * len(line_variants)
-            reading_evidence = None
-            if _has_kana_choice(
-                line_variants, allow_different_lengths=recognition_mode is not None
-            ):
-                chosen, reading_evidence = _choose_readings_with_kana(
-                    audio_path,
-                    vocals,
-                    line_texts,
-                    line_variants,
-                    recognized_windows,
-                    device=device or "auto",
-                    shared_inference=shared_inference,
-                )
-            selected_variants = [
-                [variants[index]]
-                for variants, index in zip(line_variants, chosen, strict=True)
-            ]
             localized_alignment_retries = []
-            try:
-                aligned, _fixed_choices = align_moras_with_variants(
-                    vocals,
-                    selected_variants,
-                    device=device,
-                    emissions=emissions,
-                    phonetic_aliases=True,
-                    line_windows=recognized_windows,
-                )
-                recognition_windows_fallback = False
-            except ValueError as exc:
-                recognition_windows_fallback = True
-                fallback_windows = recognized_windows
-                logger.warning(
-                    "歌詞不足の局所再認識後にWhisper行時刻をCTC整列に使えないため"
-                    "全体整列へ切替: %s",
-                    exc,
-                )
-                recognized_windows = None
-                aligned, _fixed_choices = align_moras_with_variants(
-                    vocals,
-                    selected_variants,
-                    device=device,
-                    emissions=emissions,
-                    phonetic_aliases=True,
-                    line_windows=None,
-                )
-                aligned, retries = retry_pathological_line_alignments(
-                    vocals,
-                    selected_variants,
-                    aligned,
-                    fallback_windows,
-                    device=device,
-                    emissions=emissions,
-                    phonetic_aliases=True,
-                )
-                localized_alignment_retries.extend(retries)
+            (
+                retained_lines, line_texts, recognized_windows, line_variants,
+                chosen, reading_evidence, selected_variants, aligned,
+            ) = prepare_automatic_alignment(retained_lines, "deficit-recovery")
 
     expected_moras = sum(
         len(line[choice])
@@ -1007,6 +994,7 @@ def analyze_audio(
                         "localized_recoveries": localized_recoveries,
                         "localized_deficit_recoveries": localized_deficit_recoveries,
                         "localized_alignment_retries": localized_alignment_retries,
+                        "ctc_capacity_rejections": ctc_capacity_rejections,
                     },
                     "segments": [
                         {
@@ -1071,6 +1059,11 @@ def analyze_audio(
         limitations.append(
             "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
         )
+    if ctc_capacity_rejections:
+        limitations.append(
+            "Whisper区間のCTCフレームへ収まらない自動認識行を"
+            f"{len(ctc_capacity_rejections)}行、不採用にしました。"
+        )
     if recognition_windows_fallback:
         repaired_count = sum(
             item.get("status") == "replaced"
@@ -1117,6 +1110,7 @@ def analyze_audio(
                 "recognition_mode": recognition_mode,
                 "recognition_flags": recognition_flags,
                 "localized_alignment_retries": localized_alignment_retries,
+                "ctc_capacity_rejections": ctc_capacity_rejections,
                 "mora_count": len(raw_alignment),
                 "sources": {},
                 "limitations": limitations,
@@ -1125,6 +1119,9 @@ def analyze_audio(
                 ] + [
                     {"stage": "mora-ctc-local-retry", **item}
                     for item in localized_alignment_retries
+                ] + [
+                    {"stage": "mora-ctc-capacity", **item}
+                    for item in ctc_capacity_rejections
                 ],
             },
             ensure_ascii=False,

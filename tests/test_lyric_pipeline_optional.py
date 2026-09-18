@@ -92,6 +92,40 @@ def test_known_lyrics_audio_path_never_calls_whisper(monkeypatch, tmp_path):
     assert [x["confidence"] for x in value.lyric_layers["performed"]] == [0.75, 0.65]
 
 
+def test_known_lyrics_ctc_capacity_error_is_not_turned_into_lyric_deletion(
+    monkeypatch, tmp_path,
+):
+    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.mora_align import CTCWindowCapacityError
+
+    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
+
+    def reject_capacity(*args, **kwargs):
+        assert kwargs["line_windows"] is None
+        raise CTCWindowCapacityError(
+            available_frames=1,
+            target_count=2,
+            adjacent_repeats=0,
+        )
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", reject_capacity)
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": False}
+    )
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("かき", encoding="utf-8")
+
+    with pytest.raises(CTCWindowCapacityError):
+        analyze_audio(
+            tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
+            device="cpu", skip_separation=True,
+        )
+
+    assert not (tmp_path / "project/analyze_audio/recognition.json").exists()
+
+
 def test_audio_path_requires_sheetsage(monkeypatch, tmp_path):
     from soramimic_video import audio_melody, mora_align, reading
     from soramimic_video.analyze_audio import analyze_audio
@@ -369,6 +403,96 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
     assert reading_evidence["mode"] == "closed-reading-candidate-rerank"
     assert reading_evidence["distance_metric"] == "kanasim-weighted-substring-0.0.11"
     assert [line["selected_index"] for line in reading_evidence["lines"]] == [0, 0]
+
+
+def test_infeasible_automatic_ctc_line_is_rejected_whole(monkeypatch, tmp_path):
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora, CTCWindowCapacityError
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *args, **kwargs: [
+        TranscribedLine(1.0, 2.0, "かき"),
+        TranscribedLine(8.0, 9.0, "く"),
+    ])
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: {"かき": ["カキ"], "く": ["ク"]}[text],
+    )
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args, **kwargs: emissions)
+    calls = []
+
+    def align(path, variants, **kwargs):
+        calls.append((variants, kwargs["line_windows"]))
+        assert kwargs["emissions"] is emissions
+        if len(variants) == 2:
+            raise CTCWindowCapacityError(
+                line=0,
+                available_frames=52,
+                target_count=57,
+                adjacent_repeats=0,
+            )
+        assert variants == [[["ク"]]]
+        return [AlignedMora(0, 0, "ク", 8.2, 8.3, 0.8)], [0]
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *args, **kwargs: [
+        MelodyNote(1.0, 2.0, 60), MelodyNote(8.0, 9.0, 62),
+    ])
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=10.0)),
+    )
+
+    value = analyze_audio(
+        tmp_path / "input.wav", tmp_path / "project", device="cpu",
+        skip_separation=True,
+    )
+
+    assert calls == [
+        ([[["カ", "キ"]], [["ク"]]], [(1.0, 2.0), (8.0, 9.0)]),
+        ([[["ク"]]], [(8.0, 9.0)]),
+    ]
+    assert value.lyric_layers["canonical_text"] == "く"
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    assert [item["surface"] for item in recognition["segments"]] == ["く"]
+    assert [item["status"] for item in recognition["semantic_gate"]["decisions"]] == [
+        "rejected", "accepted",
+    ]
+    assert recognition["semantic_gate"]["ctc_capacity_rejections"] == [{
+        "phase": "initial",
+        "source_segment_index": 0,
+        "source_retained_index": 0,
+        "start_sec": 1.0,
+        "end_sec": 2.0,
+        "surface": "かき",
+        "status": "rejected",
+        "reason": "ctc-window-capacity-insufficient",
+        "available_frames": 52,
+        "required_frames": 57,
+        "target_count": 57,
+        "adjacent_repeats": 0,
+    }]
+    analysis = json.loads(
+        (tmp_path / "project/analyze_audio/analysis.json").read_text()
+    )
+    assert analysis["ctc_capacity_rejections"] == (
+        recognition["semantic_gate"]["ctc_capacity_rejections"]
+    )
+    assert any(
+        item["stage"] == "mora-ctc-capacity"
+        and item["reason"] == "ctc-window-capacity-insufficient"
+        for item in analysis["diagnostics"]
+    )
 
 
 def test_overlapping_recognition_windows_retry_global_ctc_without_dropping_lyrics(

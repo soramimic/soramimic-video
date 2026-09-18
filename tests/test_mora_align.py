@@ -34,6 +34,36 @@ def test_build_targets_skips_unknown_chars():
     assert owners == [(0, 0)]
 
 
+def test_recognition_window_rejects_infeasible_ctc_capacity_before_alignment(
+    monkeypatch,
+):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    emissions = mora_align.CTCEmissions(
+        np.zeros((200, 3)), {"<pad>": 0, "カ": 1, "キ": 2}
+    )
+    monkeypatch.setattr(
+        mora_align,
+        "_forced_align",
+        lambda *args: pytest.fail("capacity must be checked before forced alignment"),
+    )
+
+    with pytest.raises(mora_align.CTCWindowCapacityError) as captured:
+        mora_align.align_moras_with_variants(
+            Path("unused.wav"),
+            [[["カ", "カ", "キ"]]],
+            device="cpu",
+            emissions=emissions,
+            line_windows=[(1.0, 1.06)],
+        )
+
+    error = captured.value
+    assert error.line == 0
+    assert error.available_frames == 3
+    assert error.target_count == 3
+    assert error.adjacent_repeats == 1
+    assert error.required_frames == 4
+
+
 def _m(line: int, mora: int, kana: str, start: float, end: float) -> AlignedMora:
     return AlignedMora(
         line=line, mora=mora, kana=kana, start_sec=start, end_sec=end, score=1.0
