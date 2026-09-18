@@ -46,6 +46,15 @@ wheels = [
 ]
 
 [[package]]
+name = "arpakana"
+version = "0.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/59/9a17b4753ccf66f574f5699b9c6926cbd1a3030cc91a0c4359d57506b553/arpakana-0.0.4.tar.gz", hash = "sha256:86d396231b9c75c5651ccbd61145920411080e5971f2d41241a38712c7a75793", size = 261779, upload-time = "2026-09-18T03:47:59.695Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/b3/2fb7786820e7d3864a98ea8491d8072774ed13847e71c2c99f621e0e9a36/arpakana-0.0.4-py3-none-any.whl", hash = "sha256:3f470cdde26d542dd259d6f40a65655a4eab2b30f6ae2ffde7a53fc011a8cc97", size = 8402, upload-time = "2026-09-18T03:47:58.511Z" },
+]
+
+[[package]]
 name = "ast-serialize"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2739,8 +2748,9 @@ dev = [
 [[package]]
 name = "soramimic-yomi"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-yomi#8b89e52fe7b8a9d00754535e149997eb10d578aa" }
+source = { git = "https://github.com/soramimic/soramimic-yomi#856bc528ea9408a2892c1b193cb66b634b7f2640" }
 dependencies = [
+    { name = "arpakana" },
     { name = "e2k" },
     { name = "pyopenjtalk-plus" },
 ]
