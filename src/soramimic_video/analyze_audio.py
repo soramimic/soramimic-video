@@ -262,6 +262,125 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
     return len(recovered)
 
 
+def _continuize_spoken_synthesis_lines(layers: dict) -> tuple[int, int]:
+    """Give complete spoken-fallback lines continuous, CTC-owned timing.
+
+    A Stage 3 note candidate can land well after its performed lyric unit while
+    the intervening spoken units retain only very short CTC peaks.  Such a score
+    technically contains the lyrics but does not articulate them.  When every
+    performed unit in a line has exactly one synthesis slot, retime the complete
+    line from each observed unit start to the next one and finish at the final
+    observed end.  Incomplete or overlapping lines keep their original timing.
+    """
+    plan = list(layers.get("synthesis_plan", []))
+    layers["synthesis_plan"] = plan
+    spoken_utterances = {
+        item["utterance_id"]
+        for item in plan
+        if "spoken" in item.get("pitch_sources", [])
+    }
+    if not spoken_utterances:
+        return 0, 0
+
+    canonical = {item["utterance_id"]: item for item in layers.get("canonical", [])}
+    performed = list(layers.get("performed", []))
+    slots_by_utterance: dict[str, list[dict]] = {}
+    for slot in plan:
+        slots_by_utterance.setdefault(slot["utterance_id"], []).append(slot)
+
+    evidence = list(layers.get("evidence", []))
+    layers["evidence"] = evidence
+    evidence_ids = {item["id"] for item in evidence}
+    adjusted_lines = 0
+    adjusted_slots = 0
+
+    for utterance_id in sorted(spoken_utterances):
+        line = canonical.get(utterance_id)
+        slots = slots_by_utterance.get(utterance_id, [])
+        if line is None or not slots:
+            continue
+        mora_order = {mora_id: index for index, mora_id in enumerate(line["mora_ids"])}
+        units = [
+            unit
+            for unit in performed
+            if unit.get("mora_ids")
+            and all(mora_id in mora_order for mora_id in unit["mora_ids"])
+        ]
+        rendered_ids = [slot["singing_unit_id"] for slot in slots]
+        if (len(rendered_ids) != len(set(rendered_ids))
+                or set(rendered_ids) != {unit["singing_unit_id"] for unit in units}):
+            continue
+        units.sort(key=lambda unit: min(mora_order[mora_id] for mora_id in unit["mora_ids"]))
+        candidate: dict[str, tuple[float, float]] = {}
+        valid = True
+        for index, unit in enumerate(units):
+            start = unit.get("start_sec")
+            end = (
+                units[index + 1].get("start_sec")
+                if index + 1 < len(units)
+                else unit.get("end_sec")
+            )
+            if (not isinstance(start, (int, float))
+                    or not isinstance(end, (int, float))
+                    or not math.isfinite(start + end) or end <= start):
+                valid = False
+                break
+            candidate[unit["singing_unit_id"]] = (float(start), float(end))
+        if not valid:
+            continue
+
+        line_start = min(start for start, _end in candidate.values())
+        line_end = max(end for _start, end in candidate.values())
+        outside = (slot for slot in plan if slot["utterance_id"] != utterance_id)
+        if any(
+            float(slot["start_sec"]) < line_end
+            and line_start < float(slot["end_sec"])
+            for slot in outside
+        ):
+            continue
+
+        evidence_id = f"stage3-spoken-continuous-{utterance_id}"
+        suffix = 1
+        while evidence_id in evidence_ids:
+            evidence_id = f"stage3-spoken-continuous-{utterance_id}-{suffix}"
+            suffix += 1
+        evidence_ids.add(evidence_id)
+        evidence.append({
+            "id": evidence_id,
+            "source": "soramimic-video",
+            "kind": "spoken-continuous-timing",
+            "confidence": 1.0,
+            "detail": {
+                "reason": "complete-spoken-fallback-line",
+                "utterance_id": utterance_id,
+                "unit_count": len(units),
+            },
+        })
+        for slot in slots:
+            start, end = candidate[slot["singing_unit_id"]]
+            slot["timing_original_start_sec"] = float(slot["start_sec"])
+            slot["timing_original_end_sec"] = float(slot["end_sec"])
+            slot["start_sec"] = start
+            slot["end_sec"] = end
+            slot["timing_source"] = "mora_ctc_continuous"
+            slot["timing_adjustment"] = "spoken_line_continuous"
+            slot["evidence_ids"] = list(slot.get("evidence_ids", [])) + [evidence_id]
+        adjusted_lines += 1
+        adjusted_slots += len(slots)
+
+    if adjusted_lines:
+        plan.sort(key=lambda item: (item["start_sec"], item["end_sec"], item["id"]))
+        diagnostics = list(layers.get("diagnostics", []))
+        layers["diagnostics"] = diagnostics
+        diagnostics.append({
+            "stage": "stage3",
+            "status": "spoken-continuous-timing",
+            "line_count": adjusted_lines,
+            "unit_count": adjusted_slots,
+        })
+    return adjusted_lines, adjusted_slots
+
+
 def _generation_quality_assessment(layers: dict) -> dict[str, object]:
     """Summarize whether missing melody evidence affects much of the song."""
     performed = {
@@ -1330,6 +1449,7 @@ def analyze_audio(
         )
     layer_data = layers.to_dict()
     recovered_units = _recover_bracketed_synthesis_units(layer_data)
+    continuous_lines, continuous_units = _continuize_spoken_synthesis_lines(layer_data)
     omitted_units = _omit_unresolved_synthesis_units(layer_data)
     for slot in layer_data["synthesis_plan"]:
         # SheetSage does not expose calibrated pitch confidence. Preserve the
@@ -1358,6 +1478,20 @@ def analyze_audio(
             "stage": "stage3",
             "status": "spoken-synthesis-recovery",
             "unit_count": recovered_units,
+            "detail": detail,
+        })
+    if continuous_lines:
+        detail = (
+            f"spoken補完を含み全歌唱単位が揃う{continuous_lines}行・"
+            f"{continuous_units}歌唱単位を、CTC開始位置から次の開始位置まで"
+            "連続する合成時刻へ調整しました。"
+        )
+        analysis_data["limitations"].append(detail)
+        analysis_data["diagnostics"].append({
+            "stage": "stage3",
+            "status": "spoken-continuous-timing",
+            "line_count": continuous_lines,
+            "unit_count": continuous_units,
             "detail": detail,
         })
     if omitted_units:

@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from soramimic_video.analyze_audio import (
+    _continuize_spoken_synthesis_lines,
     _generation_quality_assessment,
     _omit_unresolved_synthesis_units,
     _recover_bracketed_synthesis_units,
@@ -152,6 +153,75 @@ def test_internal_pitch_gap_is_retained_as_explicit_spoken_synthesis():
     apply_lyric_layers(value, data)
     assert [note.kana for note in value.notes] == ["カ", "キ", "ク"]
     assert [note.source for note in value.notes] == ["synthetic", "spoken", "synthetic"]
+
+
+def test_complete_spoken_line_uses_continuous_ctc_timing():
+    data = layers()
+    data["performed"][0]["end_sec"] = 0.08
+    data["performed"][1]["start_sec"] = 0.18
+    data["performed"][1]["end_sec"] = 0.2
+    data["performed"][2]["start_sec"] = 0.6
+    data["performed"][2]["end_sec"] = 0.72
+    data["synthesis_plan"] = [data["synthesis_plan"][0], data["synthesis_plan"][2]]
+    data["synthesis_plan"][0]["end_sec"] = 0.08
+    data["synthesis_plan"][1]["start_sec"] = 1.0
+    data["synthesis_plan"][1]["end_sec"] = 1.4
+    data["unresolved_unit_ids"] = ["s1"]
+
+    assert _recover_bracketed_synthesis_units(data) == 1
+    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
+    assert [
+        (slot["start_sec"], slot["end_sec"])
+        for slot in data["synthesis_plan"]
+    ] == [(0.0, 0.18), (0.18, 0.6), (0.6, 0.72)]
+    assert all(
+        slot["timing_source"] == "mora_ctc_continuous"
+        for slot in data["synthesis_plan"]
+    )
+    assert data["evidence"][-1]["kind"] == "spoken-continuous-timing"
+
+    value = project()
+    apply_lyric_layers(value, data)
+    assert [(note.start_sec, note.end_sec) for note in value.notes] == [
+        (0.0, 0.18), (0.18, 0.6), (0.6, 0.72),
+    ]
+
+
+def test_spoken_line_with_omitted_unit_keeps_original_timing():
+    data = layers()
+    data["synthesis_plan"].pop(1)
+    data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
+    data["unresolved_unit_ids"] = ["s1"]
+    before = copy.deepcopy(data["synthesis_plan"])
+
+    assert _continuize_spoken_synthesis_lines(data) == (0, 0)
+    assert data["synthesis_plan"] == before
+
+
+def test_spoken_line_does_not_expand_across_another_line():
+    data = layers()
+    data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
+    data["performed"][-1]["end_sec"] = 1.1
+    data["canonical"].append({
+        "utterance_id": "u1", "text": "け", "kana": "ケ", "mora_ids": ["m3"],
+    })
+    data["performed"].append({
+        "singing_unit_id": "s3", "mora_ids": ["m3"], "status": "observed",
+        "start_sec": 0.95, "end_sec": 1.2, "confidence": 0.7,
+        "link_ids": ["l3"], "evidence_ids": [],
+    })
+    data["synthesis_plan"].append({
+        "id": "slot-3", "utterance_id": "u1", "singing_unit_id": "s3",
+        "mora_ids": ["m3"], "note_candidate_id": "n1", "link_ids": ["l3"],
+        "kana": "ケ", "start_sec": 0.95, "end_sec": 1.2, "midi_pitch": 62,
+        "operation": "match", "timing_source": "aligned_boundary",
+        "confidence": 0.7, "evidence_ids": [], "pitch_sources": ["synthetic"],
+        "continuation": False,
+    })
+    before = copy.deepcopy(data["synthesis_plan"])
+
+    assert _continuize_spoken_synthesis_lines(data) == (0, 0)
+    assert data["synthesis_plan"] == before
 
 
 def test_unbracketed_pitch_gap_stays_unresolved_for_omission():
