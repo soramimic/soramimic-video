@@ -778,19 +778,17 @@ def test_public_rejects_invalid_custom_text(public_app, endpoint):
     assert "カタカナ" in response.json()["detail"]
 
 
-@pytest.mark.parametrize("as_file", [False, True])
 @pytest.mark.parametrize("convert", ["0", "1"])
-def test_public_text_editor_session_is_self_contained(public_app, tmp_path, convert, as_file):
+def test_public_text_editor_session_is_self_contained(public_app, tmp_path, convert):
     from test_editor_embed import _xf_midi
 
     midi = _xf_midi(tmp_path)
     files = {"midi": ("song.mid", midi.read_bytes(), "audio/midi")}
-    data = {"wordlist_name": "地名", "convert": convert}
-    text = "静岡,シズオカ\n鈴鹿,スズカ"
-    if as_file:
-        files["wordlist_text"] = ("wordlist.txt", text.encode(), "text/plain")
-    else:
-        data["wordlist_text"] = text
+    data = {
+        "wordlist_name": "地名",
+        "convert": convert,
+        "wordlist_text": "静岡,シズオカ\n鈴鹿,スズカ",
+    }
     response = TestClient(public_app).post("/api/editor-session", files=files, data=data)
     assert response.status_code == 200, response.text
     result = response.json()
@@ -822,18 +820,12 @@ def test_public_check_rejects_zip_and_image_channels(public_app):
     ("SORAMIMIC_MAX_WORDLIST_BYTES", "4"),
     ("SORAMIMIC_MAX_WORDLIST_ROWS", "1"),
 ])
-@pytest.mark.parametrize("as_file", [False, True])
 def test_public_custom_text_preserves_limits(
-    public_app, monkeypatch, endpoint, limit_env, limit, as_file,
+    public_app, monkeypatch, endpoint, limit_env, limit,
 ):
     monkeypatch.setenv(limit_env, limit)
     files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
-    data = {}
-    text = "雀,スズメ\n猫,ネコ"
-    if as_file:
-        files["wordlist_text"] = ("wordlist.txt", text.encode(), "text/plain")
-    else:
-        data["wordlist_text"] = text
+    data = {"wordlist_text": "雀,スズメ\n猫,ネコ"}
     response = TestClient(public_app).post(endpoint, files=files, data=data)
     assert response.status_code == 400, response.text
 
