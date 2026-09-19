@@ -187,18 +187,62 @@ def test_complete_spoken_line_uses_continuous_ctc_timing():
     ]
 
 
-def test_spoken_line_with_omitted_unit_keeps_original_timing():
+def test_spoken_line_with_omitted_unit_absorbs_gap_into_rendered_slots():
     data = layers()
     data["synthesis_plan"].pop(1)
     data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
     data["unresolved_unit_ids"] = ["s1"]
-    before = copy.deepcopy(data["synthesis_plan"])
 
-    assert _continuize_spoken_synthesis_lines(data) == (0, 0)
-    assert data["synthesis_plan"] == before
+    assert _continuize_spoken_synthesis_lines(data) == (1, 2)
+    bounds = [
+        (slot["start_sec"], slot["end_sec"])
+        for slot in data["synthesis_plan"]
+    ]
+    assert [value for bound in bounds for value in bound] == pytest.approx(
+        [0.0, 0.6, 0.6, 0.9]
+    )
+    assert data["evidence"][-1]["detail"]["performed_unit_count"] == 3
+    assert data["evidence"][-1]["detail"]["rendered_unit_count"] == 2
 
 
-def test_spoken_line_does_not_expand_across_another_line():
+def test_spoken_line_regularizes_ctc_peaks_to_audible_durations():
+    data = layers()
+    data["performed"][0]["start_sec"] = 11.2
+    data["performed"][0]["end_sec"] = 11.38
+    data["performed"][1]["start_sec"] = 11.6
+    data["performed"][1]["end_sec"] = 11.68
+    data["performed"][2]["start_sec"] = 11.7
+    data["performed"][2]["end_sec"] = 11.72
+    data["canonical"][0]["mora_ids"].append("m3")
+    data["performed"].append({
+        "singing_unit_id": "s3", "mora_ids": ["m3"], "status": "observed",
+        "start_sec": 11.72, "end_sec": 11.94, "confidence": 0.0,
+        "link_ids": ["l3"], "evidence_ids": [],
+    })
+    data["synthesis_plan"].pop(0)
+    data["synthesis_plan"].append({
+        "id": "slot-3", "utterance_id": "u0", "singing_unit_id": "s3",
+        "mora_ids": ["m3"], "note_candidate_id": "n0", "link_ids": ["l3"],
+        "kana": "ケ", "start_sec": 11.72, "end_sec": 11.94,
+        "midi_pitch": 60, "operation": "spoken_pitch_carry",
+        "timing_source": "mora_ctc_interval", "confidence": 0.0,
+        "evidence_ids": [], "pitch_sources": ["spoken"],
+        "continuation": False,
+    })
+    for slot in data["synthesis_plan"]:
+        slot["pitch_sources"] = ["spoken"]
+
+    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
+    bounds = [
+        (slot["start_sec"], slot["end_sec"])
+        for slot in data["synthesis_plan"]
+    ]
+    assert bounds[0][0] == pytest.approx(11.2)
+    assert bounds[-1][1] == pytest.approx(11.94)
+    assert all(end - start >= 0.12 - 1e-9 for start, end in bounds)
+
+
+def test_spoken_line_trims_simple_overlap_with_another_line():
     data = layers()
     data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
     data["performed"][-1]["end_sec"] = 1.1
@@ -214,6 +258,40 @@ def test_spoken_line_does_not_expand_across_another_line():
         "id": "slot-3", "utterance_id": "u1", "singing_unit_id": "s3",
         "mora_ids": ["m3"], "note_candidate_id": "n1", "link_ids": ["l3"],
         "kana": "ケ", "start_sec": 0.95, "end_sec": 1.2, "midi_pitch": 62,
+        "operation": "match", "timing_source": "aligned_boundary",
+        "confidence": 0.7, "evidence_ids": [], "pitch_sources": ["synthetic"],
+        "continuation": False,
+    })
+    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
+    spoken = [
+        slot for slot in data["synthesis_plan"]
+        if slot["utterance_id"] == "u0"
+    ]
+    assert spoken[0]["start_sec"] == pytest.approx(0.0)
+    assert spoken[-1]["end_sec"] == pytest.approx(0.95)
+    assert all(
+        left["end_sec"] <= right["start_sec"]
+        for left, right in zip(
+            data["synthesis_plan"], data["synthesis_plan"][1:], strict=False
+        )
+    )
+
+
+def test_spoken_line_keeps_original_timing_for_interior_overlap():
+    data = layers()
+    data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
+    data["canonical"].append({
+        "utterance_id": "u1", "text": "け", "kana": "ケ", "mora_ids": ["m3"],
+    })
+    data["performed"].append({
+        "singing_unit_id": "s3", "mora_ids": ["m3"], "status": "observed",
+        "start_sec": 0.35, "end_sec": 0.45, "confidence": 0.7,
+        "link_ids": ["l3"], "evidence_ids": [],
+    })
+    data["synthesis_plan"].append({
+        "id": "slot-3", "utterance_id": "u1", "singing_unit_id": "s3",
+        "mora_ids": ["m3"], "note_candidate_id": "n1", "link_ids": ["l3"],
+        "kana": "ケ", "start_sec": 0.35, "end_sec": 0.45, "midi_pitch": 62,
         "operation": "match", "timing_source": "aligned_boundary",
         "confidence": 0.7, "evidence_ids": [], "pitch_sources": ["synthetic"],
         "continuation": False,

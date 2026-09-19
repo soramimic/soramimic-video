@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 
 ANALYZE_DIR = "analyze_audio"
 SEPARATION_DIR = "separation"
+# VOICEVOX needs roughly this much time for an independent mora to remain
+# intelligible.  Keep this in sync with voicevox.MIN_ARTICULATION_MORA_SEC without
+# importing the synthesis backend into the analysis stage.
+SPOKEN_SLOT_MIN_SEC = 0.12
 
 
 def _torch_device(device: str | None) -> str:
@@ -263,14 +267,17 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
 
 
 def _continuize_spoken_synthesis_lines(layers: dict) -> tuple[int, int]:
-    """Give complete spoken-fallback lines continuous, CTC-owned timing.
+    """Give spoken-fallback lines continuous, articulation-safe timing.
 
     A Stage 3 note candidate can land well after its performed lyric unit while
     the intervening spoken units retain only very short CTC peaks.  Such a score
-    technically contains the lyrics but does not articulate them.  When every
-    performed unit in a line has exactly one synthesis slot, retime the complete
-    line from each observed unit start to the next one and finish at the final
-    observed end.  Incomplete or overlapping lines keep their original timing.
+    technically contains the lyrics but does not articulate them.  Retime every
+    rendered slot in an affected line across the complete observed line span,
+    absorbing omitted units into the neighbouring rendered lyrics.  Preserve the
+    CTC rhythm where possible, but redistribute time so each rendered slot gets an
+    audible minimum duration.  Trim simple overlaps at line boundaries without
+    crossing another rendered line; ambiguous interior overlaps keep their
+    original timing.
     """
     plan = list(layers.get("synthesis_plan", []))
     layers["synthesis_plan"] = plan
@@ -306,38 +313,89 @@ def _continuize_spoken_synthesis_lines(layers: dict) -> tuple[int, int]:
             if unit.get("mora_ids")
             and all(mora_id in mora_order for mora_id in unit["mora_ids"])
         ]
+        units_by_id = {unit["singing_unit_id"]: unit for unit in units}
         rendered_ids = [slot["singing_unit_id"] for slot in slots]
-        if (len(rendered_ids) != len(set(rendered_ids))
-                or set(rendered_ids) != {unit["singing_unit_id"] for unit in units}):
-            continue
-        units.sort(key=lambda unit: min(mora_order[mora_id] for mora_id in unit["mora_ids"]))
-        candidate: dict[str, tuple[float, float]] = {}
-        valid = True
-        for index, unit in enumerate(units):
-            start = unit.get("start_sec")
-            end = (
-                units[index + 1].get("start_sec")
-                if index + 1 < len(units)
-                else unit.get("end_sec")
-            )
-            if (not isinstance(start, (int, float))
-                    or not isinstance(end, (int, float))
-                    or not math.isfinite(start + end) or end <= start):
-                valid = False
-                break
-            candidate[unit["singing_unit_id"]] = (float(start), float(end))
-        if not valid:
-            continue
-
-        line_start = min(start for start, _end in candidate.values())
-        line_end = max(end for _start, end in candidate.values())
-        outside = (slot for slot in plan if slot["utterance_id"] != utterance_id)
-        if any(
-            float(slot["start_sec"]) < line_end
-            and line_start < float(slot["end_sec"])
-            for slot in outside
+        if (
+            len(rendered_ids) != len(set(rendered_ids))
+            or any(unit_id not in units_by_id for unit_id in rendered_ids)
         ):
             continue
+        units.sort(key=lambda unit: min(mora_order[mora_id] for mora_id in unit["mora_ids"]))
+        slots.sort(
+            key=lambda slot: min(
+                mora_order[mora_id] for mora_id in units_by_id[
+                    slot["singing_unit_id"]
+                ]["mora_ids"]
+            )
+        )
+        observed_bounds = [
+            (unit.get("start_sec"), unit.get("end_sec")) for unit in units
+        ]
+        if any(
+            not isinstance(start, (int, float))
+            or not isinstance(end, (int, float))
+            or not math.isfinite(start + end)
+            or end <= start
+            for start, end in observed_bounds
+        ):
+            continue
+        line_start = float(min(start for start, _end in observed_bounds))
+        line_end = float(max(end for _start, end in observed_bounds))
+        if line_end <= line_start:
+            continue
+        blocked = False
+        for slot in plan:
+            if slot["utterance_id"] == utterance_id:
+                continue
+            outside_start = float(slot["start_sec"])
+            outside_end = float(slot["end_sec"])
+            if outside_start >= line_end or outside_end <= line_start:
+                continue
+            if outside_start <= line_start < outside_end < line_end:
+                line_start = outside_end
+            elif line_start < outside_start < line_end <= outside_end:
+                line_end = outside_start
+            else:
+                blocked = True
+                break
+        if blocked or line_end <= line_start:
+            continue
+
+        raw_boundaries = [line_start]
+        for slot in slots[1:]:
+            observed_start = float(
+                units_by_id[slot["singing_unit_id"]]["start_sec"]
+            )
+            raw_boundaries.append(
+                max(raw_boundaries[-1], min(line_end, observed_start))
+            )
+        raw_boundaries.append(line_end)
+        raw_durations = [
+            max(0.0, right - left)
+            for left, right in zip(
+                raw_boundaries, raw_boundaries[1:], strict=False
+            )
+        ]
+        total = line_end - line_start
+        minimum = min(SPOKEN_SLOT_MIN_SEC, total / len(slots))
+        remaining = max(0.0, total - minimum * len(slots))
+        flexible = [max(0.0, duration - minimum) for duration in raw_durations]
+        flexible_total = sum(flexible)
+        if flexible_total > 0.0:
+            durations = [
+                minimum + remaining * weight / flexible_total
+                for weight in flexible
+            ]
+        else:
+            durations = [total / len(slots)] * len(slots)
+        candidate: dict[str, tuple[float, float]] = {}
+        cursor = line_start
+        for index, (slot, duration) in enumerate(
+            zip(slots, durations, strict=True)
+        ):
+            end = line_end if index + 1 == len(slots) else cursor + duration
+            candidate[slot["singing_unit_id"]] = (cursor, end)
+            cursor = end
 
         evidence_id = f"stage3-spoken-continuous-{utterance_id}"
         suffix = 1
@@ -351,9 +409,11 @@ def _continuize_spoken_synthesis_lines(layers: dict) -> tuple[int, int]:
             "kind": "spoken-continuous-timing",
             "confidence": 1.0,
             "detail": {
-                "reason": "complete-spoken-fallback-line",
+                "reason": "audible-spoken-fallback-line",
                 "utterance_id": utterance_id,
-                "unit_count": len(units),
+                "performed_unit_count": len(units),
+                "rendered_unit_count": len(slots),
+                "minimum_slot_sec": minimum,
             },
         })
         for slot in slots:

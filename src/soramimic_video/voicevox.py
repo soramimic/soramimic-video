@@ -68,6 +68,9 @@ TAIL_GAP_MIN_SEC = 0.1
 # 1音符へ複数モーラを積む場合に、独立した発音として確保する最短時間。
 # これより過密なら、全部を早口で潰す代わりに語を聞き分けやすいモーラを残す。
 MIN_ARTICULATION_MORA_SEC = 0.12
+SPOKEN_ARTICULATION_FRAMES = math.ceil(
+    MIN_ARTICULATION_MORA_SEC * FRAME_RATE
+)
 # 過密ノートへ直後の空白を貸す場合も、次の音符との分離感とVOICEVOXの休符要件を
 # 保つため、この長さは休符として残す。
 BORROWED_REST_MIN_SEC = TAIL_GAP_MIN_SEC
@@ -425,7 +428,12 @@ def _layered_note_frames(
         gaps = []
         for n in group:
             count = max(1, len(split_voicevox_moras(lyric_map.get(n.id) or "")))
-            minimum = count * MIN_ELEMENT_FRAMES
+            per_mora = (
+                SPOKEN_ARTICULATION_FRAMES
+                if n.source == "spoken"
+                else MIN_ELEMENT_FRAMES
+            )
+            minimum = count * per_mora
             if n is notes[0] and preferred[0] < HEAD_REST_FRAMES:
                 minimum += HEAD_REST_FRAMES - preferred[0]
             gaps.extend([minimum, 0])
