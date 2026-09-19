@@ -120,6 +120,20 @@ def test_public_guidelines_explain_data_handling(client, monkeypatch):
     )
 
 
+def test_public_guidelines_limit_uploads_and_outputs_to_private_use(client, monkeypatch):
+    browser, _ = client
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+
+    response = browser.get("/guidelines")
+
+    assert '<h2 id="usage-scope-title">楽曲・生成物の利用範囲</h2>' in response.text
+    assert "個人・家庭内など限られた範囲で、仕事以外の私的利用" in response.text
+    assert "SNSへの投稿・公開・配布などは私的利用には含まれません。" in response.text
+    assert "必要な許諾・利用条件を別途確認できたもの" in response.text
+    assert '<a href="#usage-scope-title">楽曲・生成物の利用範囲</a>' in response.text
+    assert 'href="https://www.bunka.go.jp/seisaku/chosakuken/taisetsu/point/"' in response.text
+
+
 def test_image_sections_make_their_scope_explicit(client):
     browser, _ = client
     response = browser.get("/guidelines")
@@ -133,6 +147,8 @@ def test_private_guidelines_do_not_claim_public_retention_policy(client):
     response = browser.get("/guidelines")
     assert 'id="data-handling-title"' not in response.text
     assert 'href="#data-handling-title"' not in response.text
+    assert 'id="usage-scope-title"' not in response.text
+    assert 'href="#usage-scope-title"' not in response.text
 
 
 def test_guidelines_keep_distinct_terms_urls(client):
