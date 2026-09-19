@@ -68,6 +68,18 @@ def test_compact_english_reading_reaches_acoustic_selection(candidate_builder, r
     assert decision.reason == "kana-evidence"
 
 
+@pytest.mark.parametrize("candidate_builder", [reading_candidates, automatic_reading_candidates])
+def test_different_compact_phrases_reach_acoustic_selection(candidate_builder):
+    from soramimic_video.kana_whisper import choose_reading
+
+    candidates = candidate_builder("Shout it out! Pick it up!")
+    compact = "シャティタピキタ"
+    assert compact in candidates
+    decision = choose_reading(candidates, [compact, compact])
+    assert candidates[decision.selected_index] == compact
+    assert decision.reason == "kana-evidence"
+
+
 def test_repeated_connected_english_prioritizes_mora_count_variants():
     candidates = reading_candidates("Shout it out! Shout it out!")
 
