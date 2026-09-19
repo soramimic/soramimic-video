@@ -19,7 +19,7 @@ from typing import Any, cast
 import jaconv
 from kanasim import WeightedLevenshtein, create_kana_distance_calculator
 
-from .kana import normalize_long_vowels
+from .kana import normalize_audio_reading, normalize_long_vowels
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +84,12 @@ def model_available() -> bool:
 def normalize_kana_evidence(text: str) -> str:
     """Normalize free KanaWhisper text for closed-candidate comparison."""
     kana = "".join(_KATAKANA_RE.findall(jaconv.hira2kata(text)))
-    return normalize_long_vowels(kana.replace("ヲ", "オ"))
+    return normalize_audio_reading(normalize_long_vowels(kana.replace("ヲ", "オ")))
 
 
 def _candidate_key(reading: str) -> str:
-    return normalize_long_vowels(jaconv.hira2kata(reading).replace("ヲ", "オ"))
+    kana = normalize_audio_reading(jaconv.hira2kata(reading).replace("ヲ", "オ"))
+    return normalize_audio_reading(normalize_long_vowels(kana))
 
 
 def _kanasim_moras(text: str) -> list[str]:
@@ -157,18 +158,48 @@ def choose_reading(candidates: Sequence[str], evidence: Sequence[str]) -> Readin
         reason = "no-distinct-candidates" if len(eligible) < 2 else "no-evidence"
         return ReadingDecision(0, reason, normalized, ())
 
-    distances = tuple(
-        tuple(_phonetic_substring_distance(key, transcript) for transcript in normalized)
-        for key in keys
-    )
+    distance_rows: list[tuple[float, ...]] = []
+    for index, key in enumerate(keys):
+        try:
+            row = tuple(
+                _phonetic_substring_distance(key, transcript)
+                for transcript in normalized
+            )
+        except ValueError as exc:
+            logger.warning(
+                "KanaWhisper距離表にない読み候補を除外: index=%d reading=%r: %s",
+                index,
+                candidates[index],
+                exc,
+            )
+            row = ()
+        distance_rows.append(row)
+    distances = tuple(distance_rows)
+    supported = [index for index in eligible if len(distances[index]) == len(normalized)]
     normalized_distances = tuple(
         tuple(distance / max(1, len(_kanasim_moras(key))) for distance in row)
         for key, row in zip(keys, distances, strict=True)
     )
-    totals = {index: sum(distances[index]) for index in eligible}
+    if not supported:
+        return ReadingDecision(
+            0, "unsupported-kana", normalized, distances, normalized_distances
+        )
+    if 0 not in supported:
+        return ReadingDecision(
+            supported[0], "unsupported-default", normalized, distances,
+            normalized_distances,
+        )
+    if len(supported) < 2:
+        return ReadingDecision(
+            0, "no-supported-alternative", normalized, distances,
+            normalized_distances,
+        )
+
+    totals = {index: sum(distances[index]) for index in supported}
     best_total = min(totals.values())
     selected = next(
-        index for index in eligible if math.isclose(totals[index], best_total, abs_tol=1e-12)
+        index for index in supported
+        if math.isclose(totals[index], best_total, abs_tol=1e-12)
     )
     if selected == 0:
         return ReadingDecision(
