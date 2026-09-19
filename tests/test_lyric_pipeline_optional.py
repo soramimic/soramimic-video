@@ -42,7 +42,7 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
     assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
     from wav_to_xf import NoteRunConfig
 
-    assert captured["config"] == NoteRunConfig(whisper_ownership_weight=0.001)
+    assert captured["config"] == NoteRunConfig(whisper_boundary_cost_per_sec2=0.1)
     assert captured["line_windows_by_utterance"] == {"u0": (0.0, 0.5)}
     notes = {item.id: item for item in document.note_candidates}
     assert [

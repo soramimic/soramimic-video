@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .mora_align import AlignedMora
 
 
-_WHISPER_OWNERSHIP_WEIGHT = 0.001
+_WHISPER_BOUNDARY_COST_PER_SEC2 = 0.1
 _WHISPER_REST_MIN_SEC = 0.08
 _WHISPER_REST_MAX_SNAP_SEC = 0.75
 
@@ -169,7 +169,9 @@ def build_stage3_layers(
     )
     run = run_stage3_document(
         document,
-        config=NoteRunConfig(whisper_ownership_weight=_WHISPER_OWNERSHIP_WEIGHT),
+        config=NoteRunConfig(
+            whisper_boundary_cost_per_sec2=_WHISPER_BOUNDARY_COST_PER_SEC2,
+        ),
         line_windows_by_utterance=(
             {f"u{index}": window
              for index, window in enumerate(snapped_windows)}
