@@ -28,10 +28,9 @@ uv sync
 uv run soramimic-video analyze \
   --midi song.mid --lyrics lyrics.txt --project work/song
 
-# または歌唱音源を解析
+# または歌唱音源を解析（--lyrics を省くと歌詞も自動認識）
 uv run soramimic-video analyze-audio \
-  --audio song.wav --lyrics lyrics.txt \
-  --project work/song
+  --audio song.wav --project work/song
 
 # 替え歌へ変換
 uv run soramimic-video convert \
@@ -58,29 +57,6 @@ uv run soramimic-video edit-timing --project work/song
 各 command と option の詳細は `uv run soramimic-video --help` および各 subcommand の
 `--help` を参照してください。
 
-## 画像URLの検査
-
-```sh
-uv run soramimic-video audit-image-links --report-dir work/image-link-audit --max-urls 2500
-```
-
-既定では、全単語リストのHTTP(S)画像URLを対象にします。同じURLはまとめて検査します。
-`--max-urls` で1回の件数を制限すると、未検査のURL、最後の検査が古いURLの順に巡回します。
-同じ保存先で繰り返し実行すれば、実行日が空いても保存済みの結果から再開できます。
-上限を省略するか0にすると一度に全件を検査します。
-
-`latest.json` には、検査済みの全URLについて名前、HTTPステータス、検査日時、連続失敗回数を
-保存します。`coverage` で全URL数と未検査件数、`known_findings` で未解消の検出件数を確認できます。
-当日検査しなかったURLの問題も保持し、次の検査で正常になれば解消します。
-日時付きJSONにはその回に検査した結果だけを保存し、直近30回分を保持します。
-`--scope external-fanwork` は外部配信の非営利ファン活動向け画像だけに絞る指定です。
-
-404・410は `broken`、空の応答やHTMLは `invalid`、アクセス制限やタイムアウトは
-`unavailable` として区別し、異常は一度再試行します。検査は画像URLの疎通確認で、
-画像全体の破損検査やURLの自動修正は行いません。終了コードは正常0、検出あり1、
-実行失敗2です。終了コード0でも未検査URLが残ることがあるため、定期実行時は
-終了コードに加えて `coverage` と検査日時を確認してください。
-
 ## Web UI
 
 ```sh
@@ -91,10 +67,6 @@ uv run soramimic-video serve
 Web UI では、曲と単語リストの選択、替え歌編集、動画生成、進捗確認、完成動画の保存・共有が
 できます。公開 instance では、混雑防止や不正利用防止のため、投稿数・入力サイズ・曲長などが
 制限される場合があります。画面に表示された案内に従ってください。
-
-メイン画面の単語リストのプルダウンにある「＋ 新しいリスト」から、名前を付けた単語リストを複数保存できます。
-単語は手入力するかCSV・テキストファイルから読み込み、単語リストの選択欄で切り替えます。
-「選択中のリストを編集」で内容・名前の変更や削除ができます。保存先は使用中のブラウザです。
 
 音源を入力するサーバーは、音源解析用の依存もインストールして起動します。
 
@@ -108,9 +80,10 @@ uv run soramimic-video serve
 1ファイルをドラッグ＆ドロップでき、WebM音声も入力できます。同梱曲は「サンプル曲で試す」で入力方法を切り替えて選べます。
 「曲をアップロード」で戻れます。入力方法を切り替えると前の曲選択は解除されます。
 形式は拡張子とファイル内容から自動で判定し、
-圧縮音声は解析前にPCM WAVへ変換します。持ち込み音源には正式な元歌詞を
-画面へ入力するか、UTF-8のTXT/Markdownで同時にアップロードします。正式歌詞は
-正解文字列としてforced alignmentし、ASRで書き換えません。音源分離・タイミング推定・音高推定を
+圧縮音声は解析前にPCM WAVへ変換します。持ち込み音源では正式な元歌詞を
+画面へ入力するか、UTF-8のTXT/Markdownで同時にアップロードできます。歌詞を指定しない場合は
+自動認識し、指定した正式歌詞は正解文字列としてforced alignmentしてASRで書き換えません。
+音源分離・タイミング推定・音高推定を
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
 

@@ -3885,6 +3885,9 @@ const HIDDEN_PREVIEW_WORDLISTS = {
 };
 
 // ---- メイン画面の名前付き自作リスト ----
+// 今回の公開面では既存の名前付きリストに絞る。保存・編集の実装は、後続の
+// 自作リスト昇格で有効化できるよう同梱しておく。
+const CUSTOM_LIST_MANAGEMENT_ENABLED = false;
 const customListsRepository = VideoCustomWordlists.createRepository();
 const CUSTOM_LIST_PREFIX = "__custom_list__:";
 const NEW_CUSTOM_LIST = "__new_custom_list__";
@@ -3895,10 +3898,13 @@ let customListBusy = false;
 let customListOpener = null;
 let customListInitialValues = { name: "", text: "" };
 async function refreshCustomLists() {
+  if (!CUSTOM_LIST_MANAGEMENT_ENABLED) { customLists = []; return; }
   customLists = await customListsRepository.lists();
 }
 function activeCustomList() {
-  return simpleMode ? null : customLists.find((list) => list.id === activeCustomListId) || null;
+  return !CUSTOM_LIST_MANAGEMENT_ENABLED || simpleMode
+    ? null
+    : customLists.find((list) => list.id === activeCustomListId) || null;
 }
 function setCustomWordlistText(form, text) {
   const file = new Blob([text], { type: "text/plain;charset=utf-8" });
@@ -3913,7 +3919,8 @@ function appendCustomWordlist(form) {
   form.set("wordlist_name", list.name);
 }
 function selectCustomList(id) {
-  if (simpleMode || !customLists.some((list) => list.id === id)) return;
+  if (!CUSTOM_LIST_MANAGEMENT_ENABLED || simpleMode
+      || !customLists.some((list) => list.id === id)) return;
   activeCustomListId = id;
   $("wordlist-select").selectedIndex = -1;
   $("wordlist").value = "";
@@ -4161,7 +4168,7 @@ function syncBuilderOptions() {
   $("builder-sample").innerHTML = $("sample-select").innerHTML;
   const wl = $("wordlist-select");
   $("builder-wordlist").innerHTML = wl.innerHTML;
-  if (!simpleMode) {
+  if (CUSTOM_LIST_MANAGEMENT_ENABLED && !simpleMode) {
     const group = document.createElement("optgroup");
     group.label = "自作リスト";
     for (const list of customLists) {
@@ -7396,7 +7403,8 @@ async function doRestoreForm() {
       $("where").value = state.where || "";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
     }
-    if (!simpleMode && customLists.some((list) => list.id === state.customWordlistId)) {
+    if (CUSTOM_LIST_MANAGEMENT_ENABLED && !simpleMode
+        && customLists.some((list) => list.id === state.customWordlistId)) {
       selectCustomList(state.customWordlistId);
     }
     // 2. lyrics, transpose, model
