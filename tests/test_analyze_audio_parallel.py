@@ -197,7 +197,7 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         return (
             tmp_path / "project/separation/vocals.wav",
             tmp_path / "project/separation/no_vocals.wav",
-            [TranscribedLine(0.1, 0.5, "か")],
+            [TranscribedLine(0.1, 0.5, "かき")],
             shared_notes,
         )
 
@@ -220,33 +220,74 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         "configured_capabilities",
         lambda: {"sheetsage2": True},
     )
-    monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カ"])
+    monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カキ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     monkeypatch.setattr(
         mora_align,
         "align_moras_with_variants",
         lambda *args, **kwargs: (
-            [AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8)],
+            [
+                AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8),
+                AlignedMora(0, 1, "キ", 0.3, 0.4, 0.8),
+            ],
             [0],
         ),
     )
-    def reject_stage3(*_args, **_kwargs):
-        raise ValueError("test fallback")
+
+    class Document:
+        def to_json(self):
+            return "{}"
+
+    class Layers:
+        def to_dict(self):
+            return {
+                "schema_version": 1,
+                "canonical_text": "かき",
+                "canonical": [{
+                    "utterance_id": "u0", "text": "かき", "kana": "カキ",
+                    "mora_ids": ["m0", "m1"],
+                }],
+                "performed": [
+                    {
+                        "singing_unit_id": "s0", "mora_ids": ["m0"],
+                        "status": "weak", "start_sec": 0.1, "end_sec": 0.2,
+                        "confidence": 0.8, "link_ids": ["l0"],
+                        "evidence_ids": [],
+                    },
+                    {
+                        "singing_unit_id": "s1", "mora_ids": ["m1"],
+                        "status": "weak", "start_sec": 0.6, "end_sec": 0.8,
+                        "confidence": 0.8, "link_ids": ["l1"],
+                        "evidence_ids": [],
+                    },
+                ],
+                "synthesis_plan": [{
+                    "id": "slot-1", "utterance_id": "u0",
+                    "singing_unit_id": "s1", "mora_ids": ["m1"],
+                    "note_candidate_id": "n1", "link_ids": ["l1"],
+                    "kana": "キ", "start_sec": 0.6, "end_sec": 0.8,
+                    "midi_pitch": 64, "operation": "match",
+                    "timing_source": "note_interval", "confidence": 0.0,
+                    "evidence_ids": [], "pitch_sources": ["sheetsage2-vocal"],
+                    "pitch_confidence": None, "continuation": False,
+                }],
+                "omissions": [], "unresolved_unit_ids": ["s0"],
+                "diagnostics": [], "evidence": [],
+            }
 
     monkeypatch.setitem(
         sys.modules,
         "soramimic_video.stage3",
-        SimpleNamespace(build_stage3_layers=reject_stage3),
+        SimpleNamespace(build_stage3_layers=lambda *_args, **_kwargs: (
+            Document(), Layers()
+        )),
     )
 
-    import pytest
-
-    with pytest.raises(RuntimeError, match="歌詞や音高を補わず"):
-        analyze_audio_module.analyze_audio(
-            tmp_path / "input.wav",
-            tmp_path / "project",
-            device="cuda",
-        )
+    project = analyze_audio_module.analyze_audio(
+        tmp_path / "input.wav",
+        tmp_path / "project",
+        device="cuda",
+    )
 
     assert len(calls) == 1
     assert calls[0][0][:5] == (
@@ -278,4 +319,10 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     }
     assert [item["status"] for item in json.loads(
         (tmp_path / "project/analyze_audio/analysis.json").read_text()
-    )["diagnostics"]] == ["unresolved", "unresolved"]
+    )["diagnostics"]] == [
+        "unresolved", "spoken-synthesis-recovery", "spoken-continuous-timing",
+    ]
+    assert [note.kana for note in project.notes] == ["カ", "キ"]
+    assert project.notes[0].midi_note == 60
+    assert project.notes[0].source == "spoken"
+    assert project.lyric_layers["omissions"] == []

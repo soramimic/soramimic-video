@@ -10,7 +10,7 @@ from soramimic_video.analyze_audio import (
     _continuize_spoken_synthesis_lines,
     _generation_quality_assessment,
     _omit_unresolved_synthesis_units,
-    _recover_bracketed_synthesis_units,
+    _recover_synthesis_units,
 )
 from soramimic_video.convert import engine_phrases
 from soramimic_video.lyric_layers import apply_lyric_layers
@@ -137,7 +137,7 @@ def test_internal_pitch_gap_is_retained_as_explicit_spoken_synthesis():
     data["synthesis_plan"].pop(1)
     data["unresolved_unit_ids"] = ["s1"]
 
-    assert _recover_bracketed_synthesis_units(data) == 1
+    assert _recover_synthesis_units(data) == 1
     assert data["unresolved_unit_ids"] == []
     recovered = next(
         slot for slot in data["synthesis_plan"]
@@ -168,7 +168,7 @@ def test_complete_spoken_line_uses_continuous_ctc_timing():
     data["synthesis_plan"][1]["end_sec"] = 1.4
     data["unresolved_unit_ids"] = ["s1"]
 
-    assert _recover_bracketed_synthesis_units(data) == 1
+    assert _recover_synthesis_units(data) == 1
     assert _continuize_spoken_synthesis_lines(data) == (1, 3)
     assert [
         (slot["start_sec"], slot["end_sec"])
@@ -307,10 +307,69 @@ def test_unbracketed_pitch_gap_stays_unresolved_for_omission():
     data["synthesis_plan"].pop(0)
     data["unresolved_unit_ids"] = ["s0"]
 
-    assert _recover_bracketed_synthesis_units(data) == 0
+    assert _recover_synthesis_units(data) == 0
     assert data["unresolved_unit_ids"] == ["s0"]
     assert _omit_unresolved_synthesis_units(data) == 1
     assert data["omissions"][0]["singing_unit_id"] == "s0"
+
+
+@pytest.mark.parametrize(
+    ("missing_index", "reason"),
+    [
+        (0, "vocal-activity-supported-leading-speech"),
+        (2, "vocal-activity-supported-trailing-speech"),
+    ],
+)
+def test_vocal_supported_edge_speech_uses_neutral_pitch(missing_index, reason):
+    data = layers()
+    data["synthesis_plan"].pop(missing_index)
+    data["unresolved_unit_ids"] = [f"s{missing_index}"]
+
+    assert _recover_synthesis_units(
+        data, edge_spoken_utterance_ids={"u0"}
+    ) == 1
+    recovered = next(
+        slot for slot in data["synthesis_plan"]
+        if slot["singing_unit_id"] == f"s{missing_index}"
+    )
+    assert recovered["midi_pitch"] == 60
+    assert recovered["note_candidate_id"] is None
+    assert recovered["operation"] == "spoken_neutral_pitch"
+    assert data["evidence"][-1]["detail"] == {
+        "reason": reason,
+        "pitch_strategy": "neutral-spoken-midi",
+        "midi_pitch": 60,
+        "nearest_song_slot_id": "slot-1",
+    }
+
+
+def test_edge_speech_requires_explicit_vocal_activity_eligibility():
+    data = layers()
+    data["synthesis_plan"].pop()
+    data["unresolved_unit_ids"] = ["s2"]
+
+    assert _recover_synthesis_units(data) == 0
+    assert data["unresolved_unit_ids"] == ["s2"]
+
+
+def test_edge_speech_regularizes_overlapping_ctc_units_in_one_utterance():
+    data = layers()
+    data["performed"][1]["start_sec"] = 0.3
+    data["performed"][1]["end_sec"] = 0.65
+    data["performed"][2]["start_sec"] = 0.6
+    data["performed"][2]["end_sec"] = 0.9
+    data["synthesis_plan"] = data["synthesis_plan"][:1]
+    data["unresolved_unit_ids"] = ["s1", "s2"]
+
+    assert _recover_synthesis_units(
+        data, edge_spoken_utterance_ids={"u0"}
+    ) == 2
+    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
+    slots = data["synthesis_plan"]
+    assert all(
+        left["end_sec"] <= right["start_sec"]
+        for left, right in zip(slots, slots[1:], strict=False)
+    )
 
 
 def test_spoken_recovery_preserves_fine_long_vowel_mora_ids():
@@ -341,7 +400,7 @@ def test_spoken_recovery_preserves_fine_long_vowel_mora_ids():
     ]
     data["unresolved_unit_ids"] = ["s1", "s2"]
 
-    assert _recover_bracketed_synthesis_units(data) == 2
+    assert _recover_synthesis_units(data) == 2
     recovered = {
         slot["singing_unit_id"]: slot["kana"]
         for slot in data["synthesis_plan"]

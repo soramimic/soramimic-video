@@ -44,6 +44,9 @@ SEPARATION_DIR = "separation"
 # intelligible.  Keep this in sync with voicevox.MIN_ARTICULATION_MORA_SEC without
 # importing the synthesis backend into the analysis stage.
 SPOKEN_SLOT_MIN_SEC = 0.12
+# Do not carry a possibly distant or extreme melody pitch into leading/trailing
+# speech. C4 is inside the stable singing range and keeps the fallback neutral.
+EDGE_SPEECH_MIDI_PITCH = 60
 
 
 def _torch_device(device: str | None) -> str:
@@ -133,15 +136,26 @@ def _omit_unresolved_synthesis_units(layers: dict) -> int:
     return len(unresolved)
 
 
-def _recover_bracketed_synthesis_units(layers: dict) -> int:
-    """Voice internal pitch gaps without pretending they are measured notes.
+def _recover_synthesis_units(
+    layers: dict,
+    *,
+    edge_spoken_utterance_ids: set[str] | None = None,
+) -> int:
+    """Voice safe pitch gaps without pretending they are measured notes.
 
     Stage 3 deliberately leaves a unit unresolved when SheetSage has no candidate.
     Short spoken/rap passages can nevertheless have reliable CTC mora intervals
     between two measured melody notes. Keep those intervals and borrow the pitch
     of the nearer bracketing slot solely as a synthesis-compatible ``spoken``
-    value. Leading/trailing gaps stay unresolved because they are not bracketed.
+    value.
+
+    Automatic-transcription utterances explicitly supported by vocal-stem activity
+    may also be retained at the leading or trailing edge of a song. Those use a
+    neutral pitch rather than carrying a potentially distant melody note. Callers
+    must opt individual utterances into this edge behavior; known lyrics and audio
+    without separated-vocal evidence therefore retain the conservative default.
     """
+    edge_spoken_utterance_ids = edge_spoken_utterance_ids or set()
     unresolved = list(dict.fromkeys(layers.get("unresolved_unit_ids", [])))
     if not unresolved:
         return 0
@@ -169,9 +183,10 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
     omitted = {
         item["singing_unit_id"] for item in layers.get("omissions", [])
     }
-    occupied = [
+    fixed_occupied = [
         (float(item["start_sec"]), float(item["end_sec"])) for item in plan
     ]
+    recovered_occupied: list[tuple[float, float, str]] = []
     evidence = list(layers.get("evidence", []))
     layers["evidence"] = evidence
     evidence_ids = {item["id"] for item in evidence}
@@ -186,20 +201,10 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
                 or not isinstance(end, (int, float))
                 or not math.isfinite(start + end) or end <= start):
             continue
-        if any(left < end and start < right for left, right in occupied):
+        if any(left < end and start < right for left, right in fixed_occupied):
             continue
         before = [item for item in anchors if item["end_sec"] <= start]
         after = [item for item in anchors if item["start_sec"] >= end]
-        if not before or not after:
-            continue
-        left, right = before[-1], after[0]
-        center = (start + end) / 2
-        anchor = min(
-            (left, right),
-            key=lambda item: abs(
-                center - (float(item["start_sec"]) + float(item["end_sec"])) / 2
-            ),
-        )
         details = [mora_details.get(mora_id) for mora_id in unit["mora_ids"]]
         if not details or any(item is None for item in details):
             continue
@@ -208,6 +213,48 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
             continue
         utterance_id = utterances.pop()
         kana = "".join(item[1] for item in details if item is not None)
+
+        overlapping_recoveries = {
+            owner
+            for left, right, owner in recovered_occupied
+            if left < end and start < right
+        }
+        if overlapping_recoveries and overlapping_recoveries != {utterance_id}:
+            continue
+
+        if before and after:
+            left, right = before[-1], after[0]
+            center = (start + end) / 2
+            anchor = min(
+                (left, right),
+                key=lambda item: abs(
+                    center
+                    - (float(item["start_sec"]) + float(item["end_sec"])) / 2
+                ),
+            )
+            midi_pitch = anchor["midi_pitch"]
+            note_candidate_id = anchor.get("note_candidate_id")
+            operation = "spoken_pitch_carry"
+            recovery_detail = {
+                "reason": "bracketed-sheet-sage-gap",
+                "pitch_strategy": "nearest-bracketing-slot",
+                "anchor_slot_id": anchor["id"],
+                "left_slot_id": left["id"],
+                "right_slot_id": right["id"],
+            }
+        elif (before or after) and utterance_id in edge_spoken_utterance_ids:
+            edge = "trailing" if before else "leading"
+            midi_pitch = EDGE_SPEECH_MIDI_PITCH
+            note_candidate_id = None
+            operation = "spoken_neutral_pitch"
+            recovery_detail = {
+                "reason": f"vocal-activity-supported-{edge}-speech",
+                "pitch_strategy": "neutral-spoken-midi",
+                "midi_pitch": EDGE_SPEECH_MIDI_PITCH,
+                "nearest_song_slot_id": (before[-1] if before else after[0])["id"],
+            }
+        else:
+            continue
 
         evidence_id = f"stage3-spoken-recovery-{unit_id}"
         suffix = 1
@@ -220,25 +267,20 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
             "source": "soramimic-video",
             "kind": "spoken-synthesis-fallback",
             "confidence": 1.0,
-            "detail": {
-                "reason": "bracketed-sheet-sage-gap",
-                "anchor_slot_id": anchor["id"],
-                "left_slot_id": left["id"],
-                "right_slot_id": right["id"],
-            },
+            "detail": recovery_detail,
         })
         plan.append({
             "id": f"spoken-slot-{unit_id}",
             "utterance_id": utterance_id,
             "singing_unit_id": unit_id,
             "mora_ids": list(unit["mora_ids"]),
-            "note_candidate_id": anchor.get("note_candidate_id"),
+            "note_candidate_id": note_candidate_id,
             "link_ids": list(unit.get("link_ids", [])),
             "kana": kana,
             "start_sec": float(start),
             "end_sec": float(end),
-            "midi_pitch": anchor["midi_pitch"],
-            "operation": "spoken_pitch_carry",
+            "midi_pitch": midi_pitch,
+            "operation": operation,
             "timing_source": "mora_ctc_interval",
             "confidence": 0.0,
             "evidence_ids": [evidence_id],
@@ -246,7 +288,7 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
             "pitch_confidence": None,
             "continuation": False,
         })
-        occupied.append((float(start), float(end)))
+        recovered_occupied.append((float(start), float(end), utterance_id))
         recovered.append(unit_id)
 
     if not recovered:
@@ -1543,7 +1585,28 @@ def analyze_audio(
             document.to_json(), encoding="utf-8"
         )
     layer_data = layers.to_dict()
-    recovered_units = _recover_bracketed_synthesis_units(layer_data)
+    edge_spoken_utterance_ids: set[str] = set()
+    if recognition_mode is not None:
+        supported_lines = {
+            id(line)
+            for line, decision in zip(recognition_lines, decisions, strict=True)
+            if (
+                decision.status == "unresolved"
+                and decision.template_family is None
+                and decision.vocal_activity_support is True
+            )
+        }
+        edge_spoken_utterance_ids = {
+            canonical["utterance_id"]
+            for canonical, line in zip(
+                layer_data["canonical"], retained_lines, strict=True
+            )
+            if id(line) in supported_lines
+        }
+    recovered_units = _recover_synthesis_units(
+        layer_data,
+        edge_spoken_utterance_ids=edge_spoken_utterance_ids,
+    )
     continuous_lines, continuous_units = _continuize_spoken_synthesis_lines(layer_data)
     omitted_units = _omit_unresolved_synthesis_units(layer_data)
     for slot in layer_data["synthesis_plan"]:
@@ -1565,8 +1628,8 @@ def analyze_audio(
     analysis_data["generation_quality"] = _generation_quality_assessment(layer_data)
     if recovered_units:
         detail = (
-            f"SheetSage2ノートに前後を挟まれた{recovered_units}歌唱単位を、"
-            "CTC時刻とspoken合成用の近傍音高で保持しました。"
+            f"安全に補完できる{recovered_units}歌唱単位を、CTC時刻と"
+            "spoken合成用音高で保持しました。"
         )
         analysis_data["limitations"].append(detail)
         analysis_data["diagnostics"].append({
