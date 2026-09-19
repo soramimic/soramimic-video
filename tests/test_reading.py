@@ -21,6 +21,21 @@ def test_automatic_candidates_add_digitwise_reading():
     assert "ヨンヨンヨンサンデハズレルタンサンスイ" in candidates
 
 
+def test_reading_candidates_normalize_expressive_kana(monkeypatch):
+    monkeypatch.setattr(
+        "soramimic_video.reading._yomi_candidates_with_ruby",
+        lambda _text: ["オジカンデェース", "オジカンデス"],
+    )
+    monkeypatch.setattr(
+        "soramimic_video.reading._unidic_candidates_with_ruby", lambda _text: []
+    )
+
+    assert reading_candidates("お時間でぇーす") == [
+        "オジカンデエース", "オジカンデス"
+    ]
+    assert automatic_reading_candidates("お時間でぇーす") == ["オジカンデエース"]
+
+
 def test_automatic_digitwise_candidate_can_win_with_kana_evidence():
     from soramimic_video.kana_whisper import choose_reading
 

@@ -136,6 +136,28 @@ def test_manifest_or_asset_inconsistency_fails_closed(tmp_path, monkeypatch, sto
     assert client.get("/api/asset-preview", params={"wordlist": "allowed"}).status_code == 404
 
 
+def test_representative_preview_skips_an_unavailable_managed_asset(tmp_path, monkeypatch):
+    client, _original, source, _jobs = _setup(tmp_path, monkeypatch)
+    missing_url = "https://example.test/missing.png"
+    wordlist = convert.WORDLISTS_DIR / "allowed.csv"
+    wordlist.write_text(
+        "surface,image,image_usage\n"
+        f"missing,{missing_url},\n"
+        f"available,{URL},\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/asset-preview", params={"wordlist": "allowed"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/png")
+    assert source.is_file()
+    assert client.get(
+        "/api/asset-preview",
+        params={"wordlist": "allowed", "url": missing_url},
+    ).status_code == 404
+
+
 def test_usage_gate_runs_before_any_asset_read(tmp_path, monkeypatch):
     client, _original, _source, _jobs = _setup(
         tmp_path, monkeypatch, usage="noncommercial_fanwork"

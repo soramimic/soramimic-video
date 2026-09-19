@@ -26,7 +26,7 @@ from typing import Any
 import jaconv
 
 from . import ruby, runproc
-from .kana import normalize_long_vowels, split_moras, vowel_of
+from .kana import normalize_audio_reading, normalize_long_vowels, split_moras, vowel_of
 
 logger = logging.getLogger(__name__)
 
@@ -400,11 +400,12 @@ def reading_candidates(text: str) -> list[str]:
     candidates = [*yomi, *unidic]
     unique: list[str] = []
     seen: set[str] = set()
-    for k in candidates:
-        norm = normalize_long_vowels(k)
-        if norm not in seen:
-            seen.add(norm)
-            unique.append(k)
+    for candidate in candidates:
+        normalized = normalize_audio_reading(candidate)
+        key = normalize_audio_reading(normalize_long_vowels(normalized))
+        if normalized and key not in seen:
+            seen.add(key)
+            unique.append(normalized)
     return unique
 
 
@@ -470,8 +471,9 @@ def automatic_reading_candidates(text: str) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
-        normalized = normalize_long_vowels(candidate)
-        if candidate and normalized not in seen:
-            seen.add(normalized)
-            unique.append(candidate)
+        normalized = normalize_audio_reading(candidate)
+        key = normalize_audio_reading(normalize_long_vowels(normalized))
+        if normalized and key not in seen:
+            seen.add(key)
+            unique.append(normalized)
     return unique
