@@ -1937,7 +1937,7 @@ class JobManager:
             return False
         failures = False
         for child in root.iterdir():
-            if child.name == STATUS_FILENAME:
+            if child.name in (STATUS_FILENAME, f"{STATUS_FILENAME}.tmp"):
                 continue
             try:
                 if child.is_dir() and not child.is_symlink():
@@ -1972,6 +1972,9 @@ class JobManager:
         keep = {
             video,
             (root / STATUS_FILENAME).resolve(),
+            # Another process may still be finishing an atomic status write
+            # during a rolling restart. It contains status metadata, not uploads.
+            (root / f"{STATUS_FILENAME}.tmp").resolve(),
         }
         if job.thumbnail.is_file() and not job.thumbnail.is_symlink():
             keep.add(job.thumbnail.resolve())
