@@ -27,6 +27,10 @@ class SemanticLyricDecision:
     melodic_support: bool
     ctc_support: bool | None = None
     ctc_median_score: float | None = None
+    vocal_activity_support: bool | None = None
+    vocal_activity_percentile_dbfs: float | None = None
+    vocal_activity_relative_db: float | None = None
+    vocal_active_frame_ratio: float | None = None
 
 
 @dataclass(frozen=True)
@@ -425,6 +429,32 @@ def decide_recognized_line(
     else:
         status = "accepted"
     return SemanticLyricDecision(status, normalized, family, supported)
+
+
+def apply_vocal_activity_support(
+    decision: SemanticLyricDecision,
+    *,
+    supported: bool,
+    percentile_dbfs: float,
+    relative_db: float,
+    active_frame_ratio: float,
+) -> SemanticLyricDecision:
+    """Reject only unresolved ordinary text from a mostly silent vocal stem.
+
+    Melody-supported lines remain governed by SheetSage, while exact non-lyric
+    templates retain their stricter semantic/CTC handling. The energy measurement
+    is therefore an additional guard for the ordinary no-melody case, not a
+    replacement for either existing signal.
+    """
+    applies = decision.status == "unresolved" and decision.template_family is None
+    return replace(
+        decision,
+        status="rejected" if applies and not supported else decision.status,
+        vocal_activity_support=supported if applies else None,
+        vocal_activity_percentile_dbfs=percentile_dbfs,
+        vocal_activity_relative_db=relative_db,
+        vocal_active_frame_ratio=active_frame_ratio,
+    )
 
 
 def apply_ctc_support(

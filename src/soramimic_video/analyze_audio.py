@@ -717,6 +717,7 @@ def analyze_audio(
     localized_deficit_recoveries: list[dict[str, object]] = []
     localized_alignment_retries: list[dict[str, object]] = []
     ctc_capacity_rejections: list[dict[str, object]] = []
+    vocal_activity_profile = None
 
     last_progress = 0.0
 
@@ -784,10 +785,18 @@ def analyze_audio(
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
     else:
         from .semantic_lyrics import (
+            apply_vocal_activity_support,
             coalesce_repeated_suffix_fragments,
             decide_recognized_line,
         )
         from .transcribe import transcribe_lines
+        from .vocal_activity import (
+            ACTIVE_FRAME_FLOOR_DBFS,
+            FRAME_DURATION_SEC,
+            LOUD_FRAME_PERCENTILE,
+            MAX_RELATIVE_DROP_DB,
+            measure_vocal_activity,
+        )
 
         # Unknown lyrics use one complete, deterministic Whisper transcript.
         # CTC remains downstream for mora timing, not for deciding whether
@@ -812,6 +821,23 @@ def analyze_audio(
                 )
         recognition_lines = lines
         decisions = [decide_recognized_line(line, sheetsage_notes) for line in lines]
+        if not skip_separation:
+            vocal_activity_profile = measure_vocal_activity(
+                vocals,
+                [(line.start_sec, line.end_sec) for line in lines],
+            )
+            decisions = [
+                apply_vocal_activity_support(
+                    decision,
+                    supported=evidence.supported,
+                    percentile_dbfs=evidence.percentile_dbfs,
+                    relative_db=evidence.relative_db,
+                    active_frame_ratio=evidence.active_frame_ratio,
+                )
+                for decision, evidence in zip(
+                    decisions, vocal_activity_profile.lines, strict=True
+                )
+            ]
         retained_indices = [
             index for index, decision in enumerate(decisions)
             if decision.status != "rejected"
@@ -1261,7 +1287,7 @@ def analyze_audio(
         (out / "recognition.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 4,
+                    "schema_version": 5,
                     "mode": recognition_mode,
                     "model": whisper_model,
                     "transcription_options": {
@@ -1275,9 +1301,27 @@ def analyze_audio(
                         else "reazon-kana-ctc-input-audio",
                         "rule": (
                             "always-recover-exact-credit-patterns; require-melody-"
-                            "and-ctc-median-support-for-other-non-lyric-patterns"
+                            "and-ctc-median-support-for-other-non-lyric-patterns; "
+                            "reject-ordinary-nonmelodic-lines-without-relative-"
+                            "vocal-stem-activity"
                         ),
                         "ctc_median_threshold": MIN_CTC_MEDIAN_SCORE,
+                        "vocal_activity": (
+                            {
+                                "applied": True,
+                                "source": "demucs-separated-vocals",
+                                "frame_duration_sec": FRAME_DURATION_SEC,
+                                "line_percentile": LOUD_FRAME_PERCENTILE,
+                                "active_frame_floor_dbfs": ACTIVE_FRAME_FLOOR_DBFS,
+                                "max_relative_drop_db": MAX_RELATIVE_DROP_DB,
+                                "reference_dbfs": vocal_activity_profile.reference_dbfs,
+                            }
+                            if vocal_activity_profile is not None
+                            else {
+                                "applied": False,
+                                "reason": "separation-skipped",
+                            }
+                        ),
                         "boundary_merges": [
                             {
                                 "left_index": item.left_index,
@@ -1299,6 +1343,18 @@ def analyze_audio(
                                 "melodic_support": decision.melodic_support,
                                 "ctc_support": decision.ctc_support,
                                 "ctc_median_score": decision.ctc_median_score,
+                                "vocal_activity_support": (
+                                    decision.vocal_activity_support
+                                ),
+                                "vocal_activity_percentile_dbfs": (
+                                    decision.vocal_activity_percentile_dbfs
+                                ),
+                                "vocal_activity_relative_db": (
+                                    decision.vocal_activity_relative_db
+                                ),
+                                "vocal_active_frame_ratio": (
+                                    decision.vocal_active_frame_ratio
+                                ),
                             }
                             for line, decision in zip(
                                 recognition_lines, decisions, strict=True
@@ -1325,7 +1381,7 @@ def analyze_audio(
         )
         logger.info(
             "Whisper mix/no-VADの%d行を元歌詞として採用 "
-            "(非歌詞テンプレートを%d行除外、非旋律音声を%d行保持)",
+            "(意味・音量ゲートで%d行除外、非旋律音声を%d行保持)",
             len(line_texts),
             sum(decision.status == "rejected" for decision in decisions),
             sum(decision.status == "unresolved" for decision in decisions),
@@ -1363,6 +1419,12 @@ def analyze_audio(
             "melodic_support": decision.melodic_support,
             "ctc_support": decision.ctc_support,
             "ctc_median_score": decision.ctc_median_score,
+            "vocal_activity_support": decision.vocal_activity_support,
+            "vocal_activity_percentile_dbfs": (
+                decision.vocal_activity_percentile_dbfs
+            ),
+            "vocal_activity_relative_db": decision.vocal_activity_relative_db,
+            "vocal_active_frame_ratio": decision.vocal_active_frame_ratio,
         }
         for decision in (decisions if recognition_mode is not None else [])
         if decision.status != "accepted"
@@ -1393,7 +1455,7 @@ def analyze_audio(
     (out / "analysis.json").write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 5,
                 "mode": mode,
                 "official_lyrics": lyrics_path is not None,
                 "asr_used": lyrics_path is None or reading_asr_used,

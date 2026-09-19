@@ -257,7 +257,7 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
     assert '"mora-ctc-anchor"' in correspondence
     analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert analysis["stage3_correspondence"] is True
-    assert analysis["schema_version"] == 4
+    assert analysis["schema_version"] == 5
     assert analysis["audio_pipeline"] == "stage3"
     assert analysis["mode"] == "sheetsage2_stage3"
     assert analysis["inference_roles"] == {
@@ -461,11 +461,15 @@ def test_partial_recognition_windows_survive_alignment(monkeypatch, tmp_path):
     recognition = json.loads(
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
-    assert recognition["schema_version"] == 4
+    assert recognition["schema_version"] == 5
     assert recognition["mode"] == "whisper-mix-semantic-gate"
     assert recognition["transcription_options"] == {
         "vad_filter": False,
         "condition_on_previous_text": False,
+    }
+    assert recognition["semantic_gate"]["vocal_activity"] == {
+        "applied": False,
+        "reason": "separation-skipped",
     }
     assert [item["status"] for item in recognition["semantic_gate"]["decisions"]] == [
         "accepted", "accepted",
