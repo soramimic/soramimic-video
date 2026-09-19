@@ -200,6 +200,13 @@ APP_CREDIT_SIZE = 0.022
 APP_CREDIT_COLOR = "#ffffffb3"
 
 
+def app_credit_for_wordlist(wordlist: str = "") -> str:
+    """VTuberリストのときだけ非公式・ファンメイド表記を添える。"""
+    if wordlist.strip().lower() == "vtuber":
+        return f"{APP_CREDIT} / 非公式・ファンメイド"
+    return APP_CREDIT
+
+
 # 単語リストCSVで「値なし」を表す文字列(R由来のNA等)。値として描画せず空扱いにする。
 MISSING_VALUES = frozenset({"na", "n/a", "nan", "none", "null"})
 
@@ -220,6 +227,28 @@ def _display_value(column: str, value: object) -> object:
     """CSVの保存形式を変えず、カード表示向けに値を整える。"""
     if column == "team":
         return re.sub(r"(?<=[^\x00-\x7f])-(?=[^\x00-\x7f])", "・", str(value))
+    if column == "subscribers":
+        try:
+            count = int(str(value).replace(",", ""))
+        except ValueError:
+            return value
+        if count < 0:
+            return value
+        if count < 10_000:
+            return f"{count:,}人"
+        divisor, suffix = (100_000_000, "億人") if count >= 100_000_000 else (10_000, "万人")
+        scaled = count / divisor
+        decimals = 0 if scaled >= 100 else 1 if scaled >= 10 else 2
+        number = f"{scaled:.{decimals}f}"
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        return f"{number}{suffix}"
+    if column == "subscribers_as_of":
+        match = re.fullmatch(r"(\d{4})-(\d{2})(?:-(\d{2}))?", str(value))
+        if match:
+            year, month, day = match.groups()
+            result = f"{int(year)}年{int(month)}月"
+            return f"{result}{int(day)}日" if day else result
     return value
 
 
@@ -280,8 +309,8 @@ class SubtitleElement:
     # 第1段階では source="parody" のみ有効(元歌詞ではカナ対応付けに課題があり無視する)。
     ruby: bool = False
     ruby_size: float = 0.5  # ルビの文字サイズ(本文フォントサイズに対する比)
-    # 表示粒度。"line"(行) / "phrase"(フレーズ)。None は source 既定
-    # (original=line, parody=phrase)。詳細は align.build_subtitle_segments。
+    # 表示粒度。"line"(元歌詞行) / "cue"(対応行) / "phrase"(フレーズ)。None は source 既定
+    # (original=line, parody=line)。詳細は align.build_subtitle_segments。
     granularity: str | None = None
 
 
@@ -525,9 +554,10 @@ def _parse_elements(
                     f"subtitle の source は parody / original です: {source!r} ({origin})"
                 )
             granularity = e.get("granularity")
-            if granularity is not None and granularity not in ("line", "phrase"):
+            if granularity is not None and granularity not in ("line", "cue", "phrase"):
                 raise ValueError(
-                    f"subtitle の granularity は line / phrase です: {granularity!r} ({origin})"
+                    "subtitle の granularity は line / cue / phrase です: "
+                    f"{granularity!r} ({origin})"
                 )
             subtitles.append(
                 SubtitleElement(

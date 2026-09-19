@@ -11,6 +11,7 @@ import bisect
 import logging
 import re
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -230,6 +231,62 @@ def _collect_notes(midi: XFMidiFile) -> list[RawNote]:
                     notes.append(RawNote(msg.channel, msg.note, active.pop(key), tick))
     notes.sort(key=lambda n: n.start_tick)
     return notes
+
+
+def melody_continuations(project: Project) -> dict[int, list[RawNote]]:
+    """歌詞付き音符の直後に続く、XFで歌詞イベントの無い旋律音符を返す。
+
+    XFでは1つの歌詞イベントを複数の旋律音符で歌うことがあり、後続音符には
+    歌詞イベントが置かれない。この音符は ``Project.notes`` には現れないため、
+    そのままでは歌唱合成時に休符と誤認される。同じ歌詞行の次の歌詞付き音符まで
+    ほぼ切れ目なく連なる音符だけを、直前の歌詞付き音符の継続として復元する。
+
+    MIDIが無い音源入力projectや、元ファイルを参照できない古いprojectでは空を返す。
+    """
+    midi_path = project.song.midi_path
+    channel = project.song.melody_channel
+    if not midi_path or channel is None or len(project.notes) < 2:
+        return {}
+    try:
+        midi = XFMidiFile(str(midi_path), charset="cp932")
+    except (OSError, ValueError):
+        logger.debug("継続旋律音符を読むためのMIDIを開けません: %s", midi_path)
+        return {}
+
+    tolerance = max(1, int(midi.ticks_per_beat * PAIRING_TOLERANCE_BEATS))
+    melody = [note for note in _collect_notes(midi) if note.channel == channel]
+    melody_signatures = {
+        (note.start_tick, note.end_tick, note.note) for note in melody
+    }
+    represented = {
+        (note.start_tick, note.end_tick, note.midi_note) for note in project.notes
+    }
+    ordered = sorted(project.notes, key=lambda note: note.start_tick)
+    recovered: dict[int, list[RawNote]] = {}
+    for note, following in pairwise(ordered):
+        if note.line != following.line:
+            continue
+        anchors = (
+            (note.start_tick, note.end_tick, note.midi_note),
+            (following.start_tick, following.end_tick, following.midi_note),
+        )
+        if any(anchor not in melody_signatures for anchor in anchors):
+            continue
+        cursor = note.end_tick
+        bridge: list[RawNote] = []
+        for raw in melody:
+            signature = (raw.start_tick, raw.end_tick, raw.note)
+            if signature in represented or raw.start_tick < cursor:
+                continue
+            if raw.start_tick >= following.start_tick:
+                break
+            if raw.start_tick - cursor > tolerance or raw.end_tick > following.start_tick:
+                break
+            bridge.append(raw)
+            cursor = raw.end_tick
+        if bridge and following.start_tick - cursor <= tolerance:
+            recovered[note.id] = bridge
+    return recovered
 
 
 def _select_melody_channel(

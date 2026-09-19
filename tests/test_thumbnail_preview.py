@@ -166,6 +166,32 @@ def test_preview_without_reading_converts_the_title(
     assert seen == [[SAMPLE_TITLE]]
 
 
+def test_uploaded_song_title_returns_uncached_private_preview(
+    client: TestClient, monkeypatch, tmp_path: Path
+):
+    """持ち込み曲名の派生PNGを共有ディスクキャッシュへ残さない。"""
+    seen: list[list[str]] = []
+
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+        seen.append(list(phrases))
+        return {
+            "lines": [{"units": [], "words": [{"surface": "米原", "id": "1"}]}],
+            "tokensList": [],
+            "phrases": phrases,
+        }
+
+    monkeypatch.setattr(thumb_mod, "run_convert", fake)
+    res = client.get(
+        "/api/thumbnail-preview", params={"title": " marigold ", "wordlist": "mylist"}
+    )
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "image/png"
+    assert res.headers["x-preview-cache"] == "private"
+    assert res.headers["cache-control"] == "private, no-store"
+    assert seen == [["marigold"]]
+    assert not list(preview_mod.preview_cache_dir(tmp_path / "jobs").glob("*.png"))
+
+
 def test_cache_key_changes_with_reading(wordlist_dir: Path):
     # 読みを足した/変えたら作り直す(古い読みのPNGを返し続けない)
     plain = preview_mod.PreviewSpec.create(SAMPLE_TITLE, "mylist")
@@ -191,6 +217,19 @@ def test_unknown_wordlist_is_404(client: TestClient):
 
 def test_missing_wordlist_is_400(client: TestClient):
     assert get_preview(client, wordlist="  ").status_code == 400
+
+
+def test_missing_sample_and_title_is_400(client: TestClient):
+    res = client.get("/api/thumbnail-preview", params={"wordlist": "mylist"})
+    assert res.status_code == 400
+    assert "曲名" in res.json()["detail"]
+
+
+def test_uploaded_song_title_is_limited(client: TestClient):
+    res = client.get(
+        "/api/thumbnail-preview", params={"title": "a" * 201, "wordlist": "mylist"}
+    )
+    assert res.status_code == 400
 
 
 # ---- レート制限 ----
@@ -223,6 +262,7 @@ def test_rate_limit_disabled_by_zero(client: TestClient, monkeypatch):
 @pytest.fixture
 def public_client(tmp_path, monkeypatch, wordlist_dir, samples) -> TestClient:
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setattr(api_mod, "launch_wordlist_names", lambda: {"mylist"})
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
     monkeypatch.setattr(api_mod, "run_pipeline", lambda job, config: job.dir / "x.mp4")
     return TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
@@ -239,6 +279,7 @@ def test_public_mode_rate_limit_is_per_session(
     tmp_path, monkeypatch, wordlist_dir, samples
 ):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setattr(api_mod, "launch_wordlist_names", lambda: {"mylist"})
     monkeypatch.setenv(preview_mod.RATE_LIMIT_ENV, "1")
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
     app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
@@ -253,6 +294,7 @@ def test_ip_backstop_survives_cookie_deletion(
     tmp_path, monkeypatch, wordlist_dir, samples
 ):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setattr(api_mod, "launch_wordlist_names", lambda: {"mylist"})
     monkeypatch.setenv(preview_mod.RATE_LIMIT_ENV, "100")
     monkeypatch.setenv(api_mod.GET_IP_RATE_LIMIT_ENV, "1")
     monkeypatch.setattr(thumb_mod, "run_convert", _fake_convert())
@@ -382,9 +424,10 @@ def test_index_html_builder_uses_preview_with_fallback():
     assert "/api/thumbnail-preview?" in html  # カードはプレビューを取りに行く
     assert "builder-loading" in html  # 生成待ちのローディング表示がある
     assert "PREVIEW_TIMEOUT_MS = 8000" in html  # 8秒で打ち切る
-    # 失敗・429・タイムアウトは代表画像(/api/wordlist-image)にフォールバックする
+    # 失敗・429・タイムアウトは派生代表画像(/api/asset-preview)にフォールバックする
     assert "loadWordlistImage(combo.wordlistName, seq);" in html
-    assert "/api/wordlist-image?wordlist=" in html
+    assert "/api/asset-preview?wordlist=" in html
+    assert "/api/wordlist-image?" not in html
     # フォールバックしたままにはせず、本物のプレビューを裏で聞き直す
     assert "retryPreviewAfterFallback(url, seq, PREVIEW_FALLBACK_RETRIES," in html
 

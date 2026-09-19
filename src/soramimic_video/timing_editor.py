@@ -233,6 +233,7 @@ def apply_payload(project: Project, payload: dict[str, Any]) -> dict[str, Any]:
             xf_kana="".join(notes[i].kana for i in note_ids),
             note_ids=note_ids,
             original_text=base.original_text if base else None,
+            original_line_index=base.original_line_index if base else None,
         ))
 
     structural = (

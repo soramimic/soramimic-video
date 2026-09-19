@@ -6,6 +6,8 @@ from soramimic_video.wordlist_catalog import (
     WORDLIST_CATALOG_PATH,
     default_launch_wordlists,
     load_wordlist_catalog,
+    load_wordlist_image_policies,
+    load_wordlist_phrases,
 )
 
 
@@ -31,3 +33,110 @@ def test_launch_catalog_does_not_duplicate_wordlist_configuration():
 
 def test_wordlist_catalog_is_packaged_next_to_code():
     assert WORDLIST_CATALOG_PATH.is_file()
+
+
+def test_vtuber_catalog_exposes_noncommercial_image_policy():
+    policy = load_wordlist_catalog()["vtuber"]["image_policy"]
+    assert policy == {
+        "usage": "noncommercial_fanwork",
+        "terms": "https://hololivepro.com/terms/",
+    }
+
+
+def test_image_policy_collects_distinct_terms_from_restricted_rows(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(
+        json.dumps({
+            "people": {
+                "image_policy": {
+                    "usage": "noncommercial_fanwork",
+                    "terms": "https://fallback.example/guidelines",
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    wordlists = tmp_path / "wordlists"
+    wordlists.mkdir()
+    (wordlists / "people.csv").write_text(
+        "image_usage,image_terms_page\n"
+        "noncommercial_fanwork,https://www.anycolor.co.jp/guidelines/\n"
+        "noncommercial_fanwork,https://www.anycolor.co.jp/guidelines/\n"
+        "noncommercial_fanwork,https://hololivepro.com/terms/\n"
+        "other,https://ignored.example/guidelines\n"
+        "noncommercial_fanwork,javascript:alert(1)\n",
+        encoding="utf-8",
+    )
+
+    policy = load_wordlist_image_policies(wordlists, catalog)["people"]
+
+    assert policy["terms_pages"] == [
+        {
+            "url": "https://www.anycolor.co.jp/guidelines/",
+            "label": "ANYCOLOR二次創作ガイドライン",
+        },
+        {
+            "url": "https://hololivepro.com/terms/",
+            "label": "ホロライブプロダクション二次創作ガイドライン",
+        },
+    ]
+
+
+def test_image_policy_uses_safe_catalog_fallback_when_csv_is_missing(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(
+        json.dumps({
+            "people": {
+                "image_policy": {
+                    "usage": "noncommercial_fanwork",
+                    "terms": "https://example.com/guidelines",
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    policy = load_wordlist_image_policies(tmp_path / "missing", catalog)["people"]
+
+    assert policy["terms_pages"] == [{
+        "url": "https://example.com/guidelines",
+        "label": "example.com 二次創作ガイドライン",
+    }]
+
+
+def test_terms_labels_follow_people_and_organizations_without_domain_merging(tmp_path):
+    import csv
+
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"people": {"image_policy": {"usage": "noncommercial_fanwork"}}}))
+    with (tmp_path / "people.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "original", "org", "image_terms_page", "image_usage"
+        ])
+        writer.writeheader()
+        for name, url in [("A<&", "https://note.com/a"), ("B", "https://note.com/b"),
+                          ("A<&", "https://note.com/a"), ("C", "https://note.com/a"),
+                          ("A<&", "https://note.com/a/en"), ("D", "https://[broken")]:
+            writer.writerow({"original": name, "org": "個人勢", "image_terms_page": url,
+                             "image_usage": "noncommercial_fanwork"})
+    terms = load_wordlist_image_policies(tmp_path, catalog)["people"]["terms_pages"]
+    assert [term["url"] for term in terms] == [
+        "https://note.com/a", "https://note.com/b", "https://note.com/a/en"
+    ]
+    assert terms[0]["people"] == ["A<&", "C"]
+    assert "B" in terms[1]["label"]
+    assert "A<&" in terms[2]["label"]
+
+
+def test_load_wordlist_phrases_uses_only_nonempty_strings(tmp_path):
+    path = tmp_path / "catalog.json"
+    path.write_text(
+        json.dumps({
+            "stations": {"phrase": "駅名"},
+            "empty": {"phrase": ""},
+            "number": {"phrase": 123},
+            "missing": {"layout": "default"},
+        }),
+        encoding="utf-8",
+    )
+    assert load_wordlist_phrases(path) == {"stations": "駅名"}

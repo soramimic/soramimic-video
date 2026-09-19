@@ -454,7 +454,7 @@ def build_editor_preview(
     (替え歌/元歌詞)を持たせる。MIDI(音符)なしでも作れるよう、時間ではなく
     行・単語の並びでキュー順を決める(実動画でも歌唱順=この並び)。
 
-    字幕テキストの粒度(行/フレーズ)は video.build_ass と同じ align 側の共通
+    字幕テキストの粒度(元歌詞行/対応行/フレーズ)は video.build_ass と同じ align 側の共通
     ロジックで解決し、動画と一致した元歌詞/替え歌を返す。
     """
     from .align import (
@@ -478,6 +478,7 @@ def build_editor_preview(
     # 正とする(editor.json の originalLines はエディタの表示用)。実動画
     # (import_editor)も同じ方針なので、プレビューと本番の字幕が揃う。
     aligned: list[str | None] = [None] * len(phrases)
+    assignments: list[int | None] = [None] * len(phrases)
     # フォームに元歌詞が無ければ、JSONが持つ生テキストで対応づける
     # (editor.json だけを持ち込んだケース。import_editor と同じ考え方)
     source = lyrics if lyrics.strip() else (editor_lyrics(payload) or "")
@@ -493,6 +494,7 @@ def build_editor_preview(
     n_lines = len(results)
     grans = effective_granularities(layout.subtitles, granularity)
     originals: list[str | None] = [aligned[i] if i < len(aligned) else None for i in range(n_lines)]
+    original_groups = [assignments[i] if i < len(assignments) else None for i in range(n_lines)]
     xf_texts = [str(phrases[i]) if i < len(phrases) else "" for i in range(n_lines)]
     original_full = [
         (originals[i] or (str(phrases[i]) if i < len(phrases) else "")) for i in range(n_lines)
@@ -505,14 +507,14 @@ def build_editor_preview(
     original_by_line = segment_text_by_line(
         build_subtitle_segments(
             "original", grans["original"], originals, original_full, xf_texts,
-            dummy_spans, sep=WORD_SEP,
+            dummy_spans, sep=WORD_SEP, original_groups=original_groups,
         ),
         n_lines,
     )
     parody_by_line = segment_text_by_line(
         build_subtitle_segments(
             "parody", grans["parody"], originals, parody_full, xf_texts,
-            dummy_spans, sep=WORD_SEP,
+            dummy_spans, sep=WORD_SEP, original_groups=original_groups,
         ),
         n_lines,
     )
@@ -530,7 +532,7 @@ def build_editor_preview(
         if not isinstance(line_words, list):
             continue
         # 字幕テキストは粒度解決済み(video.build_ass と同じ align 側ロジック)。
-        # 元歌詞=行/フレーズ、替え歌=フレーズ/行 のいずれか。
+        # 元歌詞=元歌詞行/対応行/フレーズ、替え歌=対応行/元歌詞行 のいずれか。
         parody_text = parody_by_line[i]
         original_text = original_by_line[i]
         for w in line_words:
