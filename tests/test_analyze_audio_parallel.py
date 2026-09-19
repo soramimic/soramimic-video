@@ -182,6 +182,11 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         audio_melody,
         mora_align,
         reading,
+        vocal_activity,
+    )
+    from soramimic_video.vocal_activity import (
+        VocalActivityLine,
+        VocalActivityProfile,
     )
 
     calls = []
@@ -202,6 +207,14 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(analyze_audio_module, "_require_audio_pipeline", lambda: None)
     monkeypatch.setattr(analyze_audio_module, "_run_audio_models", run_shared)
+    monkeypatch.setattr(
+        vocal_activity,
+        "measure_vocal_activity",
+        lambda *_args, **_kwargs: VocalActivityProfile(
+            -15.0,
+            (VocalActivityLine(-20.0, -5.0, 0.8, True),),
+        ),
+    )
     monkeypatch.setattr(
         audio_melody,
         "configured_capabilities",
@@ -254,6 +267,15 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
     assert recognition["semantic_gate"]["decisions"][0]["status"] == "unresolved"
+    assert recognition["semantic_gate"]["vocal_activity"] == {
+        "applied": True,
+        "source": "demucs-separated-vocals",
+        "frame_duration_sec": 0.05,
+        "line_percentile": 90.0,
+        "active_frame_floor_dbfs": -70.0,
+        "max_relative_drop_db": 30.0,
+        "reference_dbfs": -15.0,
+    }
     assert [item["status"] for item in json.loads(
         (tmp_path / "project/analyze_audio/analysis.json").read_text()
     )["diagnostics"]] == ["unresolved", "unresolved"]

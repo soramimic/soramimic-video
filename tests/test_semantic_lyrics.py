@@ -4,6 +4,7 @@ from soramimic_video.audio_melody import MelodyNote
 from soramimic_video.mora_align import AlignedMora
 from soramimic_video.semantic_lyrics import (
     apply_ctc_support,
+    apply_vocal_activity_support,
     coalesce_repeated_suffix_fragments,
     credit_recovery_windows,
     decide_recognized_line,
@@ -107,6 +108,55 @@ def test_semantic_gate_is_exact_conjunction_and_preserves_nonmelodic_voice(
     decision = decide_recognized_line(TranscribedLine(1.0, 2.0, text), notes)
     assert decision.status == status
     assert decision.melodic_support is bool(notes)
+
+
+def test_vocal_activity_rejects_only_unsupported_ordinary_nonmelodic_text():
+    unresolved = decide_recognized_line(
+        TranscribedLine(1.0, 2.0, "ここは話し声です"), []
+    )
+    rejected = apply_vocal_activity_support(
+        unresolved,
+        supported=False,
+        percentile_dbfs=-64.5,
+        relative_db=-51.0,
+        active_frame_ratio=0.06,
+    )
+
+    assert rejected.status == "rejected"
+    assert rejected.vocal_activity_support is False
+    assert rejected.vocal_activity_percentile_dbfs == -64.5
+    assert rejected.vocal_activity_relative_db == -51.0
+    assert rejected.vocal_active_frame_ratio == 0.06
+
+    melodic = decide_recognized_line(
+        TranscribedLine(1.0, 2.0, "ここは歌です"),
+        [MelodyNote(1.0, 2.0, 60)],
+    )
+    preserved = apply_vocal_activity_support(
+        melodic,
+        supported=False,
+        percentile_dbfs=-80.0,
+        relative_db=-60.0,
+        active_frame_ratio=0.0,
+    )
+    assert preserved.status == "accepted"
+    assert preserved.vocal_activity_support is None
+
+
+def test_vocal_activity_preserves_supported_nonmelodic_voice():
+    decision = decide_recognized_line(
+        TranscribedLine(1.0, 2.0, "ここは話し声です"), []
+    )
+    retained = apply_vocal_activity_support(
+        decision,
+        supported=True,
+        percentile_dbfs=-22.0,
+        relative_db=-7.0,
+        active_frame_ratio=0.8,
+    )
+
+    assert retained.status == "unresolved"
+    assert retained.vocal_activity_support is True
 
 
 def test_credit_gate_rejects_clearly_insufficient_melody_time():
