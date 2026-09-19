@@ -326,6 +326,147 @@ def test_expired_jobs_are_removed_during_startup(tmp_path, monkeypatch):
     assert not job.dir.exists()
 
 
+def test_restart_persists_interruption_and_scrubs_private_files(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    jobs_dir = tmp_path / "jobs"
+    job_dir = jobs_dir / "abcdef12"
+    job_dir.mkdir(parents=True)
+    (job_dir / "input.wav").write_bytes(b"private audio")
+    (job_dir / api_mod.STATUS_FILENAME).write_text(
+        json.dumps(
+            {
+                "id": "abcdef12",
+                "status": "running",
+                "params": {"input_kind": "audio"},
+                "created_at": "2026-09-20T01:00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    job = client.app.state.manager.jobs["abcdef12"]
+    saved = json.loads((job_dir / api_mod.STATUS_FILENAME).read_text(encoding="utf-8"))
+
+    assert job.status == "error"
+    assert job.finished_at is not None
+    assert job.cleanup_pending is False
+    assert sorted(path.name for path in job_dir.iterdir()) == [api_mod.STATUS_FILENAME]
+    assert saved["status"] == "error"
+    assert saved["finished_at"] == job.finished_at
+
+
+def test_startup_removes_upload_without_durable_status(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    orphan = tmp_path / "jobs" / "deadbeef"
+    orphan.mkdir(parents=True)
+    (orphan / "input.wav").write_bytes(b"private audio")
+
+    TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    assert not orphan.exists()
+
+
+def test_cleanup_failure_is_persisted_and_retried(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.EXPOSE_OPS_ENV, "1")
+    blocked = True
+    original_unlink = api_mod.Path.unlink
+
+    def flaky_unlink(path, *args, **kwargs):
+        if blocked and path.name == "private.tmp":
+            raise PermissionError("temporarily locked")
+        return original_unlink(path, *args, **kwargs)
+
+    def failing_pipeline(job, config):
+        (job.dir / "private.tmp").write_bytes(b"private")
+        raise RuntimeError("inference stopped")
+
+    monkeypatch.setattr(api_mod.Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(api_mod, "run_pipeline", failing_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    job_id = submit(client).json()["id"]
+    wait_done(client, job_id)
+    manager = client.app.state.manager
+    job = manager.jobs[job_id]
+
+    assert job.cleanup_pending is True
+    assert manager.pending_cleanup_count() == 1
+    assert "soramimic_privacy_cleanup_pending 1" in client.get("/metrics").text
+    assert (job.dir / "private.tmp").exists()
+    assert json.loads((job.dir / api_mod.STATUS_FILENAME).read_text())["cleanup_pending"]
+
+    blocked = False
+    manager._scrub_terminal_jobs(pending_only=True)
+
+    assert job.cleanup_pending is False
+    assert manager.pending_cleanup_count() == 0
+    assert "soramimic_privacy_cleanup_pending 0" in client.get("/metrics").text
+    assert sorted(path.name for path in job.dir.iterdir()) == [api_mod.STATUS_FILENAME]
+    assert "cleanup_pending" not in json.loads(
+        (job.dir / api_mod.STATUS_FILENAME).read_text()
+    )
+
+
+def test_expired_result_deletion_failure_is_hidden_and_retried(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    job_id = submit(client).json()["id"]
+    wait_done(client, job_id)
+    manager = client.app.state.manager
+    job = manager.jobs[job_id]
+    job.finished_at = time.time() - 2 * 3600
+    original_rmtree = api_mod.shutil.rmtree
+    blocked = True
+
+    def flaky_rmtree(path, *args, **kwargs):
+        if blocked and path == job.dir:
+            raise PermissionError("temporarily locked")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(api_mod.shutil, "rmtree", flaky_rmtree)
+
+    assert manager.cleanup_expired() == [job_id]
+    assert job_id not in manager.jobs
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+    assert job.dir.exists()
+    assert manager.pending_cleanup_count() == 1
+
+    blocked = False
+    manager._retry_pending_deletions()
+
+    assert not job.dir.exists()
+    assert manager.pending_cleanup_count() == 0
+
+
+def test_create_failure_removes_partially_written_upload(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    manager = client.app.state.manager
+
+    def disk_full(job):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(manager, "_save", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        manager.create(
+            FAKE_MIDI,
+            None,
+            "private lyrics",
+            {"input_kind": "midi"},
+        )
+
+    assert manager.jobs == {}
+    assert not any(
+        path.is_dir() and len(path.name) == 8
+        for path in (tmp_path / "jobs").iterdir()
+    )
+
+
 def test_public_config_reports_result_retention(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "24")

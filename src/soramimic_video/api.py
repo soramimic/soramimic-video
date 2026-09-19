@@ -146,7 +146,7 @@ QUEUE_JOB_SECONDS: dict[str, tuple[int, int]] = {
 SESSION_COOKIE = "sv_session"
 SESSION_MAX_AGE = 30 * 24 * 3600  # 30日
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
-CLEANUP_INTERVAL_SECONDS = 3600  # ジョブ自動削除の巡回間隔
+CLEANUP_INTERVAL_SECONDS = 60  # 機密データ清掃・保存期限削除の再試行間隔
 STATIC_DIR = Path(__file__).parent / "static"
 LAUNCH_CATALOG_PATH = STATIC_DIR / "launch_catalog.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -645,6 +645,9 @@ class Job:
     layout_source: str | None = None
     video: Path | None = None
     generation_quality_warning: bool = False
+    # A cleanup failure is never treated as success. Keep it durable so startup
+    # and the periodic privacy scrubber continue retrying after transient I/O errors.
+    cleanup_pending: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -1501,16 +1504,23 @@ class JobManager:
         self.jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._queue: queue.Queue[Job] = queue.Queue()
+        self._pending_deletions: dict[str, Path] = {}
+        self._editor_cleanup_failed = False
         self._load_existing()
+        self._cleanup_orphan_job_dirs()
         self._scrub_terminal_jobs()
-        # Do not leave already-expired uploads on disk for another hour after a
-        # restart.  The periodic cleaner below remains the steady-state backstop.
+        # Do not leave already-expired results on disk for another cleanup cycle
+        # after a restart. The periodic cleaner below remains the backstop.
         self.cleanup_expired()
         self._worker = threading.Thread(target=self._loop, daemon=True)
         self._worker.start()
-        # 自動削除はTTLが正のときだけ。無効なら従来どおりスレッドも作らない
+        # Public instances also need retries for private-artifact cleanup even when
+        # result retention is disabled. Private workspaces preserve prior behavior.
         self._cleaner: threading.Thread | None = None
-        if _env_float(JOB_TTL_HOURS_ENV, 0.0) > 0:
+        if (
+            self.config.get("scrub_private_artifacts")
+            or _env_float(JOB_TTL_HOURS_ENV, 0.0) > 0
+        ):
             self._cleaner = threading.Thread(target=self._cleanup_loop, daemon=True)
             self._cleaner.start()
 
@@ -1536,6 +1546,7 @@ class JobManager:
                 generation_quality_warning=bool(
                     data.get("generation_quality_warning", False)
                 ),
+                cleanup_pending=bool(data.get("cleanup_pending", False)),
             )
             if data.get("created_at"):
                 job.created_at = datetime.fromisoformat(data["created_at"]).timestamp()
@@ -1543,16 +1554,46 @@ class JobManager:
             if job.status in ("queued", "running"):
                 job.status = "error"
                 job.error = "サーバー再起動により中断されました"
+                job.finished_at = time.time()
+                job.cleanup_pending = True
             video = status_path.parent / data.get("video", "")
             if data.get("video") and video.exists():
                 job.video = video
             self.jobs[job.id] = job
 
-    def _scrub_terminal_jobs(self) -> None:
+    def _cleanup_orphan_job_dirs(self) -> None:
+        """Remove incomplete uploads that never acquired a durable status file."""
+        if not self.jobs_dir.is_dir():
+            return
+        for directory in self.jobs_dir.iterdir():
+            if (
+                not directory.is_dir()
+                or directory.is_symlink()
+                or re.fullmatch(r"[0-9a-f]{8}", directory.name) is None
+                or (directory / STATUS_FILENAME).exists()
+            ):
+                continue
+            try:
+                shutil.rmtree(directory)
+                logger.warning(
+                    "[job %s] 状態保存前に残った入力を起動時に削除しました",
+                    directory.name,
+                )
+            except OSError:
+                self._pending_deletions[directory.name] = directory
+                logger.exception(
+                    "[job %s] 状態のない入力ディレクトリを削除できません",
+                    directory.name,
+                )
+
+    def _scrub_terminal_jobs(self, *, pending_only: bool = False) -> None:
         """Remove private inputs left by older releases from terminal jobs."""
         for job in list(self.jobs.values()):
+            if pending_only and not job.cleanup_pending:
+                continue
             if job.status in {"error", "canceled"}:
                 self._cleanup_failed_artifacts(job)
+                self._save(job)
                 continue
             if (
                 not self.config.get("scrub_private_artifacts")
@@ -1562,12 +1603,13 @@ class JobManager:
                 continue
             try:
                 self._cleanup_completed_artifacts(job)
+                job.cleanup_pending = False
             except Exception as exc:  # noqa: BLE001 - fail closed on private data
                 logger.exception("[job %s] 完了済みジョブの機密データ清掃に失敗", job.id)
                 job.error = f"完了後の一時データ削除に失敗しました: {exc}"
                 job.status = "error"
                 self._cleanup_failed_artifacts(job)
-                self._save(job)
+            self._save(job)
 
     def create(
         self,
@@ -1586,39 +1628,54 @@ class JobManager:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
         job_dir.mkdir(parents=True)
-        if audio is not None:
-            (job_dir / "input.wav").write_bytes(audio)
-        elif midi is not None:
-            (job_dir / "input.mid").write_bytes(midi)
-        else:
-            raise ValueError("MIDIまたはWAVが必要です")
-        # 自作の単語リスト(正規化済みCSV)はこのジョブの中だけに置く。
-        # 名前は params["wordlist_csv"] 側で決まっている(custom_wordlist_name)
-        if wordlist_csv:
-            wl_dir = job_dir / WORDLIST_DIRNAME
-            wl_dir.mkdir(exist_ok=True)
-            if wordlist_images:
-                wordlist_csv = _store_wordlist_images(wl_dir, wordlist_csv, wordlist_images)
-            (wl_dir / str(params["wordlist_csv"])).write_text(
-                wordlist_csv, encoding="utf-8"
+        job: Job | None = None
+        try:
+            if audio is not None:
+                (job_dir / "input.wav").write_bytes(audio)
+            elif midi is not None:
+                (job_dir / "input.mid").write_bytes(midi)
+            else:
+                raise ValueError("MIDIまたはWAVが必要です")
+            # 自作の単語リスト(正規化済みCSV)はこのジョブの中だけに置く。
+            # 名前は params["wordlist_csv"] 側で決まっている(custom_wordlist_name)
+            if wordlist_csv:
+                wl_dir = job_dir / WORDLIST_DIRNAME
+                wl_dir.mkdir(exist_ok=True)
+                if wordlist_images:
+                    wordlist_csv = _store_wordlist_images(
+                        wl_dir, wordlist_csv, wordlist_images
+                    )
+                (wl_dir / str(params["wordlist_csv"])).write_text(
+                    wordlist_csv, encoding="utf-8"
+                )
+            if editor:
+                (job_dir / "editor.json").write_bytes(editor)
+            if lyrics.strip():
+                (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
+            if layout_json.strip():
+                (job_dir / LAYOUT_FILENAME).write_text(layout_json, encoding="utf-8")
+            job = Job(
+                id=job_id,
+                dir=job_dir,
+                params=params,
+                owner=owner,
+                client_hash=client_hash,
+                submission_id=submission_id,
             )
-        if editor:
-            (job_dir / "editor.json").write_bytes(editor)
-        if lyrics.strip():
-            (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
-        if layout_json.strip():
-            (job_dir / LAYOUT_FILENAME).write_text(layout_json, encoding="utf-8")
-        job = Job(
-            id=job_id,
-            dir=job_dir,
-            params=params,
-            owner=owner,
-            client_hash=client_hash,
-            submission_id=submission_id,
-        )
-        with self._lock:
-            self.jobs[job_id] = job
-        self._save(job)
+            with self._lock:
+                self.jobs[job_id] = job
+            self._save(job)
+        except Exception:
+            with self._lock:
+                self.jobs.pop(job_id, None)
+            try:
+                shutil.rmtree(job_dir)
+            except OSError:
+                logger.exception(
+                    "[job %s] 受付失敗後の入力削除に失敗しました", job_id
+                )
+            raise
+        assert job is not None
         self._queue.put(job)
         return job
 
@@ -1726,13 +1783,34 @@ class JobManager:
         return counts
 
     def _cleanup_loop(self) -> None:
-        """完了から一定時間経ったジョブを定期的に消す(公開インスタンスの容量対策)。"""
+        """Retry privacy cleanup and remove results past their retention period."""
         while True:
             time.sleep(CLEANUP_INTERVAL_SECONDS)
             try:
+                self._scrub_terminal_jobs(pending_only=True)
+                self._retry_pending_deletions()
                 self.cleanup_expired()
             except Exception:  # noqa: BLE001 - 掃除の失敗でスレッドを落とさない
                 logger.exception("ジョブの自動削除に失敗しました")
+
+    def _retry_pending_deletions(self) -> None:
+        for job_id, directory in list(self._pending_deletions.items()):
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.exception("[job %s] 保存期限後の削除を再試行できません", job_id)
+                continue
+            self._pending_deletions.pop(job_id, None)
+            logger.info("[job %s] 保存期限後の削除再試行が完了しました", job_id)
+
+    def pending_cleanup_count(self) -> int:
+        return (
+            sum(1 for job in list(self.jobs.values()) if job.cleanup_pending)
+            + len(self._pending_deletions)
+            + int(self._editor_cleanup_failed)
+        )
 
     def cleanup_expired(self, now: float | None = None) -> list[str]:
         """SORAMIMIC_JOB_TTL_HOURS を過ぎた完了ジョブを削除し、そのIDを返す。
@@ -1753,18 +1831,32 @@ class JobManager:
             for job in expired:
                 self.jobs.pop(job.id, None)
         for job in expired:
-            shutil.rmtree(job.dir, ignore_errors=True)
-            logger.info("[job %s] 保存期間を過ぎたので削除しました", job.id)
+            try:
+                shutil.rmtree(job.dir)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                self._pending_deletions[job.id] = job.dir
+                logger.exception(
+                    "[job %s] 保存期限後の削除に失敗したため再試行します", job.id
+                )
+            else:
+                logger.info("[job %s] 保存期間を過ぎたので削除しました", job.id)
 
         # 自作リストのeditorセッションも同じTTLで掃除する。保存処理は同じ
         # fingerprintを再利用するたびCSVを書き直すので、mtimeが最終利用時刻になる。
         from .editor_io import cleanup_editor_sessions
 
-        cleanup_editor_sessions(
-            self.config.get("editor_sessions"),
-            hours * 3600,
-            now=time.time() if now is None else now,
-        )
+        try:
+            cleanup_editor_sessions(
+                self.config.get("editor_sessions"),
+                hours * 3600,
+                now=time.time() if now is None else now,
+            )
+            self._editor_cleanup_failed = False
+        except Exception:
+            self._editor_cleanup_failed = True
+            raise
         return [job.id for job in expired]
 
     def _save(self, job: Job) -> None:
@@ -1782,6 +1874,8 @@ class JobManager:
             data["submission_id"] = job.submission_id
         if job.finished_at:
             data["finished_at"] = job.finished_at
+        if job.cleanup_pending:
+            data["cleanup_pending"] = True
         if job.video:
             # job.video が絶対パス・job.dir が相対パスの組み合わせでも落ちない
             # よう、両方を resolve してから相対化する。ジョブディレクトリ外の
@@ -1812,19 +1906,22 @@ class JobManager:
             # ワーカーは1本なので、実行中プロセス=このジョブのもの
             runproc.kill_current()
         else:
-            self._cleanup_failed_artifacts(job)
             job.status = "canceled"
+            job.finished_at = time.time()
+            self._cleanup_failed_artifacts(job)
             self._save(job)
         return job
 
-    def _cleanup_failed_artifacts(self, job: Job) -> None:
+    def _cleanup_failed_artifacts(self, job: Job) -> bool:
         """Remove uploads/intermediates after errors and cancellation, retaining status."""
         root = job.dir.resolve()
         if root.parent != self.jobs_dir.resolve() or not root.is_dir():
             logger.error("[job %s] 不正なジョブ保存先のため清掃を拒否しました", job.id)
-            return
+            job.cleanup_pending = True
+            return False
+        failures = False
         for child in root.iterdir():
-            if child.name in (STATUS_FILENAME, f"{STATUS_FILENAME}.tmp"):
+            if child.name == STATUS_FILENAME:
                 continue
             try:
                 if child.is_dir() and not child.is_symlink():
@@ -1832,7 +1929,10 @@ class JobManager:
                 else:
                     child.unlink(missing_ok=True)
             except OSError:
+                failures = True
                 logger.exception("[job %s] 失敗時の一時ファイル清掃に失敗", job.id)
+        job.cleanup_pending = failures
+        return not failures
 
     def _cleanup_completed_artifacts(self, job: Job) -> None:
         """Keep only downloadable results; remove uploads and work products.
@@ -1856,7 +1956,6 @@ class JobManager:
         keep = {
             video,
             (root / STATUS_FILENAME).resolve(),
-            (root / f"{STATUS_FILENAME}.tmp").resolve(),
         }
         if job.thumbnail.is_file() and not job.thumbnail.is_symlink():
             keep.add(job.thumbnail.resolve())
@@ -1898,7 +1997,9 @@ class JobManager:
             except Exception as exc:  # noqa: BLE001 - ワーカー存続を最優先
                 job.status = "error"
                 job.error = job.error or f"ワーカー内部エラー: {exc}"
+                job.finished_at = job.finished_at or time.time()
                 logger.exception("[job %s] ワーカー内部エラー", job.id)
+                self._cleanup_failed_artifacts(job)
                 try:
                     self._save(job)
                 except Exception:
@@ -2347,6 +2448,8 @@ def create_app(
             ),
             "particle_reading": particle_reading,
         }
+        if is_public_mode():
+            checks["privacy_cleanup"] = manager.pending_cleanup_count() == 0
         from .audio_inference import configured_url, service_available
 
         if configured_url() is not None:
@@ -2368,6 +2471,7 @@ def create_app(
             f'soramimic_jobs{{status="{status}"}} {count}\n'
             for status, count in counts.items()
         )
+        body += f"soramimic_privacy_cleanup_pending {manager.pending_cleanup_count()}\n"
         return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
 
     @app.get("/openapi.json", include_in_schema=False)
@@ -2458,8 +2562,10 @@ def create_app(
                 data_handling = (
                     '<section aria-labelledby="data-handling-title">'
                     '<h2 id="data-handling-title">データの取り扱い</h2>'
-                    '<p>元の音源・歌詞と解析用データは処理終了時に削除します。'
-                    f'完成動画は{retention_label}後に自動削除します。'
+                    '<p>元の音源・歌詞と解析用データは処理終了時に削除し、'
+                    '失敗した場合は自動で再試行します。'
+                    f'完成動画は{retention_label}の保存期間を過ぎたものから'
+                    '定期的に自動削除します。'
                     '入力内容をAIモデルの学習には使用しません。</p>'
                     '</section>'
                 )
