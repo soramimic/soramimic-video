@@ -1255,6 +1255,32 @@ def test_svg_to_png_keeps_viewbox_ratio():
         assert img.size == (640, 400)  # viewBox 320x200 の比を保つ
 
 
+def test_svg_to_png_adds_linux_japanese_font_fallback(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import soramimic_video.video as video_mod
+
+    captured: dict[str, bytes] = {}
+
+    def fake_svg2png(*, bytestring, output_width):
+        captured["svg"] = bytestring
+        assert output_width == 640
+        return b"png"
+
+    monkeypatch.setitem(sys.modules, "cairosvg", SimpleNamespace(svg2png=fake_svg2png))
+    monkeypatch.setattr(video_mod, "_svg_japanese_font_family", lambda: b"Test CJK")
+    assert video_mod.svg_to_png(SVG_FIXTURE, width=640) == b"png"
+    assert b"Test CJK" in captured["svg"]
+    assert b'font-family="Test CJK,\'Hiragino Sans\'' in captured["svg"]
+    assert (
+        video_mod._svg_with_japanese_font_fallback(
+            b'<text font-family="monospace">No.0001</text>', b"Test CJK"
+        )
+        == b'<text font-family="monospace">No.0001</text>'
+    )
+
+
 def test_svg_to_png_returns_none_for_broken_svg():
     pytest.importorskip("cairosvg")
     from soramimic_video.video import svg_to_png
@@ -1283,12 +1309,13 @@ def test_cached_image_converts_legacy_svg_cache(tmp_path: Path):
     pytest.importorskip("cairosvg")
     from PIL import Image
 
+    import soramimic_video.video as video_mod
     from soramimic_video.video import cached_image
 
     url = "https://example.com/card.svg"
     cache = tmp_path / "cache"
     cache.mkdir()
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = video_mod._image_cache_stem(url)
     legacy = cache / f"{name}.img"  # 旧バージョンはSVGを .img で置いていた
     legacy.write_bytes(SVG_FIXTURE)
 

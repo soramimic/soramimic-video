@@ -251,6 +251,22 @@ def _mix_with_recorded_gain(
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_mix_normalizes_final_output_for_phone_playback(tmp_path: Path):
+    acc = make_tone(tmp_path / "acc.wav", -8)
+    vocal = vocal_path(tmp_path)
+    vocal.parent.mkdir(parents=True, exist_ok=True)
+    make_tone(vocal, -30)
+    project = Project(
+        song=SongInfo(midi_path="", ticks_per_beat=480, accompaniment_path=str(acc))
+    )
+
+    out = mix(project, tmp_path)
+    loudness = measure_loudness(out)
+    assert loudness is not None
+    assert loudness == pytest.approx(-14.0, abs=1.0)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
 def test_mix_auto_lowers_gain_for_quiet_vocal(tmp_path: Path, monkeypatch):
     gain = _mix_with_recorded_gain(tmp_path, monkeypatch, vocal_db=-30, acc_db=-8)
     assert ACCOMPANIMENT_GAIN_MIN <= gain < ACCOMPANIMENT_GAIN_MAX
