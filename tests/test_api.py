@@ -2176,6 +2176,13 @@ def test_brand_symbols_are_public_versioned_transparent_png(client):
         )
 
 
+def test_index_declares_versioned_brand_favicon(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert '<link rel="icon" href="/logo-soramimic-symbol-v3.png">' in response.text
+
+
 def test_designer_wordmarks_are_public_versioned_transparent_png(client):
     from PIL import Image
 

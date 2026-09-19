@@ -38,6 +38,7 @@ import time
 import traceback
 import uuid
 from collections import deque
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -2829,21 +2830,20 @@ def create_app(
             ) from exc
         return resolved
 
-    def _asset_preview_row(wordlist: str, url: str) -> dict[str, str] | None:
-        """指定URLまたは代表画像の、名前付きCSVに実在する行だけを返す。"""
+    def _asset_preview_rows(wordlist: str, url: str) -> Iterator[dict[str, str]]:
+        """指定URLまたは代表画像候補をCSV順に返す。"""
         try:
             path = _asset_preview_wordlist_path(wordlist)
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, encoding="utf-8") as f:
-                rows = csv.DictReader(f)
-                if url:
-                    return next((row for row in rows if row.get("image") == url), None)
-                first = next(rows, None)
-                if first and first.get("image"):
-                    return first
-                return next((row for row in rows if row.get("image")), None)
+                for row in csv.DictReader(f):
+                    image = row.get("image")
+                    if image and (not url or image == url):
+                        yield row
+                        if url:
+                            return
         except (FileNotFoundError, OSError):
-            return None
+            return
 
     @app.get("/api/image-sources", dependencies=[Depends(_require_api_key)])
     def image_sources(wordlist: str) -> list[dict[str, str]]:
@@ -2867,7 +2867,7 @@ def create_app(
         指定した名前付き単語リストのimage列に実在するURLだけを対象にする。
         url未指定時は代表行(単語リストの最初の画像あり行)の画像。
         """
-        from .asset_store import verified_preview_asset
+        from .asset_store import configured_asset_store, verified_preview_asset
         from .image_usage import require_image_usage
         from .video import cached_image
 
@@ -2875,52 +2875,68 @@ def create_app(
         # URL照合にもCSV走査が要るため、cache判定より先に広いhit枠を適用する。
         if not _allow_expensive_get(request, cache_hit=True):
             raise HTTPException(status_code=429, detail="画像の取得が続いています")
-        row = _asset_preview_row(wordlist, url)
-        if row is None or not row.get("image"):
-            raise HTTPException(status_code=404, detail="画像が見つかりません")
-        target = row["image"]
-        try:
-            require_image_usage(
-                row,
-                allow_noncommercial_fanwork=noncommercial_fanwork,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-        parsed = urlsplit(target)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise HTTPException(status_code=404, detail="画像が見つかりません")
-
-        managed, path, revision, source_sha256 = verified_preview_asset(target)
         cache_dir = jobs_dir.resolve() / "image-cache"
-        if not managed:
-            path = cached_image(target, cache_dir)
-        if path is None:
-            raise HTTPException(status_code=404, detail="画像を取得できません")
-        if not managed:
+        # A configured store is authoritative and lets the representative-image
+        # request cheaply skip a stale/unavailable first row. A URL-specific
+        # request must remain exact, and an installation without a store keeps
+        # the old single-network-fetch behavior.
+        allow_representative_fallback = not url and configured_asset_store() is not None
+        failure_detail = "画像が見つかりません"
+        for row in _asset_preview_rows(wordlist, url):
+            target = row["image"]
             try:
-                resolved_cache = cache_dir.resolve(strict=True)
-                if path.is_symlink():
-                    raise OSError("symlink")
-                path = path.resolve(strict=True)
-                path.relative_to(resolved_cache)
-            except (OSError, ValueError) as exc:
-                raise HTTPException(status_code=404, detail="画像を取得できません") from exc
-        try:
-            with _expensive_get_slot():
-                preview = derive_asset_preview(
-                    path,
-                    config["asset_preview_cache"],
-                    asset_id=target,
-                    source_revision=revision,
-                    expected_sha256=source_sha256,
+                require_image_usage(
+                    row,
+                    allow_noncommercial_fanwork=noncommercial_fanwork,
                 )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail="画像を変換できません") from exc
-        return FileResponse(
-            preview,
-            media_type="image/png",
-            headers={"Cache-Control": "private, no-store"},
-        )
+            except ValueError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            parsed = urlsplit(target)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                if allow_representative_fallback:
+                    continue
+                break
+
+            managed, path, revision, source_sha256 = verified_preview_asset(target)
+            if not managed:
+                path = cached_image(target, cache_dir)
+            if path is None:
+                failure_detail = "画像を取得できません"
+                if allow_representative_fallback:
+                    continue
+                break
+            if not managed:
+                try:
+                    resolved_cache = cache_dir.resolve(strict=True)
+                    if path.is_symlink():
+                        raise OSError("symlink")
+                    path = path.resolve(strict=True)
+                    path.relative_to(resolved_cache)
+                except (OSError, ValueError):
+                    failure_detail = "画像を取得できません"
+                    if allow_representative_fallback:
+                        continue
+                    break
+            try:
+                with _expensive_get_slot():
+                    preview = derive_asset_preview(
+                        path,
+                        config["asset_preview_cache"],
+                        asset_id=target,
+                        source_revision=revision,
+                        expected_sha256=source_sha256,
+                    )
+            except ValueError:
+                failure_detail = "画像を変換できません"
+                if allow_representative_fallback:
+                    continue
+                break
+            return FileResponse(
+                preview,
+                media_type="image/png",
+                headers={"Cache-Control": "private, no-store"},
+            )
+        raise HTTPException(status_code=404, detail=failure_detail)
 
     def _sample_title(sample_id: str) -> tuple[str, str]:
         """サンプル曲の (曲名, 読み)。読みは samples.json の title_kana(無ければ空)。
