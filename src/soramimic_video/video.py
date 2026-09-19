@@ -185,6 +185,11 @@ def extend_for_endroll(total_sec: float, sung_end_sec: float, words: list[str]) 
 
 
 SVG_RASTER_WIDTH = 1280  # SVGをPNGに焼くときの幅(高さは元のviewBox比で決まる)
+# SVG内の日本語テキストへLinuxで利用できるCJKフォントを補った版。
+# 生成カードの配布SVGが ``Noto Sans JP`` を指定していても、サーバには通常
+# ``Noto Sans CJK JP`` というfamily名で入っているため、generic sans-serifへ
+# 落ちると日本語が豆腐になる。値を上げると既存のSVG由来PNGキャッシュも分離される。
+SVG_RASTER_CACHE_VERSION = 3
 
 
 def looks_like_svg(data: bytes) -> bool:
@@ -201,6 +206,43 @@ def looks_like_svg(data: bytes) -> bool:
     return head.startswith((b"<?xml", b"<!--", b"<!DOCTYPE")) and b"<svg" in data[:4096]
 
 
+@lru_cache(maxsize=1)
+def _svg_japanese_font_family() -> bytes | None:
+    """このホストで実際に利用できる日本語フォントのfamily名。"""
+    path = resolve_font_path(None)
+    if path is None:
+        return None
+    getname = getattr(_font(path, 16), "getname", None)
+    if not callable(getname):
+        return None
+    family, _style = getname()
+    return str(family).encode("utf-8")
+
+
+def _svg_with_japanese_font_fallback(
+    data: bytes, family: bytes | None = None
+) -> bytes:
+    """SVGのfont-family先頭へ利用可能な日本語フォントfamilyを追加する。
+
+    CairoSVGのtoy text APIはブラウザのように後続familyへ字形単位でfallback
+    しないため、存在しないHiragino等より前へ置く必要がある。
+    """
+    family = family or _svg_japanese_font_family()
+    if family is None:
+        return data
+
+    def prefix(match: re.Match[bytes]) -> bytes:
+        value = match.group(3)
+        if b"sans-serif" not in value or value.lstrip().startswith(family):
+            return match.group(0)
+        return (
+            match.group(1) + match.group(2) + family
+            + b"," + value + match.group(2)
+        )
+
+    return re.sub(rb"(font-family\s*=\s*)(['\"])(.*?)\2", prefix, data)
+
+
 def svg_to_png(data: bytes, width: int = SVG_RASTER_WIDTH) -> bytes | None:
     """SVGのバイト列をPNGに焼く(失敗したら警告してNone)。
 
@@ -215,7 +257,9 @@ def svg_to_png(data: bytes, width: int = SVG_RASTER_WIDTH) -> bytes | None:
         logger.warning("SVGを変換できません(cairosvgが使えません): %s", e)
         return None
     try:
-        return cairosvg.svg2png(bytestring=data, output_width=width)
+        return cairosvg.svg2png(
+            bytestring=_svg_with_japanese_font_fallback(data), output_width=width
+        )
     except Exception as e:  # noqa: BLE001 - 壊れたSVGでジョブを落とさない
         logger.warning("SVGをPNGに変換できませんでした: %s", e)
         return None
@@ -287,16 +331,28 @@ def image_is_visible(image_path: Path) -> bool:
     return visible.getbbox() is not None
 
 
+def _image_cache_stem(url: str) -> str:
+    """URLベースのキャッシュ名。SVGはラスタライズ仕様もキーへ含める。"""
+    path = url.split("?", 1)[0].split("#", 1)[0]
+    key = url
+    if path.lower().endswith(".svg"):
+        family = (_svg_japanese_font_family() or b"missing").decode(
+            "utf-8", errors="replace"
+        )
+        key = f"{url}#soramimic-svg-raster-v{SVG_RASTER_CACHE_VERSION}-{family}"
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+
 def _cached_raw(url: str, cache_dir: Path) -> Path | None:
     """キャッシュにあるファイル(SVGのままかもしれない)のパス。"""
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = _image_cache_stem(url)
     for p in sorted(cache_dir.glob(f"{name}.*")):
         return p
     return None
 
 
 def _image_metadata_path(url: str, cache_dir: Path) -> Path:
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = _image_cache_stem(url)
     return cache_dir / IMAGE_CACHE_METADATA_DIR / f"{name}.json"
 
 
@@ -326,7 +382,7 @@ def _store_image_revision(
     url: str, cache_dir: Path, extension: str, data: bytes
 ) -> Path | None:
     """新しい画像内容を保存し、同じURLの旧拡張子ファイルだけを取り除く。"""
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = _image_cache_stem(url)
     result = _store_image(cache_dir / f"{name}.{extension}", data)
     # SVG変換失敗時は _store_image が .svg を保存してNoneを返す。その新しいSVGを
     # revision本体として残し、同じURLの古いPNGを誤って選ばない。
@@ -343,7 +399,7 @@ def cached_image(url: str, cache_dir: Path) -> Path | None:
     """すでにキャッシュにある画像のパス(無ければ None)。ダウンロードは一切しない。
 
     ダウンロードを待てない用途(サムネのプレビュー生成など)向け。
-    キーは download_image と同じ URL のsha1先頭16桁。
+    キーは download_image と同じURLベース(SVGだけはラスタ仕様も含む)。
     キャッシュがSVGだったときだけ、その場でPNGへ焼き直して返す(通信はしない)。
     """
     from .asset_store import local_asset

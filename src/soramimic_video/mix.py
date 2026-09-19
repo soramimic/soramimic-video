@@ -32,6 +32,12 @@ ACCOMPANIMENT_GAIN_MAX = 0.6
 ACCOMPANIMENT_GAIN_MIN = 0.15
 # loudnorm が返す無音相当のラウドネス(これ以下は測定失敗とみなす)
 SILENCE_LUFS = -70.0
+# スマホ再生でも聞き取れる最終ミックスの配信用ラウドネス。歌と伴奏の相対
+# バランスを決めた後、全体だけを正規化するので歌声のヘッドルームは維持される。
+TARGET_MIX_LUFS = -14.0
+TARGET_MIX_LRA = 11.0
+TARGET_MIX_TRUE_PEAK_DB = -1.0
+MIX_SAMPLE_RATE = 44100
 
 # GM のリズムチャンネル。noteが音高ではなく打楽器の種類なので移調してはいけない
 DRUM_CHANNEL = 9
@@ -226,7 +232,9 @@ def mix(
         "-filter_complex",
         f"[0:a]volume={accompaniment_gain}[a0];"
         f"[1:a]volume={vocal_gain}[a1];"
-        "[a0][a1]amix=inputs=2:duration=longest:normalize=0[out]",
+        "[a0][a1]amix=inputs=2:duration=longest:normalize=0,"
+        f"loudnorm=I={TARGET_MIX_LUFS}:LRA={TARGET_MIX_LRA}:"
+        f"TP={TARGET_MIX_TRUE_PEAK_DB},aresample={MIX_SAMPLE_RATE}[out]",
         "-map", "[out]",
         str(out),
     ]
