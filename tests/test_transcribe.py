@@ -31,16 +31,20 @@ def test_transcribe_lines_exposes_context_and_vad_choices_and_keeps_defaults(mon
         Path("mix.wav"),
         "small",
         "cpu",
+        language="en",
         vad_filter=False,
         condition_on_previous_text=False,
     )
     assert [(line.start_sec, line.end_sec, line.text) for line in lines] == [
         (1.0, 2.0, "一行目"),
     ]
-    assert calls[-1] == ("run", "mix.wav", "ja", False, False)
+    assert calls[-1] == ("run", "mix.wav", "en", False, False)
 
     transcribe_lines(Path("vocals.wav"), "small", "cpu")
     assert calls[-1] == ("run", "vocals.wav", "ja", True, True)
+
+    transcribe_lines(Path("auto.wav"), "small", "cpu", language=None)
+    assert calls[-1] == ("run", "auto.wav", None, True, True)
 
 
 def test_transcribe_lines_uses_cpu_when_cuda_memory_is_low(monkeypatch):

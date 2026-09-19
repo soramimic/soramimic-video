@@ -326,6 +326,7 @@ def transcribe_lines_remote(
     model_size: str,
     device: str,
     *,
+    language: str | None = "ja",
     vad_filter: bool,
     condition_on_previous_text: bool,
 ):
@@ -337,12 +338,18 @@ def transcribe_lines_remote(
         {
             "model_size": model_size,
             "device": device,
+            "language": language,
             "vad_filter": vad_filter,
             "condition_on_previous_text": condition_on_previous_text,
         },
     )
     if not isinstance(result, dict) or not isinstance(result.get("lines"), list):
         raise RuntimeError("共有Whisperの応答形式が不正です")
+    if "requested_language" in result:
+        if result["requested_language"] != language:
+            raise RuntimeError("共有Whisperの言語指定応答が不正です")
+    elif language != "ja":
+        raise RuntimeError("共有Whisperサービスが言語指定に対応していません")
     return [
         TranscribedLine(
             start_sec=float(line["start_sec"]),
@@ -598,10 +605,13 @@ class InferenceScheduler:
 
             model_size = str(job.parameters.get("model_size") or "large-v3")
             device = self._job_device(job)
+            language = job.parameters.get("language", "ja")
+            assert language is None or isinstance(language, str)
             lines = _transcribe_lines_local(
                 job.audio_path,
                 model_size,
                 device,
+                language=language,
                 vad_filter=bool(job.parameters.get("vad_filter", True)),
                 condition_on_previous_text=bool(
                     job.parameters.get("condition_on_previous_text", True)
@@ -611,6 +621,7 @@ class InferenceScheduler:
                 cancel_check=lambda: self._check_cancelled(job),
             )
             return {
+                "requested_language": language,
                 "lines": [
                     {
                         "start_sec": line.start_sec,
@@ -833,6 +844,17 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
             for option in ("vad_filter", "condition_on_previous_text"):
                 if option in parsed and not isinstance(parsed[option], bool):
                     raise HTTPException(422, f"{option}はbooleanで指定してください")
+            language = parsed.get("language", "ja")
+            if language is not None and (
+                not isinstance(language, str)
+                or len(language) not in (2, 3)
+                or not language.isascii()
+                or not language.isalpha()
+                or not language.islower()
+            ):
+                raise HTTPException(
+                    422, "languageは小文字のWhisper言語コードまたはnullで指定してください"
+                )
         elif kind == "kana-whisper":
             from .kana_whisper import KANA_CONTEXT_MAX_SEC, KANA_MAX_WINDOWS
 
