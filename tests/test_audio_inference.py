@@ -242,6 +242,7 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
                 path.read_bytes(),
                 model_size,
                 device,
+                kwargs["language"],
                 kwargs["cache_model"],
                 kwargs["cuda_capacity_reserved"],
             )
@@ -269,7 +270,9 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
             data={
                 "kind": "whisper",
                 "priority": "preview",
-                "parameters": '{"model_size":"large-v3","device":"auto"}',
+                "parameters": (
+                    '{"model_size":"large-v3","device":"auto","language":"en"}'
+                ),
             },
         )
         assert submitted.status_code == 202
@@ -282,12 +285,40 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
             time.sleep(0.01)
 
         assert response.json()["result"] == {
+            "requested_language": "en",
             "lines": [{"start_sec": 0.1, "end_sec": 0.8, "text": "歌詞"}]
         }
         assert client.delete(f"/v1/jobs/{job_id}").status_code == 204
         assert client.get(f"/v1/jobs/{job_id}").status_code == 404
 
-    assert calls == [(b"wave", "large-v3", "cpu", True, False)]
+    assert calls == [(b"wave", "large-v3", "cpu", "en", True, False)]
+
+
+@pytest.mark.parametrize(
+    ("parameters", "expected_language"),
+    [({}, "ja"), ({"language": None}, None)],
+)
+def test_whisper_worker_defaults_to_japanese_and_allows_detection(
+    monkeypatch, tmp_path, parameters, expected_language
+):
+    from soramimic_video import transcribe
+
+    observed = []
+
+    def transcribe_local(_path, _model_size, _device, **kwargs):
+        observed.append(kwargs["language"])
+        return []
+
+    monkeypatch.setattr(transcribe, "_transcribe_lines_local", transcribe_local)
+    scheduler = InferenceScheduler(tmp_path / "state", device="cpu")
+    job = _queued_job(scheduler, tmp_path, "whisper-language", "dev")
+    job.parameters.update(parameters)
+
+    assert scheduler._run(job) == {
+        "requested_language": expected_language,
+        "lines": [],
+    }
+    assert observed == [expected_language]
 
 
 def test_inference_api_runs_kana_whisper_windows(monkeypatch, tmp_path):
@@ -435,6 +466,24 @@ def test_inference_api_rejects_unconfigured_model(tmp_path):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize("language", ["", "EN", "english", 1, True, [], {}])
+def test_inference_api_rejects_invalid_whisper_language(tmp_path, language):
+    import json
+
+    app = create_audio_inference_app(tmp_path / "state", device="cpu")
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/jobs",
+            files={"audio": ("song.wav", b"wave")},
+            data={
+                "kind": "whisper",
+                "priority": "dev",
+                "parameters": json.dumps({"language": language}),
+            },
+        )
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize(
     "windows",
     [[], [[-1, 2]], [[2, 1]], [[0, 25]], [[2, 3], [1, 2]], [[0, "later"]]],
@@ -474,6 +523,7 @@ def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path
         audio,
         "large-v3",
         "auto",
+        language=None,
         vad_filter=False,
         condition_on_previous_text=False,
     )
@@ -482,9 +532,73 @@ def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path
     assert calls == [
         (
             (audio, "large-v3", "auto"),
-            {"vad_filter": False, "condition_on_previous_text": False},
+            {
+                "language": None,
+                "vad_filter": False,
+                "condition_on_previous_text": False,
+            },
         )
     ]
+
+
+def test_remote_whisper_sends_language_and_checks_server_support(monkeypatch, tmp_path):
+    from soramimic_video import audio_inference
+
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"wave")
+    calls = []
+
+    def infer(kind, path, parameters):
+        calls.append((kind, path, parameters))
+        return {"requested_language": "en", "lines": []}
+
+    monkeypatch.setattr(audio_inference, "_remote_inference", infer)
+
+    assert audio_inference.transcribe_lines_remote(
+        audio,
+        "large-v3",
+        "auto",
+        language="en",
+        vad_filter=False,
+        condition_on_previous_text=False,
+    ) == []
+    assert calls == [
+        (
+            "whisper",
+            audio,
+            {
+                "model_size": "large-v3",
+                "device": "auto",
+                "language": "en",
+                "vad_filter": False,
+                "condition_on_previous_text": False,
+            },
+        )
+    ]
+
+
+def test_remote_whisper_rejects_legacy_server_for_nondefault_language(
+    monkeypatch, tmp_path
+):
+    from soramimic_video import audio_inference
+
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"wave")
+    monkeypatch.setattr(
+        audio_inference,
+        "_remote_inference",
+        lambda *_args, **_kwargs: {"lines": []},
+    )
+
+    with pytest.raises(RuntimeError, match="言語指定に対応していません"):
+        audio_inference.transcribe_lines_remote(
+            audio,
+            "large-v3",
+            "auto",
+            language=None,
+            vad_filter=False,
+            condition_on_previous_text=False,
+        )
 
 
 def test_kana_whisper_delegates_to_configured_shared_service(monkeypatch, tmp_path):
