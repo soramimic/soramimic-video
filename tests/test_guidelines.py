@@ -55,7 +55,7 @@ def test_guidelines_are_public_and_deduplicate_existing_terms(client):
     assert "規約1" in response.text and "規約2" in response.text
     assert 'href="/"' in response.text
     assert '<h2 id="generation-tips">生成しやすい曲のヒント</h2>' in response.text
-    assert "主旋律の歌声がはっきり聞こえる、日本語のソロ歌唱曲" in response.text
+    assert "ボーカルがはっきり聞こえる、日本語のソロ歌唱曲" in response.text
 
 
 @pytest.mark.parametrize("wordlist", ["first", "second", "unknown", "empty", ""])
