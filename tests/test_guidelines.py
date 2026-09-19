@@ -111,8 +111,10 @@ def test_public_guidelines_explain_data_handling(client, monkeypatch):
     response = browser.get("/guidelines")
 
     assert '<h2 id="data-handling-title">データの取り扱い</h2>' in response.text
-    assert "元の音源・歌詞と解析用データは処理終了時に削除します。" in response.text
-    assert "完成動画は24時間後に自動削除します。" in response.text
+    assert "元の音源・歌詞と解析用データは処理終了時に削除し、" in response.text
+    assert "失敗した場合は自動で再試行します。" in response.text
+    assert "完成動画は24時間の保存期間を過ぎたものから" in response.text
+    assert "定期的に自動削除します。" in response.text
     assert "入力内容をAIモデルの学習には使用しません。" in response.text
     assert '<a href="#data-handling-title">データの取り扱い</a>' in response.text
     assert response.text.index('id="guidelines-title"') < response.text.index(
