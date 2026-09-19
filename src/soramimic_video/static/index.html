@@ -6818,7 +6818,7 @@ async function loadWordlistSelect(editorAvailable) {
       const name = w.filepath.replace(/.*\//, "").replace(/\.csv$/, "");
       return !HIDDEN_UI_WORDLISTS.has(name);
     });
-    if (simpleMode) {
+    if (launchWordlists.length) {
       const allowed = new Set(launchWordlists);
       entries = entries.filter((w) => {
         const name = w.filepath.replace(/.*\//, "").replace(/\.csv$/, "");
@@ -6840,7 +6840,7 @@ async function loadWordlistSelect(editorAvailable) {
     g.entries.push(w);
   });
   wordlistGroups = [...map.values()];
-  if (simpleMode) {
+  if (launchWordlists.length) {
     const order = new Map(launchWordlists.map((name, i) => [name, i]));
     wordlistGroups.sort((a, b) => order.get(a.name) - order.get(b.name));
   }
