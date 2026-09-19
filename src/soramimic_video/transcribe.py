@@ -72,13 +72,14 @@ def _run_whisper(
     whisper_model: Any,
     vocals_path: Path,
     *,
+    language: str | None,
     vad_filter: bool,
     condition_on_previous_text: bool,
     cancel_check: Callable[[], Any] | None = None,
 ) -> tuple[list[TranscribedLine], Any]:
     segments, info = whisper_model.transcribe(
         str(vocals_path),
-        language="ja",
+        language=language,
         vad_filter=vad_filter,
         condition_on_previous_text=condition_on_previous_text,
     )
@@ -124,6 +125,7 @@ def transcribe_lines(
     model_size: str = DEFAULT_WHISPER_MODEL,
     device: str = "auto",
     *,
+    language: str | None = "ja",
     vad_filter: bool = True,
     condition_on_previous_text: bool = True,
 ) -> list[TranscribedLine]:
@@ -135,6 +137,7 @@ def transcribe_lines(
             vocals_path,
             model_size,
             device,
+            language=language,
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
         )
@@ -142,6 +145,7 @@ def transcribe_lines(
         vocals_path,
         model_size,
         device,
+        language=language,
         vad_filter=vad_filter,
         condition_on_previous_text=condition_on_previous_text,
     )
@@ -153,6 +157,8 @@ def transcribe_window(
     end_sec: float,
     model_size: str = DEFAULT_WHISPER_MODEL,
     device: str = "auto",
+    *,
+    language: str | None = "ja",
 ) -> list[TranscribedLine]:
     """Transcribe one hard-bounded audio interval and restore song-clock times."""
     if start_sec < 0 or end_sec <= start_sec:
@@ -176,6 +182,7 @@ def transcribe_window(
             clip,
             model_size,
             device,
+            language=language,
             vad_filter=False,
             condition_on_previous_text=False,
         )
@@ -196,6 +203,7 @@ def _transcribe_lines_local(
     model_size: str = DEFAULT_WHISPER_MODEL,
     device: str = "auto",
     *,
+    language: str | None = "ja",
     vad_filter: bool = True,
     condition_on_previous_text: bool = True,
     cache_model: bool = False,
@@ -232,6 +240,7 @@ def _transcribe_lines_local(
         lines, info = _run_whisper(
             model,
             vocals_path,
+            language=language,
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
             cancel_check=cancel_check,
@@ -252,6 +261,7 @@ def _transcribe_lines_local(
         lines, info = _run_whisper(
             model,
             vocals_path,
+            language=language,
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
             cancel_check=cancel_check,

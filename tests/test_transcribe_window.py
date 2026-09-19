@@ -53,7 +53,9 @@ def test_transcribe_window_crops_audio_and_restores_absolute_times(monkeypatch, 
 
     monkeypatch.setattr(transcribe, "transcribe_lines", recognize)
 
-    lines = transcribe.transcribe_window(audio, 2.0, 3.0, "large-v3", "cpu")
+    lines = transcribe.transcribe_window(
+        audio, 2.0, 3.0, "large-v3", "cpu", language="en"
+    )
 
     assert observed == {
         "seek": 200,
@@ -62,6 +64,10 @@ def test_transcribe_window_crops_audio_and_restores_absolute_times(monkeypatch, 
         "write_options": {"subtype": "FLOAT"},
         "model_size": "large-v3",
         "device": "cpu",
-        "options": {"vad_filter": False, "condition_on_previous_text": False},
+        "options": {
+            "language": "en",
+            "vad_filter": False,
+            "condition_on_previous_text": False,
+        },
     }
     assert lines == [TranscribedLine(2.2, 3.0, "歌")]
