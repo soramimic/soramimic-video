@@ -2699,10 +2699,15 @@ def create_app(
             "audio_analysis": audio_analysis,
             "max_audio_upload_bytes": max_audio_upload_bytes(),
         }
-        if is_simple_ui():
+        # Public deployments use the launch catalog as an allowlist even when the
+        # full settings UI is enabled.  The API already enforces the same list;
+        # expose it so the browser does not advertise choices that will be rejected.
+        launch: dict[str, Any] = {}
+        if is_public_mode() or is_simple_ui():
             launch = load_launch_catalog()
-            conf["simple_ui"] = True
             conf["launch_wordlists"] = launch.get("wordlists", [])
+        if is_simple_ui():
+            conf["simple_ui"] = True
             conf["fixed_voicevox_style"] = int(launch.get("voicevox_style", 3003))
             # 初回版は「曲×単語リスト」の核だけを見せる。エディタと
             # 自作リストは後続アップデートで導線を開ける。

@@ -132,12 +132,13 @@ def test_builder_omits_editor_entry_button():
         assert btn in ids
 
 
-def test_simple_ui_hides_advanced_and_filters_wordlists():
-    """初回公開版は詳細設定を隠し、サーバーが返したカタログだけ出す。"""
+def test_public_ui_filters_wordlists_and_simple_ui_hides_advanced():
+    """公開UIはカタログだけを出し、簡易UIではさらに詳細設定を隠す。"""
     script = _script()
     assert '$("advanced").hidden = simpleMode;' in script
     assert "loadWordlistSelect(conf.wordlist_config ?? conf.editor)" in script
     assert "const allowed = new Set(launchWordlists);" in script
+    assert "if (launchWordlists.length)" in script
     assert "return allowed.has(name);" in script
     defaults = _function_body(script, "function applyFixedUiDefaults()")
     assert '$("synthesizer").value = "voicevox"' in defaults
