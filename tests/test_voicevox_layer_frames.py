@@ -41,6 +41,24 @@ def test_short_line_borrows_from_idle_time_without_crossing_next_line():
     assert sum(note["frame_length"] for note in score) == 40
 
 
+def test_spoken_fallback_units_get_audible_articulation_time():
+    value = layered([
+        (20, 21, "カ", 0), (21, 22, "キ", 0), (50, 60, "ク", 1),
+    ])
+    value.notes[0].source = "spoken"
+    value.notes[1].source = "spoken"
+
+    score = vv.build_score(value)["notes"]
+    sung = [note for note in score if note["key"] is not None]
+
+    assert [note["lyric"] for note in sung] == list("カキク")
+    assert all(
+        note["frame_length"] >= vv.SPOKEN_ARTICULATION_FRAMES
+        for note in sung[:2]
+    )
+    assert sum(note["frame_length"] for note in score) == 60
+
+
 @pytest.mark.parametrize("specs", [
     [(20, 23, "カキ", 0)], [(0, 3, "カ", 0)],
     [(20, 21, "カ", 0), (21, 23, "キ", 0)],
