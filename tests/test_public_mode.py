@@ -504,6 +504,7 @@ def test_public_config_reports_limits(public_app, monkeypatch):
     conf = TestClient(public_app).get("/api/config").json()
     assert conf["public"] is True
     assert conf["daily_quota"] == 3 and conf["max_song_seconds"] == 300
+    assert conf["launch_wordlists"] == api_mod.load_launch_catalog()["wordlists"]
 
 
 def test_index_html_turnstile_and_credit():
@@ -558,6 +559,7 @@ def test_private_config_has_no_public_keys(tmp_path, monkeypatch):
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
     conf = client.get("/api/config").json()
     assert "public" not in conf and "daily_quota" not in conf
+    assert "launch_wordlists" not in conf
 
 
 def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
