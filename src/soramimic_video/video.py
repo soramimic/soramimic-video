@@ -49,7 +49,6 @@ from . import runproc
 from .image_credit import USER_AGENT, fetch_image_credit, http_get_with_retry
 from .kana import normalize_long_vowels
 from .layout import (
-    APP_CREDIT,
     DEFAULT_SUBTITLES,
     ImageElement,
     Layout,
@@ -57,6 +56,7 @@ from .layout import (
     _font,
     _require_met,
     _SafeDict,
+    app_credit_for_wordlist,
     is_missing,
     load_layout,
     render_frame,
@@ -103,9 +103,6 @@ DEFAULT_VIDEO_FPS = 30
 # カードは発声と同時よりわずかに先に見せる方が、知覚上の遅れを感じにくい。
 # 30fpsでは3フレーム。音声・字幕の時刻は動かさない。
 DEFAULT_IMAGE_LEAD_SEC = 0.1
-RENDERED_FRAME_CACHE_DIR = "rendered-frames"
-RENDERED_FRAME_CACHE_TTL_SEC = 30 * 24 * 3600
-RENDERED_FRAME_CACHE_MAX = 4000
 IMAGE_CACHE_METADATA_DIR = ".metadata"
 IMAGE_CACHE_REVALIDATE_SEC = 24 * 3600
 
@@ -497,35 +494,6 @@ def image_cache_dir(work: Path, image_cache: Path | None = None) -> Path:
     )
 
 
-def prune_rendered_frame_cache(
-    cache_dir: Path,
-    ttl_sec: float = RENDERED_FRAME_CACHE_TTL_SEC,
-    max_entries: int = RENDERED_FRAME_CACHE_MAX,
-    now: float | None = None,
-) -> list[Path]:
-    """共有フレームPNGをTTL超過→上限超過の順で古いものから刈る。"""
-    if not cache_dir.is_dir():
-        return []
-    current = time.time() if now is None else now
-    entries: list[tuple[float, Path]] = []
-    for path in cache_dir.glob("frame_*.png"):
-        try:
-            entries.append((path.stat().st_mtime, path))
-        except OSError:
-            continue
-    removed = {path for mtime, path in entries if current - mtime > ttl_sec}
-    kept = sorted(
-        ((mtime, path) for mtime, path in entries if path not in removed),
-        reverse=True,
-    )
-    removed.update(path for _, path in kept[max_entries:])
-    for path in removed:
-        path.unlink(missing_ok=True)
-    if removed:
-        logger.info("共有フレームキャッシュを%d件削除しました", len(removed))
-    return sorted(removed)
-
-
 def _black_frame(out_dir: Path, width: int, height: int) -> Path:
     out = out_dir / f"black_{width}x{height}.png"
     if not out.exists():
@@ -592,6 +560,20 @@ class ImageCue:
     start: float
     end: float
     frame: Path
+    credits: tuple[dict, ...] = ()
+
+
+def credits_for_cues(cues: list[ImageCue]) -> list[dict]:
+    from .credits import FIELDS
+
+    found: dict[tuple[str, ...], dict] = {}
+    for cue in cues:
+        if cue.end <= cue.start:
+            continue
+        for item in cue.credits:
+            key = tuple(str(item.get(field) or "") for field in FIELDS)
+            found.setdefault(key, item)
+    return list(found.values())
 
 
 def word_frame_data(word: ParodyWord, row: dict) -> dict:
@@ -618,7 +600,7 @@ def idle_frame_data(project: Project, app_credit: str = "") -> dict:
     """
     title = Path(project.song.midi_path).stem if project.song.midi_path else ""
     wordlist = project.parody.wordlist if project.parody else ""
-    return {"title": title, "wordlist": wordlist, "app_credit": app_credit or APP_CREDIT}
+    return {"title": title, "wordlist": wordlist, "app_credit": app_credit or app_credit_for_wordlist(wordlist)}
 
 
 # ---- 歌唱なし区間(前奏・間奏・後奏) ----
@@ -772,7 +754,7 @@ def image_credits_text(credits: list[dict]) -> str:
 
     動画本編では画像ごとに右下へ焼き込んでいる文言を、後奏でまとめて出すため。
     """
-    texts = (str(c.get("credit") or "").strip() for c in credits)
+    texts = (str(c.get("image_credit") or c.get("credit") or "").strip() for c in credits)
     return " / ".join(dict.fromkeys(t for t in texts if t))
 
 
@@ -921,7 +903,9 @@ def build_section_cues(
                 t = end
             if show_credits and t < sec.end:
                 data = section_frame_data(
-                    project, app_credit_text(synth_credit), "credits", sec.duration,
+                    project, app_credit_text(
+                        synth_credit, wordlist=project.parody.wordlist if project.parody else "",
+                    ), "credits", sec.duration,
                     image_credits=credit_text, synth_credit=synth_credit,
                     original_song=original_song,
                     original_display_credit=original_display_credit,
@@ -952,6 +936,7 @@ def app_credit_text(
     *,
     original_song: str = "",
     original_display_credit: str = "",
+    wordlist: str = "",
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
@@ -964,7 +949,7 @@ def app_credit_text(
     song = (original_song or "").strip()
     notice = (credit_notice or "").strip()
     display_credit = (original_display_credit or "").strip()
-    parts = [APP_CREDIT]
+    parts = [app_credit_for_wordlist(wordlist)]
     if synth:
         parts.append(synth)
     original = " — ".join(part for part in (song, display_credit or notice) if part)
@@ -1144,6 +1129,7 @@ def build_image_cues(
     layout: Layout | None = None,
     app_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
+    allow_noncommercial_fanwork: bool = False,
 ) -> tuple[list[ImageCue], list[dict]]:
     """替え歌単語の歌唱区間に対応するフレームキュー列と、使用画像のクレジット情報。
 
@@ -1159,15 +1145,21 @@ def build_image_cues(
     if layout is None:
         layout = load_layout(None)
     frames = collect_word_frames(project, layout)
+    from .image_usage import require_image_usage
+
+    for wf in frames:
+        if wf.data.get("image"):
+            require_image_usage(
+                wf.data,
+                allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+            )
 
     cues: list[ImageCue] = []
-    credits: dict[str, dict] = {}
+    credits: dict[tuple[str, ...], dict] = {}
     cache = image_cache_dir(work, image_cache)
-    # 画像と同じ共有キャッシュ配下へ置き、同じ単語・レイアウトのPNGをジョブ間で再利用する
-    norm = cache / RENDERED_FRAME_CACHE_DIR
-    # 描画前に刈る。描画後だと、上限を超える巨大ジョブでこのあとffmpegが読む
-    # フレームまで削除しかねない。
-    prune_rendered_frame_cache(norm)
+    # 描画PNGには元歌詞など利用者由来の文字が入り得るため、共有画像キャッシュへ
+    # 置かずジョブ内だけで再利用する。完了時に動画へ焼き込み済みなので削除される。
+    norm = work / "rendered-frames"
     # 逐次ループが読む画像/クレジットを先に並列で温める(キャッシュが冷えていると
     # 1単語あたり画像DL+クレジット取得で数秒かかり、単語数ぶん直列に積み上がるため)
     _prefetch_image_assets(frames, cache)
@@ -1177,7 +1169,7 @@ def build_image_cues(
         start = max(0.0, wf.start - image_lead_sec)
         data, use_fallback = wf.data, wf.use_fallback
         # 全フレーム共通の署名(レイアウトが左下に焼き込む)
-        data["app_credit"] = app_credit or APP_CREDIT
+        data["app_credit"] = app_credit or app_credit_for_wordlist(project.parody.wordlist)
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
         raw = download_image(url, cache) if url else None
@@ -1209,15 +1201,29 @@ def build_image_cues(
         if cues and cues[-1].end > start:
             cues[-1].end = start
         cues.append(ImageCue(start=start, end=show_end, frame=frame))
-        if url and raw is not None and url not in credits:
-            credits[url] = {
+        credit_key = tuple(str(data.get(k) or "") for k in (
+            "id", "original", "image", "image_page", "image_credit", "image_terms_page",
+            "image_usage",
+        ))
+        visible_image = any(
+            isinstance(el, ImageElement) and _require_met(el, _SafeDict(data))
+            for el in layout.active_elements(use_fallback)
+        )
+        if url and raw is not None and visible_image:
+            credits[credit_key] = {
+                "id": str(data.get("id") or ""),
+                "org": str(data.get("org") or ""),
+                "image_credit": str(data.get("image_credit") or ""),
                 "word": data["surface"],
                 "original": data["original"],
                 "image": url,
                 "image_page": data.get("image_page", ""),
                 "credit": str(data.get("image_credit") or ""),
+                "image_usage": str(data.get("image_usage") or ""),
+                "image_terms_page": str(data.get("image_terms_page") or ""),
             }
-    return cues, list(credits.values())
+            cues[-1].credits = (credits[credit_key],)
+    return cues, credits_for_cues(cues)
 
 
 def thumbnail_show_end(project: Project) -> float:
@@ -1251,7 +1257,7 @@ def prepend_thumbnail_cue(
         if cue.end <= end:
             continue  # サムネに完全に覆われる単語(字幕はそのまま焼かれる)
         kept.append(
-            ImageCue(start=max(cue.start, end), end=cue.end, frame=cue.frame)
+            ImageCue(start=max(cue.start, end), end=cue.end, frame=cue.frame, credits=cue.credits)
         )
     return [ImageCue(start=0.0, end=end, frame=frame), *kept]
 
@@ -1608,14 +1614,17 @@ def build_ass(
     font: str,
     layout: Layout | None = None,
     granularity: dict[str, str] | None = None,
+    clear_ranges: list[tuple[float, float]] | None = None,
 ) -> str:
     """歌詞字幕(替え歌/元歌詞)のASSを作る。行の歌唱区間で表示する。
 
     消灯はその行の最後の単語画像の余韻(frame_show_end)に合わせる(次の行の
     表示が始まればそこで交代)。位置・サイズ・色はレイアウトのsubtitle要素から
     決める。subtitle要素のないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
-    表示粒度(行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
+    表示粒度(元歌詞行/対応行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
     (Web UIの一括指定)、それも無ければ source 既定に従う。
+    clear_ranges は間奏・後奏など専用画面の表示区間。この区間に入る字幕は
+    専用画面の開始時刻で消し、直前の歌詞が画面上に残らないようにする。
     """
     from .align import build_subtitle_segments, resolve_granularity
 
@@ -1664,11 +1673,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         spans[j][1] = min(spans[j][1], spans[j + 1][0])
         spans[j][1] = max(spans[j][1], spans[j][0] + 0.2)  # 行の重なりが極端でも一瞬は出す
         spans[j + 1][0] = max(spans[j + 1][0], spans[j][1])
+    # 間奏カード等は画像キューの隙間へ差し込まれるが、字幕は歌唱時刻から別に
+    # 作るため、カードの先行表示ぶんだけ直前の歌詞と重なり得る。専用画面が
+    # 始まったら字幕をそこで切る。通常の短い歌間(専用画面なし)は従来どおり。
+    # 行同士の最短表示時間調整より後に適用し、そこで再び間奏へはみ出させない。
+    for span in spans:
+        for clear_start, clear_end in clear_ranges or []:
+            if clear_end <= span[0] or clear_start >= span[1]:
+                continue
+            if span[0] < clear_start:
+                span[1] = clear_start
+            else:
+                # 専用画面内から始まる字幕は、その画面が終わるまで出さない。
+                span[0] = min(span[1], clear_end)
 
     font_path = resolve_font_path(layout.font if layout else None)
     # 行ごとの素材(グループ化・切り出し・マージは align 側の共通ロジックで行う)
     plines = [parody_lines.get(line.id) for line in shown]
-    originals = [line.original_text for line in shown]  # グループ化キー(未対応はNone)
+    originals = [line.original_text for line in shown]
+    # 新しいprojectは元歌詞側の行番号でグループ化し、同文の別出現を区別する。
+    # 古いprojectは番号を持たないため、従来どおり本文を互換キーにする。
+    original_groups: list[int | str | None] = [
+        line.original_line_index
+        if line.original_line_index is not None
+        else line.original_text
+        for line in shown
+    ]
     # 元歌詞のフレーズ切り出しは読み(かな)どうしで突き合わせるので XFカナを優先
     xf_texts = [line.xf_kana or line.xf_surface for line in shown]
     original_full = [(line.original_text or line.xf_surface) for line in shown]
@@ -1684,7 +1714,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         gran = resolve_granularity(el.source, getattr(el, "granularity", None), granularity)
         full_texts = parody_full if el.source == "parody" else original_full
         segments = build_subtitle_segments(
-            el.source, gran, originals, full_texts, xf_texts, span_pairs, sep=WORD_SEP
+            el.source,
+            gran,
+            originals,
+            full_texts,
+            xf_texts,
+            span_pairs,
+            sep=WORD_SEP,
+            original_groups=original_groups,
         )
         # \posで固定配置(boxのalign/valign側の辺が基準点)。
         # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
@@ -1725,26 +1762,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def write_credits(credits: list[dict], work: Path) -> Path | None:
-    if not credits:
-        return None
-    lines = [
-        "# 画像クレジット",
-        "",
-        "この動画で使用した画像の出典。公開時は各ファイルページのライセンス"
-        "(作者表示など)に従ってください。",
-        "クレジット欄が空の画像は表記不要(パブリックドメイン等)か情報を取得"
-        "できなかったもので、後者はライセンス確認先で要確認です。",
-        "",
-        "| 単語 | 画像 | クレジット | ライセンス確認先 |",
-        "|---|---|---|---|",
-    ]
-    for c in credits:
-        lines.append(
-            f"| {c['original']} | {c['image']} | {c.get('credit', '')} | {c['image_page']} |"
-        )
-    path = work / "credits.md"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    from .credits import write_credit_files
+
+    return write_credit_files(credits, work)
 
 
 # ---- 本体 ----
@@ -1824,6 +1844,7 @@ def prepare_video(
     credit_notice: str = "",
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
+    allow_noncommercial_fanwork: bool = False,
 ) -> PreparedVideo:
     """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
     if fps <= 0:
@@ -1836,6 +1857,7 @@ def prepare_video(
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
         original_song=original_song,
+        wordlist=project.parody.wordlist if project.parody else "",
     )
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
@@ -1847,10 +1869,17 @@ def prepare_video(
         sung_end,
         endroll_words or ([""] if midi_end_credit.strip() else []),
     )
-    if midi_end_credit.strip():
-        total_sec = max(total_sec, minimum)
     if total_sec + 1e-6 < minimum:
-        raise ValueError(f"動画予定尺が短すぎます({total_sec:.3f} < {minimum:.3f})")
+        # The planned duration is an optimization hint computed before audio
+        # synthesis.  Rendering must remain safe if a later lyric/timing detail
+        # requires a longer tail; padding a silent video is lossless, while
+        # rejecting the whole job discards otherwise valid audio and lyrics.
+        logger.warning(
+            "動画予定尺を必要最小尺まで延長します(%.3f -> %.3f)",
+            total_sec,
+            minimum,
+        )
+        total_sec = minimum
     if total_sec > sung_end:
         logger.info("動画予定尺: %.1f秒 (歌唱終端+余韻 %.1f秒)", total_sec, sung_end)
 
@@ -1858,11 +1887,13 @@ def prepare_video(
     cues, credits = build_image_cues(
         project, work, width, height, image_cache, layout_obj, credit_text,
         image_lead_sec=image_lead_sec,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
     if cues:
         logger.info("画像キュー: %d件", len(cues))
     else:
         logger.warning("画像キューが0件です。動画の背景は全編無地になります")
+    thumbnail_credits: list[dict] = []
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -1872,9 +1903,15 @@ def prepare_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=thumbnail_credits,
     )
     if thumbnail is not None:
-        cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
+        show_end = thumbnail_show_end(project)
+        cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
+        if show_end > 0:
+            cues[0].credits = tuple(thumbnail_credits)
+        credits = credits_for_cues(cues)
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
@@ -1895,7 +1932,11 @@ def prepare_video(
     )
     ass_path = work / "subtitles.ass"
     ass_path.write_text(
-        build_ass(project, width, height, font, layout_obj, granularity), encoding="utf-8"
+        build_ass(
+            project, width, height, font, layout_obj, granularity,
+            [(cue.start, cue.end) for cue in section_cues],
+        ),
+        encoding="utf-8",
     )
     credits_path = write_credits(credits, work)
     if credits_path:
@@ -1967,6 +2008,7 @@ def make_video(
     credit_notice: str = "",
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
+    allow_noncommercial_fanwork: bool = False,
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
@@ -1979,6 +2021,7 @@ def make_video(
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
         original_song=original_song,
+        wordlist=project.parody.wordlist if project.parody else "",
     )
     work = project_dir / VIDEO_DIR
     work.mkdir(parents=True, exist_ok=True)
@@ -2015,6 +2058,7 @@ def make_video(
     cues, credits = build_image_cues(
         project, work, width, height, image_cache, layout_obj, credit_text,
         image_lead_sec=image_lead_sec,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
     )
     if cues:
         logger.info("画像キュー: %d件", len(cues))
@@ -2025,6 +2069,7 @@ def make_video(
     # 曲名の空耳変換つきサムネ(thumbnail.png)。前奏区間に出すほか、SNS投稿用に
     # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)。
     # song_title_kana は曲名の読み(分かっていれば変換入力に使う)
+    thumbnail_credits: list[dict] = []
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -2034,9 +2079,15 @@ def make_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+        used_images=thumbnail_credits,
     )
     if thumbnail is not None:
-        cues = prepend_thumbnail_cue(cues, thumbnail, thumbnail_show_end(project))
+        show_end = thumbnail_show_end(project)
+        cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
+        if show_end > 0:
+            cues[0].credits = tuple(thumbnail_credits)
+        credits = credits_for_cues(cues)
     # 間奏の「間奏(X秒)」・後奏のエンドロールを、歌唱フレームの隙間に差し込む
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
@@ -2060,7 +2111,11 @@ def make_video(
 
     ass_path = work / "subtitles.ass"
     ass_path.write_text(
-        build_ass(project, width, height, font, layout_obj, granularity), encoding="utf-8"
+        build_ass(
+            project, width, height, font, layout_obj, granularity,
+            [(cue.start, cue.end) for cue in section_cues],
+        ),
+        encoding="utf-8",
     )
 
     credits_path = write_credits(credits, work)

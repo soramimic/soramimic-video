@@ -8,11 +8,13 @@ run_voicevoxのフローを確認する。エンジンが起動していれば�
 from __future__ import annotations
 
 import io
+import math
 import wave
 
 import pytest
 
 import soramimic_video.voicevox as vv
+from helpers import build_xf_midi
 from soramimic_video.project import Note, Project, SongInfo
 from soramimic_video.voicevox import (
     FRAME_RATE,
@@ -22,6 +24,7 @@ from soramimic_video.voicevox import (
     split_score,
     split_voicevox_moras,
 )
+from soramimic_video.xfparse import analyze_midi
 
 ENGINE_URL = "http://127.0.0.1:50021"
 
@@ -269,6 +272,125 @@ def test_auto_mode_sings_tail_when_gap_follows():
     attack = round(vv.STACKED_MORA_ATTACK_SEC * FRAME_RATE)
     lengths = [n["frame_length"] for n in score["notes"] if n["key"] is not None]
     assert lengths[1] == attack  # リは短い返し(末尾)
+
+
+def test_auto_mode_keeps_articulation_anchors_in_overcrowded_note():
+    # 289msの1音符へ「ブースター」相当を全部詰めると早口で潰れる。
+    # 長音母音を捨て、語の輪郭になる ブ・タ を残す。
+    note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.289, "ブースター")
+    score = build_score(_project([note]))
+    pitched = [n for n in score["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["ブ", "タ"]
+    assert sum(n["frame_length"] for n in pitched) == round(0.289 * FRAME_RATE)
+
+
+def test_auto_mode_uses_one_anchor_for_extremely_dense_note():
+    # 142msへ4モーラなら、安全に明瞭化できるのは語頭1モーラだけ。
+    note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.142, "ワルビル")
+    score = build_score(_project([note]))
+    pitched = [n for n in score["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["ワ"]
+    assert pitched[0]["frame_length"] == round(0.142 * FRAME_RATE)
+
+
+def test_auto_mode_borrows_following_rest_before_dropping_moras():
+    # 142msの音符単体では1モーラしか明瞭にできないが、直後に十分な空白があれば
+    # そこへ音価を伸ばして4モーラを保持する。次の音符前の短い休符は残す。
+    notes = [
+        _note(0, 68, HEAD_SEC, HEAD_SEC + 0.142, "ワルビル"),
+        _note(1, 70, HEAD_SEC + 0.58, HEAD_SEC + 0.88, "ラ"),
+    ]
+    score = build_score(_project(notes))
+    assert [n["lyric"] for n in score["notes"] if n["key"] is not None] == [
+        "ワ", "ル", "ビ", "ル", "ラ",
+    ]
+    rests = [n for n in score["notes"] if n["key"] is None]
+    assert rests[-1]["frame_length"] >= round(vv.BORROWED_REST_MIN_SEC * FRAME_RATE)
+
+
+def test_auto_mode_uses_unlyriced_melody_notes_before_borrowing_rest(tmp_path):
+    # XFの1歌詞イベントが複数の旋律音符にまたがる場合、間を空白とせず、後続の
+    # 無歌詞音符へ残りのモーラを載せる。音高変化も元MIDIどおり保持する。
+    midi = build_xf_midi(
+        tmp_path / "bridge.mid",
+        notes=[(480, 230, 60), (720, 230, 62), (960, 230, 64)],
+        lyric_events=[(480, "ワル"), (960, "ラ")],
+    )
+    score = build_score(analyze_midi(midi))
+    pitched = [note for note in score["notes"] if note["key"] is not None]
+
+    assert [note["lyric"] for note in pitched] == ["ワ", "ル", "ラ"]
+    assert [note["key"] for note in pitched] == [60, 62, 64]
+
+
+def test_recovered_melody_limits_each_source_note_to_one_syllable(tmp_path):
+    midi = build_xf_midi(
+        tmp_path / "bridge-capacity.mid",
+        notes=[
+            (480, 230, 60),
+            (720, 230, 62),
+            (960, 230, 64),
+            (1200, 230, 65),
+        ],
+        lyric_events=[(480, "ワルビル"), (1200, "ラ")],
+    )
+    score = build_score(analyze_midi(midi))
+    pitched = [note for note in score["notes"] if note["key"] is not None]
+
+    # 4実音節を3つの元MIDI音へ詰めず、語頭・語尾を含む3音節だけを1つずつ載せる。
+    assert [note["lyric"] for note in pitched] == ["ワ", "ビ", "ル", "ラ"]
+    assert [note["key"] for note in pitched] == [60, 62, 64, 65]
+
+
+def test_long_vowels_and_codas_stay_in_the_same_syllable_group():
+    morae = ["ブ", "ウ", "ス", "タ", "ア"]
+    assert vv._one_syllable_per_segment(morae, 3) == morae
+    assert vv._syllables_by_pitch_segment(morae, 3) == [
+        ["ブ", "ウ"], ["ス"], ["タ", "ア"]
+    ]
+
+
+def test_unused_recovered_note_attaches_to_previous_syllable(tmp_path):
+    midi = build_xf_midi(
+        tmp_path / "bridge-absorption.mid",
+        notes=[
+            (480, 230, 60),
+            (720, 230, 62),
+            (960, 230, 64),
+            (1200, 230, 65),
+        ],
+        lyric_events=[(480, "ワル"), (1200, "ラ")],
+    )
+    score = build_score(analyze_midi(midi))
+    pitched = [note for note in score["notes"] if note["key"] is not None]
+
+    # 2音節に対して元MIDI音が3つある。中央の余り音は休符にせず、ワの母音へ吸着。
+    assert [note["lyric"] for note in pitched] == ["ワ", "ア", "ル", "ラ"]
+    assert [note["key"] for note in pitched] == [60, 62, 64, 65]
+
+
+def test_expanded_note_end_borrows_only_required_capacity():
+    required = math.ceil(4 * vv.MIN_ARTICULATION_MORA_SEC * FRAME_RATE)
+    assert vv._expanded_note_end(100, 113, 160, 4) == 100 + required
+
+
+def test_expanded_note_end_keeps_minimum_rest():
+    keep = math.ceil(vv.BORROWED_REST_MIN_SEC * FRAME_RATE)
+    assert vv._expanded_note_end(100, 113, 140, 4) == 140 - keep
+
+
+def test_articulation_moras_spreads_anchors_across_word():
+    # 子音付きモーラを絞る場合は、語尾を落とさず全体へ散らす。
+    assert vv.articulation_moras(["マ", "フィ", "ティ", "フ"], 27) == [
+        "マ", "フ"
+    ]
+
+
+def test_auto_mode_does_not_reduce_multimora_note_with_enough_time():
+    note = _note(0, 68, HEAD_SEC, HEAD_SEC + 0.5, "ワルビル")
+    score = build_score(_project([note]))
+    lyrics = [n["lyric"] for n in score["notes"] if n["key"] is not None]
+    assert lyrics == ["ワ", "ル", "ビ", "ル"]
 
 
 def test_mora_frame_bounds_edges():
@@ -677,13 +799,62 @@ def test_run_voicevox_explains_unsplittable_query_500(tmp_path, monkeypatch):
 
     with pytest.raises(
         RuntimeError,
-        match="歌詞「ラ」、1音符.*該当箇所の単語を変更.*休符で分けて",
+        match="歌詞「ラ」、1音符.*短音符の自動補正後も合成できませんでした",
     ):
         run_voicevox(
             _project([_note(0, 60, 0.5, 1.0, "ラ")]),
             tmp_path,
             style_id=6000,
         )
+
+
+def test_run_voicevox_isolates_unsplittable_short_notes(tmp_path, monkeypatch):
+    singers = [
+        {"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}
+    ]
+    monkeypatch.setattr(
+        vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers)
+    )
+    posts = {"query": 0, "synth": 0}
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        if "sing_frame_audio_query" in url:
+            posts["query"] += 1
+            sung = [n for n in json["notes"] if n["key"] is not None]
+            if len(sung) > 1:
+                return _FakeResp(status=500)
+            return _FakeResp(json_data=json)
+        posts["synth"] += 1
+        frames = sum(n["frame_length"] for n in json["notes"])
+        return _FakeResp(content=_wav_const(frames * 256, 1000 * posts["synth"]))
+
+    monkeypatch.setattr(vv.requests, "post", fake_post)
+    # Every sung note is only two frames, so the existing split cannot borrow
+    # two frames for a new leading rest without deleting a mora.
+    score = {
+        "notes": [
+            {"key": None, "frame_length": 3, "lyric": ""},
+            {"key": 60, "frame_length": 2, "lyric": "ド"},
+            {"key": 62, "frame_length": 2, "lyric": "リ"},
+            {"key": 64, "frame_length": 2, "lyric": "ミ"},
+        ]
+    }
+    monkeypatch.setattr(vv, "build_score", lambda project, transpose=0: score)
+
+    out = run_voicevox(
+        _project([_note(0, 60, 0.0, 0.1, "ド")]),
+        tmp_path,
+        style_id=6000,
+        chunk_sec=0,
+    )
+
+    assert posts == {"query": 4, "synth": 3}
+    samples = _read_samples(out)
+    assert len(samples) == 9 * 256
+    assert set(samples[: 3 * 256]) == {0}
+    assert set(samples[3 * 256 : 5 * 256]) == {1000}
+    assert set(samples[5 * 256 : 7 * 256]) == {2000}
+    assert set(samples[7 * 256 :]) == {3000}
 
 
 def test_run_voicevox_engine_aborted_midrequest(tmp_path, monkeypatch):

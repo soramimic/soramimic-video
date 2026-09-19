@@ -49,6 +49,11 @@ class Note:
     surface: str  # XF歌詞の表記部分(継続モーラでは空文字)
     kana: str  # 読み(カタカナ正規化)
     raw: str  # XFKMイベントの生テキスト
+    # 音源入力の音高由来。MIDI由来の既存projectは既定値のまま読み込める。
+    # sheetsage_note / recovered_note / spoken を区別し、spoken のmidi_noteは
+    # 合成互換のための代替値であって推定音高ではないことを明示する。
+    source: str = "midi_note"
+    pitch_confidence: float | None = None
 
 
 @dataclass
@@ -60,6 +65,12 @@ class Line:
     xf_kana: str
     note_ids: list[int]
     original_text: str | None = None  # アライメントで対応づいた元歌詞の行
+    # 同じ文字列の別行と、1つの元歌詞行を分割したXF行を区別する元歌詞側の行番号。
+    # 古いproject.jsonでは欠けるためNoneを許す。
+    original_line_index: int | None = None
+    canonical_kana: str | None = None  # 完全な読み。実演/合成の省略で削らない
+    canonical_start_sec: float | None = None
+    canonical_end_sec: float | None = None
 
 
 @dataclass
@@ -100,6 +111,7 @@ class Project:
     lines: list[Line] = field(default_factory=list)
     parody: Parody | None = None
     version: int = SCHEMA_VERSION
+    lyric_layers: dict[str, Any] | None = None
 
     # ---- 参照ヘルパ ----
 
@@ -113,7 +125,13 @@ class Project:
 
     def line_time_range(self, line: Line) -> tuple[float, float]:
         notes = [self.notes[i] for i in line.note_ids]
-        return notes[0].start_sec, notes[-1].end_sec
+        starts = [n.start_sec for n in notes]
+        ends = [n.end_sec for n in notes]
+        if line.canonical_start_sec is not None:
+            starts.append(line.canonical_start_sec)
+        if line.canonical_end_sec is not None:
+            ends.append(line.canonical_end_sec)
+        return min(starts, default=0.0), max(ends, default=0.0)
 
     # ---- 入出力 ----
 
@@ -148,4 +166,5 @@ class Project:
                     for pl in p["lines"]
                 ],
             )
-        return cls(song=song, notes=notes, lines=lines, parody=parody)
+        return cls(song=song, notes=notes, lines=lines, parody=parody,
+                   lyric_layers=data.get("lyric_layers"))

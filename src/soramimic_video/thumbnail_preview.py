@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from .convert import resolve_convert_settings, resolve_wordlist
+from .layout import app_credit_for_wordlist
 from .thumbnail import (
     DEFAULT_STYLE,
     HEADLINE_MAX_WORDS,
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
 # モーダルに出すだけなので本番(1280x720)より小さくてよい。描画も軽くなる
 PREVIEW_WIDTH = 640
 PREVIEW_HEIGHT = 360
-CACHE_DIRNAME = "thumbnail-preview-cache"
+CACHE_DIRNAME = "thumbnail-preview-cache-v2"
 CACHE_TTL_SECONDS = 7 * 24 * 3600  # これより古いPNGは捨てる
 CACHE_MAX_ENTRIES = 300  # 件数上限(超過ぶんは古い順に捨てる)
 # 生成は同時に1本だけ通す(変換はCPUを食うので連打で並列に走らせない)。
@@ -107,7 +108,8 @@ def _layout_fingerprint() -> str:
         thumbnail_layout_spec(has_word=False, has_image=False),
     ]
     return json.dumps(
-        [DEFAULT_STYLE, design_fingerprint(), HEADLINE_MAX_WORDS, SIGNATURE, specs],
+        [DEFAULT_STYLE, design_fingerprint(), HEADLINE_MAX_WORDS, SIGNATURE,
+         app_credit_for_wordlist("vtuber"), specs],
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -131,6 +133,7 @@ class PreviewSpec:
     # 曲名の読み(カタカナ)。あれば変換の入力に使う(samples.json の title_kana)。
     # 見出しに出す曲名は title のまま
     title_kana: str = ""
+    allow_noncommercial_fanwork: bool = False
 
     @classmethod
     def create(
@@ -143,6 +146,7 @@ class PreviewSpec:
         height: int = PREVIEW_HEIGHT,
         with_images: bool = True,
         title_kana: str = "",
+        allow_noncommercial_fanwork: bool = False,
     ) -> PreviewSpec:
         """where・変換パラメータの既定をジョブ本体と同じ経路で解決して組み立てる。
 
@@ -161,6 +165,7 @@ class PreviewSpec:
             height=height,
             with_images=with_images,
             title_kana=title_kana,
+            allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         )
 
     @property
@@ -183,6 +188,7 @@ class PreviewSpec:
                 "params": {k: str(v) for k, v in self.params.items()},
                 "size": [self.width, self.height],
                 "with_images": self.with_images,
+                "allow_noncommercial_fanwork": self.allow_noncommercial_fanwork,
                 "layout": _layout_fingerprint(),
             },
             ensure_ascii=False,
@@ -240,6 +246,7 @@ class PreviewSpec:
             missing_images=missing,
             image_wait_sec=wait_sec if image_cache is not None else 0.0,
             song_kana=self.title_kana,
+            allow_noncommercial_fanwork=self.allow_noncommercial_fanwork,
         )
         if out is None:
             tmp.unlink(missing_ok=True)

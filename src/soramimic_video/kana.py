@@ -128,3 +128,20 @@ def normalize_long_vowels(kana: str) -> str:
                 continue
         out.append(ch)
     return "".join(out)
+
+
+def normalize_audio_reading(kana: str) -> str:
+    """音響照合へ渡すカナ読みを、発音を保った受理可能な形へ揃える。
+
+    同母音の小書き母音を開く。歌唱上の伸ばしを表す連続長音はモーラ数として
+    数えず1本に畳む。ティ・ファのような
+    異母音の外来語モーラは ``normalize_small_vowels`` がそのまま保持する。
+    表示用の歌詞には適用せず、読み候補と音響認識結果だけに使う。
+    """
+    normalized = normalize_small_vowels(kana)
+    out: list[str] = []
+    for ch in normalized:
+        if ch == "ー" and out and out[-1] == "ー":
+            continue
+        out.append(ch)
+    return "".join(out)

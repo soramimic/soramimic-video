@@ -17,7 +17,8 @@ CTC のスパンはスパイク状で実際の歌唱区間より短いため、e
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,27 @@ _VARIANT_MARGIN_FRAMES = 25  # 読み候補スコアリング時に行の前後�
 # 平均だと行の長さで差が薄まる(違いは1-2モーラでも行全体で平均される)ため合計を使う。
 # 実測: 正しい修正(アス,ヒガ)は約4-13、誤修正の例(ドッテ)は約1.2だった
 _VARIANT_SCORE_MARGIN = 2.0
+# Whisper emits adjacent decimal timestamps that can differ by a few ULPs after
+# JSON/Python round trips.  One microsecond is still far below a CTC frame (20 ms).
+_WINDOW_BOUNDARY_EPSILON_SEC = 1e-6
+# CTC evidence is spike-like.  These conservative physical guards detect a line
+# assigned to a distant repeated phrase without treating an early ASR boundary as
+# wrong (Whisper can legitimately begin after the first sung mora).
+PATHOLOGICAL_MORA_SPAN_SEC = 1.2
+PATHOLOGICAL_WINDOW_START_UNDERRUN_SEC = 0.75
+PATHOLOGICAL_WINDOW_END_OVERRUN_SEC = 0.75
+_MODEL_CACHE: dict[str, tuple[Any, Any]] = {}
+
+
+def _frame_ceiling(time_sec: float) -> int:
+    """Map padded seconds to a half-open CTC frame boundary.
+
+    Decimal timestamps that are exactly on the 20 ms grid can land a few ULPs
+    above an integer after floating-point addition and division.  A raw ceil
+    would then include one frame beginning at the window's exclusive end.
+    """
+    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+    return math.ceil((time_sec + _PAD_SEC) / frame_sec - 1e-9)
 
 
 @dataclass
@@ -46,6 +68,153 @@ class AlignedMora:
     start_sec: float
     end_sec: float
     score: float
+
+
+@dataclass
+class CTCEmissions:
+    """Shared model output; timing scores are not calibrated onset probabilities."""
+
+    log_probs: Any
+    vocab: dict[str, int]
+
+
+class CTCWindowCapacityError(RuntimeError):
+    """A transcript cannot fit into its fixed CTC frame window."""
+
+    def __init__(
+        self,
+        *,
+        available_frames: int,
+        target_count: int,
+        adjacent_repeats: int,
+        line: int | None = None,
+    ) -> None:
+        self.line = line
+        self.available_frames = available_frames
+        self.target_count = target_count
+        self.adjacent_repeats = adjacent_repeats
+        self.required_frames = target_count + adjacent_repeats
+        super().__init__(
+            "CTC window has insufficient capacity: "
+            f"{available_frames} frames for {target_count} targets "
+            f"and {adjacent_repeats} adjacent repeats"
+        )
+
+
+def _require_ctc_capacity(
+    available_frames: int, targets: list[int], *, line: int | None = None,
+) -> None:
+    adjacent_repeats = sum(
+        left == right for left, right in zip(targets, targets[1:], strict=False)
+    )
+    if available_frames < len(targets) + adjacent_repeats:
+        raise CTCWindowCapacityError(
+            line=line,
+            available_frames=available_frames,
+            target_count=len(targets),
+            adjacent_repeats=adjacent_repeats,
+        )
+
+
+def _validated_line_windows(
+    line_windows: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Validate windows while folding floating-point dust into a shared boundary."""
+    normalized: list[tuple[float, float]] = []
+    previous_end = 0.0
+    for raw_start, end in line_windows:
+        start = raw_start
+        if not math.isfinite(start + end):
+            raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+        if start < previous_end:
+            if previous_end - start > _WINDOW_BOUNDARY_EPSILON_SEC:
+                raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+            start = previous_end
+        if not 0 <= previous_end <= start < end:
+            raise ValueError("line_windows must be finite, positive, and nonoverlapping")
+        normalized.append((start, end))
+        previous_end = end
+    return normalized
+
+
+def compute_emissions(vocals_path: Path, device: str | None = None) -> CTCEmissions:
+    import torch
+    from transformers import Wav2Vec2CTCTokenizer
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    vocab = Wav2Vec2CTCTokenizer.from_pretrained(MODEL_NAME).get_vocab()
+    return CTCEmissions(_compute_log_probs(vocals_path, device), vocab)
+
+
+def decode_kana_window(
+    emissions: CTCEmissions, start_sec: float, end_sec: float,
+) -> tuple[str, float]:
+    """Greedy decode an audio window without any transcript or forced targets.
+
+    The returned score is the geometric mean emitted-token posterior, not a
+    calibrated transcript probability. Blank frames still belong to the analyzed
+    window, but are neither kana nor evidence of a vowel's duration.
+    """
+    if not 0 <= start_sec < end_sec:
+        raise ValueError("CTC window must have positive duration")
+    # A half-open partition assigns a boundary frame to exactly one adjacent
+    # window. floor(start)/ceil(end) would decode that frame twice.
+    first = max(0, _frame_ceiling(start_sec))
+    last = min(len(emissions.log_probs), _frame_ceiling(end_sec))
+    values = emissions.log_probs[first:last]
+    if len(values) == 0:
+        return "", 0.0
+    # numpy makes this pure decode testable without model/runtime dependencies.
+    import numpy as np
+
+    matrix = np.asarray(values)
+    best = matrix.argmax(axis=-1)
+    vocabulary = {value: key for key, value in emissions.vocab.items()}
+    chars: list[str] = []
+    scores: list[float] = []
+    previous = -1
+    for index, token_id in enumerate(best):
+        token_id = int(token_id)
+        if token_id == 0 or token_id == previous:
+            previous = token_id
+            continue
+        previous = token_id
+        token = jaconv.hira2kata(vocabulary.get(token_id, ""))
+        if not token or not all("ァ" <= ch <= "ヺ" or ch == "ー" for ch in token):
+            continue
+        # A crop can start inside a syllable; do not invent its missing head.
+        if not chars and token[0] in "ァィゥェォャュョヮー":
+            continue
+        chars.append(token)
+        scores.append(float(matrix[index, token_id]))
+    return "".join(chars), math.exp(sum(scores) / len(scores)) if scores else 0.0
+
+
+def collapse_kana_aliases(emissions: CTCEmissions) -> Any:
+    """Sum mutually exclusive hiragana/katakana token probabilities.
+
+    The vocabulary contains both scripts. They have the same pronunciation but
+    need not have similar posteriors. Keep the original matrix unchanged for
+    independent decoding; canonical target IDs receive their combined mass.
+    """
+    import numpy as np
+
+    matrix = np.asarray(emissions.log_probs).copy()
+    groups: dict[str, list[int]] = {}
+    for token, token_id in emissions.vocab.items():
+        kana = jaconv.hira2kata(token)
+        if len(kana) == 1 and ("ァ" <= kana <= "ヺ" or kana == "ー"):
+            groups.setdefault(kana, []).append(token_id)
+    for kana, aliases in groups.items():
+        if len(aliases) < 2:
+            continue
+        target = emissions.vocab.get(kana, aliases[0])
+        combined = np.logaddexp.reduce(matrix[:, aliases], axis=1)
+        matrix[:, aliases] = -np.inf
+        matrix[:, target] = combined
+    if hasattr(emissions.log_probs, "new_tensor"):
+        return emissions.log_probs.new_tensor(matrix)
+    return matrix
 
 
 def build_targets(
@@ -96,9 +265,16 @@ def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (
     import torch
     from transformers import AutoProcessor, Wav2Vec2ForCTC
 
+    from . import runproc
+
     logger.info("wav2vec2(%s)でCTC確率を計算中...", MODEL_NAME)
-    model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME).to(device)  # type: ignore[arg-type]
-    processor = AutoProcessor.from_pretrained(MODEL_NAME)
+    cached = _MODEL_CACHE.get(device)
+    if cached is None:
+        model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME).eval().to(device)  # type: ignore[arg-type]
+        processor = AutoProcessor.from_pretrained(MODEL_NAME)
+        _MODEL_CACHE[device] = (model, processor)
+    else:
+        model, processor = cached
 
     audio, _ = librosa.load(str(vocals_path), sr=SAMPLING_RATE, mono=True)
     audio = np.pad(audio, pad_width=int(_PAD_SEC * SAMPLING_RATE))
@@ -107,6 +283,7 @@ def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (
     pos = 0
     n = len(audio)
     while pos < n:
+        runproc.raise_if_cancelled()
         s0 = max(0, pos - _OVERLAP_SAMPLES)
         s1 = min(n, pos + _CHUNK_SAMPLES + _OVERLAP_SAMPLES)
         input_values = processor(
@@ -119,6 +296,7 @@ def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (
         keep_to = logits.shape[0] if s1 >= n else keep_from + _CHUNK_SAMPLES // FRAME_SAMPLES
         chunks.append(logits[keep_from:keep_to])
         pos += _CHUNK_SAMPLES
+    runproc.raise_if_cancelled()
     log_probs = torch.nn.functional.log_softmax(torch.cat(chunks), dim=-1)
     logger.debug("logits: %d frames x %d tokens", *log_probs.shape)
     return log_probs
@@ -162,6 +340,8 @@ def _spans_to_moras(
     spans: list[Any],
     owners: list[tuple[int, int]],
     line_moras: list[list[str]],
+    *,
+    frame_offset: int = 0,
 ) -> list[AlignedMora]:
     """トークンスパンを(行,モーラ)ごとに集約してAlignedMora列にする。"""
     moras = [
@@ -171,8 +351,8 @@ def _spans_to_moras(
     ]
     index = {(m.line, m.mora): m for m in moras}
     for span, owner in zip(spans, owners, strict=True):
-        start = max(0.0, span.start * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
-        end = max(0.0, span.end * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
+        start = max(0.0, (span.start + frame_offset) * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
+        end = max(0.0, (span.end + frame_offset) * FRAME_SAMPLES / SAMPLING_RATE - _PAD_SEC)
         m = index[owner]
         if m.start_sec < 0:
             m.start_sec = start
@@ -186,15 +366,25 @@ def align_moras_with_variants(
     vocals_path: Path,
     line_variants: list[list[list[str]]],
     device: str | None = None,
+    *,
+    emissions: CTCEmissions | None = None,
+    phonetic_aliases: bool = False,
+    line_windows: list[tuple[float, float]] | None = None,
 ) -> tuple[list[AlignedMora], list[int]]:
     """行ごとの読み候補つきアライメント。
 
     line_variants[行] = 候補読みのモーラ列のリスト(先頭が既定)。
     候補が複数の行は、初回アライメントで得た行の時間範囲のlog_probsに
     候補ごとのforced_alignを掛け、尤度の高い読みを採用して最終アライメントする。
+    line_windowsを指定した場合は各行をその音響区間内で対応づけ、絶対時刻を返す。
+    区間は母音開始の観測ではなく、候補を支持した音声の範囲として扱う。
 
     戻り値: (全モーラの時刻列, 行ごとの採用候補index)
     """
+    if line_windows is not None:
+        if len(line_windows) != len(line_variants):
+            raise ValueError("line_windows must contain one window per lyric line")
+        line_windows = _validated_line_windows(line_windows)
     try:
         import torch
     except ImportError as e:
@@ -202,19 +392,167 @@ def align_moras_with_variants(
             "torch/torchaudio/transformers がインストールされていません"
             "(uv sync --extra audio)"
         ) from e
-    from transformers import Wav2Vec2CTCTokenizer
-
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+    emissions = emissions or compute_emissions(vocals_path, device)
+    vocab, log_probs = emissions.vocab, emissions.log_probs
+    if phonetic_aliases:
+        log_probs = collapse_kana_aliases(emissions)
 
-    vocab = Wav2Vec2CTCTokenizer.from_pretrained(MODEL_NAME).get_vocab()
-    log_probs = _compute_log_probs(vocals_path, device)
+    if line_windows is not None:
+        bounds = [(_frame_ceiling(start), _frame_ceiling(end))
+                  for start, end in line_windows]
+        if any(first >= last or first < 0 or last > len(log_probs) for first, last in bounds):
+            raise ValueError("line_windows must contain available CTC frames")
+        aligned: list[AlignedMora] = []
+        choices: list[int] = []
+        for line, (variants, window, frames) in enumerate(
+            zip(line_variants, line_windows, bounds, strict=True)
+        ):
+            first, last = frames
+            targets, _owners = build_targets([variants[0]], vocab)
+            _require_ctc_capacity(last - first, targets, line=line)
+            local, chosen = _align_variants(
+                log_probs[first:last], vocab, [variants], frame_offset=first,
+            )
+            start, end = window
+            aligned.extend(replace(mora, line=line,
+                                   start_sec=max(start, mora.start_sec),
+                                   end_sec=min(end, mora.end_sec)) for mora in local)
+            choices.append(chosen[0])
+        return aligned, choices
+    return _align_variants(log_probs, vocab, line_variants)
+
+
+def _pathological_reasons(
+    moras: list[AlignedMora], window: tuple[float, float],
+) -> list[str]:
+    if not moras:
+        return []
+    reasons = []
+    longest = max(moras, key=lambda mora: mora.end_sec - mora.start_sec)
+    if (
+        longest.end_sec - longest.start_sec > PATHOLOGICAL_MORA_SPAN_SEC
+        and window[0] - longest.start_sec > PATHOLOGICAL_WINDOW_START_UNDERRUN_SEC
+    ):
+        reasons.append("mora-span-before-whisper-window")
+    if max(mora.end_sec for mora in moras) - window[1] > PATHOLOGICAL_WINDOW_END_OVERRUN_SEC:
+        reasons.append("after-whisper-window")
+    return reasons
+
+
+def retry_pathological_line_alignments(
+    vocals_path: Path,
+    line_variants: list[list[list[str]]],
+    aligned: list[AlignedMora],
+    line_windows: list[tuple[float, float]],
+    device: str | None = None,
+    *,
+    emissions: CTCEmissions,
+    phonetic_aliases: bool = False,
+) -> tuple[list[AlignedMora], list[dict[str, object]]]:
+    """Retry physically implausible whole-song assignments inside their ASR window.
+
+    This is a safety net for a genuine overlap or other invalid line-window layout
+    that forced the caller to use whole-song CTC.  A retry is published only when
+    every pathology that triggered it is gone; otherwise the original alignment is
+    retained.
+    """
+    if len(line_variants) != len(line_windows):
+        raise ValueError("line_windows must contain one window per lyric line")
+    grouped: list[list[AlignedMora]] = [[] for _ in line_variants]
+    for mora in aligned:
+        if not 0 <= mora.line < len(grouped):
+            raise ValueError("aligned mora line is outside line_variants")
+        grouped[mora.line].append(mora)
+
+    replacements: dict[int, list[AlignedMora]] = {}
+    diagnostics: list[dict[str, object]] = []
+    for line, (variants, window, previous) in enumerate(
+        zip(line_variants, line_windows, grouped, strict=True)
+    ):
+        reasons = _pathological_reasons(previous, window)
+        if not reasons:
+            continue
+        before_max_span = max(
+            (mora.end_sec - mora.start_sec for mora in previous), default=0.0
+        )
+        record: dict[str, object] = {
+            "line": line,
+            "window_start_sec": window[0],
+            "window_end_sec": window[1],
+            "reasons": reasons,
+            "before_max_mora_span_sec": before_max_span,
+            "before_line_end_sec": max(
+                (mora.end_sec for mora in previous), default=window[0]
+            ),
+        }
+        try:
+            local, _choices = align_moras_with_variants(
+                vocals_path,
+                [variants],
+                device=device,
+                emissions=emissions,
+                phonetic_aliases=phonetic_aliases,
+                line_windows=[window],
+            )
+        except (RuntimeError, ValueError) as exc:
+            record.update(status="failed", detail=str(exc))
+            diagnostics.append(record)
+            logger.warning("行%dの病的CTC整列を局所再試行できませんでした: %s", line, exc)
+            continue
+        local = [replace(mora, line=line) for mora in local]
+        after_max_span = max(
+            (mora.end_sec - mora.start_sec for mora in local), default=0.0
+        )
+        remaining = _pathological_reasons(local, window)
+        record.update(
+            after_max_mora_span_sec=after_max_span,
+            after_line_end_sec=max(
+                (mora.end_sec for mora in local), default=window[0]
+            ),
+        )
+        if len(local) != len(previous) or remaining:
+            record.update(
+                status="unresolved",
+                detail=(
+                    "localized alignment did not preserve the mora count"
+                    if len(local) != len(previous)
+                    else f"remaining pathologies: {', '.join(remaining)}"
+                ),
+            )
+            diagnostics.append(record)
+            continue
+        replacements[line] = local
+        record["status"] = "replaced"
+        diagnostics.append(record)
+        logger.warning(
+            "行%dの病的CTC整列をWhisper区間 %.3f–%.3f秒で再整列しました (%s)",
+            line, window[0], window[1], ", ".join(reasons),
+        )
+
+    if not replacements:
+        return aligned, diagnostics
+    repaired = [
+        mora
+        for line in range(len(grouped))
+        for mora in replacements.get(line, grouped[line])
+    ]
+    return repaired, diagnostics
+
+
+def _align_variants(
+    log_probs: Any, vocab: dict[str, int], line_variants: list[list[list[str]]], *,
+    frame_offset: int = 0,
+) -> tuple[list[AlignedMora], list[int]]:
+    """Use the same pronunciation selection and CTC decoder at either scope."""
 
     chosen = [0] * len(line_variants)
     line_moras = [variants[0] for variants in line_variants]
     targets, owners = build_targets(line_moras, vocab)
     if not targets:
         raise ValueError("アライメント可能なカナがありません")
+    _require_ctc_capacity(len(log_probs), targets)
     logger.info("forced alignment実行中(%dトークン)...", len(targets))
     spans = _forced_align(log_probs, targets)
     if len(spans) != len(targets):
@@ -256,11 +594,12 @@ def align_moras_with_variants(
         if changed:
             line_moras = [v[k] for v, k in zip(line_variants, chosen, strict=True)]
             targets, owners = build_targets(line_moras, vocab)
+            _require_ctc_capacity(len(log_probs), targets)
             spans = _forced_align(log_probs, targets)
             if len(spans) != len(targets):
                 raise RuntimeError("再アライメントのトークン数が不一致")
 
-    return _spans_to_moras(spans, owners, line_moras), chosen
+    return _spans_to_moras(spans, owners, line_moras, frame_offset=frame_offset), chosen
 
 
 def align_moras(

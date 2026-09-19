@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import time
+import wave
 
 import pytest
 
@@ -20,6 +22,16 @@ from soramimic_video import api as api_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
+
+
+def fake_wav(seconds: float, rate: int = 8000) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * round(seconds * rate))
+    return out.getvalue()
 
 
 def fast_pipeline(job, config):
@@ -54,21 +66,32 @@ def public_app(tmp_path, monkeypatch):
     """公開モードのアプリ。パイプラインと曲長判定はモックする。"""
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
     # ダミーMIDIは解析できないので、曲長は0秒(=上限に引っかからない)扱いにする
     monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
     return api_mod.create_app(jobs_dir=tmp_path / "jobs")
 
 
 def test_session_cookie_issued_once(public_app):
-    client = TestClient(public_app)
+    client = TestClient(public_app, base_url="https://testserver")
     res = client.get("/api/config")
     assert api_mod.SESSION_COOKIE in res.cookies
     sid = res.cookies[api_mod.SESSION_COOKIE]
     assert len(sid) == 32
+    assert "Secure" in res.headers["set-cookie"]
+    assert "HttpOnly" in res.headers["set-cookie"]
     # 2回目は既存のcookieを使い回すので発行し直さない
     res2 = client.get("/api/config")
     assert api_mod.SESSION_COOKIE not in res2.cookies
     assert client.cookies[api_mod.SESSION_COOKIE] == sid
+
+
+def test_public_custom_wordlists_script_is_packaged(public_app):
+    """The main page must not reference a missing script in a deployed release."""
+    response = TestClient(public_app).get("/custom-wordlists.js")
+
+    assert response.status_code == 200
+    assert "VideoCustomWordlists" in response.text
 
 
 def test_jobs_are_isolated_per_session(public_app):
@@ -91,6 +114,12 @@ def test_jobs_are_isolated_per_session(public_app):
     playback = alice.get(f"/api/jobs/{a_id}/playback")
     assert playback.content == FAKE_MP4
     assert playback.headers["content-disposition"].startswith("inline;")
+    listing = alice.get("/api/jobs")
+    assert listing.headers["cache-control"] == "private, no-store"
+    assert listing.headers["vary"] == "Cookie"
+    detail = alice.get(f"/api/jobs/{a_id}")
+    assert detail.headers["cache-control"] == "private, no-store"
+    assert detail.headers["vary"] == "Cookie"
 
 
 def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
@@ -104,6 +133,38 @@ def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
     assert api_mod.SESSION_COOKIE not in alice.cookies
     assert [j["id"] for j in bob.get("/api/jobs").json()] == [a_id]
     assert bob.get(f"/api/jobs/{a_id}").status_code == 200
+
+
+def test_public_jobs_reject_editor_wordlists_outside_launch_catalog(public_app):
+    client = TestClient(public_app)
+    editor = json.dumps(
+        {"wordlist": {"filepath": "/tmp/youtuber.csv"}}
+    ).encode()
+    response = client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "editor": ("editor.json", editor, "application/json"),
+        },
+        data={"wordlist": "youtuber"},
+    )
+    assert response.status_code == 422
+
+
+def test_public_editor_preview_requires_a_launch_wordlist(public_app):
+    client = TestClient(public_app)
+    response = client.post(
+        "/api/editor-preview",
+        files={
+            "editor": (
+                "editor.json",
+                json.dumps({"wordlist": {"filepath": "/tmp/youtuber.csv"}}).encode(),
+                "application/json",
+            )
+        },
+        data={"wordlist": ""},
+    )
+    assert response.status_code == 422
 
 
 def test_owner_is_persisted_across_restart(tmp_path, monkeypatch):
@@ -124,6 +185,35 @@ def test_owner_is_persisted_across_restart(tmp_path, monkeypatch):
     again.cookies.set(api_mod.SESSION_COOKIE, sid)
     assert [j["id"] for j in again.get("/api/jobs").json()] == [job_id]
     assert TestClient(app2).get("/api/jobs").json() == []
+
+
+def test_restart_scrubs_private_artifacts_left_by_older_release(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+    jobs_dir = tmp_path / "jobs"
+    first = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    job_id = submit(first).json()["id"]
+    wait_done(first, job_id)
+    old_job = first.app.state.manager.jobs[job_id]
+    (old_job.dir / "private-input.wav").write_bytes(b"private")
+    (old_job.dir / "analysis").mkdir()
+    (old_job.dir / "analysis" / "lyrics.json").write_text("private")
+
+    restarted = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    loaded = restarted.app.state.manager.jobs[job_id]
+    assert loaded.status == "done"
+    assert loaded.video is not None and loaded.video.exists()
+    assert not (loaded.dir / "private-input.wav").exists()
+    assert not (loaded.dir / "analysis").exists()
+
+
+def test_simple_ui_refuses_to_start_without_public_isolation(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.REQUIRE_PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
+    with pytest.raises(RuntimeError, match=api_mod.REQUIRE_PUBLIC_ENV):
+        api_mod.create_app(jobs_dir=tmp_path / "jobs")
 
 
 def test_queue_limit_returns_429(tmp_path, monkeypatch):
@@ -166,6 +256,17 @@ def test_song_length_limit_returns_400(public_app, monkeypatch):
     assert "長すぎます" in detail and "約10分" in detail and "約7分" in detail
 
 
+def test_wav_uses_the_same_public_song_length_limit(public_app, monkeypatch):
+    monkeypatch.setenv(api_mod.MAX_SONG_SECONDS_ENV, "1")
+    res = TestClient(public_app).post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(2), "audio/wav")},
+        data={"wordlist": "stations", "lyrics": "あ"},
+    )
+    assert res.status_code == 400
+    assert "曲が長すぎます" in res.json()["detail"]
+
+
 def test_fmt_duration_ja():
     # 上限が1分未満のときに「0分」と出ないよう、秒と分を出し分ける
     assert api_mod.fmt_duration_ja(30) == "約30秒"
@@ -204,6 +305,65 @@ def test_job_ttl_cleanup(tmp_path, monkeypatch):
     assert not job_dir.exists()
     assert client.get("/api/jobs").json() == []
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_expired_jobs_are_removed_during_startup(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+    jobs_dir = tmp_path / "jobs"
+    first = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    job_id = submit(first).json()["id"]
+    wait_done(first, job_id)
+    job = first.app.state.manager.jobs[job_id]
+    job.finished_at = time.time() - 2 * 3600
+    first.app.state.manager._save(job)
+
+    restarted = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+
+    assert job_id not in restarted.app.state.manager.jobs
+    assert not job.dir.exists()
+
+
+def test_public_config_reports_result_retention(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "24")
+    conf = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs")).get(
+        "/api/config"
+    ).json()
+    assert conf["result_retention_hours"] == 24
+
+
+def test_job_ttl_cleanup_removes_retained_result_after_wav_is_scrubbed(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    response = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(0.1), "audio/wav")},
+        data={"wordlist": "stations", "lyrics": "あ"},
+    )
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    wait_done(client, job_id)
+    manager = client.app.state.manager
+    wav_path = manager.jobs[job_id].dir / "input.wav"
+    result_path = manager.jobs[job_id].video
+    assert not wav_path.exists()
+    assert result_path is not None and result_path.exists()
+    assert sorted(
+        path.relative_to(manager.jobs[job_id].dir).as_posix()
+        for path in manager.jobs[job_id].dir.rglob("*")
+        if path.is_file()
+    ) == ["song.mp4", "status.json"]
+    manager.jobs[job_id].finished_at = time.time() - 2 * 3600
+
+    assert manager.cleanup_expired() == [job_id]
+    assert not wav_path.exists()
+    assert not result_path.exists()
 
 
 def test_job_ttl_cleanup_removes_stale_editor_sessions(tmp_path, monkeypatch):
@@ -352,6 +512,7 @@ def test_public_config_reports_limits(public_app, monkeypatch):
     conf = TestClient(public_app).get("/api/config").json()
     assert conf["public"] is True
     assert conf["daily_quota"] == 3 and conf["max_song_seconds"] == 300
+    assert conf["launch_wordlists"] == api_mod.load_launch_catalog()["wordlists"]
 
 
 def test_index_html_turnstile_and_credit():
@@ -406,6 +567,7 @@ def test_private_config_has_no_public_keys(tmp_path, monkeypatch):
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
     conf = client.get("/api/config").json()
     assert "public" not in conf and "daily_quota" not in conf
+    assert "launch_wordlists" not in conf
 
 
 def test_simple_ui_exposes_only_the_launch_catalog(tmp_path, monkeypatch):
@@ -553,3 +715,155 @@ def test_thumbnail_is_owner_checked(tmp_path, monkeypatch):
     assert alice.get(f"/api/jobs/{a_id}/thumbnail").status_code == 200
     bob.get("/api/config")  # bobにも別セッションのcookieを発行させる
     assert bob.get(f"/api/jobs/{a_id}/thumbnail").status_code == 404
+
+
+def test_public_accepts_named_text_wordlist_and_strips_images(
+    public_app, tmp_path, monkeypatch
+):
+    captured: dict[str, str] = {}
+
+    def inspect_pipeline(job, config):
+        saved = job.dir / api_mod.WORDLIST_DIRNAME / "庭の鳥.csv"
+        captured["wordlist"] = saved.read_text(encoding="utf-8")
+        return fast_pipeline(job, config)
+
+    monkeypatch.setattr(api_mod, "run_pipeline", inspect_pipeline)
+    client = TestClient(public_app)
+    response = submit(
+        client, wordlist="unused-list-name", wordlist_name="庭の鳥",
+        wordlist_text=(
+            "surface,pronunciation,image,image_page\n"
+            "雀,スズメ,http://127.0.0.1/private,file:///etc/passwd\n"
+        ), where="type=bird",
+    )
+    assert response.status_code == 200, response.text
+    job = wait_done(client, response.json()["id"])
+    params = job["params"]
+    assert params["wordlist"] == "庭の鳥"
+    assert params["where"] == ""
+    assert params["wordlist_rows"] == 1
+    saved = (tmp_path / "jobs" / job["id"] / api_mod.WORDLIST_DIRNAME / "庭の鳥.csv")
+    assert captured["wordlist"] == (
+        "id,original,surface,pronunciation\n1,雀,雀,スズメ"
+    )
+    assert not saved.exists()
+
+
+@pytest.mark.parametrize("endpoint", ["/api/jobs", "/api/editor-session"])
+@pytest.mark.parametrize("field", ["wordlist_csv", "wordlist_images"])
+def test_public_custom_text_does_not_enable_file_inputs(public_app, endpoint, field):
+    client = TestClient(public_app)
+    response = client.post(
+        endpoint,
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            field: ("upload.csv", b"cat,cat", "text/csv"),
+        },
+        data={"wordlist_text": "雀,スズメ"},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_public_custom_text_does_not_enable_editor_upload(public_app):
+    client = TestClient(public_app)
+    response = client.post(
+        "/api/jobs",
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "editor": ("editor.json", b"{}", "application/json"),
+        },
+        data={"wordlist_text": "雀,スズメ"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["/api/jobs", "/api/editor-session"])
+def test_public_rejects_invalid_custom_text(public_app, endpoint):
+    response = TestClient(public_app).post(
+        endpoint,
+        files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
+        data={"wordlist_text": "surface,pronunciation\n猫,猫又"},
+    )
+    assert response.status_code == 400, response.text
+    assert "カタカナ" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("convert", ["0", "1"])
+def test_public_text_editor_session_is_self_contained(public_app, tmp_path, convert):
+    from test_editor_embed import _xf_midi
+
+    midi = _xf_midi(tmp_path)
+    files = {"midi": ("song.mid", midi.read_bytes(), "audio/midi")}
+    data = {
+        "wordlist_name": "地名",
+        "convert": convert,
+        "wordlist_text": "静岡,シズオカ\n鈴鹿,スズカ",
+    }
+    response = TestClient(public_app).post("/api/editor-session", files=files, data=data)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["wordlist"]["value"] == "ORIGINAL"
+    assert result["wordlist"]["text"] == "地名"
+    assert "静岡" in result["wordlist"]["csvText"]
+    assert "filepath" not in result["wordlist"]
+    assert ("results" in result) == (convert == "1")
+    assert not list((tmp_path / "jobs" / "editor-sessions").glob("*/wordlist.csv"))
+
+
+def test_public_check_rejects_zip_and_image_channels(public_app):
+    client = TestClient(public_app)
+    response = client.post(
+        "/api/wordlist-check",
+        files={"wordlist_csv": ("words.zip", b"PK\x03\x04", "application/zip")},
+    )
+    assert response.status_code == 422
+    response = client.post(
+        "/api/wordlist-check",
+        files={"wordlist_images": ("cat.png", b"fake", "image/png")},
+        data={"wordlist_text": "猫,ネコ"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["/api/jobs", "/api/editor-session", "/api/wordlist-check"])
+@pytest.mark.parametrize("limit_env,limit", [
+    ("SORAMIMIC_MAX_WORDLIST_BYTES", "4"),
+    ("SORAMIMIC_MAX_WORDLIST_ROWS", "1"),
+])
+def test_public_custom_text_preserves_limits(
+    public_app, monkeypatch, endpoint, limit_env, limit,
+):
+    monkeypatch.setenv(limit_env, limit)
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    data = {"wordlist_text": "雀,スズメ\n猫,ネコ"}
+    response = TestClient(public_app).post(endpoint, files=files, data=data)
+    assert response.status_code == 400, response.text
+
+
+def test_simple_ui_still_rejects_custom_text(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    response = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs")).post(
+        "/api/jobs",
+        data={"sample_id": "furusato", "wordlist_text": "雀,スズメ"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "この入力形式は現在利用できません"
+
+
+def test_image_credits_follow_job_session_ownership(public_app):
+    from soramimic_video.credits import write_credit_files
+
+    owner = TestClient(public_app)
+    other = TestClient(public_app)
+    result = submit(owner)
+    job_id = result.json()["id"]
+    body = wait_done(owner, job_id)
+    job = public_app.state.manager.jobs[job_id]
+    work = job.dir / "video"
+    work.mkdir()
+    write_credit_files([{"original": "画像A", "image_page": "https://example.com/a"}], work)
+    url = body["credits_url"]
+    for suffix in ("", "?download=true"):
+        assert owner.get(url + suffix).status_code == 200
+        assert other.get(url + suffix).status_code == 404

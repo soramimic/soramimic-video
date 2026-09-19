@@ -115,6 +115,29 @@ def test_project_roundtrip_with_audio_fields(tmp_path: Path):
     assert loaded.notes[0].kana == "ア"
 
 
+def test_project_roundtrip_keeps_audio_pitch_provenance(tmp_path: Path):
+    mora = MoraNote(
+        line=0,
+        kana="ア",
+        start_sec=0.0,
+        end_sec=0.5,
+        midi_note=61,
+        source="recovered_note",
+        pitch_confidence=0.84,
+    )
+    project = build_project(
+        audio_path=Path("song.wav"),
+        vocals_path=None,
+        accompaniment_path=None,
+        line_texts=["あ"],
+        mora_notes=[mora],
+    )
+    project.save(tmp_path)
+    note = Project.load(tmp_path).notes[0]
+    assert note.source == "recovered_note"
+    assert note.pitch_confidence == 0.84
+
+
 def test_project_load_without_audio_fields(tmp_path: Path):
     """既存(MIDI由来)のproject.jsonも読める(後方互換)。"""
     import json

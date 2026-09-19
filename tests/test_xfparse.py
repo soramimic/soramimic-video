@@ -2,7 +2,12 @@ from pathlib import Path
 
 from helpers import build_xf_midi
 from soramimic_video import reading as reading_mod
-from soramimic_video.xfparse import analyze_midi, normalize_kana, parse_lyric_events
+from soramimic_video.xfparse import (
+    analyze_midi,
+    melody_continuations,
+    normalize_kana,
+    parse_lyric_events,
+)
 
 
 def test_parse_lyric_events_brackets_and_breaks():
@@ -126,6 +131,32 @@ def test_analyze_midi_multi_mora_note(tmp_path: Path):
     project = analyze_midi(midi)
     assert len(project.notes) == 2
     assert project.notes[1].kana == "ライ"
+
+
+def test_melody_continuations_recovers_unlyriced_bridge_notes(tmp_path: Path):
+    midi = build_xf_midi(
+        tmp_path / "bridge.mid",
+        notes=[(0, 230, 60), (240, 230, 62), (480, 230, 64)],
+        lyric_events=[(0, "ワル"), (480, "ラ")],
+    )
+    project = analyze_midi(midi)
+
+    recovered = melody_continuations(project)
+
+    assert [(n.start_tick, n.end_tick, n.note) for n in recovered[0]] == [
+        (240, 470, 62)
+    ]
+
+
+def test_melody_continuations_does_not_cross_a_real_gap(tmp_path: Path):
+    midi = build_xf_midi(
+        tmp_path / "gap.mid",
+        notes=[(0, 120, 60), (240, 120, 62), (480, 230, 64)],
+        lyric_events=[(0, "ワル"), (480, "ラ")],
+    )
+    project = analyze_midi(midi)
+
+    assert melody_continuations(project) == {}
 
 
 def test_analyze_midi_fills_kanji_without_ruby(tmp_path: Path, monkeypatch):

@@ -25,6 +25,7 @@ dependencies = [
     # 欠けると処理自体は継続するが、同じMIDI・変換パラメータでも選択語が変わる。
     "mecab-python3>=1.0",
     "unidic-lite>=1.0",
+    "kanasim==0.0.11",
 ]
 
 [project.optional-dependencies]
@@ -41,11 +42,24 @@ audio = [
     "torch>=2.1",
     "torchaudio>=2.1",
     "torchcodec>=0.2",  # 新しめのtorchaudioは音声保存をtorchcodecに委譲する(要ffmpeg)
-    "transformers>=4.40",
+    # SheetSage2の検証済みcustom model APIと互換の範囲。
+    "transformers>=4.45.2,<4.46",
     "librosa>=0.10",
+    "soundfile>=0.12",
+    "scipy>=1.13",
+    # SheetSage2's tokenizer imports mir_eval.chord while loading the custom model.
+    "mir-eval>=0.8.2",
+    # SheetSage2's custom model exports MIDI through pretty_midi during inference.
+    "pretty-midi>=0.2.10",
     "faster-whisper>=1.0",
     "soramimic-yomi",
+    # librosa imports Numba, whose current runtime rejects NumPy 2.5.
+    "numpy>=1.24,<2.5",
+]
+# 同梱WAVサンプルの再生成用。実行時サーバーには不要
+sample-audio = [
     "numpy>=1.24",
+    "pyopenjtalk-plus>=0.4.1.post8",
 ]
 
 [project.scripts]
@@ -71,6 +85,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/soramimic_video"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"THIRD_PARTY_NOTICES.md" = "soramimic_video/THIRD_PARTY_NOTICES.md"
+"src/soramimic_video/static/sample/katatsumuri_audio.wav" = "soramimic_video/static/sample/katatsumuri_audio.wav"
+"src/soramimic_video/static/sample/momotarou_audio.wav" = "soramimic_video/static/sample/momotarou_audio.wav"
+"src/soramimic_video/static/sample/harugakita_audio.wav" = "soramimic_video/static/sample/harugakita_audio.wav"
 
 [tool.ruff]
 line-length = 100

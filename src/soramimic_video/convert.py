@@ -49,7 +49,8 @@ def engine_phrases(project: Project) -> list[str]:
     convert_project の入口と、変換せず解析だけする経路(/api/editor-session の
     解析のみモード)で同じ前処理を共有するための小さなヘルパ。
     """
-    return [_engine_kana(line.xf_kana) for line in project.lines]
+    return [_engine_kana(line.canonical_kana if line.canonical_kana is not None
+                         else line.xf_kana) for line in project.lines]
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -5,12 +5,127 @@ import pytest
 pytest.importorskip("MeCab")
 pytest.importorskip("unidic_lite")
 
+from soramimic_video.kana import split_moras  # noqa: E402
 from soramimic_video.reading import (  # noqa: E402
+    automatic_reading_candidates,
     reading_candidates,
     reading_tokens,
     text_to_kana,
     text_to_kana_unidic,
 )
+
+
+def test_automatic_candidates_add_digitwise_reading():
+    candidates = automatic_reading_candidates("4443で外れる炭酸水")
+    assert candidates[0].startswith("ヨンセンヨンヒャクヨンジューサン")
+    assert "ヨンヨンヨンサンデハズレルタンサンスイ" in candidates
+
+
+def test_reading_candidates_normalize_expressive_kana(monkeypatch):
+    monkeypatch.setattr(
+        "soramimic_video.reading._yomi_candidates_with_ruby",
+        lambda _text: ["オジカンデェース", "オジカンデス"],
+    )
+    monkeypatch.setattr(
+        "soramimic_video.reading._unidic_candidates_with_ruby", lambda _text: []
+    )
+
+    assert reading_candidates("お時間でぇーす") == [
+        "オジカンデエース", "オジカンデス"
+    ]
+    assert automatic_reading_candidates("お時間でぇーす") == ["オジカンデエース"]
+
+
+def test_automatic_digitwise_candidate_can_win_with_kana_evidence():
+    from soramimic_video.kana_whisper import choose_reading
+
+    candidates = automatic_reading_candidates("4443で外れる炭酸水")
+    decision = choose_reading(
+        candidates,
+        ["ヨーヨーヨーダンベラズ", "ヨーヨーヨーゼンベンハズレ"],
+    )
+    assert candidates[decision.selected_index].startswith("ヨンヨンヨンサン")
+    assert decision.reason == "kana-evidence"
+
+
+def test_automatic_candidates_keep_english_dictionary_first_and_add_spelling():
+    candidates = automatic_reading_candidates("reason")
+    assert candidates[0] == reading_candidates("reason")[0] == "リーザン"
+    assert "アールイーエーエスオーエヌ" in candidates
+
+
+def test_reading_candidates_include_yomi_connected_english():
+    candidates = reading_candidates("did you")
+    assert candidates[0] == "ディドユー"
+    assert "ディジュー" in candidates
+
+
+def test_reading_candidates_keep_connected_english_with_fewer_moras():
+    candidates = reading_candidates("Shout it out")
+
+    assert candidates[0] == "シャウトイットアウト"
+    assert "シャウティタウト" in candidates
+    assert len(split_moras("シャウティタウト")) < len(split_moras(candidates[0]))
+
+
+@pytest.mark.parametrize("candidate_builder", [reading_candidates, automatic_reading_candidates])
+@pytest.mark.parametrize("repetitions", [1, 2, 3])
+def test_compact_english_reading_reaches_acoustic_selection(candidate_builder, repetitions):
+    from soramimic_video.kana_whisper import choose_reading
+
+    candidates = candidate_builder("Shout it out! " * repetitions)
+    compact = "シャティタ" * repetitions
+
+    assert candidates[0] == "シャウトイットアウト" * repetitions
+    assert compact in candidates
+    decision = choose_reading(candidates, [compact, compact])
+    assert candidates[decision.selected_index] == compact
+    assert decision.reason == "kana-evidence"
+
+
+@pytest.mark.parametrize("candidate_builder", [reading_candidates, automatic_reading_candidates])
+def test_different_compact_phrases_reach_acoustic_selection(candidate_builder):
+    from soramimic_video.kana_whisper import choose_reading
+
+    candidates = candidate_builder("Shout it out! Pick it up!")
+    compact = "シャティタピキタ"
+    assert compact in candidates
+    decision = choose_reading(candidates, [compact, compact])
+    assert candidates[decision.selected_index] == compact
+    assert decision.reason == "kana-evidence"
+
+
+def test_repeated_connected_english_prioritizes_mora_count_variants():
+    candidates = reading_candidates("Shout it out! Shout it out!")
+
+    assert candidates[0] == "シャウトイットアウトシャウトイットアウト"
+    assert "シャウティタウトシャウティタウト" in candidates
+    assert "シャティタシャティタ" in candidates
+    assert len(candidates) == 8
+    assert len({len(split_moras(candidate)) for candidate in candidates}) == 8
+    assert all(not candidate.startswith("エスエイチ") for candidate in candidates)
+
+
+def test_automatic_candidates_include_yomi_letter_names():
+    candidates = automatic_reading_candidates("AI")
+    assert candidates[0] == "アイ"
+    assert "エーアイ" in candidates
+
+
+def test_automatic_candidates_filter_japanese_by_vowels_not_length(monkeypatch):
+    monkeypatch.setattr(
+        "soramimic_video.reading.reading_candidates",
+        lambda _text: ["カサ", "ガタ", "キサ", "カサラ"],
+    )
+    assert automatic_reading_candidates("仮") == ["カサ", "キサ", "カサラ"]
+
+
+def test_automatic_candidates_add_supported_symbol_reading(monkeypatch):
+    monkeypatch.setattr(
+        "soramimic_video.reading.reading_candidates", lambda _text: ["タス"]
+    )
+    assert automatic_reading_candidates("+") == ["タス", "プラス"]
+    assert automatic_reading_candidates("＋") == ["タス", "プラス"]
 
 
 def test_public_yomi_hides_native_dictionary_path(monkeypatch, capfd):
@@ -74,6 +189,25 @@ def test_reading_candidates_dedupes_by_long_vowel_normalization():
 def test_reading_candidates_nonempty_first():
     cands = reading_candidates("夜に駆ける")
     assert cands and cands[0]
+
+
+def test_reading_candidates_include_unidic_nbest_pronunciations():
+    cands = reading_candidates("あんなに側にいたのに")
+    assert cands[0] == "アンナニガワニイタノニ"
+    assert "アンナニソバニイタノニ" in cands
+    assert len(cands) == 2
+
+
+def test_reading_candidates_include_nani_for_naniwo():
+    cands = reading_candidates("何をしていたの")
+    assert any(candidate.startswith("ナニ") for candidate in cands)
+
+
+def test_reading_candidates_keep_explicit_ruby_across_unidic_nbest():
+    cands = reading_candidates("あんなに｜側《そば》にいたのに")
+    assert cands
+    assert all("ソバニ" in candidate for candidate in cands)
+    assert all("ガワニ" not in candidate for candidate in cands)
 
 
 def test_reading_tokens_uses_pronunciation_for_particles():

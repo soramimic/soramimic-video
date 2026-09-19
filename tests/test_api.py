@@ -6,10 +6,16 @@ APIキー認証を確認する。NEUTRINO実行込みのE2Eは手動(serve)で�
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import re
+import shutil
+import subprocess
+import threading
 import time
+import wave
 from pathlib import Path
 
 import pytest
@@ -19,9 +25,34 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from soramimic_video import api as api_mod  # noqa: E402
+from soramimic_video import audio_input as audio_input_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
+
+
+def fake_wav(seconds: float = 0.1, rate: int = 8000) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * round(seconds * rate))
+    return out.getvalue()
+
+
+def encoded_audio(tmp_path: Path, suffix: str, codec: str, muxer: str) -> bytes:
+    path = tmp_path / f"tone{suffix}"
+    subprocess.run(
+        [
+            shutil.which("ffmpeg") or "ffmpeg",
+            "-v", "error", "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=0.2",
+            "-c:a", codec, "-f", muxer, "-y", str(path),
+        ],
+        check=True,
+    )
+    return path.read_bytes()
 
 
 @pytest.fixture
@@ -34,6 +65,7 @@ def client(tmp_path, monkeypatch):
         return out
 
     monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
     app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
     return TestClient(app)
 
@@ -73,6 +105,414 @@ def test_job_flow_with_editor(client):
     assert playback.headers["content-type"] == "video/mp4"
     assert playback.headers["content-disposition"].startswith("inline;")
     assert playback.headers["cache-control"] == "private, no-store"
+
+
+def test_job_flow_accepts_wav_with_auto_lyrics_by_default(client):
+    wav = fake_wav()
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", wav, "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    body = wait_done(client, job_id)
+    assert body["status"] == "done"
+    assert body["params"]["input_kind"] == "audio"
+    assert body["params"]["auto_lyrics"] is True
+    assert body["song_label"] == "アップロードした曲"
+    job = client.app.state.manager.jobs[job_id]
+    assert (job.dir / "input.wav").read_bytes() == wav
+    assert not (job.dir / "input.mid").exists()
+    assert not (job.dir / "lyrics.txt").exists()
+    assert client.get(body["playback_url"]).content == FAKE_MP4
+
+
+def test_audio_job_persists_generation_quality_warning(tmp_path, monkeypatch):
+    def difficult_pipeline(job, config):
+        analysis_dir = job.dir / "analyze_audio"
+        analysis_dir.mkdir()
+        (analysis_dir / "analysis.json").write_text(
+            json.dumps({"generation_quality": {"status": "warning"}}),
+            encoding="utf-8",
+        )
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", difficult_pipeline)
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
+    browser = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    response = browser.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+
+    body = wait_done(browser, response.json()["id"])
+
+    assert body["status"] == "done"
+    assert body["generation_quality_warning"] is True
+
+
+def test_retried_audio_submission_returns_the_same_job(client):
+    fields = {
+        "wordlist": "stations",
+        "submission_id": "a" * 32,
+    }
+    files = {"audio": ("voice.wav", fake_wav(), "audio/wav")}
+    first = client.post("/api/jobs", files=files, data=fields)
+    second = client.post("/api/jobs", files=files, data=fields)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert len(client.app.state.manager.jobs) == 1
+    job = client.app.state.manager.jobs[first.json()["id"]]
+    saved = json.loads((job.dir / api_mod.STATUS_FILENAME).read_text(encoding="utf-8"))
+    assert saved["submission_id"] == fields["submission_id"]
+    assert "submission_id" not in client.get(f"/api/jobs/{job.id}").json()["params"]
+
+
+def test_rejects_invalid_audio_submission_id(client):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations", "submission_id": "not-a-valid-id"},
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "送信IDが不正です"
+
+
+def test_manual_correct_lyrics_mode_is_persisted(client):
+    wav = fake_wav()
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", wav, "audio/wav")},
+        data={
+            "wordlist": "stations",
+            "auto_lyrics": "false",
+            "lyrics": "正しい歌詞",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    job = client.app.state.manager.jobs[body["id"]]
+    assert body["params"]["auto_lyrics"] is False
+    assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正しい歌詞"
+
+
+def test_manual_correct_lyrics_mode_requires_lyrics(client):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations", "auto_lyrics": "false", "lyrics": "  "},
+    )
+    assert res.status_code == 422
+    assert "正式な元歌詞" in res.json()["detail"]
+
+
+def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path):
+    escaped = tmp_path / "escaped.txt"
+    res = client.post(
+        "/api/jobs",
+        files={
+            "audio": ("voice.wav", fake_wav(), "audio/wav"),
+            "lyrics_file": ("../../escaped.txt", "正式な歌詞".encode(), "text/plain"),
+        },
+        data={"wordlist": "stations", "auto_lyrics": "false"},
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    job = client.app.state.manager.jobs[body["id"]]
+    assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正式な歌詞"
+    assert not escaped.exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "status"),
+    [
+        ("lyrics.pdf", b"words", 400),
+        ("lyrics.txt", b"\xff", 400),
+        ("lyrics.txt", b"a" * (api_mod.MAX_LYRICS_UPLOAD_BYTES + 1), 413),
+    ],
+)
+def test_rejects_unsafe_lyrics_upload(client, filename, content, status):
+    res = client.post(
+        "/api/jobs",
+        files={
+            "audio": ("voice.wav", fake_wav(), "audio/wav"),
+            "lyrics_file": (filename, content, "application/octet-stream"),
+        },
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == status
+
+
+def test_job_flow_accepts_bundled_wav_preset(client, tmp_path, monkeypatch):
+    samples = tmp_path / "audio-samples"
+    samples.mkdir()
+    (samples / "samples.json").write_text("[]", encoding="utf-8")
+    (samples / "audio_samples.json").write_text(
+        json.dumps([{
+            "id": "demo_audio",
+            "title": "音源サンプル",
+            "original_credit": "PD song",
+            "credit_notice": "Synthetic voice (CC BY 3.0)",
+        }]),
+        encoding="utf-8",
+    )
+    wav = fake_wav()
+    (samples / "demo_audio.wav").write_bytes(wav)
+    (samples / "demo_audio_lyrics.txt").write_text("あ", encoding="utf-8")
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(samples))
+
+    listed = client.get("/api/samples").json()
+    assert [(row["id"], row["input_kind"]) for row in listed] == [
+        ("demo_audio", "audio")
+    ]
+    res = client.post(
+        "/api/jobs", data={"sample_id": "demo_audio", "wordlist": "stations"}
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    assert body["params"]["input_kind"] == "audio"
+    assert body["params"]["sample_id"] == "demo_audio"
+    assert body["params"]["original_credit"] == "PD song"
+    assert body["params"]["credit_notice"] == "Synthetic voice (CC BY 3.0)"
+    job = client.app.state.manager.jobs[body["id"]]
+    assert (job.dir / "input.wav").read_bytes() == wav
+    assert not (job.dir / "input.mid").exists()
+
+
+@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobeが必要")
+@pytest.mark.parametrize(
+    ("filename", "content", "detail"),
+    [
+        ("voice.mp3", fake_wav(), "音声ファイルを読み取れません"),
+        ("voice.wav", b"not a wav", "WAVファイルではありません"),
+    ],
+)
+def test_rejects_invalid_audio(client, filename, content, detail):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": (filename, content, "application/octet-stream")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 400
+    assert detail in res.json()["detail"]
+
+
+def test_rejects_wav_with_midi_or_sample(client):
+    files = {
+        "audio": ("voice.wav", fake_wav(), "audio/wav"),
+        "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+    }
+    res = client.post("/api/jobs", files=files, data={"wordlist": "stations"})
+    assert res.status_code == 422
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"sample_id": "furusato", "wordlist": "stations"},
+    )
+    assert res.status_code == 422
+
+
+def test_wav_input_is_hidden_and_rejected_without_audio_extra(client, monkeypatch):
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: False)
+    assert client.get("/api/config").json()["audio_input"] is False
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 503
+    assert "音声入力を利用できません" in res.json()["detail"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpegが必要")
+@pytest.mark.parametrize(
+    ("suffix", "codec", "muxer"),
+    [
+        (".mp3", "libmp3lame", "mp3"),
+        (".m4a", "aac", "ipod"),
+        (".aac", "aac", "adts"),
+        (".flac", "flac", "flac"),
+        (".ogg", "libvorbis", "ogg"),
+        (".opus", "libopus", "opus"),
+        (".webm", "libopus", "webm"),
+    ],
+)
+def test_normalizes_supported_audio_formats(tmp_path, suffix, codec, muxer):
+    raw = encoded_audio(tmp_path, suffix, codec, muxer)
+    wav, seconds = audio_input_mod.normalize_compressed_audio(
+        raw, f"voice{suffix}", 200 * 1024 * 1024, 420,
+    )
+    assert wav[:4] == b"RIFF"
+    assert wav[8:12] == b"WAVE"
+    assert 0.1 < seconds < 1
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpegが必要")
+def test_mp3_upload_is_stored_as_normalized_wav(client, tmp_path):
+    raw = encoded_audio(tmp_path, ".mp3", "libmp3lame", "mp3")
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.mp3", raw, "audio/mpeg")},
+        data={"wordlist": "stations", "lyrics": "あ"},
+    )
+    assert res.status_code == 200, res.text
+    body = wait_done(client, res.json()["id"])
+    job = client.app.state.manager.jobs[body["id"]]
+    stored = (job.dir / "input.wav").read_bytes()
+    assert stored[:4] == b"RIFF"
+    assert body["params"]["input_kind"] == "audio"
+
+
+def test_rejects_compressed_audio_over_upload_limit():
+    with pytest.raises(audio_input_mod.AudioInputError) as caught:
+        audio_input_mod.normalize_compressed_audio(b"x" * 11, "voice.mp3", 10, 420)
+    assert caught.value.status_code == 413
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpegが必要")
+def test_rejects_webm_containing_video(tmp_path):
+    path = tmp_path / "movie.webm"
+    subprocess.run(
+        [
+            shutil.which("ffmpeg") or "ffmpeg",
+            "-v", "error", "-f", "lavfi", "-i", "color=black:s=16x16:d=0.2",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2",
+            "-c:v", "libvpx", "-c:a", "libopus", "-shortest", "-y", str(path),
+        ],
+        check=True,
+    )
+    with pytest.raises(audio_input_mod.AudioInputError) as caught:
+        audio_input_mod.normalize_compressed_audio(
+            path.read_bytes(), path.name, 200 * 1024 * 1024, 420,
+        )
+    assert caught.value.status_code == 400
+
+
+def test_wav_capability_preserves_full_ui_editor_and_local_samples(
+    tmp_path, monkeypatch
+):
+    """WAV対応は通常UIを簡易UIへ変えず、既存の環境限定曲も絞らない。"""
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    (samples / "samples.json").write_text(
+        json.dumps([{"id": "bundled", "title": "同梱曲"}]), encoding="utf-8"
+    )
+    (samples / "samples.local.json").write_text(
+        json.dumps([{"id": "local", "title": "環境限定曲"}]), encoding="utf-8"
+    )
+    (samples / "local.mid").write_bytes(FAKE_MIDI)
+    editor_dist = tmp_path / "editor-dist"
+    editor_dist.mkdir()
+    (editor_dist / "editor.html").write_text("<!doctype html>", encoding="utf-8")
+
+    def fake_pipeline(job, config):
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.delenv(api_mod.SIMPLE_UI_ENV, raising=False)
+    monkeypatch.setenv(api_mod.SAMPLES_DIR_ENV, str(samples))
+    monkeypatch.setattr(api_mod, "audio_input_available", lambda: True)
+    monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
+    full_client = TestClient(
+        api_mod.create_app(jobs_dir=tmp_path / "jobs", editor_dist=editor_dist)
+    )
+
+    conf = full_client.get("/api/config").json()
+    assert conf["audio_input"] is True
+    assert "simple_ui" not in conf
+    assert conf["editor"] is True
+    assert [row["id"] for row in full_client.get("/api/samples").json()] == [
+        "bundled",
+        "local",
+    ]
+    selected = full_client.post(
+        "/api/jobs", data={"sample_id": "local", "wordlist": "stations"}
+    )
+    assert selected.status_code == 200, selected.text
+    job = full_client.app.state.manager.jobs[selected.json()["id"]]
+    assert job.params["sample_id"] == "local"
+    assert (job.dir / "input.mid").read_bytes() == FAKE_MIDI
+
+
+def test_wav_upload_limit_is_configurable(client, monkeypatch):
+    monkeypatch.setenv(api_mod.MAX_AUDIO_UPLOAD_BYTES_ENV, "64")
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav")},
+        data={"wordlist": "stations"},
+    )
+    assert res.status_code == 413
+
+
+def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
+    from soramimic_video import analyze_audio as analyze_audio_mod
+
+    class ReachedAnalyzer(Exception):
+        pass
+
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(fake_wav())
+    def fake_analyze(audio_path, project_dir, **kwargs):
+        assert audio_path == audio
+        assert project_dir == tmp_path
+        assert kwargs["lyrics_path"] is None
+        assert kwargs["whisper_model"] == "large-v3"
+        raise ReachedAnalyzer
+
+    monkeypatch.setattr(analyze_audio_mod, "analyze_audio", fake_analyze)
+    job = api_mod.Job(
+        id="wavtest",
+        dir=tmp_path,
+        params={"input_kind": "audio", "auto_lyrics": True},
+    )
+    with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})
+
+
+def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monkeypatch):
+    from soramimic_video import analyze_audio as analyze_audio_mod
+
+    class ReachedAnalyzer(Exception):
+        pass
+
+    audio = tmp_path / "input.wav"
+    audio.write_bytes(fake_wav())
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("正しい歌詞", encoding="utf-8")
+    def fake_analyze(audio_path, project_dir, **kwargs):
+        assert audio_path == audio
+        assert project_dir == tmp_path
+        assert kwargs["lyrics_path"] == lyrics
+        assert callable(kwargs["progress"])
+        raise ReachedAnalyzer
+
+    monkeypatch.setattr(analyze_audio_mod, "analyze_audio", fake_analyze)
+    job = api_mod.Job(
+        id="wav-correct-lyrics",
+        dir=tmp_path,
+        params={"input_kind": "audio", "auto_lyrics": False},
+    )
+
+    with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})
+
+
+def test_noncommercial_fanwork_is_explicit_and_persisted(client):
+    ordinary = submit(client, editor=b'{"format": "soramimic-editor/1"}')
+    assert wait_done(client, ordinary)["params"]["allow_noncommercial_fanwork"] is False
+
+    opted_in = submit(
+        client,
+        editor=b'{"format": "soramimic-editor/1"}',
+        allow_noncommercial_fanwork="true",
+    )
+    assert wait_done(client, opted_in)["params"]["allow_noncommercial_fanwork"] is True
 
 
 def test_requires_editor_or_wordlist(client):
@@ -169,9 +609,7 @@ def test_convert_params_default_empty(client):
 
 
 def test_index_html_forwards_wordlist_filter_to_the_editor():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert '<input type="hidden" id="where">' in html
     assert 'form.append("where", $("where").value.trim());' in html
 
@@ -189,18 +627,14 @@ def test_note_length_weight_setting_moved_to_soramimic():
 
 
 def test_index_html_keeps_note_length_default_for_non_editor_flow():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert 'return "NOTE_LENGTH_WEIGHT=0.25";' in html
 
 def test_index_html_model_layout_use_select_not_datalist():
     # iOS Safari が datalist を表示しない問題への対応:
     # 歌声モデル(#model)・レイアウト(#layout)は select + 手入力 + 隠しvalue に置換。
     # 送信フィールド名(#model / #layout の hidden)は据え置きでAPI互換を保つ。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # iOS Safariでも選択肢を表示できることを、現在のコントロールで確認する。
     assert "<datalist" not in html
     assert 'list="model-list"' not in html and 'list="layout-list"' not in html
@@ -232,7 +666,7 @@ def test_index_html_gates_neutrino_by_config():
 def test_index_html_explains_missing_custom_wordlist_preview():
     html = _index_html()
     assert "自作リストはプレビューに対応していません。" in html
-    assert "const custom = showsEditorWordlist();" in html
+    assert "const custom = !!activeCustomList() || showsEditorWordlist();" in html
 
 
 def test_index_html_hides_preview_for_sensitive_wordlists():
@@ -241,9 +675,7 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
     黙って出さないのではなく「隠している理由」と「画像を表示する」ボタンを出す。
     対象はこのプレビューだけで、動画・サムネの画像は従来どおり。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # 対象リストは1か所の定数で複数指定できる(将来クモ等を足せるように)
     assert "const HIDDEN_PREVIEW_WORDLISTS = {" in html
     assert "insect:" in html
@@ -261,13 +693,11 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
 
 def test_index_html_builder_card_has_selects():
     """カードで曲・単語リストを選べる。隠しの正本と写しを双方向に同期する。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
-    # プルダウンは2つ横並び。サムネ枠より上に置く(選ぶ → 下に絵が出る)
+    # サンプル曲と単語リストはサムネ枠より上で選べる。
     assert '<div class="builder-selects">' in card
-    assert '<select id="builder-sample" aria-label="曲(サンプル曲)"></select>' in card
+    assert '<select id="builder-sample" aria-label="サンプル曲"></select>' in card
     assert (
         '<select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>'
         in card
@@ -286,32 +716,29 @@ def test_index_html_builder_card_has_selects():
         "() => { syncBuilderValues(); schedulePreview(); });" in html
     )
     assert (
-        '$("wordlist-select").addEventListener("change", '
-        "() => { syncBuilderValues(); schedulePreview(); });" in html
+        '$("wordlist-select").addEventListener("change", () => {\n'
+        "  syncBuilderValues();\n"
+        "  schedulePreview();\n"
+        "});" in html
     )
     advanced = _advanced_html()
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
         "synthesizer", "model-select", "voicevox-style",
     ]
-    # 🎲ランダムはカードの選択を差し替える
-    assert '$("lucky").addEventListener("click", () => pickCombo(luckyRandomCombo()));' in html
+    # 不要なランダム・編集ボタンはカードに置かない
+    assert 'id="lucky"' not in card
+    assert 'id="builder-edit"' not in card
     # 進捗・結果は畳んである詳細(ビルダーカードの中の控えめなテキストリンク)
     assert '<details class="sub-details" id="job-card" hidden>' in html
 
 
-def test_index_html_builder_card_has_gear_and_editor_status():
-    """カードの右上は⚙(替え歌を編集)と🎲(ランダム)。替え歌の状態表示もカードに置く。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+def test_index_html_builder_card_keeps_editor_status_without_action_buttons():
+    """替え歌の状態表示は残し、ランダム・編集ボタンは置かない。"""
+    html = _index_html()
     card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
-    # ⚙は🎲と同じ topbar に置き、押すと従来と同じ導線(openEditorFlow)で開く
-    assert '<button type="button" id="builder-edit" class="btn-sm"' in card
-    assert 'aria-label="替え歌を編集" title="替え歌を編集"' in card
-    assert card.index('id="builder-edit"') < card.index('id="lucky"')
-    assert '$("builder-edit").addEventListener("click", openEditorFlow);' in html
-    # エディタを同梱していないサーバーでは⚙ごと出さない
-    assert card.index('id="editor-embed-controls"') < card.index('id="builder-edit"')
+    assert 'id="builder-edit"' not in card
+    assert 'id="lucky"' not in card
+    assert 'class="builder-topbar"' not in card
     # 替え歌の状態表示もカードに移した(エディタの導線がカードにあるので)
     assert 'id="parody-status"' in card
     # 「保存済みの替え歌があります」の選択はカード内に展開せず(サムネ枠が押し
@@ -322,9 +749,7 @@ def test_index_html_builder_card_has_gear_and_editor_status():
 
 def test_index_html_job_card_is_collapsed_by_default():
     """ジョブの詳細は既定で畳み、エラー・中断のときだけ自動で開く。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # ビルダーカードの最下部に置く小さなテキストリンク(.sub-details)。
     assert '<details class="sub-details" id="job-card" hidden>' in html
     assert "<summary>生成の詳細(ステージ・ログ)</summary>" in html
@@ -338,9 +763,7 @@ def test_index_html_job_card_is_collapsed_by_default():
 
 def test_index_html_job_card_lives_in_the_builder_card():
     """「生成の詳細」はビルダーカードの中(最下部)にあり、エラー時だけ目立たせる。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     builder = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
     assert 'id="job-card"' in builder
     # 最下部(サムネ枠・上限や確認の表示のあと)
@@ -352,33 +775,23 @@ def test_index_html_job_card_lives_in_the_builder_card():
 
 
 def test_index_html_keeps_form_restore_and_file_hint():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "function saveForm()" in html
     assert "async function doRestoreForm()" in html
     assert "localStorage.setItem(FORM_KEY" in html
     assert 'id="midi-restore-hint"' in html
 
 
-def test_index_html_builder_card_has_labeled_topbar_actions():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    # ⚙と🎲はカードの右上に小さく置くだけ。ただしアイコンだけだと気づかれない
-    # ので、文字ラベルを添えたピルにする(絵文字は読み上げ対象から外す)
-    assert '<div class="builder-topbar">' in html
-    assert '<button type="button" id="lucky" class="btn-sm"' in html
-    assert '<span class="lucky-icon" aria-hidden="true">🎲</span>ランダム</button>' in html
-    assert '<span class="lucky-icon" aria-hidden="true">⚙</span>編集</button>' in html
-    assert "border-radius: 999px; background: var(--panel-2);" in html
+def test_index_html_builder_card_omits_random_and_edit_actions():
+    html = _index_html()
+    assert '<div class="builder-topbar">' not in html
+    assert 'id="lucky"' not in html
+    assert 'id="builder-edit"' not in html
 
 
 def test_index_html_builder_frame_runs_the_whole_flow():
     """サムネ枠がそのまま「生成ボタン → 進捗 → 動画プレイヤー」に変わる。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # 枠のタップで生成が始まる(これが唯一の生成導線)
     assert '<button type="button" class="builder-play" id="builder-play"' in html
     assert '$("builder-play").addEventListener("click", () => submitJob(0));' in html
@@ -389,7 +802,7 @@ def test_index_html_builder_frame_runs_the_whole_flow():
     # 中断は生成中も枠の中から押せる
     assert '$("builder-cancel").addEventListener("click", cancelJob);' in html
     # 完成したら同じ枠が動画プレイヤーになり、シェアは枠の直下に出る
-    assert '<video id="builder-video" controls playsinline hidden></video>' in html
+    assert '<video id="builder-video" controls playsinline preload="none" hidden></video>' in html
     assert "video.poster = qs(job.thumbnail_url);" in html
     assert '$("builder-share").innerHTML = SHARE_HTML;' in html
     # 選び直したら枠は新しいプレビューに戻る
@@ -397,13 +810,11 @@ def test_index_html_builder_frame_runs_the_whole_flow():
 
 
 def test_index_html_builder_submit_is_gated_while_busy():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
-    assert '上の「曲」から選ぶか🎲で選び直してください' in html
+    assert '曲をアップロードするか、「サンプル曲で試す」から選んでください' in html
     assert '<p class="error" id="submit-msg" hidden></p>' in html
 
 
@@ -413,9 +824,7 @@ def test_index_html_settings_change_returns_frame_to_preview():
     生成の導線が枠のタップだけになったので、詳細設定(歌声・変換パラメータ・
     レイアウトなど)を変えたあとに再生成できなくなる状態を作ってはいけない。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "function releaseBuilderDone() {" in html
     assert 'if (builderState !== "done") return;' in html
     # 入力の変化は文書全体でまとめて拾う(詳細設定の中のどれでも戻る)
@@ -434,9 +843,7 @@ def test_index_html_polling_survives_background():
     バックグラウンド中はタイマーが凍り、fetchも失敗する。以前は失敗すると
     setTimeoutのチェーンが張り直されず、戻っても進捗が止まったままだった。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # 可視に戻ったら即座に取り直す(bfcache復帰・回線復帰も同じ入口)
     assert 'document.addEventListener("visibilitychange", resumePolling);' in html
     assert 'window.addEventListener("pageshow", resumePolling);' in html
@@ -475,9 +882,7 @@ def test_index_html_elapsed_seconds_come_from_server():
 
     バックグラウンドから戻ったとき、1回ポーリングするだけで正しい値に戻る。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # ステージ名と経過秒を組み立てるのはこの1か所だけ
     assert "`${label}${elapsed}`" in html
     assert "const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)`" in html
@@ -723,6 +1128,92 @@ def test_to_dict_no_progress_for_other_stages():
     assert "stage_eta_seconds" not in d
 
 
+def test_to_dict_hides_unreliable_audio_analysis_eta():
+    job = _running_synth_job(
+        stage="analyze",
+        params={"input_kind": "audio"},
+        stage_started_at=time.time() - 10,
+        stage_progress=25,
+    )
+    d = job.to_dict(with_log=False)
+    assert d["stage_progress"] == 25
+    assert d["stage_elapsed"] >= 9
+    assert "stage_eta_seconds" not in d
+
+
+def test_done_job_exposes_generation_quality_warning(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    job = api_mod.Job(
+        id="difficult-song",
+        dir=tmp_path,
+        params={"input_kind": "audio"},
+        status="done",
+        video=video,
+        generation_quality_warning=True,
+    )
+
+    assert job.to_dict(with_log=False)["generation_quality_warning"] is True
+
+
+def test_queued_job_reports_input_aware_start_wait(tmp_path):
+    """前方のWAVはXF MIDIより長い幅で足し、他人の詳細は返さない。"""
+    now = time.time()
+    running_audio = api_mod.Job(
+        id="audio",
+        dir=tmp_path / "audio",
+        params={"input_kind": "audio"},
+        status="running",
+        created_at=now - 60,
+        started_at=now - 30,
+    )
+    queued_midi = api_mod.Job(
+        id="midi",
+        dir=tmp_path / "midi",
+        params={"input_kind": "midi"},
+        status="queued",
+        created_at=now - 10,
+    )
+    manager = object.__new__(api_mod.JobManager)
+    manager.jobs = {running_audio.id: running_audio, queued_midi.id: queued_midi}
+    manager._lock = threading.Lock()
+
+    body = manager.job_dict(queued_midi, with_log=False)
+
+    assert body["queue_ahead"] == 1
+    assert 89 <= body["queue_wait_min_seconds"] <= 91
+    assert 269 <= body["queue_wait_max_seconds"] <= 271
+    assert 9 <= body["queued_elapsed_seconds"] <= 11
+    assert "audio" not in body
+
+
+def test_queued_wait_estimate_distinguishes_midi_from_audio(tmp_path):
+    now = time.time()
+    first_midi = api_mod.Job(
+        id="first-midi", dir=tmp_path / "first-midi",
+        params={"input_kind": "midi"}, status="running",
+        created_at=now - 20, started_at=now - 10,
+    )
+    second_audio = api_mod.Job(
+        id="second-audio", dir=tmp_path / "second-audio",
+        params={"input_kind": "audio"}, status="queued", created_at=now - 5,
+    )
+    last = api_mod.Job(
+        id="last", dir=tmp_path / "last",
+        params={"input_kind": "midi"}, status="queued", created_at=now,
+    )
+    manager = object.__new__(api_mod.JobManager)
+    manager.jobs = {job.id: job for job in (first_midi, second_audio, last)}
+    manager._lock = threading.Lock()
+
+    body = manager.job_dict(last, with_log=False)
+
+    assert body["queue_ahead"] == 2
+    # 実行中MIDIの残り35〜170秒 + 待機WAVの120〜300秒。
+    assert 154 <= body["queue_wait_min_seconds"] <= 156
+    assert 469 <= body["queue_wait_max_seconds"] <= 471
+
+
 def test_cancel_running_and_queued(tmp_path, monkeypatch):
     from soramimic_video import runproc
 
@@ -744,14 +1235,33 @@ def test_cancel_running_and_queued(tmp_path, monkeypatch):
     res = client.post(f"/api/jobs/{queued}/cancel")
     assert res.status_code == 200
     assert res.json()["status"] == "canceled"
+    queued_dir = client.app.state.manager.jobs[queued].dir
+    assert [path.name for path in queued_dir.iterdir()] == [api_mod.STATUS_FILENAME]
 
     # 実行中のジョブは中断チェックで止まる
     client.post(f"/api/jobs/{running}/cancel")
     body = wait_done(client, running)
     assert body["status"] == "canceled"
+    running_dir = client.app.state.manager.jobs[running].dir
+    assert [path.name for path in running_dir.iterdir()] == [api_mod.STATUS_FILENAME]
     assert client.get(f"/api/jobs/{queued}").json()["status"] == "canceled"
     # 完了済みジョブへのcancelは何もしない
     assert client.post(f"/api/jobs/{running}/cancel").json()["status"] == "canceled"
+
+
+def test_failed_job_removes_uploaded_and_intermediate_files(tmp_path, monkeypatch):
+    def failing_pipeline(job, config):
+        (job.dir / "analyze").mkdir()
+        (job.dir / "analyze" / "private.tmp").write_bytes(b"intermediate")
+        raise RuntimeError("analysis failed")
+
+    monkeypatch.setattr(api_mod, "run_pipeline", failing_pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    job_id = submit(client, editor=b"{}")
+    body = wait_done(client, job_id)
+    assert body["status"] == "error"
+    job_dir = client.app.state.manager.jobs[job_id].dir
+    assert [path.name for path in job_dir.iterdir()] == [api_mod.STATUS_FILENAME]
 
 
 def test_runproc_kill_current():
@@ -944,12 +1454,75 @@ def test_config_lists_layouts(client):
     assert "default" in conf["layouts"] and "caption" in conf["layouts"]
 
 
+def test_config_lists_only_active_analysis_capability(client, monkeypatch):
+    from soramimic_video import audio_melody
+
+    monkeypatch.setattr(
+        audio_melody,
+        "configured_capabilities",
+        lambda: {"sheetsage2": True},
+    )
+
+    assert client.get("/api/config").json()["audio_analysis"] == {"sheetsage2": True}
+
+
+def test_config_lists_wordlist_phrases_for_text_previews(client):
+    phrases = client.get("/api/config").json()["wordlist_phrases"]
+    assert phrases["stations"] == "駅名"
+    assert phrases["baseball"] == "野球選手名"
+
+
 def test_config_has_wordlist_layouts(client):
     conf = client.get("/api/config").json()
     wl = conf["wordlist_layouts"]
     assert wl["scientist"] == "scientist_card"
     # 値はすべて組み込みレイアウト名(UIがそのまま#layoutに入れるため)
     assert set(wl.values()) <= set(conf["layouts"])
+
+
+def test_config_has_vtuber_image_policy(client):
+    conf = client.get("/api/config").json()
+    assert "youtuber" not in conf["wordlist_image_policies"]
+    policy = conf["wordlist_image_policies"]["vtuber"]
+    assert policy["usage"] == "noncommercial_fanwork"
+    assert policy["terms"] == "https://hololivepro.com/terms/"
+    by_url = {term["url"]: term for term in policy["terms_pages"]}
+    assert len(by_url) == len(policy["terms_pages"])
+    assert by_url["https://hololivepro.com/terms/"]["people"]
+    fsp = by_url["https://firststage-pro.com/guideline/"]
+    assert "FIRST STAGE PRODUCTION" in fsp["label"]
+    assert len(fsp["people"]) == 26
+
+
+
+@pytest.mark.parametrize(("name", "label"), [("youtuber", "YouTuber"), ("vtuber", "VTuber")])
+def test_creator_wordlists_are_separate_in_ui_and_editor(client, name, label):
+    from soramimic_video.editor_io import (
+        SETTING_JSON,
+        _flatten_wordlists,
+        named_wordlist_entry,
+        wordlist_phrase_name,
+    )
+
+    if not SETTING_JSON.is_file():
+        pytest.skip("submodule未取得")
+    config = client.get("/api/config").json()
+    assert config["wordlist_layouts"][name] == "youtuber_card"
+    assert wordlist_phrase_name(name) == f"{label}名"
+
+    response = client.get("/editor/conf/setting.json")
+    assert response.status_code == 200
+    entries = _flatten_wordlists(response.json()["wordlist"])
+    entry = next(item for item in entries if item.get("value") == name.upper())
+    assert entry == named_wordlist_entry(name)
+    assert entry["text"] == label
+    assert {facet["column"] for facet in entry["facets"]} == {"type", "status"}
+
+    response = client.get(f"/editor/{entry['filepath']}")
+    assert response.status_code == 200
+    rows = list(csv.DictReader(io.StringIO(response.text)))
+    assert rows
+    assert {row["category"] for row in rows} == {name}
 
 
 def test_get_builtin_layout(client):
@@ -1503,9 +2076,7 @@ def test_synth_credit_of_neutrino_is_empty():
 
 def test_index_html_has_platform_appropriate_save_share_buttons():
     # モバイルは保存・共有1ボタン、PCはダウンロードと共有を分ける。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert 'id="share-save"' in html
     assert 'id="download-video"' in html
     assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
@@ -1524,7 +2095,6 @@ def test_index_html_has_platform_appropriate_save_share_buttons():
     assert "navigator.share({ files: [prepared.file], text: SHARE_TEXT })" in html
     assert "#Soramimic" in html
     assert "#そらみみっく" in html
-    assert "#ソラミミック" not in html
     click = html[html.index("function bindShare(videoUrl)") :]
     click = click[: click.index("\n}\n")]
     assert "fetch(" not in click and "await " not in click
@@ -1606,6 +2176,13 @@ def test_brand_symbols_are_public_versioned_transparent_png(client):
         )
 
 
+def test_index_declares_versioned_brand_favicon(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert '<link rel="icon" href="/logo-soramimic-symbol-v3.png">' in response.text
+
+
 def test_designer_wordmarks_are_public_versioned_transparent_png(client):
     from PIL import Image
 
@@ -1652,9 +2229,7 @@ def test_canva_horizontal_logos_are_public_transparent_pngs(client):
 
 def test_index_html_share_hint_matches_platform_capability():
     """モバイルは保存・共有、PCはダウンロードと共有の案内に切り替える。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert '/iPhone|iPad|iPod/i.test(platform)' in html
     assert 'return "ios";' in html and 'return "android";' in html
     assert '「ビデオを保存」「ファイルに保存」' in html
@@ -1664,9 +2239,7 @@ def test_index_html_share_hint_matches_platform_capability():
 
 
 def test_index_html_shows_neutrino_configuration_warning():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "NEUTRINO_ROOT未設定" in html
 
 
@@ -1709,15 +2282,14 @@ def test_layout_name_only_job_has_no_layout_json(client):
     assert api_mod.resolve_layout(job, {}) == ("caption", "name:caption")
 
 
-def test_index_html_sends_layout_json_only_when_edited():
-    # 事故の本命: レイアウト名を切り替えてもテキストエリアの古いJSONが送られ、
-    # サーバー側で名前より優先されて別リストのカードになっていた。
-    # エディタを編集したとき(leDirty)だけ layout_json を送る。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    assert 'if (leDirty && $("layout-json").value.trim()) {' in html
-    assert '    form.append("layout_json", $("layout-json").value);' in html
+def test_index_html_never_sends_layout_json_from_web_ui():
+    # レイアウト編集の実装は残すが、Web UIからは単語リスト対応カードを固定で使い、
+    # 保存済みの手動JSONもジョブへ送らない。
+    html = _index_html()
+    submit = html.split("async function submitJob(previewSec, previewMode) {")[1]
+    submit = submit.split("\n}\n\n// サムネ・フッター", 1)[0]
+    assert 'form.append("layout_json"' not in submit
+    assert 'form.append("layout", customLayout ? "" : $("layout").value)' in submit
     # 読み込んだだけのJSONは編集扱いにしない。leToJson が dirty のまま保存して
     # いるので、降ろしたあとに保存し直さないとリロードで編集扱いに戻ってしまう
     assert (
@@ -1732,9 +2304,7 @@ def test_index_html_layout_load_clears_on_fetch_error():
     # メッセージを出す(握りつぶすと前のリストのJSONが焼き付く)
     import re
 
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     body = re.search(r"async function leLoad\(\) \{.*?\n\}", html, re.S).group(0)
     assert "try {" in body and "} catch (err) {" in body
     assert "leClearLayout();" in body
@@ -1742,14 +2312,14 @@ def test_index_html_layout_load_clears_on_fetch_error():
 
 
 def test_index_html_wordlist_layout_switch_clears_layout_json():
-    # applyWordlistLayout はレイアウト名を入れた直後に「同期で」JSONを捨てる。
-    # 非同期の leLoad 頼みだと、fetchが失敗したとき古いJSONが残る
+    # applyWordlistLayout は保存済みの手動選択より単語リスト対応カードを優先し、
+    # レイアウト名を入れた直後に「同期で」古いJSONを捨てる。
     import re
 
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     body = re.search(r"function applyWordlistLayout\(\) \{.*?\n\}", html, re.S).group(0)
+    assert "cur && cur !== lastAutoLayout" not in body
+    assert 'next === cur && !leDirty && !$("layout-json").value.trim()' in body
     assert (
         body.index('setChoice("layout", next);')
         < body.index("leClearLayout();")
@@ -1760,9 +2330,7 @@ def test_index_html_wordlist_layout_switch_clears_layout_json():
 def test_index_html_restores_layout_json_only_when_layout_matches():
     # 保存したJSONの出どころ(layoutJsonFor)が復元するレイアウト名と一致する
     # ときだけ復元する。ズレたJSONをリロードのたびに再生産しないため
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "layoutJsonFor: leLayoutFor," in html
     assert "layoutDirty: leDirty," in html
     # ベースの素性とクリーンな内容も保存する(リロード後も「〈ベース名〉の編集」に戻す)
@@ -1786,17 +2354,23 @@ def _advanced_html() -> str:
     return body.split('<details class="card" id="history">')[0]
 
 
-def test_index_html_song_values_are_hidden_canonicals():
-    """曲・MIDI・元歌詞の正本はDOMに残すが、詳細設定には表示しない。
+def test_index_html_song_values_keep_hidden_file_canonicals_and_visible_correct_lyrics():
+    """曲・MIDIの正本は隠し、正解歌詞だけアップロード欄に必要時表示する。
 
-    選ぶ操作はビルダーカードと替え歌エディタに移譲済み。送信・保存・復元・MIDI検証・
-    親子同期はこのIDを読むので、要素そのものは hidden の正本として温存する。
+    ファイル選択の正本は既存処理のためhidden領域に残す。歌詞の正本は自動認識を
+    オフにしたとき入力できるよう、アップロード欄の条件表示パネルへ置く。
     """
     html = _index_html()
     store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
-    assert '<input type="file" id="midi" accept=".mid,.midi">' in store
+    assert 'id="midi"' in store
+    assert '.mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,audio/midi' in store
+    assert 'id="audio"' not in store
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in store
-    assert '<textarea id="lyrics"></textarea>' in store
+    assert 'id="lyrics"' not in store
+    upload = html.split('<div id="song-upload-panel">')[1].split('<div id="sample-picker"')[0]
+    assert 'id="auto-lyrics"' in upload
+    assert 'id="lyrics-correction-panel" hidden' in upload
+    assert '<textarea id="lyrics"' in upload
     # 隠しのまま置いてよいのは、中身が別の見える場所へ中継されるか、
     # 読まれなくてもユーザーが困らないものだけ(理由はマークアップのコメント)
     for dynamic_id in (
@@ -1806,10 +2380,11 @@ def test_index_html_song_values_are_hidden_canonicals():
     ):
         assert f'id="{dynamic_id}"' in store
 
-    # 正本をhiddenへ移してもカード・🎲・エディタとの既存経路は維持する
-    assert '$("sample-select").value = c.sampleId;' in html
+    # 正本をhiddenへ移してもカード・エディタとの既存経路は維持する
+    assert '$("sample-select").value = $("builder-sample").value;' in html
     assert '$("sample-select").addEventListener("change", () => {' in html
-    assert "trackSample(applySample()).then((ok) => {" in html
+    assert "const pending = trackSample(applySample());" in html
+    assert "pending.then((ok) => {" in html
     assert (
         '$("sample-select").addEventListener("change", '
         "() => { syncBuilderValues(); schedulePreview(); });" in html
@@ -1839,16 +2414,49 @@ def test_index_html_song_warnings_stay_reachable_without_section_one():
 # ---- 詳細設定(#advanced)の情報整理: 役割ごとのグループを使用頻度順に並べる ----
 
 
+def test_index_html_places_advanced_accordion_below_the_wordlist():
+    """詳細設定は単語リスト直下のスロットへ移し、カード内で開閉できる。"""
+    html = _index_html()
+    card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
+    assert card.index('id="builder-wordlist"') < card.index('id="advanced-slot"')
+    assert card.index('id="advanced-slot"') < card.index('id="builder-fanwork-notice"')
+    assert "$('advanced-slot').replaceWith($('advanced'));" in html
+    # 親カード内で二重のカードに見えないよう、外枠と別背景を打ち消す。
+    advanced_style = html.split("#advanced {")[1].split("}")[0]
+    assert "border: 0;" in advanced_style
+    assert "border-radius: 0;" in advanced_style
+    assert "background: transparent;" in advanced_style
+
+
+def test_index_html_wordlist_filter_is_first_in_advanced_settings():
+    """選択中リストのファセット絞り込みを、詳細設定の先頭で直接変更できる。"""
+    advanced = _advanced_html()
+    assert advanced.index('id="wordlist-filter-field"') < advanced.index('id="auth"')
+    assert 'id="wordlist-facets" class="wordlist-facets"' in advanced
+    html = _index_html()
+    render = html.split("function renderWordlistFilter() {")[1].split("\n}")[0]
+    assert 'field.hidden = !facets.length;' in render
+    assert 'cb.__where = wordlistFacetClause(f, item);' in render
+    compile_filter = html.split("function compileWordlistFilter(g) {")[1].split("\n}")[0]
+    assert 'group.querySelectorAll("input.facet-value:checked")' in compile_filter
+    assert 'return clauses.join(" and ");' in compile_filter
+    commit = html.split("function commitWordlistFilter() {")[1].split("\n}")[0]
+    assert "clearEditorFile();" in commit
+    assert "setWhere(compileWordlistFilter(g));" in commit
+    assert "schedulePreview(true);" in commit
+
+
 def _opt_groups() -> dict[str, str]:
     """詳細設定のグループ見出し → そのグループのHTML。"""
     import re
 
     out: dict[str, str] = {}
-    for part in _advanced_html().split('<section class="opt-group">')[1:]:
-        body = part.split("</section>")[0]
+    for match in re.finditer(r'<section class="opt-group"(?P<attrs>[^>]*)>(?P<body>.*?)</section>',
+                             _advanced_html(), re.S):
+        body = match.group("body")
         title = re.search(r'<h3 class="opt-group-title">(.*?)</h3>', body)
         assert title, body[:200]
-        out[title.group(1)] = body
+        out[title.group(1)] = match.group(0)
     return out
 
 
@@ -1858,38 +2466,41 @@ def test_index_html_advanced_is_grouped_by_role():
     「空耳のもと」(単語リスト選択・エディタの導線)は、選ぶ操作がエディタの⚙と
     カードの⚙に移ったのでグループごと廃止した。
     """
-    assert list(_opt_groups()) == [
-        "① 歌声",
-        "② 見た目",
-        "③ 元曲クレジット",
-    ]
+    assert list(_opt_groups()) == ["① 歌声", "② 見た目", "曲情報・クレジット"]
     # どのグループにも1行の説明を添える
     assert _advanced_html().count('class="hint opt-group-lead"') == 3
     # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
     advanced = _advanced_html()
-    assert advanced.index('id="auth"') < advanced.index('<section class="opt-group">')
+    assert 'id="advanced-lock-hint"' in advanced
+    assert advanced.index('id="auth"') < advanced.index('<section class="opt-group"')
     # 区切りは見た目にも出す(小見出し + 罫線)
     html = _index_html()
     assert ".opt-group + .opt-group {" in html
     assert ".opt-group-title { font-size: .9rem;" in html
 
 
-def test_index_html_advanced_groups_hold_the_right_fields():
-    """詳細設定には動画側の歌声と見た目だけを残す。"""
+def test_index_html_advanced_groups_hide_controls_and_expose_song_text():
+    """歌声とレイアウトの実装は残して隠し、元曲由来の文字だけ見せる。"""
     g = _opt_groups()
     voice = g["① 歌声"]
+    assert voice.startswith('<section class="opt-group" hidden>')
     assert 'id="synthesizer"' in voice
     assert 'id="auto-octave"' in voice and 'id="transpose"' in voice
     assert 'id="preview"' in voice
     look = g["② 見た目"]
+    assert look.startswith('<section class="opt-group" hidden>')
     # プリセット選択も編集も全画面モーダル(#le-modal)へ寄せたので、グループに残るのは
     # 送信値の正本(隠しinput)・モーダルを開くボタン・カスタム編集中の目印だけ。
     # レイアウトは単語リストに連動して自動で決まるものなので、ふだんは選ばせない
     assert 'id="layout"' in look and 'id="le-open"' in look
     assert 'id="le-status"' in look
-    credit = g["③ 元曲クレジット"]
+    credit = g["曲情報・クレジット"]
+    assert credit.startswith('<section class="opt-group" id="song-credit-section">')
+    assert 'id="song-title"' in credit
     assert 'id="original-credit"' in credit
     assert 'id="credit-notice"' in credit
+    for preview in ("thumb-caption", "footer", "credits-original"):
+        assert f'id="song-preview-{preview}"' in credit
 
 
 def test_index_html_layout_base_select_lives_in_the_editor_modal():
@@ -1929,7 +2540,7 @@ def test_index_html_wordlist_values_are_hidden_canonicals():
     """単語リストの選択UIは無くし、値(名前・絞り込み)だけを隠して持つ。"""
     html = _index_html()
     store = html.split('<div id="wordlist-store" hidden>')[1].split("</div>")[0]
-    # 選択肢の一覧(🎲の抽選・表示名の引き当てに使う)と、送信値の正本
+    # 選択肢の一覧(表示名の引き当てに使う)と、送信値の正本
     assert '<select id="wordlist-select" hidden></select>' in store
     assert '<input type="hidden" id="wordlist">' in store
     assert '<input type="hidden" id="where">' in store
@@ -1940,7 +2551,7 @@ def test_index_html_wordlist_values_are_hidden_canonicals():
 
 
 def test_index_html_keeps_the_conf_default_filters():
-    """チェックボックスUIを畳んでも、confのfacet既定(default:true)の絞り込みは残す。
+    """フィルターを触らなくても、editorと同じfacet既定の絞り込みを使う。
 
     駅名は現存駅だけ・流行はセンシティブ除外…といった既定が消えると、UIの整理が
     そのまま出力の変化になってしまう。組み立てた式が本当にエディタ側
@@ -1949,8 +2560,9 @@ def test_index_html_keeps_the_conf_default_filters():
     """
     html = _index_html()
     body = html.split("function facetDefaultWhere(g) {")[1].split("\n}")[0]
-    # 既定ONの値だけを集める
-    assert '(f.values || []).filter((v) => v.default === true)' in body
+    # default:true があればその値、ひとつも無ければeditorと同じく全値を選ぶ
+    assert 'const defaults = values.filter((v) => v.default === true);' in body
+    assert 'const selected = defaults.length ? defaults : values;' in body
     # 値の述語は where 優先、無ければ col=v の or(複数列は全列)を括弧でくくる
     assert '(v.where ? v.where : "(" + cols.map((c) => c + "=" + v.v).join(" or ") + ")")' in body
     # ファセットごとにも括弧をつけ、facetをまたぐと and(エディタの compileWhere と同形)
@@ -2114,9 +2726,8 @@ def test_index_html_editor_auto_import_checks_provenance():
     assert 'wordlist: $("wordlist").value.trim(),' in prov
     assert 'where: $("where").value.trim(),' in prov
     assert "params: buildConvertParams()," in prov
-    # 撤去した自作リスト(画像つき)の指紋キーは書かない。ただし古いシードを
-    # 「別の入力」として弾けるよう、比較キーの並びからは外さない
-    assert "customWordlist" not in prov
+    # 登録済み自作リストのIDと内容が変わった編集も、別の入力として判定する。
+    assert "customWordlist" in prov
     assert (
         'const PROVENANCE_KEYS = '
         '["song", "wordlist", "customWordlist", "where", "params"];' in html
@@ -2152,10 +2763,9 @@ def test_index_html_progress_uses_the_active_stage_plan():
     # convert / import-editor は排他(parody_source で決まる)
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
-    assert (
-        'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
-    )
-    assert "setJobStatus(`歌唱合成${tail}`, `歌唱合成${tail}`);" in html
+    assert 'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
+    assert "setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`);" in html
+    assert "setJobStatus(`${label}${tail}`, `${label}${tail}`);" in html
 
 
 def test_index_html_stage_chips_match_the_step_count():
@@ -2168,3 +2778,40 @@ def test_index_html_stage_chips_match_the_step_count():
     assert "li.hidden = !plan.includes(name) && !doneNames.has(name);" in body
     # 枠内のバーの分母も同じ数え方にそろえる
     assert "const total = stagePlan(job).length || 6;" in html
+
+
+def test_job_credits_download_and_missing_history(client):
+    from soramimic_video.credits import write_credit_files
+
+    job_id = submit(client, wordlist="stations")
+    body = wait_done(client, job_id)
+    url = body["credits_url"]
+    assert client.get(url).status_code == 404
+    job = client.app.state.manager.jobs[job_id]
+    write_credit_files([{"original": "素材", "image_page": "https://youtu.be/a?t=42",
+                         "image_terms_page": "https://example.com/terms",
+                         "image_credit": "非公式"}],
+                       job.dir / "video")
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.json()["items"][0]["image_credit"] == "非公式"
+    response = client.get(url, params={"download": "true"})
+    assert response.status_code == 200
+    assert 'filename="credits.md"' in response.headers["content-disposition"]
+    assert "https://youtu.be/a?t=42" in response.text
+    assert "https://example.com/terms" in response.text
+    job.status = "running"
+    assert client.get(url).status_code == 409
+
+
+def test_image_sources_restricts_paths_and_preserves_fsp_metadata(client):
+    for name in ["../vtuber", "/etc/passwd", "vtuber.csv"]:
+        assert client.get("/api/image-sources", params={"wordlist": name}).status_code == 404
+    response = client.get("/api/image-sources", params={"wordlist": "vtuber"})
+    assert response.status_code == 200
+    rows = response.json()
+    fsp = [row for row in rows if row["image_terms_page"] == "https://firststage-pro.com/guideline/"]
+    assert len(fsp) == 26
+    assert all(row["image"] and row["image_page"] and row["image_credit"] for row in fsp)
+    assert all(row["image_usage"] == "noncommercial_fanwork" for row in fsp)

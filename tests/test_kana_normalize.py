@@ -1,4 +1,18 @@
-from soramimic_video.kana import normalize_long_vowels, normalize_small_vowels
+from soramimic_video.kana import (
+    normalize_audio_reading,
+    normalize_long_vowels,
+    normalize_small_vowels,
+)
+
+
+def test_normalize_audio_reading_opens_small_vowels_and_collapses_long_runs():
+    assert normalize_audio_reading("デェー") == "デエー"
+    assert normalize_audio_reading("ドーー") == "ドー"
+    assert normalize_audio_reading("ウッセェワ") == "ウッセエワ"
+
+
+def test_normalize_audio_reading_keeps_foreign_kana_moras():
+    assert normalize_audio_reading("ティーファイル") == "ティーファイル"
 
 
 def test_normalize_ou_and_ei():

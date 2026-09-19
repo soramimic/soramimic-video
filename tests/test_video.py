@@ -23,7 +23,6 @@ from soramimic_video.video import (
     download_image,
     layout_column_mismatch,
     layout_template_columns,
-    prune_rendered_frame_cache,
     word_frame_data,
     write_slideshow,
 )
@@ -118,6 +117,7 @@ def _two_line_project(tmp_path: Path):
     align_lines(project, ["沈むように 溶けるように"])
     # 2つのXF行(=2フレーズ)が同じ元歌詞行に対応する
     assert [ln.original_text for ln in project.lines] == ["沈むように 溶けるように"] * 2
+    assert [ln.original_line_index for ln in project.lines] == [0, 0]
     project.parody = Parody(
         wordlist="test",
         lines=[
@@ -152,15 +152,25 @@ def test_build_ass_original_line_merges_group(tmp_path: Path):
               if ln.startswith("Dialogue:") and ",Original," in ln]
     # 1枚だけ: 開始=1フレーズ目の頭、終了=2フレーズ目の終わり(通しタイミング)
     assert len(starts) == 1
-    assert _parody_texts(ass) == ["静  川"]  # 替え歌も元歌詞の行に合わせる
+    assert _parody_texts(ass) == ["静  川"]
 
 
-def test_build_ass_default_follows_original_lyric_lines(tmp_path: Path):
-    # 既定(override・要素指定なし): 替え歌・元歌詞とも元歌詞の行単位
+def test_build_ass_default_merges_fragments_of_same_original_line(tmp_path: Path):
+    # 既定: 1つの元歌詞行に対応するXF断片はまとめる
     project = _two_line_project(tmp_path)
     ass = build_ass(project, 1280, 720, "Font")
     assert _orig_texts(ass) == ["沈むように 溶けるように"]
     assert _parody_texts(ass) == ["静  川"]
+
+
+def test_build_ass_default_keeps_identical_lyric_occurrences_separate(tmp_path: Path):
+    project = _two_line_project(tmp_path)
+    for index, line in enumerate(project.lines):
+        line.original_text = "同じ歌詞"
+        line.original_line_index = index
+    ass = build_ass(project, 1280, 720, "Font")
+    assert _orig_texts(ass) == ["同じ歌詞", "同じ歌詞"]
+    assert _parody_texts(ass) == ["静", "川"]
 
 
 def test_build_ass_original_phrase_splits(tmp_path: Path):
@@ -555,26 +565,6 @@ def test_black_frame_creates_missing_dir(tmp_path: Path):
     assert out.exists() and out.stat().st_size > 0
 
 
-def test_prune_rendered_frame_cache(tmp_path: Path):
-    cache = tmp_path / "rendered-frames"
-    cache.mkdir()
-    old = cache / "frame_old.png"
-    recent = cache / "frame_recent.png"
-    newest = cache / "frame_newest.png"
-    unrelated = cache / "other.png"
-    for path in (old, recent, newest, unrelated):
-        path.touch()
-    os.utime(old, (10, 10))
-    os.utime(recent, (80, 80))
-    os.utime(newest, (90, 90))
-
-    removed = prune_rendered_frame_cache(cache, ttl_sec=50, max_entries=1, now=100)
-
-    assert removed == [old, recent]
-    assert newest.exists()
-    assert unrelated.exists()
-
-
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
 def test_image_cues_and_slideshow(tmp_path: Path):
     project = _project(tmp_path)
@@ -597,13 +587,14 @@ def test_image_cues_and_slideshow(tmp_path: Path):
     assert credits[0]["image_page"] == "https://example.com/page"
     # カードは単語の歌唱開始(tick480 @120bpm = 0.5s)より0.1秒早く出る
     assert abs(cues[0].start - (0.5 - DEFAULT_IMAGE_LEAD_SEC)) < 0.01
-    assert cues[0].frame.parent == cache / "rendered-frames"
+    assert cues[0].frame.parent == work / "rendered-frames"
 
-    # 作業ディレクトリが違っても、明示した画像キャッシュが同じなら描画PNGを再利用する
+    # 元歌詞などが焼き込まれる描画PNGは、画像キャッシュが同じでもジョブ間共有しない
     reused, _ = build_image_cues(
         project, tmp_path / "other-video", 320, 180, image_cache=cache
     )
-    assert reused[0].frame == cues[0].frame
+    assert reused[0].frame != cues[0].frame
+    assert reused[0].frame.parent == tmp_path / "other-video" / "rendered-frames"
 
     # 先行表示は無効化でき、音符の元時刻には影響しない
     unshifted, _ = build_image_cues(
@@ -913,6 +904,27 @@ def test_subtitle_timing_is_not_shifted_with_image_cues(tmp_path: Path):
     assert abs(spans_h[1][0] - (4.5 - SUB_PAD_SEC)) < 0.01
     # hold=next の最終単語は余韻なし(後奏はidle/黒)なので従来のパディングのまま
     assert abs(spans_h[1][1] - (4.75 + SUB_PAD_SEC)) < 0.01
+
+
+def test_subtitle_clears_when_interlude_frame_starts(tmp_path: Path):
+    project = _two_word_project()
+    cap, _hold = _text_layouts(tmp_path)
+    cues, _ = build_image_cues(project, tmp_path / "cap", 320, 180, layout=cap)
+
+    # 間奏カードは直前の単語カードが消えた瞬間から始まる。字幕側の通常の余韻が
+    # それより長くても、専用画面へ切り替わる時刻で歌詞を消す。
+    interlude_start = cues[0].end
+    ass = build_ass(
+        project,
+        1280,
+        720,
+        "Font",
+        cap,
+        clear_ranges=[(interlude_start, cues[1].start)],
+    )
+    spans = _dialogue_spans(ass)
+    assert abs(spans[0][1] - interlude_start) < 0.01
+    assert spans[1][0] >= cues[1].start
 
 
 def test_subtitle_end_kept_when_next_line_is_close(tmp_path: Path):
@@ -1423,6 +1435,36 @@ def test_planned_video_total_includes_midi_render_tail(tmp_path: Path, monkeypat
     assert video_mod.planned_video_total_sec(project) >= 26.0
 
 
+def test_prepare_video_extends_stale_plan_to_required_endroll(
+    tmp_path: Path, monkeypatch,
+):
+    from soramimic_video import video as video_mod
+
+    project = _project(tmp_path)
+    sung_end = video_mod._sung_end_sec(project)
+    monkeypatch.setattr(video_mod, "build_image_cues", lambda *a, **k: ([], []))
+    monkeypatch.setattr(video_mod, "generate_thumbnail", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "build_section_cues", lambda *a, **k: [])
+    monkeypatch.setattr(video_mod, "render_idle_frame", lambda *a, **k: None)
+
+    def slideshow(*args, **kwargs):
+        path = tmp_path / "video/slideshow.txt"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(video_mod, "_write_slideshow_concat", slideshow)
+    monkeypatch.setattr(video_mod, "build_ass", lambda *a, **k: "")
+    monkeypatch.setattr(video_mod, "write_credits", lambda *a, **k: None)
+
+    prepared = video_mod.prepare_video(project, tmp_path, sung_end)
+
+    assert prepared.total_sec == video_mod.extend_for_endroll(
+        sung_end, sung_end, video_mod.used_words(project)
+    )
+    assert prepared.total_sec > sung_end
+
+
 def test_parallel_video_totals_reserve_midi_end_credit_page_without_words(
     tmp_path: Path, monkeypatch
 ):
@@ -1872,11 +1914,13 @@ def test_build_section_cues_snaps_pages_to_beats(tmp_path: Path):
     assert credits_cue.end == 30.2
 
 
-def test_build_section_cues_appends_credits_page(tmp_path: Path):
+@pytest.mark.parametrize("wordlist", ["vtuber", "pokemon", "stations"])
+def test_build_section_cues_appends_credits_page(tmp_path: Path, wordlist):
     from soramimic_video.layout import load_layout, render_section_frame
     from soramimic_video.video import app_credit_text, build_section_cues, section_frame_data
 
     project = _endroll_project(tmp_path)
+    project.parody.wordlist = wordlist
     layout = load_layout("default")
     work = tmp_path / "v"
     got = build_section_cues(project, [_cue(0.0, 10.0)], 30.0, layout, work, 320, 180,
@@ -1888,7 +1932,7 @@ def test_build_section_cues_appends_credits_page(tmp_path: Path):
     assert got[-1].start == got[-2].end and got[-1].end == 30.0
     expected = render_section_frame(
         layout,
-        section_frame_data(project, app_credit_text("VOICEVOX:四国めたん"),
+        section_frame_data(project, app_credit_text("VOICEVOX:四国めたん", wordlist=wordlist),
                            section="credits", duration=20.0,
                            synth_credit="VOICEVOX:四国めたん",
                            original_song="赤とんぼ",
@@ -2176,3 +2220,62 @@ def test_collect_word_frames_warns_on_foreign_layout(tmp_path: Path, caplog):
     with caplog.at_level(logging.WARNING, logger="soramimic_video.video"):
         collect_word_frames(_scientist_project(tmp_path), load_layout("scientist_card"))
     assert "レイアウトが参照する列が単語リストにありません" not in caplog.text
+
+
+def test_text_only_cues_do_not_claim_unused_images(tmp_path):
+    from soramimic_video.layout import parse_layout
+
+    project = _project(tmp_path)
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+    layout = parse_layout({"elements": [
+        {"type": "text", "text": "{surface}", "box": [0, 0, 1, 1]},
+    ]})
+    cues, credits = build_image_cues(project, work, 320, 180, layout=layout)
+    assert cues
+    assert credits == []
+
+
+def test_cues_keep_distinct_people_sharing_one_image(tmp_path):
+    from copy import deepcopy
+
+    project = _project(tmp_path)
+    first = project.parody.lines[0].words[0]
+    second = deepcopy(first)
+    second.wordlist_row["original"] = "別の人物"
+    second.original = "別の人物"
+    second.note_ids = [2]
+    second.note_kana = ["ム"]
+    project.parody.lines[0].words.append(second)
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+    _, credits = build_image_cues(project, work, 320, 180)
+    assert len(credits) == 2
+    assert credits[0]["image"] == credits[1]["image"]
+    assert credits[0]["original"] != credits[1]["original"]
+
+
+def test_credits_exclude_cues_covered_by_thumbnail_or_zero_duration(tmp_path):
+    from soramimic_video.video import ImageCue, credits_for_cues, prepend_thumbnail_cue
+
+    def cue(start, end, name):
+        return ImageCue(start, end, tmp_path / f"{name}.png",
+                        ({"original": name, "image": f"https://example.com/{name}"},))
+
+    cues = [cue(0, 1, "隠れた画像"), cue(2, 4, "残った画像"), cue(5, 5, "表示なし")]
+    kept = prepend_thumbnail_cue(cues, tmp_path / "thumbnail.png", 3)
+    assert [row["original"] for row in credits_for_cues(kept)] == ["残った画像"]
+
+
+@pytest.mark.parametrize("wordlist", ["vtuber", "pokemon", "stations", "youtuber", "custom"])
+def test_fanmade_credit_is_limited_to_vtuber(tmp_path, wordlist):
+    from soramimic_video.video import app_credit_text, idle_frame_data
+
+    project = _project(tmp_path)
+    project.parody.wordlist = wordlist
+    credit = app_credit_text("VOICEVOX:四国めたん", original_song="曲", wordlist=wordlist)
+    assert ("非公式・ファンメイド" in credit) == (wordlist == "vtuber")
+    assert "VOICEVOX:四国めたん" in credit and "Original: 曲" in credit
+    assert ("非公式・ファンメイド" in idle_frame_data(project)["app_credit"]) == (
+        wordlist == "vtuber"
+    )

@@ -52,6 +52,19 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate_samples(args: argparse.Namespace) -> int:
+    from .sample_validation import validate_sample_directory
+
+    results = validate_sample_directory(Path(args.samples_dir), local_only=args.local_only)
+    for result in results:
+        print(
+            f"{result.sample_id}: {result.notes}モーラ / {result.lines}行 / "
+            f"元歌詞 {result.matched_lines}/{result.lines}行対応"
+        )
+    print(f"サンプル検査完了: {len(results)}曲")
+    return 0
+
+
 def cmd_analyze_audio(args: argparse.Namespace) -> int:
     from .analyze_audio import ANALYZE_DIR, analyze_audio
 
@@ -59,8 +72,6 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
         Path(args.audio),
         Path(args.project),
         lyrics_path=Path(args.lyrics) if args.lyrics else None,
-        melody_midi=Path(args.melody_midi) if args.melody_midi else None,
-        melody_channel=args.melody_channel,
         bpm=args.bpm,
         whisper_model=args.whisper_model,
         skip_separation=args.no_separation,
@@ -71,6 +82,25 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
     if not args.lyrics:
         print("元歌詞にWhisper認識結果を使用しました(誤認識は edit ステージで修正可能)")
     print(f"タイミングの目視検証用SRT: {Path(args.project) / ANALYZE_DIR}/")
+    return 0
+
+
+def cmd_apply_lyric_layers(args: argparse.Namespace) -> int:
+    from .lyric_layers import apply_lyric_layers
+
+    project = Project.load(Path(args.project))
+    layers = json.loads(Path(args.layers).read_text(encoding="utf-8"))
+    apply_lyric_layers(project, layers)
+    project.save(Path(args.project))
+    print(f"歌詞レイヤー適用完了: {len(project.notes)}ノート / {len(project.lines)}行")
+    return 0
+
+
+def cmd_export_xf(args: argparse.Namespace) -> int:
+    from .xfexport import export_xf_midi
+
+    path = export_xf_midi(Project.load(Path(args.project)), Path(args.output))
+    print(f"XF出力完了: {path} (由来情報: {path.name}.provenance.json)")
     return 0
 
 
@@ -220,6 +250,7 @@ def cmd_video(args: argparse.Namespace) -> int:
         original_credit=args.original_credit,
         credit_notice=args.credit_notice,
         image_lead_sec=args.image_lead_sec,
+        allow_noncommercial_fanwork=args.noncommercial_fanwork,
     )
     print(f"動画完成: {out}")
     return 0
@@ -243,6 +274,7 @@ def cmd_prewarm_images(args: argparse.Namespace) -> int:
         cache_dir,
         delay=args.delay,
         revalidate=args.revalidate,
+        allow_noncommercial_fanwork=args.noncommercial_fanwork,
     )
     print(
         f"prewarm完了: 取得 {summary['fetched']} / 更新確認 {summary['revalidated']} / "
@@ -287,6 +319,8 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
             mode=mode, dry_run=args.dry_run,
             download_workers=args.download_workers,
             source_manifest_url=args.source_manifest_url,
+            allow_noncommercial_fanwork=args.noncommercial_fanwork,
+            allow_builtin_fanwork=args.builtin_fanwork,
         )
     except (OSError, ValueError, RuntimeError) as e:
         print(f"asset sync失敗(last-goodを維持): {e}", file=sys.stderr)
@@ -345,6 +379,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 1
     import os
 
+    from .asset_store import ASSET_STORE_ENV, load_manifest
+
+    store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "").strip()
+    asset_store_summary = "asset storeなし"
+    if store_value:
+        store = Path(store_value).resolve()
+        manifest = store / "manifest.json"
+        if not manifest.is_file():
+            print(f"asset store manifestがありません: {manifest}", file=sys.stderr)
+            return 2
+        manifest_data = load_manifest(store)
+        assets = manifest_data.get("assets")
+        if manifest_data.get("version") != 1 or not isinstance(assets, dict) or not assets:
+            print(f"asset store manifestが有効ではありません: {manifest}", file=sys.stderr)
+            return 2
+        os.environ[ASSET_STORE_ENV] = str(store)
+        asset_store_summary = f"asset store {len(assets):,}件"
+
     app = create_app(
         jobs_dir=Path(args.jobs_dir),
         soundfont=args.soundfont,
@@ -358,9 +410,28 @@ def cmd_serve(args: argparse.Namespace) -> int:
         parallel_video=not args.serial_video,
     )
     auth = "APIキー認証あり" if os.environ.get(API_KEY_ENV) else f"認証なし({API_KEY_ENV}で有効化)"
-    print(f"http://{args.host}:{args.port}/ で待ち受けます({auth})")
+    print(f"http://{args.host}:{args.port}/ で待ち受けます({auth}, {asset_store_summary})")
     # Access exemption decisions must see the actual socket peer. Do not let
     # uvicorn rewrite request.client from user-controlled forwarding headers.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
+    return 0
+
+
+def cmd_serve_audio_inference(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from .audio_inference import create_audio_inference_app
+    except ImportError:
+        print(
+            "共有音声推論サーバーの依存が足りません。"
+            "`pip install -e '.[api,audio]'` で入れてください",
+            file=sys.stderr,
+        )
+        return 1
+
+    app = create_audio_inference_app(Path(args.state_dir), device=args.device)
+    print(f"http://{args.host}:{args.port}/ で共有音声推論を待ち受けます")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
     return 0
 
@@ -377,6 +448,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser(
+        "validate-samples", help="配置済みサンプルのXF歌詞と元歌詞を一括検査する"
+    )
+    p.add_argument("--samples-dir", required=True, help="samples.jsonを含むディレクトリ")
+    p.add_argument(
+        "--local-only",
+        action="store_true",
+        help="samples.local.jsonの追加曲だけを検査する",
+    )
+    p.set_defaults(func=cmd_validate_samples)
+
+    p = sub.add_parser(
         "analyze-audio", help="歌唱音源(wav/mp3)を解析しモーラタイミングを抽出する"
     )
     p.add_argument("--audio", required=True, help="歌唱入り音源ファイル(wav/mp3)")
@@ -385,15 +467,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="元歌詞テキスト(1行1フレーズ)。省略時はWhisperの認識結果を元歌詞にする",
     )
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
-    p.add_argument(
-        "--melody-midi",
-        help="メロディ入りMIDI(非XFでよい)。あればピッチ・タイミングを楽譜に寄せる",
-    )
-    p.add_argument(
-        "--melody-channel",
-        type=int,
-        help="メロディのMIDIチャンネル(0始まり)。省略時は自動選択",
-    )
     p.add_argument("--bpm", type=float, default=120.0, help="tick換算用の固定BPM")
     p.add_argument(
         "--whisper-model",
@@ -407,6 +480,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--device", help="torchデバイス(省略時はcuda→cpuの順で自動)")
     p.set_defaults(func=cmd_analyze_audio)
+
+    p = sub.add_parser("apply-lyric-layers", help="歌詞と合成ノートのレイヤーを取り込む")
+    p.add_argument("--project", required=True, help="替え歌変換前のプロジェクト")
+    p.add_argument("--layers", required=True, help="version 1のrealization JSON")
+    p.set_defaults(func=cmd_apply_lyric_layers)
+
+    p = sub.add_parser("export-xf", help="選択した歌詞とノートを由来情報付きXF MIDIへ出力する")
+    p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
+    p.add_argument("--output", required=True, help="出力MIDIパス")
+    p.set_defaults(func=cmd_export_xf)
 
     p = sub.add_parser(
         "eval-audio", help="analyze-audioの出力をXF正解プロジェクトと突き合わせて評価する"
@@ -538,6 +621,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--image-lead-sec", type=float, default=0.1,
         help="カードを音声より先に表示する秒数(既定: 0.1、無効化: 0)",
     )
+    p.add_argument(
+        "--noncommercial-fanwork",
+        action="store_true",
+        help="非営利ファン活動に限定された単語画像を利用する",
+    )
     p.add_argument("--font", default="Hiragino Sans", help="字幕フォント名")
     p.add_argument("--audio", help="音声ファイル(省略時は mix/song.wav か neutrino/vocal.wav)")
     p.add_argument(
@@ -595,6 +683,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="キャッシュ済み画像もETag/Last-Modifiedで更新確認する",
     )
+    p.add_argument(
+        "--noncommercial-fanwork",
+        action="store_true",
+        help="非営利ファン活動に限定された画像も事前取得する",
+    )
     p.set_defaults(func=cmd_prewarm_images)
 
     p = sub.add_parser(
@@ -634,6 +727,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="画像取得の並列数(1または2、既定2。長時間のCommons一括取得は1を推奨)",
     )
     p.add_argument("--dry-run", action="store_true", help="取得せず差分件数だけ表示する")
+    fanwork = p.add_mutually_exclusive_group()
+    fanwork.add_argument(
+        "--noncommercial-fanwork",
+        action="store_true",
+        help="非営利ファン活動に限定された画像も同期する",
+    )
+    fanwork.add_argument(
+        "--builtin-fanwork",
+        action="store_true",
+        help="非営利ファン画像のうち組み込み配布URLだけを追加同期する",
+    )
     p.set_defaults(func=cmd_sync_assets)
 
     p = sub.add_parser("asset-status", help="永続asset storeのmanifest集計を表示する")
@@ -666,11 +770,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--layout", help="フレームレイアウト(組み込み名かJSONパス)")
     p.add_argument(
+        "--asset-store",
+        help="組み込み単語画像を読むasset store。指定時はmanifestが無ければ起動しない",
+    )
+    p.add_argument(
         "--editor-dist",
         help="同梱editorの静的ビルド出力(既定は external/soramimic/frontend/dist)。"
         "scripts/build-editor.sh で生成する",
     )
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser(
+        "serve-audio-inference",
+        help="Demucs/Whisper/SheetSage2の共有ローカル推論サーバーを起動する",
+    )
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="待ち受けアドレス(共有ホストでは127.0.0.1のまま使用)",
+    )
+    p.add_argument("--port", type=int, default=8320)
+    p.add_argument(
+        "--state-dir",
+        default="work/audio-inference",
+        help="アップロード音源を一時保存するディレクトリ",
+    )
+    p.add_argument("--device", default="cuda", help="共有モデルのtorchデバイス")
+    p.set_defaults(func=cmd_serve_audio_inference)
 
     return parser
 
