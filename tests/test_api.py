@@ -2356,7 +2356,7 @@ def test_index_html_song_values_keep_hidden_file_canonicals_and_visible_correct_
     html = _index_html()
     store = html.split('<div id="song-store" hidden>')[1].split("<!-- 2.")[0]
     assert 'id="midi"' in store
-    assert '.mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.webm' in store
+    assert '.mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,audio/midi' in store
     assert 'id="audio"' not in store
     assert '<select id="sample-select" aria-label="サンプル曲"></select>' in store
     assert 'id="lyrics"' not in store
