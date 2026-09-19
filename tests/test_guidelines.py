@@ -46,7 +46,11 @@ def test_guidelines_are_public_and_deduplicate_existing_terms(client):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<h1 id="guidelines-title">利用ガイドライン</h1>' in response.text
-    assert "曲の選び方や、動画内で使用される画像・キャラクター" in response.text
+    assert "曲の選び方や、動画内で使用される画像・キャラクター" not in response.text
+    assert '<nav aria-label="目次">' in response.text
+    assert '<a href="#generation-tips">生成しやすい曲のヒント</a>' in response.text
+    assert '<a href="#image-guidelines-title">画像の利用ガイドライン</a>' in response.text
+    assert '<a href="#contact-title">画像の権利をお持ちの方へ</a>' in response.text
     assert response.text.count('href="https://example.com/shared"') == 1
     assert "規約1" in response.text and "規約2" in response.text
     assert 'href="/"' in response.text
@@ -82,7 +86,10 @@ def test_guidelines_escape_links_and_reject_unsafe_schemes(client):
     assert "Invalid link" not in response.text
     parsed = Links()
     parsed.feed(response.text)
-    external = [link for link in parsed.links if link["href"] != "/"]
+    external = [
+        link for link in parsed.links
+        if link["href"].startswith(("http://", "https://"))
+    ]
     assert {"href": url, "target": "_blank", "rel": "noopener noreferrer"} in external
     assert all(link["target"] == "_blank" and link["rel"] == "noopener noreferrer"
                for link in external)
@@ -108,6 +115,7 @@ def test_public_guidelines_explain_data_handling(client, monkeypatch):
     assert "元の音源・歌詞と解析用データは処理終了時に削除します。" in response.text
     assert "完成動画は24時間後に自動削除します。" in response.text
     assert "入力内容をAIモデルの学習には使用しません。" in response.text
+    assert '<a href="#data-handling-title">データの取り扱い</a>' in response.text
     assert response.text.index('id="guidelines-title"') < response.text.index(
         'id="data-handling-title"'
     )
@@ -125,6 +133,7 @@ def test_private_guidelines_do_not_claim_public_retention_policy(client):
     browser, _ = client
     response = browser.get("/guidelines")
     assert 'id="data-handling-title"' not in response.text
+    assert 'href="#data-handling-title"' not in response.text
 
 
 def test_guidelines_keep_distinct_terms_urls(client):

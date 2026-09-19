@@ -2443,9 +2443,13 @@ def create_app(
             links = terms_links(list(policies.values()))
         content = f'<ul class="guidelines">{links}</ul>' if links else ""
         data_handling = ""
+        data_handling_toc = ""
         retention_hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
         if is_public_mode() and retention_hours > 0:
             retention_label = f"{retention_hours:g}時間"
+            data_handling_toc = (
+                '<li><a href="#data-handling-title">データの取り扱い</a></li>'
+            )
             data_handling = (
                 '<section aria-labelledby="data-handling-title">'
                 '<h2 id="data-handling-title">データの取り扱い</h2>'
@@ -2455,8 +2459,10 @@ def create_app(
                 '</section>'
             )
         page = (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8")
-        return page.replace("<!-- guideline-links -->", content).replace(
-            "<!-- data-handling -->", data_handling
+        return (
+            page.replace("<!-- guideline-links -->", content)
+            .replace("<!-- data-handling -->", data_handling)
+            .replace("<!-- data-handling-toc -->", data_handling_toc)
         )
 
     @app.get("/image-credits.js", include_in_schema=False)
