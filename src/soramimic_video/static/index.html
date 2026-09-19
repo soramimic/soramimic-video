@@ -194,21 +194,9 @@
   .stages li.now { color: var(--text); background: #2563eb33; border-color: #2563eb55; animation: pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity: .5; } }
   .image-sources { overflow-wrap: anywhere; min-width: 0; }
-  .image-sources input, .image-sources textarea { width: 100%; min-width: 0; box-sizing: border-box; }
-  .image-sources input[type="search"] { min-height: 44px; padding: .6rem .75rem;
-    border: 1px solid var(--border); border-radius: 8px; font: inherit;
-    color: var(--text); background: var(--panel); }
-  .image-sources textarea { font-size: 1rem; }
-  .image-sources label { display: block; margin: .8rem 0; }
   .image-source-card { border-top: 1px solid var(--border); padding: .8rem 0; }
   .image-source-card h3, .image-source-card p { margin: .4rem 0; }
   .image-source-card a { overflow-wrap: anywhere; }
-  .image-source-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-  .image-source-actions button { max-width: 100%; white-space: normal; }
-  #image-sources-dialog { width: min(44rem, calc(100% - 2rem)); max-height: 85dvh;
-    box-sizing: border-box; overflow: auto; color: var(--text); background: var(--panel, var(--bg));
-    border: 1px solid var(--border); border-radius: 12px; padding: 1rem; }
-  #image-sources-dialog::backdrop { background: #0008; }
   #result video { width: 100%; border-radius: 8px; margin-top: .5rem; }
   .error { color: var(--danger); white-space: pre-wrap; }
   pre {
@@ -1334,11 +1322,6 @@
   </div>
 </div>
 
-<dialog id="image-sources-dialog" aria-labelledby="image-sources-title">
-  <form method="dialog"><button type="submit" class="btn-sm">閉じる</button></form>
-  <h2 id="image-sources-title">出典・クレジット</h2>
-  <div id="image-sources-content" class="image-sources"></div>
-</dialog>
 <script src="/image-credits.js"></script>
 <script src="/custom-wordlists.js"></script>
 <script>
@@ -1517,7 +1500,6 @@ let resumed = false;
 // 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
 let wordlistLayouts = {};
 let wordlistPhrases = {};
-let wordlistImagePolicies = {};
 let simpleMode = false;
 let launchWordlists = [];
 // Web UIの歌声はVOICEVOX 波音リツ(ノーマル・歌唱)に固定する。
@@ -1534,7 +1516,6 @@ async function loadConfig() {
   $("custom-wordlist-actions").hidden = simpleMode;
   try { await refreshCustomLists(); }
   catch (err) { showBuilderMsg(err.message); }
-  wordlistImagePolicies = conf.wordlist_image_policies || {};
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
@@ -2563,47 +2544,6 @@ async function poll(id, seq = pollSeq) {
       ? failure : `生成に失敗しました: ${failure}`);
     openJobDetails();
     finish();
-  }
-}
-
-let imageSourcesSeq = 0;
-async function openImageSources(job = null) {
-  const seq = ++imageSourcesSeq;
-  const dialog = $("image-sources-dialog");
-  const content = $("image-sources-content");
-  $("image-sources-title").textContent = job
-    ? "この動画の出典・クレジット" : "選択リスト全体の人物・素材";
-  content.textContent = "読み込み中…";
-  if (!dialog.open) dialog.showModal();
-  try {
-    const name = currentWordlistName();
-    if (!job && !name) throw new Error("表示中の素材の出典はレイアウト確認画面で確認できます。");
-    const url = job ? (job.credits_url || `/api/jobs/${encodeURIComponent(job.id)}/credits`)
-      : "/api/image-sources?" + new URLSearchParams({wordlist: name});
-    const res = await fetch(url, {headers: headers(), cache: "no-store"});
-    if (!res.ok) throw new Error(res.status === 404
-      ? "この動画の出典情報は保存されていません。再生成した動画では確認できます。"
-      : "出典情報を取得できませんでした。もう一度お試しください。");
-    const data = await res.json();
-    if (seq !== imageSourcesSeq) return;
-    ImageCredits.render(content, job ? data.items : data, {
-      scope: job ? "この動画の使用素材" : "選択リスト全体の素材",
-      text: job ? data.text : null,
-      download: job ? async () => {
-        const response = await fetch(url + "?download=true", {headers: headers(), cache: "no-store"});
-        if (!response.ok) throw new Error("保存に失敗しました");
-        const blobUrl = URL.createObjectURL(await response.blob());
-        const link = document.createElement("a");
-        link.href = blobUrl;
-        link.download = "credits.md";
-        document.body.append(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-      } : null,
-    });
-  } catch (error) {
-    if (seq === imageSourcesSeq) content.textContent = error.message;
   }
 }
 
@@ -4271,15 +4211,6 @@ function syncBuilderValues() {
   updateNoncommercialFanworkNotice();
 }
 
-function currentImagePolicy() {
-  return wordlistImagePolicies[currentWordlistName()] || null;
-}
-
-function usesNoncommercialFanworkImages() {
-  const policy = currentImagePolicy();
-  return !!policy && policy.usage === "noncommercial_fanwork";
-}
-
 function updateNoncommercialFanworkNotice() {
   $("builder-fanwork-notice").hidden = currentWordlistName().toLowerCase() !== "vtuber";
   $("builder-fanwork-guidelines").href = "/guidelines?"
@@ -4380,8 +4311,7 @@ for (const type of ["change", "input"]) {
   document.addEventListener(type, (ev) => {
     const t = ev.target;
     if (t instanceof Node
-        && ($("builder-figure").contains(t) || $("builder-share").contains(t)
-            || $("image-sources-dialog")?.contains(t))) return;
+        && ($("builder-figure").contains(t) || $("builder-share").contains(t))) return;
     releaseBuilderDone();
   }, true);
 }
