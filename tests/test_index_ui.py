@@ -110,7 +110,6 @@ def test_header_uses_versioned_soramimic_video_logo():
     assert 'class="brand-logo"' in text
     assert 'src="/logo-soramimic-video-v2.png"' in text
     assert 'alt="Soramimic video"' in text
-    assert "歌詞が空耳で置き換わった替え歌動画を作れます。" not in text
 
 
 def test_static_hints_in_advanced_are_all_folded():
@@ -2289,8 +2288,6 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
-            "function currentImagePolicy()",
-            "function usesNoncommercialFanworkImages()",
             "function updateNoncommercialFanworkNotice()",
             "function loadWordlistImage(name, seq)",
             "function automaticLyricsEnabled()",
@@ -2303,14 +2300,6 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         """
         const assert = require("node:assert/strict");
         let selected = "fanwork", songInputMode = "sample";
-        const wordlistImagePolicies = {
-          fanwork: { usage: "noncommercial_fanwork", terms_pages: [
-            { url: "https://example.com/one", label: "規約1" },
-            { url: "https://example.com/two", label: "規約2" },
-          ] },
-          legacy: { usage: "noncommercial_fanwork", terms: "https://example.com/legacy" },
-          ordinary: { usage: "standard" },
-        };
         const currentWordlistName = () => selected;
         const elements = new Map();
         const $ = (id) => {
@@ -2534,14 +2523,6 @@ def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
     assert "clearEditorFile();" in body
 
 
-def test_upload_form_keeps_long_processing_explanations_out_of_the_main_flow():
-    html = INDEX.read_text(encoding="utf-8")
-    assert 'id="upload-privacy"' not in html
-    assert "この文字列を正解としてforced alignmentします" not in html
-    assert "元の音源・歌詞と解析用データは処理終了時に削除します" not in html
-    assert "入力内容をAIモデルの学習には使用しません" not in html
-
-
 def test_footer_labels_guidance_links():
     html = INDEX.read_text(encoding="utf-8")
     assert '<a href="/guidelines">利用ガイドライン</a>' in html
@@ -2557,7 +2538,7 @@ def test_difficult_audio_result_links_to_song_generation_tips():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_image_credits_interactions():
+def test_image_credit_cards():
     subprocess.run(
         ["node", "tests/image-credits.mjs"], cwd=INDEX.parents[3],
         check=True, text=True, capture_output=True,

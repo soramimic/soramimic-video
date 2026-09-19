@@ -595,33 +595,6 @@ def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
     return any(len(options) > 1 for options in variants)
 
 
-def _filter_reading_evidence(
-    evidence: dict[str, object], kept_line_indices: list[int]
-) -> dict[str, object]:
-    """Reindex KanaWhisper diagnostics after the semantic gate removes lines."""
-    payload = json.loads(json.dumps(evidence))
-    line_map = {old: new for new, old in enumerate(kept_line_indices)}
-    lines = [payload["lines"][index] for index in kept_line_indices]
-    used_contexts = sorted({
-        item["context_index"] for item in lines if item["context_index"] is not None
-    })
-    context_map = {old: new for new, old in enumerate(used_contexts)}
-    contexts = [payload["contexts"][index] for index in used_contexts]
-    for new_index, item in enumerate(lines):
-        item["line"] = new_index
-        if item["context_index"] is not None:
-            item["context_index"] = context_map[item["context_index"]]
-    for context in contexts:
-        context["line_indices"] = [
-            line_map[index]
-            for index in context["line_indices"]
-            if index in line_map
-        ]
-    payload["lines"] = lines
-    payload["contexts"] = contexts
-    return payload
-
-
 def _choose_readings_with_kana(
     audio_path: Path,
     vocals_path: Path,

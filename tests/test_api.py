@@ -609,9 +609,7 @@ def test_convert_params_default_empty(client):
 
 
 def test_index_html_forwards_wordlist_filter_to_the_editor():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert '<input type="hidden" id="where">' in html
     assert 'form.append("where", $("where").value.trim());' in html
 
@@ -629,18 +627,14 @@ def test_note_length_weight_setting_moved_to_soramimic():
 
 
 def test_index_html_keeps_note_length_default_for_non_editor_flow():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert 'return "NOTE_LENGTH_WEIGHT=0.25";' in html
 
 def test_index_html_model_layout_use_select_not_datalist():
     # iOS Safari が datalist を表示しない問題への対応:
     # 歌声モデル(#model)・レイアウト(#layout)は select + 手入力 + 隠しvalue に置換。
     # 送信フィールド名(#model / #layout の hidden)は据え置きでAPI互換を保つ。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # iOS Safariでも選択肢を表示できることを、現在のコントロールで確認する。
     assert "<datalist" not in html
     assert 'list="model-list"' not in html and 'list="layout-list"' not in html
@@ -681,9 +675,7 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
     黙って出さないのではなく「隠している理由」と「画像を表示する」ボタンを出す。
     対象はこのプレビューだけで、動画・サムネの画像は従来どおり。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # 対象リストは1か所の定数で複数指定できる(将来クモ等を足せるように)
     assert "const HIDDEN_PREVIEW_WORDLISTS = {" in html
     assert "insect:" in html
@@ -701,9 +693,7 @@ def test_index_html_hides_preview_for_sensitive_wordlists():
 
 def test_index_html_builder_card_has_selects():
     """カードで曲・単語リストを選べる。隠しの正本と写しを双方向に同期する。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
     # サンプル曲と単語リストはサムネ枠より上で選べる。
     assert '<div class="builder-selects">' in card
@@ -744,9 +734,7 @@ def test_index_html_builder_card_has_selects():
 
 def test_index_html_builder_card_keeps_editor_status_without_action_buttons():
     """替え歌の状態表示は残し、ランダム・編集ボタンは置かない。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     card = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
     assert 'id="builder-edit"' not in card
     assert 'id="lucky"' not in card
@@ -761,9 +749,7 @@ def test_index_html_builder_card_keeps_editor_status_without_action_buttons():
 
 def test_index_html_job_card_is_collapsed_by_default():
     """ジョブの詳細は既定で畳み、エラー・中断のときだけ自動で開く。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # ビルダーカードの最下部に置く小さなテキストリンク(.sub-details)。
     assert '<details class="sub-details" id="job-card" hidden>' in html
     assert "<summary>生成の詳細(ステージ・ログ)</summary>" in html
@@ -777,9 +763,7 @@ def test_index_html_job_card_is_collapsed_by_default():
 
 def test_index_html_job_card_lives_in_the_builder_card():
     """「生成の詳細」はビルダーカードの中(最下部)にあり、エラー時だけ目立たせる。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     builder = html.split('<section class="card" id="lucky-card">')[1].split("</section>")[0]
     assert 'id="job-card"' in builder
     # 最下部(サムネ枠・上限や確認の表示のあと)
@@ -791,9 +775,7 @@ def test_index_html_job_card_lives_in_the_builder_card():
 
 
 def test_index_html_keeps_form_restore_and_file_hint():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "function saveForm()" in html
     assert "async function doRestoreForm()" in html
     assert "localStorage.setItem(FORM_KEY" in html
@@ -801,9 +783,7 @@ def test_index_html_keeps_form_restore_and_file_hint():
 
 
 def test_index_html_builder_card_omits_random_and_edit_actions():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert '<div class="builder-topbar">' not in html
     assert 'id="lucky"' not in html
     assert 'id="builder-edit"' not in html
@@ -811,9 +791,7 @@ def test_index_html_builder_card_omits_random_and_edit_actions():
 
 def test_index_html_builder_frame_runs_the_whole_flow():
     """サムネ枠がそのまま「生成ボタン → 進捗 → 動画プレイヤー」に変わる。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # 枠のタップで生成が始まる(これが唯一の生成導線)
     assert '<button type="button" class="builder-play" id="builder-play"' in html
     assert '$("builder-play").addEventListener("click", () => submitJob(0));' in html
@@ -832,9 +810,7 @@ def test_index_html_builder_frame_runs_the_whole_flow():
 
 
 def test_index_html_builder_submit_is_gated_while_busy():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "let submitBusy = false;" in html
     assert "submitBusy = busy;" in html
     assert "&& $(\"builder-loading\").hidden && !submitBusy);" in html
@@ -848,9 +824,7 @@ def test_index_html_settings_change_returns_frame_to_preview():
     生成の導線が枠のタップだけになったので、詳細設定(歌声・変換パラメータ・
     レイアウトなど)を変えたあとに再生成できなくなる状態を作ってはいけない。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "function releaseBuilderDone() {" in html
     assert 'if (builderState !== "done") return;' in html
     # 入力の変化は文書全体でまとめて拾う(詳細設定の中のどれでも戻る)
@@ -869,9 +843,7 @@ def test_index_html_polling_survives_background():
     バックグラウンド中はタイマーが凍り、fetchも失敗する。以前は失敗すると
     setTimeoutのチェーンが張り直されず、戻っても進捗が止まったままだった。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # 可視に戻ったら即座に取り直す(bfcache復帰・回線復帰も同じ入口)
     assert 'document.addEventListener("visibilitychange", resumePolling);' in html
     assert 'window.addEventListener("pageshow", resumePolling);' in html
@@ -910,9 +882,7 @@ def test_index_html_elapsed_seconds_come_from_server():
 
     バックグラウンドから戻ったとき、1回ポーリングするだけで正しい値に戻る。
     """
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     # ステージ名と経過秒を組み立てるのはこの1か所だけ
     assert "`${label}${elapsed}`" in html
     assert "const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)`" in html
@@ -2106,9 +2076,7 @@ def test_synth_credit_of_neutrino_is_empty():
 
 def test_index_html_has_platform_appropriate_save_share_buttons():
     # モバイルは保存・共有1ボタン、PCはダウンロードと共有を分ける。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert 'id="share-save"' in html
     assert 'id="download-video"' in html
     assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
@@ -2254,9 +2222,7 @@ def test_canva_horizontal_logos_are_public_transparent_pngs(client):
 
 def test_index_html_share_hint_matches_platform_capability():
     """モバイルは保存・共有、PCはダウンロードと共有の案内に切り替える。"""
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert '/iPhone|iPad|iPod/i.test(platform)' in html
     assert 'return "ios";' in html and 'return "android";' in html
     assert '「ビデオを保存」「ファイルに保存」' in html
@@ -2266,9 +2232,7 @@ def test_index_html_share_hint_matches_platform_capability():
 
 
 def test_index_html_shows_neutrino_configuration_warning():
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "NEUTRINO_ROOT未設定" in html
 
 
@@ -2314,9 +2278,7 @@ def test_layout_name_only_job_has_no_layout_json(client):
 def test_index_html_never_sends_layout_json_from_web_ui():
     # レイアウト編集の実装は残すが、Web UIからは単語リスト対応カードを固定で使い、
     # 保存済みの手動JSONもジョブへ送らない。
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     submit = html.split("async function submitJob(previewSec, previewMode) {")[1]
     submit = submit.split("\n}\n\n// サムネ・フッター", 1)[0]
     assert 'form.append("layout_json"' not in submit
@@ -2335,9 +2297,7 @@ def test_index_html_layout_load_clears_on_fetch_error():
     # メッセージを出す(握りつぶすと前のリストのJSONが焼き付く)
     import re
 
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     body = re.search(r"async function leLoad\(\) \{.*?\n\}", html, re.S).group(0)
     assert "try {" in body and "} catch (err) {" in body
     assert "leClearLayout();" in body
@@ -2349,9 +2309,7 @@ def test_index_html_wordlist_layout_switch_clears_layout_json():
     # レイアウト名を入れた直後に「同期で」古いJSONを捨てる。
     import re
 
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     body = re.search(r"function applyWordlistLayout\(\) \{.*?\n\}", html, re.S).group(0)
     assert "cur && cur !== lastAutoLayout" not in body
     assert 'next === cur && !leDirty && !$("layout-json").value.trim()' in body
@@ -2365,9 +2323,7 @@ def test_index_html_wordlist_layout_switch_clears_layout_json():
 def test_index_html_restores_layout_json_only_when_layout_matches():
     # 保存したJSONの出どころ(layoutJsonFor)が復元するレイアウト名と一致する
     # ときだけ復元する。ズレたJSONをリロードのたびに再生産しないため
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    html = _index_html()
     assert "layoutJsonFor: leLayoutFor," in html
     assert "layoutDirty: leDirty," in html
     # ベースの素性とクリーンな内容も保存する(リロード後も「〈ベース名〉の編集」に戻す)
