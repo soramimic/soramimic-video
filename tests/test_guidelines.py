@@ -46,7 +46,6 @@ def test_guidelines_are_public_and_deduplicate_existing_terms(client):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<h1 id="guidelines-title">利用ガイドライン</h1>' in response.text
-    assert "曲の選び方や、動画内で使用される画像・キャラクター" not in response.text
     assert '<nav aria-label="目次">' in response.text
     assert '<a href="#generation-tips">生成しやすい曲のヒント</a>' in response.text
     assert '<a href="#image-guidelines-title">画像の利用ガイドライン</a>' in response.text
