@@ -53,11 +53,24 @@ def test_reading_candidates_keep_connected_english_with_fewer_moras():
     assert len(split_moras("シャウティタウト")) < len(split_moras(candidates[0]))
 
 
+@pytest.mark.parametrize("candidate_builder", [reading_candidates, automatic_reading_candidates])
+def test_compact_english_reading_reaches_acoustic_selection(candidate_builder):
+    from soramimic_video.kana_whisper import choose_reading
+
+    candidates = candidate_builder("Shout it out!")
+
+    assert candidates[0] == "シャウトイットアウト"
+    assert "シャティタ" in candidates
+    decision = choose_reading(candidates, ["シャティタ", "シャティタ"])
+    assert candidates[decision.selected_index] == "シャティタ"
+    assert decision.reason == "kana-evidence"
+
+
 def test_repeated_connected_english_prioritizes_mora_count_variants():
     candidates = reading_candidates("Shout it out! Shout it out!")
 
     assert candidates[0] == "シャウトイットアウトシャウトイットアウト"
-    assert "シャウティタウトシャウティタウト" in candidates
+    assert "シャティタシャウトイットアウト" in candidates
     assert len(candidates) == 8
     assert len({len(split_moras(candidate)) for candidate in candidates}) == 7
     assert all(not candidate.startswith("エスエイチ") for candidate in candidates)
