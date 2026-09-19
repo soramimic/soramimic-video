@@ -32,6 +32,8 @@
   h1 { margin: 0 0 .75rem; font-size: 1.5rem; }
   h2 { margin: 0 0 .75rem; font-size: 1.2rem; }
   p { margin: 0; color: var(--muted); }
+  .toc { margin: 0; padding-left: 1.3rem; }
+  .toc li + li { margin-top: .35rem; }
   .guidelines { margin: 1.5rem 0 0; padding-left: 1.3rem; }
   .guidelines li + li { margin-top: 1rem; }
   .back { font-size: .9rem; }
@@ -42,7 +44,14 @@
   <a class="brand" href="/">Soramimic</a>
   <section aria-labelledby="guidelines-title">
     <h1 id="guidelines-title">利用ガイドライン</h1>
-    <p>曲の選び方や、動画内で使用される画像・キャラクターなどの利用条件をご確認ください。</p>
+    <nav aria-label="目次">
+      <ul class="toc">
+        <!-- data-handling-toc -->
+        <li><a href="#generation-tips">生成しやすい曲のヒント</a></li>
+        <li><a href="#image-guidelines-title">画像の利用ガイドライン</a></li>
+        <li><a href="#contact-title">画像の権利をお持ちの方へ</a></li>
+      </ul>
+    </nav>
   </section>
   <!-- data-handling -->
   <section aria-labelledby="generation-tips">
