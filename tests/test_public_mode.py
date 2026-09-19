@@ -86,6 +86,14 @@ def test_session_cookie_issued_once(public_app):
     assert client.cookies[api_mod.SESSION_COOKIE] == sid
 
 
+def test_public_custom_wordlists_script_is_packaged(public_app):
+    """The main page must not reference a missing script in a deployed release."""
+    response = TestClient(public_app).get("/custom-wordlists.js")
+
+    assert response.status_code == 200
+    assert "VideoCustomWordlists" in response.text
+
+
 def test_jobs_are_isolated_per_session(public_app):
     alice = TestClient(public_app)
     bob = TestClient(public_app)
