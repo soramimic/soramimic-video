@@ -53,6 +53,16 @@ def test_reading_candidates_keep_connected_english_with_fewer_moras():
     assert len(split_moras("シャウティタウト")) < len(split_moras(candidates[0]))
 
 
+def test_repeated_connected_english_prioritizes_mora_count_variants():
+    candidates = reading_candidates("Shout it out! Shout it out!")
+
+    assert candidates[0] == "シャウトイットアウトシャウトイットアウト"
+    assert "シャウティタウトシャウティタウト" in candidates
+    assert len(candidates) == 8
+    assert len({len(split_moras(candidate)) for candidate in candidates}) == 7
+    assert all(not candidate.startswith("エスエイチ") for candidate in candidates)
+
+
 def test_automatic_candidates_include_yomi_letter_names():
     candidates = automatic_reading_candidates("AI")
     assert candidates[0] == "アイ"

@@ -34,6 +34,8 @@ _KATAKANA_RE = re.compile(r"[ァ-ヶー]+")
 _PRON_FIELD = 9  # unidic: 発音形(出現形)
 _UNIDIC_NBEST_PATHS = 8
 _UNIDIC_MAX_READINGS = 2
+_YOMI_NBEST_PATHS = 32
+_YOMI_MAX_READINGS = 8
 _YOMI_VARIANT_RE = re.compile(
     r"[0-9\uff10-\uff19A-Za-z\uff21-\uff3a\uff41-\uff5a]"
 )
@@ -291,6 +293,46 @@ def _yomi_kana(text: str) -> str | None:
     return _kana_only(result)
 
 
+def _mora_diverse_readings(
+    readings: list[tuple[str, bool]], limit: int,
+) -> list[str]:
+    """Keep the default, then prefer high-quality candidates of each mora count."""
+    if limit <= 0:
+        return []
+
+    unique: list[tuple[str, bool]] = []
+    seen_readings: set[str] = set()
+    for reading, diversity_eligible in readings:
+        normalized = normalize_long_vowels(reading)
+        if reading and normalized not in seen_readings:
+            seen_readings.add(normalized)
+            unique.append((reading, diversity_eligible))
+    if len(unique) <= limit:
+        return [reading for reading, _eligible in unique]
+
+    selected = [unique[0][0]]
+    selected_indices = {0}
+    seen_counts = {len(split_moras(unique[0][0]))}
+    for index, (reading, diversity_eligible) in enumerate(unique[1:], start=1):
+        if not diversity_eligible:
+            continue
+        mora_count = len(split_moras(reading))
+        if mora_count in seen_counts:
+            continue
+        selected.append(reading)
+        selected_indices.add(index)
+        seen_counts.add(mora_count)
+        if len(selected) == limit:
+            return selected
+
+    for index, (reading, _eligible) in enumerate(unique[1:], start=1):
+        if index not in selected_indices:
+            selected.append(reading)
+            if len(selected) == limit:
+                break
+    return selected
+
+
 def _yomi_kana_candidates(text: str) -> list[str]:
     """Return soramimic-yomi's ordered readings for plain text."""
     global _yomi_available
@@ -311,12 +353,15 @@ def _yomi_kana_candidates(text: str) -> list[str]:
         generate = getattr(soramimic_yomi, "get_yomi_candidates", None)
         if generate is None:
             return [_kana_only(soramimic_yomi.get_yomi(text))]
-        generated = generate(text, nbest=8)
-    return [
-        kana
+        generated = generate(text, nbest=_YOMI_NBEST_PATHS)
+    # Letter-name spellings remain available when capacity remains, but do not
+    # displace connected-speech readings solely by adding a new mora count.
+    readings = [
+        (kana, "latin" not in candidate.sources)
         for candidate in generated
         if (kana := _kana_only(candidate.reading))
     ]
+    return _mora_diverse_readings(readings, _YOMI_MAX_READINGS)
 
 
 def text_to_kana_yomi(text: str) -> str | None:
@@ -345,7 +390,8 @@ def reading_candidates(text: str) -> list[str]:
     """行の読み候補(重複除去済み、第1候補が既定)。
 
     yomi の既定読みと UniDic N-best の発音形を候補にする。
-    N-best は上限付きで、長音正規化後の重複を除く。
+    N-best は上限付きで、既定読みを先頭に保ちながらモーラ数を分散させ、
+    長音正規化後の重複を除く。
     候補が複数の行は音響スコア(CTC)で判定する(mora_align.align_moras_with_variants)。
     ルビ注釈のある区間は両エンジンで同じ(指定)読みになるので、候補は増えない。
     """
