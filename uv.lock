@@ -2748,7 +2748,7 @@ dev = [
 [[package]]
 name = "soramimic-yomi"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-yomi#d53ad92bf3aed3441850ff33143953f4ef778a6c" }
+source = { git = "https://github.com/soramimic/soramimic-yomi#79f0574a201a31ee56434c4d13f7ed484e58ac18" }
 dependencies = [
     { name = "arpakana" },
     { name = "e2k" },
