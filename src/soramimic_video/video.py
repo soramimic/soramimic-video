@@ -1623,7 +1623,7 @@ def build_ass(
     決める。subtitle要素のないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
     表示粒度(元歌詞行/対応行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
     (Web UIの一括指定)、それも無ければ source 既定に従う。
-    clear_ranges は間奏・後奏など専用画面の表示区間。この区間に入る字幕は
+    clear_ranges はサムネ・間奏・後奏など専用画面の表示区間。この区間に入る字幕は
     専用画面の開始時刻で消し、直前の歌詞が画面上に残らないようにする。
     """
     from .align import build_subtitle_segments, resolve_granularity
@@ -1894,6 +1894,7 @@ def prepare_video(
     else:
         logger.warning("画像キューが0件です。動画の背景は全編無地になります")
     thumbnail_credits: list[dict] = []
+    thumbnail_clear_ranges: list[tuple[float, float]] = []
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -1911,6 +1912,7 @@ def prepare_video(
         cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
         if show_end > 0:
             cues[0].credits = tuple(thumbnail_credits)
+            thumbnail_clear_ranges.append((0.0, show_end))
         credits = credits_for_cues(cues)
     section_cues = build_section_cues(
         project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
@@ -1934,7 +1936,10 @@ def prepare_video(
     ass_path.write_text(
         build_ass(
             project, width, height, font, layout_obj, granularity,
-            [(cue.start, cue.end) for cue in section_cues],
+            [
+                *thumbnail_clear_ranges,
+                *((cue.start, cue.end) for cue in section_cues),
+            ],
         ),
         encoding="utf-8",
     )
@@ -2070,6 +2075,7 @@ def make_video(
     # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)。
     # song_title_kana は曲名の読み(分かっていれば変換入力に使う)
     thumbnail_credits: list[dict] = []
+    thumbnail_clear_ranges: list[tuple[float, float]] = []
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -2087,6 +2093,7 @@ def make_video(
         cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
         if show_end > 0:
             cues[0].credits = tuple(thumbnail_credits)
+            thumbnail_clear_ranges.append((0.0, show_end))
         credits = credits_for_cues(cues)
     # 間奏の「間奏(X秒)」・後奏のエンドロールを、歌唱フレームの隙間に差し込む
     section_cues = build_section_cues(
@@ -2113,7 +2120,10 @@ def make_video(
     ass_path.write_text(
         build_ass(
             project, width, height, font, layout_obj, granularity,
-            [(cue.start, cue.end) for cue in section_cues],
+            [
+                *thumbnail_clear_ranges,
+                *((cue.start, cue.end) for cue in section_cues),
+            ],
         ),
         encoding="utf-8",
     )
