@@ -110,6 +110,48 @@ def test_kanasim_accepts_expressive_repeated_long_vowel_marks():
     assert decision.distances[0] == (0.0, 0.0)
 
 
+def test_kanasim_accepts_same_vowel_small_kana_in_candidate():
+    decision = choose_reading(["デェー", "デス"], ["デー", "デー"])
+
+    assert decision.selected_index == 0
+    assert decision.distances[0] == (0.0, 0.0)
+
+
+def test_unsupported_candidate_is_excluded_without_aborting(monkeypatch):
+    from soramimic_video import kana_whisper
+
+    original = kana_whisper._phonetic_substring_distance
+
+    def reject_unknown(needle, haystack):
+        if needle == "ヴョ":
+            raise ValueError("unsupported test mora")
+        return original(needle, haystack)
+
+    monkeypatch.setattr(kana_whisper, "_phonetic_substring_distance", reject_unknown)
+    decision = choose_reading(["カ", "ヴョ", "サ"], ["サ", "サ"])
+
+    assert decision.selected_index == 2
+    assert decision.reason == "kana-evidence"
+    assert decision.distances[1] == ()
+
+
+def test_unsupported_default_uses_first_supported_candidate(monkeypatch):
+    from soramimic_video import kana_whisper
+
+    original = kana_whisper._phonetic_substring_distance
+
+    def reject_unknown(needle, haystack):
+        if needle == "ヴョ":
+            raise ValueError("unsupported test mora")
+        return original(needle, haystack)
+
+    monkeypatch.setattr(kana_whisper, "_phonetic_substring_distance", reject_unknown)
+    decision = choose_reading(["ヴョ", "カ", "サ"], ["サ", "サ"])
+
+    assert decision.selected_index == 1
+    assert decision.reason == "unsupported-default"
+
+
 def test_earlier_dictionary_path_wins_when_nbest_paths_are_one_edit_apart():
     decision = choose_reading(
         [
