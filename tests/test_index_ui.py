@@ -774,6 +774,7 @@ def _song_input_node_harness() -> str:
         const showsEditorWordlist = () => false;
         const activeCustomList = () => null;
         const simpleMode = false;
+        const renderCustomListMenu = () => {};
         const updateNoncommercialFanworkNotice = () => {};
         const updateAdvancedSettingsAvailability = () => {};
         const selectedSampleIsAudio = () => false;
@@ -2047,6 +2048,32 @@ def test_card_selects_mirror_the_canonical_form():
     wiring = wiring[: wiring.index('$("sample-select").addEventListener')]
     assert '$("sample-select").value = $("builder-sample").value;' in wiring
     assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
+
+
+def test_custom_wordlists_use_the_soramimic_row_menu():
+    """自作リストは選択・編集・削除を同じ行にまとめ、新規作成を末尾に置く。"""
+    html = INDEX.read_text(encoding="utf-8")
+    script = _script()
+    assert 'id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"' in html
+    assert 'id="custom-wordlist-edit"' not in html
+
+    options = _function_body(script, "function syncBuilderOptions()")
+    assert 'menu.textContent = "自作リストを選ぶ…";' in options
+    assert "for (const list of customLists)" not in options
+
+    render = _function_body(script, "function renderCustomListMenu()")
+    assert 'row.className = "custom-wordlist-menu-row";' in render
+    assert 'choose.setAttribute("role", "menuitemradio");' in render
+    assert 'choose.setAttribute("aria-checked", String(list.id === activeCustomListId));' in render
+    assert 'edit.setAttribute("aria-label", `「${list.name}」を編集`);' in render
+    assert 'remove.setAttribute("aria-label", `「${list.name}」を削除`);' in render
+    assert 'add.textContent = "＋ 新しいリスト";' in render
+
+    opening = _function_body(script, "async function openCustomListMenu(")
+    assert 'menu.querySelector("[role=\'menuitemradio\'][aria-checked=\'true\']")' in opening
+    assert '$("builder-wordlist").setAttribute("aria-expanded", "true");' in opening
+    assert 'if (event.key === "Escape")' in script
+    assert 'if (event.key === "ArrowDown")' in script
 
 
 def test_public_mode_shows_private_use_notice():
