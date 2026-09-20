@@ -766,6 +766,7 @@ def _song_input_node_harness() -> str:
           return elements.get(id);
         }
         let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
+        let recordedSongFile = null;
         let midiFromSample = false, samplePending = null, restoring = false;
         let sampleLyricsId = "", sampleLyricsBaseline = null;
         const sampleCredits = {}, sampleLicenseUrls = {}, sampleDescriptions = {};
@@ -778,6 +779,9 @@ def _song_input_node_harness() -> str:
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
         const clearAudioInput = clearAudioPresentation;
+        const stopSongRecording = () => {};
+        const clearRecordedSongPlayback = () => {};
+        const syncRecordingUi = () => {};
         const clearEditorFile = () => { $("editor").files = []; };
         let previews = 0, saves = 0, builderMessage = "";
         const schedulePreview = () => { previews += 1; };
@@ -2057,6 +2061,11 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     html = INDEX.read_text(encoding="utf-8")
     script = _script()
     assert 'id="song-upload-button"' in html
+    assert 'id="song-record-button"' in html
+    assert 'id="song-record-status" role="status" hidden' in html
+    assert 'id="song-record-playback" controls playsinline preload="metadata" hidden' in html
+    assert html.index('id="song-upload-filename"') < html.index('id="song-record-playback"')
+    assert html.index('id="song-record-playback"') < html.index('id="song-upload-clear"')
     assert html.index('id="song-upload-button"') < html.index('id="builder-sample"')
     assert '曲をアップロード' in html
     assert 'id="song-upload-selection" hidden' in html
@@ -2077,6 +2086,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '[".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".webm"]' in script
     assert 'name.endsWith(".mid") || name.endsWith(".midi")' in script
     assert '$("song-upload-button").addEventListener("click", () => $("midi").click());' in script
+    assert '$("song-record-button").addEventListener("click", startSongRecording);' in script
     assert 'id="audio-input-panel"' not in html
     assert 'id="auto-lyrics"' in html
     assert 'id="auto-lyrics" aria-controls="lyrics-correction-panel" checked' in html
@@ -2124,6 +2134,117 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'localStorage.setItem("audioFile"' not in script
     save = script[script.index('// 持ち込みMIDIはバイナリ') :]
     assert 'if (ownSongKind(f) !== "midi")' in save
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone():
+    """Safari形式の録音を既存の音源入力へ渡し、停止時にマイクも解放する。"""
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function ownSongFile()",
+            "function recordingSupported()",
+            "function preferredRecordingMimeType()",
+            "function recordingExtension(",
+            "function recordingFilename(",
+            "function recordedFile(",
+            "function clearRecordedSongPlayback()",
+            "function showRecordedSongPlayback(",
+            "function syncRecordingUi()",
+            "function setRecordingStatus(",
+            "function releaseSongRecording(",
+            "function finishSongRecording(",
+            "function stopSongRecording(",
+            "async function startSongRecording(",
+            "function setRecordedSongFile(",
+        )
+    )
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        function $(id) {{
+          if (!elements.has(id)) elements.set(id, {{
+            hidden: false, disabled: false, textContent: "", value: "", files: [],
+            attrs: {{}}, classList: {{ toggle() {{}} }},
+            setAttribute(name, value) {{ this.attrs[name] = value; }},
+            removeAttribute(name) {{ delete this.attrs[name]; }},
+            pause() {{}}, load() {{}},
+            dispatchEvent() {{}},
+          }});
+          return elements.get(id);
+        }}
+        class FakeRecorder {{
+          static isTypeSupported(type) {{ return type.startsWith("audio/mp4"); }}
+          constructor(stream, options) {{
+            this.stream = stream;
+            this.mimeType = options?.mimeType || "audio/mp4";
+            this.state = "inactive";
+            this.listeners = new Map();
+          }}
+          addEventListener(type, listener) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(listener);
+          }}
+          emit(type, event = {{}}) {{
+            for (const listener of this.listeners.get(type) || []) listener(event);
+          }}
+          start() {{ this.state = "recording"; }}
+          stop() {{ this.state = "inactive"; this.emit("stop"); }}
+        }}
+        const track = {{ stopped: false, stop() {{ this.stopped = true; }} }};
+        const stream = {{ getTracks() {{ return [track]; }} }};
+        global.window = {{ isSecureContext: true, MediaRecorder: FakeRecorder }};
+        const revokedUrls = [];
+        global.URL = {{
+          createObjectURL() {{ return "blob:recording-preview"; }},
+          revokeObjectURL(url) {{ revokedUrls.push(url); }},
+        }};
+        Object.defineProperty(global, "navigator", {{
+          value: {{
+            mediaDevices: {{ getUserMedia: async (constraints) => {{
+              assert.deepEqual(constraints, {{ audio: true }});
+              return stream;
+            }} }},
+          }},
+          configurable: true,
+        }});
+        global.Event = class {{ constructor(type) {{ this.type = type; }} }};
+        let audioInputReady = true;
+        let maxSongSeconds = 420;
+        let songInputMode = "upload";
+        let recordedSongFile = null;
+        let recordedSongPreviewUrl = "";
+        let preserveRecordedSongFileOnChange = false;
+        let activeSongRecording = null;
+        let recordingStartSequence = 0;
+        {functions}
+
+        (async () => {{
+          assert.equal(recordingSupported(), true);
+          assert.equal(preferredRecordingMimeType(), "audio/mp4;codecs=mp4a.40.2");
+          await startSongRecording();
+          assert.equal(activeSongRecording.recorder.state, "recording");
+          const recorder = activeSongRecording.recorder;
+          recorder.emit("dataavailable", {{ data: new Blob([new Uint8Array([1, 2, 3])]) }});
+          stopSongRecording();
+          assert.equal(activeSongRecording, null);
+          assert.equal(track.stopped, true);
+          assert.match(recordedSongFile.name, /^recording-\\d{{8}}-\\d{{6}}\\.m4a$/);
+          assert.equal(recordedSongFile.type, "audio/mp4;codecs=mp4a.40.2");
+          assert.equal(recordedSongFile.size, 3);
+          assert.equal($("song-record-playback").src, "blob:recording-preview");
+          assert.equal($("song-record-playback").hidden, false);
+          assert.equal($("song-record-status").textContent,
+            "録音した音声を曲としてセットしました。");
+          clearRecordedSongPlayback();
+          assert.equal($("song-record-playback").hidden, true);
+          assert.deepEqual(revokedUrls, ["blob:recording-preview"]);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
