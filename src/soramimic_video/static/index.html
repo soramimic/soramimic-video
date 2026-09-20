@@ -580,10 +580,12 @@
     display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: stretch;
   }
   .custom-wordlist-menu-heading {
-    margin: .2rem .45rem .1rem; padding-top: .35rem; border-top: 1px solid var(--border);
-    color: var(--muted); font-size: .75rem; font-weight: 700;
+    margin: .4rem 0 .1rem; padding: .5rem .7rem;
+    border-top: 1px solid var(--border); border-radius: 6px;
+    background: color-mix(in srgb, var(--text) 6%, var(--panel));
+    color: var(--text); font-size: .82rem; font-weight: 700;
   }
-  .custom-wordlist-menu-heading:first-child { border-top: 0; padding-top: 0; }
+  .custom-wordlist-menu-heading:first-child { margin-top: 0; border-top: 0; }
   .custom-wordlist-menu button {
     min-height: 44px; border: 0; border-radius: 7px;
     background: transparent; color: var(--text); cursor: pointer;
@@ -600,6 +602,17 @@
     text-align: left; text-overflow: ellipsis; white-space: nowrap;
   }
   .custom-wordlist-menu > .custom-wordlist-menu-select { width: 100%; }
+  .custom-wordlist-menu-subitem {
+    margin-left: .7rem; width: calc(100% - .7rem) !important;
+    padding-left: 1rem; border-left: 2px solid var(--border) !important;
+    border-radius: 0 7px 7px 0 !important;
+  }
+  .custom-wordlist-menu-row.custom-wordlist-menu-subitem {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .custom-wordlist-menu-row.custom-wordlist-menu-subitem > .custom-wordlist-menu-select {
+    padding-left: 1rem;
+  }
   .custom-wordlist-menu-select[aria-checked="true"] {
     background: color-mix(in srgb, var(--accent) 18%, var(--panel)); font-weight: 700;
   }
@@ -905,7 +918,7 @@
     </div>
   </div>
   <div id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"
-    aria-label="自作リスト" hidden></div>
+    aria-label="単語リスト" hidden></div>
   <!-- #advanced はHTML上では正本の入力群とまとまった位置に置き、ページ構築時に
        このスロットへ移す。単語リスト直下で開閉でき、下のプレビューを探し回らずに済む。 -->
   <div id="advanced-slot"></div>
@@ -4332,10 +4345,11 @@ async function openCustomListMenu({ focus = true, last = false } = {}) {
   (last ? items.at(-1) : checked || items[0])?.focus();
 }
 
-function appendBuilderWordlistOption(menu, option) {
+function appendBuilderWordlistOption(menu, option, subitem = false) {
   const choose = document.createElement("button");
   choose.type = "button";
   choose.className = "custom-wordlist-menu-select";
+  if (subitem) choose.classList.add("custom-wordlist-menu-subitem");
   choose.setAttribute("role", "menuitemradio");
   choose.setAttribute("aria-checked", String(
     !activeCustomList() && !showsEditorWordlist() && option.value === $("builder-wordlist").value));
@@ -4361,11 +4375,19 @@ function appendCustomListMenuHeading(menu, text) {
 function renderCustomListMenu() {
   const menu = $("custom-wordlist-menu");
   menu.replaceChildren();
+  for (const child of $("builder-wordlist").children) {
+    if (child.tagName === "OPTGROUP") {
+      appendCustomListMenuHeading(menu, child.label);
+      for (const option of child.children) appendBuilderWordlistOption(menu, option, true);
+    } else if (child.value !== EDITOR_WORDLIST_VALUE) {
+      appendBuilderWordlistOption(menu, child);
+    }
+  }
   if (!simpleMode) {
     appendCustomListMenuHeading(menu, "自作リスト");
     const add = document.createElement("button");
     add.type = "button";
-    add.className = "custom-wordlist-menu-new";
+    add.className = "custom-wordlist-menu-new custom-wordlist-menu-subitem";
     add.setAttribute("role", "menuitem");
     add.textContent = "＋ 新しいリスト";
     add.addEventListener("click", () => {
@@ -4376,7 +4398,7 @@ function renderCustomListMenu() {
     if (showsEditorWordlist()) {
       const editorList = document.createElement("button");
       editorList.type = "button";
-      editorList.className = "custom-wordlist-menu-select";
+      editorList.className = "custom-wordlist-menu-select custom-wordlist-menu-subitem";
       editorList.setAttribute("role", "menuitemradio");
       editorList.setAttribute("aria-checked", "true");
       editorList.textContent = EDITOR_WORDLIST_LABEL;
@@ -4385,7 +4407,7 @@ function renderCustomListMenu() {
     }
     for (const list of customLists) {
       const row = document.createElement("div");
-      row.className = "custom-wordlist-menu-row";
+      row.className = "custom-wordlist-menu-row custom-wordlist-menu-subitem";
       const choose = document.createElement("button");
       choose.type = "button";
       choose.className = "custom-wordlist-menu-select";
@@ -4418,14 +4440,6 @@ function renderCustomListMenu() {
       });
       row.append(choose, edit, remove);
       menu.appendChild(row);
-    }
-  }
-  for (const child of $("builder-wordlist").children) {
-    if (child.tagName === "OPTGROUP") {
-      appendCustomListMenuHeading(menu, child.label);
-      for (const option of child.children) appendBuilderWordlistOption(menu, option);
-    } else if (child.value !== EDITOR_WORDLIST_VALUE) {
-      appendBuilderWordlistOption(menu, child);
     }
   }
   positionCustomListMenu();
