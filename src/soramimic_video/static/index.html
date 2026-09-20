@@ -633,16 +633,6 @@
     border-color: #ef4444; color: #ef4444;
   }
   #song-record-status { font-variant-numeric: tabular-nums; }
-  .song-record-review {
-    display: grid; gap: .55rem; padding: .7rem;
-    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
-  }
-  .song-record-review[hidden] { display: none; }
-  .song-record-review audio { width: 100%; }
-  .song-record-review-actions {
-    display: grid; grid-template-columns: 1fr 1fr; gap: .5rem;
-  }
-  .song-record-review-actions button { min-height: 2.6rem; font-weight: 700; }
   .audio-upload-entry .hint { margin: 0; }
   .upload-use-notice {
     margin-top: .65rem; padding: .65rem .75rem; border: 1px solid var(--border);
@@ -650,13 +640,18 @@
   }
   .upload-use-notice p { margin: 0; }
   .song-upload-selection {
-    display: flex; align-items: center; gap: .5rem; min-height: 2.75rem;
+    display: flex; align-items: flex-start; gap: .5rem; min-height: 2.75rem;
     padding: .15rem 0 .15rem .15rem;
   }
   .song-upload-selection[hidden] { display: none; }
-  #song-upload-filename {
-    min-width: 0; flex: 1; overflow-wrap: anywhere; color: var(--text); font-weight: 700;
+  .song-upload-selection-main {
+    display: grid; flex: 1; gap: .45rem; min-width: 0; padding-top: .65rem;
   }
+  #song-upload-filename {
+    min-width: 0; overflow-wrap: anywhere; color: var(--text); font-weight: 700;
+  }
+  #song-record-playback { width: 100%; }
+  #song-record-playback[hidden] { display: none; }
   #song-upload-clear {
     display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
     width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: 50%;
@@ -806,15 +801,11 @@
       </div>
       <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
       <p class="hint" id="song-record-status" role="status" hidden></p>
-      <div class="song-record-review" id="song-record-review" hidden>
-        <audio id="song-record-playback" controls playsinline preload="metadata"></audio>
-        <div class="song-record-review-actions">
-          <button type="button" id="song-record-use">この録音を使う</button>
-          <button type="button" id="song-record-retry">録り直す</button>
-        </div>
-      </div>
       <div class="song-upload-selection" id="song-upload-selection" hidden>
-        <span id="song-upload-filename" role="status"></span>
+        <div class="song-upload-selection-main">
+          <span id="song-upload-filename" role="status"></span>
+          <audio id="song-record-playback" controls playsinline preload="metadata" hidden></audio>
+        </div>
         <button type="button" id="song-upload-clear" aria-label="選択した曲を解除"
           title="選択した曲を解除">&times;</button>
       </div>
@@ -3283,7 +3274,6 @@ let midiSampleId = "";
 let sampleApplySeq = 0;
 let songInputMode = "upload";
 let recordedSongFile = null;
-let pendingRecordedSongFile = null;
 let recordedSongPreviewUrl = "";
 let preserveRecordedSongFileOnChange = false;
 function ownSongFile() {
@@ -3365,42 +3355,21 @@ function recordedFile(chunks, mimeType, now = new Date()) {
   return new File([blob], recordingFilename(mimeType, now), { type: mimeType });
 }
 
-function clearRecordedSongReview() {
+function clearRecordedSongPlayback() {
   const playback = $("song-record-playback");
   playback.pause();
   playback.removeAttribute("src");
   playback.load();
   if (recordedSongPreviewUrl) URL.revokeObjectURL(recordedSongPreviewUrl);
   recordedSongPreviewUrl = "";
-  pendingRecordedSongFile = null;
-  $("song-record-review").hidden = true;
+  playback.hidden = true;
 }
 
-function showRecordedSongReview(file) {
-  clearRecordedSongReview();
-  pendingRecordedSongFile = file;
+function showRecordedSongPlayback(file) {
+  clearRecordedSongPlayback();
   recordedSongPreviewUrl = URL.createObjectURL(file);
   $("song-record-playback").src = recordedSongPreviewUrl;
-  $("song-record-review").hidden = false;
-  setRecordingStatus("録音を再生して確認してください。");
-  syncRecordingUi();
-}
-
-function acceptRecordedSong() {
-  const file = pendingRecordedSongFile;
-  if (!file) return;
-  clearRecordedSongReview();
-  setRecordedSongFile(file);
-  if (ownSongFile() === file) {
-    setRecordingStatus("録音した音声を曲としてセットしました。");
-  }
-}
-
-async function retrySongRecording() {
-  clearRecordedSongReview();
-  setRecordingStatus("");
-  syncRecordingUi();
-  await startSongRecording();
+  $("song-record-playback").hidden = false;
 }
 
 let activeSongRecording = null;
@@ -3409,14 +3378,12 @@ let recordingStartSequence = 0;
 function syncRecordingUi() {
   const button = $("song-record-button");
   const recording = activeSongRecording?.recorder?.state === "recording";
-  const reviewing = !!pendingRecordedSongFile;
-  button.hidden = !recording
-    && (!audioInputReady || !recordingSupported() || !!ownSongFile() || reviewing);
+  button.hidden = !recording && (!audioInputReady || !recordingSupported() || !!ownSongFile());
   button.disabled = activeSongRecording?.stopping === true;
   button.classList.toggle("is-recording", recording);
   button.setAttribute("aria-pressed", String(recording));
   $("song-record-label").textContent = recording ? "録音を停止" : "録音する";
-  $("song-upload-button").hidden = recording || !!ownSongFile() || reviewing;
+  $("song-upload-button").hidden = recording || !!ownSongFile();
 }
 
 function setRecordingStatus(message) {
@@ -3452,7 +3419,11 @@ function finishSongRecording(state) {
     syncRecordingUi();
     return;
   }
-  showRecordedSongReview(file);
+  setRecordedSongFile(file);
+  if (ownSongFile() === file) {
+    showRecordedSongPlayback(file);
+    setRecordingStatus("録音した音声を曲としてセットしました。");
+  }
 }
 
 function stopSongRecording(discard = false) {
@@ -3665,7 +3636,7 @@ $("advanced").querySelector(":scope > summary").addEventListener("click", (event
 function switchSongInputMode(mode) {
   if (mode === songInputMode) return;
   stopSongRecording(true);
-  clearRecordedSongReview();
+  clearRecordedSongPlayback();
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
   $("sample-select").value = "";
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
@@ -3694,8 +3665,6 @@ $("song-source-switch").addEventListener("click", () => {
 
 $("song-upload-button").addEventListener("click", () => $("midi").click());
 $("song-record-button").addEventListener("click", startSongRecording);
-$("song-record-use").addEventListener("click", acceptRecordedSong);
-$("song-record-retry").addEventListener("click", retrySongRecording);
 function setOwnSongFile(file) {
   const transfer = new DataTransfer();
   transfer.items.add(file);
@@ -3718,6 +3687,7 @@ function setRecordedSongFile(file) {
 // FileListに入らないページ内録音のFileも同時に破棄する。
 $("midi").addEventListener("change", () => {
   if (!preserveRecordedSongFileOnChange) {
+    clearRecordedSongPlayback();
     recordedSongFile = null;
     recordingStartSequence += 1;
   }
@@ -3807,7 +3777,7 @@ $("song-upload-clear").addEventListener("click", () => {
 });
 window.addEventListener("pagehide", () => {
   stopSongRecording(true);
-  clearRecordedSongReview();
+  clearRecordedSongPlayback();
 });
 // #lyrics がどのサンプルの配信値かと、その時点の未編集値。リロード時に
 // 「前回の標準歌詞」だけ最新版へ更新し、ユーザーが手で直した歌詞は残すために使う。
