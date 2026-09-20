@@ -150,9 +150,27 @@ def test_guidelines_include_disclaimer(client):
 
     assert '<h2 id="disclaimer-title">免責事項</h2>' in response.text
     assert "本サービスおよび生成物の正確性、完全性、特定目的への適合性" in response.text
-    assert "当方の故意または重大な過失による場合を除き" in response.text
+    assert (
+        "当方は、本サービスの利用または利用不能により生じた損害について責任を負いません"
+        in response.text
+    )
+    assert "当方の故意または重大な過失による場合を除き" not in response.text
     assert "生成物の利用に必要な権利・許諾は、利用者自身で" in response.text
     assert '<a href="#disclaimer-title">免責事項</a>' in response.text
+
+
+def test_public_guidelines_put_disclaimer_first(client, monkeypatch):
+    browser, _ = client
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+
+    response = browser.get("/guidelines")
+
+    assert response.text.index('href="#disclaimer-title"') < response.text.index(
+        'href="#usage-scope-title"'
+    )
+    assert response.text.index('id="disclaimer-title"') < response.text.index(
+        'id="usage-scope-title"'
+    )
 
 
 def test_private_guidelines_do_not_claim_public_retention_policy(client):
