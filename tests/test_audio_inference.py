@@ -511,12 +511,16 @@ def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path
     audio = tmp_path / "song.wav"
     audio.write_bytes(b"wave")
     calls = []
+    monkeypatch.setattr(transcribe, "_audio_duration_sec", lambda _path: 12.623)
     monkeypatch.setenv("SORAMIMIC_AUDIO_INFERENCE_URL", "http://127.0.0.1:8320/")
     monkeypatch.setattr(
         audio_inference,
         "transcribe_lines_remote",
         lambda *args, **kwargs: calls.append((args, kwargs))
-        or [TranscribedLine(0.0, 1.0, "共有")],
+        or [
+            TranscribedLine(0.0, 29.98, "共有"),
+            TranscribedLine(12.623, 29.98, "空区間"),
+        ],
     )
 
     result = transcribe.transcribe_lines(
@@ -528,7 +532,9 @@ def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path
         condition_on_previous_text=False,
     )
 
-    assert [line.text for line in result] == ["共有"]
+    assert [(line.start_sec, line.end_sec, line.text) for line in result] == [
+        (0.0, 12.623, "共有")
+    ]
     assert calls == [
         (
             (audio, "large-v3", "auto"),

@@ -29,6 +29,24 @@ class TranscribedLine:
     text: str
 
 
+def _audio_duration_sec(audio_path: Path) -> float:
+    import soundfile as sf
+
+    return float(sf.info(str(audio_path)).duration)
+
+
+def _clamp_lines_to_audio(
+    lines: list[TranscribedLine], audio_duration_sec: float
+) -> list[TranscribedLine]:
+    clamped = []
+    for line in lines:
+        start_sec = max(0.0, min(audio_duration_sec, line.start_sec))
+        end_sec = max(0.0, min(audio_duration_sec, line.end_sec))
+        if end_sec > start_sec:
+            clamped.append(TranscribedLine(start_sec, end_sec, line.text))
+    return clamped
+
+
 def _cuda_free_bytes(device: str) -> int | None:
     """Return currently available CUDA memory without making CUDA mandatory."""
     if device != "auto" and not device.startswith("cuda"):
@@ -133,7 +151,7 @@ def transcribe_lines(
 
     if configured_url() is not None:
         logger.info("共有Whisperサービスで歌詞を認識中...")
-        return transcribe_lines_remote(
+        lines = transcribe_lines_remote(
             vocals_path,
             model_size,
             device,
@@ -141,14 +159,16 @@ def transcribe_lines(
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
         )
-    return _transcribe_lines_local(
-        vocals_path,
-        model_size,
-        device,
-        language=language,
-        vad_filter=vad_filter,
-        condition_on_previous_text=condition_on_previous_text,
-    )
+    else:
+        lines = _transcribe_lines_local(
+            vocals_path,
+            model_size,
+            device,
+            language=language,
+            vad_filter=vad_filter,
+            condition_on_previous_text=condition_on_previous_text,
+        )
+    return _clamp_lines_to_audio(lines, _audio_duration_sec(vocals_path))
 
 
 def transcribe_window(
