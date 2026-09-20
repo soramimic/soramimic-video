@@ -2073,6 +2073,10 @@ def test_custom_wordlists_use_the_soramimic_row_menu():
     opening = _function_body(script, "async function openCustomListMenu(")
     assert 'menu.querySelector("[role=\'menuitemradio\'][aria-checked=\'true\']")' in opening
     assert '$("builder-wordlist").setAttribute("aria-expanded", "true");' in opening
+    wiring = script[script.index('$("builder-wordlist").addEventListener("change"') :]
+    wiring = wiring[: wiring.index('// 正本(詳細設定の曲')]
+    assert "if (v === CUSTOM_LIST_MENU_VALUE) { openCustomListMenu(); return; }" in wiring
+    assert "closeCustomListMenu(false);" in wiring
     assert 'if (event.key === "Escape")' in script
     assert 'if (event.key === "ArrowDown")' in script
 

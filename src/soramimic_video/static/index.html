@@ -5078,6 +5078,9 @@ $("builder-sample").addEventListener("change", () => {
 $("builder-wordlist").addEventListener("change", () => {
   const v = $("builder-wordlist").value;
   if (v === CUSTOM_LIST_MENU_VALUE) { openCustomListMenu(); return; }
+  // 自作リストのメニューを開いたまま通常の単語リストへ選び直した場合も、
+  // native select 自体のクリックは外側クリック扱いにならないため明示的に閉じる。
+  closeCustomListMenu(false);
   if (v.startsWith(CUSTOM_LIST_PREFIX)) { selectCustomList(v.slice(CUSTOM_LIST_PREFIX.length)); return; }
   // 合成の選択肢(自作リスト)は正本に対応する値を持たない。選ばれても正本には
   // 何も書かず表示だけ戻す(いまの自作リストのまま=実質なにも起きない)
