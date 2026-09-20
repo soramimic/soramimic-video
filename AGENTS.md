@@ -15,13 +15,18 @@
 - Development delivery does not authorize a release. Create or mark ready a
   promotion to `preview` or a `preview` to `main` release only when the user has
   requested that promotion; passing CI or a generic instruction to finish is insufficient.
+- Promotions from `dev` to `preview` are feature-scoped by default. Start from
+  `origin/preview` and include only the requested change and required dependencies;
+  promote all of `dev` only when the user explicitly requests it.
+- Partial promotions can change commit IDs, so check patch or content equivalence,
+  not ancestry alone, before deciding that a change is absent from `preview`.
 - Same-repository, non-draft pull requests targeting `dev`, `preview`, or `main` are
   automatically merged after all mandatory checks pass unless they carry the
   `no-automerge` label.
 - Creating or marking ready a pull request to `preview` authorizes the repository
   workflow to merge and deploy that named promotion automatically. Add `no-automerge`
   before marking it ready when a separate review or approval stop is required.
-- Normal code releases to `main` come from the same repository's `preview` branch. A
+- Promotions from `preview` to `main` use the whole `preview` branch by default. A
   `preview` to `main` release pull request is automatically merged and deployed after
   all mandatory checks pass unless it carries `no-automerge`.
 - Creating or marking ready the `preview` to `main` release pull request is the release
