@@ -534,6 +534,30 @@ def test_layered_note_length_weights_follow_mora_owned_slots():
     assert weights[0] == pytest.approx([0.3] * 9)
 
 
+def test_layered_note_length_weights_accept_stage3_tuple_data():
+    project = _repeated_layer_project()
+    assert project.lyric_layers is not None
+
+    def tuple_sequences(value):
+        if isinstance(value, dict):
+            return {key: tuple_sequences(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return tuple(tuple_sequences(item) for item in value)
+        return value
+
+    layers = tuple_sequences(project.lyric_layers)
+    fresh = Project(SongInfo("", 480, tempo_map=[[0, 500000]]))
+    apply_lyric_layers(fresh, layers)
+
+    assert fresh.lyric_layers is not None
+    assert isinstance(fresh.lyric_layers["canonical"], list)
+    assert isinstance(fresh.lyric_layers["synthesis_plan"], list)
+    weights = project_note_length_weights(fresh, 1.0)(
+        [[{"pronunciation": "ダ"} for _ in range(9)]]
+    )
+    assert weights[0] == pytest.approx([0.3] * 9)
+
+
 def test_apply_converted_lines_resolves_compound_note_double_assignment(
     tmp_path: Path,
 ):
