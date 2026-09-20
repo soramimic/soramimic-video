@@ -390,7 +390,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
 
-        from .api import API_KEY_ENV, create_app
+        from .api import API_KEY_ENV, create_app, is_public_mode
     except ImportError:
         print(
             "APIサーバーの依存が足りません。`pip install -e '.[api]'` で入れてください",
@@ -433,7 +433,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"http://{args.host}:{args.port}/ で待ち受けます({auth}, {asset_store_summary})")
     # Access exemption decisions must see the actual socket peer. Do not let
     # uvicorn rewrite request.client from user-controlled forwarding headers.
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        proxy_headers=False,
+        # Public request paths can contain job IDs and user-selected query values.
+        # Cloudflare provides aggregate HTTP analytics; retain no duplicate raw URI
+        # stream in journald.
+        access_log=not is_public_mode(),
+    )
     return 0
 
 
