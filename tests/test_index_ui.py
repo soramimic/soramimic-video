@@ -780,6 +780,7 @@ def _song_input_node_harness() -> str:
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
         const clearAudioInput = clearAudioPresentation;
         const stopSongRecording = () => {};
+        const clearRecordedSongReview = () => {};
         const syncRecordingUi = () => {};
         const clearEditorFile = () => { $("editor").files = []; };
         let previews = 0, saves = 0, builderMessage = "";
@@ -2062,6 +2063,10 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'id="song-upload-button"' in html
     assert 'id="song-record-button"' in html
     assert 'id="song-record-status" role="status" hidden' in html
+    assert 'id="song-record-review" hidden' in html
+    assert 'id="song-record-playback" controls playsinline preload="metadata"' in html
+    assert 'id="song-record-use">この録音を使う</button>' in html
+    assert 'id="song-record-retry">録り直す</button>' in html
     assert html.index('id="song-upload-button"') < html.index('id="builder-sample"')
     assert '曲をアップロード' in html
     assert 'id="song-upload-selection" hidden' in html
@@ -2083,6 +2088,8 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'name.endsWith(".mid") || name.endsWith(".midi")' in script
     assert '$("song-upload-button").addEventListener("click", () => $("midi").click());' in script
     assert '$("song-record-button").addEventListener("click", startSongRecording);' in script
+    assert '$("song-record-use").addEventListener("click", acceptRecordedSong);' in script
+    assert '$("song-record-retry").addEventListener("click", retrySongRecording);' in script
     assert 'id="audio-input-panel"' not in html
     assert 'id="auto-lyrics"' in html
     assert 'id="auto-lyrics" aria-controls="lyrics-correction-panel" checked' in html
@@ -2145,6 +2152,10 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
             "function recordingExtension(",
             "function recordingFilename(",
             "function recordedFile(",
+            "function clearRecordedSongReview()",
+            "function showRecordedSongReview(",
+            "function acceptRecordedSong()",
+            "async function retrySongRecording()",
             "function syncRecordingUi()",
             "function setRecordingStatus(",
             "function releaseSongRecording(",
@@ -2163,6 +2174,8 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
             hidden: false, disabled: false, textContent: "", value: "", files: [],
             attrs: {{}}, classList: {{ toggle() {{}} }},
             setAttribute(name, value) {{ this.attrs[name] = value; }},
+            removeAttribute(name) {{ delete this.attrs[name]; }},
+            pause() {{}}, load() {{}},
             dispatchEvent() {{}},
           }});
           return elements.get(id);
@@ -2188,6 +2201,11 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
         const track = {{ stopped: false, stop() {{ this.stopped = true; }} }};
         const stream = {{ getTracks() {{ return [track]; }} }};
         global.window = {{ isSecureContext: true, MediaRecorder: FakeRecorder }};
+        const revokedUrls = [];
+        global.URL = {{
+          createObjectURL() {{ return "blob:recording-preview"; }},
+          revokeObjectURL(url) {{ revokedUrls.push(url); }},
+        }};
         Object.defineProperty(global, "navigator", {{
           value: {{
             mediaDevices: {{ getUserMedia: async (constraints) => {{
@@ -2202,6 +2220,8 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
         let maxSongSeconds = 420;
         let songInputMode = "upload";
         let recordedSongFile = null;
+        let pendingRecordedSongFile = null;
+        let recordedSongPreviewUrl = "";
         let preserveRecordedSongFileOnChange = false;
         let activeSongRecording = null;
         let recordingStartSequence = 0;
@@ -2217,6 +2237,29 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
           stopSongRecording();
           assert.equal(activeSongRecording, null);
           assert.equal(track.stopped, true);
+          assert.equal(recordedSongFile, null);
+          assert.match(pendingRecordedSongFile.name,
+            /^recording-\\d{{8}}-\\d{{6}}\\.m4a$/);
+          assert.equal($("song-record-playback").src, "blob:recording-preview");
+          assert.equal($("song-record-review").hidden, false);
+          assert.equal($("song-record-status").textContent,
+            "録音を再生して確認してください。");
+          await retrySongRecording();
+          assert.equal($("song-record-review").hidden, true);
+          assert.equal(pendingRecordedSongFile, null);
+          assert.equal(activeSongRecording.recorder.state, "recording");
+          assert.deepEqual(revokedUrls, ["blob:recording-preview"]);
+          const retryRecorder = activeSongRecording.recorder;
+          retryRecorder.emit("dataavailable", {{
+            data: new Blob([new Uint8Array([4, 5, 6])]),
+          }});
+          stopSongRecording();
+          assert.equal($("song-record-review").hidden, false);
+          acceptRecordedSong();
+          assert.equal(pendingRecordedSongFile, null);
+          assert.equal($("song-record-review").hidden, true);
+          assert.deepEqual(revokedUrls,
+            ["blob:recording-preview", "blob:recording-preview"]);
           assert.match(recordedSongFile.name, /^recording-\\d{{8}}-\\d{{6}}\\.m4a$/);
           assert.equal(recordedSongFile.type, "audio/mp4;codecs=mp4a.40.2");
           assert.equal(recordedSongFile.size, 3);
