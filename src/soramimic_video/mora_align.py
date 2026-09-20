@@ -78,6 +78,16 @@ class CTCEmissions:
     vocab: dict[str, int]
 
 
+@dataclass(frozen=True)
+class KanaCTCEvent:
+    """One unconditioned greedy CTC token event in absolute audio time."""
+
+    kana: str
+    start_sec: float
+    end_sec: float
+    confidence: float
+
+
 class CTCWindowCapacityError(RuntimeError):
     """A transcript cannot fit into its fixed CTC frame window."""
 
@@ -188,6 +198,71 @@ def decode_kana_window(
         chars.append(token)
         scores.append(float(matrix[index, token_id]))
     return "".join(chars), math.exp(sum(scores) / len(scores)) if scores else 0.0
+
+
+def decode_kana_events_window(
+    emissions: CTCEmissions, start_sec: float, end_sec: float,
+) -> tuple[KanaCTCEvent, ...]:
+    """Return timed greedy kana events without rerunning the acoustic model."""
+    if not 0 <= start_sec < end_sec:
+        raise ValueError("CTC window must have positive duration")
+    first = max(0, _frame_ceiling(start_sec))
+    last = min(len(emissions.log_probs), _frame_ceiling(end_sec))
+    values = collapse_kana_aliases(emissions)[first:last]
+    if len(values) == 0:
+        return ()
+
+    import numpy as np
+
+    matrix = np.asarray(values)
+    best = matrix.argmax(axis=-1)
+    vocabulary = {value: key for key, value in emissions.vocab.items()}
+    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+    output: list[KanaCTCEvent] = []
+    index = 0
+    while index < len(best):
+        token_id = int(best[index])
+        stop = index + 1
+        while stop < len(best) and int(best[stop]) == token_id:
+            stop += 1
+        if token_id != 0:
+            token = jaconv.hira2kata(vocabulary.get(token_id, ""))
+            if token and all("ァ" <= char <= "ヺ" or char == "ー" for char in token):
+                peak = max(float(matrix[frame, token_id]) for frame in range(index, stop))
+                event_start = max(start_sec, (first + index) * frame_sec - _PAD_SEC)
+                event_end = min(end_sec, (first + stop) * frame_sec - _PAD_SEC)
+                if event_end > event_start:
+                    output.append(KanaCTCEvent(
+                        token, event_start, event_end, math.exp(peak),
+                    ))
+        index = stop
+    return tuple(output)
+
+
+def decode_repeated_mora_reattacks(
+    emissions: CTCEmissions, mora: str, start_sec: float, end_sec: float,
+) -> tuple[KanaCTCEvent, ...]:
+    """Find unconditioned occurrences of one Whisper-supplied mora."""
+    target = tuple(jaconv.hira2kata(mora))
+    if not target:
+        return ()
+    events = decode_kana_events_window(emissions, start_sec, end_sec)
+    result: list[KanaCTCEvent] = []
+    index = 0
+    while index <= len(events) - len(target):
+        selected = events[index:index + len(target)]
+        if tuple(event.kana for event in selected) == target:
+            result.append(KanaCTCEvent(
+                jaconv.hira2kata(mora),
+                selected[0].start_sec,
+                selected[-1].end_sec,
+                math.exp(sum(math.log(max(event.confidence, 1e-300))
+                             for event in selected) / len(selected)),
+            ))
+            index += len(target)
+        else:
+            index += 1
+    return tuple(result)
 
 
 def collapse_kana_aliases(emissions: CTCEmissions) -> Any:

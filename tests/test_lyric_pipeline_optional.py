@@ -4,9 +4,22 @@ import json
 import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 pytest.importorskip("wav_to_xf.pipeline")
+
+
+def _ctc_emissions(kana="ラ", *event_times):
+    from soramimic_video.mora_align import CTCEmissions
+
+    matrix = np.full((100, 2), -8.0)
+    matrix[:, 0] = -0.001
+    for time_sec in event_times:
+        frame = round((time_sec + .5) / .02)
+        matrix[frame, 0] = -8.0
+        matrix[frame, 1] = -0.001
+    return CTCEmissions(matrix, {"<pad>": 0, kana: 1})
 
 
 def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
@@ -26,8 +39,8 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
         captured["line_windows_by_utterance"] = kwargs.get(
             "line_windows_by_utterance"
         )
-        captured["repeated_vocalization_config"] = kwargs.get(
-            "repeated_vocalization_config"
+        captured["vocalization_reattacks_by_utterance"] = kwargs.get(
+            "vocalization_reattacks_by_utterance"
         )
         return original(document, config=config, **kwargs)
 
@@ -40,15 +53,16 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
         [MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.5, 62)],
         whisper_line_windows=[(0.0, 0.5)],
         enable_repeated_vocalization=True,
+        ctc_emissions=_ctc_emissions("ラ"),
     )
 
     anchors = [item for item in document.evidence if item.kind == "mora-ctc-anchor"]
     assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
-    from wav_to_xf import NoteRunConfig, RepeatedVocalizationConfig
+    from wav_to_xf import NoteRunConfig
 
     assert captured["config"] == NoteRunConfig(whisper_boundary_cost_per_sec2=0.1)
     assert captured["line_windows_by_utterance"] == {"u0": (0.0, 0.5)}
-    assert captured["repeated_vocalization_config"] == RepeatedVocalizationConfig()
+    assert captured["vocalization_reattacks_by_utterance"] == {}
     notes = {item.id: item for item in document.note_candidates}
     assert [
         (item.kana, notes[item.note_candidate_id].midi_pitch)
@@ -82,7 +96,7 @@ def test_stage3_disables_repeated_vocalization_without_whisper_windows(monkeypat
     )
 
     assert captured["line_windows_by_utterance"] is None
-    assert captured["repeated_vocalization_config"] is None
+    assert captured["vocalization_reattacks_by_utterance"] is None
 
 
 def test_stage3_requires_whisper_windows_for_repeated_vocalization():
@@ -100,7 +114,7 @@ def test_stage3_requires_whisper_windows_for_repeated_vocalization():
         )
 
 
-def test_stage3_expands_automatic_repeated_vocalization_from_melody():
+def test_stage3_expands_automatic_repeated_vocalization_from_raw_ctc_reattacks():
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
     from soramimic_video.stage3 import build_stage3_layers
@@ -113,6 +127,7 @@ def test_stage3_expands_automatic_repeated_vocalization_from_melody():
          MelodyNote(0.5, 0.75, 64), MelodyNote(0.75, 1.0, 65)],
         whisper_line_windows=[(0.0, 1.0)],
         enable_repeated_vocalization=True,
+        ctc_emissions=_ctc_emissions("ラ", 0.0, .25, .5, .75),
     )
 
     reading = next(

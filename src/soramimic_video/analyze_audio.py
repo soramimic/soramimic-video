@@ -1573,6 +1573,7 @@ def analyze_audio(
             line_texts, selected_readings, raw_alignment, sheetsage_notes,
             whisper_line_windows=whisper_line_windows,
             enable_repeated_vocalization=whisper_line_windows is not None,
+            ctc_emissions=emissions,
         )
     except ValueError as exc:
         detail = (

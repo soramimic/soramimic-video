@@ -34,6 +34,45 @@ def test_build_targets_skips_unknown_chars():
     assert owners == [(0, 0)]
 
 
+def test_repeated_mora_reattacks_use_one_cached_ctc_pass_and_keep_count():
+    matrix = np.full((80, 3), -8.0)
+    matrix[:, 0] = -0.001
+    for frame in (25, 29, 34):
+        matrix[frame, 0] = -8.0
+        matrix[frame, 1] = -0.001
+    matrix[31, 0] = -8.0
+    matrix[31, 2] = -0.001  # unrelated kana does not become a ラ re-attack
+    emissions = mora_align.CTCEmissions(
+        matrix, {"<pad>": 0, "ラ": 1, "ナ": 2},
+    )
+
+    events = mora_align.decode_repeated_mora_reattacks(
+        emissions, "ラ", 0.0, 0.22,
+    )
+
+    assert [event.kana for event in events] == ["ラ", "ラ", "ラ"]
+    assert [event.start_sec for event in events] == pytest.approx([0.0, .08, .18])
+    assert all(event.confidence > .9 for event in events)
+
+
+def test_repeated_mora_reattacks_match_multi_character_mora():
+    matrix = np.full((80, 3), -8.0)
+    matrix[:, 0] = -0.001
+    for frame, token in ((25, 1), (27, 2), (31, 1), (33, 2)):
+        matrix[frame, 0] = -8.0
+        matrix[frame, token] = -0.001
+    emissions = mora_align.CTCEmissions(
+        matrix, {"<pad>": 0, "キ": 1, "ャ": 2},
+    )
+
+    events = mora_align.decode_repeated_mora_reattacks(
+        emissions, "キャ", 0.0, 0.2,
+    )
+
+    assert len(events) == 2
+    assert all(event.kana == "キャ" for event in events)
+
+
 def test_recognition_window_rejects_infeasible_ctc_capacity_before_alignment(
     monkeypatch,
 ):
