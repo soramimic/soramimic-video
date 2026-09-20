@@ -555,8 +555,22 @@
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー ---- */
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+  .builder-wordlist-trigger {
+    width: 100%; min-width: 0; min-height: 2.5rem; padding: .5rem .6rem;
+    display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+    text-align: left; background: var(--panel);
+  }
+  .builder-wordlist-trigger-label {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .builder-wordlist-trigger-chevron {
+    flex: 0 0 auto; font-size: 1rem; line-height: 1; transition: transform .15s ease;
+  }
+  .builder-wordlist-trigger[aria-expanded="true"] .builder-wordlist-trigger-chevron {
+    transform: rotate(180deg);
+  }
   .custom-wordlist-menu {
-    position: fixed; z-index: 1000; width: min(22rem, calc(100vw - 1rem));
+    position: fixed; z-index: 1000; width: min(38rem, calc(100vw - 1rem));
     max-height: min(70dvh, 28rem); overflow: auto; padding: .35rem;
     border: 1px solid var(--border); border-radius: 10px;
     background: var(--panel); box-shadow: 0 8px 24px #0003;
@@ -565,6 +579,11 @@
   .custom-wordlist-menu-row {
     display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: stretch;
   }
+  .custom-wordlist-menu-heading {
+    margin: .2rem .45rem .1rem; padding-top: .35rem; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: .75rem; font-weight: 700;
+  }
+  .custom-wordlist-menu-heading:first-child { border-top: 0; padding-top: 0; }
   .custom-wordlist-menu button {
     min-height: 44px; border: 0; border-radius: 7px;
     background: transparent; color: var(--text); cursor: pointer;
@@ -580,6 +599,7 @@
     min-width: 0; padding: .55rem .7rem; overflow: hidden;
     text-align: left; text-overflow: ellipsis; white-space: nowrap;
   }
+  .custom-wordlist-menu > .custom-wordlist-menu-select { width: 100%; }
   .custom-wordlist-menu-select[aria-checked="true"] {
     background: color-mix(in srgb, var(--accent) 18%, var(--panel)); font-weight: 700;
   }
@@ -590,8 +610,7 @@
   .custom-wordlist-menu-icon { display: block; width: 1.25rem; height: 1.25rem; }
   .custom-wordlist-menu-delete { color: var(--danger) !important; }
   .custom-wordlist-menu-new {
-    width: 100%; padding: .55rem .7rem; border-top: 1px solid var(--border) !important;
-    text-align: left;
+    width: 100%; padding: .55rem .7rem; text-align: left;
   }
   body.custom-wordlist-open { overflow: hidden; }
   .custom-wordlist-dialog {
@@ -875,9 +894,14 @@
     aria-controls="song-upload-panel sample-picker">サンプル曲で試す</button>
   <div class="builder-selects">
     <div class="field builder-input-row" id="builder-wordlist-field">
-      <label for="builder-wordlist" title="何に空耳させるか">単語リスト</label>
-      <select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"
-        aria-haspopup="menu" aria-controls="custom-wordlist-menu" aria-expanded="false"></select>
+      <label for="builder-wordlist-trigger" title="何に空耳させるか">単語リスト</label>
+      <button type="button" id="builder-wordlist-trigger" class="builder-wordlist-trigger"
+        aria-label="単語リスト(何に空耳させるか)" aria-haspopup="menu"
+        aria-controls="custom-wordlist-menu" aria-expanded="false">
+        <span id="builder-wordlist-trigger-label" class="builder-wordlist-trigger-label">単語リストを選ぶ…</span>
+        <span class="builder-wordlist-trigger-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <select id="builder-wordlist" hidden aria-hidden="true" tabindex="-1"></select>
     </div>
   </div>
   <div id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"
@@ -4152,8 +4176,6 @@ const HIDDEN_PREVIEW_WORDLISTS = {
 
 // ---- メイン画面の名前付き自作リスト ----
 const customListsRepository = VideoCustomWordlists.createRepository();
-const CUSTOM_LIST_PREFIX = "__custom_list__:";
-const CUSTOM_LIST_MENU_VALUE = "__custom_list_menu__";
 let customLists = [];
 let activeCustomListId = "";
 let editingCustomListId = "";
@@ -4235,7 +4257,10 @@ function setCustomListBusy(busy) {
     $("custom-wordlist-" + id).disabled = busy;
   }
   $("builder-wordlist").disabled = busy;
-  for (const button of $("custom-wordlist-menu").querySelectorAll("button")) button.disabled = busy;
+  $("builder-wordlist-trigger").disabled = busy;
+  for (const button of $("custom-wordlist-menu").querySelectorAll("button")) {
+    button.disabled = busy || button.dataset.optionDisabled === "true";
+  }
 }
 function showCustomListMessage(text, isError = false) {
   const msg = $("custom-wordlist-message");
@@ -4265,10 +4290,10 @@ function customListMenuIcon(type) {
 function positionCustomListMenu() {
   const menu = $("custom-wordlist-menu");
   if (menu.hidden) return;
-  const trigger = $("builder-wordlist");
+  const trigger = $("builder-wordlist-trigger");
   const rect = trigger.getBoundingClientRect();
   const gutter = 8;
-  const width = Math.min(352, window.innerWidth - gutter * 2);
+  const width = Math.min(Math.max(rect.width, 320), window.innerWidth - gutter * 2);
   menu.style.width = `${width}px`;
   menu.style.left = `${Math.max(gutter, Math.min(rect.left, window.innerWidth - width - gutter))}px`;
   const below = rect.bottom + 4;
@@ -4281,23 +4306,25 @@ function closeCustomListMenu(focusTrigger = true) {
   const menu = $("custom-wordlist-menu");
   if (menu.hidden) return;
   menu.hidden = true;
-  $("builder-wordlist").setAttribute("aria-expanded", "false");
-  if (focusTrigger) $("builder-wordlist").focus();
+  $("builder-wordlist-trigger").setAttribute("aria-expanded", "false");
+  if (focusTrigger) $("builder-wordlist-trigger").focus();
 }
 
 async function openCustomListMenu({ focus = true, last = false } = {}) {
-  if (simpleMode || customListBusy || $("custom-wordlist-panel").open) {
+  if (customListBusy || $("custom-wordlist-panel").open) {
     syncBuilderValues();
     return;
   }
-  setCustomListBusy(true);
-  try { await refreshCustomLists(); }
-  catch (err) { showBuilderMsg(err.message); syncBuilderValues(); return; }
-  finally { setCustomListBusy(false); }
+  if (!simpleMode) {
+    setCustomListBusy(true);
+    try { await refreshCustomLists(); }
+    catch (err) { showBuilderMsg(err.message); syncBuilderValues(); return; }
+    finally { setCustomListBusy(false); }
+  }
   syncBuilderOptions();
   const menu = $("custom-wordlist-menu");
   menu.hidden = false;
-  $("builder-wordlist").setAttribute("aria-expanded", "true");
+  $("builder-wordlist-trigger").setAttribute("aria-expanded", "true");
   positionCustomListMenu();
   if (!focus) return;
   const items = [...menu.querySelectorAll("button")];
@@ -4305,55 +4332,102 @@ async function openCustomListMenu({ focus = true, last = false } = {}) {
   (last ? items.at(-1) : checked || items[0])?.focus();
 }
 
+function appendBuilderWordlistOption(menu, option) {
+  const choose = document.createElement("button");
+  choose.type = "button";
+  choose.className = "custom-wordlist-menu-select";
+  choose.setAttribute("role", "menuitemradio");
+  choose.setAttribute("aria-checked", String(
+    !activeCustomList() && !showsEditorWordlist() && option.value === $("builder-wordlist").value));
+  choose.dataset.optionDisabled = String(option.disabled);
+  choose.disabled = customListBusy || option.disabled;
+  choose.textContent = option.textContent;
+  choose.addEventListener("click", () => {
+    closeCustomListMenu();
+    $("builder-wordlist").value = option.value;
+    $("builder-wordlist").dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  menu.appendChild(choose);
+}
+
+function appendCustomListMenuHeading(menu, text) {
+  const heading = document.createElement("div");
+  heading.className = "custom-wordlist-menu-heading";
+  heading.setAttribute("role", "presentation");
+  heading.textContent = text;
+  menu.appendChild(heading);
+}
+
 function renderCustomListMenu() {
   const menu = $("custom-wordlist-menu");
   menu.replaceChildren();
-  for (const list of customLists) {
-    const row = document.createElement("div");
-    row.className = "custom-wordlist-menu-row";
-    const choose = document.createElement("button");
-    choose.type = "button";
-    choose.className = "custom-wordlist-menu-select";
-    choose.setAttribute("role", "menuitemradio");
-    choose.setAttribute("aria-label", list.name);
-    choose.setAttribute("aria-checked", String(list.id === activeCustomListId));
-    choose.textContent = list.name;
-    choose.addEventListener("click", () => {
-      selectCustomList(list.id);
+  if (!simpleMode) {
+    appendCustomListMenuHeading(menu, "自作リスト");
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "custom-wordlist-menu-new";
+    add.setAttribute("role", "menuitem");
+    add.textContent = "＋ 新しいリスト";
+    add.addEventListener("click", () => {
       closeCustomListMenu();
+      openCustomList();
     });
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "custom-wordlist-menu-action";
-    edit.setAttribute("role", "menuitem");
-    edit.setAttribute("aria-label", `「${list.name}」を編集`);
-    edit.appendChild(customListMenuIcon("edit"));
-    edit.addEventListener("click", () => {
-      closeCustomListMenu();
-      openCustomList(list.id);
-    });
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "custom-wordlist-menu-action custom-wordlist-menu-delete";
-    remove.setAttribute("role", "menuitem");
-    remove.setAttribute("aria-label", `「${list.name}」を削除`);
-    remove.appendChild(customListMenuIcon("delete"));
-    remove.addEventListener("click", async () => {
-      if (await deleteCustomList(list)) closeCustomListMenu();
-    });
-    row.append(choose, edit, remove);
-    menu.appendChild(row);
+    menu.appendChild(add);
+    if (showsEditorWordlist()) {
+      const editorList = document.createElement("button");
+      editorList.type = "button";
+      editorList.className = "custom-wordlist-menu-select";
+      editorList.setAttribute("role", "menuitemradio");
+      editorList.setAttribute("aria-checked", "true");
+      editorList.textContent = EDITOR_WORDLIST_LABEL;
+      editorList.addEventListener("click", () => closeCustomListMenu());
+      menu.appendChild(editorList);
+    }
+    for (const list of customLists) {
+      const row = document.createElement("div");
+      row.className = "custom-wordlist-menu-row";
+      const choose = document.createElement("button");
+      choose.type = "button";
+      choose.className = "custom-wordlist-menu-select";
+      choose.setAttribute("role", "menuitemradio");
+      choose.setAttribute("aria-label", list.name);
+      choose.setAttribute("aria-checked", String(list.id === activeCustomListId));
+      choose.textContent = list.name;
+      choose.addEventListener("click", () => {
+        selectCustomList(list.id);
+        closeCustomListMenu();
+      });
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "custom-wordlist-menu-action";
+      edit.setAttribute("role", "menuitem");
+      edit.setAttribute("aria-label", `「${list.name}」を編集`);
+      edit.appendChild(customListMenuIcon("edit"));
+      edit.addEventListener("click", () => {
+        closeCustomListMenu();
+        openCustomList(list.id);
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "custom-wordlist-menu-action custom-wordlist-menu-delete";
+      remove.setAttribute("role", "menuitem");
+      remove.setAttribute("aria-label", `「${list.name}」を削除`);
+      remove.appendChild(customListMenuIcon("delete"));
+      remove.addEventListener("click", async () => {
+        if (await deleteCustomList(list)) closeCustomListMenu();
+      });
+      row.append(choose, edit, remove);
+      menu.appendChild(row);
+    }
   }
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "custom-wordlist-menu-new";
-  add.setAttribute("role", "menuitem");
-  add.textContent = "＋ 新しいリスト";
-  add.addEventListener("click", () => {
-    closeCustomListMenu();
-    openCustomList();
-  });
-  menu.appendChild(add);
+  for (const child of $("builder-wordlist").children) {
+    if (child.tagName === "OPTGROUP") {
+      appendCustomListMenuHeading(menu, child.label);
+      for (const option of child.children) appendBuilderWordlistOption(menu, option);
+    } else if (child.value !== EDITOR_WORDLIST_VALUE) {
+      appendBuilderWordlistOption(menu, child);
+    }
+  }
   positionCustomListMenu();
 }
 async function checkCustomList(form) {
@@ -4395,7 +4469,8 @@ $("custom-wordlist-menu").addEventListener("keydown", (event) => {
 });
 document.addEventListener("click", (event) => {
   const menu = $("custom-wordlist-menu");
-  if (!menu.hidden && !menu.contains(event.target) && event.target !== $("builder-wordlist")) {
+  if (!menu.hidden && !menu.contains(event.target)
+      && !$("builder-wordlist-trigger").contains(event.target)) {
     closeCustomListMenu(false);
   }
 });
@@ -4419,7 +4494,7 @@ $("custom-wordlist-panel").addEventListener("close", () => {
   const opener = customListOpener;
   customListOpener = null;
   if (opener?.isConnected && !opener.disabled && opener.getClientRects().length) opener.focus();
-  else $("builder-wordlist").focus();
+  else $("builder-wordlist-trigger").focus();
 });
 $("custom-wordlist-save").addEventListener("click", async () => {
   const name = $("custom-wordlist-name").value.trim();
@@ -4551,12 +4626,8 @@ function wordlistOptionByName(name) {
 let builderReady = false;   // 初期化済みか(loadConfigはAPIキー変更で再実行される)
 let builderLive = false;    // 初期選択が決まったか(それまでプレビューは出さない)
 
-// エディタの中で書いた自作リスト(ORIGINAL / 旧 custom:<sid>)を使っているあいだ、
-// 単語リストの正本(#wordlist)は空になる。そのままだとカードのプルダウンが
-// 「未選択」に見えて何に空耳させているのか分からないので、そのときだけこの合成の
-// 選択肢を末尾に足して選択済みに見せる(名前付きリストに戻ったら取り除く)。
-// value は正本のどの選択肢とも重ならない印。ユーザーがこれを選び直しても正本は
-// 触らず表示を戻すだけにして、「何も選ばない」に落ちないようにする。
+// エディタの中で書いた自作リスト(ORIGINAL / 旧 custom:<sid>)の表示名。
+// 単語リストの正本(#wordlist)は空になるため、統合メニューのトリガーと選択行に使う。
 const EDITOR_WORDLIST_VALUE = "__editor__";
 const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";
 const OWN_SONG_VALUE = "__own_song__";
@@ -4568,35 +4639,18 @@ function showsEditorWordlist() {
   return !currentWordlistName() && usesEditorWordlist();
 }
 
-// 詳細設定側の選択肢をカードのプルダウンへ複製する(optgroupごとそのまま)。
+// 詳細設定側の選択肢を統合メニュー用の非表示selectへ複製する(optgroupごとそのまま)。
 // サンプル一覧・単語リスト一覧が揃うたびに呼ばれる。
 function syncBuilderOptions() {
   $("builder-sample").innerHTML = $("sample-select").innerHTML;
   const wl = $("wordlist-select");
   $("builder-wordlist").innerHTML = wl.innerHTML;
-  if (!simpleMode) {
-    const group = document.createElement("optgroup");
-    group.label = "自作リスト";
-    const selected = activeCustomList();
-    if (selected) {
-      const option = document.createElement("option");
-      option.value = CUSTOM_LIST_PREFIX + selected.id;
-      option.textContent = selected.name;
-      group.appendChild(option);
-    }
-    const menu = document.createElement("option");
-    menu.value = CUSTOM_LIST_MENU_VALUE;
-    menu.textContent = "自作リストを選ぶ…";
-    group.appendChild(menu);
-    $("builder-wordlist").appendChild(group);
-  }
   // 同梱リストがない構成でも、自作リストは選択・登録できる。
   $("builder-wordlist-field").hidden = wl.hidden && simpleMode;
   syncBuilderValues();
 }
 
-// 正本の選択をカードのプルダウンへ写す(カード側の change は発火しない)。
-// 自作リストのあいだだけ合成の選択肢を足し、抜けたら取り除く。
+// 正本の選択をカードのトリガーへ写す(カード側の change は発火しない)。
 function syncBuilderValues() {
   const file = ownSongFile();
   $("song-upload-filename").textContent = file ? file.name : "";
@@ -4611,17 +4665,12 @@ function syncBuilderValues() {
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const selectedCustom = activeCustomList();
   const own = !selectedCustom && showsEditorWordlist();
-  const synth = [...card.options].find((o) => o.value === EDITOR_WORDLIST_VALUE);
-  if (own && !synth) {
-    const o = document.createElement("option");
-    o.value = EDITOR_WORDLIST_VALUE;
-    o.textContent = EDITOR_WORDLIST_LABEL;
-    card.appendChild(o);
-  } else if (!own && synth) {
-    synth.remove();
-  }
-  card.value = selectedCustom ? CUSTOM_LIST_PREFIX + selectedCustom.id
-    : own ? EDITOR_WORDLIST_VALUE : (wl.hidden ? "" : wl.value);
+  if (selectedCustom || own) card.selectedIndex = -1;
+  else card.value = wl.hidden ? "" : wl.value;
+  const selectedLabel = selectedCustom?.name || (own ? EDITOR_WORDLIST_LABEL : "")
+    || card.selectedOptions[0]?.textContent || "単語リストを選ぶ…";
+  $("builder-wordlist-trigger-label").textContent = selectedLabel;
+  $("builder-wordlist-trigger").title = selectedLabel;
   renderCustomListMenu();
   updateNoncommercialFanworkNotice();
 }
@@ -5047,19 +5096,20 @@ $("builder-sample").addEventListener("change", () => {
 });
 $("builder-wordlist").addEventListener("change", () => {
   const v = $("builder-wordlist").value;
-  if (v === CUSTOM_LIST_MENU_VALUE) { openCustomListMenu(); return; }
-  // 自作リストのメニューを開いたまま通常の単語リストへ選び直した場合も、
-  // native select 自体のクリックは外側クリック扱いにならないため明示的に閉じる。
-  closeCustomListMenu(false);
-  if (v.startsWith(CUSTOM_LIST_PREFIX)) { selectCustomList(v.slice(CUSTOM_LIST_PREFIX.length)); return; }
-  // 合成の選択肢(自作リスト)は正本に対応する値を持たない。選ばれても正本には
-  // 何も書かず表示だけ戻す(いまの自作リストのまま=実質なにも起きない)
-  if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }
   const sel = $("wordlist-select");
   sel.value = v;
   sel.dispatchEvent(new Event("change", { bubbles: true }));
   clearEditorFile();   // 取り込み済みの替え歌JSONは別のリストから作られたもの
   schedulePreview();
+});
+$("builder-wordlist-trigger").addEventListener("click", () => {
+  if ($("custom-wordlist-menu").hidden) openCustomListMenu({ focus: false });
+  else closeCustomListMenu();
+});
+$("builder-wordlist-trigger").addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  openCustomListMenu({ last: event.key === "ArrowUp" });
 });
 
 // 正本(詳細設定の曲・隠しの単語リスト)が変わったらカードのプルダウンと

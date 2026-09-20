@@ -2052,31 +2052,33 @@ def test_card_selects_mirror_the_canonical_form():
 
 
 def test_custom_wordlists_use_the_soramimic_row_menu():
-    """自作リストは選択・編集・削除を同じ行にまとめ、新規作成を末尾に置く。"""
+    """統合メニューに組み込みリストと、自作リストの作成・行操作をまとめる。"""
     html = INDEX.read_text(encoding="utf-8")
     script = _script()
     assert 'id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"' in html
     assert 'id="custom-wordlist-edit"' not in html
 
-    options = _function_body(script, "function syncBuilderOptions()")
-    assert 'menu.textContent = "自作リストを選ぶ…";' in options
-    assert "for (const list of customLists)" not in options
+    assert 'id="builder-wordlist-trigger" class="builder-wordlist-trigger"' in html
+    assert '<select id="builder-wordlist" hidden aria-hidden="true" tabindex="-1"></select>' in html
 
     render = _function_body(script, "function renderCustomListMenu()")
+    assert 'for (const child of $("builder-wordlist").children)' in render
+    assert "appendBuilderWordlistOption(menu, option);" in render
+    assert 'appendCustomListMenuHeading(menu, "自作リスト");' in render
+    assert 'add.textContent = "＋ 新しいリスト";' in render
     assert 'row.className = "custom-wordlist-menu-row";' in render
     assert 'choose.setAttribute("role", "menuitemradio");' in render
     assert 'choose.setAttribute("aria-checked", String(list.id === activeCustomListId));' in render
     assert 'edit.setAttribute("aria-label", `「${list.name}」を編集`);' in render
     assert 'remove.setAttribute("aria-label", `「${list.name}」を削除`);' in render
-    assert 'add.textContent = "＋ 新しいリスト";' in render
 
     opening = _function_body(script, "async function openCustomListMenu(")
     assert 'menu.querySelector("[role=\'menuitemradio\'][aria-checked=\'true\']")' in opening
-    assert '$("builder-wordlist").setAttribute("aria-expanded", "true");' in opening
-    wiring = script[script.index('$("builder-wordlist").addEventListener("change"') :]
+    assert '$("builder-wordlist-trigger").setAttribute("aria-expanded", "true");' in opening
+    wiring = script[script.index('$("builder-wordlist-trigger").addEventListener("click"') :]
     wiring = wiring[: wiring.index('// 正本(詳細設定の曲')]
-    assert "if (v === CUSTOM_LIST_MENU_VALUE) { openCustomListMenu(); return; }" in wiring
-    assert "closeCustomListMenu(false);" in wiring
+    assert 'openCustomListMenu({ focus: false });' in wiring
+    assert 'event.key !== "ArrowDown" && event.key !== "ArrowUp"' in wiring
     assert 'if (event.key === "Escape")' in script
     assert 'if (event.key === "ArrowDown")' in script
 
@@ -2411,7 +2413,7 @@ def test_audio_sample_skips_midi_check():
 
 
 def test_card_wordlist_select_shows_the_editor_own_list():
-    """エディタの中で自作リストを使っているあいだは、合成の選択肢で選択済みに見せる。
+    """エディタの中で自作リストを使っているあいだも、トリガーとメニューに表示する。
 
     自作リスト(ORIGINAL/csvText)のときは正本 #wordlist が空になるので、その
     ままだとカードのプルダウンが「未選択」になって何に空耳させているか分からない。
@@ -2424,11 +2426,12 @@ def test_card_wordlist_select_shows_the_editor_own_list():
     assert "return !currentWordlistName() && usesEditorWordlist();" in shows
     body = _function_body(script, "function syncBuilderValues()")
     assert "const own = !selectedCustom && showsEditorWordlist();" in body
-    assert "card.appendChild(o);" in body     # 自作リストのあいだだけ足す
-    assert "synth.remove();" in body          # 名前付きリストに戻ったら取り除く
-    assert 'card.value = selectedCustom ? CUSTOM_LIST_PREFIX + selectedCustom.id' in body
-    # 選び直されても正本は触らない(「何も選ばない」に落とさない)
-    assert "if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }" in script
+    assert "if (selectedCustom || own) card.selectedIndex = -1;" in body
+    assert 'selectedCustom?.name || (own ? EDITOR_WORDLIST_LABEL : "")' in body
+    assert '$("builder-wordlist-trigger-label").textContent = selectedLabel;' in body
+    render = _function_body(script, "function renderCustomListMenu()")
+    assert "if (showsEditorWordlist())" in render
+    assert 'editorList.textContent = EDITOR_WORDLIST_LABEL;' in render
 def test_layout_preview_image_needs_a_wordlist_name():
     """レイアウトプレビューの代表画像は、単語リスト名が空なら取りに行かない。
 
