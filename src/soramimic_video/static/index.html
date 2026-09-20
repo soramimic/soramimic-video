@@ -621,11 +621,18 @@
     padding: .8rem; border: 1px dashed var(--border); border-radius: 10px;
     background: var(--panel-2);
   }
-  #song-upload-button {
+  .song-upload-actions {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .5rem;
+  }
+  #song-upload-button, #song-record-button {
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
     width: 100%; min-height: 2.75rem;
     border-color: var(--accent); color: var(--link); font-weight: 700;
   }
+  #song-record-button.is-recording {
+    border-color: #ef4444; color: #ef4444;
+  }
+  #song-record-status { font-variant-numeric: tabular-nums; }
   .audio-upload-entry .hint { margin: 0; }
   .upload-use-notice {
     margin-top: .65rem; padding: .65rem .75rem; border: 1px solid var(--border);
@@ -778,10 +785,17 @@
   <span id="open-editor-msg" class="error"></span>
   <div id="song-upload-panel">
     <div class="audio-upload-entry" id="song-upload-entry">
-      <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
-        <span aria-hidden="true">＋</span>曲をアップロード
-      </button>
+      <div class="song-upload-actions">
+        <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
+          <span aria-hidden="true">＋</span>曲をアップロード
+        </button>
+        <button type="button" id="song-record-button" aria-describedby="song-record-status"
+          aria-pressed="false" hidden>
+          <span aria-hidden="true">●</span><span id="song-record-label">録音する</span>
+        </button>
+      </div>
       <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
+      <p class="hint" id="song-record-status" role="status" hidden></p>
       <div class="song-upload-selection" id="song-upload-selection" hidden>
         <span id="song-upload-filename" role="status"></span>
         <button type="button" id="song-upload-clear" aria-label="選択した曲を解除"
@@ -1514,6 +1528,7 @@ let launchWordlists = [];
 // Web UIの歌声はVOICEVOX 波音リツ(ノーマル・歌唱)に固定する。
 let fixedVoicevoxStyle = 6000;
 let maxAudioUploadBytes = 200 * 1024 * 1024;
+let maxSongSeconds = 7 * 60;
 let audioInputReady = false;
 
 async function loadConfig() {
@@ -1528,10 +1543,15 @@ async function loadConfig() {
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
+  const configuredMaxSongSeconds = Number(conf.max_song_seconds);
+  if (Number.isFinite(configuredMaxSongSeconds) && configuredMaxSongSeconds >= 0) {
+    maxSongSeconds = configuredMaxSongSeconds;
+  }
   audioInputReady = conf.audio_input === true;
   $("song-upload-hint").textContent = audioInputReady
     ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
     : "XF MIDIに対応";
+  syncRecordingUi();
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
   // APIキー欄は詳細設定の中(先頭)にあるので、キー待ちのときは折りたたみを
@@ -3245,8 +3265,10 @@ const samplesReady = loadSamples();
 let midiSampleId = "";
 let sampleApplySeq = 0;
 let songInputMode = "upload";
+let recordedSongFile = null;
+let preserveRecordedSongFileOnChange = false;
 function ownSongFile() {
-  return $("midi").files[0] || null;
+  return $("midi").files[0] || recordedSongFile;
 }
 
 function ownSongKind(file = ownSongFile()) {
@@ -3285,6 +3307,169 @@ function rejectOwnSongFile(message) {
   syncBuilderValues();
   schedulePreview(true);
   showBuilderMsg(message);
+}
+
+function recordingSupported() {
+  return window.isSecureContext
+    && typeof window.MediaRecorder === "function"
+    && typeof navigator.mediaDevices?.getUserMedia === "function";
+}
+
+function preferredRecordingMimeType() {
+  if (typeof window.MediaRecorder !== "function") return "";
+  const candidates = [
+    "audio/mp4;codecs=mp4a.40.2",
+    "audio/mp4",
+    "audio/webm;codecs=opus",
+    "audio/webm",
+  ];
+  if (typeof window.MediaRecorder.isTypeSupported !== "function") return "";
+  return candidates.find((mimeType) => window.MediaRecorder.isTypeSupported(mimeType)) || "";
+}
+
+function recordingExtension(mimeType) {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized.includes("mp4")) return ".m4a";
+  if (normalized.includes("ogg")) return ".ogg";
+  return ".webm";
+}
+
+function recordingFilename(mimeType, now = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+    + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `recording-${stamp}${recordingExtension(mimeType)}`;
+}
+
+function recordedFile(chunks, mimeType, now = new Date()) {
+  const blob = new Blob(chunks, { type: mimeType });
+  return new File([blob], recordingFilename(mimeType, now), { type: mimeType });
+}
+
+let activeSongRecording = null;
+let recordingStartSequence = 0;
+
+function syncRecordingUi() {
+  const button = $("song-record-button");
+  const recording = activeSongRecording?.recorder?.state === "recording";
+  button.hidden = !recording && (!audioInputReady || !recordingSupported() || !!ownSongFile());
+  button.disabled = activeSongRecording?.stopping === true;
+  button.classList.toggle("is-recording", recording);
+  button.setAttribute("aria-pressed", String(recording));
+  $("song-record-label").textContent = recording ? "録音を停止" : "録音する";
+  $("song-upload-button").hidden = recording || !!ownSongFile();
+}
+
+function setRecordingStatus(message) {
+  $("song-record-status").textContent = message;
+  $("song-record-status").hidden = !message;
+}
+
+function releaseSongRecording(state) {
+  clearInterval(state.timer);
+  clearTimeout(state.limitTimer);
+  state.stream.getTracks().forEach((track) => track.stop());
+}
+
+function finishSongRecording(state) {
+  if (state.finished) return;
+  state.finished = true;
+  releaseSongRecording(state);
+  if (activeSongRecording === state) activeSongRecording = null;
+  if (state.discard) {
+    setRecordingStatus("");
+    syncRecordingUi();
+    return;
+  }
+  if (state.error) {
+    setRecordingStatus(state.error);
+    syncRecordingUi();
+    return;
+  }
+  const mimeType = state.recorder.mimeType || state.mimeType;
+  const file = recordedFile(state.chunks, mimeType);
+  if (!file.size) {
+    setRecordingStatus("録音データを作れませんでした。もう一度お試しください。");
+    syncRecordingUi();
+    return;
+  }
+  setRecordedSongFile(file);
+  if (ownSongFile() === file) {
+    setRecordingStatus("録音した音声を曲としてセットしました。");
+  }
+}
+
+function stopSongRecording(discard = false) {
+  recordingStartSequence += 1;
+  const state = activeSongRecording;
+  if (!state) return;
+  state.discard ||= discard;
+  state.stopping = true;
+  clearInterval(state.timer);
+  clearTimeout(state.limitTimer);
+  if (!discard) setRecordingStatus("録音を処理しています…");
+  syncRecordingUi();
+  if (state.recorder.state === "inactive") finishSongRecording(state);
+  else state.recorder.stop();
+}
+
+async function startSongRecording() {
+  if (activeSongRecording) {
+    stopSongRecording();
+    return;
+  }
+  if (!audioInputReady || !recordingSupported()) return;
+  const request = ++recordingStartSequence;
+  setRecordingStatus("マイクの使用を許可してください…");
+  $("song-record-button").disabled = true;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (request !== recordingStartSequence || songInputMode !== "upload") {
+      stream.getTracks().forEach((track) => track.stop());
+      setRecordingStatus("");
+      syncRecordingUi();
+      return;
+    }
+    const mimeType = preferredRecordingMimeType();
+    const recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const state = {
+      recorder, stream, mimeType, chunks: [], startedAt: Date.now(),
+      timer: null, limitTimer: null, stopping: false, discard: false, error: "",
+      finished: false,
+    };
+    activeSongRecording = state;
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) state.chunks.push(event.data);
+    });
+    recorder.addEventListener("error", () => {
+      state.error = "録音中にエラーが発生しました。もう一度お試しください。";
+      stopSongRecording();
+    });
+    recorder.addEventListener("stop", () => finishSongRecording(state), { once: true });
+    // Safariではtimeslice付きstartの対応が端末差になり得る。停止時のdataavailable
+    // だけで十分なので引数なしで始め、経過表示は独立したタイマーで更新する。
+    recorder.start();
+    const updateElapsed = () => {
+      const seconds = Math.max(0, Math.floor((Date.now() - state.startedAt) / 1000));
+      const minutes = Math.floor(seconds / 60);
+      setRecordingStatus(`録音中 ${minutes}:${String(seconds % 60).padStart(2, "0")}`);
+    };
+    updateElapsed();
+    state.timer = setInterval(updateElapsed, 1000);
+    if (maxSongSeconds > 0) {
+      state.limitTimer = setTimeout(() => stopSongRecording(), maxSongSeconds * 1000);
+    }
+    syncRecordingUi();
+  } catch (error) {
+    stream?.getTracks().forEach((track) => track.stop());
+    const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
+    setRecordingStatus(denied
+      ? "マイクを使用できません。ブラウザの設定でマイクを許可してください。"
+      : "録音を開始できませんでした。もう一度お試しください。");
+    $("song-record-button").disabled = false;
+    syncRecordingUi();
+  }
 }
 
 function automaticLyricsEnabled() {
@@ -3423,6 +3608,7 @@ $("advanced").querySelector(":scope > summary").addEventListener("click", (event
 
 function switchSongInputMode(mode) {
   if (mode === songInputMode) return;
+  stopSongRecording(true);
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
   $("sample-select").value = "";
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
@@ -3450,12 +3636,33 @@ $("song-source-switch").addEventListener("click", () => {
 });
 
 $("song-upload-button").addEventListener("click", () => $("midi").click());
+$("song-record-button").addEventListener("click", startSongRecording);
 function setOwnSongFile(file) {
   const transfer = new DataTransfer();
   transfer.items.add(file);
   $("midi").files = transfer.files;
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
 }
+
+function setRecordedSongFile(file) {
+  $("midi").value = "";
+  recordedSongFile = file;
+  preserveRecordedSongFileOnChange = true;
+  try {
+    $("midi").dispatchEvent(new Event("change", { bubbles: true }));
+  } finally {
+    preserveRecordedSongFileOnChange = false;
+  }
+}
+
+// 実ファイルを選び直したときや既存のクリア処理が change を送ったときは、
+// FileListに入らないページ内録音のFileも同時に破棄する。
+$("midi").addEventListener("change", () => {
+  if (!preserveRecordedSongFileOnChange) {
+    recordedSongFile = null;
+    recordingStartSequence += 1;
+  }
+});
 
 // PCでは曲入力欄全体をドロップ先にする。複数ファイルを暗黙に先頭だけ使うと
 // 選択したつもりの曲と違う事故になるため、必ず1ファイルに絞ってもらう。
@@ -3494,6 +3701,7 @@ songUploadEntry.addEventListener("drop", (event) => {
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
   if (!file) return;
+  setRecordingStatus("");
   const kind = ownSongKind(file);
   if (!kind) {
     rejectOwnSongFile("XF MIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
@@ -3535,8 +3743,10 @@ $("song-upload-clear").addEventListener("click", () => {
   clearAudioInput();
   syncBuilderValues();
   schedulePreview(true);
+  setRecordingStatus("");
   $("song-upload-button").focus();
 });
+window.addEventListener("pagehide", () => stopSongRecording(true));
 // #lyrics がどのサンプルの配信値かと、その時点の未編集値。リロード時に
 // 「前回の標準歌詞」だけ最新版へ更新し、ユーザーが手で直した歌詞は残すために使う。
 // null はこの情報を保存する前の旧版状態で、標準歌詞とみなし一度最新版へ移行する。
@@ -4201,6 +4411,7 @@ function syncBuilderValues() {
   $("song-upload-selection").hidden = !file;
   $("song-upload-button").hidden = !!file;
   $("song-upload-hint").hidden = !!file;
+  syncRecordingUi();
   const sample = $("sample-select");
   showSongInputMode(sample.value ? "sample" : file ? "upload" : songInputMode);
   updateAdvancedSettingsAvailability();
