@@ -142,6 +142,17 @@ def test_image_sections_make_their_scope_explicit(client):
     assert "動画内で使用される画像に関するご連絡・ご要望は、" in response.text
 
 
+def test_guidelines_include_disclaimer(client):
+    browser, _ = client
+    response = browser.get("/guidelines")
+
+    assert '<h2 id="disclaimer-title">免責事項</h2>' in response.text
+    assert "本サービスおよび生成物の正確性、完全性、特定目的への適合性" in response.text
+    assert "当方の故意または重大な過失による場合を除き" in response.text
+    assert "生成物の利用に必要な権利・許諾は、利用者自身で" in response.text
+    assert '<a href="#disclaimer-title">免責事項</a>' in response.text
+
+
 def test_private_guidelines_do_not_claim_public_retention_policy(client):
     browser, _ = client
     response = browser.get("/guidelines")
