@@ -77,6 +77,7 @@ from .layout import (
 from .soramimic_engine import start_warmup_thread
 from .thumbnail_preview import RateLimiter, preview_cache_dir
 from .transcribe import DEFAULT_WHISPER_MODEL
+from .usage_metrics import UsageMetrics
 from .wordlist_catalog import (
     default_launch_wordlists,
     load_wordlist_image_policies,
@@ -155,6 +156,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EDITOR_DIST = REPO_ROOT / "external" / "soramimic" / "frontend" / "dist"
 STATUS_FILENAME = "status.json"
 THROUGHPUT_FILENAME = "synthesize-throughput.json"
+USAGE_METRICS_FILENAME = "usage-metrics.json"
+QUEUE_WAIT_BUCKETS = (1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0)
+JOB_DURATION_BUCKETS = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0)
+STAGE_DURATION_BUCKETS = (1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0)
 # アップロードされた自作単語リストを置くジョブ内サブディレクトリ。
 # ファイル名(<表示名>.csv)は editor 連携・サムネのリスト名表示に効くので残す。
 WORDLIST_DIRNAME = "wordlist"
@@ -656,6 +661,9 @@ class Job:
     # A cleanup failure is never treated as success. Keep it durable so startup
     # and the periodic privacy scrubber continue retrying after transient I/O errors.
     cleanup_pending: bool = False
+    # 匿名集計への二重計上を防ぐ運用状態。利用者や入力内容は含めない。
+    usage_finished_recorded: bool = False
+    usage_outputs_recorded: set[str] = field(default_factory=set)
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -1509,8 +1517,9 @@ class JobManager:
     def __init__(self, jobs_dir: Path, config: dict[str, Any]) -> None:
         self.jobs_dir = jobs_dir
         self.config = config
+        self.usage_metrics: UsageMetrics = config["usage_metrics"]
         self.jobs: dict[str, Job] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._queue: queue.Queue[Job] = queue.Queue()
         self._pending_deletions: dict[str, Path] = {}
         self._editor_cleanup_failed = False
@@ -1555,9 +1564,14 @@ class JobManager:
                     data.get("generation_quality_warning", False)
                 ),
                 cleanup_pending=bool(data.get("cleanup_pending", False)),
+                usage_finished_recorded=bool(
+                    data.get("usage_finished_recorded", False)
+                ),
+                usage_outputs_recorded=set(data.get("usage_outputs_recorded", [])),
             )
             if data.get("created_at"):
                 job.created_at = datetime.fromisoformat(data["created_at"]).timestamp()
+            job.started_at = data.get("started_at")
             job.finished_at = data.get("finished_at")
             if job.status in ("queued", "running"):
                 job.status = "error"
@@ -1599,6 +1613,8 @@ class JobManager:
         for job in list(self.jobs.values()):
             if pending_only and not job.cleanup_pending:
                 continue
+            if job.status in {"done", "error", "canceled"}:
+                self._record_finished_usage(job, failed_stage=job.stage)
             if job.status in {"error", "canceled"}:
                 self._cleanup_failed_artifacts(job)
                 self._save(job)
@@ -1617,6 +1633,125 @@ class JobManager:
                 job.error = f"完了後の一時データ削除に失敗しました: {exc}"
                 job.status = "error"
                 self._cleanup_failed_artifacts(job)
+            self._save(job)
+
+    @staticmethod
+    def _usage_dimensions(params: dict[str, Any]) -> dict[str, str]:
+        input_kind = str(params.get("input_kind") or "unknown")
+        if input_kind not in {"audio", "midi"}:
+            input_kind = "unknown"
+        synthesizer = str(params.get("synthesizer") or "unknown")
+        if synthesizer not in {"voicevox", "neutrino"}:
+            synthesizer = "unknown"
+        wordlist = str(params.get("wordlist") or "")
+        if wordlist not in launch_wordlist_names():
+            wordlist = "custom" if wordlist else "none"
+        else:
+            # Catalog names are operator-controlled, but normalize them before
+            # they become Prometheus label values so a future display-oriented
+            # name can never break job submission or create free-text metrics.
+            wordlist = re.sub(r"[^a-z0-9_.-]+", "_", wordlist.lower()).strip("_")
+            wordlist = wordlist[:64] or "catalog"
+        try:
+            preview = float(params.get("preview") or 0)
+        except (TypeError, ValueError):
+            preview = 0.0
+        return {
+            "input_kind": input_kind,
+            "mode": "preview" if preview > 0 else "full",
+            "source": "sample" if params.get("sample_id") else "upload",
+            "synthesizer": synthesizer,
+            "wordlist": wordlist,
+        }
+
+    def _record_submitted_usage(self, job: Job) -> None:
+        self.usage_metrics.increment(
+            "soramimic_usage_jobs_submitted_total",
+            self._usage_dimensions(job.params),
+        )
+
+    def _record_finished_usage(self, job: Job, *, failed_stage: str | None) -> None:
+        if job.usage_finished_recorded or job.status not in {
+            "done",
+            "error",
+            "canceled",
+        }:
+            return
+        dimensions = self._usage_dimensions(job.params)
+        stage = str(failed_stage or "none")
+        if re.fullmatch(r"[a-z][a-z0-9-]{0,31}", stage) is None:
+            stage = "unknown"
+        reason = "success"
+        if job.status == "canceled":
+            reason = "canceled"
+        elif job.status == "error":
+            if job.cleanup_pending:
+                reason = "privacy_cleanup"
+            elif job.error and "サーバー再起動" in job.error:
+                reason = "restart"
+            elif stage not in {"none", "unknown"}:
+                reason = "stage_" + stage.replace("-", "_")
+            else:
+                reason = "internal"
+        self.usage_metrics.increment(
+            "soramimic_usage_jobs_finished_total",
+            {
+                "input_kind": dimensions["input_kind"],
+                "outcome": job.status,
+                "reason": reason,
+            },
+        )
+        if job.started_at is not None:
+            self.usage_metrics.observe(
+                "soramimic_usage_queue_wait_seconds",
+                max(0.0, job.started_at - job.created_at),
+                QUEUE_WAIT_BUCKETS,
+                {"input_kind": dimensions["input_kind"]},
+            )
+        if job.started_at is not None and job.finished_at is not None:
+            self.usage_metrics.observe(
+                "soramimic_usage_job_duration_seconds",
+                max(0.0, job.finished_at - job.started_at),
+                JOB_DURATION_BUCKETS,
+                {
+                    "input_kind": dimensions["input_kind"],
+                    "outcome": job.status,
+                },
+            )
+        for completed_stage in job.stages:
+            stage_name = str(completed_stage.get("name") or "unknown")
+            if re.fullmatch(r"[a-z][a-z0-9-]{0,31}", stage_name) is None:
+                stage_name = "unknown"
+            try:
+                seconds = float(completed_stage["seconds"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            self.usage_metrics.observe(
+                "soramimic_usage_stage_duration_seconds",
+                seconds,
+                STAGE_DURATION_BUCKETS,
+                {
+                    "input_kind": dimensions["input_kind"],
+                    "stage": stage_name,
+                },
+            )
+        job.usage_finished_recorded = True
+
+    def record_output_usage(self, job: Job, action: str) -> None:
+        """Count the first successful output action for one job only."""
+        if action not in {"credits", "credits_download", "download", "playback", "thumbnail"}:
+            raise ValueError(f"unknown output usage action: {action}")
+        with self._lock:
+            if action in job.usage_outputs_recorded:
+                return
+            result_kind = (
+                "audio" if job.video and job.video.suffix == ".wav" else "video"
+            )
+            self.usage_metrics.increment(
+                "soramimic_usage_outputs_total",
+                {"action": action, "result_kind": result_kind},
+            )
+            job.usage_outputs_recorded.add(action)
             self._save(job)
 
     def create(
@@ -1684,6 +1819,7 @@ class JobManager:
                 )
             raise
         assert job is not None
+        self._record_submitted_usage(job)
         self._queue.put(job)
         return job
 
@@ -1734,11 +1870,11 @@ class JobManager:
 
     def job_dict(self, job: Job, *, with_log: bool = True) -> dict[str, Any]:
         """Serialize a job and add live queue information for queued jobs."""
-        data = job.to_dict(with_log=with_log)
-        if job.status != "queued":
-            return data
-        now = time.time()
         with self._lock:
+            data = job.to_dict(with_log=with_log)
+            if job.status != "queued":
+                return data
+            now = time.time()
             active = sorted(
                 (
                     candidate
@@ -1884,6 +2020,12 @@ class JobManager:
             data["finished_at"] = job.finished_at
         if job.cleanup_pending:
             data["cleanup_pending"] = True
+        if job.started_at:
+            data["started_at"] = job.started_at
+        if job.usage_finished_recorded:
+            data["usage_finished_recorded"] = True
+        if job.usage_outputs_recorded:
+            data["usage_outputs_recorded"] = sorted(job.usage_outputs_recorded)
         if job.video:
             # job.video が絶対パス・job.dir が相対パスの組み合わせでも落ちない
             # よう、両方を resolve してから相対化する。ジョブディレクトリ外の
@@ -1922,10 +2064,12 @@ class JobManager:
             # ワーカーは1本なので、実行中プロセス=このジョブのもの
             runproc.kill_current()
         else:
-            job.status = "canceled"
-            job.finished_at = time.time()
-            self._cleanup_failed_artifacts(job)
-            self._save(job)
+            with self._lock:
+                job.status = "canceled"
+                job.finished_at = time.time()
+                self._record_finished_usage(job, failed_stage=None)
+                self._cleanup_failed_artifacts(job)
+                self._save(job)
         return job
 
     def _cleanup_failed_artifacts(self, job: Job) -> bool:
@@ -2015,15 +2159,17 @@ class JobManager:
             try:
                 self._run_one(job)
             except Exception as exc:  # noqa: BLE001 - ワーカー存続を最優先
-                job.status = "error"
-                job.error = job.error or f"ワーカー内部エラー: {exc}"
-                job.finished_at = job.finished_at or time.time()
-                logger.exception("[job %s] ワーカー内部エラー", job.id)
-                self._cleanup_failed_artifacts(job)
-                try:
-                    self._save(job)
-                except Exception:
-                    logger.exception("[job %s] 状態の保存に失敗", job.id)
+                with self._lock:
+                    job.status = "error"
+                    job.error = job.error or f"ワーカー内部エラー: {exc}"
+                    job.finished_at = job.finished_at or time.time()
+                    logger.exception("[job %s] ワーカー内部エラー", job.id)
+                    self._cleanup_failed_artifacts(job)
+                    self._record_finished_usage(job, failed_stage=job.stage)
+                    try:
+                        self._save(job)
+                    except Exception:
+                        logger.exception("[job %s] 状態の保存に失敗", job.id)
 
     def _run_one(self, job: Job) -> None:
         if job.cancel_event.is_set():
@@ -2037,6 +2183,7 @@ class JobManager:
         job.started_at = time.time()
         runproc.set_cancel_check(job.cancel_event.is_set)
         self._save(job)
+        final_status = "error"
         try:
             job.video = run_pipeline(job, self.config)
             if job.cancel_event.is_set():
@@ -2048,11 +2195,11 @@ class JobManager:
                 job.generation_quality_warning = quality.get("status") == "warning"
             if self.config.get("scrub_private_artifacts"):
                 self._cleanup_completed_artifacts(job)
-            job.status = "done"
+            final_status = "done"
         except runproc.Cancelled:
             logger.info("[job %s] 中断されました", job.id)
             self._cleanup_failed_artifacts(job)
-            job.status = "canceled"
+            final_status = "canceled"
         except Exception as exc:  # noqa: BLE001 - ジョブ失敗はAPI応答に載せる
             if job.cancel_event.is_set():
                 # 中断でプロセスをkillした結果のエラーは「中断」として扱う
@@ -2065,15 +2212,21 @@ class JobManager:
                 logger.exception("[job %s] 失敗", job.id)
             # statusがAPIから観測可能になる前にuploadと中間物を消す。
             self._cleanup_failed_artifacts(job)
-            job.status = final_status
         finally:
             runproc.set_cancel_check(None)
-            job.stage = None
-            job.finished_at = time.time()
+            final_stage = job.stage
             logging.getLogger("soramimic_video").removeHandler(handler)
-            if job.status in ("error", "canceled"):
-                self._cleanup_failed_artifacts(job)
-            self._save(job)
+            # Publish a terminal in-memory state only after its metrics and durable
+            # status are ready.  Polling clients therefore cannot race result TTL
+            # cleanup against the final status write.
+            with self._lock:
+                job.finished_at = time.time()
+                if final_status in ("error", "canceled"):
+                    self._cleanup_failed_artifacts(job)
+                job.status = final_status
+                self._record_finished_usage(job, failed_stage=final_stage)
+                job.stage = None
+                self._save(job)
 
 
 def _require_api_key(request: Request) -> None:
@@ -2115,6 +2268,10 @@ def create_app(
     )
 
     configured_ip_hash_key = os.environ.get(IP_HASH_KEY_ENV, "").strip()
+    usage_metrics = UsageMetrics(
+        jobs_dir.resolve() / USAGE_METRICS_FILENAME,
+        enabled=is_public_mode(),
+    )
 
     config: dict[str, Any] = {
         # 単語画像はジョブをまたいで共有する(初回ジョブの動画ステージが
@@ -2147,6 +2304,9 @@ def create_app(
             else secrets.token_bytes(32)
         ),
         "ip_hash_persistent": bool(configured_ip_hash_key),
+        # 永続化するのは低カーディナリティの匿名集計値だけ。入力、IP、cookie、
+        # job/session ID、ファイル名はUsageMetricsのschema上保存できない。
+        "usage_metrics": usage_metrics,
     }
     manager = JobManager(jobs_dir, config)
     # 高コストGETの短期レート制限。セッション枠に加えてIP枠も必ず確認するため、
@@ -2199,6 +2359,7 @@ def create_app(
         expose_headers=["X-Preview-Cache", "X-Preview-Images"],
     )
     app.state.manager = manager
+    app.state.usage_metrics = usage_metrics
 
     @app.middleware("http")
     async def _session_cookie(request: Request, call_next):
@@ -2218,6 +2379,11 @@ def create_app(
             )
             if not allowed_editor_path:
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
+        is_job_submission = (
+            is_public_mode()
+            and request.method == "POST"
+            and request.url.path == "/api/jobs"
+        )
         if is_simple_ui() and request.method == "POST" and request.url.path in {
             "/api/jobs",
             "/api/midi-check",
@@ -2240,6 +2406,11 @@ def create_app(
             except ValueError:
                 length = -1
             if maximum > 0 and (length < 0 or length > maximum):
+                if is_job_submission:
+                    usage_metrics.increment(
+                        "soramimic_usage_submission_responses_total",
+                        {"status": "413"},
+                    )
                 return JSONResponse({"detail": "入力が大きすぎます"}, status_code=413)
         if not is_public_mode() or request.url.path in {
             "/healthz",
@@ -2261,6 +2432,11 @@ def create_app(
             "/logo-soramimic-video-v2.png",
         }:
             response = await call_next(request)
+            if is_job_submission:
+                usage_metrics.increment(
+                    "soramimic_usage_submission_responses_total",
+                    {"status": str(response.status_code)},
+                )
             if request.url.path == "/api/jobs" or request.url.path.startswith(
                 "/api/jobs/"
             ):
@@ -2273,6 +2449,11 @@ def create_app(
             session = uuid.uuid4().hex
         request.state.session = session
         response = await call_next(request)
+        if is_job_submission:
+            usage_metrics.increment(
+                "soramimic_usage_submission_responses_total",
+                {"status": str(response.status_code)},
+            )
         if request.url.path == "/api/jobs" or request.url.path.startswith(
             "/api/jobs/"
         ):
@@ -2470,6 +2651,7 @@ def create_app(
         }
         if is_public_mode():
             checks["privacy_cleanup"] = manager.pending_cleanup_count() == 0
+            checks["usage_metrics"] = usage_metrics.healthy
         from .audio_inference import configured_url, service_available
 
         if configured_url() is not None:
@@ -2492,6 +2674,7 @@ def create_app(
             for status, count in counts.items()
         )
         body += f"soramimic_privacy_cleanup_pending {manager.pending_cleanup_count()}\n"
+        body += usage_metrics.render_prometheus()
         return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
 
     @app.get("/openapi.json", include_in_schema=False)
@@ -3829,6 +4012,7 @@ def create_app(
         path = job.dir / VIDEO_DIR / ("credits.md" if download else "credits.json")
         if not path.is_file():
             raise HTTPException(status_code=404, detail="この動画の出典情報は保存されていません")
+        manager.record_output_usage(job, "credits_download" if download else "credits")
         return FileResponse(
             path, media_type="text/markdown; charset=utf-8" if download else "application/json",
             filename="credits.md" if download else None,
@@ -3840,6 +4024,7 @@ def create_app(
         job = manager.get(job_id, owner_of(request))
         if job.status != "done" or not job.video or not job.video.exists():
             raise HTTPException(status_code=409, detail="動画はまだできていません")
+        manager.record_output_usage(job, "download")
         if job.video.suffix == ".wav":  # プレビュー(歌声のみ)
             return FileResponse(
                 job.video, media_type="audio/wav", filename=_download_filename(job),
@@ -3856,6 +4041,7 @@ def create_app(
         job = manager.get(job_id, owner_of(request))
         if job.status != "done" or not job.video or not job.video.exists():
             raise HTTPException(status_code=409, detail="動画はまだできていません")
+        manager.record_output_usage(job, "playback")
         media_type = "audio/wav" if job.video.suffix == ".wav" else "video/mp4"
         return FileResponse(
             job.video,
@@ -3871,6 +4057,7 @@ def create_app(
         job = manager.get(job_id, owner_of(request))
         if not job.thumbnail.exists():
             raise HTTPException(status_code=404, detail="サムネ画像がありません")
+        manager.record_output_usage(job, "thumbnail")
         return FileResponse(
             job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job),
             headers={"Cache-Control": "private, no-store"},
