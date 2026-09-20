@@ -1283,18 +1283,18 @@ def build_image_cues(
 
 
 def thumbnail_show_end(project: Project) -> float:
-    """サムネを出す区間の終わり(=前奏の終わり)。出さないときは0を返す。
+    """サムネを出す区間の終わり。
 
-    字幕(ASS)は歌唱区間の SUB_PAD_SEC 秒前から出るので、そこで打ち切って
-    サムネと字幕が重ならないようにする。前奏が短くてサムネが一瞬しか
-    出せない曲(THUMBNAIL_MIN_SEC 未満)では、点滅させるより出さない方が
-    見やすいので0を返す(サムネ画像自体はSNS投稿用に作る)。
+    前奏が十分にある曲では、字幕(ASS)が始まる直前まで表示する。前奏が短い、
+    または歌から始まる曲でも先頭フレームが黒くならないよう、冒頭の
+    THUMBNAIL_MIN_SEC 秒は必ず表示する。その区間の字幕は build_ass の
+    clear_ranges で隠すため、サムネには重ならない。音声の時刻は変更しない。
     """
     starts = [n.start_sec for n in project.notes if n.kana] or [
         n.start_sec for n in project.notes
     ]
-    end = min(starts, default=0.0) - SUB_PAD_SEC
-    return end if end >= THUMBNAIL_MIN_SEC else 0.0
+    intro_end = min(starts, default=0.0) - SUB_PAD_SEC
+    return max(intro_end, THUMBNAIL_MIN_SEC)
 
 
 def prepend_thumbnail_cue(

@@ -1686,10 +1686,13 @@ def test_prewarm_skips_cached(tmp_path: Path, monkeypatch):
 
 
 def test_thumbnail_show_end_uses_intro(tmp_path: Path):
-    from soramimic_video.video import SUB_PAD_SEC, thumbnail_show_end
+    from soramimic_video.video import SUB_PAD_SEC, THUMBNAIL_MIN_SEC, thumbnail_show_end
 
     project = _two_word_project()  # 最初の歌唱ノートは0.5s(前奏が短い曲)
-    assert thumbnail_show_end(project) == 0.0  # 一瞬しか出せないので出さない
+    assert thumbnail_show_end(project) == THUMBNAIL_MIN_SEC
+
+    project.notes[0].start_sec = 0.0  # 歌から始まっても先頭に短く出す
+    assert thumbnail_show_end(project) == THUMBNAIL_MIN_SEC
 
     project.notes[0].start_sec = 2.0  # 公開サンプル相当の前奏ならサムネを出す
     project.notes[1].start_sec = 3.0
@@ -1732,6 +1735,27 @@ def test_thumbnail_range_clears_earlier_audio_recognition_subtitle(tmp_path: Pat
         clear_ranges=[(0.0, thumbnail_end)],
     )
     assert min(start for start, _end in _dialogue_spans(ass)) >= thumbnail_end
+
+
+def test_thumbnail_range_clears_subtitles_when_song_starts_immediately(tmp_path: Path):
+    """歌から始まる曲では冒頭の字幕を隠し、短いサムネ区間を確保する。"""
+    from soramimic_video.video import THUMBNAIL_MIN_SEC, thumbnail_show_end
+
+    project = _two_word_project()
+    project.notes[0].start_sec = 0.0
+    project.notes[0].end_sec = 0.5
+
+    thumbnail_end = thumbnail_show_end(project)
+    assert thumbnail_end == THUMBNAIL_MIN_SEC
+    ass = build_ass(
+        project,
+        1280,
+        720,
+        "Font",
+        clear_ranges=[(0.0, thumbnail_end)],
+    )
+    spans = _dialogue_spans(ass)
+    assert all(end <= start or start >= thumbnail_end for start, end in spans)
 
 
 def test_prepend_thumbnail_cue_shifts_overlapping_cues(tmp_path: Path):
