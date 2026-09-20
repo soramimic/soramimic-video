@@ -1647,10 +1647,13 @@ def test_prewarm_skips_cached(tmp_path: Path, monkeypatch):
 
 
 def test_thumbnail_show_end_uses_intro(tmp_path: Path):
-    from soramimic_video.video import SUB_PAD_SEC, thumbnail_show_end
+    from soramimic_video.video import SUB_PAD_SEC, THUMBNAIL_MIN_SEC, thumbnail_show_end
 
     project = _two_word_project()  # 最初の歌唱ノートは0.5s(前奏が短い曲)
-    assert thumbnail_show_end(project) == 0.0  # 一瞬しか出せないので出さない
+    assert thumbnail_show_end(project) == THUMBNAIL_MIN_SEC
+
+    project.notes[0].start_sec = 0.0  # 歌から始まっても先頭に短く出す
+    assert thumbnail_show_end(project) == THUMBNAIL_MIN_SEC
 
     project.notes[0].start_sec = 2.0  # 公開サンプル相当の前奏ならサムネを出す
     project.notes[1].start_sec = 3.0
@@ -1670,6 +1673,50 @@ def test_thumbnail_does_not_overlap_subtitles(tmp_path: Path):
     project.notes[1].start_sec = 6.0
     first_subtitle_start = 5.0 - SUB_PAD_SEC
     assert thumbnail_show_end(project) <= first_subtitle_start
+
+
+def test_thumbnail_range_clears_earlier_audio_recognition_subtitle(tmp_path: Path):
+    """自動認識行が最初の音符より早く始まってもサムネと字幕を重ねない。"""
+    from soramimic_video.video import SUB_PAD_SEC, thumbnail_show_end
+
+    project = _two_word_project()
+    project.notes[0].start_sec = 15.0
+    project.notes[0].end_sec = 15.25
+    project.notes[1].start_sec = 16.0
+    project.notes[1].end_sec = 16.25
+    project.lines[0].canonical_start_sec = 13.5
+
+    thumbnail_end = thumbnail_show_end(project)
+    assert abs(thumbnail_end - (15.0 - SUB_PAD_SEC)) < 0.01
+    ass = build_ass(
+        project,
+        1280,
+        720,
+        "Font",
+        clear_ranges=[(0.0, thumbnail_end)],
+    )
+    assert min(start for start, _end in _dialogue_spans(ass)) >= thumbnail_end
+
+
+def test_thumbnail_range_clears_subtitles_when_song_starts_immediately(tmp_path: Path):
+    """歌から始まる曲では冒頭の字幕を隠し、短いサムネ区間を確保する。"""
+    from soramimic_video.video import THUMBNAIL_MIN_SEC, thumbnail_show_end
+
+    project = _two_word_project()
+    project.notes[0].start_sec = 0.0
+    project.notes[0].end_sec = 0.5
+
+    thumbnail_end = thumbnail_show_end(project)
+    assert thumbnail_end == THUMBNAIL_MIN_SEC
+    ass = build_ass(
+        project,
+        1280,
+        720,
+        "Font",
+        clear_ranges=[(0.0, thumbnail_end)],
+    )
+    spans = _dialogue_spans(ass)
+    assert all(end <= start or start >= thumbnail_end for start, end in spans)
 
 
 def test_prepend_thumbnail_cue_shifts_overlapping_cues(tmp_path: Path):
