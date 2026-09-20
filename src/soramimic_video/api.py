@@ -163,6 +163,11 @@ WORDLIST_IMAGES_DIRNAME = "images"
 DEFAULT_SOUNDFONTS = ("/usr/share/sounds/sf2/FluidR3_GM.sf2",)
 
 
+def _is_status_temp_filename(name: str) -> bool:
+    """Return whether *name* is an atomic status-write temporary file."""
+    return name.startswith(f"{STATUS_FILENAME}.") and name.endswith(".tmp")
+
+
 def default_font() -> str:
     return "Hiragino Sans" if platform.system() == "Darwin" else "Noto Sans CJK JP"
 
@@ -1890,11 +1895,19 @@ class JobManager:
         # 同じディレクトリの一時ファイルに書いてから置換する。ジョブ実行中も
         # APIスレッドが status.json を読むので、書きかけの中身を読ませない
         status_path = job.dir / STATUS_FILENAME
-        tmp_path = status_path.with_suffix(".json.tmp")
-        tmp_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+        # A rolling restart can briefly leave two managers writing the same job.
+        # Give each atomic write its own temporary file so one writer cannot move
+        # another writer's file before its os.replace call.
+        tmp_path = status_path.with_name(
+            f"{STATUS_FILENAME}.{uuid.uuid4().hex}.tmp"
         )
-        os.replace(tmp_path, status_path)
+        try:
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+            os.replace(tmp_path, status_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def cancel(self, job_id: str, owner: str | None = None) -> Job:
         job = self.get(job_id, owner)
@@ -1921,7 +1934,7 @@ class JobManager:
             return False
         failures = False
         for child in root.iterdir():
-            if child.name in (STATUS_FILENAME, f"{STATUS_FILENAME}.tmp"):
+            if child.name == STATUS_FILENAME or _is_status_temp_filename(child.name):
                 continue
             try:
                 if child.is_dir() and not child.is_symlink():
@@ -1956,9 +1969,6 @@ class JobManager:
         keep = {
             video,
             (root / STATUS_FILENAME).resolve(),
-            # Another process may still be finishing an atomic status write
-            # during a rolling restart. It contains status metadata, not uploads.
-            (root / f"{STATUS_FILENAME}.tmp").resolve(),
         }
         if job.thumbnail.is_file() and not job.thumbnail.is_symlink():
             keep.add(job.thumbnail.resolve())
@@ -1975,6 +1985,10 @@ class JobManager:
             try:
                 if path.is_dir() and not path.is_symlink():
                     path.rmdir()
+                elif _is_status_temp_filename(path.name):
+                    # Another process may still be finishing an atomic status write
+                    # during a rolling restart. It contains metadata, not uploads.
+                    continue
                 elif path.resolve() not in keep:
                     path.unlink(missing_ok=True)
             except OSError as exc:

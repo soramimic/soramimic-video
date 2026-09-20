@@ -467,6 +467,33 @@ def test_create_failure_removes_partially_written_upload(tmp_path, monkeypatch):
     )
 
 
+def test_concurrent_status_writes_use_distinct_temporary_files(tmp_path, monkeypatch):
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    manager = client.app.state.manager
+    job_dir = tmp_path / "jobs" / "abcdef12"
+    job_dir.mkdir()
+    job = api_mod.Job(id="abcdef12", dir=job_dir, params={})
+    original_replace = api_mod.os.replace
+    temporary_paths = []
+    reentered = False
+
+    def overlapping_replace(source, destination):
+        nonlocal reentered
+        temporary_paths.append(source)
+        if not reentered:
+            reentered = True
+            manager._save(job)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(api_mod.os, "replace", overlapping_replace)
+
+    manager._save(job)
+
+    assert len(set(temporary_paths)) == 2
+    assert json.loads((job_dir / api_mod.STATUS_FILENAME).read_text())["id"] == job.id
+    assert not list(job_dir.glob(f"{api_mod.STATUS_FILENAME}.*.tmp"))
+
+
 def test_public_config_reports_result_retention(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "24")
