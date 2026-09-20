@@ -2061,8 +2061,9 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '曲をアップロード' in html
     assert 'id="song-upload-selection" hidden' in html
     assert 'id="upload-use-notice" hidden' in html
-    assert "SNSへの投稿・公開・配布などは私的利用には含まれません。" in html
-    assert 'href="/guidelines#usage-scope-title"' in html
+    assert "生成された動画は原則、" in html
+    assert ">私的利用</a>の範囲でご利用ください。" in html
+    assert 'href="https://www.bunka.go.jp/seisaku/chosakuken/taisetsu/point/"' in html
     assert 'id="song-upload-filename" role="status"' in html
     assert 'id="song-upload-clear" aria-label="選択した曲を解除"' in html
     assert 'id="audio-filename"' not in html
