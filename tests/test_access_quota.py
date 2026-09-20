@@ -396,6 +396,7 @@ def test_readiness_reports_only_boolean_security_checks(tmp_path, monkeypatch):
         "jobs_dir_writable": True,
         "persistent_ip_hash": True,
         "particle_reading": True,
+        "privacy_cleanup": True,
         "access": True,
     }
     assert "team.cloudflareaccess.com" not in response.text
