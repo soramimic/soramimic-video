@@ -1200,10 +1200,6 @@
 
 <details class="card" id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
 
-<!-- 公開モードのときだけ出す歌声合成のクレジット表記(利用規約上必要) -->
-<footer id="public-footer" hidden style="margin-top:1.5rem; border-top:1px solid var(--border); padding-top:.6rem">
-  <p class="hint" id="public-credit"></p>
-</footer>
 <nav class="site-links" aria-label="ご利用案内">
   <a href="/guidelines">利用ガイドライン</a>
   <a href="/guidelines#contact-title">画像の権利をお持ちの方へ</a>
@@ -1727,14 +1723,13 @@ function updateVoicevoxCredit() {
   $("voicevox-credit").textContent =
     `生成音声の利用には『VOICEVOX:${name}』のクレジット表記が必要です`
     + `(動画の左下に自動で焼き込みます)。`;
-  updatePublicCredit();
 }
 
 // ---- 公開モード(SORAMIMIC_PUBLIC)向けの表示 ----
 
 let publicMode = false;
 
-// 公開インスタンスでは投入制限の目安とクレジット表記を常時出す。
+// 公開インスタンスでは投入制限の目安を出す。
 function setupPublicMode(conf) {
   publicMode = !!conf.public;
   if (!publicMode) return;
@@ -1756,19 +1751,6 @@ function setupPublicMode(conf) {
     $("public-limits").textContent = limits.join("。") + "。混雑時は順番待ちになります。";
     $("public-limits").hidden = false;
   }
-  updatePublicCredit();
-}
-
-// 歌声合成のクレジット表記(VOICEVOXは選択中のキャラ名を出す)。
-function updatePublicCredit() {
-  if (!publicMode) return;
-  const sel = $("voicevox-style");
-  const o = sel.options[sel.selectedIndex];
-  const name = o ? (o.getAttribute("data-name") || "") : "";
-  $("public-credit").textContent = $("synthesizer").value === "voicevox"
-    ? `歌声合成: VOICEVOX${name ? ":" + name : ""}`
-    : `歌声合成: NEUTRINO${$("model").value ? "(" + $("model").value + ")" : ""}`;
-  $("public-footer").hidden = false;
 }
 
 // ---- Cloudflare Turnstile(サーバーで設定されているときだけ) ----
@@ -2072,7 +2054,6 @@ function toggleSynthOpts() {
   // クレジット表記はVOICEVOXを選んでいるときだけ(歌声セレクトの外に置いてあるので明示的に)
   $("voicevox-credit").hidden = !isVv;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
-  updatePublicCredit();
   $("auto-octave-hint").textContent = isVv
     ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
       + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"
@@ -7701,7 +7682,6 @@ function syncChoice(base) {
   // ファイル系の値(📄・読み込みトリガー・復元)はレイアウト名ではないので
   // 送信値には書かない。#layout は直前に選ばれた名前(空=サーバー既定)を保ち続ける
   if (leIsPresetValue(sel.value)) hidden.value = isOther ? other.value.trim() : sel.value;
-  if (base === "model") updatePublicCredit();  // クレジット表記のモデル名を追随させる
   if (!restoring) saveForm();
 }
 
