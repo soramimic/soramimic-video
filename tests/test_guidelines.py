@@ -53,6 +53,9 @@ def test_guidelines_are_public_and_deduplicate_existing_terms(client):
     assert response.text.count('href="https://example.com/shared"') == 1
     assert "規約1" in response.text and "規約2" in response.text
     assert 'href="/"' in response.text
+    assert 'class="brand-logo"' in response.text
+    assert 'src="/logo-soramimic-video-v2.png"' in response.text
+    assert 'alt="Soramimic video"' in response.text
     assert '<h2 id="generation-tips">生成しやすい曲のヒント</h2>' in response.text
     assert "ボーカルがはっきり聞こえる、日本語のソロ歌唱曲" in response.text
 
