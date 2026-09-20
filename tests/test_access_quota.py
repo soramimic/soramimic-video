@@ -148,6 +148,17 @@ def test_verifier_failure_logs_no_sensitive_values(monkeypatch, caplog):
     assert sentinel_email not in text
 
 
+def test_verifier_treats_missing_assertion_as_anonymous_without_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert access_identity.verify_access_email(
+            "",
+            issuer="https://team.cloudflareaccess.com",
+            audience="expected",
+        ) is None
+
+    assert "assertion verification failed" not in caplog.text
+
+
 @pytest.mark.parametrize(
     "failure",
     [
