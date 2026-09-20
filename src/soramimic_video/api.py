@@ -2429,25 +2429,47 @@ def create_app(
         content = f'<ul class="guidelines">{links}</ul>' if links else ""
         data_handling = ""
         data_handling_toc = ""
+        usage_scope = ""
+        usage_scope_toc = ""
         retention_hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
-        if is_public_mode() and retention_hours > 0:
-            retention_label = f"{retention_hours:g}時間"
-            data_handling_toc = (
-                '<li><a href="#data-handling-title">データの取り扱い</a></li>'
+        if is_public_mode():
+            usage_scope_toc = (
+                '<li><a href="#usage-scope-title">楽曲・生成物の利用範囲</a></li>'
             )
-            data_handling = (
-                '<section aria-labelledby="data-handling-title">'
-                '<h2 id="data-handling-title">データの取り扱い</h2>'
-                '<p>元の音源・歌詞と解析用データは処理終了時に削除します。'
-                f'完成動画は{retention_label}後に自動削除します。'
-                '入力内容をAIモデルの学習には使用しません。</p>'
+            usage_scope = (
+                '<section aria-labelledby="usage-scope-title">'
+                '<h2 id="usage-scope-title">楽曲・生成物の利用範囲</h2>'
+                '<p>このサービスは、適法に入手した曲・歌詞を、個人・家庭内など'
+                '限られた範囲で、仕事以外の私的利用に使うことを前提としています。'
+                'SNSへの投稿・公開・配布などは私的利用には含まれません。'
+                '生成物をそのように利用する場合は、自分が権利を持つものか、'
+                '必要な許諾・利用条件を別途確認できたものに限ってください。</p>'
+                '<p>私的利用の考え方は、文化庁の'
+                '<a href="https://www.bunka.go.jp/seisaku/chosakuken/taisetsu/point/" '
+                'target="_blank" rel="noopener noreferrer">著作権に関する案内</a>'
+                'もご確認ください。</p>'
                 '</section>'
             )
+            if retention_hours > 0:
+                retention_label = f"{retention_hours:g}時間"
+                data_handling_toc = (
+                    '<li><a href="#data-handling-title">データの取り扱い</a></li>'
+                )
+                data_handling = (
+                    '<section aria-labelledby="data-handling-title">'
+                    '<h2 id="data-handling-title">データの取り扱い</h2>'
+                    '<p>元の音源・歌詞と解析用データは処理終了時に削除します。'
+                    f'完成動画は{retention_label}後に自動削除します。'
+                    '入力内容をAIモデルの学習には使用しません。</p>'
+                    '</section>'
+                )
         page = (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8")
         return (
             page.replace("<!-- guideline-links -->", content)
             .replace("<!-- data-handling -->", data_handling)
             .replace("<!-- data-handling-toc -->", data_handling_toc)
+            .replace("<!-- usage-scope -->", usage_scope)
+            .replace("<!-- usage-scope-toc -->", usage_scope_toc)
         )
 
     @app.get("/image-credits.js", include_in_schema=False)
