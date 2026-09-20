@@ -114,6 +114,64 @@ def test_jobs_are_isolated_per_session(public_app):
     assert detail.headers["vary"] == "Cookie"
 
 
+def test_public_usage_metrics_are_persistent_aggregates_only(tmp_path, monkeypatch):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    monkeypatch.setenv(api_mod.EXPOSE_OPS_ENV, "1")
+    monkeypatch.setattr(api_mod, "run_pipeline", fast_pipeline)
+    monkeypatch.setattr(api_mod, "song_seconds", lambda midi_bytes: 0.0)
+    jobs_dir = tmp_path / "jobs"
+    client = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+
+    response = submit(client)
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    wait_done(client, job_id)
+    for _ in range(100):
+        if client.app.state.manager.jobs[job_id].usage_finished_recorded:
+            break
+        time.sleep(0.01)
+    assert client.get(f"/api/jobs/{job_id}/playback").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}/playback").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}/video").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}/video").status_code == 200
+
+    metrics = client.get("/metrics").text
+    assert 'soramimic_usage_jobs_submitted_total{' in metrics
+    assert 'input_kind="midi"' in metrics
+    assert 'source="upload"' in metrics
+    assert 'wordlist="stations"' in metrics
+    assert (
+        'soramimic_usage_jobs_finished_total{input_kind="midi",outcome="done",'
+        'reason="success"} 1' in metrics
+    )
+    assert (
+        'soramimic_usage_outputs_total{action="playback",result_kind="video"} 1'
+        in metrics
+    )
+    assert (
+        'soramimic_usage_outputs_total{action="download",result_kind="video"} 1'
+        in metrics
+    )
+    assert 'soramimic_usage_submission_responses_total{status="200"} 1' in metrics
+
+    persisted = (jobs_dir / api_mod.USAGE_METRICS_FILENAME).read_text(encoding="utf-8")
+    session = client.cookies[api_mod.SESSION_COOKIE]
+    assert job_id not in persisted
+    assert session not in persisted
+    assert "song.mid" not in persisted
+
+    restarted = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    restarted_metrics = restarted.get("/metrics").text
+    assert (
+        'soramimic_usage_jobs_finished_total{input_kind="midi",outcome="done",'
+        'reason="success"} 1' in restarted_metrics
+    )
+    assert (
+        'soramimic_usage_outputs_total{action="playback",result_kind="video"} 1'
+        in restarted_metrics
+    )
+
+
 def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
     # 環境変数が未設定なら従来どおり: cookieも発行せず、全ジョブが誰からも見える
     monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)
