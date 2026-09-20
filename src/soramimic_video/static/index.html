@@ -794,7 +794,7 @@
       <div id="lyrics-correction-panel" hidden>
         <label for="lyrics">正解歌詞</label>
         <textarea id="lyrics" rows="5" placeholder="正しい歌詞を行ごとに入力してください"></textarea>
-        <label for="lyrics-file" class="hint">または歌詞ファイルから入力（UTF-8 TXT / Markdown）</label>
+        <label for="lyrics-file" class="hint">または歌詞ファイルから入力（UTF-8テキストファイル）</label>
         <input type="file" id="lyrics-file" accept=".txt,.md,text/plain,text/markdown">
         <p class="hint" id="lyrics-file-name" role="status" hidden></p>
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
@@ -3338,7 +3338,7 @@ async function loadLyricsFile(file) {
   const previousLyrics = $("lyrics").value;
   try {
     if (!/\.(txt|md)$/i.test(file.name)) {
-      throw new Error("歌詞ファイルはTXTまたはMarkdownを選んでください。");
+      throw new Error("歌詞ファイルはUTF-8のテキストファイルを選んでください。");
     }
     if (file.size > 256 * 1024) {
       throw new Error("歌詞ファイルは256KB以下にしてください。");
