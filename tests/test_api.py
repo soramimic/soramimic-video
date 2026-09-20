@@ -2647,7 +2647,7 @@ def test_index_html_editor_opens_as_fullscreen_modal():
         '<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" '
         'aria-modal="true"' in html
     )
-    assert html.index('id="editor-frame-wrap"') > html.index('id="public-footer"')
+    assert html.index('id="editor-frame-wrap"') > html.index('aria-label="ご利用案内"')
     # 全面に広げる(モバイルでも同じ)。iframeが残りの高さを全部使う
     assert ".editor-modal {\n    position: fixed; inset: 0; z-index: 50;" in html
     assert "flex: 1 1 auto; width: 100%; min-height: 0; border: 0;" in html

@@ -358,7 +358,7 @@ def test_simple_ui_hides_the_irrelevant_song_length_limit():
     assert "if (conf.quota_exempt === true)" in body
     assert "else if (conf.daily_quota)" in body
     assert "混雑時は順番待ちになります" in body
-    assert "updatePublicCredit();" in body
+    assert "updatePublicCredit" not in _script()
 
 
 def test_history_uses_cards_and_only_safe_display_fields():
