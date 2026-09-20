@@ -1572,6 +1572,7 @@ def analyze_audio(
         document, layers = build_stage3_layers(
             line_texts, selected_readings, raw_alignment, sheetsage_notes,
             whisper_line_windows=whisper_line_windows,
+            enable_repeated_vocalization=whisper_line_windows is not None,
         )
     except ValueError as exc:
         detail = (

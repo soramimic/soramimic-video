@@ -26,6 +26,9 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
         captured["line_windows_by_utterance"] = kwargs.get(
             "line_windows_by_utterance"
         )
+        captured["repeated_vocalization_config"] = kwargs.get(
+            "repeated_vocalization_config"
+        )
         return original(document, config=config, **kwargs)
 
     monkeypatch.setattr(pipeline, "run_stage3_document", run)
@@ -36,14 +39,16 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
          AlignedMora(0, 1, "キ", 0.39, 0.41, 0.1)],
         [MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.5, 62)],
         whisper_line_windows=[(0.0, 0.5)],
+        enable_repeated_vocalization=True,
     )
 
     anchors = [item for item in document.evidence if item.kind == "mora-ctc-anchor"]
     assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
-    from wav_to_xf import NoteRunConfig
+    from wav_to_xf import NoteRunConfig, RepeatedVocalizationConfig
 
     assert captured["config"] == NoteRunConfig(whisper_boundary_cost_per_sec2=0.1)
     assert captured["line_windows_by_utterance"] == {"u0": (0.0, 0.5)}
+    assert captured["repeated_vocalization_config"] == RepeatedVocalizationConfig()
     notes = {item.id: item for item in document.note_candidates}
     assert [
         (item.kana, notes[item.note_candidate_id].midi_pitch)
@@ -52,6 +57,70 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
         ("カ", 60), ("キ", 62),
     ]
     assert not realization.unresolved_unit_ids
+
+
+def test_stage3_disables_repeated_vocalization_without_whisper_windows(monkeypatch):
+    from wav_to_xf import pipeline
+
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.stage3 import build_stage3_layers
+
+    captured = {}
+    original = pipeline.run_stage3_document
+
+    def run(document, *, config=None, **kwargs):
+        captured.update(kwargs)
+        return original(document, config=config, **kwargs)
+
+    monkeypatch.setattr(pipeline, "run_stage3_document", run)
+    build_stage3_layers(
+        ["らら"], ["ララ"],
+        [AlignedMora(0, 0, "ラ", 0.09, 0.11, 0.1),
+         AlignedMora(0, 1, "ラ", 0.39, 0.41, 0.1)],
+        [MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.5, 62)],
+    )
+
+    assert captured["line_windows_by_utterance"] is None
+    assert captured["repeated_vocalization_config"] is None
+
+
+def test_stage3_requires_whisper_windows_for_repeated_vocalization():
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.stage3 import build_stage3_layers
+
+    with pytest.raises(ValueError, match="Whisper区間"):
+        build_stage3_layers(
+            ["らら"], ["ララ"],
+            [AlignedMora(0, 0, "ラ", 0.09, 0.11, 0.1),
+             AlignedMora(0, 1, "ラ", 0.39, 0.41, 0.1)],
+            [MelodyNote(0.0, 0.3, 60), MelodyNote(0.3, 0.5, 62)],
+            enable_repeated_vocalization=True,
+        )
+
+
+def test_stage3_expands_automatic_repeated_vocalization_from_melody():
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.stage3 import build_stage3_layers
+
+    document, realization = build_stage3_layers(
+        ["la la"], ["ララ"],
+        [AlignedMora(0, 0, "ラ", 0.09, 0.11, 0.2),
+         AlignedMora(0, 1, "ラ", 0.49, 0.51, 0.2)],
+        [MelodyNote(0.0, 0.25, 60), MelodyNote(0.25, 0.5, 62),
+         MelodyNote(0.5, 0.75, 64), MelodyNote(0.75, 1.0, 65)],
+        whisper_line_windows=[(0.0, 1.0)],
+        enable_repeated_vocalization=True,
+    )
+
+    reading = next(
+        item for item in document.readings
+        if item.id == document.utterances[0].selected_reading_id
+    )
+    assert reading.kana == "ララララ"
+    assert [item.kana for item in realization.synthesis_plan] == ["ラ"] * 4
 
 
 def test_known_lyrics_audio_path_never_calls_whisper(monkeypatch, tmp_path):
