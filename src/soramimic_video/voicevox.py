@@ -16,6 +16,7 @@ import io
 import logging
 import math
 import os
+import statistics
 import time
 import wave
 from collections.abc import Callable, Sequence
@@ -83,6 +84,11 @@ SING_TEACHER_ID = 6000
 # 実体は octave.py の共通定数(自動オクターブ調整はエンジン共通化した)。
 SAFE_KEY_MIN = VOICEVOX_SAFE_KEY_MIN
 SAFE_KEY_MAX = VOICEVOX_SAFE_KEY_MAX
+# 安全音域のすぐ外でも、歌の先生が要求音高を正しく返すことがある。その場合に
+# 不要な加工をしない許容差。半音未満のずれはビブラートやノート境界の遷移として残す。
+F0_CORRECTION_MIN_SEMITONES = 1.0
+# 補正倍率をノート端で短くフェードし、前後の無声音・音高との段差を避ける。
+F0_CORRECTION_EDGE_FRAMES = 6
 _TIMEOUT = 600  # 1リクエストのタイムアウト秒(フルコーラスのクエリ生成は数分かかりうる)
 # エンジンは合成中にOOM等でクラッシュしうるが、launchd/dockerの再起動ポリシーで
 # 自動復帰する運用。クライアント側は「復帰を待って同じチャンクを再試行」する。
@@ -1198,6 +1204,9 @@ def _synthesize_chunk(
             "sing_frame_audio_query", r.status_code, r.text
         )
     query = r.json()
+    corrected = _correct_out_of_range_f0(score, query)
+    if corrected:
+        logger.info("VOICEVOXの音域外F0を%d音符補正しました", corrected)
 
     try:
         r2 = requests.post(
@@ -1217,3 +1226,64 @@ def _synthesize_chunk(
             "frame_synthesis", r2.status_code, r2.text
         )
     return r2.content
+
+
+def _correct_out_of_range_f0(
+    score: dict[str, Any],
+    query: dict[str, Any],
+) -> int:
+    """安全音域外で、要求音高から1半音以上崩れたF0だけを補正する。
+
+    ``sing_frame_audio_query`` が返した無声音(0 Hz)とノート内の揺れは維持し、
+    有声F0の中央値が要求音高へ一致する倍率だけを掛ける。中央値は可能ならノート端を
+    除いて求め、補正倍率自体も端で短くフェードする。安全音域内の音符には触れない。
+    想定外のレスポンス形状では加工せず、元のクエリをそのまま合成へ渡す。
+    """
+    f0 = query.get("f0")
+    notes = score.get("notes")
+    if not isinstance(f0, list) or not isinstance(notes, list):
+        return 0
+    total_frames = sum(int(note["frame_length"]) for note in notes)
+    if len(f0) != total_frames:
+        return 0
+
+    cursor = 0
+    corrected = 0
+    for note in notes:
+        length = int(note["frame_length"])
+        start, end = cursor, cursor + length
+        cursor = end
+        key = note.get("key")
+        if key is None or SAFE_KEY_MIN <= key <= SAFE_KEY_MAX:
+            continue
+
+        edge_frames = max(1, min(F0_CORRECTION_EDGE_FRAMES, length // 4))
+        interior = [
+            float(value)
+            for value in f0[start + edge_frames : end - edge_frames]
+            if isinstance(value, (int, float)) and value > 0
+        ]
+        voiced = interior or [
+            float(value)
+            for value in f0[start:end]
+            if isinstance(value, (int, float)) and value > 0
+        ]
+        if not voiced:
+            continue
+
+        observed_hz = statistics.median(voiced)
+        target_hz = 440.0 * 2.0 ** ((key - 69) / 12)
+        error_semitones = abs(12.0 * math.log2(observed_hz / target_hz))
+        if error_semitones < F0_CORRECTION_MIN_SEMITONES:
+            continue
+
+        ratio = target_hz / observed_hz
+        for frame in range(start, end):
+            value = f0[frame]
+            if not isinstance(value, (int, float)) or value <= 0:
+                continue
+            distance_from_edge = min(frame - start + 1, end - frame)
+            weight = min(1.0, distance_from_edge / edge_frames)
+            f0[frame] = value * ratio**weight
+        corrected += 1
+    return corrected

@@ -662,6 +662,89 @@ def _read_samples(path) -> list[int]:
     return list(a)
 
 
+# ---- 音域外F0補正 ----
+
+
+def _hz(key: float) -> float:
+    return 440.0 * 2.0 ** ((key - 69) / 12)
+
+
+def test_correct_out_of_range_f0_repairs_large_pitch_error():
+    score = {
+        "notes": [
+            {"key": None, "frame_length": 2, "lyric": ""},
+            {"key": 80, "frame_length": 8, "lyric": "ラ"},
+        ]
+    }
+    query = {"f0": [0.0, 0.0] + [_hz(68)] * 8}
+
+    assert vv._correct_out_of_range_f0(score, query) == 1
+
+    # 休符は維持し、中央は要求音高へ、端は倍率を半分だけ適用して滑らかにつなぐ。
+    assert query["f0"][:2] == [0.0, 0.0]
+    assert query["f0"][4] == pytest.approx(_hz(80))
+    assert query["f0"][2] == pytest.approx(_hz(68) * 2**0.5)
+    assert query["f0"][-1] == pytest.approx(_hz(68) * 2**0.5)
+
+
+def test_correct_out_of_range_f0_requires_one_semitone_error():
+    score = {"notes": [{"key": 79, "frame_length": 8, "lyric": "ラ"}]}
+    original = [_hz(78.25)] * 8
+    query = {"f0": original.copy()}
+
+    assert vv._correct_out_of_range_f0(score, query) == 0
+    assert query["f0"] == original
+
+
+def test_correct_out_of_range_f0_leaves_safe_range_even_if_error_is_large():
+    score = {"notes": [{"key": 70, "frame_length": 8, "lyric": "ラ"}]}
+    original = [_hz(58)] * 8
+    query = {"f0": original.copy()}
+
+    assert vv._correct_out_of_range_f0(score, query) == 0
+    assert query["f0"] == original
+
+
+def test_correct_out_of_range_f0_uses_interior_median_and_keeps_unvoiced():
+    score = {"notes": [{"key": 49, "frame_length": 12, "lyric": "ラ"}]}
+    # 端の遷移音と無声音を中央値の算出から外す。中央の誤った61を49へ戻す。
+    query = {
+        "f0": [
+            _hz(70), _hz(70), _hz(70),
+            _hz(61), _hz(61), 0.0, _hz(61), _hz(61), _hz(61),
+            _hz(70), _hz(70), _hz(70),
+        ]
+    }
+
+    assert vv._correct_out_of_range_f0(score, query) == 1
+    assert query["f0"][5] == 0.0
+    assert query["f0"][4] == pytest.approx(_hz(49))
+
+
+def test_correct_out_of_range_f0_ignores_unexpected_query_shape():
+    score = {"notes": [{"key": 80, "frame_length": 8, "lyric": "ラ"}]}
+
+    assert vv._correct_out_of_range_f0(score, {"phonemes": []}) == 0
+    assert vv._correct_out_of_range_f0(score, {"f0": [_hz(68)]}) == 0
+
+
+def test_synthesize_chunk_passes_corrected_f0_to_frame_synthesis(monkeypatch):
+    score = {"notes": [{"key": 80, "frame_length": 8, "lyric": "ラ"}]}
+    synthesized_query = {}
+
+    def fake_post(url, params=None, json=None, timeout=None):
+        if "sing_frame_audio_query" in url:
+            return _FakeResp(json_data={"f0": [_hz(68)] * 8, "phonemes": []})
+        synthesized_query.update(json)
+        return _FakeResp(content=_valid_wav_bytes())
+
+    monkeypatch.setattr(vv.requests, "post", fake_post)
+
+    vv._synthesize_chunk("http://x", "http://x", 6000, 6000, score)
+
+    assert synthesized_query["f0"][3] == pytest.approx(_hz(80))
+
+
 def test_run_voicevox_chunked_concat(tmp_path, monkeypatch):
     singers = [{"name": "波音リツ", "styles": [{"name": "ノーマル", "id": 6000, "type": "sing"}]}]
     monkeypatch.setattr(vv.requests, "get", lambda url, timeout=5: _FakeResp(json_data=singers))
