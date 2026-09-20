@@ -627,6 +627,11 @@
     border-color: var(--accent); color: var(--link); font-weight: 700;
   }
   .audio-upload-entry .hint { margin: 0; }
+  .upload-use-notice {
+    margin-top: .65rem; padding: .65rem .75rem; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--panel-2); font-size: .8rem; color: var(--muted);
+  }
+  .upload-use-notice p { margin: 0; }
   .song-upload-selection {
     display: flex; align-items: center; gap: .5rem; min-height: 2.75rem;
     padding: .15rem 0 .15rem .15rem;
@@ -794,6 +799,9 @@
         <p class="hint" id="lyrics-file-name" role="status" hidden></p>
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
       </div>
+    </div>
+    <div class="upload-use-notice" id="upload-use-notice" hidden>
+      <p>生成された動画は原則、<a href="https://www.bunka.go.jp/seisaku/chosakuken/taisetsu/point/" target="_blank" rel="noopener noreferrer">私的利用</a>の範囲でご利用ください。</p>
     </div>
   </div>
   <div id="sample-picker" hidden>
@@ -1655,6 +1663,7 @@ let publicMode = false;
 function setupPublicMode(conf) {
   publicMode = !!conf.public;
   if (!publicMode) return;
+  $("upload-use-notice").hidden = false;
   const limits = [];
   if (conf.quota_exempt === true) {
     limits.push("検証アカウント：1日の回数制限なし");

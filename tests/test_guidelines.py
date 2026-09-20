@@ -111,13 +111,29 @@ def test_public_guidelines_explain_data_handling(client, monkeypatch):
     response = browser.get("/guidelines")
 
     assert '<h2 id="data-handling-title">データの取り扱い</h2>' in response.text
-    assert "元の音源・歌詞と解析用データは処理終了時に削除します。" in response.text
-    assert "完成動画は24時間後に自動削除します。" in response.text
+    assert "元の音源・歌詞と解析用データは処理終了時に削除し、" in response.text
+    assert "失敗した場合は自動で再試行します。" in response.text
+    assert "完成動画は24時間の保存期間を過ぎたものから" in response.text
+    assert "定期的に自動削除します。" in response.text
     assert "入力内容をAIモデルの学習には使用しません。" in response.text
     assert '<a href="#data-handling-title">データの取り扱い</a>' in response.text
     assert response.text.index('id="guidelines-title"') < response.text.index(
         'id="data-handling-title"'
     )
+
+
+def test_public_guidelines_limit_uploads_and_outputs_to_private_use(client, monkeypatch):
+    browser, _ = client
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+
+    response = browser.get("/guidelines")
+
+    assert '<h2 id="usage-scope-title">楽曲・生成物の利用範囲</h2>' in response.text
+    assert "個人・家庭内など限られた範囲で、仕事以外の私的利用" in response.text
+    assert "SNSへの投稿・公開・配布などは私的利用には含まれません。" in response.text
+    assert "必要な許諾・利用条件を別途確認できたもの" in response.text
+    assert '<a href="#usage-scope-title">楽曲・生成物の利用範囲</a>' in response.text
+    assert 'href="https://www.bunka.go.jp/seisaku/chosakuken/taisetsu/point/"' in response.text
 
 
 def test_image_sections_make_their_scope_explicit(client):
@@ -128,11 +144,24 @@ def test_image_sections_make_their_scope_explicit(client):
     assert "動画内で使用される画像に関するご連絡・ご要望は、" in response.text
 
 
+def test_guidelines_include_disclaimer(client):
+    browser, _ = client
+    response = browser.get("/guidelines")
+
+    assert '<h2 id="disclaimer-title">免責事項</h2>' in response.text
+    assert "本サービスおよび生成物の正確性、完全性、特定目的への適合性" in response.text
+    assert "当方の故意または重大な過失による場合を除き" in response.text
+    assert "生成物の利用に必要な権利・許諾は、利用者自身で" in response.text
+    assert '<a href="#disclaimer-title">免責事項</a>' in response.text
+
+
 def test_private_guidelines_do_not_claim_public_retention_policy(client):
     browser, _ = client
     response = browser.get("/guidelines")
     assert 'id="data-handling-title"' not in response.text
     assert 'href="#data-handling-title"' not in response.text
+    assert 'id="usage-scope-title"' not in response.text
+    assert 'href="#usage-scope-title"' not in response.text
 
 
 def test_guidelines_keep_distinct_terms_urls(client):
