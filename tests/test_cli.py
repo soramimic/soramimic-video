@@ -56,6 +56,18 @@ def test_serve_preserves_the_immediate_socket_peer(monkeypatch, tmp_path):
 
     assert cli.cmd_serve(args) == 0
     assert seen["proxy_headers"] is False
+    assert seen["access_log"] is True
+
+
+def test_public_serve_disables_raw_uri_access_log(monkeypatch, tmp_path):
+    args = build_parser().parse_args(["serve", "--jobs-dir", str(tmp_path / "jobs")])
+    seen = {}
+    monkeypatch.setenv("SORAMIMIC_PUBLIC", "1")
+    monkeypatch.setattr("soramimic_video.api.create_app", lambda **kwargs: object())
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: seen.update(kwargs))
+
+    assert cli.cmd_serve(args) == 0
+    assert seen["access_log"] is False
 
 
 def test_serve_configures_and_validates_asset_store(monkeypatch, tmp_path):
