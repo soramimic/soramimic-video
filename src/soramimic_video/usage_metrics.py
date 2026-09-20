@@ -17,6 +17,8 @@ import os
 import re
 import threading
 import uuid
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 _METRIC_RE = re.compile(r"soramimic_usage_[a-z0-9_]+")
 _LABEL_RE = re.compile(r"[a-z][a-z0-9_]*")
 _VALUE_RE = re.compile(r"[a-z0-9_.-]{1,64}")
+DEFAULT_RETENTION_DAYS = 90
 
 
 def _escape(value: str) -> str:
@@ -55,15 +58,25 @@ def _format_labels(labels: dict[str, str], extra: tuple[str, str] | None = None)
 class UsageMetrics:
     """Persist aggregate counters and histograms without visitor identifiers."""
 
-    def __init__(self, path: Path, *, enabled: bool) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        enabled: bool,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+        today: Callable[[], date] | None = None,
+    ) -> None:
+        if retention_days < 1:
+            raise ValueError("usage metrics retention must be positive")
         self.path = path
         self.enabled = enabled
+        self.retention_days = retention_days
+        self._today = today or (lambda: datetime.now(UTC).date())
         self.healthy = True
         self._lock = threading.Lock()
         self._data: dict[str, Any] = {
-            "version": 1,
-            "counters": {},
-            "histograms": {},
+            "version": 2,
+            "days": {},
         }
         if enabled:
             self._load()
@@ -81,13 +94,27 @@ class UsageMetrics:
     def _load(self) -> None:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            if (
-                raw.get("version") != 1
-                or not isinstance(raw.get("counters"), dict)
-                or not isinstance(raw.get("histograms"), dict)
-            ):
+            migrated = False
+            if raw.get("version") == 1:
+                if not isinstance(raw.get("counters"), dict) or not isinstance(
+                    raw.get("histograms"), dict
+                ):
+                    raise ValueError("invalid legacy usage metrics format")
+                raw = {
+                    "version": 2,
+                    "days": {
+                        self._today().isoformat(): {
+                            "counters": raw["counters"],
+                            "histograms": raw["histograms"],
+                        }
+                    },
+                }
+                migrated = True
+            if raw.get("version") != 2 or not isinstance(raw.get("days"), dict):
                 raise ValueError("unknown usage metrics format")
             self._data = raw
+            if self._prune() or migrated:
+                self._save()
         except FileNotFoundError:
             return
         except (OSError, ValueError, json.JSONDecodeError):
@@ -97,6 +124,27 @@ class UsageMetrics:
             logger.exception("匿名利用メトリクスを読み込めません")
             self.enabled = False
             self.healthy = False
+
+    def _prune(self) -> bool:
+        cutoff = self._today() - timedelta(days=self.retention_days - 1)
+        days: dict[str, Any] = self._data["days"]
+        changed = False
+        for day in tuple(days):
+            try:
+                parsed = date.fromisoformat(day)
+            except ValueError as exc:
+                raise ValueError("invalid usage metrics day") from exc
+            if parsed < cutoff:
+                del days[day]
+                changed = True
+        return changed
+
+    def _current_day(self) -> dict[str, Any]:
+        self._prune()
+        return self._data["days"].setdefault(
+            self._today().isoformat(),
+            {"counters": {}, "histograms": {}},
+        )
 
     def _save(self) -> None:
         # A rolling deploy or a test may briefly have two app instances sharing
@@ -131,7 +179,7 @@ class UsageMetrics:
         self._validate(metric, dimensions)
         key = metric + "\t" + _labels_key(dimensions)
         with self._lock:
-            counters: dict[str, int] = self._data["counters"]
+            counters: dict[str, int] = self._current_day()["counters"]
             counters[key] = int(counters.get(key, 0)) + amount
             self._save()
 
@@ -152,7 +200,7 @@ class UsageMetrics:
             raise ValueError("histogram bounds must be unique, increasing, and positive")
         key = metric + "\t" + _labels_key(dimensions)
         with self._lock:
-            histograms: dict[str, dict[str, Any]] = self._data["histograms"]
+            histograms: dict[str, dict[str, Any]] = self._current_day()["histograms"]
             histogram = histograms.setdefault(
                 key,
                 {
@@ -175,10 +223,38 @@ class UsageMetrics:
         if not self.enabled:
             return ""
         with self._lock:
+            if self._prune():
+                self._save()
             snapshot = json.loads(json.dumps(self._data))
+        counters: dict[str, int] = {}
+        histograms: dict[str, dict[str, Any]] = {}
+        for day in snapshot["days"].values():
+            for key, value in day["counters"].items():
+                counters[key] = counters.get(key, 0) + int(value)
+            for key, value in day["histograms"].items():
+                combined = histograms.setdefault(
+                    key,
+                    {
+                        "bounds": value["bounds"],
+                        "buckets": [0 for _ in value["buckets"]],
+                        "count": 0,
+                        "sum": 0.0,
+                    },
+                )
+                if combined["bounds"] != value["bounds"]:
+                    metric = key.split("\t", 1)[0]
+                    raise ValueError(f"histogram bounds changed for {metric}")
+                combined["buckets"] = [
+                    int(left) + int(right)
+                    for left, right in zip(
+                        combined["buckets"], value["buckets"], strict=True
+                    )
+                ]
+                combined["count"] += int(value["count"])
+                combined["sum"] += float(value["sum"])
         lines: list[str] = []
         seen_counters: set[str] = set()
-        for key, value in sorted(snapshot["counters"].items()):
+        for key, value in sorted(counters.items()):
             metric, labels_key = key.split("\t", 1)
             labels = _labels_from_key(labels_key)
             if metric not in seen_counters:
@@ -186,7 +262,7 @@ class UsageMetrics:
                 seen_counters.add(metric)
             lines.append(f"{metric}{_format_labels(labels)} {int(value)}")
         seen_histograms: set[str] = set()
-        for key, histogram in sorted(snapshot["histograms"].items()):
+        for key, histogram in sorted(histograms.items()):
             metric, labels_key = key.split("\t", 1)
             labels = _labels_from_key(labels_key)
             if metric not in seen_histograms:
