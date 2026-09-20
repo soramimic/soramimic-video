@@ -43,11 +43,13 @@ def _jwks_client(issuer: str) -> PyJWKClient:
 def verify_access_email(assertion: str, *, issuer: str, audience: str) -> str | None:
     """Verify an Access assertion and return its canonical email, failing closed.
 
-    Logs deliberately contain no exception, token, email, or claim values.
+    Missing assertions are normal for anonymous users and return quietly.  Actual
+    verification failures are logged without exception, token, email, or claim values.
     """
+    if not assertion:
+        return None
     if (
-        not assertion
-        or len(assertion.encode("utf-8", errors="ignore")) > MAX_ASSERTION_BYTES
+        len(assertion.encode("utf-8", errors="ignore")) > MAX_ASSERTION_BYTES
         or assertion.count(".") != 2
         or not valid_issuer(issuer)
         or not audience.strip()
