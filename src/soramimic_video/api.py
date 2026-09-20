@@ -292,7 +292,10 @@ async def read_lyrics_upload(upload: UploadFile) -> str:
     """Read a small UTF-8 lyric text file without trusting its filename as a path."""
     suffix = Path(upload.filename or "lyrics.txt").suffix.lower()
     if suffix not in (".txt", ".md"):
-        raise HTTPException(status_code=400, detail="歌詞ファイルはTXTまたはMarkdownです")
+        raise HTTPException(
+            status_code=400,
+            detail="歌詞ファイルはUTF-8のテキストファイルを選んでください",
+        )
     raw = await upload.read(MAX_LYRICS_UPLOAD_BYTES + 1)
     if len(raw) > MAX_LYRICS_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="歌詞ファイルが大きすぎます")
