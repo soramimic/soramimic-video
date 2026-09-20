@@ -2113,6 +2113,11 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'href="https://www.bunka.go.jp/seisaku/chosakuken/taisetsu/point/"' in html
     assert 'id="song-upload-filename" role="status"' in html
     assert 'id="song-upload-clear" aria-label="選択した曲を解除"' in html
+    assert 'id="recording-delete-dialog"' in html
+    assert "録音を削除しますか？" in html
+    assert "録音した音声は削除すると元に戻せません。" in html
+    assert 'id="recording-delete-hide-warning"' in html
+    assert "次から表示しない" in html
     assert 'id="audio-filename"' not in html
     assert '曲ファイルを解除' not in html
     assert '$("song-upload-button").disabled' not in script
@@ -2160,10 +2165,12 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     audio_change = script[script.index('$("midi").addEventListener("change"') :]
     audio_change = audio_change[: audio_change.index('$("song-upload-clear").addEventListener')]
     assert '$("auto-lyrics").checked = false;' not in audio_change
-    clear = script[script.index('$("song-upload-clear").addEventListener') :]
-    clear = clear[: clear.index('// #lyrics')]
+    clear = _function_body(script, "async function clearSelectedSong()")
     assert '$("midi").value = "";' in clear
     assert '$("song-upload-button").focus();' in clear
+    assert 'recordedSongFile && !recordingDeleteWarningHidden()' in clear
+    assert '!await confirmRecordedSongDeletion()' in clear
+    assert '$("song-upload-clear").addEventListener("click", clearSelectedSong);' in script
     sync = _function_body(script, "function syncBuilderValues()")
     assert '$("song-upload-selection").hidden = !file;' in sync
     assert '$("song-upload-button").hidden = !!file;' in sync
@@ -2279,6 +2286,96 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
           clearRecordedSongPlayback();
           assert.equal($("song-record-playback").hidden, true);
           assert.deepEqual(revokedUrls, ["blob:recording-preview"]);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_recording_delete_requires_confirmation_and_can_hide_future_warnings():
+    """録音だけは誤削除を確認し、確定時の選択を次回以降へ保存する。"""
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function recordingDeleteWarningHidden()",
+            "function confirmRecordedSongDeletion()",
+            "async function clearSelectedSong()",
+        )
+    )
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        let dialogShows = 0, clearCalls = 0, previewCalls = 0, focused = "";
+        function element(id) {{
+          const listeners = new Map();
+          return {{
+            id, value: "", checked: false, returnValue: "", files: [],
+            addEventListener(type, callback, options = {{}}) {{
+              if (!listeners.has(type)) listeners.set(type, []);
+              listeners.get(type).push({{ callback, once: !!options.once }});
+            }},
+            emit(type) {{
+              const current = [...(listeners.get(type) || [])];
+              for (const item of current) item.callback();
+              listeners.set(type, (listeners.get(type) || []).filter(
+                (item) => !item.once || !current.includes(item)));
+            }},
+            dispatchEvent() {{}},
+            showModal() {{ dialogShows += 1; }},
+            focus() {{ focused = id; }},
+          }};
+        }}
+        function $(id) {{
+          if (!elements.has(id)) elements.set(id, element(id));
+          return elements.get(id);
+        }}
+        const values = new Map();
+        const localStorage = {{
+          getItem(key) {{ return values.get(key) ?? null; }},
+          setItem(key, value) {{ values.set(key, value); }},
+        }};
+        global.Event = class {{ constructor(type) {{ this.type = type; }} }};
+        const RECORDING_DELETE_WARNING_KEY = "soramimic-recording-delete-warning-hidden";
+        let recordedSongFile = {{ name: "recording.m4a" }};
+        const clearAudioInput = () => {{ clearCalls += 1; recordedSongFile = null; }};
+        const syncBuilderValues = () => {{}};
+        const schedulePreview = () => {{ previewCalls += 1; }};
+        const setRecordingStatus = () => {{}};
+        {functions}
+
+        (async () => {{
+          const canceled = clearSelectedSong();
+          assert.equal(dialogShows, 1);
+          $("recording-delete-hide-warning").checked = true;
+          $("recording-delete-dialog").returnValue = "cancel";
+          $("recording-delete-dialog").emit("close");
+          assert.equal(await canceled, false);
+          assert.equal(clearCalls, 0);
+          assert.equal(values.size, 0, "canceling must not hide the next warning");
+
+          const confirmed = clearSelectedSong();
+          assert.equal(dialogShows, 2);
+          $("recording-delete-hide-warning").checked = true;
+          $("recording-delete-dialog").returnValue = "delete";
+          $("recording-delete-dialog").emit("close");
+          assert.equal(await confirmed, true);
+          assert.equal(clearCalls, 1);
+          assert.equal(values.get(RECORDING_DELETE_WARNING_KEY), "1");
+          assert.equal(previewCalls, 1);
+          assert.equal(focused, "song-upload-button");
+
+          recordedSongFile = {{ name: "another-recording.m4a" }};
+          assert.equal(await clearSelectedSong(), true);
+          assert.equal(dialogShows, 2, "saved preference must skip later warnings");
+          assert.equal(clearCalls, 2);
+
+          values.clear();
+          recordedSongFile = null;
+          assert.equal(await clearSelectedSong(), true);
+          assert.equal(dialogShows, 2, "uploaded files must keep the existing immediate clear");
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
     )

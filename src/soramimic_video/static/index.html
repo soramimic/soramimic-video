@@ -555,6 +555,13 @@
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー ---- */
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+  .recording-delete-dialog p { margin: .25rem 0 .9rem; }
+  .recording-delete-choice {
+    display: flex; align-items: center; gap: .5rem; margin: 0 0 1rem;
+    color: var(--text);
+  }
+  .recording-delete-choice input { width: 1.1rem; height: 1.1rem; margin: 0; }
+  .recording-delete-actions { justify-content: flex-end; margin: 0; }
   .builder-wordlist-trigger {
     width: 100%; min-width: 0; min-height: 2.5rem; padding: .5rem .6rem;
     display: flex; align-items: center; justify-content: space-between; gap: .75rem;
@@ -1281,6 +1288,24 @@
     <button type="button" id="custom-wordlist-keep" autofocus>編集を続ける</button>
     <button type="button" id="custom-wordlist-discard-confirm" class="btn-danger">破棄する</button>
   </div>
+</dialog>
+
+<dialog id="recording-delete-dialog" class="custom-wordlist-dialog recording-delete-dialog"
+  aria-labelledby="recording-delete-title" aria-describedby="recording-delete-hint">
+  <form method="dialog">
+    <div class="custom-wordlist-header">
+      <h2 id="recording-delete-title">録音を削除しますか？</h2>
+    </div>
+    <p id="recording-delete-hint">録音した音声は削除すると元に戻せません。</p>
+    <label class="recording-delete-choice" for="recording-delete-hide-warning">
+      <input type="checkbox" id="recording-delete-hide-warning">
+      次から表示しない
+    </label>
+    <div class="custom-wordlist-actions recording-delete-actions">
+      <button type="submit" value="cancel" autofocus>キャンセル</button>
+      <button type="submit" value="delete" class="btn-danger">削除する</button>
+    </div>
+  </form>
 </dialog>
 
 <!-- 替え歌エディタ(同梱editor)の全画面モーダル。開くまではDOMにあるだけで空。
@@ -3332,6 +3357,7 @@ let songInputMode = "upload";
 let recordedSongFile = null;
 let recordedSongPreviewUrl = "";
 let preserveRecordedSongFileOnChange = false;
+const RECORDING_DELETE_WARNING_KEY = "soramimic-recording-delete-warning-hidden";
 function ownSongFile() {
   return $("midi").files[0] || recordedSongFile;
 }
@@ -3426,6 +3452,29 @@ function showRecordedSongPlayback(file) {
   recordedSongPreviewUrl = URL.createObjectURL(file);
   $("song-record-playback").src = recordedSongPreviewUrl;
   $("song-record-playback").hidden = false;
+}
+
+function recordingDeleteWarningHidden() {
+  try { return localStorage.getItem(RECORDING_DELETE_WARNING_KEY) === "1"; }
+  catch { return false; }
+}
+
+function confirmRecordedSongDeletion() {
+  const dialog = $("recording-delete-dialog");
+  const hideWarning = $("recording-delete-hide-warning");
+  hideWarning.checked = false;
+  dialog.returnValue = "cancel";
+  dialog.showModal();
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => {
+      const confirmed = dialog.returnValue === "delete";
+      if (confirmed && hideWarning.checked) {
+        try { localStorage.setItem(RECORDING_DELETE_WARNING_KEY, "1"); }
+        catch { /* 保存できない環境では次回も確認する */ }
+      }
+      resolve(confirmed);
+    }, { once: true });
+  });
 }
 
 let activeSongRecording = null;
@@ -3822,7 +3871,9 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
-$("song-upload-clear").addEventListener("click", () => {
+async function clearSelectedSong() {
+  if (recordedSongFile && !recordingDeleteWarningHidden()
+      && !await confirmRecordedSongDeletion()) return false;
   $("midi").value = "";
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioInput();
@@ -3830,7 +3881,9 @@ $("song-upload-clear").addEventListener("click", () => {
   schedulePreview(true);
   setRecordingStatus("");
   $("song-upload-button").focus();
-});
+  return true;
+}
+$("song-upload-clear").addEventListener("click", clearSelectedSong);
 window.addEventListener("pagehide", () => {
   stopSongRecording(true);
   clearRecordedSongPlayback();
