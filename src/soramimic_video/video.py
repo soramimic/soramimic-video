@@ -8,7 +8,8 @@
    ASS字幕と音声を1パスで合成する。どちらもH.264エンコードは1回だけ。
 
 あわせて曲名を空耳変換したサムネ画像(thumbnail.py)をプロジェクトディレクトリに
-作り、前奏区間(t=0〜歌い出し)のフレームとしても差し込む。
+作り、前奏区間のフレームとしても差し込む。前奏が短い曲ではサムネ用の時間を
+曲の前へ追加し、音声・字幕・単語カードを同じだけ後ろへずらす。
 
 画像はWikimedia Commons等のURL(wordlist_rowのimage列)。クレジット表記が
 必要な画像(CommonsでAttributionRequiredのもの)は出典文言をフレームに自動で
@@ -27,6 +28,7 @@ fallback・idle・サムネで共通で、レイアウトの "app_credit": false
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -712,7 +714,7 @@ def endroll_pages(
     return [words[i : i + size] for i in range(0, len(words), size)]
 
 
-def beat_times(project: Project, until: float) -> list[float]:
+def beat_times(project: Project, until: float, offset_sec: float = 0.0) -> list[float]:
     """曲の拍(4分音符)の時刻(秒)を0から until まで並べる。
 
     エンドロールのめくりを拍の切れ目に合わせるために使う。テンポ情報が無い
@@ -726,7 +728,7 @@ def beat_times(project: Project, until: float) -> list[float]:
     out: list[float] = []
     tick = 0
     while True:
-        sec = tick_to_sec(tick, tempo_map, ticks_per_beat)
+        sec = tick_to_sec(tick, tempo_map, ticks_per_beat) + offset_sec
         if sec > until:
             break
         # 異常なテンポ値(0など)で時刻が進まないときは無限ループにしない
@@ -839,6 +841,7 @@ def build_section_cues(
     original_credit: str = "",
     credit_notice: str = "",
     midi_end_credit: str = "",
+    beat_offset_sec: float = 0.0,
 ) -> list[ImageCue]:
     """前奏・間奏・後奏の専用フレームをキューにする(専用定義が無い区間は空)。
 
@@ -867,7 +870,7 @@ def build_section_cues(
             # クレジットページに最低1枚ぶんを残し、残りを単語ページに割り振る
             word_sec = sec.duration - (ENDROLL_PAGE_SEC if show_credits else 0.0)
             pages = endroll_pages(words, word_sec)
-            beats = beat_times(project, sec.end)
+            beats = beat_times(project, sec.end, beat_offset_sec)
             t = sec.start
             for i, page_words in enumerate(pages):
                 data = section_frame_data(
@@ -1226,19 +1229,68 @@ def build_image_cues(
     return cues, credits_for_cues(cues)
 
 
+def _thumbnail_natural_end(project: Project) -> float:
+    """元の曲時間上で、字幕と重ならずサムネを出せる時刻を返す。"""
+    starts = [n.start_sec for n in project.notes if n.kana] or [
+        n.start_sec for n in project.notes
+    ]
+    return max(0.0, min(starts, default=0.0) - SUB_PAD_SEC)
+
+
+def thumbnail_lead_in_sec(project: Project) -> float:
+    """短い前奏を歌に重ねず補うため、動画と音声の前へ足す秒数。"""
+    return max(0.0, THUMBNAIL_MIN_SEC - _thumbnail_natural_end(project))
+
+
 def thumbnail_show_end(project: Project) -> float:
     """サムネを出す区間の終わり。
 
     前奏が十分にある曲では、字幕(ASS)が始まる直前まで表示する。前奏が短い、
-    または歌から始まる曲でも先頭フレームが黒くならないよう、冒頭の
-    THUMBNAIL_MIN_SEC 秒は必ず表示する。その区間の字幕は build_ass の
-    clear_ranges で隠すため、サムネには重ならない。音声の時刻は変更しない。
+    または歌から始まる曲では不足分を元の曲の前へ足し、少なくとも
+    THUMBNAIL_MIN_SEC 秒表示する。
     """
-    starts = [n.start_sec for n in project.notes if n.kana] or [
-        n.start_sec for n in project.notes
+    return _thumbnail_natural_end(project) + thumbnail_lead_in_sec(project)
+
+
+def _shift_project_timing(project: Project, offset_sec: float) -> Project:
+    """映像用の複製を作り、歌唱・認識時刻を一律に後ろへずらす。"""
+    shifted = copy.deepcopy(project)
+    for note in shifted.notes:
+        note.start_sec += offset_sec
+        note.end_sec += offset_sec
+    for line in shifted.lines:
+        if line.canonical_start_sec is not None:
+            line.canonical_start_sec += offset_sec
+        if line.canonical_end_sec is not None:
+            line.canonical_end_sec += offset_sec
+    return shifted
+
+
+def _prepend_thumbnail_timeline(
+    project: Project,
+    cues: list[ImageCue],
+    frame: Path,
+    total_sec: float,
+) -> tuple[Project, list[ImageCue], float, float]:
+    """短い前奏では曲全体を後ろへずらし、先頭にサムネ時間を追加する。
+
+    戻り値は (映像用project, キュー, 総尺, 音声の遅延秒数)。元projectは変更しない。
+    """
+    lead_in = thumbnail_lead_in_sec(project)
+    video_project = _shift_project_timing(project, lead_in)
+    shifted_cues = [
+        ImageCue(
+            start=cue.start + lead_in,
+            end=cue.end + lead_in,
+            frame=cue.frame,
+            credits=cue.credits,
+        )
+        for cue in cues
     ]
-    intro_end = min(starts, default=0.0) - SUB_PAD_SEC
-    return max(intro_end, THUMBNAIL_MIN_SEC)
+    shifted_cues = prepend_thumbnail_cue(
+        shifted_cues, frame, thumbnail_show_end(project)
+    )
+    return video_project, shifted_cues, total_sec + lead_in, lead_in
 
 
 def prepend_thumbnail_cue(
@@ -1779,6 +1831,7 @@ class PreparedVideo:
     ass_path: Path
     total_sec: float
     fps: int
+    audio_delay_sec: float = 0.0
 
 
 def _sung_end_sec(project: Project) -> float:
@@ -1894,6 +1947,9 @@ def prepare_video(
     else:
         logger.warning("画像キューが0件です。動画の背景は全編無地になります")
     thumbnail_credits: list[dict] = []
+    thumbnail_clear_ranges: list[tuple[float, float]] = []
+    video_project = project
+    audio_delay_sec = 0.0
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -1907,25 +1963,29 @@ def prepare_video(
         used_images=thumbnail_credits,
     )
     if thumbnail is not None:
+        video_project, cues, total_sec, audio_delay_sec = _prepend_thumbnail_timeline(
+            project, cues, thumbnail, total_sec
+        )
         show_end = thumbnail_show_end(project)
-        cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
         if show_end > 0:
             cues[0].credits = tuple(thumbnail_credits)
+            thumbnail_clear_ranges.append((0.0, show_end))
         credits = credits_for_cues(cues)
     section_cues = build_section_cues(
-        project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
+        video_project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
         original_song=original_song,
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
         midi_end_credit=midi_end_credit.strip(),
+        beat_offset_sec=audio_delay_sec,
     )
     if section_cues:
         logger.info("間奏・後奏のフレーム: %d件", len(section_cues))
         cues = sorted([*cues, *section_cues], key=lambda c: c.start)
     idle_frame = render_idle_frame(
-        layout_obj, idle_frame_data(project, credit_text), width, height, work / "frames"
+        layout_obj, idle_frame_data(video_project, credit_text), width, height, work / "frames"
     )
     concat_path = _write_slideshow_concat(
         cues, work, width, height, total_sec, idle_frame
@@ -1933,8 +1993,11 @@ def prepare_video(
     ass_path = work / "subtitles.ass"
     ass_path.write_text(
         build_ass(
-            project, width, height, font, layout_obj, granularity,
-            [(cue.start, cue.end) for cue in section_cues],
+            video_project, width, height, font, layout_obj, granularity,
+            [
+                *thumbnail_clear_ranges,
+                *((cue.start, cue.end) for cue in section_cues),
+            ],
         ),
         encoding="utf-8",
     )
@@ -1942,7 +2005,10 @@ def prepare_video(
     if credits_path:
         runproc.log_generated_path(logger, "画像クレジットを書き出しました", credits_path)
     logger.info("動画前処理完了: %.1f秒", time.monotonic() - prepare_started)
-    return PreparedVideo(work, concat_path, ass_path, total_sec, fps)
+    return PreparedVideo(
+        work, concat_path, ass_path, total_sec, fps,
+        audio_delay_sec=audio_delay_sec,
+    )
 
 
 def _ass_filter_arg(path: Path) -> str:
@@ -1973,15 +2039,22 @@ def attach_audio(
     audio_path: Path,
     total_sec: float,
     out: Path | None = None,
+    audio_delay_sec: float = 0.0,
 ) -> Path:
-    """H.264を再エンコードせず、AAC音声だけを追加して完成MP4を作る。"""
+    """H.264を再エンコードせず、必要な冒頭無音とAAC音声を追加する。"""
+    if audio_delay_sec < 0:
+        raise ValueError("audio_delay_sec は0以上で指定してください")
     target = out or silent_video.with_name("out.mp4")
     started = time.monotonic()
     logger.info("音声結合開始: 映像stream copy / 音声AAC")
+    audio_filter = "apad"
+    if audio_delay_sec > 0:
+        delay_ms = round(audio_delay_sec * 1000)
+        audio_filter = f"adelay={delay_ms}:all=1,apad"
     _run(
         [_ffmpeg(), "-y", "-i", str(silent_video), "-i", str(audio_path),
          "-map", "0:v:0", "-map", "1:a:0",
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-af", "apad",
+         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-af", audio_filter,
          "-t", f"{total_sec:.3f}", "-movflags", "+faststart", str(target)],
         "動画と音声の結合",
     )
@@ -2070,6 +2143,9 @@ def make_video(
     # ジョブディレクトリへ残す。生成に失敗しても動画は作る(サムネ無しになるだけ)。
     # song_title_kana は曲名の読み(分かっていれば変換入力に使う)
     thumbnail_credits: list[dict] = []
+    thumbnail_clear_ranges: list[tuple[float, float]] = []
+    video_project = project
+    audio_delay_sec = 0.0
     thumbnail = generate_thumbnail(
         project,
         project_dir,
@@ -2083,27 +2159,31 @@ def make_video(
         used_images=thumbnail_credits,
     )
     if thumbnail is not None:
+        video_project, cues, total_sec, audio_delay_sec = _prepend_thumbnail_timeline(
+            project, cues, thumbnail, total_sec
+        )
         show_end = thumbnail_show_end(project)
-        cues = prepend_thumbnail_cue(cues, thumbnail, show_end)
         if show_end > 0:
             cues[0].credits = tuple(thumbnail_credits)
+            thumbnail_clear_ranges.append((0.0, show_end))
         credits = credits_for_cues(cues)
     # 間奏の「間奏(X秒)」・後奏のエンドロールを、歌唱フレームの隙間に差し込む
     section_cues = build_section_cues(
-        project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
+        video_project, cues, total_sec, layout_obj, work, width, height, credit_text, credits,
         synth_credit=synth_credit,
         original_song=original_song,
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
         midi_end_credit=midi_end_credit.strip(),
+        beat_offset_sec=audio_delay_sec,
     )
     if section_cues:
         logger.info("間奏・後奏のフレーム: %d件", len(section_cues))
         cues = sorted([*cues, *section_cues], key=lambda c: c.start)
     # 残った隙間(短い間奏・専用定義の無い区間)用のidleフレーム(定義があるときだけ)
     idle_frame = render_idle_frame(
-        layout_obj, idle_frame_data(project, credit_text), width, height, work / "frames"
+        layout_obj, idle_frame_data(video_project, credit_text), width, height, work / "frames"
     )
     concat_path = _write_slideshow_concat(
         cues, work, width, height, total_sec, idle_frame
@@ -2112,8 +2192,11 @@ def make_video(
     ass_path = work / "subtitles.ass"
     ass_path.write_text(
         build_ass(
-            project, width, height, font, layout_obj, granularity,
-            [(cue.start, cue.end) for cue in section_cues],
+            video_project, width, height, font, layout_obj, granularity,
+            [
+                *thumbnail_clear_ranges,
+                *((cue.start, cue.end) for cue in section_cues),
+            ],
         ),
         encoding="utf-8",
     )
@@ -2133,12 +2216,16 @@ def make_video(
     # 音声に合わせて切られ、足したエンドロールが消えてしまう)
     encode_started = time.monotonic()
     logger.info("動画エンコード開始: 1パス / %dfps", fps)
+    audio_filter = "apad"
+    if audio_delay_sec > 0:
+        delay_ms = round(audio_delay_sec * 1000)
+        audio_filter = f"adelay={delay_ms}:all=1,apad"
     _run(
         [_ffmpeg(), "-y",
          "-f", "concat", "-safe", "0", "-i", str(concat_path),
          "-i", str(audio_path),
          "-vf", f"fps={fps},format=yuv420p,subtitles='{ass_arg}'",
-         "-af", "apad",
+         "-af", audio_filter,
          "-c:v", "libx264", "-preset", "fast",
          "-c:a", "aac", "-b:a", "192k",
          "-t", f"{total_sec:.3f}",
