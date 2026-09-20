@@ -2,6 +2,8 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from soramimic_video.convert import (
     _align_positions,
     _coerce_params,
@@ -15,10 +17,13 @@ from soramimic_video.convert import (
     note_length_weights,
     parse_convert_params,
     pop_note_length_weight,
+    project_note_length_weights,
     unit_note_seconds,
 )
 from soramimic_video.kana import split_moras
+from soramimic_video.lyric_layers import apply_lyric_layers
 from soramimic_video.project import Line, Note, Project, SongInfo
+from soramimic_video.synthesize import build_lyric_map
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -432,6 +437,101 @@ def _assert_no_shared_notes(project: Project) -> None:
             counts.update(w.note_ids)
         for nid, c in counts.items():
             assert c == 1, f"音符 {nid} が {c} 単語に二重割り当て"
+
+
+def _repeated_layer_project() -> Project:
+    """同じ読みが連続し、1モーラを3合成スロットで歌うプロジェクト。"""
+    mora_ids = [f"m{i}" for i in range(9)]
+    performed = [
+        {
+            "singing_unit_id": f"s{i}", "mora_ids": [mora_id],
+            "status": "observed", "start_sec": i * 0.3,
+            "end_sec": (i + 1) * 0.3, "confidence": 1.0,
+            "link_ids": [f"l{i}"], "evidence_ids": [],
+        }
+        for i, mora_id in enumerate(mora_ids)
+    ]
+    plan = []
+    for i, mora_id in enumerate(mora_ids):
+        for j in range(3):
+            plan.append({
+                "id": f"slot-{i}-{j}", "utterance_id": "u0",
+                "singing_unit_id": f"s{i}", "mora_ids": [mora_id],
+                "note_candidate_id": f"n{i}-{j}", "link_ids": [f"l{i}"],
+                "kana": "ダ" if j == 0 else "ー",
+                "start_sec": i * 0.3 + j * 0.1,
+                "end_sec": i * 0.3 + (j + 1) * 0.1,
+                "midi_pitch": 60, "operation": "stack_split",
+                "timing_source": "aligned_boundary", "confidence": 1.0,
+                "evidence_ids": [], "pitch_sources": ["synthetic"],
+                "continuation": j > 0,
+            })
+    layers = {
+        "schema_version": 1, "canonical_text": "だ" * 9,
+        "canonical": [{
+            "utterance_id": "u0", "text": "だ" * 9, "kana": "ダ" * 9,
+            "mora_ids": mora_ids,
+        }],
+        "performed": performed, "synthesis_plan": plan,
+        "omissions": [], "unresolved_unit_ids": [], "diagnostics": [],
+        "evidence": [],
+    }
+    project = Project(SongInfo("", 480, tempo_map=[[0, 500000]]))
+    apply_lyric_layers(project, layers)
+    return project
+
+
+def _converted_repeated_line() -> list[dict]:
+    def word(surface: str, period: list[int], count: int) -> dict:
+        return {
+            "surface": surface, "kana": surface, "period": period,
+            "pronunciation": [surface] * count, "original": "",
+            "original_surface": "", "originalkana": "", "locked": False,
+        }
+
+    return [{
+        "units": [{"pronunciation": "ダ"} for _ in range(9)],
+        "words": [word("カ", [0, 3], 3), word("サ", [3, 9], 6)],
+    }]
+
+
+def test_apply_converted_lines_uses_layer_identity_for_repeated_moras(tmp_path: Path):
+    project = _repeated_layer_project()
+    apply_converted_lines(
+        project, _converted_repeated_line(),
+        wordlist=_empty_wordlist(tmp_path), where=None, params={},
+    )
+
+    assert project.parody is not None
+    first, second = project.parody.lines[0].words
+    assert first.note_ids == list(range(9))
+    assert second.note_ids == list(range(9, 27))
+    lyric_map = build_lyric_map(project)
+    assert [lyric_map[i] for i in range(27)] == (
+        ["カ", "ー", "ー"] * 3 + ["サ", "ー", "ー"] * 6
+    )
+    assert "ダ" not in lyric_map.values()
+
+
+def test_layered_conversion_rejects_text_mismatch_instead_of_fuzzy_mapping(
+    tmp_path: Path,
+):
+    project = _repeated_layer_project()
+    converted = _converted_repeated_line()
+    converted[0]["units"][4]["pronunciation"] = "ナ"
+    with pytest.raises(ValueError, match="変換元の音節と完全歌詞が一致しません"):
+        apply_converted_lines(
+            project, converted,
+            wordlist=_empty_wordlist(tmp_path), where=None, params={},
+        )
+
+
+def test_layered_note_length_weights_follow_mora_owned_slots():
+    project = _repeated_layer_project()
+    # テストの各モーラは0.1秒のスロットを3つ所有する。
+    compute = project_note_length_weights(project, 1.0)
+    weights = compute([[{"pronunciation": "ダ"} for _ in range(9)]])
+    assert weights[0] == pytest.approx([0.3] * 9)
 
 
 def test_apply_converted_lines_resolves_compound_note_double_assignment(
