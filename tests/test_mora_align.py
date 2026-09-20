@@ -73,6 +73,22 @@ def test_repeated_mora_reattacks_match_multi_character_mora():
     assert all(event.kana == "キャ" for event in events)
 
 
+def test_repeated_mora_reattacks_do_not_require_target_to_beat_blank():
+    matrix = np.full((80, 2), -8.0)
+    matrix[:, 0] = -0.01
+    for frame in (25, 31, 37):
+        matrix[frame, 1] = -0.1
+    emissions = mora_align.CTCEmissions(matrix, {"<blank>": 0, "ラ": 1})
+
+    assert mora_align.decode_kana_events_window(emissions, 0.0, 0.26) == ()
+    events = mora_align.decode_repeated_mora_reattacks(
+        emissions, "ラ", 0.0, 0.26,
+    )
+
+    assert [event.start_sec for event in events] == pytest.approx([0.0, .12, .24])
+    assert all(event.confidence == pytest.approx(np.exp(-.1)) for event in events)
+
+
 def test_recognition_window_rejects_infeasible_ctc_capacity_before_alignment(
     monkeypatch,
 ):

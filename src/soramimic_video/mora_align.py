@@ -37,6 +37,12 @@ _VARIANT_MARGIN_FRAMES = 25  # 読み候補スコアリング時に行の前後�
 # 平均だと行の長さで差が薄まる(違いは1-2モーラでも行全体で平均される)ため合計を使う。
 # 実測: 正しい修正(アス,ヒガ)は約4-13、誤修正の例(ドッテ)は約1.2だった
 _VARIANT_SCORE_MARGIN = 2.0
+# A CTC target can carry clear posterior spikes without ever beating blank.  This
+# is common for sung non-lexical syllables.  Keep only physically separate peaks
+# with both absolute and within-window prominence; neither rule limits the count.
+_REATTACK_MIN_POSTERIOR_PROMINENCE = 0.01
+_REATTACK_RELATIVE_PROMINENCE = 0.03
+_REATTACK_MIN_DISTANCE_FRAMES = 3
 # Whisper emits adjacent decimal timestamps that can differ by a few ULPs after
 # JSON/Python round trips.  One microsecond is still far below a CTC frame (20 ms).
 _WINDOW_BOUNDARY_EPSILON_SEC = 1e-6
@@ -242,11 +248,49 @@ def decode_kana_events_window(
 def decode_repeated_mora_reattacks(
     emissions: CTCEmissions, mora: str, start_sec: float, end_sec: float,
 ) -> tuple[KanaCTCEvent, ...]:
-    """Find unconditioned occurrences of one Whisper-supplied mora."""
+    """Find posterior spikes for one Whisper-supplied mora without a count cap.
+
+    Greedy CTC often emits blank throughout non-lexical singing even while the
+    requested kana has distinct posterior spikes.  Read those acoustic spikes
+    directly instead of requiring the kana to win the framewise argmax.
+    """
+    if not 0 <= start_sec < end_sec:
+        raise ValueError("CTC window must have positive duration")
     target = tuple(jaconv.hira2kata(mora))
     if not target:
         return ()
-    events = decode_kana_events_window(emissions, start_sec, end_sec)
+    first = max(0, _frame_ceiling(start_sec))
+    last = min(len(emissions.log_probs), _frame_ceiling(end_sec))
+    if first >= last:
+        return ()
+
+    import numpy as np
+    matrix = np.asarray(collapse_kana_aliases(emissions))[first:last]
+    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+    events: list[KanaCTCEvent] = []
+    for kana in set(target):
+        token_id = emissions.vocab.get(kana)
+        if token_id is None:
+            token_id = emissions.vocab.get(jaconv.kata2hira(kana))
+        if token_id is None:
+            continue
+        posterior = np.exp(matrix[:, token_id])
+        if not len(posterior):
+            continue
+        prominence = max(
+            _REATTACK_MIN_POSTERIOR_PROMINENCE,
+            float(posterior.max()) * _REATTACK_RELATIVE_PROMINENCE,
+        )
+        for index in _prominent_peak_indices(
+            posterior, prominence, _REATTACK_MIN_DISTANCE_FRAMES,
+        ):
+            event_start = max(start_sec, (first + index) * frame_sec - _PAD_SEC)
+            event_end = min(end_sec, event_start + frame_sec)
+            if event_end > event_start:
+                events.append(KanaCTCEvent(
+                    kana, event_start, event_end, float(posterior[index]),
+                ))
+    events.sort(key=lambda event: (event.start_sec, event.end_sec, event.kana))
     result: list[KanaCTCEvent] = []
     index = 0
     while index <= len(events) - len(target):
@@ -263,6 +307,38 @@ def decode_repeated_mora_reattacks(
         else:
             index += 1
     return tuple(result)
+
+
+def _prominent_peak_indices(
+    values: Any, minimum_prominence: float, minimum_distance: int,
+) -> list[int]:
+    """Find separated one-dimensional peaks without an additional dependency."""
+    candidates: list[int] = []
+    floor = float(values.min())
+    for index, value in enumerate(values):
+        value = float(value)
+        left_neighbor = float(values[index - 1]) if index else floor
+        right_neighbor = float(values[index + 1]) if index + 1 < len(values) else floor
+        if value < left_neighbor or value <= right_neighbor:
+            continue
+        left_base = floor if index == 0 else value
+        cursor = index - 1
+        while cursor >= 0 and float(values[cursor]) <= value:
+            left_base = min(left_base, float(values[cursor]))
+            cursor -= 1
+        right_base = floor if index + 1 == len(values) else value
+        cursor = index + 1
+        while cursor < len(values) and float(values[cursor]) <= value:
+            right_base = min(right_base, float(values[cursor]))
+            cursor += 1
+        if value - max(left_base, right_base) >= minimum_prominence:
+            candidates.append(index)
+
+    selected: list[int] = []
+    for index in sorted(candidates, key=lambda item: float(values[item]), reverse=True):
+        if all(abs(index - other) >= minimum_distance for other in selected):
+            selected.append(index)
+    return sorted(selected)
 
 
 def collapse_kana_aliases(emissions: CTCEmissions) -> Any:
