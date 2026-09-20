@@ -200,7 +200,7 @@ def build_stage3_layers(
                     event.start_sec,
                     event.end_sec,
                     event.confidence,
-                    "reazon-kana-ctc-greedy",
+                    "reazon-kana-ctc-target-posterior",
                 )
                 for event in raw_events
             )
