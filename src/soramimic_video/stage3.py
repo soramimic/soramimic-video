@@ -72,6 +72,7 @@ def build_stage3_layers(
     melody_notes: Sequence[MelodyNote],
     *,
     whisper_line_windows: Sequence[tuple[float, float]] | None = None,
+    enable_repeated_vocalization: bool = False,
 ) -> tuple[IntermediateRepresentation, Realization]:
     """Use every SheetSage candidate and explicit mora CTC peak in Stage 3."""
     from wav_to_xf import (
@@ -82,12 +83,17 @@ def build_stage3_layers(
         NoteRunConfig,
         ObservedSingingUnit,
         ReadingCandidate,
+        RepeatedVocalizationConfig,
         build_known_lyrics_document,
     )
     from wav_to_xf.pipeline import run_stage3_document
 
     if len(line_texts) != len(selected_readings) or not line_texts:
         raise ValueError("Stage 3には同数の歌詞行と読みが必要です")
+    if type(enable_repeated_vocalization) is not bool:
+        raise TypeError("反復音節補完の有効化指定はboolである必要があります")
+    if enable_repeated_vocalization and whisper_line_windows is None:
+        raise ValueError("反復音節補完には歌詞行ごとのWhisper区間が必要です")
     if (whisper_line_windows is not None
             and len(whisper_line_windows) != len(line_texts)):
         raise ValueError("Stage 3には歌詞行ごとのWhisper区間が必要です")
@@ -176,6 +182,11 @@ def build_stage3_layers(
             {f"u{index}": window
              for index, window in enumerate(snapped_windows)}
             if snapped_windows is not None
+            else None
+        ),
+        repeated_vocalization_config=(
+            RepeatedVocalizationConfig()
+            if enable_repeated_vocalization
             else None
         ),
     )
