@@ -698,8 +698,9 @@ def test_index_html_builder_card_has_selects():
     # サンプル曲と単語リストはサムネ枠より上で選べる。
     assert '<div class="builder-selects">' in card
     assert '<select id="builder-sample" aria-label="サンプル曲"></select>' in card
-    assert '<select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"' in card
-    assert 'aria-controls="custom-wordlist-menu" aria-expanded="false"></select>' in card
+    assert 'id="builder-wordlist-trigger" class="builder-wordlist-trigger"' in card
+    assert 'aria-controls="custom-wordlist-menu" aria-expanded="false">' in card
+    assert '<select id="builder-wordlist" hidden aria-hidden="true" tabindex="-1"></select>' in card
     assert 'id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"' in card
     assert card.index('class="builder-selects"') < card.index('id="builder-figure"')
     # 写し同期(選択肢と値)。正本は #sample-select / #wordlist-select のまま
