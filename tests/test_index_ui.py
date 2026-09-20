@@ -2063,10 +2063,15 @@ def test_custom_wordlists_use_the_soramimic_row_menu():
 
     render = _function_body(script, "function renderCustomListMenu()")
     assert 'for (const child of $("builder-wordlist").children)' in render
-    assert "appendBuilderWordlistOption(menu, option);" in render
+    assert "appendBuilderWordlistOption(menu, option, true);" in render
     assert 'appendCustomListMenuHeading(menu, "自作リスト");' in render
+    assert render.index('for (const child of $("builder-wordlist").children)') < render.index(
+        'appendCustomListMenuHeading(menu, "自作リスト");'
+    )
     assert 'add.textContent = "＋ 新しいリスト";' in render
-    assert 'row.className = "custom-wordlist-menu-row";' in render
+    assert (
+        'row.className = "custom-wordlist-menu-row custom-wordlist-menu-subitem";' in render
+    )
     assert 'choose.setAttribute("role", "menuitemradio");' in render
     assert 'choose.setAttribute("aria-checked", String(list.id === activeCustomListId));' in render
     assert 'edit.setAttribute("aria-label", `「${list.name}」を編集`);' in render
