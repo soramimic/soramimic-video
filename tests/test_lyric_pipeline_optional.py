@@ -138,6 +138,98 @@ def test_stage3_expands_automatic_repeated_vocalization_from_raw_ctc_reattacks()
     assert [item.kana for item in realization.synthesis_plan] == ["ラ"] * 4
 
 
+def test_initial_pure_repetition_is_capped_without_local_retry(monkeypatch, tmp_path):
+    import soramimic_video.stage3 as stage3
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.setattr(
+        transcribe,
+        "transcribe_lines",
+        lambda *a, **kw: [
+            TranscribedLine(0.0, 4.0, "ラ" * 20),
+            TranscribedLine(5.0, 6.0, "歌"),
+        ],
+    )
+
+    def no_retry(*_args, **_kwargs):
+        pytest.fail("初回から反復の行を局所再認識してはいけない")
+
+    monkeypatch.setattr(transcribe, "transcribe_window", no_retry)
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: {"ラ" * 4: ["ラ" * 4], "歌": ["ウタ"]}[text],
+    )
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
+
+    def align(_path, variants, **kwargs):
+        aligned = []
+        for line_index, (options, window) in enumerate(
+            zip(variants, kwargs["line_windows"], strict=True)
+        ):
+            moras = options[0]
+            for mora_index, mora in enumerate(moras):
+                start = window[0] + (window[1] - window[0]) * mora_index / len(moras)
+                end = window[0] + (window[1] - window[0]) * (mora_index + 1) / len(moras)
+                aligned.append(
+                    AlignedMora(line_index, mora_index, mora, start, end, 0.8)
+                )
+        return aligned, [0] * len(variants)
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    notes = [
+        MelodyNote(0.0, 0.8, 60),
+        MelodyNote(1.0, 1.8, 62),
+        MelodyNote(2.0, 2.8, 64),
+        MelodyNote(3.0, 3.8, 65),
+        MelodyNote(5.0, 6.0, 67),
+    ]
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: notes)
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=6.0)),
+    )
+
+    class StopAfterInitialNormalization(Exception):
+        pass
+
+    def stop_after_initial(
+        line_texts, selected_readings, aligned, _melody_notes, **_kwargs,
+    ):
+        assert line_texts == ["ラ" * 4, "歌"]
+        assert selected_readings == ["ラ" * 4, "ウタ"]
+        assert [item.kana for item in aligned if item.line == 0] == ["ラ"] * 4
+        raise StopAfterInitialNormalization
+
+    monkeypatch.setattr(stage3, "build_stage3_layers", stop_after_initial)
+
+    with pytest.raises(StopAfterInitialNormalization):
+        analyze_audio(
+            tmp_path / "input.wav",
+            tmp_path / "project",
+            device="cpu",
+            skip_separation=True,
+        )
+
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    assert recognition["semantic_gate"]["localized_deficit_recoveries"] == []
+    normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
+    assert normalization["phase"] == "initial"
+    assert normalization["original_mora_count"] == 20
+    assert normalization["normalized_mora_count"] == 4
+
+
 def test_known_lyrics_audio_path_never_calls_whisper(monkeypatch, tmp_path):
     from soramimic_video import audio_melody, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
@@ -907,6 +999,124 @@ def test_semantic_gate_recovers_singing_island_before_final_ctc(monkeypatch, tmp
     assert not any("CTC全体整列" in item for item in analysis["limitations"])
 
 
+def test_credit_retry_caps_pure_repetition_to_melody_notes(monkeypatch, tmp_path):
+    import soramimic_video.stage3 as stage3
+    from soramimic_video import (
+        analyze_audio as analyze_audio_module,
+    )
+    from soramimic_video import (
+        audio_melody,
+        mora_align,
+        reading,
+        transcribe,
+    )
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.setattr(
+        transcribe,
+        "transcribe_lines",
+        lambda *a, **kw: [
+            TranscribedLine(0.0, 5.0, "作曲"),
+            TranscribedLine(8.0, 9.0, "歌"),
+        ],
+    )
+    monkeypatch.setattr(
+        transcribe,
+        "transcribe_window",
+        lambda _path, start, end, _model, _device: [
+            TranscribedLine(start, end, "ダ" * 20)
+        ],
+    )
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: {
+            "作曲": ["サッキョク"],
+            "歌": ["ウタ"],
+            "ダ" * 4: ["ダ" * 4],
+        }[text],
+    )
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
+    monkeypatch.setattr(
+        analyze_audio_module,
+        "_choose_readings_with_kana",
+        lambda _mix, _vocals, _texts, variants, _windows, **_kwargs: (
+            [0] * len(variants),
+            None,
+        ),
+    )
+
+    def align(_path, variants, **kwargs):
+        aligned = []
+        for line_index, (options, window) in enumerate(
+            zip(variants, kwargs["line_windows"], strict=True)
+        ):
+            moras = options[0]
+            for mora_index, mora in enumerate(moras):
+                start = window[0] + (window[1] - window[0]) * mora_index / len(moras)
+                end = window[0] + (window[1] - window[0]) * (mora_index + 1) / len(moras)
+                aligned.append(
+                    AlignedMora(line_index, mora_index, mora, start, end, 0.8)
+                )
+        return aligned, [0] * len(variants)
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    notes = [
+        MelodyNote(1.0, 1.4, 60),
+        MelodyNote(1.8, 2.2, 62),
+        MelodyNote(2.6, 3.0, 64),
+        MelodyNote(3.4, 3.8, 65),
+        MelodyNote(8.0, 9.0, 67),
+    ]
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: notes)
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=10.0)),
+    )
+
+    class StopAfterRecovery(Exception):
+        pass
+
+    def stop_after_recovery(
+        line_texts, selected_readings, aligned, _melody_notes, **_kwargs,
+    ):
+        assert line_texts == ["ダ" * 4, "歌"]
+        assert selected_readings == ["ダ" * 4, "ウタ"]
+        assert [item.kana for item in aligned if item.line == 0] == ["ダ"] * 4
+        raise StopAfterRecovery
+
+    monkeypatch.setattr(stage3, "build_stage3_layers", stop_after_recovery)
+
+    with pytest.raises(StopAfterRecovery):
+        analyze_audio(
+            tmp_path / "input.wav",
+            tmp_path / "project",
+            device="cpu",
+            skip_separation=True,
+        )
+
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    recovery = recognition["semantic_gate"]["localized_recoveries"][0]
+    assert recovery["status"] == "accepted"
+    assert recovery["segments"][0]["surface"] == "ダ" * 4
+    normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
+    assert normalization["phase"] == "semantic-recovery"
+    assert normalization["original_mora_count"] == 20
+    assert normalization["normalized_mora_count"] == 4
+    assert normalization["note_count"] == 4
+    assert normalization["capped"] is True
+
+
 def test_note_lyric_deficit_recovery_replaces_only_acoustically_supported_detail(
     monkeypatch, tmp_path,
 ):
@@ -1009,3 +1219,128 @@ def test_note_lyric_deficit_recovery_replaces_only_acoustically_supported_detail
     assert [item["surface"] for item in recognition["segments"][-2:]] == [
         "にぬねの", "はひふへ",
     ]
+
+
+def test_note_deficit_retry_accepts_pure_repeated_vocalization(
+    monkeypatch, tmp_path,
+):
+    import soramimic_video.stage3 as stage3
+    from soramimic_video import (
+        analyze_audio as analyze_audio_module,
+    )
+    from soramimic_video import (
+        audio_melody,
+        mora_align,
+        reading,
+        transcribe,
+    )
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
+
+    original = [
+        TranscribedLine(0.0, 2.0, "かきくけ"),
+        TranscribedLine(3.0, 5.0, "こさしす"),
+        TranscribedLine(6.0, 8.0, "せそたち"),
+        TranscribedLine(10.0, 13.0, "短い"),
+    ]
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **kw: original)
+    monkeypatch.setattr(
+        transcribe,
+        "transcribe_window",
+        lambda _path, start, end, _model, _device: [
+            TranscribedLine(start, end, "DADADADA")
+        ],
+    )
+    monkeypatch.setattr(
+        reading,
+        "reading_candidates",
+        lambda text: [{
+            "かきくけ": "カキクケ",
+            "こさしす": "コサシス",
+            "せそたち": "セソタチ",
+            "短い": "ミジカイ",
+            "ダ" * 4: "ダ" * 4,
+        }[text]],
+    )
+    emissions = object()
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
+    monkeypatch.setattr(
+        analyze_audio_module,
+        "_choose_readings_with_kana",
+        lambda _mix, _vocals, _texts, variants, _windows, **_kwargs: (
+            [0] * len(variants),
+            None,
+        ),
+    )
+
+    def align(_path, variants, **kwargs):
+        aligned = []
+        for line_index, (options, window) in enumerate(
+            zip(variants, kwargs["line_windows"], strict=True)
+        ):
+            moras = options[0]
+            for mora_index, mora in enumerate(moras):
+                start = window[0] + (window[1] - window[0]) * mora_index / len(moras)
+                end = window[0] + (window[1] - window[0]) * (mora_index + 1) / len(moras)
+                aligned.append(
+                    AlignedMora(line_index, mora_index, mora, start, end, 0.0)
+                )
+        return aligned, [0] * len(variants)
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    notes = []
+    for base in (0.0, 3.0, 6.0):
+        notes.extend(
+            MelodyNote(base + index * 0.2, base + index * 0.2 + 0.1, 60)
+            for index in range(4)
+        )
+    notes.extend(
+        MelodyNote(10.0 + index * 0.15, 10.1 + index * 0.15, 62)
+        for index in range(16)
+    )
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **kw: notes)
+    monkeypatch.setattr(
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=13.0)),
+    )
+
+    class StopAfterRecovery(Exception):
+        pass
+
+    def stop_after_recovery(
+        line_texts, selected_readings, aligned, _melody_notes, **_kwargs,
+    ):
+        assert line_texts[-1] == "ダ" * 4
+        assert selected_readings[-1] == "ダ" * 4
+        assert [item.kana for item in aligned if item.line == 3] == ["ダ"] * 4
+        raise StopAfterRecovery
+
+    monkeypatch.setattr(stage3, "build_stage3_layers", stop_after_recovery)
+
+    with pytest.raises(StopAfterRecovery):
+        analyze_audio(
+            tmp_path / "input.wav",
+            tmp_path / "project",
+            device="cpu",
+            skip_separation=True,
+        )
+
+    recognition = json.loads(
+        (tmp_path / "project/analyze_audio/recognition.json").read_text()
+    )
+    recovery = recognition["semantic_gate"]["localized_deficit_recoveries"][0]
+    assert recovery["status"] == "accepted"
+    assert recovery["classification"] == "repeated-vocalization"
+    assert recovery["rejection_reasons"] == []
+    assert recovery["segments"][0]["surface"] == "ダ" * 4
+    assert recognition["segments"][-1]["surface"] == "ダ" * 4
+    normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
+    assert normalization["phase"] == "deficit-recovery"
+    assert normalization["original_surface"] == "DADADADA"
+    assert normalization["surface"] == "ダ" * 4

@@ -11,6 +11,7 @@ from soramimic_video.semantic_lyrics import (
     lyric_deficit_recoveries,
     non_lyric_template_family,
     normalize_recognized_text,
+    normalize_repeated_vocalization,
     vocalization_only,
 )
 from soramimic_video.transcribe import TranscribedLine
@@ -211,6 +212,60 @@ def test_vocalization_only_recognizes_repeated_non_lexical_syllables(text):
 @pytest.mark.parametrize("text", ["ほら", "サラサラ", "あの日", "wow 君へ"])
 def test_vocalization_only_preserves_lexical_text(text):
     assert not vocalization_only(text)
+
+
+def test_repeated_vocalization_is_capped_to_notes_and_keeps_its_unit():
+    line = TranscribedLine(1.0, 5.0, "ダ" * 20)
+    notes = [
+        MelodyNote(1.0 + index * 0.1, 1.05 + index * 0.1, 60)
+        for index in range(4)
+    ]
+
+    normalized = normalize_repeated_vocalization(line, notes)
+
+    assert normalized is not None
+    assert normalized.line == TranscribedLine(1.0, 5.0, "ダ" * 4)
+    assert normalized.unit_moras == ("ダ",)
+    assert normalized.original_mora_count == 20
+    assert normalized.normalized_mora_count == 4
+    assert normalized.note_count == 4
+
+
+def test_latin_repeated_vocalization_uses_exact_kana_count():
+    line = TranscribedLine(1.0, 5.0, "DADADADA")
+    notes = [MelodyNote(1.0, 5.0, 60)] * 31
+
+    normalized = normalize_repeated_vocalization(line, notes)
+
+    assert normalized is not None
+    assert normalized.line.text == "ダ" * 4
+    assert normalized.unit_moras == ("ダ",)
+    assert normalized.original_mora_count == 4
+    assert normalized.normalized_mora_count == 4
+    assert normalized.note_count == 31
+
+
+def test_short_multimora_pure_vocalization_keeps_its_period():
+    line = TranscribedLine(1.0, 5.0, "ダラダラ...")
+
+    normalized = normalize_repeated_vocalization(
+        line,
+        [MelodyNote(1.0, 5.0, 60)] * 31,
+    )
+
+    assert normalized is not None
+    assert normalized.line.text == "ダラダラ"
+    assert normalized.unit_moras == ("ダ", "ラ")
+    assert normalized.original_mora_count == 4
+    assert normalized.normalized_mora_count == 4
+
+
+def test_lexical_text_is_not_normalized_as_repeated_vocalization():
+    line = TranscribedLine(1.0, 5.0, "wow 君へ")
+
+    assert normalize_repeated_vocalization(
+        line, [MelodyNote(1.0, 5.0, 60)]
+    ) is None
 
 
 def test_lyric_deficit_recovery_uses_song_median_and_internal_note_rests():

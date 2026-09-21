@@ -57,6 +57,17 @@ class RecognitionBoundaryMerge:
     merged_surface: str
 
 
+@dataclass(frozen=True)
+class RepeatedVocalizationNormalization:
+    """A pure ASR vocalization rewritten to a bounded kana repetition."""
+
+    line: TranscribedLine
+    unit_moras: tuple[str, ...]
+    original_mora_count: int
+    normalized_mora_count: int
+    note_count: int
+
+
 _CREDIT_LABEL = r"(?:作詞|作曲|編曲|原作|監督|制作|製作|出演|翻訳|歌唱|動画制作|イラスト)"
 _CREDIT_VALUE_LABEL = rf"(?:{_CREDIT_LABEL}|サブタイトル)"
 _CREDIT_WITH_VALUE = re.compile(
@@ -232,6 +243,101 @@ def vocalization_only(text: str) -> bool:
         bool(latin.fullmatch(token)) if token.isascii()
         else all(character in kana for character in token)
         for token in tokens
+    )
+
+
+_LATIN_VOCALIZATION_TOKEN = re.compile(
+    r"wow|la|na|da|fa|ha|ya|a+h*|o+h*|u+h*"
+)
+
+
+def _latin_vocalization_moras(text: str) -> list[str] | None:
+    moras: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        match = _LATIN_VOCALIZATION_TOKEN.match(text, cursor)
+        if match is None:
+            return None
+        token = match.group()
+        if token == "wow":
+            moras.extend(("ワ", "ウ"))
+        elif token == "la":
+            moras.append("ラ")
+        elif token == "na":
+            moras.append("ナ")
+        elif token == "da":
+            moras.append("ダ")
+        elif token == "fa":
+            moras.append("ファ")
+        elif token == "ha":
+            moras.append("ハ")
+        elif token == "ya":
+            moras.append("ヤ")
+        elif token.startswith("a"):
+            moras.append("ア")
+        elif token.startswith("o"):
+            moras.append("オ")
+        else:
+            moras.append("ウ")
+        cursor = match.end()
+    return moras
+
+
+def _minimal_vocalization_period(moras: list[str]) -> tuple[str, ...] | None:
+    """Return a 1--3-mora period after the narrow vocalization-only gate."""
+    for width in range(1, min(3, len(moras) // 2) + 1):
+        if all(mora == moras[index % width] for index, mora in enumerate(moras)):
+            return tuple(moras[:width])
+    return None
+
+
+def normalize_repeated_vocalization(
+    line: TranscribedLine,
+    notes: list[MelodyNote],
+) -> RepeatedVocalizationNormalization | None:
+    """Canonicalize a pure repetition and cap it to melody-note capacity.
+
+    Whisper can emit hundreds of repeated syllables for a short bounded interval.
+    The surface count is not acoustic evidence, so retain the repeated unit but
+    never create more moras than SheetSage notes whose centers belong to the line.
+    Latin vocalizations are converted directly to kana so generic English reading
+    heuristics cannot collapse or spell out the repetition.
+    """
+    if not vocalization_only(line.text):
+        return None
+    normalized = normalize_recognized_text(line.text).replace("ー", "")
+    if not normalized:
+        return None
+    if normalized.isascii():
+        moras = _latin_vocalization_moras(normalized)
+    elif re.fullmatch(r"[ぁ-んァ-ヶ]+", normalized):
+        from .kana import split_moras
+
+        moras = split_moras(normalized)
+    else:
+        return None
+    if not moras:
+        return None
+    period = _minimal_vocalization_period(moras)
+    if period is None:
+        return None
+    note_count = sum(
+        line.start_sec <= (note.start_sec + note.end_sec) / 2 < line.end_sec
+        for note in notes
+    )
+    normalized_count = min(len(moras), note_count) if note_count else len(moras)
+    normalized_moras = moras[:normalized_count]
+    normalized_line = type(line)(
+        line.start_sec,
+        line.end_sec,
+        "".join(normalized_moras),
+    )
+    return RepeatedVocalizationNormalization(
+        line=normalized_line,
+        unit_moras=period,
+        original_mora_count=len(moras),
+        normalized_mora_count=len(normalized_moras),
+        note_count=note_count,
     )
 
 
