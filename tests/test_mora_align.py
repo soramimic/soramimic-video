@@ -119,6 +119,27 @@ def test_recognition_window_rejects_infeasible_ctc_capacity_before_alignment(
     assert error.required_frames == 4
 
 
+def test_whole_audio_alignment_excludes_context_only_padding(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    matrix = np.arange(100 * 2).reshape(100, 2)
+    emissions = mora_align.CTCEmissions(matrix, {"<pad>": 0, "カ": 1})
+    calls = []
+
+    def align(values, targets):
+        calls.append((values.copy(), targets))
+        return [SimpleNamespace(start=0, end=1, score=.42)]
+
+    monkeypatch.setattr(mora_align, "_forced_align", align)
+    result, chosen = mora_align.align_moras_with_variants(
+        Path("unused.wav"), [[["カ"]]], device="cpu", emissions=emissions,
+    )
+
+    assert chosen == [0]
+    np.testing.assert_array_equal(calls[0][0], matrix[25:75])
+    assert calls[0][1] == [1]
+    assert (result[0].start_sec, result[0].end_sec) == pytest.approx((0.0, .02))
+
+
 def _m(line: int, mora: int, kana: str, start: float, end: float) -> AlignedMora:
     return AlignedMora(
         line=line, mora=mora, kana=kana, start_sec=start, end_sec=end, score=1.0
