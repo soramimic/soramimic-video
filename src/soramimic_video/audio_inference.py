@@ -329,19 +329,23 @@ def transcribe_lines_remote(
     language: str | None = "ja",
     vad_filter: bool,
     condition_on_previous_text: bool,
+    temperature: float | None = None,
 ):
     from .transcribe import TranscribedLine
 
+    parameters: dict[str, Any] = {
+        "model_size": model_size,
+        "device": device,
+        "language": language,
+        "vad_filter": vad_filter,
+        "condition_on_previous_text": condition_on_previous_text,
+    }
+    if temperature is not None:
+        parameters["temperature"] = temperature
     result = _remote_inference(
         "whisper",
         audio_path,
-        {
-            "model_size": model_size,
-            "device": device,
-            "language": language,
-            "vad_filter": vad_filter,
-            "condition_on_previous_text": condition_on_previous_text,
-        },
+        parameters,
     )
     if not isinstance(result, dict) or not isinstance(result.get("lines"), list):
         raise RuntimeError("共有Whisperの応答形式が不正です")
@@ -350,6 +354,8 @@ def transcribe_lines_remote(
             raise RuntimeError("共有Whisperの言語指定応答が不正です")
     elif language != "ja":
         raise RuntimeError("共有Whisperサービスが言語指定に対応していません")
+    if temperature is not None and result.get("requested_temperature") != temperature:
+        raise RuntimeError("共有Whisperサービスが温度指定に対応していません")
     return [
         TranscribedLine(
             start_sec=float(line["start_sec"]),
@@ -616,12 +622,18 @@ class InferenceScheduler:
                 condition_on_previous_text=bool(
                     job.parameters.get("condition_on_previous_text", True)
                 ),
+                temperature=(
+                    float(job.parameters["temperature"])
+                    if "temperature" in job.parameters
+                    else None
+                ),
                 cache_model=True,
                 cuda_capacity_reserved=job.cuda_capacity_reserved,
                 cancel_check=lambda: self._check_cancelled(job),
             )
             return {
                 "requested_language": language,
+                "requested_temperature": job.parameters.get("temperature"),
                 "lines": [
                     {
                         "start_sec": line.start_sec,
@@ -844,6 +856,15 @@ def create_audio_inference_app(state_dir: Path, *, device: str = "cuda"):
             for option in ("vad_filter", "condition_on_previous_text"):
                 if option in parsed and not isinstance(parsed[option], bool):
                     raise HTTPException(422, f"{option}はbooleanで指定してください")
+            if "temperature" in parsed:
+                temperature = parsed["temperature"]
+                if (
+                    isinstance(temperature, bool)
+                    or not isinstance(temperature, (int, float))
+                    or not math.isfinite(float(temperature))
+                    or not 0.0 <= float(temperature) <= 1.0
+                ):
+                    raise HTTPException(422, "temperatureは0以上1以下で指定してください")
             language = parsed.get("language", "ja")
             if language is not None and (
                 not isinstance(language, str)

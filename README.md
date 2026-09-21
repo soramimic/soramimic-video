@@ -169,7 +169,12 @@ uv run soramimic-video export-xf --project work/song --output work/song/selected
 候補はKanaWhisperの原音mix／分離ボーカル結果で保守的に
 再順位付けします。KanaWhisperの自由認識結果を
 歌詞として採用することはありません。ReazonかなCTCは、選択済みの読みを変更せずモーラ時刻だけを
-推定します。`analyze_audio/recognition.json` に通常Whisperの歌詞認識を、
+推定します。最初の対応付け後に歌詞を所有しないSheetSage2ノートが8音以上・4秒以上まとまって残り、
+既存の認識行と重ならず、分離ボーカルの活動もある場合だけ、その区間をWhisperの温度0で局所再認識
+します。正確な区間と前後0.5秒付き区間をCTCで再検証し、支持された結果だけを加えて全体を再整列
+します。両結果の時刻と母音列だけが一致し子音がCTCを通らない場合は、共通する母音継続だけを候補に
+できます。短い反復発声は認識回数を保ち、SheetSage2の音符数へ水増ししません。
+`analyze_audio/recognition.json` に通常Whisperの歌詞認識と局所回復の判定根拠を、
 `analyze_audio/reading.json` に読み候補・KanaWhisper根拠・選択結果を保存します。対応範囲は日本語の
 主旋律で、英語・会話・コーラスが完全に復元される保証はありません。正式歌詞の指定時は
 通常Whisperによる表層認識を行わず、指定文字列も書き換えません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
