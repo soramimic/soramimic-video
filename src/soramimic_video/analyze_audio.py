@@ -849,6 +849,19 @@ def analyze_audio(
                 normalization.normalized_mora_count
                 < normalization.original_mora_count
             ),
+            "expanded": (
+                normalization.normalized_mora_count
+                > normalization.original_mora_count
+            ),
+            "adjustment": (
+                "contracted"
+                if normalization.normalized_mora_count
+                < normalization.original_mora_count
+                else "expanded"
+                if normalization.normalized_mora_count
+                > normalization.original_mora_count
+                else "unchanged"
+            ),
         })
         return normalization.line, True
 

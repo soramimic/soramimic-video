@@ -231,21 +231,21 @@ def test_repeated_vocalization_is_capped_to_notes_and_keeps_its_unit():
     assert normalized.note_count == 4
 
 
-def test_latin_repeated_vocalization_uses_exact_kana_count():
+def test_latin_repeated_vocalization_expands_to_exact_note_count():
     line = TranscribedLine(1.0, 5.0, "DADADADA")
     notes = [MelodyNote(1.0, 5.0, 60)] * 31
 
     normalized = normalize_repeated_vocalization(line, notes)
 
     assert normalized is not None
-    assert normalized.line.text == "ダ" * 4
+    assert normalized.line.text == "ダ" * 31
     assert normalized.unit_moras == ("ダ",)
     assert normalized.original_mora_count == 4
-    assert normalized.normalized_mora_count == 4
+    assert normalized.normalized_mora_count == 31
     assert normalized.note_count == 31
 
 
-def test_short_multimora_pure_vocalization_keeps_its_period():
+def test_short_multimora_pure_vocalization_cycles_its_period_to_notes():
     line = TranscribedLine(1.0, 5.0, "ダラダラ...")
 
     normalized = normalize_repeated_vocalization(
@@ -254,10 +254,22 @@ def test_short_multimora_pure_vocalization_keeps_its_period():
     )
 
     assert normalized is not None
-    assert normalized.line.text == "ダラダラ"
+    assert normalized.line.text == "ダラ" * 15 + "ダ"
     assert normalized.unit_moras == ("ダ", "ラ")
     assert normalized.original_mora_count == 4
+    assert normalized.normalized_mora_count == 31
+
+
+def test_repeated_vocalization_without_notes_preserves_recognized_count():
+    line = TranscribedLine(1.0, 5.0, "ダラダラ")
+
+    normalized = normalize_repeated_vocalization(line, [])
+
+    assert normalized is not None
+    assert normalized.line.text == "ダラダラ"
+    assert normalized.original_mora_count == 4
     assert normalized.normalized_mora_count == 4
+    assert normalized.note_count == 0
 
 
 def test_lexical_text_is_not_normalized_as_repeated_vocalization():

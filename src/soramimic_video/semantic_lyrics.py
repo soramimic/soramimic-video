@@ -59,7 +59,7 @@ class RecognitionBoundaryMerge:
 
 @dataclass(frozen=True)
 class RepeatedVocalizationNormalization:
-    """A pure ASR vocalization rewritten to a bounded kana repetition."""
+    """A pure ASR vocalization rewritten to a note-matched kana repetition."""
 
     line: TranscribedLine
     unit_moras: tuple[str, ...]
@@ -295,11 +295,13 @@ def normalize_repeated_vocalization(
     line: TranscribedLine,
     notes: list[MelodyNote],
 ) -> RepeatedVocalizationNormalization | None:
-    """Canonicalize a pure repetition and cap it to melody-note capacity.
+    """Canonicalize a pure repetition to its melody-note count.
 
     Whisper can emit hundreds of repeated syllables for a short bounded interval.
-    The surface count is not acoustic evidence, so retain the repeated unit but
-    never create more moras than SheetSage notes whose centers belong to the line.
+    It can also collapse several audible attacks into only a few syllables.  The
+    surface count is not acoustic evidence, so retain the repeated unit and emit
+    one mora per SheetSage note whose center belongs to the line.  Preserve the
+    recognized count when the interval has no notes instead of erasing the line.
     Latin vocalizations are converted directly to kana so generic English reading
     heuristics cannot collapse or spell out the repetition.
     """
@@ -325,8 +327,10 @@ def normalize_repeated_vocalization(
         line.start_sec <= (note.start_sec + note.end_sec) / 2 < line.end_sec
         for note in notes
     )
-    normalized_count = min(len(moras), note_count) if note_count else len(moras)
-    normalized_moras = moras[:normalized_count]
+    normalized_count = note_count if note_count else len(moras)
+    normalized_moras = [
+        period[index % len(period)] for index in range(normalized_count)
+    ]
     normalized_line = type(line)(
         line.start_sec,
         line.end_sec,
