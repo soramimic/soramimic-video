@@ -349,6 +349,24 @@ def test_unowned_note_window_rejects_overlap_with_retained_transcript():
     ) == []
 
 
+def test_unowned_note_window_keeps_long_prefix_before_retained_transcript():
+    notes = [
+        (f"n-{index}", index * 0.4, index * 0.4 + 0.35)
+        for index in range(14)
+    ]
+
+    windows = unowned_note_recovery_windows(
+        _unowned_correspondence(notes),
+        [TranscribedLine(4.75, 6.0, "既存")],
+    )
+
+    assert len(windows) == 1
+    assert windows[0].start_sec == 0.0
+    assert windows[0].end_sec == pytest.approx(4.75)
+    assert windows[0].note_count == 12
+    assert windows[0].note_ids[-1] == "n-11"
+
+
 def test_lyric_deficit_recovery_uses_song_median_and_internal_note_rests():
     lines = [
         TranscribedLine(0.0, 2.0, "通常一"),

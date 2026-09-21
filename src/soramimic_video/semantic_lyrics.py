@@ -137,12 +137,33 @@ def unowned_note_recovery_windows(
          for start, end in (notes_by_id[note_id],)),
         key=lambda item: (item[0], item[1], item[2]),
     )
+    # A note-only run can extend into a later Whisper line even though Stage 3
+    # did not assign those tail notes to it.  Remove only the notes that actually
+    # overlap retained text; discarding the whole run makes an otherwise safe,
+    # long prefix disappear nondeterministically when that later line moves by a
+    # few frames between full-song Whisper runs.
+    unowned = [
+        note
+        for note in unowned
+        if not any(
+            line.start_sec < note[1] and line.end_sec > note[0]
+            for line in retained_lines
+        )
+    ]
     if not unowned:
         return []
 
     clusters: list[list[tuple[float, float, str]]] = []
     for note in unowned:
-        if not clusters or note[0] - clusters[-1][-1][1] > _UNOWNED_CLUSTER_MAX_GAP_SEC:
+        crosses_retained_line = bool(clusters) and any(
+            line.start_sec < note[0] and line.end_sec > clusters[-1][-1][1]
+            for line in retained_lines
+        )
+        if (
+            not clusters
+            or note[0] - clusters[-1][-1][1] > _UNOWNED_CLUSTER_MAX_GAP_SEC
+            or crosses_retained_line
+        ):
             clusters.append([note])
         else:
             clusters[-1].append(note)
@@ -151,14 +172,19 @@ def unowned_note_recovery_windows(
         for cluster in clusters
         if len(cluster) >= _UNOWNED_CLUSTER_MIN_NOTES
         and cluster[-1][1] - cluster[0][0] >= _UNOWNED_CLUSTER_MIN_SPAN_SEC
-        and not any(
-            line.start_sec < cluster[-1][1] and line.end_sec > cluster[0][0]
-            for line in retained_lines
-        )
     ]
     merged: list[list[tuple[float, float, str]]] = []
     for seed in seeds:
-        if not merged or seed[0][0] - merged[-1][-1][1] > _UNOWNED_WINDOW_MERGE_GAP_SEC:
+        proposed_start = merged[-1][0][0] if merged else seed[0][0]
+        crosses_retained_line = any(
+            line.start_sec < seed[-1][1] and line.end_sec > proposed_start
+            for line in retained_lines
+        )
+        if (
+            not merged
+            or seed[0][0] - merged[-1][-1][1] > _UNOWNED_WINDOW_MERGE_GAP_SEC
+            or crosses_retained_line
+        ):
             merged.append(list(seed))
         else:
             merged[-1].extend(seed)

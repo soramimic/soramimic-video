@@ -1257,6 +1257,7 @@ def analyze_audio(
             )
             recovered_lines = []
             recovered_repetitions = []
+            recovered_pathological_repetition = False
             for start_sec, end_sec in recovery.windows:
                 candidates = transcribe_window(
                     audio_path,
@@ -1266,6 +1267,10 @@ def analyze_audio(
                     device or "auto",
                 )
                 for candidate in candidates:
+                    if is_pathological_repeated_vocalization(
+                        candidate, recovery.note_count
+                    ):
+                        recovered_pathological_repetition = True
                     candidate, is_repetition = normalize_vocalization_line(
                         candidate,
                         phase="deficit-recovery",
@@ -1281,6 +1286,11 @@ def analyze_audio(
             ]
             if not recovered_lines:
                 rejection_reasons.append("empty-transcript")
+            if recovered_pathological_repetition:
+                # A retry is allowed to preserve the attacks Whisper actually
+                # heard, but it must never replace a usable source line with a
+                # decoder runaway containing hundreds of periodic syllables.
+                rejection_reasons.append("pathological-repetition")
             if any(
                 decision.template_family is not None
                 for decision in recovered_decisions
