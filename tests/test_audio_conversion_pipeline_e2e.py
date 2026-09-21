@@ -62,7 +62,7 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
 
     class Stage3Document:
         def to_json(self) -> str:
-            return "{}"
+            return '{"note_candidates": [], "links": []}'
 
     class Stage3Realization:
         """Match Realization.to_dict's tuple-valued in-memory representation."""

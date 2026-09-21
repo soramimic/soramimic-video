@@ -93,14 +93,17 @@ def _run_whisper(
     language: str | None,
     vad_filter: bool,
     condition_on_previous_text: bool,
+    temperature: float | None = None,
     cancel_check: Callable[[], Any] | None = None,
 ) -> tuple[list[TranscribedLine], Any]:
-    segments, info = whisper_model.transcribe(
-        str(vocals_path),
-        language=language,
-        vad_filter=vad_filter,
-        condition_on_previous_text=condition_on_previous_text,
-    )
+    options: dict[str, Any] = {
+        "language": language,
+        "vad_filter": vad_filter,
+        "condition_on_previous_text": condition_on_previous_text,
+    }
+    if temperature is not None:
+        options["temperature"] = temperature
+    segments, info = whisper_model.transcribe(str(vocals_path), **options)
     lines = []
     for segment in segments:
         if cancel_check is not None:
@@ -146,27 +149,31 @@ def transcribe_lines(
     language: str | None = "ja",
     vad_filter: bool = True,
     condition_on_previous_text: bool = True,
+    temperature: float | None = None,
 ) -> list[TranscribedLine]:
     from .audio_inference import configured_url, transcribe_lines_remote
 
+    options: dict[str, Any] = {
+        "language": language,
+        "vad_filter": vad_filter,
+        "condition_on_previous_text": condition_on_previous_text,
+    }
+    if temperature is not None:
+        options["temperature"] = temperature
     if configured_url() is not None:
         logger.info("共有Whisperサービスで歌詞を認識中...")
         lines = transcribe_lines_remote(
             vocals_path,
             model_size,
             device,
-            language=language,
-            vad_filter=vad_filter,
-            condition_on_previous_text=condition_on_previous_text,
+            **options,
         )
     else:
         lines = _transcribe_lines_local(
             vocals_path,
             model_size,
             device,
-            language=language,
-            vad_filter=vad_filter,
-            condition_on_previous_text=condition_on_previous_text,
+            **options,
         )
     return _clamp_lines_to_audio(lines, _audio_duration_sec(vocals_path))
 
@@ -179,6 +186,7 @@ def transcribe_window(
     device: str = "auto",
     *,
     language: str | None = "ja",
+    temperature: float | None = None,
 ) -> list[TranscribedLine]:
     """Transcribe one hard-bounded audio interval and restore song-clock times."""
     if start_sec < 0 or end_sec <= start_sec:
@@ -198,14 +206,14 @@ def transcribe_window(
     with tempfile.TemporaryDirectory(prefix="soramimic-whisper-window-") as temporary:
         clip = Path(temporary) / "clip.wav"
         sf.write(clip, samples, samplerate, subtype="FLOAT")
-        local_lines = transcribe_lines(
-            clip,
-            model_size,
-            device,
-            language=language,
-            vad_filter=False,
-            condition_on_previous_text=False,
-        )
+        options: dict[str, Any] = {
+            "language": language,
+            "vad_filter": False,
+            "condition_on_previous_text": False,
+        }
+        if temperature is not None:
+            options["temperature"] = temperature
+        local_lines = transcribe_lines(clip, model_size, device, **options)
     return [
         TranscribedLine(
             max(actual_start, actual_start + line.start_sec),
@@ -226,6 +234,7 @@ def _transcribe_lines_local(
     language: str | None = "ja",
     vad_filter: bool = True,
     condition_on_previous_text: bool = True,
+    temperature: float | None = None,
     cache_model: bool = False,
     cuda_capacity_reserved: bool = False,
     cancel_check: Callable[[], Any] | None = None,
@@ -263,6 +272,7 @@ def _transcribe_lines_local(
             language=language,
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
+            temperature=temperature,
             cancel_check=cancel_check,
         )
     except RuntimeError as exc:
@@ -284,6 +294,7 @@ def _transcribe_lines_local(
             language=language,
             vad_filter=vad_filter,
             condition_on_previous_text=condition_on_previous_text,
+            temperature=temperature,
             cancel_check=cancel_check,
         )
     logger.info("認識結果: %d行 (言語確度 %.2f)", len(lines), info.language_probability)

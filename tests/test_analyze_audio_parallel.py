@@ -236,7 +236,7 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
 
     class Document:
         def to_json(self):
-            return "{}"
+            return '{"note_candidates": [], "links": []}'
 
     class Layers:
         def to_dict(self):

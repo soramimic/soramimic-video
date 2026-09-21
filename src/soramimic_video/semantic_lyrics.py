@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 import statistics
 import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .audio_melody import MelodyNote
@@ -66,6 +67,121 @@ class RepeatedVocalizationNormalization:
     original_mora_count: int
     normalized_mora_count: int
     note_count: int
+
+
+@dataclass(frozen=True)
+class UnownedNoteRecoveryWindow:
+    """A conservative retry interval made only from Stage 3 note-only links."""
+
+    start_sec: float
+    end_sec: float
+    note_ids: tuple[str, ...]
+    seed_note_count: int
+
+    @property
+    def note_count(self) -> int:
+        return len(self.note_ids)
+
+
+_UNOWNED_CLUSTER_MAX_GAP_SEC = 0.32
+_UNOWNED_CLUSTER_MIN_NOTES = 4
+_UNOWNED_CLUSTER_MIN_SPAN_SEC = 0.6
+_UNOWNED_WINDOW_MERGE_GAP_SEC = 2.0
+_UNOWNED_WINDOW_MIN_NOTES = 8
+_UNOWNED_WINDOW_MIN_SPAN_SEC = 4.0
+
+
+def unowned_note_recovery_windows(
+    correspondence: Mapping[str, Any],
+    retained_lines: Sequence[TranscribedLine],
+) -> list[UnownedNoteRecoveryWindow]:
+    """Find long lyric-free note runs without consuming nearby owned notes.
+
+    Stage 3 is the ownership authority: only ``note_only`` links without singing
+    units seed a window.  Short islands establish that a window is coherent, then
+    every unowned note inside the merged envelope is restored.  That second pass
+    is important for brief internal islands which would otherwise disappear when
+    two longer clusters are joined.
+    """
+    raw_notes = correspondence.get("note_candidates")
+    raw_links = correspondence.get("links")
+    if not isinstance(raw_notes, list) or not isinstance(raw_links, list):
+        raise ValueError("Stage 3対応表のノートまたはリンクが不正です")
+
+    notes_by_id: dict[str, tuple[float, float]] = {}
+    for raw in raw_notes:
+        if not isinstance(raw, dict):
+            continue
+        note_id = raw.get("id")
+        start = raw.get("start_sec")
+        end = raw.get("end_sec")
+        if not isinstance(note_id, str) or isinstance(start, bool) or isinstance(end, bool):
+            continue
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            continue
+        start_sec, end_sec = float(start), float(end)
+        if end_sec > start_sec:
+            notes_by_id[note_id] = (start_sec, end_sec)
+
+    unowned_ids = {
+        note_id
+        for raw in raw_links
+        if isinstance(raw, dict)
+        and raw.get("operation") == "note_only"
+        and raw.get("singing_unit_ids") == []
+        for note_id in raw.get("note_candidate_ids", [])
+        if isinstance(note_id, str) and note_id in notes_by_id
+    }
+    unowned = sorted(
+        ((start, end, note_id) for note_id in unowned_ids
+         for start, end in (notes_by_id[note_id],)),
+        key=lambda item: (item[0], item[1], item[2]),
+    )
+    if not unowned:
+        return []
+
+    clusters: list[list[tuple[float, float, str]]] = []
+    for note in unowned:
+        if not clusters or note[0] - clusters[-1][-1][1] > _UNOWNED_CLUSTER_MAX_GAP_SEC:
+            clusters.append([note])
+        else:
+            clusters[-1].append(note)
+    seeds = [
+        cluster
+        for cluster in clusters
+        if len(cluster) >= _UNOWNED_CLUSTER_MIN_NOTES
+        and cluster[-1][1] - cluster[0][0] >= _UNOWNED_CLUSTER_MIN_SPAN_SEC
+        and not any(
+            line.start_sec < cluster[-1][1] and line.end_sec > cluster[0][0]
+            for line in retained_lines
+        )
+    ]
+    merged: list[list[tuple[float, float, str]]] = []
+    for seed in seeds:
+        if not merged or seed[0][0] - merged[-1][-1][1] > _UNOWNED_WINDOW_MERGE_GAP_SEC:
+            merged.append(list(seed))
+        else:
+            merged[-1].extend(seed)
+
+    windows = []
+    for seed_group in merged:
+        start_sec, end_sec = seed_group[0][0], seed_group[-1][1]
+        rehydrated = [
+            note for note in unowned
+            if note[0] >= start_sec and note[1] <= end_sec
+        ]
+        if (
+            len(rehydrated) < _UNOWNED_WINDOW_MIN_NOTES
+            or end_sec - start_sec < _UNOWNED_WINDOW_MIN_SPAN_SEC
+        ):
+            continue
+        windows.append(UnownedNoteRecoveryWindow(
+            start_sec,
+            end_sec,
+            tuple(note[2] for note in rehydrated),
+            len(seed_group),
+        ))
+    return windows
 
 
 _CREDIT_LABEL = r"(?:作詞|作曲|編曲|原作|監督|制作|製作|出演|翻訳|歌唱|動画制作|イラスト)"
@@ -291,19 +407,46 @@ def _minimal_vocalization_period(moras: list[str]) -> tuple[str, ...] | None:
     return None
 
 
+def is_pathological_repeated_vocalization(
+    line: TranscribedLine,
+    note_count: int,
+) -> bool:
+    """Flag only runaway periodic ASR, not an ordinary short repetition."""
+    if note_count < 0:
+        raise ValueError("note_count must be non-negative")
+    normalized = normalize_recognized_text(line.text).replace("ー", "")
+    if not normalized or not vocalization_only(line.text):
+        return False
+    if normalized.isascii():
+        moras = _latin_vocalization_moras(normalized)
+    elif re.fullmatch(r"[ぁ-んァ-ヶ]+", normalized):
+        from .kana import split_moras
+
+        moras = split_moras(normalized)
+    else:
+        return False
+    if not moras or _minimal_vocalization_period(moras) is None:
+        return False
+    duration = max(1e-6, line.end_sec - line.start_sec)
+    return (
+        len(moras) > max(64, note_count * 2)
+        or len(moras) / duration > 8.0
+    )
+
+
 def normalize_repeated_vocalization(
     line: TranscribedLine,
     notes: list[MelodyNote],
 ) -> RepeatedVocalizationNormalization | None:
-    """Canonicalize a pure repetition to its melody-note count.
+    """Canonicalize a pure repetition without inventing one attack per note.
 
     Whisper can emit hundreds of repeated syllables for a short bounded interval.
     It can also collapse several audible attacks into only a few syllables.  The
-    surface count is not acoustic evidence, so retain the repeated unit and emit
-    one mora per SheetSage note whose center belongs to the line.  Preserve the
-    recognized count when the interval has no notes instead of erasing the line.
-    Latin vocalizations are converted directly to kana so generic English reading
-    heuristics cannot collapse or spell out the repetition.
+    A pitch change is not proof of a new syllable, while a repeated syllable can
+    also reattack without a pitch change.  SheetSage notes therefore must not set
+    the mora count.  Preserve Whisper's observed count and let CTC/Stage 3 decide
+    attacks and melisma.  Latin vocalizations are converted directly to kana so
+    generic English reading heuristics cannot collapse or spell out the repetition.
     """
     if not vocalization_only(line.text):
         return None
@@ -327,10 +470,7 @@ def normalize_repeated_vocalization(
         line.start_sec <= (note.start_sec + note.end_sec) / 2 < line.end_sec
         for note in notes
     )
-    normalized_count = note_count if note_count else len(moras)
-    normalized_moras = [
-        period[index % len(period)] for index in range(normalized_count)
-    ]
+    normalized_moras = list(moras)
     normalized_line = type(line)(
         line.start_sec,
         line.end_sec,
