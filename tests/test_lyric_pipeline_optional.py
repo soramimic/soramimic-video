@@ -138,7 +138,9 @@ def test_stage3_expands_automatic_repeated_vocalization_from_raw_ctc_reattacks()
     assert [item.kana for item in realization.synthesis_plan] == ["ラ"] * 4
 
 
-def test_initial_pure_repetition_is_capped_without_local_retry(monkeypatch, tmp_path):
+def test_initial_pure_repetition_is_expanded_without_local_retry(
+    monkeypatch, tmp_path,
+):
     import soramimic_video.stage3 as stage3
     from soramimic_video import audio_melody, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
@@ -150,7 +152,7 @@ def test_initial_pure_repetition_is_capped_without_local_retry(monkeypatch, tmp_
         transcribe,
         "transcribe_lines",
         lambda *a, **kw: [
-            TranscribedLine(0.0, 4.0, "ラ" * 20),
+            TranscribedLine(0.0, 4.0, "ラ" * 2),
             TranscribedLine(5.0, 6.0, "歌"),
         ],
     )
@@ -226,8 +228,11 @@ def test_initial_pure_repetition_is_capped_without_local_retry(monkeypatch, tmp_
     assert recognition["semantic_gate"]["localized_deficit_recoveries"] == []
     normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
     assert normalization["phase"] == "initial"
-    assert normalization["original_mora_count"] == 20
+    assert normalization["original_mora_count"] == 2
     assert normalization["normalized_mora_count"] == 4
+    assert normalization["capped"] is False
+    assert normalization["expanded"] is True
+    assert normalization["adjustment"] == "expanded"
 
 
 def test_known_lyrics_audio_path_never_calls_whisper(monkeypatch, tmp_path):
@@ -999,7 +1004,9 @@ def test_semantic_gate_recovers_singing_island_before_final_ctc(monkeypatch, tmp
     assert not any("CTC全体整列" in item for item in analysis["limitations"])
 
 
-def test_credit_retry_caps_pure_repetition_to_melody_notes(monkeypatch, tmp_path):
+def test_credit_retry_expands_pure_repetition_to_melody_notes(
+    monkeypatch, tmp_path,
+):
     import soramimic_video.stage3 as stage3
     from soramimic_video import (
         analyze_audio as analyze_audio_module,
@@ -1027,7 +1034,7 @@ def test_credit_retry_caps_pure_repetition_to_melody_notes(monkeypatch, tmp_path
         transcribe,
         "transcribe_window",
         lambda _path, start, end, _model, _device: [
-            TranscribedLine(start, end, "ダ" * 20)
+            TranscribedLine(start, end, "ダ" * 2)
         ],
     )
     monkeypatch.setattr(
@@ -1111,10 +1118,12 @@ def test_credit_retry_caps_pure_repetition_to_melody_notes(monkeypatch, tmp_path
     assert recovery["segments"][0]["surface"] == "ダ" * 4
     normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
     assert normalization["phase"] == "semantic-recovery"
-    assert normalization["original_mora_count"] == 20
+    assert normalization["original_mora_count"] == 2
     assert normalization["normalized_mora_count"] == 4
     assert normalization["note_count"] == 4
-    assert normalization["capped"] is True
+    assert normalization["capped"] is False
+    assert normalization["expanded"] is True
+    assert normalization["adjustment"] == "expanded"
 
 
 def test_note_lyric_deficit_recovery_replaces_only_acoustically_supported_detail(
@@ -1261,7 +1270,7 @@ def test_note_deficit_retry_accepts_pure_repeated_vocalization(
             "こさしす": "コサシス",
             "せそたち": "セソタチ",
             "短い": "ミジカイ",
-            "ダ" * 4: "ダ" * 4,
+            "ダ" * 16: "ダ" * 16,
         }[text]],
     )
     emissions = object()
@@ -1316,9 +1325,9 @@ def test_note_deficit_retry_accepts_pure_repeated_vocalization(
     def stop_after_recovery(
         line_texts, selected_readings, aligned, _melody_notes, **_kwargs,
     ):
-        assert line_texts[-1] == "ダ" * 4
-        assert selected_readings[-1] == "ダ" * 4
-        assert [item.kana for item in aligned if item.line == 3] == ["ダ"] * 4
+        assert line_texts[-1] == "ダ" * 16
+        assert selected_readings[-1] == "ダ" * 16
+        assert [item.kana for item in aligned if item.line == 3] == ["ダ"] * 16
         raise StopAfterRecovery
 
     monkeypatch.setattr(stage3, "build_stage3_layers", stop_after_recovery)
@@ -1338,9 +1347,16 @@ def test_note_deficit_retry_accepts_pure_repeated_vocalization(
     assert recovery["status"] == "accepted"
     assert recovery["classification"] == "repeated-vocalization"
     assert recovery["rejection_reasons"] == []
-    assert recovery["segments"][0]["surface"] == "ダ" * 4
-    assert recognition["segments"][-1]["surface"] == "ダ" * 4
+    assert recovery["recovered_mora_count"] == 16
+    assert recovery["segments"][0]["surface"] == "ダ" * 16
+    assert recognition["segments"][-1]["surface"] == "ダ" * 16
     normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
     assert normalization["phase"] == "deficit-recovery"
     assert normalization["original_surface"] == "DADADADA"
-    assert normalization["surface"] == "ダ" * 4
+    assert normalization["surface"] == "ダ" * 16
+    assert normalization["original_mora_count"] == 4
+    assert normalization["normalized_mora_count"] == 16
+    assert normalization["note_count"] == 16
+    assert normalization["capped"] is False
+    assert normalization["expanded"] is True
+    assert normalization["adjustment"] == "expanded"
