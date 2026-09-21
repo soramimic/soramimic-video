@@ -1246,8 +1246,15 @@ def test_note_lyric_deficit_recovery_replaces_only_acoustically_supported_detail
     ]
 
 
-def test_note_deficit_retry_accepts_pure_repeated_vocalization(
-    monkeypatch, tmp_path,
+@pytest.mark.parametrize(
+    ("retry_surface", "expected_status"),
+    [
+        ("DADADADA", "accepted"),
+        ("DA" * 100, "rejected"),
+    ],
+)
+def test_note_deficit_retry_handles_pure_repeated_vocalization(
+    monkeypatch, tmp_path, retry_surface, expected_status,
 ):
     import soramimic_video.stage3 as stage3
     from soramimic_video import (
@@ -1275,19 +1282,22 @@ def test_note_deficit_retry_accepts_pure_repeated_vocalization(
         transcribe,
         "transcribe_window",
         lambda _path, start, end, _model, _device: [
-            TranscribedLine(start, end, "DADADADA")
+            TranscribedLine(start, end, retry_surface)
         ],
     )
     monkeypatch.setattr(
         reading,
         "reading_candidates",
-        lambda text: [{
-            "かきくけ": "カキクケ",
-            "こさしす": "コサシス",
-            "せそたち": "セソタチ",
-            "短い": "ミジカイ",
-                "ダ" * 4: "ダ" * 4,
-        }[text]],
+        lambda text: [
+            text
+            if text and set(text) == {"ダ"}
+            else {
+                "かきくけ": "カキクケ",
+                "こさしす": "コサシス",
+                "せそたち": "セソタチ",
+                "短い": "ミジカイ",
+            }[text]
+        ],
     )
     emissions = object()
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *a, **kw: emissions)
@@ -1349,9 +1359,12 @@ def test_note_deficit_retry_accepts_pure_repeated_vocalization(
             return SimpleNamespace(
                 to_json=lambda: '{"note_candidates": [], "links": []}'
             ), object()
-        assert line_texts[-1] == "ダ" * 4
-        assert selected_readings[-1] == "ダ" * 4
-        assert [item.kana for item in aligned if item.line == 3] == ["ダ"] * 4
+        expected_surface = "ダ" * 4 if expected_status == "accepted" else "短い"
+        expected_reading = "ダ" * 4 if expected_status == "accepted" else "ミジカイ"
+        assert line_texts[-1] == expected_surface
+        assert selected_readings[-1] == expected_reading
+        expected_moras = ["ダ"] * 4 if expected_status == "accepted" else list("ミジカイ")
+        assert [item.kana for item in aligned if item.line == 3] == expected_moras
         raise StopAfterRecovery
 
     monkeypatch.setattr(stage3, "build_stage3_layers", stop_after_recovery)
@@ -1368,18 +1381,23 @@ def test_note_deficit_retry_accepts_pure_repeated_vocalization(
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
     recovery = recognition["semantic_gate"]["localized_deficit_recoveries"][0]
-    assert recovery["status"] == "accepted"
+    assert recovery["status"] == expected_status
     assert recovery["classification"] == "repeated-vocalization"
-    assert recovery["rejection_reasons"] == []
-    assert recovery["recovered_mora_count"] == 4
-    assert recovery["segments"][0]["surface"] == "ダ" * 4
-    assert recognition["segments"][-1]["surface"] == "ダ" * 4
+    expected_count = 4 if expected_status == "accepted" else 100
+    assert recovery["rejection_reasons"] == (
+        [] if expected_status == "accepted" else ["pathological-repetition"]
+    )
+    assert recovery["recovered_mora_count"] == expected_count
+    assert recovery["segments"][0]["surface"] == "ダ" * expected_count
+    assert recognition["segments"][-1]["surface"] == (
+        "ダ" * 4 if expected_status == "accepted" else "短い"
+    )
     normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
     assert normalization["phase"] == "deficit-recovery"
-    assert normalization["original_surface"] == "DADADADA"
-    assert normalization["surface"] == "ダ" * 4
-    assert normalization["original_mora_count"] == 4
-    assert normalization["normalized_mora_count"] == 4
+    assert normalization["original_surface"] == retry_surface
+    assert normalization["surface"] == "ダ" * expected_count
+    assert normalization["original_mora_count"] == expected_count
+    assert normalization["normalized_mora_count"] == expected_count
     assert normalization["note_count"] == 16
     assert normalization["capped"] is False
     assert normalization["expanded"] is False
