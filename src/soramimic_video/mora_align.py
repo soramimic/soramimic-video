@@ -66,6 +66,19 @@ def _frame_ceiling(time_sec: float) -> int:
     return math.ceil((time_sec + _PAD_SEC) / frame_sec - 1e-9)
 
 
+def _unpadded_emission_bounds(frame_count: int) -> tuple[int, int]:
+    """Return the half-open frame range backed by real input audio.
+
+    ``compute_emissions`` pads both sides of the waveform so edge frames retain
+    model context.  Those context-only frames must not be candidates for forced
+    alignment: otherwise a leading lyric token can be assigned wholly inside
+    the left pad and collapse to the invalid interval ``0.0--0.0`` when converted
+    back to audio time.
+    """
+    pad_frames = _frame_ceiling(0.0)
+    return pad_frames, max(pad_frames, frame_count - pad_frames)
+
+
 @dataclass
 class AlignedMora:
     line: int
@@ -572,7 +585,10 @@ def align_moras_with_variants(
                                    end_sec=min(end, mora.end_sec)) for mora in local)
             choices.append(chosen[0])
         return aligned, choices
-    return _align_variants(log_probs, vocab, line_variants)
+    first, last = _unpadded_emission_bounds(len(log_probs))
+    return _align_variants(
+        log_probs[first:last], vocab, line_variants, frame_offset=first,
+    )
 
 
 def _pathological_reasons(
