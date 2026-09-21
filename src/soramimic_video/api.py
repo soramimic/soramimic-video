@@ -1347,12 +1347,12 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video")
     runproc.set_cancel_check(lambda: job.cancel_event.is_set() or abort.is_set())
 
-    def build_silent_video() -> Path:
+    def build_silent_video() -> tuple[Path, float]:
         try:
             prepared = prepare_video(
                 visual_project, d, planned_total, **video_options
             )
-            return encode_silent_video(prepared)
+            return encode_silent_video(prepared), prepared.audio_delay_sec
         except Exception as exc:
             if not abort.is_set() and not job.cancel_event.is_set():
                 visual_failure.append(exc)
@@ -1380,7 +1380,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             raise
 
         with _stage(job, "video", estimated_total=8.0):
-            silent_video = future.result()
+            silent_video, audio_delay_sec = future.result()
             actual_total = actual_video_total_sec(
                 project, audio_path, video_options["midi_end_credit"]
             )
@@ -1398,8 +1398,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             return attach_audio(
                 silent_video,
                 audio_path,
-                actual_total,
+                actual_total + audio_delay_sec,
                 out=d / "video" / "out.mp4",
+                audio_delay_sec=audio_delay_sec,
             )
     finally:
         abort.set()
