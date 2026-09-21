@@ -163,7 +163,8 @@ NON_FRAME_LAYOUTS = frozenset({"thumbnail"})
 IDLE_SECTIONS = ("intro", "interlude", "outro", "credits")
 # 描画ロジックを変えたときに共有PNGキャッシュを確実に無効化する。
 # v2: 透明画像のアルファ合成(黒潰れの解消)と、画像なし語のfallback化
-FRAME_RENDER_CACHE_VERSION = 2
+# v3: カードの表示文から未対応の補助平面絵文字を除去
+FRAME_RENDER_CACHE_VERSION = 3
 # 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
 SECTION_DEFAULTS_PATH = Path(__file__).resolve().parent / "section_defaults.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
@@ -250,6 +251,22 @@ def _display_value(column: str, value: object) -> object:
             result = f"{int(year)}年{int(month)}月"
             return f"{result}{int(day)}日" if day else result
     return value
+
+
+def _display_text(value: object) -> object:
+    """日本語カード用フォントで描けない絵文字を表示文から除く。
+
+    チャンネル名などの元データは保持したまま、Pillowで四角の代替グリフに
+    なる補助平面の絵文字だけを落とす。日本語・記号・拡張漢字は変えない。
+    """
+    if not isinstance(value, str):
+        return value
+    cleaned = "".join(
+        ch for ch in value
+        if not (0x1F000 <= ord(ch) <= 0x1FAFF)
+        and ord(ch) not in {0x200D, 0x20E3, 0xFE0F}
+    )
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
 @dataclass
@@ -354,7 +371,7 @@ def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> li
     values = _SafeDict(
         # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
         {
-            k: ("" if is_missing(v) else _display_value(k, v))
+            k: ("" if is_missing(v) else _display_text(_display_value(k, v)))
             for k, v in data.items()
             if v is not None
         }

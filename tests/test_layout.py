@@ -159,6 +159,17 @@ def test_youtuber_fallback_keeps_metadata_when_image_is_unavailable():
     assert "水溜りボンドのメンバーとして企画動画を発信するYouTuber。" in texts
 
 
+def test_youtuber_card_removes_unsupported_emoji_without_losing_channel_name():
+    layout = load_layout("youtuber_card")
+    texts = layout.render_texts({
+        "original": "じゃんがりあん",
+        "channel": "じゃんがりあん 🐹🍶 Jyangarian Ch.",
+    })
+
+    assert "じゃんがりあん Jyangarian Ch." in texts
+    assert all("🐹" not in text and "🍶" not in text for text in texts)
+
+
 def test_youtuber_card_formats_subscriber_count_by_japanese_units():
     layout = load_layout("youtuber_card")
     cases = {
