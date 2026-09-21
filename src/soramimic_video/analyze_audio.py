@@ -29,7 +29,11 @@ from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
 from .kana import split_fine_moras, split_moras
 from .project import Project
 from .ruby import strip_ruby
-from .semantic_lyrics import RecognitionBoundaryMerge, SemanticLyricDecision
+from .semantic_lyrics import (
+    RecognitionBoundaryMerge,
+    SemanticLyricDecision,
+    normalize_repeated_vocalization,
+)
 from .transcribe import DEFAULT_WHISPER_MODEL, TranscribedLine
 
 if TYPE_CHECKING:
@@ -757,6 +761,7 @@ def analyze_audio(
     boundary_merges: list[RecognitionBoundaryMerge] = []
     localized_recoveries: list[dict[str, object]] = []
     localized_deficit_recoveries: list[dict[str, object]] = []
+    vocalization_normalizations: list[dict[str, object]] = []
     localized_alignment_retries: list[dict[str, object]] = []
     ctc_capacity_rejections: list[dict[str, object]] = []
     vocal_activity_profile = None
@@ -818,6 +823,35 @@ def analyze_audio(
         vocals, accompaniment = separate(audio_path, project_dir / SEPARATION_DIR)
     report(0.22)
 
+    def normalize_vocalization_line(
+        line: TranscribedLine,
+        *,
+        phase: str,
+        source_segment_index: int | None,
+    ) -> tuple[TranscribedLine, bool]:
+        if sheetsage_notes is None:
+            raise RuntimeError("反復発声の正規化にSheetSage2ノートがありません")
+        normalization = normalize_repeated_vocalization(line, sheetsage_notes)
+        if normalization is None:
+            return line, False
+        vocalization_normalizations.append({
+            "phase": phase,
+            "source_segment_index": source_segment_index,
+            "start_sec": line.start_sec,
+            "end_sec": line.end_sec,
+            "original_surface": line.text,
+            "surface": normalization.line.text,
+            "unit_moras": list(normalization.unit_moras),
+            "original_mora_count": normalization.original_mora_count,
+            "normalized_mora_count": normalization.normalized_mora_count,
+            "note_count": normalization.note_count,
+            "capped": (
+                normalization.normalized_mora_count
+                < normalization.original_mora_count
+            ),
+        })
+        return normalization.line, True
+
     # 2. 歌詞行の決定
     if lyrics_path is not None:
         line_texts = [
@@ -861,6 +895,15 @@ def analyze_audio(
                 raise RuntimeError(
                     "音源解析にはSheetSage2モデル設定が必要です"
                 )
+        normalized_lines = []
+        for index, line in enumerate(lines):
+            normalized, _ = normalize_vocalization_line(
+                line,
+                phase="initial",
+                source_segment_index=index,
+            )
+            normalized_lines.append(normalized)
+        lines = normalized_lines
         recognition_lines = lines
         decisions = [decide_recognized_line(line, sheetsage_notes) for line in lines]
         if not skip_separation:
@@ -1126,6 +1169,11 @@ def analyze_audio(
                     )
                     accepted = []
                     for candidate in candidates:
+                        candidate, _ = normalize_vocalization_line(
+                            candidate,
+                            phase="semantic-recovery",
+                            source_segment_index=original_index,
+                        )
                         candidate_decision = decide_recognized_line(
                             candidate, sheetsage_notes
                         )
@@ -1169,7 +1217,7 @@ def analyze_audio(
                 chosen, reading_evidence, selected_variants, aligned,
             ) = prepare_automatic_alignment(retained_lines, "semantic-recovery")
 
-        from .semantic_lyrics import lyric_deficit_recoveries, vocalization_only
+        from .semantic_lyrics import lyric_deficit_recoveries
         from .transcribe import transcribe_window
 
         deficit_candidates = lyric_deficit_recoveries(
@@ -1183,17 +1231,32 @@ def analyze_audio(
         replacements: dict[int, list[TranscribedLine]] = {}
         for recovery in deficit_candidates:
             source_line = retained_lines[recovery.line]
+            source_segment_index = next(
+                (
+                    index
+                    for index, original in enumerate(recognition_lines)
+                    if original is source_line
+                ),
+                None,
+            )
             recovered_lines = []
+            recovered_repetitions = []
             for start_sec, end_sec in recovery.windows:
-                recovered_lines.extend(
-                    transcribe_window(
-                        audio_path,
-                        start_sec,
-                        end_sec,
-                        whisper_model,
-                        device or "auto",
-                    )
+                candidates = transcribe_window(
+                    audio_path,
+                    start_sec,
+                    end_sec,
+                    whisper_model,
+                    device or "auto",
                 )
+                for candidate in candidates:
+                    candidate, is_repetition = normalize_vocalization_line(
+                        candidate,
+                        phase="deficit-recovery",
+                        source_segment_index=source_segment_index,
+                    )
+                    recovered_repetitions.append(is_repetition)
+                    recovered_lines.append(candidate)
             recovered_lines.sort(key=lambda line: (line.start_sec, line.end_sec))
             rejection_reasons = []
             recovered_decisions = [
@@ -1212,10 +1275,9 @@ def analyze_audio(
                 for decision in recovered_decisions
             ):
                 rejection_reasons.append("insufficient-melodic-support")
-            if recovered_lines and all(
-                vocalization_only(line.text) for line in recovered_lines
-            ):
-                rejection_reasons.append("repeated-vocalization")
+            pure_vocalization = bool(recovered_lines) and all(
+                recovered_repetitions
+            )
             recovered_variants = [
                 [split_moras(kana) for kana in candidate_builder(line.text)] or [[]]
                 for line in recovered_lines
@@ -1245,10 +1307,11 @@ def analyze_audio(
             required_moras = recovery.effective_mora_count + max(
                 2, math.ceil(recovery.effective_mora_count * 0.25)
             )
-            if recovered_moras < required_moras:
-                rejection_reasons.append("insufficient-detail-gain")
-            if recovered_moras > recovery.note_count * 3:
-                rejection_reasons.append("pathological-detail-gain")
+            if not pure_vocalization:
+                if recovered_moras < required_moras:
+                    rejection_reasons.append("insufficient-detail-gain")
+                if recovered_moras > recovery.note_count * 3:
+                    rejection_reasons.append("pathological-detail-gain")
             recovered_scores = [mora.score for mora in recovered_aligned]
             source_scores = [
                 mora.score for mora in aligned if mora.line == recovery.line
@@ -1259,24 +1322,17 @@ def analyze_audio(
             source_ctc_median = (
                 statistics.median(source_scores) if source_scores else 0.0
             )
-            if recovered_ctc_median < MIN_CTC_MEDIAN_SCORE:
-                rejection_reasons.append("insufficient-ctc-support")
-            if (
-                source_ctc_median > 0.0
-                and recovered_ctc_median < source_ctc_median * 0.5
-            ):
-                rejection_reasons.append("ctc-weaker-than-source")
+            if not pure_vocalization:
+                if recovered_ctc_median < MIN_CTC_MEDIAN_SCORE:
+                    rejection_reasons.append("insufficient-ctc-support")
+                if (
+                    source_ctc_median > 0.0
+                    and recovered_ctc_median < source_ctc_median * 0.5
+                ):
+                    rejection_reasons.append("ctc-weaker-than-source")
             candidate_accepted = not rejection_reasons
             if candidate_accepted:
                 replacements[recovery.line] = recovered_lines
-            source_segment_index = next(
-                (
-                    index
-                    for index, original in enumerate(recognition_lines)
-                    if original is source_line
-                ),
-                None,
-            )
             localized_deficit_recoveries.append({
                 "source_segment_index": source_segment_index,
                 "source_retained_index": recovery.line,
@@ -1288,6 +1344,9 @@ def analyze_audio(
                 "residual_notes": recovery.residual_notes,
                 "retry_windows": [list(window) for window in recovery.windows],
                 "status": "accepted" if candidate_accepted else "rejected",
+                "classification": (
+                    "repeated-vocalization" if pure_vocalization else "lyrics"
+                ),
                 "rejection_reasons": rejection_reasons,
                 "recovered_mora_count": recovered_moras,
                 "source_ctc_median_score": source_ctc_median,
@@ -1404,6 +1463,7 @@ def analyze_audio(
                         ],
                         "localized_recoveries": localized_recoveries,
                         "localized_deficit_recoveries": localized_deficit_recoveries,
+                        "vocalization_normalizations": vocalization_normalizations,
                         "localized_alignment_retries": localized_alignment_retries,
                         "ctc_capacity_rejections": ctc_capacity_rejections,
                     },
