@@ -169,6 +169,12 @@ def test_youtuber_card_removes_unsupported_emoji_without_losing_channel_name():
     assert "じゃんがりあん Jyangarian Ch." in texts
     assert all("🐹" not in text and "🍶" not in text for text in texts)
 
+    texts = layout.render_texts({
+        "original": "琶舞",
+        "channel": "琶舞 -ʙᴇᴍᴀ-",
+    })
+    assert "琶舞 -BEMA-" in texts
+
 
 def test_youtuber_card_formats_subscriber_count_by_japanese_units():
     layout = load_layout("youtuber_card")

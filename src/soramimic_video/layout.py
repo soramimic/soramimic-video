@@ -164,7 +164,8 @@ IDLE_SECTIONS = ("intro", "interlude", "outro", "credits")
 # 描画ロジックを変えたときに共有PNGキャッシュを確実に無効化する。
 # v2: 透明画像のアルファ合成(黒潰れの解消)と、画像なし語のfallback化
 # v3: カードの表示文から未対応の補助平面絵文字を除去
-FRAME_RENDER_CACHE_VERSION = 3
+# v4: 日本語フォントに無い小型大文字をASCII表示に変換
+FRAME_RENDER_CACHE_VERSION = 4
 # 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
 SECTION_DEFAULTS_PATH = Path(__file__).resolve().parent / "section_defaults.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
@@ -210,6 +211,8 @@ def app_credit_for_wordlist(wordlist: str = "") -> str:
 
 # 単語リストCSVで「値なし」を表す文字列(R由来のNA等)。値として描画せず空扱いにする。
 MISSING_VALUES = frozenset({"na", "n/a", "nan", "none", "null"})
+# Noto Sans CJKに無いが、チャンネル名の装飾に使われる小型大文字。
+DISPLAY_TRANSLITERATION = str.maketrans({"ʙ": "B", "ᴇ": "E", "ᴍ": "M", "ᴀ": "A"})
 
 
 def is_missing(value: object) -> bool:
@@ -254,13 +257,14 @@ def _display_value(column: str, value: object) -> object:
 
 
 def _display_text(value: object) -> object:
-    """日本語カード用フォントで描けない絵文字を表示文から除く。
+    """日本語カード用フォントで描けない文字を表示用に正規化する。
 
     チャンネル名などの元データは保持したまま、Pillowで四角の代替グリフに
-    なる補助平面の絵文字だけを落とす。日本語・記号・拡張漢字は変えない。
+    なる絵文字を落とし、装飾用小型大文字はASCIIへ変換する。
     """
     if not isinstance(value, str):
         return value
+    value = value.translate(DISPLAY_TRANSLITERATION)
     cleaned = "".join(
         ch for ch in value
         if not (0x1F000 <= ord(ch) <= 0x1FAFF)
