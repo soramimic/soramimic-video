@@ -47,6 +47,10 @@ def test_video_image_lead_defaults_and_can_be_disabled():
         "video", "--project", "work/song", "--noncommercial-fanwork",
     ])
     assert allowed.noncommercial_fanwork is True
+    assert video.asset_store is None
+    assert parser.parse_args([
+        "video", "--project", "work/song", "--asset-store", "/srv/assets",
+    ]).asset_store == "/srv/assets"
 
     serve = parser.parse_args(["serve"])
     assert serve.video_image_lead_sec == 0.1
@@ -96,6 +100,32 @@ def test_serve_configures_and_validates_asset_store(monkeypatch, tmp_path):
 
     assert cli.cmd_serve(args) == 0
     assert asset_store.configured_asset_store() == store.resolve()
+
+
+def test_video_configures_and_validates_asset_store(monkeypatch, tmp_path):
+    store = tmp_path / "assets"
+    store.mkdir()
+    (store / "manifest.json").write_text(
+        '{"version": 1, "assets": {"https://example.com/a.png": {}}}',
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args([
+        "video", "--project", "work/song", "--asset-store", str(store),
+    ])
+    monkeypatch.setattr(cli.Project, "load", lambda path: object())
+    monkeypatch.setattr("soramimic_video.video.make_video", lambda *args, **kwargs: "out.mp4")
+
+    assert cli.cmd_video(args) == 0
+    assert asset_store.configured_asset_store() == store.resolve()
+
+
+def test_video_rejects_asset_store_without_manifest(tmp_path):
+    args = build_parser().parse_args([
+        "video", "--project", "work/song",
+        "--asset-store", str(tmp_path / "missing"),
+    ])
+
+    assert cli.cmd_video(args) == 2
 
 
 def test_serve_rejects_asset_store_without_manifest(tmp_path):

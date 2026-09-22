@@ -232,9 +232,35 @@ def cmd_mix(args: argparse.Namespace) -> int:
     return 0
 
 
+def _activate_asset_store(value: str | None) -> int | None:
+    """CLIから指定された共有asset storeを検証し、当該プロセスで有効化する。"""
+    import os
+
+    from .asset_store import ASSET_STORE_ENV, load_manifest
+
+    store_value = value or os.environ.get(ASSET_STORE_ENV, "").strip()
+    if not store_value:
+        return None
+    store = Path(store_value).expanduser().resolve()
+    manifest_path = store / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"asset store manifestがありません: {manifest_path}")
+    manifest = load_manifest(store)
+    assets = manifest.get("assets")
+    if manifest.get("version") != 1 or not isinstance(assets, dict) or not assets:
+        raise ValueError(f"asset store manifestが有効ではありません: {manifest_path}")
+    os.environ[ASSET_STORE_ENV] = str(store)
+    return len(assets)
+
+
 def cmd_video(args: argparse.Namespace) -> int:
     from .video import make_video
 
+    try:
+        _activate_asset_store(args.asset_store)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
     project = Project.load(Path(args.project))
     out = make_video(
         project,
@@ -399,23 +425,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 1
     import os
 
-    from .asset_store import ASSET_STORE_ENV, load_manifest
-
-    store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "").strip()
     asset_store_summary = "asset storeなし"
-    if store_value:
-        store = Path(store_value).resolve()
-        manifest = store / "manifest.json"
-        if not manifest.is_file():
-            print(f"asset store manifestがありません: {manifest}", file=sys.stderr)
-            return 2
-        manifest_data = load_manifest(store)
-        assets = manifest_data.get("assets")
-        if manifest_data.get("version") != 1 or not isinstance(assets, dict) or not assets:
-            print(f"asset store manifestが有効ではありません: {manifest}", file=sys.stderr)
-            return 2
-        os.environ[ASSET_STORE_ENV] = str(store)
-        asset_store_summary = f"asset store {len(assets):,}件"
+    try:
+        asset_count = _activate_asset_store(args.asset_store)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    if asset_count is not None:
+        asset_store_summary = f"asset store {asset_count:,}件"
 
     app = create_app(
         jobs_dir=Path(args.jobs_dir),
@@ -671,6 +688,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="単語画像の共有キャッシュ(環境変数 SORAMIMIC_VIDEO_IMAGE_CACHE でも指定可)",
     )
     p.add_argument(
+        "--asset-store",
+        help="同期済み単語画像を読む永続asset store"
+        "(環境変数 SORAMIMIC_VIDEO_ASSET_STORE でも指定可)",
+    )
+    p.add_argument(
         "--layout",
         help="フレームレイアウト。組み込み名(default/caption)またはJSONファイルパス"
         "(書き方は examples/layouts/ と layout.py 冒頭を参照)",
@@ -822,7 +844,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layout", help="フレームレイアウト(組み込み名かJSONパス)")
     p.add_argument(
         "--asset-store",
-        help="組み込み単語画像を読むasset store。指定時はmanifestが無ければ起動しない",
+        help="同期済み単語画像を読むasset store。指定時はmanifestが無ければ起動しない",
     )
     p.add_argument(
         "--editor-dist",
