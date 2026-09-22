@@ -34,6 +34,61 @@ def test_build_targets_skips_unknown_chars():
     assert owners == [(0, 0)]
 
 
+def test_repeated_mora_reattacks_use_one_cached_ctc_pass_and_keep_count():
+    matrix = np.full((80, 3), -8.0)
+    matrix[:, 0] = -0.001
+    for frame in (25, 29, 34):
+        matrix[frame, 0] = -8.0
+        matrix[frame, 1] = -0.001
+    matrix[31, 0] = -8.0
+    matrix[31, 2] = -0.001  # unrelated kana does not become a ラ re-attack
+    emissions = mora_align.CTCEmissions(
+        matrix, {"<pad>": 0, "ラ": 1, "ナ": 2},
+    )
+
+    events = mora_align.decode_repeated_mora_reattacks(
+        emissions, "ラ", 0.0, 0.22,
+    )
+
+    assert [event.kana for event in events] == ["ラ", "ラ", "ラ"]
+    assert [event.start_sec for event in events] == pytest.approx([0.0, .08, .18])
+    assert all(event.confidence > .9 for event in events)
+
+
+def test_repeated_mora_reattacks_match_multi_character_mora():
+    matrix = np.full((80, 3), -8.0)
+    matrix[:, 0] = -0.001
+    for frame, token in ((25, 1), (27, 2), (31, 1), (33, 2)):
+        matrix[frame, 0] = -8.0
+        matrix[frame, token] = -0.001
+    emissions = mora_align.CTCEmissions(
+        matrix, {"<pad>": 0, "キ": 1, "ャ": 2},
+    )
+
+    events = mora_align.decode_repeated_mora_reattacks(
+        emissions, "キャ", 0.0, 0.2,
+    )
+
+    assert len(events) == 2
+    assert all(event.kana == "キャ" for event in events)
+
+
+def test_repeated_mora_reattacks_do_not_require_target_to_beat_blank():
+    matrix = np.full((80, 2), -8.0)
+    matrix[:, 0] = -0.01
+    for frame in (25, 31, 37):
+        matrix[frame, 1] = -0.1
+    emissions = mora_align.CTCEmissions(matrix, {"<blank>": 0, "ラ": 1})
+
+    assert mora_align.decode_kana_events_window(emissions, 0.0, 0.26) == ()
+    events = mora_align.decode_repeated_mora_reattacks(
+        emissions, "ラ", 0.0, 0.26,
+    )
+
+    assert [event.start_sec for event in events] == pytest.approx([0.0, .12, .24])
+    assert all(event.confidence == pytest.approx(np.exp(-.1)) for event in events)
+
+
 def test_recognition_window_rejects_infeasible_ctc_capacity_before_alignment(
     monkeypatch,
 ):
@@ -62,6 +117,27 @@ def test_recognition_window_rejects_infeasible_ctc_capacity_before_alignment(
     assert error.target_count == 3
     assert error.adjacent_repeats == 1
     assert error.required_frames == 4
+
+
+def test_whole_audio_alignment_excludes_context_only_padding(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    matrix = np.arange(100 * 2).reshape(100, 2)
+    emissions = mora_align.CTCEmissions(matrix, {"<pad>": 0, "カ": 1})
+    calls = []
+
+    def align(values, targets):
+        calls.append((values.copy(), targets))
+        return [SimpleNamespace(start=0, end=1, score=.42)]
+
+    monkeypatch.setattr(mora_align, "_forced_align", align)
+    result, chosen = mora_align.align_moras_with_variants(
+        Path("unused.wav"), [[["カ"]]], device="cpu", emissions=emissions,
+    )
+
+    assert chosen == [0]
+    np.testing.assert_array_equal(calls[0][0], matrix[25:75])
+    assert calls[0][1] == [1]
+    assert (result[0].start_sec, result[0].end_sec) == pytest.approx((0.0, .02))
 
 
 def _m(line: int, mora: int, kana: str, start: float, end: float) -> AlignedMora:

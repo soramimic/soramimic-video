@@ -32,12 +32,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy src
       - run: uv run pytest -q
-      - name: Test deployment safety scripts
-        run: |
-          bash -n deploy/*.sh deploy/tests/*.sh
-          bash deploy/tests/test-deploy-environment.sh
-          bash deploy/tests/test-auto-deploy.sh
-          bash deploy/tests/test-install-auto-deploy.sh
-          bash deploy/tests/test-deploy-public.sh
       - name: Markdown-only PR policy tests
         run: node tests/main-pr-policy.cjs

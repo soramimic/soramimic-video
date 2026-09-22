@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 import statistics
+import threading
 import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .audio_melody import MelodyNote
@@ -27,6 +29,10 @@ class SemanticLyricDecision:
     melodic_support: bool
     ctc_support: bool | None = None
     ctc_median_score: float | None = None
+    vocal_activity_support: bool | None = None
+    vocal_activity_percentile_dbfs: float | None = None
+    vocal_activity_relative_db: float | None = None
+    vocal_active_frame_ratio: float | None = None
 
 
 @dataclass(frozen=True)
@@ -53,19 +59,183 @@ class RecognitionBoundaryMerge:
     merged_surface: str
 
 
+@dataclass(frozen=True)
+class RepeatedVocalizationNormalization:
+    """A pure ASR vocalization rewritten to a note-matched kana repetition."""
+
+    line: TranscribedLine
+    unit_moras: tuple[str, ...]
+    original_mora_count: int
+    normalized_mora_count: int
+    note_count: int
+
+
+@dataclass(frozen=True)
+class UnownedNoteRecoveryWindow:
+    """A conservative retry interval made only from Stage 3 note-only links."""
+
+    start_sec: float
+    end_sec: float
+    note_ids: tuple[str, ...]
+    seed_note_count: int
+
+    @property
+    def note_count(self) -> int:
+        return len(self.note_ids)
+
+
+_UNOWNED_CLUSTER_MAX_GAP_SEC = 0.32
+_UNOWNED_CLUSTER_MIN_NOTES = 4
+_UNOWNED_CLUSTER_MIN_SPAN_SEC = 0.6
+_UNOWNED_WINDOW_MERGE_GAP_SEC = 2.0
+_UNOWNED_WINDOW_MIN_NOTES = 8
+_UNOWNED_WINDOW_MIN_SPAN_SEC = 4.0
+
+
+def unowned_note_recovery_windows(
+    correspondence: Mapping[str, Any],
+    retained_lines: Sequence[TranscribedLine],
+) -> list[UnownedNoteRecoveryWindow]:
+    """Find long lyric-free note runs without consuming nearby owned notes.
+
+    Stage 3 is the ownership authority: only ``note_only`` links without singing
+    units seed a window.  Short islands establish that a window is coherent, then
+    every unowned note inside the merged envelope is restored.  That second pass
+    is important for brief internal islands which would otherwise disappear when
+    two longer clusters are joined.
+    """
+    raw_notes = correspondence.get("note_candidates")
+    raw_links = correspondence.get("links")
+    if not isinstance(raw_notes, list) or not isinstance(raw_links, list):
+        raise ValueError("Stage 3対応表のノートまたはリンクが不正です")
+
+    notes_by_id: dict[str, tuple[float, float]] = {}
+    for raw in raw_notes:
+        if not isinstance(raw, dict):
+            continue
+        note_id = raw.get("id")
+        start = raw.get("start_sec")
+        end = raw.get("end_sec")
+        if not isinstance(note_id, str) or isinstance(start, bool) or isinstance(end, bool):
+            continue
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            continue
+        start_sec, end_sec = float(start), float(end)
+        if end_sec > start_sec:
+            notes_by_id[note_id] = (start_sec, end_sec)
+
+    unowned_ids = {
+        note_id
+        for raw in raw_links
+        if isinstance(raw, dict)
+        and raw.get("operation") == "note_only"
+        and raw.get("singing_unit_ids") == []
+        for note_id in raw.get("note_candidate_ids", [])
+        if isinstance(note_id, str) and note_id in notes_by_id
+    }
+    unowned = sorted(
+        ((start, end, note_id) for note_id in unowned_ids
+         for start, end in (notes_by_id[note_id],)),
+        key=lambda item: (item[0], item[1], item[2]),
+    )
+    # A note-only run can extend into a later Whisper line even though Stage 3
+    # did not assign those tail notes to it.  Remove only the notes that actually
+    # overlap retained text; discarding the whole run makes an otherwise safe,
+    # long prefix disappear nondeterministically when that later line moves by a
+    # few frames between full-song Whisper runs.
+    unowned = [
+        note
+        for note in unowned
+        if not any(
+            line.start_sec < note[1] and line.end_sec > note[0]
+            for line in retained_lines
+        )
+    ]
+    if not unowned:
+        return []
+
+    clusters: list[list[tuple[float, float, str]]] = []
+    for note in unowned:
+        crosses_retained_line = bool(clusters) and any(
+            line.start_sec < note[0] and line.end_sec > clusters[-1][-1][1]
+            for line in retained_lines
+        )
+        if (
+            not clusters
+            or note[0] - clusters[-1][-1][1] > _UNOWNED_CLUSTER_MAX_GAP_SEC
+            or crosses_retained_line
+        ):
+            clusters.append([note])
+        else:
+            clusters[-1].append(note)
+    seeds = [
+        cluster
+        for cluster in clusters
+        if len(cluster) >= _UNOWNED_CLUSTER_MIN_NOTES
+        and cluster[-1][1] - cluster[0][0] >= _UNOWNED_CLUSTER_MIN_SPAN_SEC
+    ]
+    merged: list[list[tuple[float, float, str]]] = []
+    for seed in seeds:
+        proposed_start = merged[-1][0][0] if merged else seed[0][0]
+        crosses_retained_line = any(
+            line.start_sec < seed[-1][1] and line.end_sec > proposed_start
+            for line in retained_lines
+        )
+        if (
+            not merged
+            or seed[0][0] - merged[-1][-1][1] > _UNOWNED_WINDOW_MERGE_GAP_SEC
+            or crosses_retained_line
+        ):
+            merged.append(list(seed))
+        else:
+            merged[-1].extend(seed)
+
+    windows = []
+    for seed_group in merged:
+        start_sec, end_sec = seed_group[0][0], seed_group[-1][1]
+        rehydrated = [
+            note for note in unowned
+            if note[0] >= start_sec and note[1] <= end_sec
+        ]
+        if (
+            len(rehydrated) < _UNOWNED_WINDOW_MIN_NOTES
+            or end_sec - start_sec < _UNOWNED_WINDOW_MIN_SPAN_SEC
+        ):
+            continue
+        windows.append(UnownedNoteRecoveryWindow(
+            start_sec,
+            end_sec,
+            tuple(note[2] for note in rehydrated),
+            len(seed_group),
+        ))
+    return windows
+
+
 _CREDIT_LABEL = r"(?:作詞|作曲|編曲|原作|監督|制作|製作|出演|翻訳|歌唱|動画制作|イラスト)"
 _CREDIT_VALUE_LABEL = rf"(?:{_CREDIT_LABEL}|サブタイトル)"
 _CREDIT_WITH_VALUE = re.compile(
     rf"^\s*{_CREDIT_VALUE_LABEL}(?:担当|協力|提供|制作|作成)?"
     r"(?:\s*[:：/／|｜]\s*|\s+)"
-    r"[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32}\s*$"
+    r"(?P<value>[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32})\s*$"
 )
 _COMPOUND_CREDIT_WITH_VALUE = re.compile(
     rf"^\s*{_CREDIT_LABEL}"
     rf"(?:\s*[・･/&＆,，、／|｜]\s*{_CREDIT_LABEL})+"
     r"\s*(?:[:：+＋]|\s)\s*"
-    r"[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32}\s*$"
+    r"(?P<value>[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32})\s*$"
 )
+_CONTEXTUAL_CREDIT_WITH_VALUE = re.compile(
+    r"^\s*(?P<label>映像|歌)(?:担当|制作|作成)?"
+    r"(?:\s*[:：/／|｜]\s*|\s+)"
+    r"(?P<value>[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー"
+    r"@._・+＋#＃&＆*＊\-\s]{1,48}?)\s*$"
+)
+_CREDIT_BLOCK_MAX_GAP_SEC = 0.5
+_CREDIT_ENTITY_ORGANIZATION_SUFFIX = re.compile(
+    r"(?:研究所|スタジオ|工房|プロジェクト|チーム|制作室|映像部)$"
+)
+_credit_entity_tagger: Any = None
+_credit_entity_tagger_lock = threading.Lock()
 _MIN_MELODY_COVERAGE = 0.25
 _MIN_MELODY_SECONDS_PER_CHARACTER = 0.05
 _RECOVERY_MAX_NOTE_GAP_SEC = 1.0
@@ -231,6 +401,129 @@ def vocalization_only(text: str) -> bool:
     )
 
 
+_LATIN_VOCALIZATION_TOKEN = re.compile(
+    r"wow|la|na|da|fa|ha|ya|a+h*|o+h*|u+h*"
+)
+
+
+def _latin_vocalization_moras(text: str) -> list[str] | None:
+    moras: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        match = _LATIN_VOCALIZATION_TOKEN.match(text, cursor)
+        if match is None:
+            return None
+        token = match.group()
+        if token == "wow":
+            moras.extend(("ワ", "ウ"))
+        elif token == "la":
+            moras.append("ラ")
+        elif token == "na":
+            moras.append("ナ")
+        elif token == "da":
+            moras.append("ダ")
+        elif token == "fa":
+            moras.append("ファ")
+        elif token == "ha":
+            moras.append("ハ")
+        elif token == "ya":
+            moras.append("ヤ")
+        elif token.startswith("a"):
+            moras.append("ア")
+        elif token.startswith("o"):
+            moras.append("オ")
+        else:
+            moras.append("ウ")
+        cursor = match.end()
+    return moras
+
+
+def _minimal_vocalization_period(moras: list[str]) -> tuple[str, ...] | None:
+    """Return a 1--3-mora period after the narrow vocalization-only gate."""
+    for width in range(1, min(3, len(moras) // 2) + 1):
+        if all(mora == moras[index % width] for index, mora in enumerate(moras)):
+            return tuple(moras[:width])
+    return None
+
+
+def is_pathological_repeated_vocalization(
+    line: TranscribedLine,
+    note_count: int,
+) -> bool:
+    """Flag only runaway periodic ASR, not an ordinary short repetition."""
+    if note_count < 0:
+        raise ValueError("note_count must be non-negative")
+    normalized = normalize_recognized_text(line.text).replace("ー", "")
+    if not normalized or not vocalization_only(line.text):
+        return False
+    if normalized.isascii():
+        moras = _latin_vocalization_moras(normalized)
+    elif re.fullmatch(r"[ぁ-んァ-ヶ]+", normalized):
+        from .kana import split_moras
+
+        moras = split_moras(normalized)
+    else:
+        return False
+    if not moras or _minimal_vocalization_period(moras) is None:
+        return False
+    duration = max(1e-6, line.end_sec - line.start_sec)
+    return (
+        len(moras) > max(64, note_count * 2)
+        or len(moras) / duration > 8.0
+    )
+
+
+def normalize_repeated_vocalization(
+    line: TranscribedLine,
+    notes: list[MelodyNote],
+) -> RepeatedVocalizationNormalization | None:
+    """Canonicalize a pure repetition without inventing one attack per note.
+
+    Whisper can emit hundreds of repeated syllables for a short bounded interval.
+    It can also collapse several audible attacks into only a few syllables.  The
+    A pitch change is not proof of a new syllable, while a repeated syllable can
+    also reattack without a pitch change.  SheetSage notes therefore must not set
+    the mora count.  Preserve Whisper's observed count and let CTC/Stage 3 decide
+    attacks and melisma.  Latin vocalizations are converted directly to kana so
+    generic English reading heuristics cannot collapse or spell out the repetition.
+    """
+    if not vocalization_only(line.text):
+        return None
+    normalized = normalize_recognized_text(line.text).replace("ー", "")
+    if not normalized:
+        return None
+    if normalized.isascii():
+        moras = _latin_vocalization_moras(normalized)
+    elif re.fullmatch(r"[ぁ-んァ-ヶ]+", normalized):
+        from .kana import split_moras
+
+        moras = split_moras(normalized)
+    else:
+        return None
+    if not moras:
+        return None
+    period = _minimal_vocalization_period(moras)
+    if period is None:
+        return None
+    note_count = sum(
+        line.start_sec <= (note.start_sec + note.end_sec) / 2 < line.end_sec
+        for note in notes
+    )
+    normalized_moras = list(moras)
+    normalized_line = type(line)(
+        line.start_sec,
+        line.end_sec,
+        "".join(normalized_moras),
+    )
+    return RepeatedVocalizationNormalization(
+        line=normalized_line,
+        unit_moras=period,
+        original_mora_count=len(moras),
+        normalized_mora_count=len(normalized_moras),
+        note_count=note_count,
+    )
+
+
 def lyric_deficit_recoveries(
     lines: list[TranscribedLine],
     mora_counts: list[int],
@@ -347,6 +640,126 @@ def non_lyric_template_family(text: str) -> str | None:
     return None
 
 
+def _credit_value_parts_of_speech(value: str) -> list[tuple[str, str, str]]:
+    """Return UniDic POS fields used only by the conservative credit-value gate."""
+    global _credit_entity_tagger
+    with _credit_entity_tagger_lock:
+        if _credit_entity_tagger is None:
+            import MeCab
+            import unidic_lite
+
+            _credit_entity_tagger = MeCab.Tagger("-d " + unidic_lite.DICDIR)
+        node = _credit_entity_tagger.parseToNode(value)
+        parts = []
+        while node:
+            if node.surface:
+                fields = node.feature.split(",")
+                fields.extend(["*"] * (3 - len(fields)))
+                parts.append((fields[0], fields[1], fields[2]))
+            node = node.next
+    return parts
+
+
+def _credit_value_is_entity_like(value: str) -> bool:
+    """Require creator-name evidence instead of treating arbitrary text as a credit."""
+    compact = re.sub(r"\s+", "", value)
+    if not compact or len(compact) > 32:
+        return False
+    parts = _credit_value_parts_of_speech(compact)
+    if any(
+        major in {"動詞", "形容詞", "助詞", "助動詞", "代名詞"}
+        for major, _minor, _detail in parts
+    ):
+        return False
+    if any(
+        major == "名詞" and minor == "固有名詞"
+        for major, minor, _detail in parts
+    ):
+        return True
+    if _CREDIT_ENTITY_ORGANIZATION_SUFFIX.search(compact):
+        return True
+    # Latin handles and mixed-script creator names are common and UniDic normally
+    # labels them as ordinary nouns or unknown words.  An explicit label/value
+    # layout plus Latin letters is narrow enough for the standalone 映像 case.
+    return bool(re.search(r"[A-Za-z]", compact))
+
+
+def _contextual_credit_candidate(text: str) -> tuple[str, str] | None:
+    original = unicodedata.normalize("NFKC", text)
+    match = _CONTEXTUAL_CREDIT_WITH_VALUE.fullmatch(original)
+    if match is None:
+        return None
+    return match.group("label"), match.group("value").strip()
+
+
+def _confirmed_credit_value(text: str) -> str | None:
+    original = unicodedata.normalize("NFKC", text)
+    for pattern in (_CREDIT_WITH_VALUE, _COMPOUND_CREDIT_WITH_VALUE):
+        match = pattern.fullmatch(original)
+        if match is not None:
+            return normalize_recognized_text(match.group("value"))
+    return None
+
+
+def _credit_lines_are_adjacent(left: TranscribedLine, right: TranscribedLine) -> bool:
+    boundary_delta = right.start_sec - left.end_sec
+    return (
+        right.start_sec >= left.start_sec
+        and abs(boundary_delta) <= _CREDIT_BLOCK_MAX_GAP_SEC
+    )
+
+
+def contextual_non_lyric_template_families(
+    lines: Sequence[TranscribedLine],
+) -> list[str | None]:
+    """Classify soft credit labels using entity evidence and a contiguous block.
+
+    ``映像`` may anchor a block when its value independently looks like a creator.
+    The much more lyric-like ``歌`` is accepted only next to an already confirmed
+    credit.  Ordinary text breaks propagation, so this does not become a generic
+    duplicate-text or opening-position suppression rule.
+    """
+    families = [non_lyric_template_family(line.text) for line in lines]
+    candidates = [_contextual_credit_candidate(line.text) for line in lines]
+    confirmed_values = {
+        value
+        for line in lines
+        if (value := _confirmed_credit_value(line.text)) is not None
+    }
+    entity_like = [
+        candidate is not None
+        and (
+            _credit_value_is_entity_like(candidate[1])
+            or normalize_recognized_text(candidate[1]) in confirmed_values
+        )
+        for candidate in candidates
+    ]
+
+    for index, candidate in enumerate(candidates):
+        if candidate is not None and candidate[0] == "映像" and entity_like[index]:
+            families[index] = "credits"
+
+    changed = True
+    while changed:
+        changed = False
+        for index, candidate in enumerate(candidates):
+            if candidate is None or families[index] is not None or not entity_like[index]:
+                continue
+            adjacent_credit = (
+                index > 0
+                and families[index - 1] == "credits"
+                and _credit_lines_are_adjacent(lines[index - 1], lines[index])
+            ) or (
+                index + 1 < len(lines)
+                and families[index + 1] == "credits"
+                and _credit_lines_are_adjacent(lines[index], lines[index + 1])
+            )
+            if adjacent_credit:
+                families[index] = "credits"
+                changed = True
+    return families
+
+
 def interval_has_melodic_support(
     start_sec: float,
     end_sec: float,
@@ -369,6 +782,8 @@ def interval_has_melodic_support(
 def credit_recovery_windows(
     line: TranscribedLine,
     notes: list[MelodyNote],
+    *,
+    template_family: str | None = None,
 ) -> list[tuple[float, float]]:
     """Return substantial SheetSage singing islands inside a template candidate.
 
@@ -376,7 +791,9 @@ def credit_recovery_windows(
     bounds let a second Whisper pass hear the singing without the long silent or
     instrumental context that can induce a credit hallucination.
     """
-    if non_lyric_template_family(line.text) is None:
+    if template_family is None:
+        template_family = non_lyric_template_family(line.text)
+    if template_family is None:
         return []
     clipped = [
         (max(line.start_sec, note.start_sec), min(line.end_sec, note.end_sec))
@@ -425,6 +842,49 @@ def decide_recognized_line(
     else:
         status = "accepted"
     return SemanticLyricDecision(status, normalized, family, supported)
+
+
+def decide_recognized_lines(
+    lines: Sequence[TranscribedLine],
+    notes: list[MelodyNote],
+) -> list[SemanticLyricDecision]:
+    """Decide a transcript together so contiguous soft credit labels have context."""
+    families = contextual_non_lyric_template_families(lines)
+    decisions = []
+    for line, family in zip(lines, families, strict=True):
+        decision = decide_recognized_line(line, notes)
+        if family != decision.template_family:
+            decision = replace(decision, template_family=family)
+            if family is not None and not decision.melodic_support:
+                decision = replace(decision, status="rejected")
+        decisions.append(decision)
+    return decisions
+
+
+def apply_vocal_activity_support(
+    decision: SemanticLyricDecision,
+    *,
+    supported: bool,
+    percentile_dbfs: float,
+    relative_db: float,
+    active_frame_ratio: float,
+) -> SemanticLyricDecision:
+    """Reject only unresolved ordinary text from a mostly silent vocal stem.
+
+    Melody-supported lines remain governed by SheetSage, while exact non-lyric
+    templates retain their stricter semantic/CTC handling. The energy measurement
+    is therefore an additional guard for the ordinary no-melody case, not a
+    replacement for either existing signal.
+    """
+    applies = decision.status == "unresolved" and decision.template_family is None
+    return replace(
+        decision,
+        status="rejected" if applies and not supported else decision.status,
+        vocal_activity_support=supported if applies else None,
+        vocal_activity_percentile_dbfs=percentile_dbfs,
+        vocal_activity_relative_db=relative_db,
+        vocal_active_frame_ratio=active_frame_ratio,
+    )
 
 
 def apply_ctc_support(

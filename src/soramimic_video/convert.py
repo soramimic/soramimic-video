@@ -26,7 +26,7 @@ from .kana import (
     split_moras,
     vowel_of,
 )
-from .project import Parody, ParodyLine, ParodyWord, Project
+from .project import Line, Parody, ParodyLine, ParodyWord, Project
 from .soramimic_engine import UnitWeightsFunc, run_convert
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,116 @@ def engine_phrases(project: Project) -> list[str]:
     """
     return [_engine_kana(line.canonical_kana if line.canonical_kana is not None
                          else line.xf_kana) for line in project.lines]
+
+
+def _layer_unit_note_indices(
+    project: Project,
+    line: Line,
+    units: list[dict[str, Any]],
+) -> list[list[int]] | None:
+    """Return each engine unit's line-local note indices from lyric-layer identity.
+
+    ``apply_lyric_layers`` creates one project note for every synthesis-plan slot in
+    plan order.  The plan already carries canonical mora IDs, so layered projects
+    must project engine units through those IDs rather than comparing the flattened
+    rendered kana (which contains continuation ``ー`` slots) with canonical text.
+
+    ``None`` means this is a legacy XF/MIDI project without lyric layers.  Invalid
+    layered provenance is an error: silently falling back to fuzzy text alignment
+    would reintroduce the lyric loss this identity path is meant to prevent.
+    """
+    layers = project.lyric_layers
+    if layers is None:
+        return None
+
+    canonical = layers.get("canonical")
+    plan = layers.get("synthesis_plan")
+    if not isinstance(canonical, list) or not isinstance(plan, list):
+        raise ValueError("歌詞レイヤーに完全歌詞または合成計画がありません")
+    if len(plan) != len(project.notes):
+        raise ValueError("歌詞レイヤーの合成計画と音符列の対応が失われています")
+
+    canonical_index = line.original_line_index
+    if canonical_index is None:
+        canonical_index = line.id
+    if not isinstance(canonical_index, int) or not 0 <= canonical_index < len(canonical):
+        raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
+    canonical_line = canonical[canonical_index]
+    utterance_id = canonical_line.get("utterance_id")
+    mora_ids = canonical_line.get("mora_ids")
+    canonical_kana = canonical_line.get("kana")
+    if (not isinstance(utterance_id, str)
+            or not isinstance(mora_ids, list)
+            or not all(isinstance(value, str) for value in mora_ids)
+            or not isinstance(canonical_kana, str)):
+        raise ValueError(f"行{line.id}: 完全歌詞のID対応が不正です")
+
+    moras = split_fine_moras(canonical_kana)
+    if len(moras) != len(mora_ids):
+        raise ValueError(f"行{line.id}: 完全歌詞のモーラIDと読みが一致しません")
+    unit_prons: list[str] = []
+    for unit in units:
+        value = unit.get("pronunciation")
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"行{line.id}: 変換元の音節に読みがありません")
+        unit_prons.append(value)
+    unit_concat = "".join(unit_prons)
+    canonical_concat = _engine_kana(canonical_kana)
+    if unit_concat != canonical_concat:
+        raise ValueError(
+            f"行{line.id}: 変換元の音節と完全歌詞が一致しません "
+            f"({unit_concat!r} != {canonical_concat!r})"
+        )
+
+    # _engine_kana is length-preserving, so canonical mora spans can be measured
+    # on the original string while comparing them with normalized engine units.
+    mora_spans: list[tuple[int, int, str]] = []
+    cursor = 0
+    for mora, mora_id in zip(moras, mora_ids, strict=True):
+        mora_spans.append((cursor, cursor + len(mora), mora_id))
+        cursor += len(mora)
+
+    unit_mora_ids: list[set[str]] = []
+    cursor = 0
+    for pron in unit_prons:
+        end = cursor + len(pron)
+        owned = {
+            mora_id for start, stop, mora_id in mora_spans
+            if start < end and cursor < stop
+        }
+        if not owned:
+            raise ValueError(f"行{line.id}: 変換元音節のモーラIDを特定できません")
+        unit_mora_ids.append(owned)
+        cursor = end
+
+    slot_by_note_id = {
+        note.id: slot
+        for note, slot in zip(project.notes, plan, strict=True)
+    }
+    if len(slot_by_note_id) != len(project.notes):
+        raise ValueError("歌詞レイヤーの音符IDが重複しています")
+
+    note_mora_ids: list[set[str]] = []
+    for note_id in line.note_ids:
+        slot = slot_by_note_id.get(note_id)
+        if slot is None or slot.get("utterance_id") != utterance_id:
+            raise ValueError(f"行{line.id}: 音符{note_id}の歌詞レイヤー対応が不正です")
+        slot_moras = slot.get("mora_ids")
+        if (not isinstance(slot_moras, list)
+                or not slot_moras
+                or not all(isinstance(value, str) for value in slot_moras)
+                or not set(slot_moras).issubset(set(mora_ids))):
+            raise ValueError(f"行{line.id}: 音符{note_id}のモーラIDが不正です")
+        note_mora_ids.append(set(slot_moras))
+
+    groups = [
+        [index for index, note_moras in enumerate(note_mora_ids) if note_moras & unit_moras]
+        for unit_moras in unit_mora_ids
+    ]
+    covered = {index for group in groups for index in group}
+    if covered != set(range(len(line.note_ids))):
+        raise ValueError(f"行{line.id}: 合成音符を完全歌詞のモーラIDへ投影できません")
+    return groups
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -235,6 +345,23 @@ def note_length_weights(
     ]
 
 
+def _layer_note_length_weights(
+    unit_note_indices: list[list[int]], note_durs: list[float], alpha: float
+) -> list[float]:
+    """Compute unit weights from identity-owned synthesis slots."""
+    raws: list[float | None] = [
+        sum(note_durs[index] for index in dict.fromkeys(indices)) if indices else None
+        for indices in unit_note_indices
+    ]
+    known = [value for value in raws if value is not None]
+    mean = sum(known) / len(known) if known else 1.0
+    return [
+        ((mean if raw is None else raw) ** alpha)
+        if (mean if raw is None else raw) > 0 else 0.0
+        for raw in raws
+    ]
+
+
 def project_note_length_weights(project: Project, alpha: float) -> UnitWeightsFunc:
     """run_convert に渡す「ユニット列 → 行ごとのノート長重み」コールバックを作る。
 
@@ -246,14 +373,19 @@ def project_note_length_weights(project: Project, alpha: float) -> UnitWeightsFu
         out: list[list[float]] = []
         for line, units in zip(project.lines, units_per_line, strict=True):
             notes = [project.notes[i] for i in line.note_ids]
-            out.append(
-                note_length_weights(
-                    [u["pronunciation"] for u in units],
-                    [n.kana for n in notes],
-                    [n.end_sec - n.start_sec for n in notes],
-                    alpha,
+            note_durs = [n.end_sec - n.start_sec for n in notes]
+            unit_note_indices = _layer_unit_note_indices(project, line, units)
+            if unit_note_indices is not None:
+                out.append(_layer_note_length_weights(unit_note_indices, note_durs, alpha))
+            else:
+                out.append(
+                    note_length_weights(
+                        [u["pronunciation"] for u in units],
+                        [n.kana for n in notes],
+                        note_durs,
+                        alpha,
+                    )
                 )
-            )
         return out
 
     return compute
@@ -948,6 +1080,7 @@ def _map_word_to_notes(
     notes_kana: list[str] | None = None,
     notes_dur: list[float] | None = None,
     notes_bunsetsu: list[bool] | None = None,
+    unit_note_indices: list[list[int]] | None = None,
 ) -> tuple[list[int], list[str]]:
     """periodユニット区間 → 重なる音符indexの列と音符ごとの歌唱カナ。
 
@@ -964,36 +1097,51 @@ def _map_word_to_notes(
     独立要素へ戻す候補(_expansion_candidates)を試し、埋まる音符が増えるものを
     採用する(同数なら割り付けスコアが良い方)。
     """
-    unit_cum = [0]
-    for length in unit_lens:
-        unit_cum.append(unit_cum[-1] + length)
-    start_src = unit_cum[period[0]]
-    end_src = unit_cum[period[1]]
-    start_c = offset_map[start_src]
-    end_c = offset_map[end_src]
+    if not 0 <= period[0] <= period[1] <= len(unit_lens):
+        raise ValueError(f"変換単語の音節区間が不正です: {period}")
 
-    note_cum = [0]
-    for length in note_lens:
-        note_cum.append(note_cum[-1] + length)
-    ids = [
-        i
-        for i in range(len(note_lens))
-        if note_cum[i] < end_c and note_cum[i + 1] > start_c
-    ]
+    units = list(range(period[0], period[1]))
+    if unit_note_indices is None:
+        unit_cum = [0]
+        for length in unit_lens:
+            unit_cum.append(unit_cum[-1] + length)
+        start_src = unit_cum[period[0]]
+        end_src = unit_cum[period[1]]
+        start_c = offset_map[start_src]
+        end_c = offset_map[end_src]
+
+        note_cum = [0]
+        for length in note_lens:
+            note_cum.append(note_cum[-1] + length)
+        ids = [
+            i
+            for i in range(len(note_lens))
+            if note_cum[i] < end_c and note_cum[i + 1] > start_c
+        ]
+
+        # 各ユニット(元歌詞音節)が占める ids 内の音符位置を求める
+        unit_note_ks: list[list[int]] = []
+        for u in units:
+            lo, hi = offset_map[unit_cum[u]], offset_map[unit_cum[u + 1]]
+            if hi <= lo:  # 対応先の文字がない(脱落): 直近の音符に寄せる
+                lo, hi = max(0, lo - 1), lo
+            ks = [
+                k for k, i in enumerate(ids)
+                if note_cum[i] < hi and note_cum[i + 1] > lo
+            ]
+            unit_note_ks.append(ks)
+    else:
+        selected_groups = unit_note_indices[period[0]:period[1]]
+        ids = sorted({index for group in selected_groups for index in group})
+        positions = {note_index: position for position, note_index in enumerate(ids)}
+        unit_note_ks = [
+            [positions[note_index] for note_index in group if note_index in positions]
+            for group in selected_groups
+        ]
 
     kana_per_note = [""] * len(ids)
     if not pronunciation:
         return ids, kana_per_note
-
-    # 各ユニット(元歌詞音節)が占める ids 内の音符位置を求める
-    units = list(range(period[0], period[1]))
-    unit_note_ks: list[list[int]] = []
-    for u in units:
-        lo, hi = offset_map[unit_cum[u]], offset_map[unit_cum[u + 1]]
-        if hi <= lo:  # 対応先の文字がない(脱落): 直近の音符に寄せる
-            lo, hi = max(0, lo - 1), lo
-        ks = [k for k, i in enumerate(ids) if note_cum[i] < hi and note_cum[i + 1] > lo]
-        unit_note_ks.append(ks)
 
     comp_per_elem = (
         _compressed_moras_per_element(word_kana, pronunciation) if word_kana else None
@@ -1313,21 +1461,30 @@ def apply_converted_lines(
     for line, converted in zip(project.lines, lines, strict=True):
         pline = ParodyLine(line_id=line.id)
         unit_lens = [len(u["pronunciation"]) for u in converted["units"]]
-        # 小書き母音の開き(セェ→セエ)はエンジンに渡す側だけに掛かるので、
-        # 突き合わせる音符側にも同じ正規化を掛けて位置対応を恒等に保つ
-        unit_concat = _engine_kana(
-            "".join(u["pronunciation"] for u in converted["units"])
-        )
         note_lens = [len(project.notes[i].kana) for i in line.note_ids]
-        note_concat = _engine_kana(
-            "".join(project.notes[i].kana for i in line.note_ids)
+        unit_note_indices = _layer_unit_note_indices(
+            project, line, converted["units"]
         )
-        if unit_concat != note_concat:
-            logger.debug(
-                "行%d: ユニット列と音符列の読みが不一致 (%r != %r)。difflibで対応づけます",
-                line.id, unit_concat, note_concat,
+        if unit_note_indices is None:
+            # Legacy XF/MIDI projects have no identity graph.  Keep their
+            # character-offset bridge, including its compatibility fallback.
+            unit_concat = _engine_kana(
+                "".join(u["pronunciation"] for u in converted["units"])
             )
-        offset_map = _offset_map(unit_concat, note_concat)
+            note_concat = _engine_kana(
+                "".join(project.notes[i].kana for i in line.note_ids)
+            )
+            if unit_concat != note_concat:
+                logger.debug(
+                    "行%d: ユニット列と音符列の読みが不一致 "
+                    "(%r != %r)。difflibで対応づけます",
+                    line.id, unit_concat, note_concat,
+                )
+            offset_map = _offset_map(unit_concat, note_concat)
+        else:
+            # _map_word_to_notes receives the exact ID-owned note groups below;
+            # this identity table is used only for word-span diagnostics.
+            offset_map = list(range(sum(unit_lens) + 1))
         note_cum = [0]
         for length in note_lens:
             note_cum.append(note_cum[-1] + length)
@@ -1349,20 +1506,40 @@ def apply_converted_lines(
                 word.get("pronunciation"), word.get("kana", ""),
                 notes_kana=notes_kana, notes_dur=notes_dur,
                 notes_bunsetsu=notes_bunsetsu,
+                unit_note_indices=unit_note_indices,
             )
             start_c, end_c = _word_char_span(
                 unit_lens, offset_map, tuple(word["period"])
             )
             pending.append([word, note_idx, note_kana, start_c, end_c])
 
-        # 2nd pass: 複合音符の二重割り当てを一本化する
-        for i, winner, loser in _resolve_shared_notes(pending, note_cum):
-            logger.debug(
-                "行%d: 音符位置%d を単語 %r と %r が二重取り→%r に一本化",
-                line.id, i,
-                pending[winner][0]["surface"], pending[loser][0]["surface"],
-                pending[winner][0]["surface"],
-            )
+        if unit_note_indices is None:
+            # Legacy compound-kana notes can straddle two engine words.
+            for i, winner, loser in _resolve_shared_notes(pending, note_cum):
+                logger.debug(
+                    "行%d: 音符位置%d を単語 %r と %r が二重取り→%r に一本化",
+                    line.id, i,
+                    pending[winner][0]["surface"], pending[loser][0]["surface"],
+                    pending[winner][0]["surface"],
+                )
+        else:
+            holders: dict[int, list[str]] = {}
+            for word, note_idx, _note_kana, _start_c, _end_c in pending:
+                for index in note_idx:
+                    holders.setdefault(index, []).append(str(word["surface"]))
+            shared = {index: words for index, words in holders.items() if len(words) > 1}
+            if shared:
+                raise ValueError(
+                    f"行{line.id}: 1つの合成音符が複数の替え歌単語に属しています: "
+                    f"{shared}"
+                )
+            claimed = set(holders)
+            expected = set(range(len(line.note_ids)))
+            if claimed != expected:
+                missing = [line.note_ids[index] for index in sorted(expected - claimed)]
+                raise ValueError(
+                    f"行{line.id}: 替え歌を割り当てられない合成音符があります: {missing}"
+                )
 
         # 3rd pass: ParodyWord を生成
         for word, note_idx, note_kana, _start_c, _end_c in pending:
