@@ -10,6 +10,7 @@ from soramimic_video.semantic_lyrics import (
     decide_recognized_line,
     decide_recognized_lines,
     duration_repeated_vocalization_candidate,
+    has_tandem_repeat_ctc_support,
     has_tandem_repeat_note_support,
     has_tandem_repeated_phrase,
     is_pathological_repeated_vocalization,
@@ -111,6 +112,29 @@ def test_tandem_repeat_note_support_requires_detail_gain_and_better_note_fit():
         recovered_mora_count=14,
         note_count=7,
         median_notes_per_mora=1.0,
+    )
+
+
+def test_tandem_repeat_ctc_support_requires_retry_to_improve_on_source():
+    assert has_tandem_repeat_ctc_support(
+        note_support=True,
+        source_ctc_median_score=0.00008,
+        recovered_ctc_median_score=0.00021,
+    )
+    assert not has_tandem_repeat_ctc_support(
+        note_support=True,
+        source_ctc_median_score=0.00080,
+        recovered_ctc_median_score=0.00007,
+    )
+    assert not has_tandem_repeat_ctc_support(
+        note_support=False,
+        source_ctc_median_score=0.00008,
+        recovered_ctc_median_score=0.00021,
+    )
+    assert not has_tandem_repeat_ctc_support(
+        note_support=True,
+        source_ctc_median_score=0.0,
+        recovered_ctc_median_score=0.0,
     )
 
 

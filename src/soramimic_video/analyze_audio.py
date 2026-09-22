@@ -35,6 +35,7 @@ from .semantic_lyrics import (
     decide_recognized_line,
     decide_recognized_lines,
     duration_repeated_vocalization_candidate,
+    has_tandem_repeat_ctc_support,
     has_tandem_repeat_note_support,
     is_pathological_repeated_vocalization,
     normalize_repeated_vocalization,
@@ -1444,16 +1445,20 @@ def analyze_audio(
             source_ctc_median = (
                 statistics.median(source_scores) if source_scores else 0.0
             )
+            tandem_repeat_ctc_support = has_tandem_repeat_ctc_support(
+                note_support=tandem_repeat_support,
+                source_ctc_median_score=source_ctc_median,
+                recovered_ctc_median_score=recovered_ctc_median,
+            )
             if not pure_vocalization:
                 if (
                     recovered_ctc_median < MIN_CTC_MEDIAN_SCORE
-                    and not tandem_repeat_support
+                    and not tandem_repeat_ctc_support
                 ):
                     rejection_reasons.append("insufficient-ctc-support")
                 if (
                     source_ctc_median > 0.0
                     and recovered_ctc_median < source_ctc_median * 0.5
-                    and not tandem_repeat_support
                 ):
                     rejection_reasons.append("ctc-weaker-than-source")
             candidate_accepted = not rejection_reasons
@@ -1482,6 +1487,7 @@ def analyze_audio(
                 "source_ctc_median_score": source_ctc_median,
                 "recovered_ctc_median_score": recovered_ctc_median,
                 "tandem_repeat_support": tandem_repeat_support,
+                "tandem_repeat_ctc_support": tandem_repeat_ctc_support,
                 "source_note_fit_error": source_note_fit_error,
                 "recovered_note_fit_error": recovered_note_fit_error,
                 "segments": [
