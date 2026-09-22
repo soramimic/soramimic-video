@@ -1012,8 +1012,12 @@ def test_semantic_gate_recovers_singing_island_before_final_ctc(monkeypatch, tmp
     assert not any("CTC全体整列" in item for item in analysis["limitations"])
 
 
+@pytest.mark.parametrize(
+    ("retry_count", "expected_status"),
+    [(2, "accepted"), (100, "unresolved")],
+)
 def test_credit_retry_preserves_observed_repetition_attacks(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, retry_count, expected_status,
 ):
     import soramimic_video.stage3 as stage3
     from soramimic_video import (
@@ -1042,7 +1046,7 @@ def test_credit_retry_preserves_observed_repetition_attacks(
         transcribe,
         "transcribe_window",
         lambda _path, start, end, _model, _device: [
-            TranscribedLine(start, end, "ダ" * 2)
+            TranscribedLine(start, end, "ダ" * retry_count)
         ],
     )
     monkeypatch.setattr(
@@ -1051,7 +1055,7 @@ def test_credit_retry_preserves_observed_repetition_attacks(
         lambda text: {
             "作曲": ["サッキョク"],
             "歌": ["ウタ"],
-                "ダ" * 2: ["ダ" * 2],
+            "ダ" * retry_count: ["ダ" * retry_count],
         }[text],
     )
     emissions = object()
@@ -1111,9 +1115,14 @@ def test_credit_retry_preserves_observed_repetition_attacks(
             return SimpleNamespace(
                 to_json=lambda: '{"note_candidates": [], "links": []}'
             ), object()
-        assert line_texts == ["ダ" * 2, "歌"]
-        assert selected_readings == ["ダ" * 2, "ウタ"]
-        assert [item.kana for item in aligned if item.line == 0] == ["ダ"] * 2
+        if expected_status == "accepted":
+            assert line_texts == ["ダ" * 2, "歌"]
+            assert selected_readings == ["ダ" * 2, "ウタ"]
+            assert [item.kana for item in aligned if item.line == 0] == ["ダ"] * 2
+        else:
+            assert line_texts == ["歌"]
+            assert selected_readings == ["ウタ"]
+            assert [item.kana for item in aligned if item.line == 0] == ["ウ", "タ"]
         raise StopAfterRecovery
 
     monkeypatch.setattr(stage3, "build_stage3_layers", stop_after_recovery)
@@ -1130,16 +1139,22 @@ def test_credit_retry_preserves_observed_repetition_attacks(
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
     recovery = recognition["semantic_gate"]["localized_recoveries"][0]
-    assert recovery["status"] == "accepted"
-    assert recovery["segments"][0]["surface"] == "ダ" * 2
-    normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
-    assert normalization["phase"] == "semantic-recovery"
-    assert normalization["original_mora_count"] == 2
-    assert normalization["normalized_mora_count"] == 2
-    assert normalization["note_count"] == 4
-    assert normalization["capped"] is False
-    assert normalization["expanded"] is False
-    assert normalization["adjustment"] == "unchanged"
+    assert recovery["status"] == expected_status
+    if expected_status == "accepted":
+        assert recovery["rejection_reasons"] == []
+        assert recovery["segments"][0]["surface"] == "ダ" * 2
+        normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
+        assert normalization["phase"] == "semantic-recovery"
+        assert normalization["original_mora_count"] == 2
+        assert normalization["normalized_mora_count"] == 2
+        assert normalization["note_count"] == 4
+        assert normalization["capped"] is False
+        assert normalization["expanded"] is False
+        assert normalization["adjustment"] == "unchanged"
+    else:
+        assert recovery["rejection_reasons"] == ["pathological-repetition"]
+        assert recovery["segments"] == []
+        assert recognition["semantic_gate"]["vocalization_normalizations"] == []
 
 
 def test_note_lyric_deficit_recovery_replaces_only_acoustically_supported_detail(
@@ -1247,14 +1262,16 @@ def test_note_lyric_deficit_recovery_replaces_only_acoustically_supported_detail
 
 
 @pytest.mark.parametrize(
-    ("retry_surface", "expected_status"),
+    ("retry_surface", "kana_surface", "expected_status", "expected_count"),
     [
-        ("DADADADA", "accepted"),
-        ("DA" * 100, "rejected"),
+        ("DADADADA", "ダ" * 4, "accepted", 4),
+        ("DADADADA", "ダ" * 12, "accepted", 12),
+        ("DA" * 100, None, "rejected", 100),
     ],
 )
 def test_note_deficit_retry_handles_pure_repeated_vocalization(
-    monkeypatch, tmp_path, retry_surface, expected_status,
+    monkeypatch, tmp_path, retry_surface, kana_surface, expected_status,
+    expected_count,
 ):
     import soramimic_video.stage3 as stage3
     from soramimic_video import (
@@ -1262,6 +1279,7 @@ def test_note_deficit_retry_handles_pure_repeated_vocalization(
     )
     from soramimic_video import (
         audio_melody,
+        kana_whisper,
         mora_align,
         reading,
         transcribe,
@@ -1320,11 +1338,18 @@ def test_note_deficit_retry_handles_pure_repeated_vocalization(
                 start = window[0] + (window[1] - window[0]) * mora_index / len(moras)
                 end = window[0] + (window[1] - window[0]) * (mora_index + 1) / len(moras)
                 aligned.append(
-                    AlignedMora(line_index, mora_index, mora, start, end, 0.0)
+                    AlignedMora(line_index, mora_index, mora, start, end, 0.01)
                 )
         return aligned, [0] * len(variants)
 
     monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    monkeypatch.setattr(
+        kana_whisper,
+        "transcribe_kana_windows",
+        lambda _path, windows, _device: [kana_surface for _window in windows]
+        if kana_surface is not None
+        else pytest.fail("pathological retry must not invoke KanaWhisper"),
+    )
     notes = []
     for base in (0.0, 3.0, 6.0):
         notes.extend(
@@ -1359,11 +1384,19 @@ def test_note_deficit_retry_handles_pure_repeated_vocalization(
             return SimpleNamespace(
                 to_json=lambda: '{"note_candidates": [], "links": []}'
             ), object()
-        expected_surface = "ダ" * 4 if expected_status == "accepted" else "短い"
-        expected_reading = "ダ" * 4 if expected_status == "accepted" else "ミジカイ"
+        expected_surface = (
+            "ダ" * expected_count if expected_status == "accepted" else "短い"
+        )
+        expected_reading = (
+            "ダ" * expected_count if expected_status == "accepted" else "ミジカイ"
+        )
         assert line_texts[-1] == expected_surface
         assert selected_readings[-1] == expected_reading
-        expected_moras = ["ダ"] * 4 if expected_status == "accepted" else list("ミジカイ")
+        expected_moras = (
+            ["ダ"] * expected_count
+            if expected_status == "accepted"
+            else list("ミジカイ")
+        )
         assert [item.kana for item in aligned if item.line == 3] == expected_moras
         raise StopAfterRecovery
 
@@ -1383,21 +1416,24 @@ def test_note_deficit_retry_handles_pure_repeated_vocalization(
     recovery = recognition["semantic_gate"]["localized_deficit_recoveries"][0]
     assert recovery["status"] == expected_status
     assert recovery["classification"] == "repeated-vocalization"
-    expected_count = 4 if expected_status == "accepted" else 100
     assert recovery["rejection_reasons"] == (
         [] if expected_status == "accepted" else ["pathological-repetition"]
     )
     assert recovery["recovered_mora_count"] == expected_count
     assert recovery["segments"][0]["surface"] == "ダ" * expected_count
     assert recognition["segments"][-1]["surface"] == (
-        "ダ" * 4 if expected_status == "accepted" else "短い"
+        "ダ" * expected_count if expected_status == "accepted" else "短い"
+    )
+    assert recovery["selected_kana_whisper_source"] == (
+        "original-mix" if expected_count == 12 else None
     )
     normalization = recognition["semantic_gate"]["vocalization_normalizations"][0]
     assert normalization["phase"] == "deficit-recovery"
     assert normalization["original_surface"] == retry_surface
-    assert normalization["surface"] == "ダ" * expected_count
-    assert normalization["original_mora_count"] == expected_count
-    assert normalization["normalized_mora_count"] == expected_count
+    retry_count = 100 if retry_surface == "DA" * 100 else 4
+    assert normalization["surface"] == "ダ" * retry_count
+    assert normalization["original_mora_count"] == retry_count
+    assert normalization["normalized_mora_count"] == retry_count
     assert normalization["note_count"] == 16
     assert normalization["capped"] is False
     assert normalization["expanded"] is False

@@ -74,6 +74,19 @@ class RepeatedVocalizationNormalization:
 
 
 @dataclass(frozen=True)
+class RepeatedVocalizationExpansionDecision:
+    """Whether free kana evidence may supply only a repetition count."""
+
+    line: TranscribedLine | None
+    source_unit_moras: tuple[str, ...]
+    source_mora_count: int
+    evidence_mora_count: int
+    note_count: int
+    cyclic_similarity: float
+    rejection_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class UnownedNoteRecoveryWindow:
     """A conservative retry interval made only from Stage 3 note-only links."""
 
@@ -93,6 +106,7 @@ _UNOWNED_CLUSTER_MIN_SPAN_SEC = 0.6
 _UNOWNED_WINDOW_MERGE_GAP_SEC = 2.0
 _UNOWNED_WINDOW_MIN_NOTES = 8
 _UNOWNED_WINDOW_MIN_SPAN_SEC = 4.0
+_KANA_REPEAT_MIN_CYCLIC_SIMILARITY = 0.65
 
 
 def unowned_note_recovery_windows(
@@ -463,7 +477,9 @@ def vocalization_only(text: str) -> bool:
     tokens = re.findall(r"[a-z]+|[ぁ-んァ-ヶー]+", normalized)
     if not tokens or "".join(tokens) != normalized:
         return False
-    latin = re.compile(r"(?:(?:a+h*|o+h*|u+h*|la|na|da|fa|ha|ya|wow))+")
+    latin = re.compile(
+        r"(?:(?:a+h*|i+|u+h*|e+|o+h*|la|na|da|fa|ha|ya|wow))+"
+    )
     kana = frozenset("あぁアァいぃイィうぅウゥえぇエェおぉオォらラなナだダふフはハやヤわワー")
     return all(
         bool(latin.fullmatch(token)) if token.isascii()
@@ -473,7 +489,7 @@ def vocalization_only(text: str) -> bool:
 
 
 _LATIN_VOCALIZATION_TOKEN = re.compile(
-    r"wow|la|na|da|fa|ha|ya|a+h*|o+h*|u+h*"
+    r"wow|la|na|da|fa|ha|ya|a+h*|i+|u+h*|e+|o+h*"
 )
 
 
@@ -501,8 +517,12 @@ def _latin_vocalization_moras(text: str) -> list[str] | None:
             moras.append("ヤ")
         elif token.startswith("a"):
             moras.append("ア")
+        elif token.startswith("i"):
+            moras.append("イ")
         elif token.startswith("o"):
             moras.append("オ")
+        elif token.startswith("e"):
+            moras.append("エ")
         else:
             moras.append("ウ")
         cursor = match.end()
@@ -575,6 +595,96 @@ def is_pathological_repeated_vocalization(
     return (
         len(moras) > max(64, note_count * 2)
         or len(moras) / duration > 8.0
+    )
+
+
+def expand_repeated_vocalization_from_kana(
+    source_line: TranscribedLine,
+    evidence_text: str,
+    notes: Sequence[MelodyNote],
+) -> RepeatedVocalizationExpansionDecision:
+    """Use KanaWhisper only to count a Whisper-derived pure vocalization.
+
+    Free KanaWhisper output is never adopted as lyric text here. A candidate must
+    closely follow the short mora period already recognized by Whisper, fit the
+    local SheetSage capacity, and remain below a decoder-runaway density. The
+    returned surface is reconstructed entirely from Whisper's period.
+    """
+    from .kana import split_moras
+    from .kana_whisper import normalize_kana_evidence
+
+    normalization = normalize_repeated_vocalization(source_line, list(notes))
+    source_period = repeated_vocalization_period(source_line.text)
+    comparison_period = (
+        tuple(split_moras(normalize_kana_evidence("".join(source_period))))
+        if source_period is not None
+        else ()
+    )
+    source_moras = (
+        split_moras(normalization.line.text.replace("ー", ""))
+        if normalization is not None
+        else []
+    )
+    evidence_moras = split_moras(
+        normalize_kana_evidence(evidence_text).replace("ー", "")
+    )
+    note_count = normalization.note_count if normalization is not None else 0
+    similarity = 0.0
+    if comparison_period and evidence_moras:
+        similarity = max(
+            sum(
+                mora == comparison_period[(index + phase) % len(comparison_period)]
+                for index, mora in enumerate(evidence_moras)
+            )
+            / len(evidence_moras)
+            for phase in range(len(comparison_period))
+        )
+
+    reasons: list[str] = []
+    if source_period is None or not source_moras:
+        reasons.append("source-not-pure-repetition")
+    if not evidence_moras:
+        reasons.append("empty-evidence")
+    minimum_gain = len(source_moras) + max(
+        2, math.ceil(len(source_moras) * 0.25)
+    )
+    if evidence_moras and len(evidence_moras) < minimum_gain:
+        reasons.append("insufficient-detail-gain")
+    if note_count < 2:
+        reasons.append("insufficient-note-support")
+    if evidence_moras and len(evidence_moras) < math.ceil(note_count * 0.25):
+        reasons.append("insufficient-note-coverage")
+    if evidence_moras and len(evidence_moras) > math.ceil(note_count * 1.5):
+        reasons.append("excessive-detail")
+    duration = max(1e-6, source_line.end_sec - source_line.start_sec)
+    if evidence_moras and len(evidence_moras) / duration > 8.0:
+        reasons.append("pathological-density")
+    if (
+        evidence_moras
+        and source_period is not None
+        and similarity < _KANA_REPEAT_MIN_CYCLIC_SIMILARITY
+    ):
+        reasons.append("period-mismatch")
+    reasons = list(dict.fromkeys(reasons))
+
+    expanded = None
+    if not reasons and source_period is not None:
+        expanded = type(source_line)(
+            source_line.start_sec,
+            source_line.end_sec,
+            "".join(
+                source_period[index % len(source_period)]
+                for index in range(len(evidence_moras))
+            ),
+        )
+    return RepeatedVocalizationExpansionDecision(
+        line=expanded,
+        source_unit_moras=source_period or (),
+        source_mora_count=len(source_moras),
+        evidence_mora_count=len(evidence_moras),
+        note_count=note_count,
+        cyclic_similarity=similarity,
+        rejection_reasons=tuple(reasons),
     )
 
 

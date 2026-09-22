@@ -1,8 +1,9 @@
 """KanaWhisper evidence for conservative pronunciation selection.
 
-The model never replaces lyric text.  It only helps choose among bounded readings
-derived from the already selected surface text.  ReazonSpeech CTC remains the
-source of mora timing.
+The model never directly replaces lyric text. It normally chooses among bounded
+readings derived from the selected surface. A separate narrow recovery path may
+use its repetition count while rebuilding text from a Whisper-derived mora period.
+ReazonSpeech CTC remains the source of mora timing.
 """
 
 from __future__ import annotations
