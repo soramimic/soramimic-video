@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import statistics
+import threading
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -215,14 +216,26 @@ _CREDIT_VALUE_LABEL = rf"(?:{_CREDIT_LABEL}|サブタイトル)"
 _CREDIT_WITH_VALUE = re.compile(
     rf"^\s*{_CREDIT_VALUE_LABEL}(?:担当|協力|提供|制作|作成)?"
     r"(?:\s*[:：/／|｜]\s*|\s+)"
-    r"[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32}\s*$"
+    r"(?P<value>[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32})\s*$"
 )
 _COMPOUND_CREDIT_WITH_VALUE = re.compile(
     rf"^\s*{_CREDIT_LABEL}"
     rf"(?:\s*[・･/&＆,，、／|｜]\s*{_CREDIT_LABEL})+"
     r"\s*(?:[:：+＋]|\s)\s*"
-    r"[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32}\s*$"
+    r"(?P<value>[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー@._・]{1,32})\s*$"
 )
+_CONTEXTUAL_CREDIT_WITH_VALUE = re.compile(
+    r"^\s*(?P<label>映像|歌)(?:担当|制作|作成)?"
+    r"(?:\s*[:：/／|｜]\s*|\s+)"
+    r"(?P<value>[0-9a-zA-Zぁ-んァ-ヶ一-龯々〆ヵヶー"
+    r"@._・+＋#＃&＆*＊\-\s]{1,48}?)\s*$"
+)
+_CREDIT_BLOCK_MAX_GAP_SEC = 0.5
+_CREDIT_ENTITY_ORGANIZATION_SUFFIX = re.compile(
+    r"(?:研究所|スタジオ|工房|プロジェクト|チーム|制作室|映像部)$"
+)
+_credit_entity_tagger: Any = None
+_credit_entity_tagger_lock = threading.Lock()
 _MIN_MELODY_COVERAGE = 0.25
 _MIN_MELODY_SECONDS_PER_CHARACTER = 0.05
 _RECOVERY_MAX_NOTE_GAP_SEC = 1.0
@@ -627,6 +640,126 @@ def non_lyric_template_family(text: str) -> str | None:
     return None
 
 
+def _credit_value_parts_of_speech(value: str) -> list[tuple[str, str, str]]:
+    """Return UniDic POS fields used only by the conservative credit-value gate."""
+    global _credit_entity_tagger
+    with _credit_entity_tagger_lock:
+        if _credit_entity_tagger is None:
+            import MeCab
+            import unidic_lite
+
+            _credit_entity_tagger = MeCab.Tagger("-d " + unidic_lite.DICDIR)
+        node = _credit_entity_tagger.parseToNode(value)
+        parts = []
+        while node:
+            if node.surface:
+                fields = node.feature.split(",")
+                fields.extend(["*"] * (3 - len(fields)))
+                parts.append((fields[0], fields[1], fields[2]))
+            node = node.next
+    return parts
+
+
+def _credit_value_is_entity_like(value: str) -> bool:
+    """Require creator-name evidence instead of treating arbitrary text as a credit."""
+    compact = re.sub(r"\s+", "", value)
+    if not compact or len(compact) > 32:
+        return False
+    parts = _credit_value_parts_of_speech(compact)
+    if any(
+        major in {"動詞", "形容詞", "助詞", "助動詞", "代名詞"}
+        for major, _minor, _detail in parts
+    ):
+        return False
+    if any(
+        major == "名詞" and minor == "固有名詞"
+        for major, minor, _detail in parts
+    ):
+        return True
+    if _CREDIT_ENTITY_ORGANIZATION_SUFFIX.search(compact):
+        return True
+    # Latin handles and mixed-script creator names are common and UniDic normally
+    # labels them as ordinary nouns or unknown words.  An explicit label/value
+    # layout plus Latin letters is narrow enough for the standalone 映像 case.
+    return bool(re.search(r"[A-Za-z]", compact))
+
+
+def _contextual_credit_candidate(text: str) -> tuple[str, str] | None:
+    original = unicodedata.normalize("NFKC", text)
+    match = _CONTEXTUAL_CREDIT_WITH_VALUE.fullmatch(original)
+    if match is None:
+        return None
+    return match.group("label"), match.group("value").strip()
+
+
+def _confirmed_credit_value(text: str) -> str | None:
+    original = unicodedata.normalize("NFKC", text)
+    for pattern in (_CREDIT_WITH_VALUE, _COMPOUND_CREDIT_WITH_VALUE):
+        match = pattern.fullmatch(original)
+        if match is not None:
+            return normalize_recognized_text(match.group("value"))
+    return None
+
+
+def _credit_lines_are_adjacent(left: TranscribedLine, right: TranscribedLine) -> bool:
+    boundary_delta = right.start_sec - left.end_sec
+    return (
+        right.start_sec >= left.start_sec
+        and abs(boundary_delta) <= _CREDIT_BLOCK_MAX_GAP_SEC
+    )
+
+
+def contextual_non_lyric_template_families(
+    lines: Sequence[TranscribedLine],
+) -> list[str | None]:
+    """Classify soft credit labels using entity evidence and a contiguous block.
+
+    ``映像`` may anchor a block when its value independently looks like a creator.
+    The much more lyric-like ``歌`` is accepted only next to an already confirmed
+    credit.  Ordinary text breaks propagation, so this does not become a generic
+    duplicate-text or opening-position suppression rule.
+    """
+    families = [non_lyric_template_family(line.text) for line in lines]
+    candidates = [_contextual_credit_candidate(line.text) for line in lines]
+    confirmed_values = {
+        value
+        for line in lines
+        if (value := _confirmed_credit_value(line.text)) is not None
+    }
+    entity_like = [
+        candidate is not None
+        and (
+            _credit_value_is_entity_like(candidate[1])
+            or normalize_recognized_text(candidate[1]) in confirmed_values
+        )
+        for candidate in candidates
+    ]
+
+    for index, candidate in enumerate(candidates):
+        if candidate is not None and candidate[0] == "映像" and entity_like[index]:
+            families[index] = "credits"
+
+    changed = True
+    while changed:
+        changed = False
+        for index, candidate in enumerate(candidates):
+            if candidate is None or families[index] is not None or not entity_like[index]:
+                continue
+            adjacent_credit = (
+                index > 0
+                and families[index - 1] == "credits"
+                and _credit_lines_are_adjacent(lines[index - 1], lines[index])
+            ) or (
+                index + 1 < len(lines)
+                and families[index + 1] == "credits"
+                and _credit_lines_are_adjacent(lines[index], lines[index + 1])
+            )
+            if adjacent_credit:
+                families[index] = "credits"
+                changed = True
+    return families
+
+
 def interval_has_melodic_support(
     start_sec: float,
     end_sec: float,
@@ -649,6 +782,8 @@ def interval_has_melodic_support(
 def credit_recovery_windows(
     line: TranscribedLine,
     notes: list[MelodyNote],
+    *,
+    template_family: str | None = None,
 ) -> list[tuple[float, float]]:
     """Return substantial SheetSage singing islands inside a template candidate.
 
@@ -656,7 +791,9 @@ def credit_recovery_windows(
     bounds let a second Whisper pass hear the singing without the long silent or
     instrumental context that can induce a credit hallucination.
     """
-    if non_lyric_template_family(line.text) is None:
+    if template_family is None:
+        template_family = non_lyric_template_family(line.text)
+    if template_family is None:
         return []
     clipped = [
         (max(line.start_sec, note.start_sec), min(line.end_sec, note.end_sec))
@@ -705,6 +842,23 @@ def decide_recognized_line(
     else:
         status = "accepted"
     return SemanticLyricDecision(status, normalized, family, supported)
+
+
+def decide_recognized_lines(
+    lines: Sequence[TranscribedLine],
+    notes: list[MelodyNote],
+) -> list[SemanticLyricDecision]:
+    """Decide a transcript together so contiguous soft credit labels have context."""
+    families = contextual_non_lyric_template_families(lines)
+    decisions = []
+    for line, family in zip(lines, families, strict=True):
+        decision = decide_recognized_line(line, notes)
+        if family != decision.template_family:
+            decision = replace(decision, template_family=family)
+            if family is not None and not decision.melodic_support:
+                decision = replace(decision, status="rejected")
+        decisions.append(decision)
+    return decisions
 
 
 def apply_vocal_activity_support(

@@ -8,6 +8,7 @@ from soramimic_video.semantic_lyrics import (
     coalesce_repeated_suffix_fragments,
     credit_recovery_windows,
     decide_recognized_line,
+    decide_recognized_lines,
     is_pathological_repeated_vocalization,
     lyric_deficit_recoveries,
     non_lyric_template_family,
@@ -94,6 +95,107 @@ def test_short_standalone_line_is_not_merged_without_parallel_suffix():
 )
 def test_template_matching_does_not_use_substrings_or_broad_end_rules(text):
     assert non_lyric_template_family(text) is None
+
+
+def test_contextual_credit_gate_requires_creator_like_value_for_video():
+    lines = [
+        TranscribedLine(0.0, 2.0, "映像 初音ミク"),
+        TranscribedLine(3.0, 5.0, "映像 ABC Studio"),
+        TranscribedLine(6.0, 8.0, "映像 南方研究所"),
+        TranscribedLine(9.0, 11.0, "映像 美しい未来"),
+        TranscribedLine(12.0, 14.0, "映像 未来"),
+        TranscribedLine(15.0, 17.0, "映像の中で君を見た"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+        "credits",
+        None,
+        None,
+        None,
+    ]
+    assert [decision.status for decision in decisions] == [
+        "rejected",
+        "rejected",
+        "rejected",
+        "unresolved",
+        "unresolved",
+        "unresolved",
+    ]
+
+
+def test_song_label_requires_a_contiguous_confirmed_credit_block():
+    lines = [
+        TranscribedLine(0.0, 2.0, "歌 初音ミク"),
+        TranscribedLine(3.0, 5.0, "ここから歌が始まる"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert all(decision.template_family is None for decision in decisions)
+
+
+def test_credit_block_can_begin_with_song_when_video_follows():
+    lines = [
+        TranscribedLine(0.0, 2.0, "歌 初音ミク"),
+        TranscribedLine(2.0, 4.0, "映像 初音ミク"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+    ]
+
+
+def test_contextual_credit_block_propagates_across_kick_back_opening():
+    lines = [
+        TranscribedLine(0.0, 2.0, "作詞・作曲・編曲 初音ミク"),
+        TranscribedLine(2.0, 4.0, "歌 初音ミク"),
+        TranscribedLine(4.0, 6.0, "映像 初音ミク"),
+        TranscribedLine(6.0, 8.0, "映像 初音ミク"),
+        TranscribedLine(8.0, 10.0, "ここから歌が始まる"),
+        TranscribedLine(10.0, 12.0, "歌 初音ミク"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+        "credits",
+        "credits",
+        None,
+        None,
+    ]
+    assert [decision.status for decision in decisions[:4]] == ["rejected"] * 4
+
+
+def test_confirmed_credit_value_can_supply_entity_evidence_for_song_label():
+    lines = [
+        TranscribedLine(0.0, 2.0, "制作 美しい未来"),
+        TranscribedLine(2.0, 4.0, "歌 美しい未来"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+    ]
+
+
+def test_contextual_credit_recovery_uses_the_sequence_classification():
+    line = TranscribedLine(0.0, 10.0, "歌 初音ミク")
+    notes = [MelodyNote(1.0, 9.0, 60)]
+
+    assert credit_recovery_windows(
+        line, notes, template_family="credits"
+    ) == [(1.0, 9.0)]
 
 
 @pytest.mark.parametrize(
