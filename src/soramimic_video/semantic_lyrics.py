@@ -356,6 +356,26 @@ def has_tandem_repeat_note_support(
     return recovered_error < source_error
 
 
+def has_tandem_repeat_ctc_support(
+    *,
+    note_support: bool,
+    source_ctc_median_score: float,
+    recovered_ctc_median_score: float,
+) -> bool:
+    """Allow a weak absolute CTC score only when the retry improves on its source.
+
+    Japanese CTC can score an English refrain poorly in absolute terms.  Comparing
+    the localized retry with the transcript it would replace still supplies an
+    acoustic guard and rejects structurally plausible decoder repetitions that fit
+    the note count but explain the audio worse than the source.
+    """
+    return (
+        note_support
+        and source_ctc_median_score > 0.0
+        and recovered_ctc_median_score >= source_ctc_median_score
+    )
+
+
 def coalesce_repeated_suffix_fragments(
     lines: list[TranscribedLine],
 ) -> tuple[list[TranscribedLine], list[RecognitionBoundaryMerge]]:
