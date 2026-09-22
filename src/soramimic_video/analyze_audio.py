@@ -34,6 +34,8 @@ from .semantic_lyrics import (
     SemanticLyricDecision,
     decide_recognized_line,
     decide_recognized_lines,
+    duration_repeated_vocalization_candidate,
+    has_tandem_repeat_note_support,
     is_pathological_repeated_vocalization,
     normalize_repeated_vocalization,
     unowned_note_recovery_windows,
@@ -1337,6 +1339,24 @@ def analyze_audio(
                     recovered_lines.append(candidate)
             recovered_lines.sort(key=lambda line: (line.start_sec, line.end_sec))
             rejection_reasons = []
+            if recovery.suggested_repetition_count is not None:
+                repeated_line = duration_repeated_vocalization_candidate(
+                    source_line,
+                    recovered_lines,
+                    recovery.suggested_repetition_count,
+                )
+                if repeated_line is None:
+                    rejection_reasons.append(
+                        "repeated-phrase-acoustic-family-mismatch"
+                    )
+                else:
+                    repeated_line, is_repetition = normalize_vocalization_line(
+                        repeated_line,
+                        phase="deficit-duration-repetition",
+                        source_segment_index=source_segment_index,
+                    )
+                    recovered_lines = [repeated_line]
+                    recovered_repetitions = [is_repetition]
             recovered_decisions = [
                 decide_recognized_line(line, sheetsage_notes)
                 for line in recovered_lines
@@ -1390,6 +1410,25 @@ def analyze_audio(
             required_moras = recovery.effective_mora_count + max(
                 2, math.ceil(recovery.effective_mora_count * 0.25)
             )
+            recovered_surface = "".join(line.text for line in recovered_lines)
+            source_note_fit_error = abs(
+                recovery.note_count
+                - recovery.median_notes_per_mora * recovery.effective_mora_count
+            )
+            recovered_note_fit_error = abs(
+                recovery.note_count
+                - recovery.median_notes_per_mora * recovered_moras
+            )
+            tandem_repeat_support = (
+                not pure_vocalization
+                and has_tandem_repeat_note_support(
+                    recovered_surface,
+                    source_mora_count=recovery.effective_mora_count,
+                    recovered_mora_count=recovered_moras,
+                    note_count=recovery.note_count,
+                    median_notes_per_mora=recovery.median_notes_per_mora,
+                )
+            )
             if not pure_vocalization:
                 if recovered_moras < required_moras:
                     rejection_reasons.append("insufficient-detail-gain")
@@ -1406,11 +1445,15 @@ def analyze_audio(
                 statistics.median(source_scores) if source_scores else 0.0
             )
             if not pure_vocalization:
-                if recovered_ctc_median < MIN_CTC_MEDIAN_SCORE:
+                if (
+                    recovered_ctc_median < MIN_CTC_MEDIAN_SCORE
+                    and not tandem_repeat_support
+                ):
                     rejection_reasons.append("insufficient-ctc-support")
                 if (
                     source_ctc_median > 0.0
                     and recovered_ctc_median < source_ctc_median * 0.5
+                    and not tandem_repeat_support
                 ):
                     rejection_reasons.append("ctc-weaker-than-source")
             candidate_accepted = not rejection_reasons
@@ -1425,6 +1468,10 @@ def analyze_audio(
                 "raw_note_count": recovery.note_count,
                 "median_notes_per_mora": recovery.median_notes_per_mora,
                 "residual_notes": recovery.residual_notes,
+                "repeated_surface_median_duration_sec": (
+                    recovery.repeated_surface_median_duration_sec
+                ),
+                "suggested_repetition_count": recovery.suggested_repetition_count,
                 "retry_windows": [list(window) for window in recovery.windows],
                 "status": "accepted" if candidate_accepted else "rejected",
                 "classification": (
@@ -1434,6 +1481,9 @@ def analyze_audio(
                 "recovered_mora_count": recovered_moras,
                 "source_ctc_median_score": source_ctc_median,
                 "recovered_ctc_median_score": recovered_ctc_median,
+                "tandem_repeat_support": tandem_repeat_support,
+                "source_note_fit_error": source_note_fit_error,
+                "recovered_note_fit_error": recovered_note_fit_error,
                 "segments": [
                     {
                         "start_sec": line.start_sec,
