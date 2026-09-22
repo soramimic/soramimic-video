@@ -635,14 +635,30 @@ def _recognized_line_windows(
     return windows
 
 
-def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
+def _has_kana_choice(
+    variants: list[list[list[str]]],
+    *,
+    automatic_texts: list[str] | None = None,
+) -> bool:
     """Whether KanaWhisper has more than one closed reading to compare.
 
     Connected speech, weak forms, and other real pronunciation variants may change
     the mora count.  Candidate length is therefore evidence to compare, not a gate
     on whether comparison is allowed.
     """
-    return any(len(options) > 1 for options in variants)
+    if any(len(options) > 1 for options in variants):
+        return True
+    if automatic_texts is None:
+        return False
+
+    from .kana_whisper import has_dictionary_reading_alternative
+
+    return any(
+        options
+        and options[0]
+        and has_dictionary_reading_alternative(text, "".join(options[0]))
+        for text, options in zip(automatic_texts, variants, strict=True)
+    )
 
 
 def _choose_readings_with_kana(
@@ -654,6 +670,7 @@ def _choose_readings_with_kana(
     *,
     device: str,
     shared_inference: bool,
+    expand_automatic_readings: bool = False,
 ) -> tuple[list[int], dict[str, object]]:
     import soundfile as sf
 
@@ -662,6 +679,7 @@ def _choose_readings_with_kana(
         KANA_WHISPER_REVISION,
         build_kana_contexts,
         choose_reading,
+        propose_dictionary_readings,
         transcribe_kana_windows,
     )
 
@@ -692,11 +710,26 @@ def _choose_readings_with_kana(
         zip(line_texts, line_variants, assignments, strict=True)
     ):
         candidate_texts = ["".join(candidate) for candidate in variants]
+        base_candidate_count = len(candidate_texts)
         evidence = (
             [outputs[name][context_index] for name, _path in sources]
             if context_index is not None
             else []
         )
+        proposals = (
+            propose_dictionary_readings(text, candidate_texts[0], evidence)
+            if expand_automatic_readings and candidate_texts and candidate_texts[0]
+            else ()
+        )
+        existing = set(candidate_texts)
+        accepted_proposals = []
+        for proposal in proposals:
+            if proposal.reading in existing:
+                continue
+            existing.add(proposal.reading)
+            candidate_texts.append(proposal.reading)
+            variants.append(split_moras(proposal.reading))
+            accepted_proposals.append(proposal)
         decision = choose_reading(candidate_texts, evidence)
         selected.append(decision.selected_index)
         lines.append(
@@ -704,6 +737,19 @@ def _choose_readings_with_kana(
                 "line": index,
                 "surface": strip_ruby(text),
                 "candidates": candidate_texts,
+                "base_candidate_count": base_candidate_count,
+                "dictionary_proposals": [
+                    {
+                        "candidate_index": base_candidate_count + proposal_index,
+                        "surface": proposal.surface,
+                        "default_reading": proposal.default_reading,
+                        "alternative_reading": proposal.alternative_reading,
+                        "evidence_sources": [
+                            sources[view][0] for view in proposal.evidence_views
+                        ],
+                    }
+                    for proposal_index, proposal in enumerate(accepted_proposals)
+                ],
                 "selected_index": decision.selected_index,
                 "reason": decision.reason,
                 "context_index": context_index,
@@ -715,8 +761,13 @@ def _choose_readings_with_kana(
             }
         )
     return selected, {
-        "schema_version": 3,
+        "schema_version": 4,
         "mode": "closed-reading-candidate-rerank",
+        "candidate_expansion": (
+            "kana-local-dictionary-readings-v1"
+            if expand_automatic_readings
+            else "none"
+        ),
         "distance_metric": "kanasim-weighted-substring-0.0.11",
         "model": {
             "id": KANA_WHISPER_MODEL,
@@ -994,7 +1045,10 @@ def analyze_audio(
             current_texts = [strip_ruby(text) for text in current_texts]
             current_choices = [0] * len(current_variants)
             current_reading_evidence = None
-            if _has_kana_choice(current_variants):
+            if _has_kana_choice(
+                current_variants,
+                automatic_texts=current_texts,
+            ):
                 current_choices, current_reading_evidence = _choose_readings_with_kana(
                     audio_path,
                     vocals,
@@ -1003,6 +1057,7 @@ def analyze_audio(
                     current_windows,
                     device=device or "auto",
                     shared_inference=shared_inference,
+                    expand_automatic_readings=True,
                 )
             current_selected = [
                 [variants[index]]
