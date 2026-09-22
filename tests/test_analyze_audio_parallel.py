@@ -163,6 +163,60 @@ def test_kana_evidence_reranks_closed_candidates_from_mix_and_vocals(
     assert receipt["lines"][0]["selected_index"] == 1
 
 
+def test_kana_evidence_expands_locally_aligned_dictionary_reading(
+    monkeypatch,
+    tmp_path,
+):
+    from soramimic_video import analyze_audio, kana_whisper
+
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=10.0)),
+    )
+    mix = tmp_path / "mix.wav"
+    vocals = tmp_path / "vocals.wav"
+
+    def transcribe(path, windows, device):
+        assert windows == [(2.5, 9.5)]
+        assert device == "auto"
+        return [
+            "オーケータチマチソクダンジョー"
+            if path == mix
+            else "オーケータツマチドクダンチョー"
+        ]
+
+    monkeypatch.setattr(kana_whisper, "transcribe_kana_windows", transcribe)
+    variants = [[[
+        "オー", "ケ", "イ", "リュー", "マ", "チ", "ド", "ク", "ダン",
+        "ジョー", "リ", "サン", "リ", "サン",
+    ]]]
+    chosen, receipt = analyze_audio._choose_readings_with_kana(
+        mix,
+        vocals,
+        ["OK! 竜町独壇場 Listen! Listen!"],
+        variants,
+        [(4.0, 8.0)],
+        device="auto",
+        shared_inference=True,
+        expand_automatic_readings=True,
+    )
+
+    assert chosen == [1]
+    assert len(variants[0]) == 2
+    assert "".join(variants[0][1]).startswith("オーケイタツマチ")
+    assert receipt["schema_version"] == 4
+    assert receipt["candidate_expansion"] == "kana-local-dictionary-readings-v1"
+    assert receipt["lines"][0]["base_candidate_count"] == 1
+    assert receipt["lines"][0]["dictionary_proposals"] == [{
+        "candidate_index": 1,
+        "surface": "竜",
+        "default_reading": "リュー",
+        "alternative_reading": "タツ",
+        "evidence_sources": ["separated-vocals"],
+    }]
+
+
 def test_kana_choice_keeps_candidates_with_different_mora_counts():
     from soramimic_video import analyze_audio
 
@@ -171,6 +225,18 @@ def test_kana_choice_keeps_candidates_with_different_mora_counts():
             ["シャ", "ウ", "ト", "イ", "ッ", "ト", "ア", "ウ", "ト"],
             ["シャ", "ウ", "ティ", "タ", "ウ", "ト"],
         ]]
+    )
+
+
+def test_kana_choice_detects_hidden_automatic_token_alternative():
+    from soramimic_video import analyze_audio
+
+    assert analyze_audio._has_kana_choice(
+        [[[
+            "オー", "ケ", "イ", "リュー", "マ", "チ", "ド", "ク", "ダン",
+            "ジョー", "リ", "サン", "リ", "サン",
+        ]]],
+        automatic_texts=["OK! 竜町独壇場 Listen! Listen!"],
     )
 
 
