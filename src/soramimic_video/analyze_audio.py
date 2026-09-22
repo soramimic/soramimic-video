@@ -879,7 +879,7 @@ def analyze_audio(
         from .semantic_lyrics import (
             apply_vocal_activity_support,
             coalesce_repeated_suffix_fragments,
-            decide_recognized_line,
+            decide_recognized_lines,
         )
         from .transcribe import transcribe_lines
         from .vocal_activity import (
@@ -921,7 +921,7 @@ def analyze_audio(
             normalized_lines.append(normalized)
         lines = normalized_lines
         recognition_lines = lines
-        decisions = [decide_recognized_line(line, sheetsage_notes) for line in lines]
+        decisions = decide_recognized_lines(lines, sheetsage_notes)
         if not skip_separation:
             vocal_activity_profile = measure_vocal_activity(
                 vocals,
@@ -1174,7 +1174,9 @@ def analyze_audio(
                     continue
                 original_line = recognition_lines[original_index]
                 for start_sec, end_sec in credit_recovery_windows(
-                    original_line, sheetsage_notes
+                    original_line,
+                    sheetsage_notes,
+                    template_family=decision.template_family,
                 ):
                     candidates = transcribe_window(
                         audio_path,
@@ -1736,7 +1738,7 @@ def analyze_audio(
                         if not skip_separation
                         else "reazon-kana-ctc-input-audio",
                         "rule": (
-                            "always-recover-exact-credit-patterns; require-melody-"
+                            "always-recover-confirmed-credit-patterns; require-melody-"
                             "and-ctc-median-support-for-other-non-lyric-patterns; "
                             "reject-ordinary-nonmelodic-lines-without-relative-"
                             "vocal-stem-activity"
