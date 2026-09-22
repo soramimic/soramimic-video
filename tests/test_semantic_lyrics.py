@@ -10,6 +10,7 @@ from soramimic_video.semantic_lyrics import (
     decide_recognized_line,
     decide_recognized_lines,
     duration_repeated_vocalization_candidate,
+    expand_repeated_vocalization_from_kana,
     has_tandem_repeat_ctc_support,
     has_tandem_repeat_note_support,
     has_tandem_repeated_phrase,
@@ -412,6 +413,7 @@ def test_repeated_vocalization_preserves_observed_attacks_and_keeps_its_unit():
 def test_repeated_vocalization_period_distinguishes_multi_mora_refrain():
     assert repeated_vocalization_period("ダダダ") == ("ダ",)
     assert repeated_vocalization_period("アイアイア") == ("ア", "イ")
+    assert repeated_vocalization_period("Ai Ai A") == ("ア", "イ")
     assert repeated_vocalization_period("君が好き") is None
 
 
@@ -489,6 +491,73 @@ def test_only_runaway_repetition_is_pathological():
     assert is_pathological_repeated_vocalization(
         TranscribedLine(0.0, 2.0, "ラ" * 20), 20
     )
+
+
+def test_kana_evidence_can_expand_only_the_whisper_repetition_count():
+    source = TranscribedLine(209.57, 223.37, "アイアイア")
+    notes = [
+        MelodyNote(210.0 + index * 0.3, 210.15 + index * 0.3, 60)
+        for index in range(40)
+    ]
+
+    decision = expand_repeated_vocalization_from_kana(
+        source, "アイ" * 21, notes
+    )
+
+    assert decision.line == TranscribedLine(209.57, 223.37, "アイ" * 21)
+    assert decision.source_unit_moras == ("ア", "イ")
+    assert decision.source_mora_count == 5
+    assert decision.evidence_mora_count == 42
+    assert decision.note_count == 40
+    assert decision.cyclic_similarity == 1.0
+    assert decision.rejection_reasons == ()
+
+
+def test_kana_repetition_expansion_rejects_a_different_mora_family():
+    source = TranscribedLine(9.65, 21.0, "アアアアア")
+    notes = [
+        MelodyNote(10.0 + index * 0.3, 10.1 + index * 0.3, 60)
+        for index in range(31)
+    ]
+
+    decision = expand_repeated_vocalization_from_kana(
+        source, "ヤッタ" * 14, notes
+    )
+
+    assert decision.line is None
+    assert "period-mismatch" in decision.rejection_reasons
+
+    borderline = expand_repeated_vocalization_from_kana(
+        TranscribedLine(9.65, 21.0, "アイアイア"), "ハイ" * 14, notes
+    )
+    assert borderline.line is None
+    assert borderline.cyclic_similarity == 0.5
+    assert "period-mismatch" in borderline.rejection_reasons
+
+
+def test_kana_repetition_expansion_rejects_decoder_runaway():
+    source = TranscribedLine(209.57, 223.37, "アイアイア")
+    notes = [
+        MelodyNote(210.0 + index * 0.3, 210.15 + index * 0.3, 60)
+        for index in range(40)
+    ]
+
+    decision = expand_repeated_vocalization_from_kana(
+        source, "アイ" * 222, notes
+    )
+
+    assert decision.line is None
+    assert "excessive-detail" in decision.rejection_reasons
+    assert "pathological-density" in decision.rejection_reasons
+
+    capacity = expand_repeated_vocalization_from_kana(
+        TranscribedLine(0.0, 20.0, "アイアイア"),
+        "アイ" * 46,
+        [MelodyNote(index * 0.3, index * 0.3 + 0.1, 60) for index in range(60)],
+    )
+    assert capacity.line is None
+    assert capacity.evidence_mora_count == 92
+    assert capacity.rejection_reasons == ("excessive-detail",)
 
 
 def _unowned_correspondence(notes):
