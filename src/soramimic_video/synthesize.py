@@ -1,4 +1,4 @@
-"""歌唱合成ステージ: 替え歌歌詞 → MusicXML → NEUTRINO → vocal.wav。"""
+"""歌唱合成ステージ: 替え歌歌詞 → 選択した歌声合成器 → vocal.wav。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ NEUTRINO_DIR = "neutrino"
 
 
 def vocal_path(project_dir: Path) -> Path:
-    """合成した歌唱wavの正規パス。バックエンド(NEUTRINO/VOICEVOX)共通。
+    """合成した歌唱wavの正規パス。全バックエンド共通。
 
     ミックスはこの1箇所の定義を参照する(mix.pyが同じ関数を使う)。
     ディスク上の場所は歴史的経緯で neutrino/ 配下だが、両バックエンド共通。
@@ -79,7 +79,8 @@ def synthesize(
 ) -> Path | None:
     """歌唱合成を実行して vocal.wav のパスを返す。
 
-    synthesizer で使うバックエンドを選ぶ("neutrino" 既定 / "voicevox")。
+    synthesizer で使うバックエンドを選ぶ("neutrino" / "voicevox" /
+    "prettypitch")。PrettyPitchは開発用の外部ランタイムを環境変数で指定する。
     auto_octave(既定ON)はエンジンの安全音域に収まるよう曲全体をオクターブ単位で
     自動移調する(VOICEVOX/NEUTRINO共通。移調はユーザー指定transposeに加算)。
     オクターブ調整だけでは収まらない広音域の曲では、曲全体のキー変更(半音)も
@@ -108,6 +109,20 @@ def synthesize(
             auto_octave=auto_octave,
             progress_cb=progress_cb,
             octave_keys=octave_keys,
+        )
+    if synthesizer == "prettypitch":
+        from .prettypitch import run_prettypitch
+
+        # PrettyPitchは譜面の音高を直接条件にするため、試験バックエンドでは
+        # 推定音高を勝手に折り返さない。ユーザー指定transposeだけを適用する。
+        project.song.key_shift = 0
+        return run_prettypitch(
+            project,
+            project_dir,
+            lyric_map=build_lyric_map(project),
+            transpose=transpose,
+            dry_run=dry_run,
+            progress_cb=progress_cb,
         )
     if synthesizer != "neutrino":
         raise ValueError(f"未対応の合成エンジンです: {synthesizer}")

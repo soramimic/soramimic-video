@@ -568,6 +568,29 @@ def test_accepts_voicevox_params(client):
     assert body["params"]["voicevox_style"] == 3001
 
 
+def test_accepts_prettypitch_only_for_noncommercial_fanwork(client, monkeypatch):
+    from soramimic_video import prettypitch as pp_mod
+
+    monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
+    rejected = client.post(
+        "/api/jobs",
+        files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
+        data={"wordlist": "stations", "synthesizer": "prettypitch"},
+    )
+    assert rejected.status_code == 422
+    assert "非商用" in rejected.json()["detail"]
+
+    job_id = submit(
+        client,
+        wordlist="stations",
+        synthesizer="prettypitch",
+        allow_noncommercial_fanwork="true",
+    )
+    body = wait_done(client, job_id)
+    assert body["status"] == "done"
+    assert body["params"]["synthesizer"] == "prettypitch"
+
+
 def test_auto_octave_defaults_on(client):
     job_id = submit(client, wordlist="stations")
     body = wait_done(client, job_id)
@@ -908,6 +931,21 @@ def test_running_job_reports_stage_elapsed(tmp_path):
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone
+    assert "prettypitch" in body
+    assert body["fixed_synthesizer"] == "voicevox"
+
+
+def test_config_can_fix_web_synthesis_to_prettypitch(tmp_path, monkeypatch):
+    from soramimic_video import prettypitch as pp_mod
+
+    monkeypatch.setenv(api_mod.FIXED_SYNTHESIZER_ENV, "prettypitch")
+    monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pp_mod, "available", lambda: True)
+    browser = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    body = browser.get("/api/config").json()
+    assert body["fixed_synthesizer"] == "prettypitch"
+    assert body["prettypitch"] == {"speaker": "波音リツ", "experimental": True}
 
 
 def test_preview_returns_audio(tmp_path, monkeypatch):
@@ -2077,6 +2115,12 @@ def test_synth_credit_of_neutrino_is_empty():
     # NEUTRINOは公式FAQで名称の記載が任意なので焼き込まない
     assert api_mod.synth_credit_of({"synthesizer": "neutrino", "model": "MERROW"}, {}) == ""
     assert api_mod.synth_credit_of({}, {}) == ""
+
+
+def test_synth_credit_of_prettypitch_names_engine_and_voice():
+    assert api_mod.synth_credit_of(
+        {"synthesizer": "prettypitch"}, {}
+    ) == "PrettyPitch / 波音リツ"
 
 
 def test_index_html_has_platform_appropriate_save_share_buttons():

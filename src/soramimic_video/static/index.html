@@ -1107,6 +1107,7 @@
         <select id="synthesizer" aria-label="合成エンジン">
           <option value="neutrino" id="synth-neutrino-opt">NEUTRINO</option>
           <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
+          <option value="prettypitch" id="synth-prettypitch-opt" disabled>PrettyPitch(試験・未設定)</option>
         </select>
         <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
              送信値の正本は隠し input#model。選択肢は /api/config の models。 -->
@@ -1120,6 +1121,7 @@
         </span>
       </div>
       <p class="hint" id="voicevox-credit"></p>
+      <p class="hint" id="prettypitch-credit" hidden>試験用PrettyPitch・波音リツモデルです。非商用ファン作品に限ります。</p>
       <p class="hint" id="synth-unavailable" hidden>このサーバーでは歌声合成エンジンが使えません(サーバー側の設定が必要です)。</p>
     </div>
 
@@ -1631,6 +1633,7 @@ let simpleMode = false;
 let launchWordlists = [];
 // Web UIの歌声はVOICEVOX 波音リツ(ノーマル・歌唱)に固定する。
 let fixedVoicevoxStyle = 6000;
+let fixedSynthesizer = "voicevox";
 let maxAudioUploadBytes = 200 * 1024 * 1024;
 let maxSongSeconds = 7 * 60;
 let audioInputReady = false;
@@ -1646,6 +1649,7 @@ async function loadConfig() {
   catch (err) { showBuilderMsg(err.message); }
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
+  fixedSynthesizer = String(conf.fixed_synthesizer || "voicevox");
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   const configuredMaxSongSeconds = Number(conf.max_song_seconds);
   if (Number.isFinite(configuredMaxSongSeconds) && configuredMaxSongSeconds >= 0) {
@@ -1677,6 +1681,11 @@ async function loadConfig() {
   setChoice("model", model0);
   setupNeutrino(conf.neutrino);  // VOICEVOXより先(未設定ならVOICEVOX側へ倒すため)
   setupVoicevox(conf.voicevox);
+  setupPrettyPitch(conf.prettypitch);
+  if (!$("synth-" + fixedSynthesizer + "-opt")?.disabled) {
+    $("synthesizer").value = fixedSynthesizer;
+  }
+  toggleSynthOpts();
   // 空値の表示は「(指定なし)」: 英語のプリセットIDの並びに説明文っぽい日本語が
   // 混ざると浮くので、特別な選択肢の定石の括弧書きにする(意味はⓘで説明)
   fillChoiceOptions("layout", conf.layouts || [], "(指定なし)");
@@ -1767,6 +1776,12 @@ function setupVoicevox(vv) {
   }).join("");
   updateVoicevoxCredit();
   toggleSynthOpts();
+}
+
+function setupPrettyPitch(pp) {
+  const opt = $("synth-prettypitch-opt");
+  opt.disabled = !pp;
+  opt.textContent = pp ? "PrettyPitch(波音リツ・試験)" : "PrettyPitch(試験・未設定)";
 }
 
 function updateVoicevoxCredit() {
@@ -2099,19 +2114,25 @@ async function ensureTurnstileToken(timeoutMs = 120000) {
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
 function toggleSynthOpts() {
   const isVv = $("synthesizer").value === "voicevox";
-  $("neutrino-opts").hidden = isVv;
+  const isNeutrino = $("synthesizer").value === "neutrino";
+  const isPrettyPitch = $("synthesizer").value === "prettypitch";
+  $("neutrino-opts").hidden = !isNeutrino;
   $("voicevox-opts").hidden = !isVv;
   // どちらのエンジンも使えないサーバーでは、投入前に理由が分かるよう案内を出す
   $("synth-unavailable").hidden =
-    neutrinoAvailable() || !$("synth-voicevox-opt").disabled;
+    neutrinoAvailable() || !$("synth-voicevox-opt").disabled
+      || !$("synth-prettypitch-opt").disabled;
   // クレジット表記はVOICEVOXを選んでいるときだけ(歌声セレクトの外に置いてあるので明示的に)
   $("voicevox-credit").hidden = !isVv;
+  $("prettypitch-credit").hidden = !isPrettyPitch;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
-  $("auto-octave-hint").textContent = isVv
-    ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
-      + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"
-    : "NEUTRINOは音域外の音だと苦しそうな発声になります。"
-      + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。";
+  $("auto-octave-hint").textContent = isPrettyPitch
+    ? "PrettyPitch試験バックエンドでは推定した音高をそのまま使います。"
+    : isVv
+      ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
+        + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"
+      : "NEUTRINOは音域外の音だと苦しそうな発声になります。"
+        + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。";
 }
 
 // 自動オクターブ調整ONのあいだは高さの決定を自動に任せるので、移調欄を
@@ -3156,7 +3177,7 @@ async function submitJob(previewSec, previewMode) {
   if (editorSrc.file) form.append("editor", editorSrc.file);
   appendSongLyrics(form);
   form.append("model", $("model").value);
-  form.append("synthesizer", "voicevox");
+  form.append("synthesizer", fixedSynthesizer);
   form.append("voicevox_style", String(fixedVoicevoxStyle));
   form.append("auto_octave", "true");
   form.append("transpose", "0");
@@ -7946,6 +7967,10 @@ async function doRestoreForm() {
       synthesizerTouched = true;
     } else if (state.synthesizer === "neutrino" && neutrinoAvailable()) {
       $("synthesizer").value = "neutrino";
+      synthesizerTouched = true;
+    } else if (state.synthesizer === "prettypitch"
+        && !$("synth-prettypitch-opt").disabled) {
+      $("synthesizer").value = "prettypitch";
       synthesizerTouched = true;
     }
     toggleSynthOpts();

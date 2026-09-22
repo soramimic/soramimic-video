@@ -161,12 +161,13 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
 
     script = _script()
     submit = _function_body(script, "async function submitJob(previewSec, previewMode)")
-    assert 'form.append("synthesizer", "voicevox")' in submit
+    assert 'form.append("synthesizer", fixedSynthesizer)' in submit
     assert 'form.append("voicevox_style", String(fixedVoicevoxStyle))' in submit
     assert 'form.append("auto_octave", "true")' in submit
     assert 'form.append("transpose", "0")' in submit
     assert 'form.append("layout_json"' not in submit
     assert "let fixedVoicevoxStyle = 6000;" in script
+    assert 'let fixedSynthesizer = "voicevox";' in script
 
     title = _function_body(script, "function songTitleOf(file)")
     assert '$("song-title").value.trim() || base' in title
@@ -2593,7 +2594,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         const parodyMismatch = () => true, confirm = () => true;
         const editorWordlist = { name: "fanwork" }, leDirty = true;
         let simpleMode = true;
-        const fixedVoicevoxStyle = 6000, turnstileSiteKey = "";
+        const fixedVoicevoxStyle = 6000, fixedSynthesizer = "voicevox", turnstileSiteKey = "";
         const songTitleOf = () => "sample", buildConvertParams = () => "{}";
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
         const activeCustomList = () => selected === "custom" ? {} : null;

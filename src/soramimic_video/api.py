@@ -95,6 +95,7 @@ API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 PUBLIC_ENV = "SORAMIMIC_PUBLIC"  # 1/true で公開モード
 REQUIRE_PUBLIC_ENV = "SORAMIMIC_REQUIRE_PUBLIC"  # 1/true なら公開モード設定漏れで起動しない
 SIMPLE_UI_ENV = "SORAMIMIC_SIMPLE_UI"  # 初回公開用の選択肢を絞ったUI
+FIXED_SYNTHESIZER_ENV = "SORAMIMIC_FIXED_SYNTHESIZER"
 QUEUE_LIMIT_ENV = "SORAMIMIC_QUEUE_LIMIT"  # 待機+実行中ジョブの上限
 DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の投入上限
 IP_DAILY_QUOTA_ENV = "SORAMIMIC_IP_DAILY_QUOTA"
@@ -208,6 +209,21 @@ def is_simple_ui() -> bool:
         "false",
         "no",
     )
+
+
+def fixed_synthesizer() -> str:
+    """Web UIから使う固定歌声。未指定時は従来どおりVOICEVOX。"""
+    value = os.environ.get(FIXED_SYNTHESIZER_ENV, "voicevox").strip().lower()
+    if value not in {"voicevox", "neutrino", "prettypitch"}:
+        raise RuntimeError(
+            f"{FIXED_SYNTHESIZER_ENV}はvoicevox、neutrino、prettypitchのいずれかです"
+        )
+    if value == "prettypitch":
+        from .prettypitch import installation_error
+
+        if error := installation_error():
+            raise RuntimeError(f"PrettyPitchを固定歌声にできません: {error}")
+    return value
 
 
 def load_launch_catalog() -> dict[str, Any]:
@@ -1098,9 +1114,14 @@ def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
     任意なので焼き込まない(ライブラリ個別の規約はWeb UIの「公開時のクレジット
     表記」で案内している)。
     """
+    synthesizer = str(params.get("synthesizer") or "neutrino")
+    # PrettyPitch試験ランタイムは波音リツモデルに固定する。モデルの利用条件に
+    # 沿って、生成動画にもエンジン名と歌声名を残す。
+    if synthesizer == "prettypitch":
+        return "PrettyPitch / 波音リツ"
     # 既定値のvoicevoxではなくneutrinoで補うのは、synthesizerを記録していない
     # 古いジョブがNEUTRINO時代のものだから(過去ジョブの表記を変えないため据え置く)
-    if str(params.get("synthesizer") or "neutrino") != "voicevox":
+    if synthesizer != "voicevox":
         return ""
     from .voicevox import list_singers
 
@@ -1482,9 +1503,10 @@ def _run_synthesize(
     """
     # 未記録の古いジョブはNEUTRINO時代のものなので neutrino 扱い(見積りの互換のため据え置く)
     synthesizer = job.params.get("synthesizer", "neutrino")
-    is_voicevox = synthesizer == "voicevox"
-    # VOICEVOXは速く進捗内訳も出ないので、NEUTRINO用の所要見積り・実績記録は行わない
-    store: Path | None = None if is_voicevox else config.get("throughput_store")
+    uses_external_estimate = synthesizer in {"voicevox", "prettypitch"}
+    # VOICEVOX/PrettyPitchはNEUTRINOとは速度特性が違うので、NEUTRINO用の
+    # 所要見積り・実績記録へ混ぜない。
+    store: Path | None = None if uses_external_estimate else config.get("throughput_store")
     score_seconds = max((n.end_sec for n in project.notes), default=0.0)
     with _stage(job, "synthesize"):
         if store is not None:
@@ -1492,7 +1514,7 @@ def _run_synthesize(
                 store, score_seconds
             )
         else:
-            # VOICEVOXにも工程内の概算を表示する。実進捗が届けばそちらを優先する。
+            # 外部バックエンドにも工程内の概算を表示する。実進捗が届けばそちらを優先する。
             job.stage_estimated_total = max(3.0, min(45.0, score_seconds * 0.07))
 
         def on_progress(frac: float) -> None:
@@ -1653,7 +1675,7 @@ class JobManager:
         if input_kind not in {"audio", "midi"}:
             input_kind = "unknown"
         synthesizer = str(params.get("synthesizer") or "unknown")
-        if synthesizer not in {"voicevox", "neutrino"}:
+        if synthesizer not in {"voicevox", "neutrino", "prettypitch"}:
             synthesizer = "unknown"
         wordlist = str(params.get("wordlist") or "")
         if wordlist not in launch_wordlist_names():
@@ -2296,6 +2318,7 @@ def create_app(
         "threads": threads,
         "layout": layout,
         "voicevox_url": voicevox_url,
+        "fixed_synthesizer": fixed_synthesizer(),
         "video_fps": video_fps,
         "video_image_lead_sec": video_image_lead_sec,
         "parallel_video": parallel_video,
@@ -3001,6 +3024,8 @@ def create_app(
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "voicevox": _voicevox_config(),
+            "prettypitch": _prettypitch_config(),
+            "fixed_synthesizer": config["fixed_synthesizer"],
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
@@ -3068,6 +3093,12 @@ def create_app(
             return {"styles": list_singers(str(config["voicevox_url"]), timeout=1.0)}
         except RuntimeError:
             return None
+
+    def _prettypitch_config() -> dict[str, Any] | None:
+        """外部PrettyPitchランタイムが完全なら、試験歌声を公開する。"""
+        from .prettypitch import available
+
+        return {"speaker": "波音リツ", "experimental": True} if available() else None
 
     @app.get("/api/layouts/{name}", dependencies=[Depends(_require_api_key)])
     def get_layout(name: str) -> dict[str, Any]:
@@ -3738,7 +3769,7 @@ def create_app(
             # 画面から選ばせないだけでなく、過去のlocalStorageや任意の
             # HTTPクライアントから来た値もここで固定する。
             launch = load_launch_catalog()
-            synthesizer = "voicevox"
+            synthesizer = str(config["fixed_synthesizer"])
             voicevox_style = int(launch.get("voicevox_style", 3003))
             auto_octave = True
             transpose = 0
@@ -3757,9 +3788,10 @@ def create_app(
         custom_columns = custom.csv.columns if custom is not None else None
         layout = layout.strip()
         layout_json = layout_json.strip()
-        if synthesizer not in ("neutrino", "voicevox"):
+        if synthesizer not in ("neutrino", "voicevox", "prettypitch"):
             raise HTTPException(
-                status_code=422, detail="synthesizerは neutrino か voicevox です"
+                status_code=422,
+                detail="synthesizerは neutrino、voicevox、prettypitch のいずれかです",
             )
         # NEUTRINO未設定のサーバー(公開インスタンスなど)は合成の途中で必ず落ちる。
         # 走らせてから失敗させず、受付時に理由を返す(UI側も選択肢を無効化している)
@@ -3768,6 +3800,19 @@ def create_app(
                 status_code=422,
                 detail="このサーバーではNEUTRINOを使えません(synthesizerは voicevox です)",
             )
+        if synthesizer == "prettypitch":
+            from .prettypitch import installation_error
+
+            if error := installation_error():
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"このサーバーではPrettyPitchを使えません: {error}",
+                )
+            if not allow_noncommercial_fanwork:
+                raise HTTPException(
+                    status_code=422,
+                    detail="PrettyPitch試験モデルは非商用ファン作品への同意が必要です",
+                )
         # 新名 auto_octave を優先し、無ければ旧名、どちらも無ければ既定True(自動調整ON)
         if auto_octave is None:
             auto_octave = (
