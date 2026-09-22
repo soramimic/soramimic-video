@@ -9,6 +9,21 @@ from typing import Any
 from .project import Line, Note, Project
 
 
+def _json_compatible(value: Any) -> Any:
+    """Return the layer graph in the same shape used after JSON reload.
+
+    ``Realization.to_dict`` preserves tuple-valued dataclass fields, while
+    ``Project.save``/``Project.load`` necessarily turns those sequences into
+    lists.  Keeping the in-memory and reloaded representations identical avoids
+    making downstream conversion depend on whether the project was reloaded.
+    """
+    if isinstance(value, dict):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return copy.deepcopy(value)
+
+
 def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
     """Apply a version-1 realization atomically; unresolved units need editing.
 
@@ -88,4 +103,4 @@ def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
             canonical_end_sec=max(ends, default=None),
         ))
     project.notes, project.lines = notes, lines
-    project.lyric_layers = copy.deepcopy(layers)
+    project.lyric_layers = _json_compatible(layers)

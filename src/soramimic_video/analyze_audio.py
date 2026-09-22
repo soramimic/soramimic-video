@@ -26,10 +26,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
-from .kana import split_fine_moras, split_moras
+from .kana import split_fine_moras, split_moras, vowel_of
 from .project import Project
 from .ruby import strip_ruby
-from .semantic_lyrics import RecognitionBoundaryMerge, SemanticLyricDecision
+from .semantic_lyrics import (
+    RecognitionBoundaryMerge,
+    SemanticLyricDecision,
+    decide_recognized_line,
+    decide_recognized_lines,
+    is_pathological_repeated_vocalization,
+    normalize_repeated_vocalization,
+    unowned_note_recovery_windows,
+)
 from .transcribe import DEFAULT_WHISPER_MODEL, TranscribedLine
 
 if TYPE_CHECKING:
@@ -44,6 +52,9 @@ SEPARATION_DIR = "separation"
 # intelligible.  Keep this in sync with voicevox.MIN_ARTICULATION_MORA_SEC without
 # importing the synthesis backend into the analysis stage.
 SPOKEN_SLOT_MIN_SEC = 0.12
+# Do not carry a possibly distant or extreme melody pitch into leading/trailing
+# speech. C4 is inside the stable singing range and keeps the fallback neutral.
+EDGE_SPEECH_MIDI_PITCH = 60
 
 
 def _torch_device(device: str | None) -> str:
@@ -133,15 +144,26 @@ def _omit_unresolved_synthesis_units(layers: dict) -> int:
     return len(unresolved)
 
 
-def _recover_bracketed_synthesis_units(layers: dict) -> int:
-    """Voice internal pitch gaps without pretending they are measured notes.
+def _recover_synthesis_units(
+    layers: dict,
+    *,
+    edge_spoken_utterance_ids: set[str] | None = None,
+) -> int:
+    """Voice safe pitch gaps without pretending they are measured notes.
 
     Stage 3 deliberately leaves a unit unresolved when SheetSage has no candidate.
     Short spoken/rap passages can nevertheless have reliable CTC mora intervals
     between two measured melody notes. Keep those intervals and borrow the pitch
     of the nearer bracketing slot solely as a synthesis-compatible ``spoken``
-    value. Leading/trailing gaps stay unresolved because they are not bracketed.
+    value.
+
+    Automatic-transcription utterances explicitly supported by vocal-stem activity
+    may also be retained at the leading or trailing edge of a song. Those use a
+    neutral pitch rather than carrying a potentially distant melody note. Callers
+    must opt individual utterances into this edge behavior; known lyrics and audio
+    without separated-vocal evidence therefore retain the conservative default.
     """
+    edge_spoken_utterance_ids = edge_spoken_utterance_ids or set()
     unresolved = list(dict.fromkeys(layers.get("unresolved_unit_ids", [])))
     if not unresolved:
         return 0
@@ -169,9 +191,10 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
     omitted = {
         item["singing_unit_id"] for item in layers.get("omissions", [])
     }
-    occupied = [
+    fixed_occupied = [
         (float(item["start_sec"]), float(item["end_sec"])) for item in plan
     ]
+    recovered_occupied: list[tuple[float, float, str]] = []
     evidence = list(layers.get("evidence", []))
     layers["evidence"] = evidence
     evidence_ids = {item["id"] for item in evidence}
@@ -186,20 +209,10 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
                 or not isinstance(end, (int, float))
                 or not math.isfinite(start + end) or end <= start):
             continue
-        if any(left < end and start < right for left, right in occupied):
+        if any(left < end and start < right for left, right in fixed_occupied):
             continue
         before = [item for item in anchors if item["end_sec"] <= start]
         after = [item for item in anchors if item["start_sec"] >= end]
-        if not before or not after:
-            continue
-        left, right = before[-1], after[0]
-        center = (start + end) / 2
-        anchor = min(
-            (left, right),
-            key=lambda item: abs(
-                center - (float(item["start_sec"]) + float(item["end_sec"])) / 2
-            ),
-        )
         details = [mora_details.get(mora_id) for mora_id in unit["mora_ids"]]
         if not details or any(item is None for item in details):
             continue
@@ -208,6 +221,48 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
             continue
         utterance_id = utterances.pop()
         kana = "".join(item[1] for item in details if item is not None)
+
+        overlapping_recoveries = {
+            owner
+            for left, right, owner in recovered_occupied
+            if left < end and start < right
+        }
+        if overlapping_recoveries and overlapping_recoveries != {utterance_id}:
+            continue
+
+        if before and after:
+            left, right = before[-1], after[0]
+            center = (start + end) / 2
+            anchor = min(
+                (left, right),
+                key=lambda item: abs(
+                    center
+                    - (float(item["start_sec"]) + float(item["end_sec"])) / 2
+                ),
+            )
+            midi_pitch = anchor["midi_pitch"]
+            note_candidate_id = anchor.get("note_candidate_id")
+            operation = "spoken_pitch_carry"
+            recovery_detail = {
+                "reason": "bracketed-sheet-sage-gap",
+                "pitch_strategy": "nearest-bracketing-slot",
+                "anchor_slot_id": anchor["id"],
+                "left_slot_id": left["id"],
+                "right_slot_id": right["id"],
+            }
+        elif (before or after) and utterance_id in edge_spoken_utterance_ids:
+            edge = "trailing" if before else "leading"
+            midi_pitch = EDGE_SPEECH_MIDI_PITCH
+            note_candidate_id = None
+            operation = "spoken_neutral_pitch"
+            recovery_detail = {
+                "reason": f"vocal-activity-supported-{edge}-speech",
+                "pitch_strategy": "neutral-spoken-midi",
+                "midi_pitch": EDGE_SPEECH_MIDI_PITCH,
+                "nearest_song_slot_id": (before[-1] if before else after[0])["id"],
+            }
+        else:
+            continue
 
         evidence_id = f"stage3-spoken-recovery-{unit_id}"
         suffix = 1
@@ -220,25 +275,20 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
             "source": "soramimic-video",
             "kind": "spoken-synthesis-fallback",
             "confidence": 1.0,
-            "detail": {
-                "reason": "bracketed-sheet-sage-gap",
-                "anchor_slot_id": anchor["id"],
-                "left_slot_id": left["id"],
-                "right_slot_id": right["id"],
-            },
+            "detail": recovery_detail,
         })
         plan.append({
             "id": f"spoken-slot-{unit_id}",
             "utterance_id": utterance_id,
             "singing_unit_id": unit_id,
             "mora_ids": list(unit["mora_ids"]),
-            "note_candidate_id": anchor.get("note_candidate_id"),
+            "note_candidate_id": note_candidate_id,
             "link_ids": list(unit.get("link_ids", [])),
             "kana": kana,
             "start_sec": float(start),
             "end_sec": float(end),
-            "midi_pitch": anchor["midi_pitch"],
-            "operation": "spoken_pitch_carry",
+            "midi_pitch": midi_pitch,
+            "operation": operation,
             "timing_source": "mora_ctc_interval",
             "confidence": 0.0,
             "evidence_ids": [evidence_id],
@@ -246,7 +296,7 @@ def _recover_bracketed_synthesis_units(layers: dict) -> int:
             "pitch_confidence": None,
             "continuation": False,
         })
-        occupied.append((float(start), float(end)))
+        recovered_occupied.append((float(start), float(end), utterance_id))
         recovered.append(unit_id)
 
     if not recovered:
@@ -585,14 +635,30 @@ def _recognized_line_windows(
     return windows
 
 
-def _has_kana_choice(variants: list[list[list[str]]]) -> bool:
+def _has_kana_choice(
+    variants: list[list[list[str]]],
+    *,
+    automatic_texts: list[str] | None = None,
+) -> bool:
     """Whether KanaWhisper has more than one closed reading to compare.
 
     Connected speech, weak forms, and other real pronunciation variants may change
     the mora count.  Candidate length is therefore evidence to compare, not a gate
     on whether comparison is allowed.
     """
-    return any(len(options) > 1 for options in variants)
+    if any(len(options) > 1 for options in variants):
+        return True
+    if automatic_texts is None:
+        return False
+
+    from .kana_whisper import has_dictionary_reading_alternative
+
+    return any(
+        options
+        and options[0]
+        and has_dictionary_reading_alternative(text, "".join(options[0]))
+        for text, options in zip(automatic_texts, variants, strict=True)
+    )
 
 
 def _choose_readings_with_kana(
@@ -604,6 +670,7 @@ def _choose_readings_with_kana(
     *,
     device: str,
     shared_inference: bool,
+    expand_automatic_readings: bool = False,
 ) -> tuple[list[int], dict[str, object]]:
     import soundfile as sf
 
@@ -612,6 +679,7 @@ def _choose_readings_with_kana(
         KANA_WHISPER_REVISION,
         build_kana_contexts,
         choose_reading,
+        propose_dictionary_readings,
         transcribe_kana_windows,
     )
 
@@ -642,11 +710,26 @@ def _choose_readings_with_kana(
         zip(line_texts, line_variants, assignments, strict=True)
     ):
         candidate_texts = ["".join(candidate) for candidate in variants]
+        base_candidate_count = len(candidate_texts)
         evidence = (
             [outputs[name][context_index] for name, _path in sources]
             if context_index is not None
             else []
         )
+        proposals = (
+            propose_dictionary_readings(text, candidate_texts[0], evidence)
+            if expand_automatic_readings and candidate_texts and candidate_texts[0]
+            else ()
+        )
+        existing = set(candidate_texts)
+        accepted_proposals = []
+        for proposal in proposals:
+            if proposal.reading in existing:
+                continue
+            existing.add(proposal.reading)
+            candidate_texts.append(proposal.reading)
+            variants.append(split_moras(proposal.reading))
+            accepted_proposals.append(proposal)
         decision = choose_reading(candidate_texts, evidence)
         selected.append(decision.selected_index)
         lines.append(
@@ -654,6 +737,19 @@ def _choose_readings_with_kana(
                 "line": index,
                 "surface": strip_ruby(text),
                 "candidates": candidate_texts,
+                "base_candidate_count": base_candidate_count,
+                "dictionary_proposals": [
+                    {
+                        "candidate_index": base_candidate_count + proposal_index,
+                        "surface": proposal.surface,
+                        "default_reading": proposal.default_reading,
+                        "alternative_reading": proposal.alternative_reading,
+                        "evidence_sources": [
+                            sources[view][0] for view in proposal.evidence_views
+                        ],
+                    }
+                    for proposal_index, proposal in enumerate(accepted_proposals)
+                ],
                 "selected_index": decision.selected_index,
                 "reason": decision.reason,
                 "context_index": context_index,
@@ -665,8 +761,13 @@ def _choose_readings_with_kana(
             }
         )
     return selected, {
-        "schema_version": 3,
+        "schema_version": 4,
         "mode": "closed-reading-candidate-rerank",
+        "candidate_expansion": (
+            "kana-local-dictionary-readings-v1"
+            if expand_automatic_readings
+            else "none"
+        ),
         "distance_metric": "kanasim-weighted-substring-0.0.11",
         "model": {
             "id": KANA_WHISPER_MODEL,
@@ -715,8 +816,11 @@ def analyze_audio(
     boundary_merges: list[RecognitionBoundaryMerge] = []
     localized_recoveries: list[dict[str, object]] = []
     localized_deficit_recoveries: list[dict[str, object]] = []
+    unowned_note_recoveries: list[dict[str, object]] = []
+    vocalization_normalizations: list[dict[str, object]] = []
     localized_alignment_retries: list[dict[str, object]] = []
     ctc_capacity_rejections: list[dict[str, object]] = []
+    vocal_activity_profile = None
 
     last_progress = 0.0
 
@@ -775,6 +879,48 @@ def analyze_audio(
         vocals, accompaniment = separate(audio_path, project_dir / SEPARATION_DIR)
     report(0.22)
 
+    def normalize_vocalization_line(
+        line: TranscribedLine,
+        *,
+        phase: str,
+        source_segment_index: int | None,
+    ) -> tuple[TranscribedLine, bool]:
+        if sheetsage_notes is None:
+            raise RuntimeError("反復発声の正規化にSheetSage2ノートがありません")
+        normalization = normalize_repeated_vocalization(line, sheetsage_notes)
+        if normalization is None:
+            return line, False
+        vocalization_normalizations.append({
+            "phase": phase,
+            "source_segment_index": source_segment_index,
+            "start_sec": line.start_sec,
+            "end_sec": line.end_sec,
+            "original_surface": line.text,
+            "surface": normalization.line.text,
+            "unit_moras": list(normalization.unit_moras),
+            "original_mora_count": normalization.original_mora_count,
+            "normalized_mora_count": normalization.normalized_mora_count,
+            "note_count": normalization.note_count,
+            "capped": (
+                normalization.normalized_mora_count
+                < normalization.original_mora_count
+            ),
+            "expanded": (
+                normalization.normalized_mora_count
+                > normalization.original_mora_count
+            ),
+            "adjustment": (
+                "contracted"
+                if normalization.normalized_mora_count
+                < normalization.original_mora_count
+                else "expanded"
+                if normalization.normalized_mora_count
+                > normalization.original_mora_count
+                else "unchanged"
+            ),
+        })
+        return normalization.line, True
+
     # 2. 歌詞行の決定
     if lyrics_path is not None:
         line_texts = [
@@ -784,10 +930,17 @@ def analyze_audio(
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
     else:
         from .semantic_lyrics import (
+            apply_vocal_activity_support,
             coalesce_repeated_suffix_fragments,
-            decide_recognized_line,
         )
         from .transcribe import transcribe_lines
+        from .vocal_activity import (
+            ACTIVE_FRAME_FLOOR_DBFS,
+            FRAME_DURATION_SEC,
+            LOUD_FRAME_PERCENTILE,
+            MAX_RELATIVE_DROP_DB,
+            measure_vocal_activity,
+        )
 
         # Unknown lyrics use one complete, deterministic Whisper transcript.
         # CTC remains downstream for mora timing, not for deciding whether
@@ -810,8 +963,34 @@ def analyze_audio(
                 raise RuntimeError(
                     "音源解析にはSheetSage2モデル設定が必要です"
                 )
+        normalized_lines = []
+        for index, line in enumerate(lines):
+            normalized, _ = normalize_vocalization_line(
+                line,
+                phase="initial",
+                source_segment_index=index,
+            )
+            normalized_lines.append(normalized)
+        lines = normalized_lines
         recognition_lines = lines
-        decisions = [decide_recognized_line(line, sheetsage_notes) for line in lines]
+        decisions = decide_recognized_lines(lines, sheetsage_notes)
+        if not skip_separation:
+            vocal_activity_profile = measure_vocal_activity(
+                vocals,
+                [(line.start_sec, line.end_sec) for line in lines],
+            )
+            decisions = [
+                apply_vocal_activity_support(
+                    decision,
+                    supported=evidence.supported,
+                    percentile_dbfs=evidence.percentile_dbfs,
+                    relative_db=evidence.relative_db,
+                    active_frame_ratio=evidence.active_frame_ratio,
+                )
+                for decision, evidence in zip(
+                    decisions, vocal_activity_profile.lines, strict=True
+                )
+            ]
         retained_indices = [
             index for index, decision in enumerate(decisions)
             if decision.status != "rejected"
@@ -866,7 +1045,10 @@ def analyze_audio(
             current_texts = [strip_ruby(text) for text in current_texts]
             current_choices = [0] * len(current_variants)
             current_reading_evidence = None
-            if _has_kana_choice(current_variants):
+            if _has_kana_choice(
+                current_variants,
+                automatic_texts=current_texts,
+            ):
                 current_choices, current_reading_evidence = _choose_readings_with_kana(
                     audio_path,
                     vocals,
@@ -875,6 +1057,7 @@ def analyze_audio(
                     current_windows,
                     device=device or "auto",
                     shared_inference=shared_inference,
+                    expand_automatic_readings=True,
                 )
             current_selected = [
                 [variants[index]]
@@ -1036,7 +1219,6 @@ def analyze_audio(
         if len(kept_local_indices) != len(retained_indices):
             from .semantic_lyrics import (
                 credit_recovery_windows,
-                decide_recognized_line,
             )
             from .transcribe import transcribe_window
 
@@ -1047,7 +1229,9 @@ def analyze_audio(
                     continue
                 original_line = recognition_lines[original_index]
                 for start_sec, end_sec in credit_recovery_windows(
-                    original_line, sheetsage_notes
+                    original_line,
+                    sheetsage_notes,
+                    template_family=decision.template_family,
                 ):
                     candidates = transcribe_window(
                         audio_path,
@@ -1058,6 +1242,11 @@ def analyze_audio(
                     )
                     accepted = []
                     for candidate in candidates:
+                        candidate, _ = normalize_vocalization_line(
+                            candidate,
+                            phase="semantic-recovery",
+                            source_segment_index=original_index,
+                        )
                         candidate_decision = decide_recognized_line(
                             candidate, sheetsage_notes
                         )
@@ -1101,7 +1290,7 @@ def analyze_audio(
                 chosen, reading_evidence, selected_variants, aligned,
             ) = prepare_automatic_alignment(retained_lines, "semantic-recovery")
 
-        from .semantic_lyrics import lyric_deficit_recoveries, vocalization_only
+        from .semantic_lyrics import lyric_deficit_recoveries
         from .transcribe import transcribe_window
 
         deficit_candidates = lyric_deficit_recoveries(
@@ -1115,17 +1304,37 @@ def analyze_audio(
         replacements: dict[int, list[TranscribedLine]] = {}
         for recovery in deficit_candidates:
             source_line = retained_lines[recovery.line]
+            source_segment_index = next(
+                (
+                    index
+                    for index, original in enumerate(recognition_lines)
+                    if original is source_line
+                ),
+                None,
+            )
             recovered_lines = []
+            recovered_repetitions = []
+            recovered_pathological_repetition = False
             for start_sec, end_sec in recovery.windows:
-                recovered_lines.extend(
-                    transcribe_window(
-                        audio_path,
-                        start_sec,
-                        end_sec,
-                        whisper_model,
-                        device or "auto",
-                    )
+                candidates = transcribe_window(
+                    audio_path,
+                    start_sec,
+                    end_sec,
+                    whisper_model,
+                    device or "auto",
                 )
+                for candidate in candidates:
+                    if is_pathological_repeated_vocalization(
+                        candidate, recovery.note_count
+                    ):
+                        recovered_pathological_repetition = True
+                    candidate, is_repetition = normalize_vocalization_line(
+                        candidate,
+                        phase="deficit-recovery",
+                        source_segment_index=source_segment_index,
+                    )
+                    recovered_repetitions.append(is_repetition)
+                    recovered_lines.append(candidate)
             recovered_lines.sort(key=lambda line: (line.start_sec, line.end_sec))
             rejection_reasons = []
             recovered_decisions = [
@@ -1134,6 +1343,11 @@ def analyze_audio(
             ]
             if not recovered_lines:
                 rejection_reasons.append("empty-transcript")
+            if recovered_pathological_repetition:
+                # A retry is allowed to preserve the attacks Whisper actually
+                # heard, but it must never replace a usable source line with a
+                # decoder runaway containing hundreds of periodic syllables.
+                rejection_reasons.append("pathological-repetition")
             if any(
                 decision.template_family is not None
                 for decision in recovered_decisions
@@ -1144,10 +1358,9 @@ def analyze_audio(
                 for decision in recovered_decisions
             ):
                 rejection_reasons.append("insufficient-melodic-support")
-            if recovered_lines and all(
-                vocalization_only(line.text) for line in recovered_lines
-            ):
-                rejection_reasons.append("repeated-vocalization")
+            pure_vocalization = bool(recovered_lines) and all(
+                recovered_repetitions
+            )
             recovered_variants = [
                 [split_moras(kana) for kana in candidate_builder(line.text)] or [[]]
                 for line in recovered_lines
@@ -1177,10 +1390,11 @@ def analyze_audio(
             required_moras = recovery.effective_mora_count + max(
                 2, math.ceil(recovery.effective_mora_count * 0.25)
             )
-            if recovered_moras < required_moras:
-                rejection_reasons.append("insufficient-detail-gain")
-            if recovered_moras > recovery.note_count * 3:
-                rejection_reasons.append("pathological-detail-gain")
+            if not pure_vocalization:
+                if recovered_moras < required_moras:
+                    rejection_reasons.append("insufficient-detail-gain")
+                if recovered_moras > recovery.note_count * 3:
+                    rejection_reasons.append("pathological-detail-gain")
             recovered_scores = [mora.score for mora in recovered_aligned]
             source_scores = [
                 mora.score for mora in aligned if mora.line == recovery.line
@@ -1191,24 +1405,17 @@ def analyze_audio(
             source_ctc_median = (
                 statistics.median(source_scores) if source_scores else 0.0
             )
-            if recovered_ctc_median < MIN_CTC_MEDIAN_SCORE:
-                rejection_reasons.append("insufficient-ctc-support")
-            if (
-                source_ctc_median > 0.0
-                and recovered_ctc_median < source_ctc_median * 0.5
-            ):
-                rejection_reasons.append("ctc-weaker-than-source")
+            if not pure_vocalization:
+                if recovered_ctc_median < MIN_CTC_MEDIAN_SCORE:
+                    rejection_reasons.append("insufficient-ctc-support")
+                if (
+                    source_ctc_median > 0.0
+                    and recovered_ctc_median < source_ctc_median * 0.5
+                ):
+                    rejection_reasons.append("ctc-weaker-than-source")
             candidate_accepted = not rejection_reasons
             if candidate_accepted:
                 replacements[recovery.line] = recovered_lines
-            source_segment_index = next(
-                (
-                    index
-                    for index, original in enumerate(recognition_lines)
-                    if original is source_line
-                ),
-                None,
-            )
             localized_deficit_recoveries.append({
                 "source_segment_index": source_segment_index,
                 "source_retained_index": recovery.line,
@@ -1220,6 +1427,9 @@ def analyze_audio(
                 "residual_notes": recovery.residual_notes,
                 "retry_windows": [list(window) for window in recovery.windows],
                 "status": "accepted" if candidate_accepted else "rejected",
+                "classification": (
+                    "repeated-vocalization" if pure_vocalization else "lyrics"
+                ),
                 "rejection_reasons": rejection_reasons,
                 "recovered_mora_count": recovered_moras,
                 "source_ctc_median_score": source_ctc_median,
@@ -1247,6 +1457,315 @@ def analyze_audio(
                 chosen, reading_evidence, selected_variants, aligned,
             ) = prepare_automatic_alignment(retained_lines, "deficit-recovery")
 
+    if recognition_mode is not None:
+        # Stage 3 is the only component which knows whether a SheetSage note is
+        # truly unowned after lyric alignment.  Run it once as a read-only probe,
+        # retry only long note-only regions, then rebuild the final correspondence
+        # below if a retry adds lyrics.
+        from .stage3 import build_stage3_layers
+        from .transcribe import transcribe_window
+
+        if sheetsage_notes is None:
+            raise RuntimeError("未所有ノート回復にSheetSage2ノートがありません")
+
+        provisional_readings = [
+            "".join(variants[index])
+            for variants, index in zip(line_variants, chosen, strict=True)
+        ]
+        provisional_windows = (
+            _recognized_line_windows(retained_lines)
+            if not recognition_windows_fallback
+            else None
+        )
+        provisional_document, _provisional_layers = build_stage3_layers(
+            line_texts,
+            provisional_readings,
+            aligned,
+            sheetsage_notes,
+            whisper_line_windows=provisional_windows,
+            enable_repeated_vocalization=provisional_windows is not None,
+            ctc_emissions=emissions,
+        )
+        recovery_windows = unowned_note_recovery_windows(
+            json.loads(provisional_document.to_json()), retained_lines
+        )
+        activity_by_window = (
+            measure_vocal_activity(
+                vocals,
+                [(window.start_sec, window.end_sec) for window in recovery_windows],
+            ).lines
+            if recovery_windows and not skip_separation
+            else ()
+        )
+        recovered_unowned_lines: list[TranscribedLine] = []
+        for window_index, window in enumerate(recovery_windows):
+            evidence = (
+                activity_by_window[window_index]
+                if window_index < len(activity_by_window)
+                else None
+            )
+            record: dict[str, object] = {
+                "start_sec": window.start_sec,
+                "end_sec": window.end_sec,
+                "note_count": window.note_count,
+                "seed_note_count": window.seed_note_count,
+                "note_ids": list(window.note_ids),
+                "temperature": 0.0,
+                "vocal_activity": (
+                    {
+                        "supported": evidence.supported,
+                        "percentile_dbfs": evidence.percentile_dbfs,
+                        "relative_db": evidence.relative_db,
+                        "active_frame_ratio": evidence.active_frame_ratio,
+                    }
+                    if evidence is not None
+                    else None
+                ),
+            }
+            if evidence is None or not evidence.supported:
+                record.update({
+                    "status": "rejected",
+                    "rejection_reasons": [
+                        "separated-vocal-activity-unavailable"
+                        if evidence is None
+                        else "insufficient-vocal-activity"
+                    ],
+                    "attempts": [],
+                })
+                unowned_note_recoveries.append(record)
+                continue
+
+            attempts: list[dict[str, object]] = []
+            accepted_attempts: list[
+                tuple[float, bool, int, str, list[TranscribedLine]]
+            ] = []
+            fallback_observations: list[
+                tuple[str, list[TranscribedLine], list[str], list[str]]
+            ] = []
+            for source, retry_start, retry_end in (
+                ("exact", window.start_sec, window.end_sec),
+                ("padded", max(0.0, window.start_sec - 0.5), window.end_sec + 0.5),
+            ):
+                raw_candidates = transcribe_window(
+                    audio_path,
+                    retry_start,
+                    retry_end,
+                    whisper_model,
+                    device or "auto",
+                    temperature=0.0,
+                )
+                candidates = [
+                    TranscribedLine(
+                        max(window.start_sec, candidate.start_sec),
+                        min(window.end_sec, candidate.end_sec),
+                        candidate.text,
+                    )
+                    for candidate in raw_candidates
+                    if min(window.end_sec, candidate.end_sec)
+                    > max(window.start_sec, candidate.start_sec)
+                ]
+                normalized_candidates = []
+                rejection_reasons = []
+                for candidate in candidates:
+                    if is_pathological_repeated_vocalization(
+                        candidate, window.note_count
+                    ):
+                        rejection_reasons.append("pathological-repetition")
+                        continue
+                    candidate, _is_repetition = normalize_vocalization_line(
+                        candidate,
+                        phase="unowned-note-recovery",
+                        source_segment_index=None,
+                    )
+                    decision = decide_recognized_line(candidate, sheetsage_notes)
+                    if decision.template_family is not None:
+                        rejection_reasons.append("non-lyric-template")
+                    elif not decision.melodic_support:
+                        rejection_reasons.append("insufficient-melodic-support")
+                    else:
+                        normalized_candidates.append(candidate)
+                attempt_variants = [
+                    [split_moras(kana) for kana in candidate_builder(line.text)] or [[]]
+                    for line in normalized_candidates
+                ]
+                if not normalized_candidates:
+                    rejection_reasons.append("empty-transcript")
+                if any(not item[0] for item in attempt_variants):
+                    rejection_reasons.append("missing-reading")
+                aligned_attempt: list[AlignedMora] = []
+                if not rejection_reasons:
+                    try:
+                        aligned_attempt, _fixed_choices = align_moras_with_variants(
+                            vocals,
+                            [[item[0]] for item in attempt_variants],
+                            device=device,
+                            emissions=emissions,
+                            phonetic_aliases=True,
+                            line_windows=_recognized_line_windows(
+                                normalized_candidates
+                            ),
+                        )
+                    except (RuntimeError, ValueError) as exc:
+                        rejection_reasons.append(f"ctc-alignment-failed:{exc}")
+                mora_count = sum(len(item[0]) for item in attempt_variants)
+                minimum_moras = max(4, math.ceil(window.note_count * 0.25))
+                if mora_count < minimum_moras:
+                    rejection_reasons.append("insufficient-detail")
+                if mora_count > window.note_count * 2:
+                    rejection_reasons.append("excessive-detail")
+                median_score = (
+                    statistics.median(item.score for item in aligned_attempt)
+                    if aligned_attempt
+                    else 0.0
+                )
+                if median_score < MIN_CTC_MEDIAN_SCORE:
+                    rejection_reasons.append("insufficient-ctc-support")
+                rejection_reasons = list(dict.fromkeys(rejection_reasons))
+                attempt_accepted = not rejection_reasons
+                fallback_observations.append((
+                    source,
+                    normalized_candidates,
+                    [mora for item in attempt_variants for mora in item[0]],
+                    rejection_reasons,
+                ))
+                attempts.append({
+                    "source": source,
+                    "start_sec": retry_start,
+                    "end_sec": retry_end,
+                    "status": "accepted" if attempt_accepted else "rejected",
+                    "rejection_reasons": rejection_reasons,
+                    "mora_count": mora_count,
+                    "ctc_median_score": median_score,
+                    "segments": [
+                        {
+                            "start_sec": line.start_sec,
+                            "end_sec": line.end_sec,
+                            "surface": line.text,
+                        }
+                        for line in normalized_candidates
+                    ],
+                })
+                if attempt_accepted:
+                    accepted_attempts.append((
+                        median_score,
+                        source == "exact",
+                        -abs(mora_count - window.note_count),
+                        source,
+                        normalized_candidates,
+                    ))
+
+            # If both bounded retries agree on timing and vowels but their
+            # consonants cannot clear the CTC gate, retain only the shared vowel
+            # continuation.  This runs after Whisper/readings and before the
+            # recovered line is admitted to the final alignment.
+            if not accepted_attempts and len(fallback_observations) == 2:
+                exact, padded = fallback_observations
+                exact_vowels = [vowel_of(mora) for mora in exact[2]]
+                padded_vowels = [vowel_of(mora) for mora in padded[2]]
+                exact_bounds = (
+                    (exact[1][0].start_sec, exact[1][-1].end_sec)
+                    if exact[1]
+                    else None
+                )
+                padded_bounds = (
+                    (padded[1][0].start_sec, padded[1][-1].end_sec)
+                    if padded[1]
+                    else None
+                )
+                consonant_only_failure = all(
+                    reasons == ["insufficient-ctc-support"]
+                    for _source, _lines, _moras, reasons in fallback_observations
+                )
+                timing_agrees = (
+                    exact_bounds is not None
+                    and padded_bounds is not None
+                    and abs(exact_bounds[0] - padded_bounds[0]) <= 0.6
+                    and abs(exact_bounds[1] - padded_bounds[1]) <= 0.6
+                )
+                if (
+                    consonant_only_failure
+                    and timing_agrees
+                    and exact_vowels == padded_vowels
+                    and len(exact_vowels) >= max(
+                        4, math.ceil(window.note_count * 0.25)
+                    )
+                    and all(vowel is not None for vowel in exact_vowels)
+                ):
+                    vowel_line = TranscribedLine(
+                        window.start_sec,
+                        window.end_sec,
+                        "".join(vowel for vowel in exact_vowels if vowel is not None),
+                    )
+                    try:
+                        vowel_aligned, _fixed_choices = align_moras_with_variants(
+                            vocals,
+                            [[[vowel for vowel in exact_vowels if vowel is not None]]],
+                            device=device,
+                            emissions=emissions,
+                            phonetic_aliases=True,
+                            line_windows=[(window.start_sec, window.end_sec)],
+                        )
+                    except (RuntimeError, ValueError):
+                        vowel_aligned = []
+                    vowel_score = (
+                        statistics.median(item.score for item in vowel_aligned)
+                        if vowel_aligned
+                        else 0.0
+                    )
+                    vowel_accepted = vowel_score >= MIN_CTC_MEDIAN_SCORE
+                    attempts.append({
+                        "source": "vowel-continuation",
+                        "start_sec": window.start_sec,
+                        "end_sec": window.end_sec,
+                        "status": "accepted" if vowel_accepted else "rejected",
+                        "rejection_reasons": (
+                            [] if vowel_accepted else ["insufficient-ctc-support"]
+                        ),
+                        "mora_count": len(exact_vowels),
+                        "ctc_median_score": vowel_score,
+                        "segments": [{
+                            "start_sec": vowel_line.start_sec,
+                            "end_sec": vowel_line.end_sec,
+                            "surface": vowel_line.text,
+                        }],
+                    })
+                    if vowel_accepted:
+                        accepted_attempts.append((
+                            vowel_score,
+                            False,
+                            -abs(len(exact_vowels) - window.note_count),
+                            "vowel-continuation",
+                            [vowel_line],
+                        ))
+
+            if accepted_attempts:
+                selected = max(accepted_attempts, key=lambda item: item[:3])
+                recovered_unowned_lines.extend(selected[4])
+                record.update({
+                    "status": "accepted",
+                    "selected_source": selected[3],
+                    "rejection_reasons": [],
+                    "attempts": attempts,
+                })
+            else:
+                record.update({
+                    "status": "rejected",
+                    "rejection_reasons": ["no-acoustically-supported-retry"],
+                    "attempts": attempts,
+                })
+            unowned_note_recoveries.append(record)
+
+        if recovered_unowned_lines:
+            retained_lines = sorted(
+                retained_lines + recovered_unowned_lines,
+                key=lambda line: (line.start_sec, line.end_sec),
+            )
+            localized_alignment_retries = []
+            (
+                retained_lines, line_texts, recognized_windows, line_variants,
+                chosen, reading_evidence, selected_variants, aligned,
+            ) = prepare_automatic_alignment(retained_lines, "unowned-note-recovery")
+
     expected_moras = sum(
         len(line[choice])
         for line, choice in zip(line_variants, chosen, strict=True)
@@ -1261,7 +1780,7 @@ def analyze_audio(
         (out / "recognition.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 4,
+                    "schema_version": 6,
                     "mode": recognition_mode,
                     "model": whisper_model,
                     "transcription_options": {
@@ -1274,10 +1793,28 @@ def analyze_audio(
                         if not skip_separation
                         else "reazon-kana-ctc-input-audio",
                         "rule": (
-                            "always-recover-exact-credit-patterns; require-melody-"
-                            "and-ctc-median-support-for-other-non-lyric-patterns"
+                            "always-recover-confirmed-credit-patterns; require-melody-"
+                            "and-ctc-median-support-for-other-non-lyric-patterns; "
+                            "reject-ordinary-nonmelodic-lines-without-relative-"
+                            "vocal-stem-activity"
                         ),
                         "ctc_median_threshold": MIN_CTC_MEDIAN_SCORE,
+                        "vocal_activity": (
+                            {
+                                "applied": True,
+                                "source": "demucs-separated-vocals",
+                                "frame_duration_sec": FRAME_DURATION_SEC,
+                                "line_percentile": LOUD_FRAME_PERCENTILE,
+                                "active_frame_floor_dbfs": ACTIVE_FRAME_FLOOR_DBFS,
+                                "max_relative_drop_db": MAX_RELATIVE_DROP_DB,
+                                "reference_dbfs": vocal_activity_profile.reference_dbfs,
+                            }
+                            if vocal_activity_profile is not None
+                            else {
+                                "applied": False,
+                                "reason": "separation-skipped",
+                            }
+                        ),
                         "boundary_merges": [
                             {
                                 "left_index": item.left_index,
@@ -1299,6 +1836,18 @@ def analyze_audio(
                                 "melodic_support": decision.melodic_support,
                                 "ctc_support": decision.ctc_support,
                                 "ctc_median_score": decision.ctc_median_score,
+                                "vocal_activity_support": (
+                                    decision.vocal_activity_support
+                                ),
+                                "vocal_activity_percentile_dbfs": (
+                                    decision.vocal_activity_percentile_dbfs
+                                ),
+                                "vocal_activity_relative_db": (
+                                    decision.vocal_activity_relative_db
+                                ),
+                                "vocal_active_frame_ratio": (
+                                    decision.vocal_active_frame_ratio
+                                ),
                             }
                             for line, decision in zip(
                                 recognition_lines, decisions, strict=True
@@ -1306,6 +1855,8 @@ def analyze_audio(
                         ],
                         "localized_recoveries": localized_recoveries,
                         "localized_deficit_recoveries": localized_deficit_recoveries,
+                        "unowned_note_recoveries": unowned_note_recoveries,
+                        "vocalization_normalizations": vocalization_normalizations,
                         "localized_alignment_retries": localized_alignment_retries,
                         "ctc_capacity_rejections": ctc_capacity_rejections,
                     },
@@ -1325,7 +1876,7 @@ def analyze_audio(
         )
         logger.info(
             "Whisper mix/no-VADの%d行を元歌詞として採用 "
-            "(非歌詞テンプレートを%d行除外、非旋律音声を%d行保持)",
+            "(意味・音量ゲートで%d行除外、非旋律音声を%d行保持)",
             len(line_texts),
             sum(decision.status == "rejected" for decision in decisions),
             sum(decision.status == "unresolved" for decision in decisions),
@@ -1363,6 +1914,12 @@ def analyze_audio(
             "melodic_support": decision.melodic_support,
             "ctc_support": decision.ctc_support,
             "ctc_median_score": decision.ctc_median_score,
+            "vocal_activity_support": decision.vocal_activity_support,
+            "vocal_activity_percentile_dbfs": (
+                decision.vocal_activity_percentile_dbfs
+            ),
+            "vocal_activity_relative_db": decision.vocal_activity_relative_db,
+            "vocal_active_frame_ratio": decision.vocal_active_frame_ratio,
         }
         for decision in (decisions if recognition_mode is not None else [])
         if decision.status != "accepted"
@@ -1393,7 +1950,7 @@ def analyze_audio(
     (out / "analysis.json").write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 5,
                 "mode": mode,
                 "official_lyrics": lyrics_path is not None,
                 "asr_used": lyrics_path is None or reading_asr_used,
@@ -1468,6 +2025,8 @@ def analyze_audio(
         document, layers = build_stage3_layers(
             line_texts, selected_readings, raw_alignment, sheetsage_notes,
             whisper_line_windows=whisper_line_windows,
+            enable_repeated_vocalization=whisper_line_windows is not None,
+            ctc_emissions=emissions,
         )
     except ValueError as exc:
         detail = (
@@ -1481,7 +2040,28 @@ def analyze_audio(
             document.to_json(), encoding="utf-8"
         )
     layer_data = layers.to_dict()
-    recovered_units = _recover_bracketed_synthesis_units(layer_data)
+    edge_spoken_utterance_ids: set[str] = set()
+    if recognition_mode is not None:
+        supported_lines = {
+            id(line)
+            for line, decision in zip(recognition_lines, decisions, strict=True)
+            if (
+                decision.status == "unresolved"
+                and decision.template_family is None
+                and decision.vocal_activity_support is True
+            )
+        }
+        edge_spoken_utterance_ids = {
+            canonical["utterance_id"]
+            for canonical, line in zip(
+                layer_data["canonical"], retained_lines, strict=True
+            )
+            if id(line) in supported_lines
+        }
+    recovered_units = _recover_synthesis_units(
+        layer_data,
+        edge_spoken_utterance_ids=edge_spoken_utterance_ids,
+    )
     continuous_lines, continuous_units = _continuize_spoken_synthesis_lines(layer_data)
     omitted_units = _omit_unresolved_synthesis_units(layer_data)
     for slot in layer_data["synthesis_plan"]:
@@ -1503,8 +2083,8 @@ def analyze_audio(
     analysis_data["generation_quality"] = _generation_quality_assessment(layer_data)
     if recovered_units:
         detail = (
-            f"SheetSage2ノートに前後を挟まれた{recovered_units}歌唱単位を、"
-            "CTC時刻とspoken合成用の近傍音高で保持しました。"
+            f"安全に補完できる{recovered_units}歌唱単位を、CTC時刻と"
+            "spoken合成用音高で保持しました。"
         )
         analysis_data["limitations"].append(detail)
         analysis_data["diagnostics"].append({

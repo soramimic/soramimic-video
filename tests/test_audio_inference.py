@@ -245,6 +245,7 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
                 kwargs["language"],
                 kwargs["cache_model"],
                 kwargs["cuda_capacity_reserved"],
+                kwargs["temperature"],
             )
         )
         return [TranscribedLine(0.1, 0.8, "歌詞")]
@@ -271,7 +272,8 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
                 "kind": "whisper",
                 "priority": "preview",
                 "parameters": (
-                    '{"model_size":"large-v3","device":"auto","language":"en"}'
+                    '{"model_size":"large-v3","device":"auto",'
+                    '"language":"en","temperature":0}'
                 ),
             },
         )
@@ -286,12 +288,13 @@ def test_inference_api_runs_whisper_and_removes_consumed_job(monkeypatch, tmp_pa
 
         assert response.json()["result"] == {
             "requested_language": "en",
+            "requested_temperature": 0,
             "lines": [{"start_sec": 0.1, "end_sec": 0.8, "text": "歌詞"}]
         }
         assert client.delete(f"/v1/jobs/{job_id}").status_code == 204
         assert client.get(f"/v1/jobs/{job_id}").status_code == 404
 
-    assert calls == [(b"wave", "large-v3", "cpu", "en", True, False)]
+    assert calls == [(b"wave", "large-v3", "cpu", "en", True, False, 0.0)]
 
 
 @pytest.mark.parametrize(
@@ -316,6 +319,7 @@ def test_whisper_worker_defaults_to_japanese_and_allows_detection(
 
     assert scheduler._run(job) == {
         "requested_language": expected_language,
+        "requested_temperature": None,
         "lines": [],
     }
     assert observed == [expected_language]
@@ -484,6 +488,24 @@ def test_inference_api_rejects_invalid_whisper_language(tmp_path, language):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize("temperature", [-0.1, 1.1, True, "0", None, [], {}])
+def test_inference_api_rejects_invalid_whisper_temperature(tmp_path, temperature):
+    import json
+
+    app = create_audio_inference_app(tmp_path / "state", device="cpu")
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/jobs",
+            files={"audio": ("song.wav", b"wave")},
+            data={
+                "kind": "whisper",
+                "priority": "dev",
+                "parameters": json.dumps({"temperature": temperature}),
+            },
+        )
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize(
     "windows",
     [[], [[-1, 2]], [[2, 1]], [[0, 25]], [[2, 3], [1, 2]], [[0, "later"]]],
@@ -511,12 +533,16 @@ def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path
     audio = tmp_path / "song.wav"
     audio.write_bytes(b"wave")
     calls = []
+    monkeypatch.setattr(transcribe, "_audio_duration_sec", lambda _path: 12.623)
     monkeypatch.setenv("SORAMIMIC_AUDIO_INFERENCE_URL", "http://127.0.0.1:8320/")
     monkeypatch.setattr(
         audio_inference,
         "transcribe_lines_remote",
         lambda *args, **kwargs: calls.append((args, kwargs))
-        or [TranscribedLine(0.0, 1.0, "共有")],
+        or [
+            TranscribedLine(0.0, 29.98, "共有"),
+            TranscribedLine(12.623, 29.98, "空区間"),
+        ],
     )
 
     result = transcribe.transcribe_lines(
@@ -528,7 +554,9 @@ def test_transcribe_delegates_to_configured_shared_service(monkeypatch, tmp_path
         condition_on_previous_text=False,
     )
 
-    assert [line.text for line in result] == ["共有"]
+    assert [(line.start_sec, line.end_sec, line.text) for line in result] == [
+        (0.0, 12.623, "共有")
+    ]
     assert calls == [
         (
             (audio, "large-v3", "auto"),
@@ -550,7 +578,11 @@ def test_remote_whisper_sends_language_and_checks_server_support(monkeypatch, tm
 
     def infer(kind, path, parameters):
         calls.append((kind, path, parameters))
-        return {"requested_language": "en", "lines": []}
+        return {
+            "requested_language": "en",
+            "requested_temperature": 0.0,
+            "lines": [],
+        }
 
     monkeypatch.setattr(audio_inference, "_remote_inference", infer)
 
@@ -561,6 +593,7 @@ def test_remote_whisper_sends_language_and_checks_server_support(monkeypatch, tm
         language="en",
         vad_filter=False,
         condition_on_previous_text=False,
+        temperature=0.0,
     ) == []
     assert calls == [
         (
@@ -572,6 +605,7 @@ def test_remote_whisper_sends_language_and_checks_server_support(monkeypatch, tm
                 "language": "en",
                 "vad_filter": False,
                 "condition_on_previous_text": False,
+                "temperature": 0.0,
             },
         )
     ]
@@ -598,6 +632,30 @@ def test_remote_whisper_rejects_legacy_server_for_nondefault_language(
             language=None,
             vad_filter=False,
             condition_on_previous_text=False,
+        )
+
+
+def test_remote_whisper_rejects_server_without_temperature_support(
+    monkeypatch, tmp_path
+):
+    from soramimic_video import audio_inference
+
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"wave")
+    monkeypatch.setattr(
+        audio_inference,
+        "_remote_inference",
+        lambda *_args, **_kwargs: {"requested_language": "ja", "lines": []},
+    )
+
+    with pytest.raises(RuntimeError, match="温度指定に対応していません"):
+        audio_inference.transcribe_lines_remote(
+            audio,
+            "large-v3",
+            "auto",
+            vad_filter=False,
+            condition_on_previous_text=False,
+            temperature=0.0,
         )
 
 

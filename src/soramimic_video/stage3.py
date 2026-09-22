@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from wav_to_xf import IntermediateRepresentation, Realization
 
     from .audio_melody import MelodyNote
-    from .mora_align import AlignedMora
+    from .mora_align import AlignedMora, CTCEmissions
 
 
 _WHISPER_BOUNDARY_COST_PER_SEC2 = 0.1
@@ -72,6 +72,8 @@ def build_stage3_layers(
     melody_notes: Sequence[MelodyNote],
     *,
     whisper_line_windows: Sequence[tuple[float, float]] | None = None,
+    enable_repeated_vocalization: bool = False,
+    ctc_emissions: CTCEmissions | None = None,
 ) -> tuple[IntermediateRepresentation, Realization]:
     """Use every SheetSage candidate and explicit mora CTC peak in Stage 3."""
     from wav_to_xf import (
@@ -82,12 +84,19 @@ def build_stage3_layers(
         NoteRunConfig,
         ObservedSingingUnit,
         ReadingCandidate,
+        VocalizationReattack,
         build_known_lyrics_document,
     )
     from wav_to_xf.pipeline import run_stage3_document
 
     if len(line_texts) != len(selected_readings) or not line_texts:
         raise ValueError("Stage 3には同数の歌詞行と読みが必要です")
+    if type(enable_repeated_vocalization) is not bool:
+        raise TypeError("反復音節補完の有効化指定はboolである必要があります")
+    if enable_repeated_vocalization and whisper_line_windows is None:
+        raise ValueError("反復音節補完には歌詞行ごとのWhisper区間が必要です")
+    if enable_repeated_vocalization and ctc_emissions is None:
+        raise ValueError("反復音節補完には未条件付けCTC出力が必要です")
     if (whisper_line_windows is not None
             and len(whisper_line_windows) != len(line_texts)):
         raise ValueError("Stage 3には歌詞行ごとのWhisper区間が必要です")
@@ -167,6 +176,34 @@ def build_stage3_layers(
         if whisper_line_windows is not None
         else None
     )
+    reattacks_by_utterance: dict[str, tuple[VocalizationReattack, ...]] = {}
+    if enable_repeated_vocalization:
+        from .kana import split_moras
+        from .mora_align import decode_repeated_mora_reattacks
+
+        assert snapped_windows is not None
+        assert ctc_emissions is not None
+        for index, (reading, window) in enumerate(
+            zip(selected_readings, snapped_windows, strict=True)
+        ):
+            moras = split_moras(reading)
+            if (len(moras) < 2 or len(set(moras)) != 1
+                    or moras[0] in {"ン", "ッ", "ー"}):
+                continue
+            raw_events = decode_repeated_mora_reattacks(
+                ctc_emissions, moras[0], *window,
+            )
+            if len(raw_events) < len(moras):
+                continue
+            reattacks_by_utterance[f"u{index}"] = tuple(
+                VocalizationReattack(
+                    event.start_sec,
+                    event.end_sec,
+                    event.confidence,
+                    "reazon-kana-ctc-target-posterior",
+                )
+                for event in raw_events
+            )
     run = run_stage3_document(
         document,
         config=NoteRunConfig(
@@ -177,6 +214,9 @@ def build_stage3_layers(
              for index, window in enumerate(snapped_windows)}
             if snapped_windows is not None
             else None
+        ),
+        vocalization_reattacks_by_utterance=(
+            reattacks_by_utterance if enable_repeated_vocalization else None
         ),
     )
     return run.document, run.realization

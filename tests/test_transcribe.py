@@ -8,6 +8,7 @@ from soramimic_video.transcribe import transcribe_lines
 
 def test_transcribe_lines_exposes_context_and_vad_choices_and_keeps_defaults(monkeypatch):
     calls = []
+    monkeypatch.setattr(transcribe_module, "_audio_duration_sec", lambda _path: 10.0)
 
     class Whisper:
         def __init__(self, model, *, device):
@@ -49,6 +50,7 @@ def test_transcribe_lines_exposes_context_and_vad_choices_and_keeps_defaults(mon
 
 def test_transcribe_lines_uses_cpu_when_cuda_memory_is_low(monkeypatch):
     calls = []
+    monkeypatch.setattr(transcribe_module, "_audio_duration_sec", lambda _path: 10.0)
 
     class Whisper:
         def __init__(self, model, **kwargs):
@@ -72,6 +74,7 @@ def test_transcribe_lines_uses_cpu_when_cuda_memory_is_low(monkeypatch):
 
 def test_transcribe_lines_retries_cuda_oom_on_cpu(monkeypatch):
     calls = []
+    monkeypatch.setattr(transcribe_module, "_audio_duration_sec", lambda _path: 10.0)
 
     class Whisper:
         def __init__(self, model, **kwargs):
@@ -108,6 +111,8 @@ def test_transcribe_lines_retries_cuda_oom_on_cpu(monkeypatch):
 
 
 def test_transcribe_lines_does_not_hide_non_oom_cuda_errors(monkeypatch):
+    monkeypatch.setattr(transcribe_module, "_audio_duration_sec", lambda _path: 10.0)
+
     class Whisper:
         def __init__(self, model, **kwargs):
             pass
@@ -124,6 +129,30 @@ def test_transcribe_lines_does_not_hide_non_oom_cuda_errors(monkeypatch):
         assert str(exc) == "CUDA driver is unavailable"
     else:
         raise AssertionError("non-OOM CUDA errors must remain visible")
+
+
+def test_transcribe_lines_clamps_segments_to_physical_audio_duration(monkeypatch):
+    class Whisper:
+        def __init__(self, model, *, device):
+            pass
+
+        def transcribe(self, path, **kwargs):
+            return iter([
+                SimpleNamespace(start=-0.5, end=0.5, text=" 先頭 "),
+                SimpleNamespace(start=0.0, end=29.98, text=" 正常入力 "),
+                SimpleNamespace(start=12.623, end=29.98, text=" 空区間 "),
+                SimpleNamespace(start=13.0, end=14.0, text=" 範囲外 "),
+            ]), SimpleNamespace(language_probability=0.9)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=Whisper))
+    monkeypatch.setattr(transcribe_module, "_audio_duration_sec", lambda _path: 12.623)
+
+    lines = transcribe_lines(Path("short.wav"), "small", "cpu")
+
+    assert [(line.start_sec, line.end_sec, line.text) for line in lines] == [
+        (0.0, 0.5, "先頭"),
+        (0.0, 12.623, "正常入力"),
+    ]
 
 
 def test_shared_server_reuses_whisper_model(monkeypatch):
