@@ -4,6 +4,14 @@ from soramimic_video import asset_store, cli
 from soramimic_video.cli import build_parser
 
 
+def test_synthesize_accepts_prettypitch_backend():
+    args = build_parser().parse_args([
+        "synthesize", "--project", "work/song", "--synthesizer", "prettypitch",
+    ])
+
+    assert args.synthesizer == "prettypitch"
+
+
 @pytest.mark.parametrize(
     "removed_option",
     ["--lyric-pipeline", "--melody-midi", "--melody-channel"],
