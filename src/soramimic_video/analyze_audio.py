@@ -32,6 +32,8 @@ from .ruby import strip_ruby
 from .semantic_lyrics import (
     RecognitionBoundaryMerge,
     SemanticLyricDecision,
+    decide_recognized_line,
+    decide_recognized_lines,
     is_pathological_repeated_vocalization,
     normalize_repeated_vocalization,
     unowned_note_recovery_windows,
@@ -879,7 +881,6 @@ def analyze_audio(
         from .semantic_lyrics import (
             apply_vocal_activity_support,
             coalesce_repeated_suffix_fragments,
-            decide_recognized_lines,
         )
         from .transcribe import transcribe_lines
         from .vocal_activity import (
@@ -1163,7 +1164,6 @@ def analyze_audio(
         if len(kept_local_indices) != len(retained_indices):
             from .semantic_lyrics import (
                 credit_recovery_windows,
-                decide_recognized_line,
             )
             from .transcribe import transcribe_window
 
