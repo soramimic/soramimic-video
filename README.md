@@ -49,6 +49,21 @@ uv run soramimic-video mix \
 uv run soramimic-video video --project work/song --layout caption
 ```
 
+開発環境ではPrettyPitchも試験バックエンドとして使えます。PrettyPitchとLeapSinger、
+配布モデルはこのリポジトリへ同梱せず、各プロジェクトの手順と利用条件に従って別途配置します。
+配布モデルは個人・非商用利用が前提です。
+
+```sh
+PRETTYPITCH_ROOT=/path/to/PrettyPitch \
+PRETTYPITCH_LEAPSINGER_ROOT=/path/to/LeapSinger \
+PRETTYPITCH_PYTHON=/path/to/PrettyPitch/.venv/bin/python \
+  uv run soramimic-video synthesize \
+    --project work/song --synthesizer prettypitch
+```
+
+Web UIの固定歌声として試す場合は、上記に加えて
+`SORAMIMIC_FIXED_SYNTHESIZER=prettypitch` を設定します。未設定時の既定はVOICEVOXのままです。
+
 モーラの位置・長さ・読みは timing editor で調整できます。
 
 ```sh

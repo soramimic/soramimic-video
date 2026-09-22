@@ -4,6 +4,14 @@ from soramimic_video import asset_store, cli
 from soramimic_video.cli import build_parser
 
 
+def test_synthesize_accepts_prettypitch_backend():
+    args = build_parser().parse_args([
+        "synthesize", "--project", "work/song", "--synthesizer", "prettypitch",
+    ])
+
+    assert args.synthesizer == "prettypitch"
+
+
 def test_edit_timing_accepts_full_audio_overlay_options():
     args = build_parser().parse_args([
         "edit-timing", "--project", "work/song",
