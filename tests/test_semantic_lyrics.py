@@ -9,11 +9,15 @@ from soramimic_video.semantic_lyrics import (
     credit_recovery_windows,
     decide_recognized_line,
     decide_recognized_lines,
+    duration_repeated_vocalization_candidate,
+    has_tandem_repeat_note_support,
+    has_tandem_repeated_phrase,
     is_pathological_repeated_vocalization,
     lyric_deficit_recoveries,
     non_lyric_template_family,
     normalize_recognized_text,
     normalize_repeated_vocalization,
+    repeated_vocalization_period,
     unowned_note_recovery_windows,
     vocalization_only,
 )
@@ -62,6 +66,52 @@ def test_repeated_short_suffix_fragment_rejoins_previous_asr_line():
     assert evidence[0].left_index == 1
     assert evidence[0].right_index == 2
     assert evidence[0].merged_surface == "見たと知れ残響"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Get it! Get it! Down! Get it! Get it! Down!",
+        "君が好き君が好き",
+        "この歌を届けるこの歌を届けるよ",
+    ],
+)
+def test_tandem_repeated_phrase_detects_substantial_adjacent_copy(text):
+    assert has_tandem_repeated_phrase(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Get it get it down", "もう一度鳴らせ", "君が好き、ずっと好き"],
+)
+def test_tandem_repeated_phrase_rejects_words_and_nonidentical_lines(text):
+    assert not has_tandem_repeated_phrase(text)
+
+
+def test_tandem_repeat_note_support_requires_detail_gain_and_better_note_fit():
+    text = "Get it! Get it! Down! Get it! Get it! Down!"
+
+    assert has_tandem_repeat_note_support(
+        text,
+        source_mora_count=7,
+        recovered_mora_count=14,
+        note_count=14,
+        median_notes_per_mora=1.0,
+    )
+    assert not has_tandem_repeat_note_support(
+        "Get it get it down",
+        source_mora_count=7,
+        recovered_mora_count=7,
+        note_count=14,
+        median_notes_per_mora=1.0,
+    )
+    assert not has_tandem_repeat_note_support(
+        text,
+        source_mora_count=7,
+        recovered_mora_count=14,
+        note_count=7,
+        median_notes_per_mora=1.0,
+    )
 
 
 def test_short_standalone_line_is_not_merged_without_parallel_suffix():
@@ -335,6 +385,24 @@ def test_repeated_vocalization_preserves_observed_attacks_and_keeps_its_unit():
     assert normalized.note_count == 4
 
 
+def test_repeated_vocalization_period_distinguishes_multi_mora_refrain():
+    assert repeated_vocalization_period("ダダダ") == ("ダ",)
+    assert repeated_vocalization_period("アイアイア") == ("ア", "イ")
+    assert repeated_vocalization_period("君が好き") is None
+
+
+def test_duration_repeat_duplicates_source_phrase_after_acoustic_family_match():
+    source = TranscribedLine(10.0, 22.0, "アイアイア")
+    retry = TranscribedLine(10.0, 22.0, "アイ" * 14)
+
+    candidate = duration_repeated_vocalization_candidate(source, [retry], 2)
+
+    assert candidate == TranscribedLine(10.0, 22.0, "アイアイアアイアイア")
+    assert duration_repeated_vocalization_candidate(
+        source, [TranscribedLine(10.0, 22.0, "ラララ")], 2
+    ) is None
+
+
 def test_latin_repeated_vocalization_does_not_expand_to_note_count():
     line = TranscribedLine(1.0, 5.0, "DADADADA")
     notes = [MelodyNote(1.0, 5.0, 60)] * 31
@@ -530,6 +598,51 @@ def test_lyric_deficit_counts_latin_words_but_keeps_severe_collapse():
     assert [recovery.line for recovery in recoveries] == [4]
     assert recoveries[0].mora_count == 8
     assert recoveries[0].effective_mora_count == 11
+
+
+def test_lyric_deficit_retries_only_duration_outlier_multi_mora_vocalization():
+    lines = [
+        TranscribedLine(0.0, 4.0, "アイアイア"),
+        TranscribedLine(5.0, 9.0, "アイアイア"),
+        TranscribedLine(10.0, 14.0, "アイアイア"),
+        TranscribedLine(15.0, 23.0, "アイアイア"),
+    ]
+    notes = [
+        MelodyNote(line.start_sec + index * 0.2,
+                   line.start_sec + index * 0.2 + 0.1, 60)
+        for line in lines
+        for index in range(5 if line.end_sec - line.start_sec == 4.0 else 20)
+    ]
+
+    recoveries = lyric_deficit_recoveries(lines, [5, 5, 5, 5], notes)
+
+    assert [item.line for item in recoveries] == [3]
+    assert recoveries[0].note_count == 20
+    assert recoveries[0].repeated_surface_median_duration_sec == 4.0
+    assert recoveries[0].suggested_repetition_count == 2
+
+
+def test_lyric_deficit_accepts_one_normal_duration_peer_with_acoustic_retry():
+    lines = [
+        TranscribedLine(0.0, 7.0, "アイアイア"),
+        TranscribedLine(10.0, 38.0, "アイアイア"),
+    ]
+    notes = [
+        *[
+            MelodyNote(index * 0.2, index * 0.2 + 0.1, 60)
+            for index in range(5)
+        ],
+        *[
+            MelodyNote(10.0 + index * 0.2, 10.1 + index * 0.2, 60)
+            for index in range(40)
+        ],
+    ]
+
+    recoveries = lyric_deficit_recoveries(lines, [5, 5], notes)
+
+    assert [item.line for item in recoveries] == [1]
+    assert recoveries[0].repeated_surface_median_duration_sec == 7.0
+    assert recoveries[0].suggested_repetition_count == 4
 
 
 def test_short_melody_time_does_not_reject_ordinary_lyrics():

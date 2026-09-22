@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 import threading
@@ -46,6 +47,8 @@ class LyricDeficitRecovery:
     effective_mora_count: int
     median_notes_per_mora: float
     residual_notes: float
+    repeated_surface_median_duration_sec: float | None = None
+    suggested_repetition_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -248,6 +251,7 @@ _DEFICIT_SPLIT_NOTE_GAP_SEC = 0.32
 _DEFICIT_MIN_GROUP_NOTES = 4
 _DEFICIT_MIN_GROUP_SPAN_SEC = 0.6
 _DEFICIT_WINDOW_PADDING_SEC = 0.5
+_MULTI_MORA_REPEAT_DURATION_RATIO = 1.5
 _BOUNDARY_FRAGMENT_MAX_SEC = 1.25
 _BOUNDARY_FRAGMENT_MAX_CHARS = 4
 _BOUNDARY_ADJACENCY_SEC = 0.15
@@ -303,6 +307,53 @@ def normalize_recognized_text(text: str) -> str:
         for character in normalized
         if unicodedata.category(character)[0] not in {"P", "Z"}
     )
+
+
+def has_tandem_repeated_phrase(text: str) -> bool:
+    """Return whether most of a local transcript is an adjacent repeated phrase.
+
+    This is deliberately a structural predicate rather than a lyric correction:
+    callers still need independent acoustic evidence before replacing a transcript.
+    Requiring a substantial repeated span keeps ordinary doubled words from being
+    treated as a repeated chorus on their own.
+    """
+    normalized = normalize_recognized_text(text)
+    if len(normalized) < 8:
+        return False
+    minimum_span = max(4, math.ceil(len(normalized) * 0.45))
+    for width in range(len(normalized) // 2, minimum_span - 1, -1):
+        for start in range(len(normalized) - width * 2 + 1):
+            unit = normalized[start:start + width]
+            if unit == normalized[start + width:start + width * 2]:
+                return True
+    return False
+
+
+def has_tandem_repeat_note_support(
+    text: str,
+    *,
+    source_mora_count: int,
+    recovered_mora_count: int,
+    note_count: int,
+    median_notes_per_mora: float,
+) -> bool:
+    """Require a repeated local transcript to explain an acoustic note deficit."""
+    required_moras = source_mora_count + max(
+        2, math.ceil(source_mora_count * 0.25)
+    )
+    if (
+        recovered_mora_count < required_moras
+        or recovered_mora_count > note_count * 2
+        or not has_tandem_repeated_phrase(text)
+    ):
+        return False
+    source_error = abs(
+        note_count - median_notes_per_mora * source_mora_count
+    )
+    recovered_error = abs(
+        note_count - median_notes_per_mora * recovered_mora_count
+    )
+    return recovered_error < source_error
 
 
 def coalesce_repeated_suffix_fragments(
@@ -446,6 +497,41 @@ def _minimal_vocalization_period(moras: list[str]) -> tuple[str, ...] | None:
     return None
 
 
+def repeated_vocalization_period(text: str) -> tuple[str, ...] | None:
+    """Return a short mora period for a narrowly gated pure vocalization."""
+    normalized = normalize_recognized_text(text).replace("ー", "")
+    if not normalized or not vocalization_only(text):
+        return None
+    if normalized.isascii():
+        moras = _latin_vocalization_moras(normalized)
+    elif re.fullmatch(r"[ぁ-んァ-ヶ]+", normalized):
+        from .kana import split_moras
+
+        moras = split_moras(normalized)
+    else:
+        return None
+    return _minimal_vocalization_period(moras or [])
+
+
+def duration_repeated_vocalization_candidate(
+    source_line: TranscribedLine,
+    recovered_lines: Sequence[TranscribedLine],
+    repetition_count: int,
+) -> TranscribedLine | None:
+    """Duplicate the bounded source phrase only when a retry hears its mora family."""
+    if repetition_count < 2 or not recovered_lines:
+        return None
+    source_period = repeated_vocalization_period(source_line.text)
+    recovered_periods = {
+        repeated_vocalization_period(line.text) for line in recovered_lines
+    }
+    if source_period is None or recovered_periods != {source_period}:
+        return None
+    separator = " " if source_line.text.isascii() else ""
+    surface = separator.join([source_line.text] * repetition_count)
+    return type(source_line)(source_line.start_sec, source_line.end_sec, surface)
+
+
 def is_pathological_repeated_vocalization(
     line: TranscribedLine,
     note_count: int,
@@ -454,18 +540,17 @@ def is_pathological_repeated_vocalization(
     if note_count < 0:
         raise ValueError("note_count must be non-negative")
     normalized = normalize_recognized_text(line.text).replace("ー", "")
-    if not normalized or not vocalization_only(line.text):
+    if not normalized:
+        return False
+    period = repeated_vocalization_period(line.text)
+    if period is None:
         return False
     if normalized.isascii():
-        moras = _latin_vocalization_moras(normalized)
-    elif re.fullmatch(r"[ぁ-んァ-ヶ]+", normalized):
+        moras = _latin_vocalization_moras(normalized) or []
+    else:
         from .kana import split_moras
 
         moras = split_moras(normalized)
-    else:
-        return False
-    if not moras or _minimal_vocalization_period(moras) is None:
-        return False
     duration = max(1e-6, line.end_sec - line.start_sec)
     return (
         len(moras) > max(64, note_count * 2)
@@ -568,9 +653,33 @@ def lyric_deficit_recoveries(
         note_count = len(line_notes)
         ratio = note_count / max(effective_mora_count, 1)
         residual = note_count - median_ratio * effective_mora_count
+        period = repeated_vocalization_period(line.text)
+        repeated_surface_median_duration_sec = None
+        suggested_repetition_count = None
+        if vocalization_only(line.text):
+            if period is None or len(period) == 1:
+                continue
+            normalized = normalize_recognized_text(line.text)
+            peer_durations = [
+                other.end_sec - other.start_sec
+                for other_index, other in enumerate(lines)
+                if other_index != index
+                and normalize_recognized_text(other.text) == normalized
+            ]
+            if not peer_durations:
+                continue
+            repeated_surface_median_duration_sec = statistics.median(
+                peer_durations
+            )
+            duration_ratio = (
+                (line.end_sec - line.start_sec)
+                / repeated_surface_median_duration_sec
+            )
+            if duration_ratio < _MULTI_MORA_REPEAT_DURATION_RATIO:
+                continue
+            suggested_repetition_count = max(2, math.floor(duration_ratio + 0.5))
         if (
-            vocalization_only(line.text)
-            or note_count < _DEFICIT_MIN_NOTES
+            note_count < _DEFICIT_MIN_NOTES
             or ratio < _DEFICIT_MIN_NOTES_PER_MORA
             or residual < _DEFICIT_MIN_RESIDUAL_NOTES
         ):
@@ -619,6 +728,10 @@ def lyric_deficit_recoveries(
                 effective_mora_count=effective_mora_count,
                 median_notes_per_mora=median_ratio,
                 residual_notes=residual,
+                repeated_surface_median_duration_sec=(
+                    repeated_surface_median_duration_sec
+                ),
+                suggested_repetition_count=suggested_repetition_count,
             )
         )
     return recoveries
