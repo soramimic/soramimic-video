@@ -158,8 +158,8 @@ SheetSage2だけから取得します。前後をSheetSage2ノートに挟まれ
 歌詞を無音化しないためCTCのモーラ時刻を保持し、近い側のノート音高を合成専用の
 `spoken` 値として使います。この値は推定音高とは扱わず、解析結果に由来を記録します。
 
-音源解析は `wav-to-xf` パッケージを使用します。利用可能なローカル
-チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
+歌詞と音符の対応付けには [Soramimic Score](https://github.com/jiroshimaya/soramimic-score) を
+使用します。`uv sync`で検証済みの版が一緒にインストールされます。
 全SheetSageノート候補と各モーラのかなCTC中心を
 境界なし設定のStage 3へ渡し、モーラ→ノート対応を決定します。母音・子音境界は入力せず、
 CTC中心を含む後続ノートがある場合、その
@@ -170,7 +170,7 @@ CTC中心を含む後続ノートがある場合、その
 この境界補正に使用しません。
 
 ```sh
-uv run --no-sync soramimic-video analyze-audio --audio song.wav --project work/song
+uv run soramimic-video analyze-audio --audio song.wav --project work/song
 uv run soramimic-video apply-lyric-layers --project work/song --layers work/realization.json
 uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
 ```

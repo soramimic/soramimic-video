@@ -1,4 +1,4 @@
-"""Integration contract tests, run when the optional local pipeline is installed."""
+"""Integration contract tests for the required Soramimic Score pipeline."""
 
 import json
 import sys
@@ -6,8 +6,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
-pytest.importorskip("wav_to_xf.pipeline")
 
 
 def _ctc_emissions(kana="ラ", *event_times):
@@ -25,7 +23,7 @@ def _ctc_emissions(kana="ラ", *event_times):
 def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
     monkeypatch,
 ):
-    from wav_to_xf import pipeline
+    from soramimic_score import pipeline
 
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
@@ -58,7 +56,7 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
 
     anchors = [item for item in document.evidence if item.kind == "mora-ctc-anchor"]
     assert [item.detail["time_sec"] for item in anchors] == pytest.approx([0.1, 0.4])
-    from wav_to_xf import NoteRunConfig
+    from soramimic_score import NoteRunConfig
 
     assert captured["config"] == NoteRunConfig(whisper_boundary_cost_per_sec2=0.1)
     assert captured["line_windows_by_utterance"] == {"u0": (0.0, 0.5)}
@@ -74,7 +72,7 @@ def test_stage3_uses_note_run_config_with_each_mora_ctc_peak(
 
 
 def test_stage3_disables_repeated_vocalization_without_whisper_windows(monkeypatch):
-    from wav_to_xf import pipeline
+    from soramimic_score import pipeline
 
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora

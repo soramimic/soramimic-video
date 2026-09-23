@@ -1,5 +1,12 @@
 # Third-party notices
 
+## Singing score library
+
+Lyric-to-note correspondence uses [Soramimic Score](https://github.com/jiroshimaya/soramimic-score),
+licensed under [MIT](https://github.com/jiroshimaya/soramimic-score/blob/main/LICENSE).
+Its dependencies and optional models retain their own licenses, as described in its
+[third-party notices](https://github.com/jiroshimaya/soramimic-score/blob/main/THIRD_PARTY_NOTICES.md).
+
 ## Optional audio-analysis models
 
 The optional Kana Whisper checkpoint is used only to rank closed pronunciation
