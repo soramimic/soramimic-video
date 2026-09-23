@@ -392,7 +392,8 @@ def reading_candidates(text: str) -> list[str]:
     yomi の既定読みと UniDic N-best の発音形を候補にする。
     N-best は上限付きで、既定読みを先頭に保ちながらモーラ数を分散させ、
     長音正規化後の重複を除く。
-    候補が複数の行は音響スコア(CTC)で判定する(mora_align.align_moras_with_variants)。
+    音源解析では複数候補をKanaWhisperの音声認識結果と照合して選ぶ。
+    ReazonかなCTCは選択した読みの発音時刻を推定し、読み候補の選択には使わない。
     ルビ注釈のある区間は両エンジンで同じ(指定)読みになるので、候補は増えない。
     """
     yomi = _yomi_candidates_with_ruby(text)
