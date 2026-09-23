@@ -27,7 +27,7 @@ def _json_compatible(value: Any) -> Any:
 def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
     """Apply a version-1 realization atomically; unresolved units need editing.
 
-    Import and playback do not require an inference model or wav_to_xf package.
+    Import and playback do not require an inference model.
     Acoustic confidence and synthesis interpolation remain distinct metadata.
     """
     if type(layers.get("schema_version")) is not int or layers["schema_version"] != 1:

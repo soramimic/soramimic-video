@@ -78,12 +78,11 @@ def _torch_device(device: str | None) -> str:
 
 def _require_audio_pipeline() -> None:
     try:
-        from wav_to_xf.pipeline import run_stage3_document  # noqa: F401
-        from wav_to_xf.realization import compile_realization  # noqa: F401
+        from soramimic_score import compile_score  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
-            "音源解析にはwav-to-xfパッケージが必要です。"
-            "利用可能なローカルチェックアウトを uv pip install <checkout> で追加してください。"
+            "音源解析にはsoramimic-scoreパッケージが必要です。"
+            "uv sync --extra audio で依存ライブラリをインストールしてください。"
         ) from exc
 
 

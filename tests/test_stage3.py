@@ -2,6 +2,32 @@ from soramimic_video.audio_melody import MelodyNote
 from soramimic_video.stage3 import _snap_whisper_windows_to_sheetsage_rests
 
 
+def test_score_library_runs_without_a_legacy_pipeline_installation(monkeypatch):
+    import builtins
+
+    from soramimic_video.analyze_audio import _require_audio_pipeline
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.stage3 import build_stage3_layers
+
+    original_import = builtins.__import__
+
+    def no_legacy(name, *args, **kwargs):
+        if name == "wav_to_xf" or name.startswith("wav_to_xf."):
+            raise ImportError("legacy pipeline must not be used")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_legacy)
+    _require_audio_pipeline()
+    observations, score = build_stage3_layers(
+        ["空"], ["ソラ"],
+        [AlignedMora(0, 0, "ソ", .05, .15, .8), AlignedMora(0, 1, "ラ", .3, .4, .8)],
+        [MelodyNote(0, .25, 60), MelodyNote(.25, .5, 62)],
+    )
+    assert type(observations).__module__ == "soramimic_score.ir"
+    assert [slot.kana for slot in score.synthesis_plan] == ["ソ", "ラ"]
+    assert not score.unresolved_unit_ids
+
+
 def test_whisper_windows_snap_to_nearest_eligible_sheetsage_rests():
     windows = [(0.0, 1.0), (1.1, 2.0), (2.1, 3.0)]
     notes = [

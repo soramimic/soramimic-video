@@ -26,6 +26,7 @@ dependencies = [
     "mecab-python3>=1.0",
     "unidic-lite>=1.0",
     "kanasim==0.0.11",
+    "soramimic-score==0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -119,5 +120,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 
 [tool.uv.sources]
+soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "d47b654610e774eab4440c4ef652621e2c74e044" }
 soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi" }
 soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "6fd96e490111cb9d9dcb6dcb58c886bf0aa8506c" }

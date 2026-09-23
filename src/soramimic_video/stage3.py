@@ -1,4 +1,4 @@
-"""Bridge local acoustic observations into wav-to-xf Stage 3."""
+"""Bridge acoustic observations into Soramimic Score correspondence."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from wav_to_xf import IntermediateRepresentation, Realization
+    from soramimic_score import IntermediateRepresentation, Realization
 
     from .audio_melody import MelodyNote
     from .mora_align import AlignedMora, CTCEmissions
@@ -76,7 +76,7 @@ def build_stage3_layers(
     ctc_emissions: CTCEmissions | None = None,
 ) -> tuple[IntermediateRepresentation, Realization]:
     """Use every SheetSage candidate and explicit mora CTC peak in Stage 3."""
-    from wav_to_xf import (
+    from soramimic_score import (
         Boundary,
         Evidence,
         LyricSpan,
@@ -86,8 +86,8 @@ def build_stage3_layers(
         ReadingCandidate,
         VocalizationReattack,
         build_known_lyrics_document,
+        compile_score,
     )
-    from wav_to_xf.pipeline import run_stage3_document
 
     if len(line_texts) != len(selected_readings) or not line_texts:
         raise ValueError("Stage 3には同数の歌詞行と読みが必要です")
@@ -204,7 +204,7 @@ def build_stage3_layers(
                 )
                 for event in raw_events
             )
-    run = run_stage3_document(
+    score = compile_score(
         document,
         config=NoteRunConfig(
             whisper_boundary_cost_per_sec2=_WHISPER_BOUNDARY_COST_PER_SEC2,
@@ -219,4 +219,4 @@ def build_stage3_layers(
             reattacks_by_utterance if enable_repeated_vocalization else None
         ),
     )
-    return run.document, run.realization
+    return score.observations, score.score

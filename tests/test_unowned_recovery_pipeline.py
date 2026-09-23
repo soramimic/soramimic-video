@@ -6,8 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("wav_to_xf.pipeline")
-
 
 @pytest.mark.parametrize(
     ("retry_texts", "expected_text", "selected_source", "note_count", "kana_texts"),
