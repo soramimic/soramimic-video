@@ -295,6 +295,105 @@ def test_known_lyrics_audio_path_only_calls_whisper_for_adjustment(monkeypatch, 
         assert analysis["lyric_adjustment"]["decisions"][-1]["operation"] == "remove"
 
 
+@pytest.mark.parametrize("adjust", [False, True])
+@pytest.mark.parametrize("scenario", ["correction", "conflict", "empty", "ruby"])
+def test_known_lyrics_kana_selection_is_independent_of_line_adjustment(
+    monkeypatch, tmp_path, adjust, scenario,
+):
+    from soramimic_video import (
+        audio_melody,
+        kana_whisper,
+        known_lyrics,
+        mora_align,
+        reading,
+        separation,
+        transcribe,
+        vocal_activity,
+    )
+    from soramimic_video.analyze_audio import analyze_audio
+    from soramimic_video.audio_melody import MelodyNote
+    from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.ruby import strip_ruby
+    from soramimic_video.transcribe import TranscribedLine
+
+    monkeypatch.delenv("SORAMIMIC_AUDIO_INFERENCE_URL", raising=False)
+    audio, vocals = tmp_path / "input.wav", tmp_path / "vocals.wav"
+    supplied = "｜明日《あす》" if scenario == "ruby" else "明日"
+    original = f"余分な行\n{supplied}" if adjust else supplied
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text(original, encoding="utf-8")
+    lyric_calls, kana_calls, alignment_calls = [], [], []
+
+    def recognize(*_args, **_kwargs):
+        assert adjust, "line adjustment off must bypass lyric transcription"
+        lyric_calls.append(True)
+        return [TranscribedLine(0, 0.6, "明日")]
+
+    real_candidates = reading.reading_candidates
+    monkeypatch.setattr(reading, "reading_candidates", lambda text: (
+        real_candidates(text) if scenario == "ruby" else ["アシタ", "アス"]
+    ))
+    monkeypatch.setattr(transcribe, "transcribe_lines", recognize)
+    monkeypatch.setattr(known_lyrics, "text_to_kana", strip_ruby)
+    monkeypatch.setattr(separation, "separate", lambda *_args: (
+        vocals, tmp_path / "no_vocals.wav",
+    ))
+    monkeypatch.setattr(vocal_activity, "measure_vocal_activity", lambda *_args: (
+        SimpleNamespace(lines=[SimpleNamespace(supported=True)])
+    ))
+    monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
+        info=lambda _path: SimpleNamespace(duration=1.0),
+    ))
+    monkeypatch.setattr(mora_align, "compute_emissions", lambda *_args: object())
+
+    def align(path, variants, **kwargs):
+        assert path == vocals
+        assert kwargs["line_windows"] is None
+        selected = variants[0][0]
+        alignment_calls.append("".join(selected))
+        return ([AlignedMora(0, index, mora, index * .2, (index + 1) * .2, .8)
+                 for index, mora in enumerate(selected)], [0])
+
+    def recognize_kana(path, windows, device):
+        assert scenario != "ruby", "an explicit single reading needs no reranking"
+        assert windows == [(0.0, 1.0)]
+        assert device == "cpu"
+        kana_calls.append(path)
+        return ["" if scenario == "empty" else
+                "アシタ" if scenario == "conflict" and path == vocals else "アス"]
+
+    monkeypatch.setattr(mora_align, "align_moras_with_variants", align)
+    monkeypatch.setattr(kana_whisper, "transcribe_kana_windows", recognize_kana)
+    monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {"sheetsage2": True})
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *_args, **_kwargs: [
+        MelodyNote(index * .2, (index + 1) * .2, 60 + index) for index in range(3)
+    ])
+    project_dir = tmp_path / "project"
+    project = analyze_audio(audio, project_dir, lyrics_path=lyrics,
+                            adjust_lyrics=adjust, device="cpu")
+
+    expected = "アス" if scenario in {"correction", "ruby"} else "アシタ"
+    assert project.lyric_layers["canonical_text"] == "明日"
+    assert project.lyric_layers["canonical"][0]["kana"] == expected
+    assert "".join(note.kana for note in project.notes) == expected
+    assert lyrics.read_text(encoding="utf-8") == original
+    assert len(lyric_calls) == int(adjust)
+    assert alignment_calls == (["アシタ", "アス"] if scenario == "correction" else [expected])
+    analysis = json.loads((project_dir / "analyze_audio/analysis.json").read_text())
+    assert analysis["lyric_asr_used"] is adjust
+    assert analysis["reading_asr_used"] is (scenario != "ruby")
+    assert set(kana_calls) == ({audio, vocals} if scenario != "ruby" else set())
+    if scenario != "ruby":
+        evidence = json.loads((project_dir / "analyze_audio/reading.json").read_text())
+        assert evidence["sources"] == ["original-mix", "separated-vocals"]
+        assert evidence["lines"][0]["selected_index"] == int(scenario == "correction")
+        assert evidence["lines"][0]["reason"] == {
+            "correction": "kana-evidence",
+            "conflict": "conflicting-evidence",
+            "empty": "no-evidence",
+        }[scenario]
+
+
 def test_known_lyrics_reranks_connected_english_with_fewer_moras(
     monkeypatch, tmp_path,
 ):
