@@ -897,6 +897,13 @@
         <input type="file" id="lyrics-file" accept=".txt,.md,text/plain,text/markdown">
         <p class="hint" id="lyrics-file-name" role="status" hidden></p>
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
+        <div id="adjust-lyrics-panel" hidden>
+          <label class="lyrics-recognition-toggle" for="adjust-lyrics">
+            <input type="checkbox" id="adjust-lyrics" aria-describedby="adjust-lyrics-hint">
+            音源に合わせて歌詞を削除・補完
+          </label>
+          <p class="hint" id="adjust-lyrics-hint">行単位で、歌われていない行を除き、繰り返しや不足する行を補います。認識ミスで誤って変更される場合があります。オフなら入力した歌詞をそのまま使います。</p>
+        </div>
       </div>
     </div>
     <div class="upload-use-notice" id="upload-use-notice" hidden>
@@ -3643,6 +3650,8 @@ function appendSongLyrics(form) {
     form.append("lyrics_file", $("lyrics-file").files[0]);
   }
   form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");
+  form.append("adjust_lyrics", !automaticLyricsEnabled()
+    && !$("adjust-lyrics").disabled && $("adjust-lyrics").checked ? "true" : "false");
 }
 
 function syncLyricsRecognition() {
@@ -3656,6 +3665,8 @@ function syncLyricsRecognition() {
   $("lyrics-correction-panel").hidden = automatic;
   $("lyrics").required = !automatic && !$("lyrics-file").files?.[0];
   $("lyrics-mode-hint").hidden = audio;
+  $("adjust-lyrics-panel").hidden = !audio || automatic;
+  $("adjust-lyrics").disabled = !audio || automatic;
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
 }
 
@@ -3663,6 +3674,9 @@ $("auto-lyrics").addEventListener("change", () => {
   syncLyricsRecognition();
   clearEditorFile();
   scheduleMidiCheck();
+});
+$("adjust-lyrics").addEventListener("change", () => {
+  clearEditorFile();
 });
 let lyricsFileReadSequence = 0;
 async function loadLyricsFile(file) {

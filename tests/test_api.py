@@ -183,7 +183,8 @@ def test_rejects_invalid_audio_submission_id(client):
     assert res.json()["detail"] == "送信IDが不正です"
 
 
-def test_manual_correct_lyrics_mode_is_persisted(client):
+@pytest.mark.parametrize("adjust", [False, True])
+def test_manual_correct_lyrics_mode_is_persisted(client, adjust):
     wav = fake_wav()
     res = client.post(
         "/api/jobs",
@@ -192,12 +193,14 @@ def test_manual_correct_lyrics_mode_is_persisted(client):
             "wordlist": "stations",
             "auto_lyrics": "false",
             "lyrics": "正しい歌詞",
+            "adjust_lyrics": str(adjust).lower(),
         },
     )
     assert res.status_code == 200, res.text
     body = wait_done(client, res.json()["id"])
     job = client.app.state.manager.jobs[body["id"]]
     assert body["params"]["auto_lyrics"] is False
+    assert body["params"]["adjust_lyrics"] is adjust
     assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正しい歌詞"
 
 
@@ -209,6 +212,18 @@ def test_manual_correct_lyrics_mode_requires_lyrics(client):
     )
     assert res.status_code == 422
     assert "正式な元歌詞" in res.json()["detail"]
+
+
+@pytest.mark.parametrize("kind,automatic", [("audio", True), ("midi", False)])
+def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic):
+    content = fake_wav() if kind == "audio" else FAKE_MIDI
+    res = client.post(
+        "/api/jobs", files={kind: ("input.wav" if kind == "audio" else "input.mid", content)},
+        data={"wordlist": "stations", "lyrics": "正しい歌詞",
+              "auto_lyrics": str(automatic).lower(), "adjust_lyrics": "true"},
+    )
+    assert res.status_code == 422
+    assert "音源と入力歌詞" in res.json()["detail"]
 
 
 def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path):
@@ -475,7 +490,8 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
         api_mod.run_pipeline(job, {})
 
 
-def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monkeypatch):
+@pytest.mark.parametrize("adjust", [False, True])
+def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monkeypatch, adjust):
     from soramimic_video import analyze_audio as analyze_audio_mod
 
     class ReachedAnalyzer(Exception):
@@ -489,6 +505,7 @@ def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monke
         assert audio_path == audio
         assert project_dir == tmp_path
         assert kwargs["lyrics_path"] == lyrics
+        assert kwargs["adjust_lyrics"] is adjust
         assert callable(kwargs["progress"])
         raise ReachedAnalyzer
 
@@ -496,7 +513,7 @@ def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monke
     job = api_mod.Job(
         id="wav-correct-lyrics",
         dir=tmp_path,
-        params={"input_kind": "audio", "auto_lyrics": False},
+        params={"input_kind": "audio", "auto_lyrics": False, "adjust_lyrics": adjust},
     )
 
     with pytest.raises(ReachedAnalyzer):

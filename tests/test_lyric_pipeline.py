@@ -241,16 +241,23 @@ def test_initial_pure_repetition_preserves_observed_attacks_without_local_retry(
     assert normalization["adjustment"] == "unchanged"
 
 
-def test_known_lyrics_audio_path_never_calls_whisper(monkeypatch, tmp_path):
-    from soramimic_video import audio_melody, mora_align, reading, transcribe
+@pytest.mark.parametrize("adjust", [False, True])
+def test_known_lyrics_audio_path_only_calls_whisper_for_adjustment(monkeypatch, tmp_path, adjust):
+    from soramimic_video import audio_melody, known_lyrics, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
+    from soramimic_video.transcribe import TranscribedLine
 
-    def forbidden(*args, **kwargs):
-        pytest.fail("known lyrics must not call ASR")
+    calls = []
 
-    monkeypatch.setattr(transcribe, "transcribe_lines", forbidden)
+    def recognize(*args, **kwargs):
+        assert adjust, "known lyrics must not call ASR without explicit adjustment"
+        calls.append(True)
+        return [TranscribedLine(0.0, .6, "かき")]
+
+    monkeypatch.setattr(transcribe, "transcribe_lines", recognize)
+    monkeypatch.setattr(known_lyrics, "text_to_kana", lambda text: text)
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
@@ -268,15 +275,24 @@ def test_known_lyrics_audio_path_never_calls_whisper(monkeypatch, tmp_path):
         audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
     )
     lyrics = tmp_path / "lyrics.txt"
-    lyrics.write_text("かき", encoding="utf-8")
+    original = "余分な行\nかき" if adjust else "かき"
+    lyrics.write_text(original, encoding="utf-8")
     value = analyze_audio(
         tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
-        device="cpu", skip_separation=True,
+        device="cpu", skip_separation=True, adjust_lyrics=adjust,
     )
     assert value.lyric_layers["canonical_text"] == "かき"
     assert [n.kana for n in value.notes] == ["カ", "キ"]
     assert all(note.pitch_confidence is None for note in value.notes)
     assert [x["confidence"] for x in value.lyric_layers["performed"]] == [0.75, 0.65]
+    assert len(calls) == int(adjust)
+    assert lyrics.read_text(encoding="utf-8") == original
+    analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
+    assert analysis["lyric_asr_used"] is adjust
+    assert analysis["adjust_lyrics"] is adjust
+    if adjust:
+        assert value.lyric_layers["lyric_adjustment"]["supplied_lines"] == ["余分な行", "かき"]
+        assert analysis["lyric_adjustment"]["decisions"][-1]["operation"] == "remove"
 
 
 def test_known_lyrics_reranks_connected_english_with_fewer_moras(

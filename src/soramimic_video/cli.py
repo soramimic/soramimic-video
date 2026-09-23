@@ -74,6 +74,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
         Path(args.audio),
         Path(args.project),
         lyrics_path=Path(args.lyrics) if args.lyrics else None,
+        adjust_lyrics=args.adjust_lyrics,
         bpm=args.bpm,
         whisper_model=args.whisper_model,
         skip_separation=args.no_separation,
@@ -515,10 +516,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
     p.add_argument("--bpm", type=float, default=120.0, help="tick換算用の固定BPM")
+    p.add_argument("--adjust-lyrics", action="store_true",
+                   help="音源に合わせ、入力歌詞を行単位で削除・補完する（--lyrics必須）")
     p.add_argument(
         "--whisper-model",
         default="large-v3",
-        help="歌詞認識用Whisperモデル(faster-whisper)。--lyrics指定時は未使用",
+        help="歌詞認識用Whisperモデル。歌詞指定時は--adjust-lyricsを選んだ場合だけ使用",
     )
     p.add_argument(
         "--no-separation",
