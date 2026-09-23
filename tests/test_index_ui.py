@@ -2392,6 +2392,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
             "function ownSongFile()",
             "function automaticLyricsEnabled()",
             "function songLyricsForRequest()",
+            "function appendSongLyrics(form)",
             "function syncLyricsRecognition()",
         )
     )
@@ -2423,12 +2424,32 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal($("lyrics").required, false);
         assert.equal(automaticLyricsEnabled(), true);
         assert.equal(songLyricsForRequest(), "");
+        assert.equal($("adjust-lyrics").disabled, true);
         $("auto-lyrics").checked = false;
         syncLyricsRecognition();
         assert.equal($("lyrics-correction-panel").hidden, false);
         assert.equal($("lyrics").required, true);
         assert.equal(automaticLyricsEnabled(), false);
         assert.equal(songLyricsForRequest(), "manual lyrics");
+        assert.equal($("adjust-lyrics-panel").hidden, false);
+        assert.equal($("adjust-lyrics").disabled, false);
+        let values = new Map();
+        const form = {append: (key, value) => values.set(key, value)};
+        appendSongLyrics(form);
+        assert.equal(values.get("adjust_lyrics"), "false");
+        $("adjust-lyrics").checked = true;
+        appendSongLyrics(form);
+        assert.equal(values.get("adjust_lyrics"), "true");
+        $("auto-lyrics").checked = true;
+        syncLyricsRecognition();
+        appendSongLyrics(form);
+        assert.equal(values.get("adjust_lyrics"), "false");
+        $("auto-lyrics").checked = false;
+        $("midi").files = [{name: "song.mid"}];
+        syncLyricsRecognition();
+        appendSongLyrics(form);
+        assert.equal($("adjust-lyrics-panel").hidden, true);
+        assert.equal(values.get("adjust_lyrics"), "false");
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

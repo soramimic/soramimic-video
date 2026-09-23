@@ -802,6 +802,7 @@ def analyze_audio(
     skip_separation: bool = False,
     device: str | None = None,
     progress: Callable[[float], None] | None = None,
+    adjust_lyrics: bool = False,
 ) -> Project:
     from .mora_align import (
         CTCWindowCapacityError,
@@ -810,7 +811,10 @@ def analyze_audio(
     )
     from .reading import automatic_reading_candidates, reading_candidates
 
+    if adjust_lyrics and lyrics_path is None:
+        raise ValueError("歌詞の削除・補完には入力歌詞が必要です")
     _require_audio_pipeline()
+    lyric_adjustment = None
     emissions = None
     recognized_windows = None
     recognition_mode = None
@@ -858,7 +862,8 @@ def analyze_audio(
 
     # Audio-analysis jobs depend only on the uploaded mix. Submit them before waiting:
     # Demucs vocals unblock CTC later, while its no_vocals output is retained for mix.
-    # Known lyrics deliberately omit Whisper. The loopback service serializes CUDA
+    # Known lyrics omit Whisper unless line adjustment is explicitly enabled.
+    # The loopback service serializes CUDA
     # work according to its existing single-worker priority/capacity policy.
     accompaniment: Path | None = None
     prefetch_audio_models = capabilities["sheetsage2"]
@@ -873,7 +878,7 @@ def analyze_audio(
                 sheetsage_device,
                 lambda value: report(0.01 + value * 0.47),
                 run_separation=not skip_separation,
-                run_whisper=lyrics_path is None,
+                run_whisper=lyrics_path is None or adjust_lyrics,
                 shared_inference=shared_inference,
             )
         )
@@ -1008,6 +1013,26 @@ def analyze_audio(
         ]
         line_texts = [ln for ln in line_texts if ln]
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)
+        if adjust_lyrics:
+            from .known_lyrics import adjust_supplied_lines
+            from .transcribe import transcribe_lines
+
+            if sheetsage_notes is None:
+                sheetsage_notes = _run_sheetsage(
+                    audio_path, project_dir, sheetsage_device,
+                    lambda value: report(0.22 + value * 0.26),
+                )
+                sheetsage_was_run = True
+            if sheetsage_notes is None:
+                raise RuntimeError("歌詞の削除・補完にはSheetSage2モデル設定が必要です")
+            recognized = prefetched_lines if prefetched_lines is not None else transcribe_lines(
+                audio_path, whisper_model, device or "auto", vad_filter=False,
+                condition_on_previous_text=False,
+            )
+            line_texts, lyric_adjustment = adjust_supplied_lines(
+                line_texts, recognized, sheetsage_notes,
+                vocals=None if skip_separation else vocals,
+            )
     else:
         from .semantic_lyrics import (
             apply_vocal_activity_support,
@@ -1108,8 +1133,8 @@ def analyze_audio(
         recognition_mode = "whisper-mix-semantic-gate"
         if not retained:
             raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
-    # 3. カナ化 + forced alignment。正式歌詞がある場合、通常Whisperによる
-    # 表層認識を通さない。KanaWhisperは文字列を書き換えず、ルビ・辞書から
+    # 3. カナ化 + forced alignment。正式歌詞の行は、明示的な削除・補完を除いて
+    # Whisperで変更しない。KanaWhisperは文字列を書き換えず、ルビ・辞書から
     # 得た閉じた発音候補の再順位付けだけに使う。
     # 元歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。カナ化には記法つきの
     # 行を渡し、字幕・表示に使うテキスト(line_texts)は素テキストに直しておく。
@@ -2503,6 +2528,11 @@ def analyze_audio(
         if decision.status != "accepted"
     ]
     limitations = []
+    if lyric_adjustment is not None:
+        limitations.append(
+            "入力歌詞を音声認識に合わせて行単位で削除・補完しました。"
+            "認識ミスで誤って変更される場合があります。lyric_adjustmentを確認してください。"
+        )
     if recognition_mode is not None:
         limitations.append(
             "未知歌詞はWhisperによる推定です。recognition.jsonで認識結果を確認できます。"
@@ -2531,13 +2561,16 @@ def analyze_audio(
                 "schema_version": 5,
                 "mode": mode,
                 "official_lyrics": lyrics_path is not None,
-                "asr_used": lyrics_path is None or reading_asr_used,
-                "lyric_asr_used": lyrics_path is None,
+                "asr_used": lyrics_path is None or adjust_lyrics or reading_asr_used,
+                "lyric_asr_used": lyrics_path is None or adjust_lyrics,
+                "adjust_lyrics": adjust_lyrics,
+                "lyric_adjustment": lyric_adjustment,
                 "reading_asr_used": reading_asr_used,
                 "audio_pipeline": "stage3",
                 "inference_roles": {
                     "lyrics": f"whisper-{whisper_model}-original-mix"
                     if lyrics_path is None
+                    else "known-lyrics-with-audio-adjustment" if adjust_lyrics
                     else "known-lyrics",
                     "mora_timing": (
                         "reazon-kana-ctc-input-audio"
@@ -2618,6 +2651,8 @@ def analyze_audio(
             document.to_json(), encoding="utf-8"
         )
     layer_data = layers.to_dict()
+    if lyric_adjustment is not None:
+        layer_data["lyric_adjustment"] = lyric_adjustment
     edge_spoken_utterance_ids: set[str] = set()
     if recognition_mode is not None:
         supported_lines = {

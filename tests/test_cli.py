@@ -12,6 +12,15 @@ def test_synthesize_accepts_prettypitch_backend():
     assert args.synthesizer == "prettypitch"
 
 
+def test_audio_lyric_adjustment_is_opt_in():
+    parser = build_parser()
+    argv = [
+        "analyze-audio", "--audio", "input.wav", "--project", "work/song", "--lyrics", "lyrics.txt",
+    ]
+    assert parser.parse_args(argv).adjust_lyrics is False
+    assert parser.parse_args(argv + ["--adjust-lyrics"]).adjust_lyrics is True
+
+
 def test_edit_timing_accepts_full_audio_overlay_options():
     args = build_parser().parse_args([
         "edit-timing", "--project", "work/song",

@@ -124,8 +124,12 @@ uv run soramimic-video serve
 「曲をアップロード」で戻れます。入力方法を切り替えると前の曲選択は解除されます。
 形式は拡張子とファイル内容から自動で判定し、
 圧縮音声は解析前にPCM WAVへ変換します。持ち込み音源には正式な元歌詞を
-画面へ入力するか、UTF-8のテキストファイルとして同時にアップロードします。正式歌詞は
-正解文字列としてforced alignmentし、ASRで書き換えません。音源分離・タイミング推定・音高推定を
+画面へ入力するか、UTF-8のテキストファイルとして同時にアップロードできます。
+「歌詞を自動認識」をオフにすると、入力した歌詞をそのまま使います。
+「音源に合わせて歌詞を削除・補完」をオンにした場合だけ、音声認識と照合して、
+歌われていない行を除き、繰り返しや不足する行を補います。補正は行単位で、対応する行の
+表記は保ちます。認識ミスによる誤った変更も起こり得るため、結果を確認してください。
+音源分離・タイミング推定・音高推定を
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
 
@@ -174,6 +178,12 @@ uv run soramimic-video analyze-audio --audio song.wav --project work/song
 uv run soramimic-video apply-lyric-layers --project work/song --layers work/realization.json
 uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
 ```
+
+入力歌詞を音源に合わせる場合は、`analyze-audio`に
+`--lyrics lyrics.txt --adjust-lyrics`を付けます。元の歌詞ファイルは変更しません。
+APIでは音源入力・`auto_lyrics=false`とともに`adjust_lyrics=true`を指定します（既定はfalse）。
+変更内容は解析結果の`lyric_adjustment`に記録され、公開モードでは他の解析中間物と
+同じく処理終了時に削除されます。
 
 未知歌詞では原音mixをWhisper large-v3（既定）のVADなし・前セグメント文脈なしの単一パスで認識します。
 対応区間にSheetSage2ノートがなく、かつ認識全文が限定的な視聴案内・字幕・クレジット文型に
