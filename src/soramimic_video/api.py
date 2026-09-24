@@ -158,6 +158,11 @@ DEFAULT_EDITOR_DIST = REPO_ROOT / "external" / "soramimic" / "frontend" / "dist"
 STATUS_FILENAME = "status.json"
 THROUGHPUT_FILENAME = "synthesize-throughput.json"
 USAGE_METRICS_FILENAME = "usage-metrics.json"
+WEB_ANALYTICS_HOST = "video.soramimic.com"
+WEB_ANALYTICS_SNIPPET = (
+    '<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js" '
+    'data-cf-beacon=\'{"token":"541b49daf9754c12ba5e434047126045"}\'></script>'
+)
 QUEUE_WAIT_BUCKETS = (1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0)
 JOB_DURATION_BUCKETS = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0)
 STAGE_DURATION_BUCKETS = (1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0)
@@ -2734,8 +2739,11 @@ def create_app(
     editor_available = (editor_root / "editor.html").is_file()
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    def index(request: Request) -> str:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        if request.url.hostname == WEB_ANALYTICS_HOST:
+            return html.replace("</body>", f"{WEB_ANALYTICS_SNIPPET}\n</body>", 1)
+        return html
 
     @app.get("/guidelines", response_class=HTMLResponse)
     def guidelines(wordlist: str = "") -> str:
