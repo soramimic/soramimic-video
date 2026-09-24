@@ -1,4 +1,5 @@
 import copy
+import json
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -57,9 +58,17 @@ def test_surface_overlay_preserves_notes_readings_and_unmatched_input(monkeypatc
     assert asdict(Project.load(tmp_path)) == asdict(project)
 
 
-@pytest.mark.parametrize("evidence", ["アシタ", "", "conflict"])
-def test_asr_first_refines_only_acoustically_supported_known_reading(
-    monkeypatch, tmp_path, evidence,
+@pytest.mark.parametrize("evidence,text,asr,candidates,expected", [
+    ("アシタ", "明日", "明日", ["アシタ", "アス"], "アシタ"),
+    ("アス", "明日", "明日", ["アシタ", "アス"], "アス"),
+    ("", "明日", "明日", ["アシタ", "アス"], "アシタ"),
+    ("conflict", "明日", "明日", ["アシタ", "アス"], "アシタ"),
+    ("タツマチ", "たちまち", "たつまち", ["タチマチ"], "タチマチ"),
+    ("アス", "｜明日《あした》", "明日", ["アシタ"], "アシタ"),
+])
+@pytest.mark.parametrize("fail_final", [False, True])
+def test_supplied_candidates_are_fixed_before_final_alignment(
+    monkeypatch, tmp_path, evidence, text, asr, candidates, expected, fail_final,
 ):
     import sys
 
@@ -73,15 +82,18 @@ def test_asr_first_refines_only_acoustically_supported_known_reading(
         transcribe,
     )
 
-    monkeypatch.setattr(reading, "automatic_reading_candidates", lambda _: ["アス"])
-    monkeypatch.setattr(reading, "reading_candidates", lambda _: ["アシタ", "アス"])
+    automatic = "タツマチ" if asr == "たつまち" else "アス"
+    monkeypatch.setattr(reading, "automatic_reading_candidates", lambda _: [automatic])
+    monkeypatch.setattr(reading, "reading_candidates", lambda _: candidates)
     monkeypatch.setattr(known_lyrics, "text_to_kana", lambda _: "アシタ")
-    monkeypatch.setattr(analyze_audio, "_has_kana_choice", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        analyze_audio, "_has_kana_choice", lambda vv, **_k: any(len(v) > 1 for v in vv),
+    )
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *_a, **_k: [
-        TranscribedLine(0, 1, "明日")])
+        TranscribedLine(0, 1, asr)])
     monkeypatch.setattr(audio_melody, "configured_capabilities", lambda: {"sheetsage2": True})
     monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *_a, **_k: [
-        MelodyNote(i * .2, (i + 1) * .2, 60 + i) for i in range(3)])
+        MelodyNote(i * .2, (i + 1) * .2, 60 + i) for i in range(4)])
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda _: SimpleNamespace(duration=1)))
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *_a: object())
@@ -92,6 +104,8 @@ def test_asr_first_refines_only_acoustically_supported_known_reading(
     calls = []
     def align(_path, variants, **kwargs):
         calls.append((variants, kwargs["line_windows"]))
+        if fail_final and len(calls) == 2:
+            raise ValueError("insufficient frames")
         selected = variants[0][0]
         return ([mora_align.AlignedMora(0, i, k, i * .2, (i + 1) * .2, .9)
                  for i, k in enumerate(selected)], [0])
@@ -101,17 +115,48 @@ def test_asr_first_refines_only_acoustically_supported_known_reading(
                 if evidence == "conflict" else evidence]
     monkeypatch.setattr(kana_whisper, "transcribe_kana_windows", kana)
     lyrics = tmp_path / "lyrics.txt"
-    lyrics.write_text("明日\n遠い星", encoding="utf-8")
+    lyrics.write_text(text + "\n遠い星", encoding="utf-8")
     # Give the unrelated extra line a distinct reading so it remains unresolved.
     monkeypatch.setattr(known_lyrics, "text_to_kana", lambda text: (
         "トオイホシ" if text == "遠い星" else "アシタ"))
+    if fail_final:
+        with pytest.raises(RuntimeError, match="自動認識の読みには戻していません"):
+            analyze_audio.analyze_audio(tmp_path / "input.wav", tmp_path / "project",
+                                       lyrics_path=lyrics, device="cpu")
+        assert len(calls) == 2
+        record = json.loads((tmp_path / "project/analyze_audio/lyric_surface.json").read_text())
+        assert record["alignment_status"] == "failed"
+        assert record["reading_reviews"][0]["proposed"] == expected
+        return
     project = analyze_audio.analyze_audio(tmp_path / "input.wav", tmp_path / "project",
                                          lyrics_path=lyrics, device="cpu")
     overlay = project.lyric_layers["lyric_surface"]
     review = overlay["reading_reviews"][0]
-    expected = "アシタ" if evidence == "アシタ" else "アス"
     assert project.lines[0].canonical_kana == expected
-    assert review["status"] == ("applied" if evidence == "アシタ" else "unchanged")
+    assert review["status"] == "supplied-reading"
+    assert review["candidates"] == candidates
+    assert overlay["readings_fixed_before_alignment"] is True
     assert overlay["unused_supplied_indices"] == [1]
-    assert len(calls) == (2 if evidence == "アシタ" else 1)
+    assert len(calls) == 2  # provisional localization, then fixed final pronunciation
+    assert "".join(calls[-1][0][0][0]) == expected
+    assert project.lines[0].xf_surface == known_lyrics.strip_ruby(text)
     assert all(window == [(0, 1)] for _, window in calls)
+
+
+def test_split_and_merged_lines_prepare_authoritative_text(monkeypatch):
+    monkeypatch.setattr(known_lyrics, "text_to_kana", lambda text: text)
+    lines, texts, plan = known_lyrics.prepare_supplied_inputs(
+        [TranscribedLine(0, 1, "あおいそら"), TranscribedLine(1, 2, "しろいくも"),
+         TranscribedLine(3, 4, "ねこ")],
+        ["アオイソラ", "シロイクモ", "ネコ"], ["あおいそらしろいくも", "ほし"],
+    )
+    assert lines == [TranscribedLine(0, 2, "あおいそらしろいくも"), TranscribedLine(3, 4, "ねこ")]
+    assert texts == ["あおいそらしろいくも", "ねこ"]
+    assert plan["groups"][0]["asr_indices"] == [0, 1]
+    assert plan["groups"][1]["line_indices"] == [1]
+    assert plan["unused_supplied_indices"] == [1]
+    lines, texts, plan = known_lyrics.prepare_supplied_inputs(
+        lines[:1], ["アオイソラシロイクモ"], ["あおいそら", "しろいくも"],
+    )
+    assert texts == ["あおいそら\nしろいくも"]
+    assert plan["groups"][0]["supplied_indices"] == [0, 1]

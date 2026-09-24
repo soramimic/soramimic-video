@@ -5,7 +5,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from soramimic_score import LyricLine, SurfaceLine, adjust_known_lyrics, align_lyric_surface
+from soramimic_score import (
+    LyricLine,
+    SurfaceLine,
+    adjust_known_lyrics,
+    align_lyric_surface,
+    plan_lyric_inputs,
+)
 
 from .audio_melody import MelodyNote
 from .project import Project
@@ -13,6 +19,45 @@ from .reading import text_to_kana
 from .ruby import strip_ruby
 from .semantic_lyrics import coalesce_repeated_suffix_fragments, decide_recognized_lines
 from .transcribe import TranscribedLine
+
+
+def prepare_supplied_inputs(
+    recognized: list[TranscribedLine], readings: list[str], supplied: list[str],
+) -> tuple[list[TranscribedLine], list[str], dict[str, Any]]:
+    """Localize supplied text before fixing its reading and final CTC times.
+
+    Matched split/merged lines share one acoustic window. Raw input (including
+    ruby) and original ASR occurrence indices remain separate from final IDs.
+    """
+    plan = plan_lyric_inputs(
+        [SurfaceLine(line.text, kana, text_to_kana(line.text))
+         for line, kana in zip(recognized, readings, strict=True)],
+        [SurfaceLine(strip_ruby(text), text_to_kana(text)) for text in supplied],
+    )
+    plan["supplied_lines"] = supplied.copy()
+    plan.pop("acoustic_changes", None)
+    lines, reading_texts = [], []
+    for index, group in enumerate(plan["groups"]):
+        sources = [recognized[i] for i in group["asr_indices"]]
+        text = ("\n".join(supplied[i] for i in group["supplied_indices"])
+                if group["operation"] == "match" else sources[0].text)
+        lines.append(TranscribedLine(sources[0].start_sec, sources[-1].end_sec, strip_ruby(text)))
+        reading_texts.append(text)
+        group.update(line_ids=[index], start_sec=sources[0].start_sec,
+                     end_sec=sources[-1].end_sec)
+    return lines, reading_texts, plan
+
+
+def attach_supplied_inputs(project: Project, plan: dict[str, Any]) -> None:
+    """Attach finalized supplied-text provenance without changing the reading."""
+    if project.lyric_layers is None:
+        raise ValueError("音源解析の歌詞レイヤーが必要です")
+    for group_index, group in enumerate(plan["groups"]):
+        for index in group["line_indices"]:
+            line = project.lines[index]
+            line.original_text = group["display_text"]
+            line.original_line_index = group_index
+    project.lyric_layers["lyric_surface"] = plan
 
 
 def apply_supplied_surface(

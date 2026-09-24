@@ -572,7 +572,7 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
     assert analysis["audio_pipeline"] == "stage3"
     assert analysis["mode"] == "sheetsage2_stage3"
     assert analysis["inference_roles"] == {
-        "lyrics": "whisper-first-supplied-surface",
+        "lyrics": "asr-localized-supplied-lyrics",
         "mora_timing": "reazon-kana-ctc-input-audio",
         "reading": "yomi-unidic-default-reading",
         "notes": "sheetsage2-original-mix",
