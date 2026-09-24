@@ -74,6 +74,7 @@ def build_stage3_layers(
     whisper_line_windows: Sequence[tuple[float, float]] | None = None,
     enable_repeated_vocalization: bool = False,
     ctc_emissions: CTCEmissions | None = None,
+    fixed_reading_indices: frozenset[int] = frozenset(),
 ) -> tuple[IntermediateRepresentation, Realization]:
     """Use every SheetSage candidate and explicit mora CTC peak in Stage 3."""
     from soramimic_score import (
@@ -186,6 +187,8 @@ def build_stage3_layers(
         for index, (reading, window) in enumerate(
             zip(selected_readings, snapped_windows, strict=True)
         ):
+            if index in fixed_reading_indices:
+                continue
             moras = split_moras(reading)
             if (len(moras) < 2 or len(set(moras)) != 1
                     or moras[0] in {"ン", "ッ", "ー"}):

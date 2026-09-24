@@ -814,6 +814,7 @@ def analyze_audio(
     if adjust_lyrics and lyrics_path is None:
         raise ValueError("歌詞の削除・補完には入力歌詞が必要です")
     supplied_lyrics = None
+    supplied_overlay = None
     if lyrics_path is not None and not adjust_lyrics:
         supplied_lyrics = [line.strip() for line in lyrics_path.read_text(
             encoding="utf-8"
@@ -2375,6 +2376,79 @@ def analyze_audio(
                 chosen, reading_evidence, selected_variants, aligned,
             ) = prepare_automatic_alignment(retained_lines, "unowned-note-recovery")
 
+    # Automatic alignment above is provisional localization/recovery evidence.
+    # Fix matched supplied text and pronunciation before the FINAL alignment.
+    localized_asr_lines = retained_lines
+    if supplied_lyrics is not None:
+        from .known_lyrics import prepare_supplied_inputs
+
+        automatic_readings = [
+            "".join(variants[index])
+            for variants, index in zip(line_variants, chosen, strict=True)
+        ]
+        retained_lines, reading_texts, supplied_overlay = prepare_supplied_inputs(
+            retained_lines, automatic_readings, supplied_lyrics,
+        )
+        supplied_overlay["localization_reading_asr_used"] = bool(
+            reading_evidence is not None and reading_evidence["contexts"]
+        )
+        line_texts = [line.text for line in retained_lines]
+        line_variants = []
+        for text, group in zip(reading_texts, supplied_overlay["groups"], strict=True):
+            known_candidates = (reading_candidates(text) if group["operation"] == "match"
+                                else [automatic_readings[group["asr_indices"][0]]])
+            if not known_candidates or any(not split_moras(kana) for kana in known_candidates):
+                raise RuntimeError(
+                    "入力歌詞の読みを確定できませんでした。読みやルビを確認してください。"
+                )
+            line_variants.append([split_moras(kana) for kana in known_candidates])
+        recognized_windows = _recognized_line_windows(retained_lines)
+        chosen = [0] * len(line_variants)
+        reading_evidence = None
+        if _has_kana_choice(line_variants):
+            chosen, reading_evidence = _choose_readings_with_kana(
+                audio_path, vocals, line_texts, line_variants, recognized_windows,
+                device=device or "auto", shared_inference=shared_inference,
+            )
+        selected_variants = [[variants[index]] for variants, index in zip(
+            line_variants, chosen, strict=True
+        )]
+        reviews = []
+        for index, (group, options, choice) in enumerate(zip(
+            supplied_overlay["groups"], line_variants, chosen, strict=True
+        )):
+            finalized_kana = "".join(options[choice])
+            review = {
+                "asr_indices": group["asr_indices"], "line_indices": [index],
+                "before": group["acoustic_reading"], "proposed": finalized_kana,
+                "candidates": ["".join(option) for option in options],
+                "status": "supplied-reading" if group["operation"] == "match"
+                else "automatic-unmatched",
+            }
+            reviews.append(review)
+            group["original_acoustic_reading"] = group["acoustic_reading"]
+            group["acoustic_reading"] = finalized_kana
+        supplied_overlay["reading_reviews"] = reviews
+        supplied_overlay["readings_fixed_before_alignment"] = True
+        try:
+            aligned, _fixed_choices = align_moras_with_variants(
+                vocals, selected_variants, device=device, emissions=emissions,
+                phonetic_aliases=True, line_windows=recognized_windows,
+            )
+        except (ValueError, CTCWindowCapacityError) as exc:
+            supplied_overlay["alignment_status"] = "failed"
+            out = project_dir / ANALYZE_DIR
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "lyric_surface.json").write_text(
+                json.dumps(supplied_overlay, ensure_ascii=False, indent=1), encoding="utf-8",
+            )
+            raise RuntimeError(
+                "確定した入力歌詞の読みを音源区間に整列できませんでした。"
+                "自動認識の読みには戻していません。歌詞と音源の対応を確認してください。"
+            ) from exc
+        supplied_overlay["alignment_status"] = "complete"
+        recognition_windows_fallback = False
+
     expected_moras = sum(
         len(line[choice])
         for line, choice in zip(line_variants, chosen, strict=True)
@@ -2385,7 +2459,7 @@ def analyze_audio(
     if recognition_mode is not None:
         out = project_dir / ANALYZE_DIR
         out.mkdir(parents=True, exist_ok=True)
-        retained = retained_lines
+        retained = localized_asr_lines
         (out / "recognition.json").write_text(
             json.dumps(
                 {
@@ -2650,6 +2724,10 @@ def analyze_audio(
             whisper_line_windows=whisper_line_windows,
             enable_repeated_vocalization=whisper_line_windows is not None,
             ctc_emissions=emissions,
+            fixed_reading_indices=frozenset(
+                index for index, group in enumerate(supplied_overlay["groups"])
+                if group["operation"] == "match"
+            ) if supplied_overlay is not None else frozenset(),
         )
     except ValueError as exc:
         detail = (
@@ -2676,6 +2754,13 @@ def analyze_audio(
                 and decision.vocal_activity_support is True
             )
         }
+        if supplied_overlay is not None:
+            supported_lines.update(
+                id(retained_lines[index])
+                for index, group in enumerate(supplied_overlay["groups"])
+                if any(id(localized_asr_lines[i]) in supported_lines
+                       for i in group["asr_indices"])
+            )
         edge_spoken_utterance_ids = {
             canonical["utterance_id"]
             for canonical, line in zip(
@@ -2749,120 +2834,21 @@ def analyze_audio(
         encoding="utf-8",
     )
 
-    if supplied_lyrics is not None:
-        import copy
+    if supplied_overlay is not None:
+        from .known_lyrics import attach_supplied_inputs
 
-        from .known_lyrics import apply_supplied_surface
-
-        def refine_known_reading(index: int, text: str) -> dict[str, object]:
-            nonlocal raw_alignment, selected_readings, document, layer_data
-            from .ruby import has_ruby
-
-            baseline = selected_readings[index]
-            specified = reading_candidates(text)
-            explicit = has_ruby(text)
-            candidates = list(dict.fromkeys(specified if explicit else [baseline, *specified]))
-            review: dict[str, object] = {
-                "before": baseline, "candidates": candidates, "status": "unchanged",
-            }
-            if candidates == [baseline]:
-                return review
-            windows = _recognized_line_windows(retained_lines)
-            start, end = windows[index]
-            variants = [[split_moras(kana) for kana in candidates]]
-            if len(candidates) == 1:
-                choices = [0]
-                review["reason"] = "explicit-ruby"
-            else:
-                choices, evidence = _choose_readings_with_kana(
-                    audio_path, vocals, [strip_ruby(text)], variants, [(start, end)],
-                    device=device or "auto", shared_inference=shared_inference,
-                )
-                review["evidence"] = evidence
-            selected = candidates[choices[0]]
-            review["proposed"] = selected
-            if selected == baseline:
-                return review
-            try:
-                local_alignment, _ = align_moras_with_variants(
-                    vocals, [[split_moras(selected)]], device=device, emissions=emissions,
-                    phonetic_aliases=True, line_windows=[(start, end)],
-                )
-                if any(m.start_sec < start or m.end_sec > end for m in local_alignment):
-                    review["status"] = "outside-recognized-window"
-                    return review
-                proposed_alignment = sorted(
-                    [m for m in raw_alignment if m.line != index]
-                    + [replace(m, line=index) for m in local_alignment],
-                    key=lambda m: (m.line, m.mora),
-                )
-                proposed_readings = selected_readings.copy()
-                proposed_readings[index] = selected
-                proposed_document, proposed_layers = build_stage3_layers(
-                    line_texts, proposed_readings, proposed_alignment, sheetsage_notes,
-                    whisper_line_windows=whisper_line_windows,
-                    enable_repeated_vocalization=whisper_line_windows is not None,
-                    ctc_emissions=emissions,
-                )
-                data = proposed_layers.to_dict()
-                _recover_synthesis_units(data, edge_spoken_utterance_ids=edge_spoken_utterance_ids)
-                _continuize_spoken_synthesis_lines(data)
-                _omit_unresolved_synthesis_units(data)
-                for slot in data["synthesis_plan"]:
-                    if "sheetsage2-vocal" in slot.get("pitch_sources", []):
-                        slot["pitch_confidence"] = None
-                proposed_project = copy.deepcopy(project)
-                apply_lyric_layers(proposed_project, data)
-            except (ValueError, CTCWindowCapacityError) as exc:
-                review["status"] = "infeasible-local-alignment"
-                review["reason"] = type(exc).__name__
-                return review
-
-            def unaffected_plan(candidate: Project) -> list[tuple[object, ...]]:
-                return [(n.line, n.kana, n.start_sec, n.end_sec, n.midi_note,
-                         n.start_tick, n.end_tick, n.source)
-                        for n in candidate.notes if n.line != index]
-
-            if unaffected_plan(project) != unaffected_plan(proposed_project):
-                review["status"] = "would-change-other-lines"
-                return review
-            # A proposed reading must cover its entire line; never accept a
-            # pronunciation correction by silently dropping its difficult units.
-            target = data["canonical"][index]
-            target_units = {u["singing_unit_id"] for u in data["performed"]
-                            if set(u["mora_ids"]) & set(target["mora_ids"])}
-            if any(o["singing_unit_id"] in target_units for o in data["omissions"]):
-                review["status"] = "incomplete-local-synthesis"
-                return review
-            project.notes, project.lines = proposed_project.notes, proposed_project.lines
-            project.lyric_layers = proposed_project.lyric_layers
-            raw_alignment, selected_readings = proposed_alignment, proposed_readings
-            document, layer_data = proposed_document, data
-            review["status"] = "applied"
-            return review
-
-        overlay = apply_supplied_surface(project, supplied_lyrics, refine=refine_known_reading)
+        attach_supplied_inputs(project, supplied_overlay)
         (out / "lyric_surface.json").write_text(
-            json.dumps(overlay, ensure_ascii=False, indent=1), encoding="utf-8",
+            json.dumps(supplied_overlay, ensure_ascii=False, indent=1), encoding="utf-8",
         )
-        (out / "correspondence.json").write_text(document.to_json(), encoding="utf-8")
         analysis_data.update({
             "official_lyrics": True, "asr_used": True, "lyric_asr_used": True,
-            "lyric_surface": overlay,
-            "reading_asr_used": reading_asr_used or any(
-                "evidence" in row for row in overlay["reading_reviews"]
-            ),
-            "mora_count": len(raw_alignment),
-            "generation_quality": _generation_quality_assessment(layer_data),
+            "lyric_surface": supplied_overlay,
         })
-        analysis_data["inference_roles"]["lyrics"] = "whisper-first-supplied-surface"
-        analysis_data["sources"] = {
-            source: sum(n.source == source for n in project.notes)
-            for source in sorted({n.source for n in project.notes})
-        }
+        analysis_data["inference_roles"]["lyrics"] = "asr-localized-supplied-lyrics"
         analysis_data["limitations"].append(
-            "入力歌詞は認識結果に対応する表示として保持します。未対応の入力行は"
-            "歌われていないとは断定しません。読みの変更は音声で支持された行に限定します。"
+            "対応した入力歌詞から読みを確定し、その読みで最終整列しています。"
+            "未対応の入力行は未解決として残し、未対応の認識行は自動認識の読みを使います。"
         )
         analysis_path.write_text(
             json.dumps(analysis_data, ensure_ascii=False, indent=1), encoding="utf-8",
