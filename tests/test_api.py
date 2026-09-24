@@ -2249,6 +2249,17 @@ def test_index_declares_versioned_brand_favicon(client):
     assert '<link rel="icon" href="/logo-soramimic-symbol-v3.png">' in response.text
 
 
+def test_web_analytics_beacon_only_on_production_host(client):
+    production = client.get("/", headers={"host": "video.soramimic.com"})
+    assert production.status_code == 200
+    assert api_mod.WEB_ANALYTICS_SNIPPET in production.text
+
+    for hostname in ("dev-video.soramimic.com", "preview-video.soramimic.com"):
+        response = client.get("/", headers={"host": hostname})
+        assert response.status_code == 200
+        assert "static.cloudflareinsights.com/beacon.min.js" not in response.text
+
+
 def test_designer_wordmarks_are_public_versioned_transparent_png(client):
     from PIL import Image
 
