@@ -62,8 +62,15 @@ def test_simple_midi_check_uses_the_same_catalog_id(simple_client: TestClient):
 
 
 def test_simple_uses_bundled_lyrics_and_rejects_custom_inputs(
-    simple_client: TestClient, tmp_path: Path
+    simple_client: TestClient, monkeypatch
 ):
+    seen_lyrics: dict[str, str] = {}
+
+    def capture_lyrics(job, config):
+        seen_lyrics[job.id] = (job.dir / "lyrics.txt").read_text(encoding="utf-8")
+        return _fast_pipeline(job, config)
+
+    monkeypatch.setattr(api_mod, "run_pipeline", capture_lyrics)
     bundled = (api_mod.STATIC_DIR / "sample" / "furusato_lyrics.txt").read_text(
         encoding="utf-8"
     )
@@ -72,8 +79,14 @@ def test_simple_uses_bundled_lyrics_and_rejects_custom_inputs(
     # 照合済みMIDIに付属する歌詞へサーバー側で一意に戻す。
     normalized = _post_job(simple_client, lyrics="任意の歌詞")
     assert normalized.status_code == 200
-    saved = tmp_path / "jobs" / normalized.json()["id"] / "lyrics.txt"
-    assert saved.read_text(encoding="utf-8") == bundled
+    job_id = normalized.json()["id"]
+    for _ in range(500):
+        status = simple_client.get(f"/api/jobs/{job_id}").json()["status"]
+        if status in {"done", "error", "canceled"}:
+            break
+        time.sleep(0.01)
+    assert status == "done"
+    assert seen_lyrics[job_id] == bundled
     custom = simple_client.post(
         "/api/jobs",
         files={
