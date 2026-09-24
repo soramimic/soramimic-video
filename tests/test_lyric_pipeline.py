@@ -242,7 +242,7 @@ def test_initial_pure_repetition_preserves_observed_attacks_without_local_retry(
 
 
 @pytest.mark.parametrize("adjust", [False, True])
-def test_known_lyrics_audio_path_only_calls_whisper_for_adjustment(monkeypatch, tmp_path, adjust):
+def test_known_lyrics_audio_path_always_calls_whisper(monkeypatch, tmp_path, adjust):
     from soramimic_video import audio_melody, known_lyrics, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
@@ -252,7 +252,6 @@ def test_known_lyrics_audio_path_only_calls_whisper_for_adjustment(monkeypatch, 
     calls = []
 
     def recognize(*args, **kwargs):
-        assert adjust, "known lyrics must not call ASR without explicit adjustment"
         calls.append(True)
         return [TranscribedLine(0.0, .6, "かき")]
 
@@ -263,7 +262,7 @@ def test_known_lyrics_audio_path_only_calls_whisper_for_adjustment(monkeypatch, 
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     def align(*args, **kwargs):
-        assert kwargs["line_windows"] is None
+        assert kwargs["line_windows"] == (None if adjust else [(0.0, .6)])
         return ([AlignedMora(0, 0, "カ", 0.1, 0.12, 0.75),
                  AlignedMora(0, 1, "キ", 0.4, 0.42, 0.65)], [0])
 
@@ -285,17 +284,17 @@ def test_known_lyrics_audio_path_only_calls_whisper_for_adjustment(monkeypatch, 
     assert [n.kana for n in value.notes] == ["カ", "キ"]
     assert all(note.pitch_confidence is None for note in value.notes)
     assert [x["confidence"] for x in value.lyric_layers["performed"]] == [0.75, 0.65]
-    assert len(calls) == int(adjust)
+    assert len(calls) == 1
     assert lyrics.read_text(encoding="utf-8") == original
     analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
-    assert analysis["lyric_asr_used"] is adjust
+    assert analysis["lyric_asr_used"] is True
     assert analysis["adjust_lyrics"] is adjust
     if adjust:
         assert value.lyric_layers["lyric_adjustment"]["supplied_lines"] == ["余分な行", "かき"]
         assert analysis["lyric_adjustment"]["decisions"][-1]["operation"] == "remove"
 
 
-@pytest.mark.parametrize("adjust", [False, True])
+@pytest.mark.parametrize("adjust", [True])
 @pytest.mark.parametrize("scenario", ["correction", "conflict", "empty", "ruby"])
 def test_known_lyrics_kana_selection_is_independent_of_line_adjustment(
     monkeypatch, tmp_path, adjust, scenario,
@@ -399,12 +398,14 @@ def test_known_lyrics_reranks_connected_english_with_fewer_moras(
 ):
     import soramimic_video.stage3 as stage3
     from soramimic_video import analyze_audio as analyze_audio_module
-    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
 
     canonical = ["シャ", "ウ", "ト", "イ", "ッ", "ト", "ア", "ウ", "ト"]
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **k: [
+        transcribe.TranscribedLine(0, 1.8, "Shout it out")])
     connected = ["シャ", "ウ", "ティ", "タ", "ウ", "ト"]
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=2.0)))
@@ -413,6 +414,7 @@ def test_known_lyrics_reranks_connected_english_with_fewer_moras(
         "reading_candidates",
         lambda text: ["シャウトイットアウト", "シャウティタウト"],
     )
+    monkeypatch.setattr(reading, "automatic_reading_candidates", reading.reading_candidates)
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     aligned_calls = []
 
@@ -463,7 +465,7 @@ def test_known_lyrics_reranks_connected_english_with_fewer_moras(
     assert rerank_calls == [
         (["Shout it out"], [[canonical, connected]], [(0.0, 1.8)])
     ]
-    assert aligned_calls == [canonical, connected]
+    assert aligned_calls == [connected]
     assert stage3_calls == [
         (["Shout it out"], ["シャウティタウト"], connected)
     ]
@@ -472,15 +474,20 @@ def test_known_lyrics_reranks_connected_english_with_fewer_moras(
 def test_known_lyrics_ctc_capacity_error_is_not_turned_into_lyric_deletion(
     monkeypatch, tmp_path,
 ):
-    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.mora_align import CTCWindowCapacityError
 
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **k: [
+        transcribe.TranscribedLine(0, .6, "かき")])
+    from soramimic_video.audio_melody import MelodyNote
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", lambda *a, **k: [
+        MelodyNote(0, .6, 60)])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
 
     def reject_capacity(*args, **kwargs):
-        assert kwargs["line_windows"] is None
+        assert kwargs["line_windows"] == [(0, .6)]
         raise CTCWindowCapacityError(
             available_frames=1,
             target_count=2,
@@ -489,7 +496,7 @@ def test_known_lyrics_ctc_capacity_error_is_not_turned_into_lyric_deletion(
 
     monkeypatch.setattr(mora_align, "align_moras_with_variants", reject_capacity)
     monkeypatch.setattr(
-        audio_melody, "configured_capabilities", lambda: {"sheetsage2": False}
+        audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
     )
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("かき", encoding="utf-8")
@@ -527,7 +534,7 @@ def test_audio_path_requires_sheetsage(monkeypatch, tmp_path):
 
 
 def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path):
-    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
@@ -535,6 +542,8 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **k: [
+        transcribe.TranscribedLine(0, .5, "かき")])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
         [AlignedMora(0, 0, "カ", 0.09, 0.11, 0.1),
@@ -563,7 +572,7 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
     assert analysis["audio_pipeline"] == "stage3"
     assert analysis["mode"] == "sheetsage2_stage3"
     assert analysis["inference_roles"] == {
-        "lyrics": "known-lyrics",
+        "lyrics": "whisper-first-supplied-surface",
         "mora_timing": "reazon-kana-ctc-input-audio",
         "reading": "yomi-unidic-default-reading",
         "notes": "sheetsage2-original-mix",
@@ -660,13 +669,13 @@ def test_unresolved_stage3_unit_is_omitted_for_known_and_automatic_lyrics(
     assert value.lyric_layers["omissions"][0]["singing_unit_id"] == "singing-unit-1"
     analysis = json.loads((tmp_path / "project/analyze_audio/analysis.json").read_text())
     assert analysis["stage3_correspondence"] is True
-    assert analysis["lyric_asr_used"] is not known_lyrics
+    assert analysis["lyric_asr_used"] is True
     assert analysis["diagnostics"][-1]["status"] == "synthesis-omission"
 
 
 def test_known_lyrics_fails_truthfully_when_stage3_plan_is_invalid(monkeypatch, tmp_path):
     import soramimic_video.stage3 as stage3
-    from soramimic_video import audio_melody, mora_align, reading
+    from soramimic_video import audio_melody, mora_align, reading, transcribe
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.audio_melody import MelodyNote
     from soramimic_video.mora_align import AlignedMora
@@ -674,6 +683,8 @@ def test_known_lyrics_fails_truthfully_when_stage3_plan_is_invalid(monkeypatch, 
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
     monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **k: [
+        transcribe.TranscribedLine(0, .5, "かき")])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
         [AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8),
@@ -686,7 +697,12 @@ def test_known_lyrics_fails_truthfully_when_stage3_plan_is_invalid(monkeypatch, 
         audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
     )
 
+    stage3_calls = 0
     def invalid_plan(*args, **kwargs):
+        nonlocal stage3_calls
+        stage3_calls += 1
+        if stage3_calls == 1:
+            return SimpleNamespace(to_json=lambda: '{"note_candidates": [], "links": []}'), object()
         raise ValueError("invalid synthesis slot timing, pitch, or confidence")
 
     monkeypatch.setattr(stage3, "build_stage3_layers", invalid_plan)

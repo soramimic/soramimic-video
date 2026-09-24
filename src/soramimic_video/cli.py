@@ -521,7 +521,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--whisper-model",
         default="large-v3",
-        help="歌詞認識用Whisperモデル。歌詞指定時は--adjust-lyricsを選んだ場合だけ使用",
+        help="歌詞認識用Whisperモデル。歌詞指定時も音源との対応付けに使用",
     )
     p.add_argument(
         "--no-separation",
