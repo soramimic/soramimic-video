@@ -4,12 +4,17 @@ from soramimic_video.audio_melody import MelodyNote
 from soramimic_video.mora_align import AlignedMora
 from soramimic_video.semantic_lyrics import (
     apply_ctc_support,
+    apply_vocal_activity_support,
     coalesce_repeated_suffix_fragments,
     credit_recovery_windows,
     decide_recognized_line,
+    decide_recognized_lines,
+    is_pathological_repeated_vocalization,
     lyric_deficit_recoveries,
     non_lyric_template_family,
     normalize_recognized_text,
+    normalize_repeated_vocalization,
+    unowned_note_recovery_windows,
     vocalization_only,
 )
 from soramimic_video.transcribe import TranscribedLine
@@ -92,6 +97,107 @@ def test_template_matching_does_not_use_substrings_or_broad_end_rules(text):
     assert non_lyric_template_family(text) is None
 
 
+def test_contextual_credit_gate_requires_creator_like_value_for_video():
+    lines = [
+        TranscribedLine(0.0, 2.0, "映像 初音ミク"),
+        TranscribedLine(3.0, 5.0, "映像 ABC Studio"),
+        TranscribedLine(6.0, 8.0, "映像 南方研究所"),
+        TranscribedLine(9.0, 11.0, "映像 美しい未来"),
+        TranscribedLine(12.0, 14.0, "映像 未来"),
+        TranscribedLine(15.0, 17.0, "映像の中で君を見た"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+        "credits",
+        None,
+        None,
+        None,
+    ]
+    assert [decision.status for decision in decisions] == [
+        "rejected",
+        "rejected",
+        "rejected",
+        "unresolved",
+        "unresolved",
+        "unresolved",
+    ]
+
+
+def test_song_label_requires_a_contiguous_confirmed_credit_block():
+    lines = [
+        TranscribedLine(0.0, 2.0, "歌 初音ミク"),
+        TranscribedLine(3.0, 5.0, "ここから歌が始まる"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert all(decision.template_family is None for decision in decisions)
+
+
+def test_credit_block_can_begin_with_song_when_video_follows():
+    lines = [
+        TranscribedLine(0.0, 2.0, "歌 初音ミク"),
+        TranscribedLine(2.0, 4.0, "映像 初音ミク"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+    ]
+
+
+def test_contextual_credit_block_propagates_across_kick_back_opening():
+    lines = [
+        TranscribedLine(0.0, 2.0, "作詞・作曲・編曲 初音ミク"),
+        TranscribedLine(2.0, 4.0, "歌 初音ミク"),
+        TranscribedLine(4.0, 6.0, "映像 初音ミク"),
+        TranscribedLine(6.0, 8.0, "映像 初音ミク"),
+        TranscribedLine(8.0, 10.0, "ここから歌が始まる"),
+        TranscribedLine(10.0, 12.0, "歌 初音ミク"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+        "credits",
+        "credits",
+        None,
+        None,
+    ]
+    assert [decision.status for decision in decisions[:4]] == ["rejected"] * 4
+
+
+def test_confirmed_credit_value_can_supply_entity_evidence_for_song_label():
+    lines = [
+        TranscribedLine(0.0, 2.0, "制作 美しい未来"),
+        TranscribedLine(2.0, 4.0, "歌 美しい未来"),
+    ]
+
+    decisions = decide_recognized_lines(lines, [])
+
+    assert [decision.template_family for decision in decisions] == [
+        "credits",
+        "credits",
+    ]
+
+
+def test_contextual_credit_recovery_uses_the_sequence_classification():
+    line = TranscribedLine(0.0, 10.0, "歌 初音ミク")
+    notes = [MelodyNote(1.0, 9.0, 60)]
+
+    assert credit_recovery_windows(
+        line, notes, template_family="credits"
+    ) == [(1.0, 9.0)]
+
+
 @pytest.mark.parametrize(
     ("notes", "text", "status"),
     [
@@ -107,6 +213,55 @@ def test_semantic_gate_is_exact_conjunction_and_preserves_nonmelodic_voice(
     decision = decide_recognized_line(TranscribedLine(1.0, 2.0, text), notes)
     assert decision.status == status
     assert decision.melodic_support is bool(notes)
+
+
+def test_vocal_activity_rejects_only_unsupported_ordinary_nonmelodic_text():
+    unresolved = decide_recognized_line(
+        TranscribedLine(1.0, 2.0, "ここは話し声です"), []
+    )
+    rejected = apply_vocal_activity_support(
+        unresolved,
+        supported=False,
+        percentile_dbfs=-64.5,
+        relative_db=-51.0,
+        active_frame_ratio=0.06,
+    )
+
+    assert rejected.status == "rejected"
+    assert rejected.vocal_activity_support is False
+    assert rejected.vocal_activity_percentile_dbfs == -64.5
+    assert rejected.vocal_activity_relative_db == -51.0
+    assert rejected.vocal_active_frame_ratio == 0.06
+
+    melodic = decide_recognized_line(
+        TranscribedLine(1.0, 2.0, "ここは歌です"),
+        [MelodyNote(1.0, 2.0, 60)],
+    )
+    preserved = apply_vocal_activity_support(
+        melodic,
+        supported=False,
+        percentile_dbfs=-80.0,
+        relative_db=-60.0,
+        active_frame_ratio=0.0,
+    )
+    assert preserved.status == "accepted"
+    assert preserved.vocal_activity_support is None
+
+
+def test_vocal_activity_preserves_supported_nonmelodic_voice():
+    decision = decide_recognized_line(
+        TranscribedLine(1.0, 2.0, "ここは話し声です"), []
+    )
+    retained = apply_vocal_activity_support(
+        decision,
+        supported=True,
+        percentile_dbfs=-22.0,
+        relative_db=-7.0,
+        active_frame_ratio=0.8,
+    )
+
+    assert retained.status == "unresolved"
+    assert retained.vocal_activity_support is True
 
 
 def test_credit_gate_rejects_clearly_insufficient_melody_time():
@@ -161,6 +316,157 @@ def test_vocalization_only_recognizes_repeated_non_lexical_syllables(text):
 @pytest.mark.parametrize("text", ["ほら", "サラサラ", "あの日", "wow 君へ"])
 def test_vocalization_only_preserves_lexical_text(text):
     assert not vocalization_only(text)
+
+
+def test_repeated_vocalization_preserves_observed_attacks_and_keeps_its_unit():
+    line = TranscribedLine(1.0, 5.0, "ダ" * 20)
+    notes = [
+        MelodyNote(1.0 + index * 0.1, 1.05 + index * 0.1, 60)
+        for index in range(4)
+    ]
+
+    normalized = normalize_repeated_vocalization(line, notes)
+
+    assert normalized is not None
+    assert normalized.line == TranscribedLine(1.0, 5.0, "ダ" * 20)
+    assert normalized.unit_moras == ("ダ",)
+    assert normalized.original_mora_count == 20
+    assert normalized.normalized_mora_count == 20
+    assert normalized.note_count == 4
+
+
+def test_latin_repeated_vocalization_does_not_expand_to_note_count():
+    line = TranscribedLine(1.0, 5.0, "DADADADA")
+    notes = [MelodyNote(1.0, 5.0, 60)] * 31
+
+    normalized = normalize_repeated_vocalization(line, notes)
+
+    assert normalized is not None
+    assert normalized.line.text == "ダ" * 4
+    assert normalized.unit_moras == ("ダ",)
+    assert normalized.original_mora_count == 4
+    assert normalized.normalized_mora_count == 4
+    assert normalized.note_count == 31
+
+
+def test_short_multimora_pure_vocalization_preserves_observed_periods():
+    line = TranscribedLine(1.0, 5.0, "ダラダラ...")
+
+    normalized = normalize_repeated_vocalization(
+        line,
+        [MelodyNote(1.0, 5.0, 60)] * 31,
+    )
+
+    assert normalized is not None
+    assert normalized.line.text == "ダラダラ"
+    assert normalized.unit_moras == ("ダ", "ラ")
+    assert normalized.original_mora_count == 4
+    assert normalized.normalized_mora_count == 4
+
+
+def test_repeated_vocalization_without_notes_preserves_recognized_count():
+    line = TranscribedLine(1.0, 5.0, "ダラダラ")
+
+    normalized = normalize_repeated_vocalization(line, [])
+
+    assert normalized is not None
+    assert normalized.line.text == "ダラダラ"
+    assert normalized.original_mora_count == 4
+    assert normalized.normalized_mora_count == 4
+    assert normalized.note_count == 0
+
+
+def test_lexical_text_is_not_normalized_as_repeated_vocalization():
+    line = TranscribedLine(1.0, 5.0, "wow 君へ")
+
+    assert normalize_repeated_vocalization(
+        line, [MelodyNote(1.0, 5.0, 60)]
+    ) is None
+
+
+def test_only_runaway_repetition_is_pathological():
+    assert not is_pathological_repeated_vocalization(
+        TranscribedLine(0.0, 2.0, "la la la"), 3
+    )
+    assert not is_pathological_repeated_vocalization(
+        TranscribedLine(0.0, 10.0, "ラ" * 40), 24
+    )
+    assert is_pathological_repeated_vocalization(
+        TranscribedLine(0.0, 10.0, "ラ" * 100), 24
+    )
+    assert is_pathological_repeated_vocalization(
+        TranscribedLine(0.0, 2.0, "ラ" * 20), 20
+    )
+
+
+def _unowned_correspondence(notes):
+    return {
+        "note_candidates": [
+            {"id": note_id, "start_sec": start, "end_sec": end}
+            for note_id, start, end in notes
+        ],
+        "links": [
+            {
+                "operation": "note_only",
+                "singing_unit_ids": [],
+                "note_candidate_ids": [note_id],
+            }
+            for note_id, _start, _end in notes
+        ],
+    }
+
+
+def test_unowned_note_window_rehydrates_short_internal_island():
+    notes = []
+    for index, start in enumerate((1.0, 1.2, 1.4, 1.6)):
+        notes.append((f"left-{index}", start, start + 0.12))
+    for index, start in enumerate((2.3, 2.5, 2.7)):
+        notes.append((f"middle-{index}", start, start + 0.12))
+    for index, start in enumerate((3.4, 3.65, 3.9, 4.15)):
+        # The first three establish a short island; the long final note makes the
+        # second seed's span and the merged window duration pass the safety gate.
+        notes.append((f"right-{index}", start, start + (1.65 if index == 3 else 0.12)))
+
+    windows = unowned_note_recovery_windows(
+        _unowned_correspondence(notes), []
+    )
+
+    assert len(windows) == 1
+    assert windows[0].start_sec == 1.0
+    assert windows[0].end_sec == pytest.approx(5.8)
+    assert windows[0].note_count == 11
+    assert windows[0].seed_note_count == 8
+    assert windows[0].note_ids[4:7] == ("middle-0", "middle-1", "middle-2")
+
+
+def test_unowned_note_window_rejects_overlap_with_retained_transcript():
+    notes = [
+        (f"n-{index}", index * 0.55, index * 0.55 + 0.5)
+        for index in range(9)
+    ]
+
+    assert unowned_note_recovery_windows(
+        _unowned_correspondence(notes),
+        [TranscribedLine(2.0, 2.5, "既存")],
+    ) == []
+
+
+def test_unowned_note_window_keeps_long_prefix_before_retained_transcript():
+    notes = [
+        (f"n-{index}", index * 0.4, index * 0.4 + 0.35)
+        for index in range(14)
+    ]
+
+    windows = unowned_note_recovery_windows(
+        _unowned_correspondence(notes),
+        [TranscribedLine(4.75, 6.0, "既存")],
+    )
+
+    assert len(windows) == 1
+    assert windows[0].start_sec == 0.0
+    assert windows[0].end_sec == pytest.approx(4.75)
+    assert windows[0].note_count == 12
+    assert windows[0].note_ids[-1] == "n-11"
 
 
 def test_lyric_deficit_recovery_uses_song_median_and_internal_note_rests():

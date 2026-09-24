@@ -37,6 +37,12 @@ _VARIANT_MARGIN_FRAMES = 25  # 読み候補スコアリング時に行の前後�
 # 平均だと行の長さで差が薄まる(違いは1-2モーラでも行全体で平均される)ため合計を使う。
 # 実測: 正しい修正(アス,ヒガ)は約4-13、誤修正の例(ドッテ)は約1.2だった
 _VARIANT_SCORE_MARGIN = 2.0
+# A CTC target can carry clear posterior spikes without ever beating blank.  This
+# is common for sung non-lexical syllables.  Keep only physically separate peaks
+# with both absolute and within-window prominence; neither rule limits the count.
+_REATTACK_MIN_POSTERIOR_PROMINENCE = 0.01
+_REATTACK_RELATIVE_PROMINENCE = 0.03
+_REATTACK_MIN_DISTANCE_FRAMES = 3
 # Whisper emits adjacent decimal timestamps that can differ by a few ULPs after
 # JSON/Python round trips.  One microsecond is still far below a CTC frame (20 ms).
 _WINDOW_BOUNDARY_EPSILON_SEC = 1e-6
@@ -60,6 +66,19 @@ def _frame_ceiling(time_sec: float) -> int:
     return math.ceil((time_sec + _PAD_SEC) / frame_sec - 1e-9)
 
 
+def _unpadded_emission_bounds(frame_count: int) -> tuple[int, int]:
+    """Return the half-open frame range backed by real input audio.
+
+    ``compute_emissions`` pads both sides of the waveform so edge frames retain
+    model context.  Those context-only frames must not be candidates for forced
+    alignment: otherwise a leading lyric token can be assigned wholly inside
+    the left pad and collapse to the invalid interval ``0.0--0.0`` when converted
+    back to audio time.
+    """
+    pad_frames = _frame_ceiling(0.0)
+    return pad_frames, max(pad_frames, frame_count - pad_frames)
+
+
 @dataclass
 class AlignedMora:
     line: int
@@ -76,6 +95,16 @@ class CTCEmissions:
 
     log_probs: Any
     vocab: dict[str, int]
+
+
+@dataclass(frozen=True)
+class KanaCTCEvent:
+    """One unconditioned greedy CTC token event in absolute audio time."""
+
+    kana: str
+    start_sec: float
+    end_sec: float
+    confidence: float
 
 
 class CTCWindowCapacityError(RuntimeError):
@@ -188,6 +217,141 @@ def decode_kana_window(
         chars.append(token)
         scores.append(float(matrix[index, token_id]))
     return "".join(chars), math.exp(sum(scores) / len(scores)) if scores else 0.0
+
+
+def decode_kana_events_window(
+    emissions: CTCEmissions, start_sec: float, end_sec: float,
+) -> tuple[KanaCTCEvent, ...]:
+    """Return timed greedy kana events without rerunning the acoustic model."""
+    if not 0 <= start_sec < end_sec:
+        raise ValueError("CTC window must have positive duration")
+    first = max(0, _frame_ceiling(start_sec))
+    last = min(len(emissions.log_probs), _frame_ceiling(end_sec))
+    values = collapse_kana_aliases(emissions)[first:last]
+    if len(values) == 0:
+        return ()
+
+    import numpy as np
+
+    matrix = np.asarray(values)
+    best = matrix.argmax(axis=-1)
+    vocabulary = {value: key for key, value in emissions.vocab.items()}
+    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+    output: list[KanaCTCEvent] = []
+    index = 0
+    while index < len(best):
+        token_id = int(best[index])
+        stop = index + 1
+        while stop < len(best) and int(best[stop]) == token_id:
+            stop += 1
+        if token_id != 0:
+            token = jaconv.hira2kata(vocabulary.get(token_id, ""))
+            if token and all("ァ" <= char <= "ヺ" or char == "ー" for char in token):
+                peak = max(float(matrix[frame, token_id]) for frame in range(index, stop))
+                event_start = max(start_sec, (first + index) * frame_sec - _PAD_SEC)
+                event_end = min(end_sec, (first + stop) * frame_sec - _PAD_SEC)
+                if event_end > event_start:
+                    output.append(KanaCTCEvent(
+                        token, event_start, event_end, math.exp(peak),
+                    ))
+        index = stop
+    return tuple(output)
+
+
+def decode_repeated_mora_reattacks(
+    emissions: CTCEmissions, mora: str, start_sec: float, end_sec: float,
+) -> tuple[KanaCTCEvent, ...]:
+    """Find posterior spikes for one Whisper-supplied mora without a count cap.
+
+    Greedy CTC often emits blank throughout non-lexical singing even while the
+    requested kana has distinct posterior spikes.  Read those acoustic spikes
+    directly instead of requiring the kana to win the framewise argmax.
+    """
+    if not 0 <= start_sec < end_sec:
+        raise ValueError("CTC window must have positive duration")
+    target = tuple(jaconv.hira2kata(mora))
+    if not target:
+        return ()
+    first = max(0, _frame_ceiling(start_sec))
+    last = min(len(emissions.log_probs), _frame_ceiling(end_sec))
+    if first >= last:
+        return ()
+
+    import numpy as np
+    matrix = np.asarray(collapse_kana_aliases(emissions))[first:last]
+    frame_sec = FRAME_SAMPLES / SAMPLING_RATE
+    events: list[KanaCTCEvent] = []
+    for kana in set(target):
+        token_id = emissions.vocab.get(kana)
+        if token_id is None:
+            token_id = emissions.vocab.get(jaconv.kata2hira(kana))
+        if token_id is None:
+            continue
+        posterior = np.exp(matrix[:, token_id])
+        if not len(posterior):
+            continue
+        prominence = max(
+            _REATTACK_MIN_POSTERIOR_PROMINENCE,
+            float(posterior.max()) * _REATTACK_RELATIVE_PROMINENCE,
+        )
+        for index in _prominent_peak_indices(
+            posterior, prominence, _REATTACK_MIN_DISTANCE_FRAMES,
+        ):
+            event_start = max(start_sec, (first + index) * frame_sec - _PAD_SEC)
+            event_end = min(end_sec, event_start + frame_sec)
+            if event_end > event_start:
+                events.append(KanaCTCEvent(
+                    kana, event_start, event_end, float(posterior[index]),
+                ))
+    events.sort(key=lambda event: (event.start_sec, event.end_sec, event.kana))
+    result: list[KanaCTCEvent] = []
+    index = 0
+    while index <= len(events) - len(target):
+        selected = events[index:index + len(target)]
+        if tuple(event.kana for event in selected) == target:
+            result.append(KanaCTCEvent(
+                jaconv.hira2kata(mora),
+                selected[0].start_sec,
+                selected[-1].end_sec,
+                math.exp(sum(math.log(max(event.confidence, 1e-300))
+                             for event in selected) / len(selected)),
+            ))
+            index += len(target)
+        else:
+            index += 1
+    return tuple(result)
+
+
+def _prominent_peak_indices(
+    values: Any, minimum_prominence: float, minimum_distance: int,
+) -> list[int]:
+    """Find separated one-dimensional peaks without an additional dependency."""
+    candidates: list[int] = []
+    floor = float(values.min())
+    for index, value in enumerate(values):
+        value = float(value)
+        left_neighbor = float(values[index - 1]) if index else floor
+        right_neighbor = float(values[index + 1]) if index + 1 < len(values) else floor
+        if value < left_neighbor or value <= right_neighbor:
+            continue
+        left_base = floor if index == 0 else value
+        cursor = index - 1
+        while cursor >= 0 and float(values[cursor]) <= value:
+            left_base = min(left_base, float(values[cursor]))
+            cursor -= 1
+        right_base = floor if index + 1 == len(values) else value
+        cursor = index + 1
+        while cursor < len(values) and float(values[cursor]) <= value:
+            right_base = min(right_base, float(values[cursor]))
+            cursor += 1
+        if value - max(left_base, right_base) >= minimum_prominence:
+            candidates.append(index)
+
+    selected: list[int] = []
+    for index in sorted(candidates, key=lambda item: float(values[item]), reverse=True):
+        if all(abs(index - other) >= minimum_distance for other in selected):
+            selected.append(index)
+    return sorted(selected)
 
 
 def collapse_kana_aliases(emissions: CTCEmissions) -> Any:
@@ -421,7 +585,10 @@ def align_moras_with_variants(
                                    end_sec=min(end, mora.end_sec)) for mora in local)
             choices.append(chosen[0])
         return aligned, choices
-    return _align_variants(log_probs, vocab, line_variants)
+    first, last = _unpadded_emission_bounds(len(log_probs))
+    return _align_variants(
+        log_probs[first:last], vocab, line_variants, frame_offset=first,
+    )
 
 
 def _pathological_reasons(

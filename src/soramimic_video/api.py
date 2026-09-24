@@ -157,6 +157,11 @@ DEFAULT_EDITOR_DIST = REPO_ROOT / "external" / "soramimic" / "frontend" / "dist"
 STATUS_FILENAME = "status.json"
 THROUGHPUT_FILENAME = "synthesize-throughput.json"
 USAGE_METRICS_FILENAME = "usage-metrics.json"
+WEB_ANALYTICS_HOST = "video.soramimic.com"
+WEB_ANALYTICS_SNIPPET = (
+    '<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js" '
+    'data-cf-beacon=\'{"token":"541b49daf9754c12ba5e434047126045"}\'></script>'
+)
 QUEUE_WAIT_BUCKETS = (1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0)
 JOB_DURATION_BUCKETS = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0)
 STAGE_DURATION_BUCKETS = (1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0)
@@ -1347,12 +1352,12 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video")
     runproc.set_cancel_check(lambda: job.cancel_event.is_set() or abort.is_set())
 
-    def build_silent_video() -> Path:
+    def build_silent_video() -> tuple[Path, float]:
         try:
             prepared = prepare_video(
                 visual_project, d, planned_total, **video_options
             )
-            return encode_silent_video(prepared)
+            return encode_silent_video(prepared), prepared.audio_delay_sec
         except Exception as exc:
             if not abort.is_set() and not job.cancel_event.is_set():
                 visual_failure.append(exc)
@@ -1380,7 +1385,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             raise
 
         with _stage(job, "video", estimated_total=8.0):
-            silent_video = future.result()
+            silent_video, audio_delay_sec = future.result()
             actual_total = actual_video_total_sec(
                 project, audio_path, video_options["midi_end_credit"]
             )
@@ -1398,8 +1403,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             return attach_audio(
                 silent_video,
                 audio_path,
-                actual_total,
+                actual_total + audio_delay_sec,
                 out=d / "video" / "out.mp4",
+                audio_delay_sec=audio_delay_sec,
             )
     finally:
         abort.set()
@@ -2702,8 +2708,11 @@ def create_app(
     editor_available = (editor_root / "editor.html").is_file()
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    def index(request: Request) -> str:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        if request.url.hostname == WEB_ANALYTICS_HOST:
+            return html.replace("</body>", f"{WEB_ANALYTICS_SNIPPET}\n</body>", 1)
+        return html
 
     @app.get("/guidelines", response_class=HTMLResponse)
     def guidelines(wordlist: str = "") -> str:

@@ -1343,7 +1343,7 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     def fake_prepare(*args, **kwargs):
         visual_started.set()
         assert audio_started.wait(1)
-        return object()
+        return type("Prepared", (), {"audio_delay_sec": 1.0})()
 
     def fake_encode(prepared):
         path = job_dir / "video" / "video-only.mp4"
@@ -1357,10 +1357,11 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
         path.write_bytes(b"wav")
         return path
 
-    def fake_attach(silent, audio, total, out=None):
+    def fake_attach(silent, audio, total, out=None, audio_delay_sec=0.0):
         assert silent.read_bytes() == b"silent"
         assert audio.read_bytes() == b"wav"
-        assert total == 9.0
+        assert total == 10.0
+        assert audio_delay_sec == 1.0
         out.write_bytes(b"mp4")
         return out
 
@@ -1423,7 +1424,11 @@ def test_run_pipeline_cleans_silent_video_when_audio_fails(tmp_path, monkeypatch
     monkeypatch.setattr(
         video_mod, "planned_video_total_sec", lambda project, *args: 10.0
     )
-    monkeypatch.setattr(video_mod, "prepare_video", lambda *a, **k: object())
+    monkeypatch.setattr(
+        video_mod,
+        "prepare_video",
+        lambda *a, **k: type("Prepared", (), {"audio_delay_sec": 0.0})(),
+    )
 
     def fake_encode(prepared):
         path = job_dir / "video" / "video-only.mp4"
@@ -2181,6 +2186,17 @@ def test_index_declares_versioned_brand_favicon(client):
 
     assert response.status_code == 200
     assert '<link rel="icon" href="/logo-soramimic-symbol-v3.png">' in response.text
+
+
+def test_web_analytics_beacon_only_on_production_host(client):
+    production = client.get("/", headers={"host": "video.soramimic.com"})
+    assert production.status_code == 200
+    assert api_mod.WEB_ANALYTICS_SNIPPET in production.text
+
+    for hostname in ("dev-video.soramimic.com", "preview-video.soramimic.com"):
+        response = client.get("/", headers={"host": hostname})
+        assert response.status_code == 200
+        assert "static.cloudflareinsights.com/beacon.min.js" not in response.text
 
 
 def test_designer_wordmarks_are_public_versioned_transparent_png(client):

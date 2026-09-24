@@ -19,7 +19,12 @@ from typing import Any, cast
 import jaconv
 from kanasim import WeightedLevenshtein, create_kana_distance_calculator
 
-from .kana import normalize_audio_reading, normalize_long_vowels
+from .kana import (
+    normalize_audio_reading,
+    normalize_long_vowels,
+    split_moras,
+    vowel_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,8 @@ _KANA_DISTANCE = cast(
 # Kanasim's normalization scales acoustic cost tables; it does not divide by
 # candidate length. Retain a small dictionary-order prior for marginal evidence.
 _MIN_TOTAL_DISTANCE_GAIN = 0.25
+_LOCAL_DICTIONARY_CONTEXT_MORAS = 2
+_KANJI_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\u3005\u3006\u30f5\u30f6]")
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,17 @@ class ReadingDecision:
     normalized_evidence: tuple[str, ...]
     distances: tuple[tuple[float, ...], ...]
     normalized_distances: tuple[tuple[float, ...], ...] = ()
+
+
+@dataclass(frozen=True)
+class DictionaryReadingProposal:
+    """One surface-token reading supported by a local KanaWhisper alignment."""
+
+    reading: str
+    surface: str
+    default_reading: str
+    alternative_reading: str
+    evidence_views: tuple[int, ...]
 
 
 def model_available() -> bool:
@@ -90,6 +108,121 @@ def normalize_kana_evidence(text: str) -> str:
 def _candidate_key(reading: str) -> str:
     kana = normalize_audio_reading(jaconv.hira2kata(reading).replace("ヲ", "オ"))
     return normalize_audio_reading(normalize_long_vowels(kana))
+
+
+def _vowel_sequence(reading: str) -> tuple[str, ...]:
+    return tuple(
+        vowel
+        for mora in split_moras(normalize_long_vowels(reading))
+        if (vowel := vowel_of(mora)) is not None
+    )
+
+
+def _dictionary_token_variants(
+    surface_text: str,
+    default_reading: str,
+) -> tuple[tuple[str, str, str, str, str], ...]:
+    """Return one-token dictionary substitutions with their local contexts.
+
+    The full line is never expanded as a Cartesian product. Each result changes
+    exactly one yomi token and retains up to two neighbouring moras on either side
+    so KanaWhisper can localize the alternative inside its wider context window.
+    """
+    from .reading import reading_candidates, reading_tokens
+
+    tokens = reading_tokens(surface_text)
+    pieces = [normalize_audio_reading(reading) for _surface, reading in tokens]
+    if _candidate_key("".join(pieces)) != _candidate_key(default_reading):
+        return ()
+
+    default_vowels = _vowel_sequence(default_reading)
+    proposals: list[tuple[str, str, str, str, str]] = []
+    seen = {_candidate_key(default_reading)}
+    for index, ((surface, _reading), token_reading) in enumerate(
+        zip(tokens, pieces, strict=True)
+    ):
+        if not token_reading or _KANJI_RE.search(surface) is None:
+            continue
+        left = _kanasim_moras(_candidate_key("".join(pieces[:index])))[
+            -_LOCAL_DICTIONARY_CONTEXT_MORAS:
+        ]
+        right = _kanasim_moras(_candidate_key("".join(pieces[index + 1 :])))[:
+            _LOCAL_DICTIONARY_CONTEXT_MORAS
+        ]
+        if len(left) + len(right) < _LOCAL_DICTIONARY_CONTEXT_MORAS:
+            continue
+        for alternative in reading_candidates(surface):
+            alternative = normalize_audio_reading(alternative)
+            if (
+                not alternative
+                or _candidate_key(alternative) == _candidate_key(token_reading)
+            ):
+                continue
+            reading = "".join(
+                [*pieces[:index], alternative, *pieces[index + 1 :]]
+            )
+            key = _candidate_key(reading)
+            # Automatic candidates already reject consonant-only ambiguity. Keep
+            # that precision guard for evidence-derived token alternatives too.
+            if key in seen or _vowel_sequence(reading) == default_vowels:
+                continue
+            seen.add(key)
+            local = "".join(
+                [*left, *_kanasim_moras(_candidate_key(alternative)), *right]
+            )
+            proposals.append(
+                (reading, surface, token_reading, alternative, local)
+            )
+    return tuple(proposals)
+
+
+def has_dictionary_reading_alternative(
+    surface_text: str,
+    default_reading: str,
+) -> bool:
+    """Return whether automatic KanaWhisper evidence could add a reading."""
+    return bool(_dictionary_token_variants(surface_text, default_reading))
+
+
+def propose_dictionary_readings(
+    surface_text: str,
+    default_reading: str,
+    evidence: Sequence[str],
+) -> tuple[DictionaryReadingProposal, ...]:
+    """Add only locally aligned, dictionary-backed automatic readings.
+
+    KanaWhisper covers multiple lyric lines and may hallucinate remote material.
+    An alternative therefore needs an exact local match that includes two moras of
+    surrounding dictionary context. The ordinary full-line conservative reranker
+    still makes the final choice after these proposals are added.
+    """
+    evidence_keys = tuple(
+        "".join(_kanasim_moras(normalized))
+        for text in evidence
+        if (normalized := normalize_kana_evidence(text))
+    )
+    if not evidence_keys:
+        return ()
+
+    proposals = []
+    for reading, surface, default, alternative, local in _dictionary_token_variants(
+        surface_text, default_reading
+    ):
+        views = tuple(
+            index for index, transcript in enumerate(evidence_keys)
+            if local in transcript
+        )
+        if views:
+            proposals.append(
+                DictionaryReadingProposal(
+                    reading=reading,
+                    surface=surface,
+                    default_reading=default,
+                    alternative_reading=alternative,
+                    evidence_views=views,
+                )
+            )
+    return tuple(proposals)
 
 
 def _kanasim_moras(text: str) -> list[str]:

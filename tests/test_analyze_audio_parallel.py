@@ -163,6 +163,60 @@ def test_kana_evidence_reranks_closed_candidates_from_mix_and_vocals(
     assert receipt["lines"][0]["selected_index"] == 1
 
 
+def test_kana_evidence_expands_locally_aligned_dictionary_reading(
+    monkeypatch,
+    tmp_path,
+):
+    from soramimic_video import analyze_audio, kana_whisper
+
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=lambda path: SimpleNamespace(duration=10.0)),
+    )
+    mix = tmp_path / "mix.wav"
+    vocals = tmp_path / "vocals.wav"
+
+    def transcribe(path, windows, device):
+        assert windows == [(2.5, 9.5)]
+        assert device == "auto"
+        return [
+            "オーケータチマチソクダンジョー"
+            if path == mix
+            else "オーケータツマチドクダンチョー"
+        ]
+
+    monkeypatch.setattr(kana_whisper, "transcribe_kana_windows", transcribe)
+    variants = [[[
+        "オー", "ケ", "イ", "リュー", "マ", "チ", "ド", "ク", "ダン",
+        "ジョー", "リ", "サン", "リ", "サン",
+    ]]]
+    chosen, receipt = analyze_audio._choose_readings_with_kana(
+        mix,
+        vocals,
+        ["OK! 竜町独壇場 Listen! Listen!"],
+        variants,
+        [(4.0, 8.0)],
+        device="auto",
+        shared_inference=True,
+        expand_automatic_readings=True,
+    )
+
+    assert chosen == [1]
+    assert len(variants[0]) == 2
+    assert "".join(variants[0][1]).startswith("オーケイタツマチ")
+    assert receipt["schema_version"] == 4
+    assert receipt["candidate_expansion"] == "kana-local-dictionary-readings-v1"
+    assert receipt["lines"][0]["base_candidate_count"] == 1
+    assert receipt["lines"][0]["dictionary_proposals"] == [{
+        "candidate_index": 1,
+        "surface": "竜",
+        "default_reading": "リュー",
+        "alternative_reading": "タツ",
+        "evidence_sources": ["separated-vocals"],
+    }]
+
+
 def test_kana_choice_keeps_candidates_with_different_mora_counts():
     from soramimic_video import analyze_audio
 
@@ -174,6 +228,18 @@ def test_kana_choice_keeps_candidates_with_different_mora_counts():
     )
 
 
+def test_kana_choice_detects_hidden_automatic_token_alternative():
+    from soramimic_video import analyze_audio
+
+    assert analyze_audio._has_kana_choice(
+        [[[
+            "オー", "ケ", "イ", "リュー", "マ", "チ", "ド", "ク", "ダン",
+            "ジョー", "リ", "サン", "リ", "サン",
+        ]]],
+        automatic_texts=["OK! 竜町独壇場 Listen! Listen!"],
+    )
+
+
 def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     from soramimic_video import (
         analyze_audio as analyze_audio_module,
@@ -182,6 +248,11 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         audio_melody,
         mora_align,
         reading,
+        vocal_activity,
+    )
+    from soramimic_video.vocal_activity import (
+        VocalActivityLine,
+        VocalActivityProfile,
     )
 
     calls = []
@@ -192,7 +263,7 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         return (
             tmp_path / "project/separation/vocals.wav",
             tmp_path / "project/separation/no_vocals.wav",
-            [TranscribedLine(0.1, 0.5, "か")],
+            [TranscribedLine(0.1, 0.5, "かき")],
             shared_notes,
         )
 
@@ -203,37 +274,86 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     monkeypatch.setattr(analyze_audio_module, "_require_audio_pipeline", lambda: None)
     monkeypatch.setattr(analyze_audio_module, "_run_audio_models", run_shared)
     monkeypatch.setattr(
+        vocal_activity,
+        "measure_vocal_activity",
+        lambda *_args, **_kwargs: VocalActivityProfile(
+            -15.0,
+            (VocalActivityLine(-20.0, -5.0, 0.8, True),),
+        ),
+    )
+    monkeypatch.setattr(
         audio_melody,
         "configured_capabilities",
         lambda: {"sheetsage2": True},
     )
-    monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カ"])
+    monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カキ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     monkeypatch.setattr(
         mora_align,
         "align_moras_with_variants",
         lambda *args, **kwargs: (
-            [AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8)],
+            [
+                AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8),
+                AlignedMora(0, 1, "キ", 0.3, 0.4, 0.8),
+            ],
             [0],
         ),
     )
-    def reject_stage3(*_args, **_kwargs):
-        raise ValueError("test fallback")
+
+    class Document:
+        def to_json(self):
+            return '{"note_candidates": [], "links": []}'
+
+    class Layers:
+        def to_dict(self):
+            return {
+                "schema_version": 1,
+                "canonical_text": "かき",
+                "canonical": [{
+                    "utterance_id": "u0", "text": "かき", "kana": "カキ",
+                    "mora_ids": ["m0", "m1"],
+                }],
+                "performed": [
+                    {
+                        "singing_unit_id": "s0", "mora_ids": ["m0"],
+                        "status": "weak", "start_sec": 0.1, "end_sec": 0.2,
+                        "confidence": 0.8, "link_ids": ["l0"],
+                        "evidence_ids": [],
+                    },
+                    {
+                        "singing_unit_id": "s1", "mora_ids": ["m1"],
+                        "status": "weak", "start_sec": 0.6, "end_sec": 0.8,
+                        "confidence": 0.8, "link_ids": ["l1"],
+                        "evidence_ids": [],
+                    },
+                ],
+                "synthesis_plan": [{
+                    "id": "slot-1", "utterance_id": "u0",
+                    "singing_unit_id": "s1", "mora_ids": ["m1"],
+                    "note_candidate_id": "n1", "link_ids": ["l1"],
+                    "kana": "キ", "start_sec": 0.6, "end_sec": 0.8,
+                    "midi_pitch": 64, "operation": "match",
+                    "timing_source": "note_interval", "confidence": 0.0,
+                    "evidence_ids": [], "pitch_sources": ["sheetsage2-vocal"],
+                    "pitch_confidence": None, "continuation": False,
+                }],
+                "omissions": [], "unresolved_unit_ids": ["s0"],
+                "diagnostics": [], "evidence": [],
+            }
 
     monkeypatch.setitem(
         sys.modules,
         "soramimic_video.stage3",
-        SimpleNamespace(build_stage3_layers=reject_stage3),
+        SimpleNamespace(build_stage3_layers=lambda *_args, **_kwargs: (
+            Document(), Layers()
+        )),
     )
 
-    import pytest
-
-    with pytest.raises(RuntimeError, match="歌詞や音高を補わず"):
-        analyze_audio_module.analyze_audio(
-            tmp_path / "input.wav",
-            tmp_path / "project",
-            device="cuda",
-        )
+    project = analyze_audio_module.analyze_audio(
+        tmp_path / "input.wav",
+        tmp_path / "project",
+        device="cuda",
+    )
 
     assert len(calls) == 1
     assert calls[0][0][:5] == (
@@ -254,6 +374,21 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         (tmp_path / "project/analyze_audio/recognition.json").read_text()
     )
     assert recognition["semantic_gate"]["decisions"][0]["status"] == "unresolved"
+    assert recognition["semantic_gate"]["vocal_activity"] == {
+        "applied": True,
+        "source": "demucs-separated-vocals",
+        "frame_duration_sec": 0.05,
+        "line_percentile": 90.0,
+        "active_frame_floor_dbfs": -70.0,
+        "max_relative_drop_db": 30.0,
+        "reference_dbfs": -15.0,
+    }
     assert [item["status"] for item in json.loads(
         (tmp_path / "project/analyze_audio/analysis.json").read_text()
-    )["diagnostics"]] == ["unresolved", "unresolved"]
+    )["diagnostics"]] == [
+        "unresolved", "spoken-synthesis-recovery", "spoken-continuous-timing",
+    ]
+    assert [note.kana for note in project.notes] == ["カ", "キ"]
+    assert project.notes[0].midi_note == 60
+    assert project.notes[0].source == "spoken"
+    assert project.lyric_layers["omissions"] == []

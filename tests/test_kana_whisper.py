@@ -1,12 +1,73 @@
 from soramimic_video.kana_whisper import (
     build_kana_contexts,
     choose_reading,
+    has_dictionary_reading_alternative,
     normalize_kana_evidence,
+    propose_dictionary_readings,
 )
 
 
 def test_normalize_kana_evidence_removes_non_kana_and_pronunciation_spelling():
     assert normalize_kana_evidence("何? なにを、みていたの") == "ナニオミテータノ"
+
+
+def test_local_alignment_recovers_dictionary_reading_missing_from_line_nbest():
+    surface = "OK! 竜町独壇場 Listen! Listen!"
+    default = "オーケイリューマチドクダンジョーリサンリサン"
+    evidence = [
+        "レディーフォーマンショーオーケータチマチソクダンジョー",
+        "レディースルマショーオーケータツマチドクダンチョー",
+    ]
+
+    assert has_dictionary_reading_alternative(surface, default)
+    proposals = propose_dictionary_readings(surface, default, evidence)
+
+    assert [proposal.reading for proposal in proposals] == [
+        "オーケイタツマチドクダンジョーリサンリサン"
+    ]
+    assert proposals[0].surface == "竜"
+    assert proposals[0].default_reading == "リュー"
+    assert proposals[0].alternative_reading == "タツ"
+    assert proposals[0].evidence_views == (1,)
+    decision = choose_reading([default, proposals[0].reading], evidence)
+    assert decision.selected_index == 1
+    assert decision.reason == "kana-evidence"
+
+
+def test_local_alignment_rejects_dictionary_reading_without_exact_context():
+    proposals = propose_dictionary_readings(
+        "心に炎を灯して 遠い未来まで",
+        "ココロニホノオヲトモシテトーイミライマデ",
+        [
+            "カラココロニクムラオトボシテトーリミライノアテー",
+            "カラココロニムムラオトモシテトーイミライマデー",
+        ],
+    )
+
+    assert all(proposal.alternative_reading != "ホムラ" for proposal in proposals)
+
+
+def test_local_alignment_does_not_borrow_matching_sound_across_left_context():
+    proposals = propose_dictionary_readings(
+        "もっと走る熱いパクスで 思い出を裏切るなら",
+        "モットハシルアツイパクスデオモイデヲウラギルナラ",
+        [
+            "ナガテトビタチモノバシルアツイッパツデオモイデモフラギルナラ",
+            "ナガデトータチコトバシルアツネパツデオモイデオーラギルナラ",
+        ],
+    )
+
+    assert all(proposal.alternative_reading != "バシル" for proposal in proposals)
+
+
+def test_local_alignment_keeps_consonant_only_ambiguity_closed():
+    proposals = propose_dictionary_readings(
+        "綺麗事じゃないけど",
+        "キレーゴトジャナイケド",
+        ["キレーコトジャナイケド", "キレーコトジャナイケド"],
+    )
+
+    assert proposals == ()
 
 
 def test_mix_tie_and_vocals_support_choose_nani_reading():
