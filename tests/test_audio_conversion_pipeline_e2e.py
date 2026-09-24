@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 
+
+@pytest.mark.parametrize("supplied", [False, True])
 def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_reload(
     monkeypatch,
     tmp_path: Path,
+    supplied: bool,
 ):
     from soramimic_video import (
         analyze_audio as analyze_audio_module,
@@ -15,6 +19,7 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
     from soramimic_video import (
         api,
         audio_melody,
+        known_lyrics,
         mix,
         mora_align,
         reading,
@@ -47,6 +52,8 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
         ),
     )
     monkeypatch.setattr(reading, "automatic_reading_candidates", lambda _text: ["カキ"])
+    monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カキ"])
+    monkeypatch.setattr(known_lyrics, "text_to_kana", lambda _text: "カキ")
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         mora_align,
@@ -188,6 +195,8 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
     job_dir = tmp_path / "job"
     job_dir.mkdir()
     (job_dir / "input.wav").write_bytes(b"deterministic-model-boundary")
+    if supplied:
+        (job_dir / "lyrics.txt").write_text("柿", encoding="utf-8")
     wordlist = tmp_path / "words.csv"
     wordlist.write_text(
         "id,original,surface,pronunciation\n0,柿,柿,カキ",
@@ -199,7 +208,7 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
         params={
             "input_kind": "audio",
             "input_seconds": 0.5,
-            "auto_lyrics": True,
+            "auto_lyrics": not supplied,
             "wordlist": str(wordlist),
             "convert_params": "NOTE_LENGTH_WEIGHT=0.25",
             "model": "MERROW",
@@ -222,3 +231,6 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
     assert isinstance(saved.lyric_layers["canonical"], list)
     assert saved.parody is not None
     assert [word.surface for word in saved.parody.lines[0].words] == ["柿"]
+    if supplied:
+        assert saved.lines[0].original_text == "柿"
+        assert saved.lyric_layers["canonical_text"] == "かき"

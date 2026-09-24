@@ -526,6 +526,20 @@ def test_layered_conversion_rejects_text_mismatch_instead_of_fuzzy_mapping(
         )
 
 
+def test_layered_conversion_does_not_use_display_group_as_acoustic_identity(tmp_path: Path):
+    project = _repeated_layer_project()
+    # Supplied spelling groups and acoustic utterances have independent indices.
+    project.lines[0].original_text = "入力表記の表示グループ"
+    project.lines[0].original_line_index = 12
+    apply_converted_lines(
+        project, _converted_repeated_line(),
+        wordlist=_empty_wordlist(tmp_path), where=None, params={},
+    )
+    assert project.parody is not None
+    assert project.parody.lines[0].words[0].note_ids == list(range(9))
+    assert project.parody.lines[0].words[1].note_ids == list(range(9, 27))
+
+
 def test_layered_note_length_weights_follow_mora_owned_slots():
     project = _repeated_layer_project()
     # テストの各モーラは0.1秒のスロットを3つ所有する。
