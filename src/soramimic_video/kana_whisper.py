@@ -152,7 +152,9 @@ def _dictionary_token_variants(
         ]
         if len(left) + len(right) < _LOCAL_DICTIONARY_CONTEXT_MORAS:
             continue
-        for alternative in reading_candidates(surface):
+        for alternative in reading_candidates(
+            surface, include_alternate_splits=True,
+        ):
             alternative = normalize_audio_reading(alternative)
             if (
                 not alternative
@@ -209,9 +211,10 @@ def propose_dictionary_readings(
     for reading, surface, default, alternative, local in _dictionary_token_variants(
         surface_text, default_reading
     ):
+        full_key = "".join(_kanasim_moras(_candidate_key(reading)))
         views = tuple(
             index for index, transcript in enumerate(evidence_keys)
-            if local in transcript
+            if local in transcript or full_key in transcript
         )
         if views:
             proposals.append(

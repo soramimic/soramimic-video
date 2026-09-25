@@ -74,7 +74,8 @@ def test_asr_first_refines_only_acoustically_supported_known_reading(
     )
 
     monkeypatch.setattr(reading, "automatic_reading_candidates", lambda _: ["アス"])
-    monkeypatch.setattr(reading, "reading_candidates", lambda _: ["アシタ", "アス"])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda _, **_kwargs: ["アシタ", "アス"])
     monkeypatch.setattr(known_lyrics, "text_to_kana", lambda _: "アシタ")
     monkeypatch.setattr(analyze_audio, "_has_kana_choice", lambda *_a, **_k: False)
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *_a, **_k: [
