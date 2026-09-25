@@ -15,6 +15,57 @@ from .semantic_lyrics import coalesce_repeated_suffix_fragments, decide_recogniz
 from .transcribe import TranscribedLine
 
 
+def plan_supplied_alignment(
+    recognized: list[TranscribedLine], readings: list[str], supplied: list[str],
+) -> tuple[list[TranscribedLine], dict[str, Any]]:
+    """Match supplied spelling before the final mora alignment.
+
+    A matched group uses supplied text and the time window of its recognized
+    sources. Unmatched recognition remains available for acoustic alignment.
+    """
+    overlay = align_lyric_surface(
+        [SurfaceLine(line.text, reading, text_to_kana(line.text))
+         for line, reading in zip(recognized, readings, strict=True)],
+        [SurfaceLine(strip_ruby(text), text_to_kana(text)) for text in supplied],
+    )
+    overlay["supplied_lines"] = supplied.copy()
+    prepared = []
+    for group in overlay["groups"]:
+        sources = [recognized[index] for index in group["asr_indices"]]
+        text = (
+            "".join(supplied[index] for index in group["supplied_indices"])
+            if group["operation"] == "match"
+            else "".join(line.text for line in sources)
+        )
+        prepared.append(TranscribedLine(sources[0].start_sec, sources[-1].end_sec, text))
+    return prepared, overlay
+
+
+def apply_prepared_surface(
+    project: Project, overlay: dict[str, Any], readings: list[str],
+    reviews: list[dict[str, object]],
+) -> dict[str, Any]:
+    """Attach a pre-alignment supplied lyric plan to the completed project."""
+    if project.lyric_layers is None or len(project.lines) != len(overlay["groups"]):
+        raise ValueError("入力歌詞の対応と歌唱行が一致しません")
+    for index, (group, line, reading) in enumerate(zip(
+        overlay["groups"], project.lines, readings, strict=True,
+    )):
+        group["source_asr_indices"] = group["asr_indices"]
+        group["asr_indices"] = [index]
+        group["line_ids"] = [line.id]
+        group["start_sec"], group["end_sec"] = project.line_time_range(line)
+        group["original_acoustic_reading"] = group["acoustic_reading"]
+        group["acoustic_reading"] = reading
+        line.original_text = group["display_text"]
+        line.original_line_index = index
+    overlay["reading_reviews"] = reviews
+    overlay["acoustic_changes"] = any(row["status"] == "applied" for row in reviews)
+    overlay["readings_fixed_before_alignment"] = True
+    project.lyric_layers["lyric_surface"] = overlay
+    return overlay
+
+
 def apply_supplied_surface(
     project: Project, supplied: list[str], *,
     refine: Callable[[int, str], dict[str, Any]] | None = None,

@@ -2503,6 +2503,74 @@ def analyze_audio(
             n_ambiguous, sum(1 for k in chosen if k != 0),
         )
 
+    supplied_overlay = None
+    supplied_reading_reviews: list[dict[str, object]] = []
+    if supplied_lyrics is not None:
+        from .known_lyrics import plan_supplied_alignment
+
+        automatic_readings = [
+            "".join(variants[index])
+            for variants, index in zip(line_variants, chosen, strict=True)
+        ]
+        prepared, supplied_overlay = plan_supplied_alignment(
+            retained_lines, automatic_readings, supplied_lyrics,
+        )
+        prepared_windows = _recognized_line_windows(prepared)
+        prepared_variants = []
+        for group, line in zip(supplied_overlay["groups"], prepared, strict=True):
+            if group["operation"] == "match":
+                supplied_candidates = reading_candidates(
+                    line.text, include_alternate_splits=True,
+                )
+            else:
+                supplied_candidates = ["".join(automatic_readings[index]
+                                               for index in group["asr_indices"])]
+            if not supplied_candidates:
+                raise RuntimeError("入力歌詞の読みを決定できませんでした")
+            prepared_variants.append([split_moras(kana) for kana in supplied_candidates])
+        prepared_choices = [0] * len(prepared)
+        supplied_evidence = None
+        if _has_kana_choice(prepared_variants):
+            prepared_choices, supplied_evidence = _choose_readings_with_kana(
+                audio_path, vocals, [strip_ruby(line.text) for line in prepared],
+                prepared_variants, prepared_windows,
+                device=device or "auto", shared_inference=shared_inference,
+            )
+        supplied_selected_variants = [[variants[index]] for variants, index in zip(
+            prepared_variants, prepared_choices, strict=True,
+        )]
+        aligned, _ = align_moras_with_variants(
+            vocals, supplied_selected_variants, device=device, emissions=emissions,
+            phonetic_aliases=True,
+            line_windows=None if recognition_windows_fallback else prepared_windows,
+        )
+        expected = sum(len(row[0]) for row in supplied_selected_variants)
+        if len(aligned) != expected:
+            raise RuntimeError("入力歌詞のモーラをすべて整列できませんでした")
+        evidence_lines = (supplied_evidence.get("lines")
+                          if supplied_evidence is not None else None)
+        for index, (group, variants, choice) in enumerate(zip(
+            supplied_overlay["groups"], prepared_variants, prepared_choices,
+            strict=True,
+        )):
+            supplied_reading_reviews.append({
+                "asr_indices": group["asr_indices"],
+                "before": group["acoustic_reading"],
+                "candidates": ["".join(row) for row in variants],
+                "proposed": "".join(variants[choice]),
+                "status": ("applied" if group["operation"] == "match"
+                           and "".join(variants[choice]) != group["acoustic_reading"]
+                           else "unchanged"),
+                "evidence": (evidence_lines[index]
+                             if isinstance(evidence_lines, list) else None),
+            })
+        supplied_overlay["reading_evidence"] = supplied_evidence
+        retained_lines = prepared
+        line_texts = [strip_ruby(line.text) for line in prepared]
+        line_variants = prepared_variants
+        chosen = prepared_choices
+        raw_alignment = [replace(mora) for mora in aligned]
+
     report(0.48)
 
     # Keep the measured CTC interval and delegate pitch entirely to SheetSage/Stage 3.
@@ -2749,120 +2817,32 @@ def analyze_audio(
         encoding="utf-8",
     )
 
-    if supplied_lyrics is not None:
-        import copy
+    if supplied_overlay is not None:
+        from .known_lyrics import apply_prepared_surface
 
-        from .known_lyrics import apply_supplied_surface
-
-        def refine_known_reading(index: int, text: str) -> dict[str, object]:
-            nonlocal raw_alignment, selected_readings, document, layer_data
-            from .ruby import has_ruby
-
-            baseline = selected_readings[index]
-            specified = reading_candidates(text, include_alternate_splits=True)
-            explicit = has_ruby(text)
-            candidates = list(dict.fromkeys(specified if explicit else [baseline, *specified]))
-            review: dict[str, object] = {
-                "before": baseline, "candidates": candidates, "status": "unchanged",
-            }
-            if candidates == [baseline]:
-                return review
-            windows = _recognized_line_windows(retained_lines)
-            start, end = windows[index]
-            variants = [[split_moras(kana) for kana in candidates]]
-            if len(candidates) == 1:
-                choices = [0]
-                review["reason"] = "explicit-ruby"
-            else:
-                choices, evidence = _choose_readings_with_kana(
-                    audio_path, vocals, [strip_ruby(text)], variants, [(start, end)],
-                    device=device or "auto", shared_inference=shared_inference,
-                )
-                review["evidence"] = evidence
-            selected = candidates[choices[0]]
-            review["proposed"] = selected
-            if selected == baseline:
-                return review
-            try:
-                local_alignment, _ = align_moras_with_variants(
-                    vocals, [[split_moras(selected)]], device=device, emissions=emissions,
-                    phonetic_aliases=True, line_windows=[(start, end)],
-                )
-                if any(m.start_sec < start or m.end_sec > end for m in local_alignment):
-                    review["status"] = "outside-recognized-window"
-                    return review
-                proposed_alignment = sorted(
-                    [m for m in raw_alignment if m.line != index]
-                    + [replace(m, line=index) for m in local_alignment],
-                    key=lambda m: (m.line, m.mora),
-                )
-                proposed_readings = selected_readings.copy()
-                proposed_readings[index] = selected
-                proposed_document, proposed_layers = build_stage3_layers(
-                    line_texts, proposed_readings, proposed_alignment, sheetsage_notes,
-                    whisper_line_windows=whisper_line_windows,
-                    enable_repeated_vocalization=whisper_line_windows is not None,
-                    ctc_emissions=emissions,
-                )
-                data = proposed_layers.to_dict()
-                _recover_synthesis_units(data, edge_spoken_utterance_ids=edge_spoken_utterance_ids)
-                _continuize_spoken_synthesis_lines(data)
-                _omit_unresolved_synthesis_units(data)
-                for slot in data["synthesis_plan"]:
-                    if "sheetsage2-vocal" in slot.get("pitch_sources", []):
-                        slot["pitch_confidence"] = None
-                proposed_project = copy.deepcopy(project)
-                apply_lyric_layers(proposed_project, data)
-            except (ValueError, CTCWindowCapacityError) as exc:
-                review["status"] = "infeasible-local-alignment"
-                review["reason"] = type(exc).__name__
-                return review
-
-            def unaffected_plan(candidate: Project) -> list[tuple[object, ...]]:
-                return [(n.line, n.kana, n.start_sec, n.end_sec, n.midi_note,
-                         n.start_tick, n.end_tick, n.source)
-                        for n in candidate.notes if n.line != index]
-
-            if unaffected_plan(project) != unaffected_plan(proposed_project):
-                review["status"] = "would-change-other-lines"
-                return review
-            # A proposed reading must cover its entire line; never accept a
-            # pronunciation correction by silently dropping its difficult units.
-            target = data["canonical"][index]
-            target_units = {u["singing_unit_id"] for u in data["performed"]
-                            if set(u["mora_ids"]) & set(target["mora_ids"])}
-            if any(o["singing_unit_id"] in target_units for o in data["omissions"]):
-                review["status"] = "incomplete-local-synthesis"
-                return review
-            project.notes, project.lines = proposed_project.notes, proposed_project.lines
-            project.lyric_layers = proposed_project.lyric_layers
-            raw_alignment, selected_readings = proposed_alignment, proposed_readings
-            document, layer_data = proposed_document, data
-            review["status"] = "applied"
-            return review
-
-        overlay = apply_supplied_surface(project, supplied_lyrics, refine=refine_known_reading)
+        overlay = apply_prepared_surface(
+            project, supplied_overlay, selected_readings, supplied_reading_reviews,
+        )
         (out / "lyric_surface.json").write_text(
             json.dumps(overlay, ensure_ascii=False, indent=1), encoding="utf-8",
         )
-        (out / "correspondence.json").write_text(document.to_json(), encoding="utf-8")
         analysis_data.update({
             "official_lyrics": True, "asr_used": True, "lyric_asr_used": True,
             "lyric_surface": overlay,
             "reading_asr_used": reading_asr_used or any(
-                "evidence" in row for row in overlay["reading_reviews"]
+                row.get("evidence") is not None for row in supplied_reading_reviews
             ),
             "mora_count": len(raw_alignment),
             "generation_quality": _generation_quality_assessment(layer_data),
         })
-        analysis_data["inference_roles"]["lyrics"] = "whisper-first-supplied-surface"
+        analysis_data["inference_roles"]["lyrics"] = "supplied-lyrics-before-mora-alignment"
         analysis_data["sources"] = {
-            source: sum(n.source == source for n in project.notes)
-            for source in sorted({n.source for n in project.notes})
+            source: sum(note.source == source for note in project.notes)
+            for source in sorted({note.source for note in project.notes})
         }
         analysis_data["limitations"].append(
-            "入力歌詞は認識結果に対応する表示として保持します。未対応の入力行は"
-            "歌われていないとは断定しません。読みの変更は音声で支持された行に限定します。"
+            "入力歌詞に対応した行は、その読みでモーラ時刻を再推定しました。"
+            "未対応の入力行は歌われていないとは断定しません。"
         )
         analysis_path.write_text(
             json.dumps(analysis_data, ensure_ascii=False, indent=1), encoding="utf-8",
