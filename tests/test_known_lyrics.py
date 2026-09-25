@@ -32,6 +32,23 @@ def test_known_lyrics_adjustment_reports_unrelated_audio(monkeypatch):
         )
 
 
+def test_supplied_lyrics_are_grouped_before_mora_alignment(monkeypatch):
+    readings = {"はしを渡る": "ハシオワタル", "白い雲": "シロイクモ",
+                "橋を渡る白い雲": "ハシオワタルシロイクモ", "遠い星": "トオイホシ"}
+    monkeypatch.setattr(known_lyrics, "text_to_kana", readings.__getitem__)
+    lines, overlay = known_lyrics.plan_supplied_alignment(
+        [TranscribedLine(0, 1, "はしを渡る"),
+         TranscribedLine(1, 2, "白い雲")],
+        ["ハシオワタル", "シロイクモ"],
+        ["橋を渡る白い雲", "遠い星"],
+    )
+    assert [(line.start_sec, line.end_sec, line.text) for line in lines] == [
+        (0, 2, "橋を渡る白い雲"),
+    ]
+    assert overlay["groups"][0]["asr_indices"] == [0, 1]
+    assert overlay["unused_supplied_indices"] == [1]
+
+
 def test_surface_overlay_preserves_notes_readings_and_unmatched_input(monkeypatch, tmp_path):
     readings = {"はしを渡る": "ハシオワタル", "橋を渡る": "ハシオワタル",
                 "白い雲": "シロイクモ", "橋を渡る白い雲": "ハシオワタルシロイクモ",
@@ -110,9 +127,10 @@ def test_asr_first_refines_only_acoustically_supported_known_reading(
                                          lyrics_path=lyrics, device="cpu")
     overlay = project.lyric_layers["lyric_surface"]
     review = overlay["reading_reviews"][0]
-    expected = "アシタ" if evidence == "アシタ" else "アス"
+    expected = "アシタ"
     assert project.lines[0].canonical_kana == expected
-    assert review["status"] == ("applied" if evidence == "アシタ" else "unchanged")
+    assert review["status"] == "applied"
     assert overlay["unused_supplied_indices"] == [1]
-    assert len(calls) == (2 if evidence == "アシタ" else 1)
+    assert len(calls) == 2
     assert all(window == [(0, 1)] for _, window in calls)
+    assert calls[-1][0] == [[['ア', 'シ', 'タ']]]

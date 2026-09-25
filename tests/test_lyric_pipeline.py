@@ -575,7 +575,7 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
     assert analysis["audio_pipeline"] == "stage3"
     assert analysis["mode"] == "sheetsage2_stage3"
     assert analysis["inference_roles"] == {
-        "lyrics": "whisper-first-supplied-surface",
+        "lyrics": "supplied-lyrics-before-mora-alignment",
         "mora_timing": "reazon-kana-ctc-input-audio",
         "reading": "yomi-unidic-default-reading",
         "notes": "sheetsage2-original-mix",
@@ -686,7 +686,8 @@ def test_known_lyrics_fails_truthfully_when_stage3_plan_is_invalid(monkeypatch, 
 
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
-    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda text, **_kwargs: ["カキ"])
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **k: [
         transcribe.TranscribedLine(0, .5, "かき")])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
