@@ -2759,7 +2759,7 @@ def analyze_audio(
             from .ruby import has_ruby
 
             baseline = selected_readings[index]
-            specified = reading_candidates(text)
+            specified = reading_candidates(text, include_alternate_splits=True)
             explicit = has_ruby(text)
             candidates = list(dict.fromkeys(specified if explicit else [baseline, *specified]))
             review: dict[str, object] = {

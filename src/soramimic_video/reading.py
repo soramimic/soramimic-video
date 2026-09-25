@@ -129,7 +129,9 @@ def _unidic_node_reading(node: Any, *, warn_unknown: bool = True) -> tuple[tuple
     return tuple(surfaces), _kana_only("".join(parts))
 
 
-def _unidic_kana_candidates(text: str) -> list[str]:
+def _unidic_kana_candidates(
+    text: str, *, include_alternate_splits: bool = False,
+) -> list[str]:
     """MeCab + unidic-lite の上位解析経路から異なる読みを返す。"""
     readings: list[str] = []
     seen: set[str] = set()
@@ -147,10 +149,9 @@ def _unidic_kana_candidates(text: str) -> list[str]:
             surfaces, kana = _unidic_node_reading(node, warn_unknown=path_index == 0)
             if best_surfaces is None:
                 best_surfaces = surfaces
-            # N-best には「沈/むよう」のような別の単語分割も含まれる。
-            # ここで必要なのは同じ表記トークンの読み違いなので、分割が
-            # 1-best と異なる経路は音響候補に混ぜない。
-            if surfaces != best_surfaces:
+            # 通常は別分割の読みを除く。音声根拠を確認する経路では
+            # 「今夜→イマヨル」のような候補も必要になる。
+            if not include_alternate_splits and surfaces != best_surfaces:
                 continue
             normalized = normalize_long_vowels(kana)
             if kana and normalized not in seen:
@@ -169,11 +170,15 @@ def _unidic_kana(text: str) -> str:
     return kana
 
 
-def _unidic_candidates_with_ruby(text: str) -> list[str]:
+def _unidic_candidates_with_ruby(
+    text: str, *, include_alternate_splits: bool = False,
+) -> list[str]:
     """明示ルビを守りつつ、UniDic N-best の行読み候補を作る。"""
     parts = ruby.segments(text)
     if len(parts) == 1 and parts[0][1] is None:
-        return _unidic_kana_candidates(parts[0][0])
+        return _unidic_kana_candidates(
+            parts[0][0], include_alternate_splits=include_alternate_splits,
+        )
     # 明示ルビはその区間の読みを固定する入力。ルビ前後を別々に N-best
     # 列挙すると文全体の接続コストを失うため、従来どおり1-bestだけを使う。
     kana = text_to_kana_unidic(text)
@@ -386,7 +391,9 @@ def text_to_kana(text: str) -> str:
     return text_to_kana_yomi(text) or text_to_kana_unidic(text)
 
 
-def reading_candidates(text: str) -> list[str]:
+def reading_candidates(
+    text: str, *, include_alternate_splits: bool = False,
+) -> list[str]:
     """行の読み候補(重複除去済み、第1候補が既定)。
 
     yomi の既定読みと UniDic N-best の発音形を候補にする。
@@ -397,7 +404,10 @@ def reading_candidates(text: str) -> list[str]:
     ルビ注釈のある区間は両エンジンで同じ(指定)読みになるので、候補は増えない。
     """
     yomi = _yomi_candidates_with_ruby(text)
-    unidic = _unidic_candidates_with_ruby(text)
+    unidic = (
+        _unidic_candidates_with_ruby(text, include_alternate_splits=True)
+        if include_alternate_splits else _unidic_candidates_with_ruby(text)
+    )
     candidates = [*yomi, *unidic]
     unique: list[str] = []
     seen: set[str] = set()

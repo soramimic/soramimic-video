@@ -259,7 +259,8 @@ def test_known_lyrics_audio_path_always_calls_whisper(monkeypatch, tmp_path, adj
     monkeypatch.setattr(known_lyrics, "text_to_kana", lambda text: text)
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
-    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda text, **_kwargs: ["カキ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     def align(*args, **kwargs):
         assert kwargs["line_windows"] == (None if adjust else [(0.0, .6)])
@@ -478,7 +479,8 @@ def test_known_lyrics_ctc_capacity_error_is_not_turned_into_lyric_deletion(
     from soramimic_video.analyze_audio import analyze_audio
     from soramimic_video.mora_align import CTCWindowCapacityError
 
-    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda text, **_kwargs: ["カキ"])
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **k: [
         transcribe.TranscribedLine(0, .6, "かき")])
     from soramimic_video.audio_melody import MelodyNote
@@ -541,7 +543,8 @@ def test_known_lyrics_audio_path_runs_stage3_for_sheetsage(monkeypatch, tmp_path
 
     monkeypatch.setitem(sys.modules, "soundfile", SimpleNamespace(
         info=lambda path: SimpleNamespace(duration=1.0)))
-    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda text, **_kwargs: ["カキ"])
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *a, **k: [
         transcribe.TranscribedLine(0, .5, "かき")])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
@@ -598,7 +601,8 @@ def test_unresolved_stage3_unit_is_omitted_for_known_and_automatic_lyrics(
     monkeypatch.setattr(transcribe, "transcribe_lines", lambda *args, **kwargs: [
         TranscribedLine(0.0, 0.5, "かき"),
     ])
-    monkeypatch.setattr(reading, "reading_candidates", lambda text: ["カキ"])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda text, **_kwargs: ["カキ"])
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
     monkeypatch.setattr(mora_align, "align_moras_with_variants", lambda *args, **kwargs: (
         [AlignedMora(0, 0, "カ", 0.1, 0.2, 0.8),

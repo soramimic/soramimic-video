@@ -52,7 +52,8 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
         ),
     )
     monkeypatch.setattr(reading, "automatic_reading_candidates", lambda _text: ["カキ"])
-    monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カキ"])
+    monkeypatch.setattr(reading, "reading_candidates",
+                        lambda _text, **_kwargs: ["カキ"])
     monkeypatch.setattr(known_lyrics, "text_to_kana", lambda _text: "カキ")
     monkeypatch.setattr(mora_align, "compute_emissions", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
