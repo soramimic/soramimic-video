@@ -888,7 +888,9 @@ def analyze_audio(
                 whisper_model,
                 device or "auto",
                 sheetsage_device,
-                lambda value: report(0.01 + value * 0.47),
+                # SheetSage can finish while Demucs or Whisper is still busy.
+                # Keep the model phase below the later lyric/CTC milestones.
+                lambda value: report(0.01 + value * 0.19),
                 run_separation=not skip_separation,
                 run_whisper=lyrics_path is None or adjust_lyrics,
                 shared_inference=shared_inference,
@@ -1032,7 +1034,7 @@ def analyze_audio(
             if sheetsage_notes is None:
                 sheetsage_notes = _run_sheetsage(
                     audio_path, project_dir, sheetsage_device,
-                    lambda value: report(0.22 + value * 0.26),
+                    lambda value: report(0.01 + value * 0.19),
                 )
                 sheetsage_was_run = True
             if sheetsage_notes is None:
@@ -1073,7 +1075,7 @@ def analyze_audio(
                     audio_path,
                     project_dir,
                     sheetsage_device,
-                    lambda value: report(0.22 + value * 0.26),
+                    lambda value: report(0.01 + value * 0.19),
                 )
                 sheetsage_was_run = True
             if sheetsage_notes is None:
@@ -1145,6 +1147,7 @@ def analyze_audio(
         recognition_mode = "whisper-mix-semantic-gate"
         if not retained:
             raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
+    report(0.26)
     # 3. カナ化 + forced alignment。正式歌詞の行は、明示的な削除・補完を除いて
     # Whisperで変更しない。KanaWhisperは文字列を書き換えず、ルビ・辞書から
     # 得た閉じた発音候補の再順位付けだけに使う。
@@ -1164,6 +1167,7 @@ def analyze_audio(
     from .mora_align import compute_emissions
 
     emissions = emissions or compute_emissions(vocals, device)
+    report(0.32)
     def prepare_automatic_alignment(
         current_lines: list[TranscribedLine], phase: str,
     ) -> tuple[
@@ -1343,6 +1347,7 @@ def analyze_audio(
                 line_windows=None,
             )
 
+    report(0.40)
     if recognition_mode is not None:
         from .semantic_lyrics import MIN_CTC_MEDIAN_SCORE, apply_ctc_support
 
@@ -1900,6 +1905,7 @@ def analyze_audio(
                 chosen, reading_evidence, selected_variants, aligned,
             ) = prepare_automatic_alignment(retained_lines, "deficit-recovery")
 
+    report(0.48)
     if recognition_mode is not None:
         # Stage 3 is the only component which knows whether a SheetSage note is
         # truly unowned after lyric alignment.  Run it once as a read-only probe,
@@ -2375,6 +2381,7 @@ def analyze_audio(
                 chosen, reading_evidence, selected_variants, aligned,
             ) = prepare_automatic_alignment(retained_lines, "unowned-note-recovery")
 
+    report(0.55)
     expected_moras = sum(
         len(line[choice])
         for line, choice in zip(line_variants, chosen, strict=True)
@@ -2570,8 +2577,6 @@ def analyze_audio(
         line_variants = prepared_variants
         chosen = prepared_choices
         raw_alignment = [replace(mora) for mora in aligned]
-
-    report(0.48)
 
     # Keep the measured CTC interval and delegate pitch entirely to SheetSage/Stage 3.
     report(0.62)
