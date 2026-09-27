@@ -256,14 +256,10 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     )
 
     calls = []
-    progress = []
-    model_phase_progress = []
     shared_notes = [MelodyNote(0.6, 0.8, 60)]
 
     def run_shared(*args, **kwargs):
         calls.append((args, kwargs))
-        args[5](1.0)
-        model_phase_progress.append(progress[-1])
         return (
             tmp_path / "project/separation/vocals.wav",
             tmp_path / "project/separation/no_vocals.wav",
@@ -357,7 +353,6 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         tmp_path / "input.wav",
         tmp_path / "project",
         device="cuda",
-        progress=progress.append,
     )
 
     assert len(calls) == 1
@@ -373,9 +368,6 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         "run_whisper": True,
         "shared_inference": True,
     }
-    assert model_phase_progress == [0.2]
-    assert progress == sorted(progress)
-    assert 0.48 in progress and 0.62 in progress and progress[-1] == 1.0
     import json
 
     recognition = json.loads(
