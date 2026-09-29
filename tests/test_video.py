@@ -2358,3 +2358,28 @@ def test_fanmade_credit_is_limited_to_vtuber(tmp_path, wordlist):
     assert ("非公式・ファンメイド" in idle_frame_data(project)["app_credit"]) == (
         wordlist == "vtuber"
     )
+
+
+def test_saved_project_uses_current_shared_word_image(tmp_path, monkeypatch):
+    from soramimic_video import asset_store, convert
+
+    project = _project(tmp_path)
+    root = tmp_path / "wordlists"
+    root.mkdir()
+    (root / "test.csv").write_text("id,original,surface,image\n1,静,静,https://old.test/a.png\n")
+    monkeypatch.setattr(convert, "WORDLISTS_DIR", root)
+    project.parody.lines[0].words[0].wordlist_row.update({"id": "1", "original": "静"})
+    original_row = dict(project.parody.lines[0].words[0].wordlist_row)
+    store = tmp_path / "store"
+    store.mkdir()
+    adopted = {"source_url": "https://new.test/a.webp", "row": {"image_page": "new page"},
+               "credit": {"credit_text": "new credit"}}
+    (store / "manifest.json").write_text(json.dumps({"words": {
+        asset_store.word_asset_key("test", "1"): {"default": adopted, "variants": {"静": adopted}},
+    }}))
+    monkeypatch.setenv(asset_store.ASSET_STORE_ENV, str(store))
+    frames = collect_word_frames(project, load_layout(None))
+    assert frames[0].data["image"] == adopted["source_url"]
+    assert frames[0].data["image_credit"] == "new credit"
+    assert frames[0].data["image_page"] == "new page"
+    assert project.parody.lines[0].words[0].wordlist_row == original_row
