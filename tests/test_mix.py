@@ -14,6 +14,7 @@ from soramimic_video.mix import (
     make_accompaniment_midi,
     measure_loudness,
     mix,
+    render_midi,
     resolve_accompaniment,
 )
 from soramimic_video.project import Project, SongInfo
@@ -21,6 +22,123 @@ from soramimic_video.synthesize import vocal_path
 from soramimic_video.xfparse import analyze_midi
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
+XG_RESET = (0x43, 0x10, 0x4C, 0, 0, 0x7E, 0)
+
+
+def _save_midi(path: Path, *tracks: list[mido.Message]) -> Path:
+    midi = mido.MidiFile()
+    midi.tracks.extend(mido.MidiTrack(messages) for messages in tracks)
+    midi.save(path)
+    return path
+
+
+@pytest.mark.parametrize("bank", [120, 126, 127])
+def test_xg_drums_keep_pitch_and_channel_across_tracks(tmp_path: Path, bank: int):
+    setup = [
+        mido.Message("sysex", data=(0x7E, 0x7F, 9, 1)),
+        mido.Message("sysex", data=XG_RESET),
+        mido.Message("control_change", channel=8, control=0, value=bank),
+        mido.Message("program_change", channel=8, program=25),
+    ]
+    notes = [
+        mido.Message("note_on", channel=8, note=38, velocity=90, time=10),
+        mido.Message("note_off", channel=8, note=38, time=120),
+        mido.Message("note_on", channel=3, note=60, velocity=90),
+        mido.Message("note_off", channel=3, note=60, time=120),
+    ]
+    source = _save_midi(tmp_path / "input.mid", setup, notes)
+    project = Project(song=SongInfo(str(source), 480, melody_channel=0, key_shift=5))
+    output = make_accompaniment_midi(project, tmp_path / "acc.mid")
+    actual = mido.MidiFile(output).tracks
+    assert actual[0] == mido.MidiFile(source).tracks[0]
+    assert [(m.channel, m.note, m.time) for m in actual[1] if not m.is_meta] == [
+        (8, 38, 10), (8, 38, 120), (3, 65, 0), (3, 65, 120),
+    ]
+
+
+def test_xg_channel_can_switch_between_drums_and_melody(tmp_path: Path):
+    messages = [
+        mido.Message("sysex", data=XG_RESET),
+        mido.Message("control_change", channel=8, control=0, value=127),
+        mido.Message("note_on", channel=8, note=38, velocity=90),
+        mido.Message("control_change", channel=8, control=0, value=0, time=10),
+        mido.Message("note_on", channel=8, note=60, velocity=90),
+        mido.Message("note_off", channel=8, note=38, time=10),
+        mido.Message("note_on", channel=8, note=60, velocity=0, time=10),
+    ]
+    source = _save_midi(tmp_path / "input.mid", messages)
+    project = Project(song=SongInfo(str(source), 480, melody_channel=0, key_shift=-3))
+    notes = _accompaniment_notes(project, tmp_path, "acc.mid")
+    assert [(m.type, m.note) for m in notes] == [
+        ("note_on", 38), ("note_on", 57), ("note_off", 38), ("note_on", 57),
+    ]
+
+
+def test_gm_reset_restores_standard_percussion_channels(tmp_path: Path):
+    messages = [
+        mido.Message("sysex", data=XG_RESET),
+        mido.Message("control_change", channel=8, control=0, value=127),
+        mido.Message("sysex", data=(0x7E, 0x7F, 9, 1)),
+        mido.Message("note_on", channel=8, note=60, velocity=90),
+        mido.Message("note_off", channel=8, note=60, time=10),
+        mido.Message("note_on", channel=9, note=38, velocity=90),
+        mido.Message("note_off", channel=9, note=38, time=10),
+    ]
+    source = _save_midi(tmp_path / "input.mid", messages)
+    project = Project(song=SongInfo(str(source), 480, melody_channel=0, key_shift=3))
+    notes = _accompaniment_notes(project, tmp_path, "acc.mid")
+    assert [(m.channel, m.note) for m in notes] == [(8, 63), (8, 63), (9, 38), (9, 38)]
+
+
+def test_gs_rhythm_part_is_not_transposed(tmp_path: Path):
+    # GS part 9 maps to MIDI channel 8; checksum covers address and data.
+    data = (0x40, 0x19, 0x15, 1)
+    source = _save_midi(tmp_path / "input.mid", [
+        mido.Message("sysex", data=(0x41, 0x10, 0x42, 0x12, *data, (-sum(data)) % 128)),
+        mido.Message("note_on", channel=8, note=38, velocity=90),
+        mido.Message("note_off", channel=8, note=38, time=120),
+    ])
+    project = Project(song=SongInfo(str(source), 480, melody_channel=0, key_shift=3))
+    assert {m.note for m in _accompaniment_notes(project, tmp_path, "acc.mid")} == {38}
+
+
+def test_render_midi_accepts_file_setup_device_ids(tmp_path: Path, monkeypatch):
+    sf = tmp_path / "soundfont.sf2"
+    sf.touch()
+    output = tmp_path / "out.wav"
+    commands = []
+
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        output.write_bytes(b"RIFF")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/fluidsynth")
+    monkeypatch.setattr(runproc, "run", run)
+    render_midi(tmp_path / "input.mid", output, str(sf))
+    assert commands[0][commands[0].index("-o") + 1] == "synth.device-id=127"
+
+
+@pytest.mark.skipif(
+    shutil.which("fluidsynth") is None or not Path("/usr/share/sounds/sf2/FluidR3_GM.sf2").exists(),
+    reason="FluidSynth and the GM soundfont are required",
+)
+def test_render_xg_drums_match_standard_drum_channel(tmp_path: Path):
+    outputs = []
+    for channel in (8, 9):
+        source = _save_midi(tmp_path / f"input-{channel}.mid", [
+            mido.Message("sysex", data=(0x7E, 0x7F, 9, 1)),
+            mido.Message("sysex", data=XG_RESET),
+            mido.Message("control_change", channel=channel, control=0, value=127),
+            mido.Message("program_change", channel=channel, program=0),
+            mido.Message("note_on", channel=channel, note=38, velocity=90),
+            mido.Message("note_off", channel=channel, note=38, time=120),
+        ])
+        outputs.append(render_midi(
+            source, tmp_path / f"output-{channel}.wav", "/usr/share/sounds/sf2/FluidR3_GM.sf2"
+        ).read_bytes())
+    assert len(outputs[0]) > 44
+    assert outputs[0] == outputs[1]
 
 
 def test_make_accompaniment_midi_removes_melody(tmp_path: Path):
