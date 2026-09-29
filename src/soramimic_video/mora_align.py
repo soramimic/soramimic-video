@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -166,13 +167,20 @@ def _validated_line_windows(
     return normalized
 
 
-def compute_emissions(vocals_path: Path, device: str | None = None) -> CTCEmissions:
+def compute_emissions(
+    vocals_path: Path, device: str | None = None,
+    *, on_progress: Callable[[int, int], None] | None = None,
+) -> CTCEmissions:
     import torch
     from transformers import Wav2Vec2CTCTokenizer
 
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     vocab = Wav2Vec2CTCTokenizer.from_pretrained(MODEL_NAME).get_vocab()
-    return CTCEmissions(_compute_log_probs(vocals_path, device), vocab)
+    log_probs = (
+        _compute_log_probs(vocals_path, device) if on_progress is None
+        else _compute_log_probs(vocals_path, device, on_progress=on_progress)
+    )
+    return CTCEmissions(log_probs, vocab)
 
 
 def decode_kana_window(
@@ -423,7 +431,10 @@ def interpolate_missing(moras: list[AlignedMora]) -> None:
         m.end_sec = max(next_start, prev_end)
 
 
-def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (T, C)
+def _compute_log_probs(
+    vocals_path: Path, device: str,
+    *, on_progress: Callable[[int, int], None] | None = None,
+) -> Any:  # torch.Tensor (T, C)
     import librosa
     import numpy as np
     import torch
@@ -460,6 +471,8 @@ def _compute_log_probs(vocals_path: Path, device: str) -> Any:  # torch.Tensor (
         keep_to = logits.shape[0] if s1 >= n else keep_from + _CHUNK_SAMPLES // FRAME_SAMPLES
         chunks.append(logits[keep_from:keep_to])
         pos += _CHUNK_SAMPLES
+        if on_progress is not None:
+            on_progress(len(chunks), math.ceil(n / _CHUNK_SAMPLES))
     runproc.raise_if_cancelled()
     log_probs = torch.nn.functional.log_softmax(torch.cat(chunks), dim=-1)
     logger.debug("logits: %d frames x %d tokens", *log_probs.shape)
@@ -534,6 +547,7 @@ def align_moras_with_variants(
     emissions: CTCEmissions | None = None,
     phonetic_aliases: bool = False,
     line_windows: list[tuple[float, float]] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[AlignedMora], list[int]]:
     """行ごとの読み候補つきアライメント。
 
@@ -584,6 +598,8 @@ def align_moras_with_variants(
                                    start_sec=max(start, mora.start_sec),
                                    end_sec=min(end, mora.end_sec)) for mora in local)
             choices.append(chosen[0])
+            if on_progress is not None:
+                on_progress(line + 1, len(line_variants))
         return aligned, choices
     first, last = _unpadded_emission_bounds(len(log_probs))
     return _align_variants(

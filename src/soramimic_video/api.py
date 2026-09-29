@@ -666,6 +666,7 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     stage_started_at: float | None = None
+    stage_detail: str | None = None
     stage_progress: int | None = None  # 現在工程の実進捗(%)
     stage_estimated_total: float | None = None  # 現在工程の所要秒の見積り
     log: deque[str] = field(default_factory=lambda: deque(maxlen=200))
@@ -724,6 +725,8 @@ class Job:
         if self.status == "running" and self.stage_started_at:
             elapsed = round(time.time() - self.stage_started_at, 1)
             d["stage_elapsed"] = elapsed
+            if self.stage_detail and self.stage == "analyze":
+                d["stage_detail"] = self.stage_detail
             pct, eta = self._stage_progress(elapsed)
             if pct is not None:
                 d["stage_progress"] = pct
@@ -1281,6 +1284,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
                 device=config.get("audio_device"),
                 progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
+                progress_detail=lambda value: setattr(job, "stage_detail", value),
             )
         else:
             from .xfparse import analyze_midi
@@ -1486,6 +1490,7 @@ def _stage(job: Job, name: str, estimated_total: float | None = None):
     job.stage = name
     job.stage_started_at = time.time()
     job.stage_progress = None
+    job.stage_detail = None
     job.stage_estimated_total = estimated_total
     logger.info("[job %s] ステージ開始: %s", job.id, name)
     yield

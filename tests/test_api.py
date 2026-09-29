@@ -2841,7 +2841,7 @@ def test_index_html_progress_uses_the_active_stage_plan():
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
     assert 'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
-    assert "setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`);" in html
+    assert "const text = `${job.stage_detail || label}${elapsed}`;" in html
     assert "setJobStatus(`${label}${tail}`, `${label}${tail}`);" in html
 
 
@@ -2892,3 +2892,20 @@ def test_image_sources_restricts_paths_and_preserves_fsp_metadata(client):
     assert len(fsp) == 26
     assert all(row["image"] and row["image_page"] and row["image_credit"] for row in fsp)
     assert all(row["image_usage"] == "noncommercial_fanwork" for row in fsp)
+
+
+def test_audio_analysis_detail_is_live_and_cleared_between_stages(tmp_path):
+    job = api_mod.Job(id="analysis-detail", dir=tmp_path, params={"input_kind": "audio"})
+    job.status = "running"
+    with api_mod._stage(job, "analyze"):
+        job.stage_detail = "歌詞の時刻合わせ · 12/30行"
+        job.stage_progress = 66
+        body = job.to_dict()
+        assert body["stage_detail"] == "歌詞の時刻合わせ · 12/30行"
+        assert body["stage_progress"] == 66
+        assert "stage_eta_seconds" not in body
+    with api_mod._stage(job, "synthesize"):
+        assert job.stage_detail is None
+        assert "stage_detail" not in job.to_dict()
+    job.status = "done"
+    assert "stage_detail" not in job.to_dict()
