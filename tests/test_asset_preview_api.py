@@ -208,3 +208,35 @@ def test_cache_and_store_are_not_static_http_mounts(tmp_path, monkeypatch):
     assert client.get("/image-cache/source.png").status_code == 404
     assert client.get("/asset-preview-cache/source.png").status_code == 404
     assert client.get("/assets/images/source.png").status_code == 404
+
+
+@pytest.mark.parametrize("public", [False, True])
+def test_word_id_uses_shared_image_and_current_usage(tmp_path, monkeypatch, public):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1" if public else "0")
+    client, _original, source, _jobs = _setup(tmp_path, monkeypatch)
+    wordlist = convert.WORDLISTS_DIR / "allowed.csv"
+    wordlist.write_text("id,original,surface,image\n938,ミオ,ミオ," + URL + "\n")
+    new_url = "https://example.test/current.webp"
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    entry = {"status": "available", "source_url": new_url,
+             "local_path": "images/source.png", "sha256": digest,
+             "row": {"image_usage": "noncommercial_fanwork"},
+             "credit": {"status": "known", "credit_text": "current credit"}}
+    (source.parent.parent / "manifest.json").write_text(json.dumps({
+        "assets": {new_url: entry},
+        "words": {asset_store.word_asset_key("allowed", "938"): {
+            "default": entry, "variants": {"ミオ": entry},
+        }},
+    }))
+    asset_store._read_manifest.cache_clear()
+    params = {"wordlist": "allowed", "word_id": "938"}
+    assert client.get("/api/asset-preview", params=params).status_code == 403
+    params["noncommercial_fanwork"] = "true"
+    assert client.get("/api/asset-preview", params=params).status_code == 200
+    assert client.get("/api/asset-preview", params={**params, "variant": "ミオ"}).status_code == 200
+    for invalid in ({"word_id": "absent"}, {"variant": "absent"}):
+        assert client.get("/api/asset-preview", params={**params, **invalid}).status_code == 404
+    assert client.get("/api/asset-preview", params={**params, "url": URL}).status_code == 400
+    credits = client.get("/api/image-sources", params={"wordlist": "allowed"}).json()
+    assert credits[0]["image"] == new_url
+    assert credits[0]["image_credit"] == "current credit"

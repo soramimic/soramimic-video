@@ -1333,7 +1333,13 @@ def _resolve_shared_notes(
 
 def _load_wordlist_rows(csv_path: Path) -> dict[str, list[dict[str, str]]]:
     with open(csv_path, encoding="utf-8") as f:
-        return _rows_by_id(f)
+        rows = _rows_by_id(f)
+    if _is_packaged_wordlist(csv_path):
+        from .asset_store import resolve_word_row
+
+        rows = {key: [resolve_word_row(csv_path.stem, row) for row in group]
+                for key, group in rows.items()}
+    return rows
 
 
 def wordlist_rows_from_text(text: str) -> dict[str, list[dict[str, str]]]:
