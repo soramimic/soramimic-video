@@ -2134,7 +2134,7 @@ function toggleSynthOpts() {
   $("prettypitch-credit").hidden = !isPrettyPitch;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
   $("auto-octave-hint").textContent = isPrettyPitch
-    ? "PrettyPitch試験バックエンドでは推定した音高をそのまま使います。"
+    ? "PrettyPitchの波音リツはVOICEVOXと同じ音域と仮定し、曲全体をオクターブ単位で自動移調します。"
     : isVv
       ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
         + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"

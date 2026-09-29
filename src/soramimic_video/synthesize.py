@@ -12,6 +12,8 @@ from .neutrino import model_pitch_range, run_neutrino
 from .octave import (
     NEUTRINO_SAFE_KEY_MAX,
     NEUTRINO_SAFE_KEY_MIN,
+    VOICEVOX_SAFE_KEY_MAX,
+    VOICEVOX_SAFE_KEY_MIN,
     resolve_auto_shift,
 )
 from .project import Project
@@ -82,7 +84,7 @@ def synthesize(
     synthesizer で使うバックエンドを選ぶ("neutrino" / "voicevox" /
     "prettypitch")。PrettyPitchは開発用の外部ランタイムを環境変数で指定する。
     auto_octave(既定ON)はエンジンの安全音域に収まるよう曲全体をオクターブ単位で
-    自動移調する(VOICEVOX/NEUTRINO共通。移調はユーザー指定transposeに加算)。
+    自動移調する(全バックエンド共通。移調はユーザー指定transposeに加算)。
     オクターブ調整だけでは収まらない広音域の曲では、曲全体のキー変更(半音)も
     併用する。キー変更ぶんは project.song.key_shift に記録され、mixが伴奏MIDIに
     同じだけ適用する(octave.resolve_auto_shift 参照)。
@@ -113,9 +115,13 @@ def synthesize(
     if synthesizer == "prettypitch":
         from .prettypitch import run_prettypitch
 
-        # PrettyPitchは譜面の音高を直接条件にするため、試験バックエンドでは
-        # 推定音高を勝手に折り返さない。ユーザー指定transposeだけを適用する。
-        project.song.key_shift = 0
+        # 波音リツの得意音域をVOICEVOXと同じと仮定する。
+        # 実測したPrettyPitchモデル固有の推奨音域ではない。
+        if auto_octave:
+            transpose += resolve_auto_shift(
+                project, octave_keys, transpose,
+                VOICEVOX_SAFE_KEY_MIN, VOICEVOX_SAFE_KEY_MAX, "PrettyPitch",
+            )
         return run_prettypitch(
             project,
             project_dir,
