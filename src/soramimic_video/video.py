@@ -919,8 +919,8 @@ def build_section_cues(
             continue
         if sec.kind == "outro":
             # 後奏が短い曲ではエンドロールを出さない。使用単語が無くても
-            # MIDI表記があれば最終クレジットページだけは出す。
-            if sec.duration < OUTRO_MIN_SEC or (not words and not midi_end_credit.strip()):
+            # 最終クレジットページは出す。
+            if sec.duration < OUTRO_MIN_SEC or (not words and not layout.has_section("credits")):
                 continue
             show_credits = layout.has_section("credits")
             # クレジットページに最低1枚ぶんを残し、残りを単語ページに割り振る
@@ -1206,7 +1206,7 @@ def build_image_cues(
 
     フレームは単語リスト行の画像+列情報をレイアウト定義で合成したもの。
     画像がなくてもレイアウトのtext要素が埋まる単語はテキストのみで表示する。
-    app_credit は全フレームの隅に焼き込む署名(既定は「lyrics & video by Soramimic」)。
+    app_credit は明示配置または app_credit: true のレイアウトで使う署名。
     image_lead_sec はカードだけを歌唱より先に出す秒数。字幕・音声は変更しない。
     """
     if image_lead_sec < 0:
@@ -1239,7 +1239,7 @@ def build_image_cues(
         # 音声と字幕はprojectの元時刻を使い続ける。
         start = max(0.0, wf.start - image_lead_sec)
         data, use_fallback = wf.data, wf.use_fallback
-        # 全フレーム共通の署名(レイアウトが左下に焼き込む)
+        # 明示配置または常時表示を指定したレイアウト向けの署名。
         data["app_credit"] = app_credit or app_credit_for_wordlist(project.parody.wordlist)
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
@@ -1914,7 +1914,7 @@ def actual_video_total_sec(
     total = _resolve_total_sec(sung_end, _audio_duration_sec(audio_path))
     words = used_words(project)
     return extend_for_endroll(
-        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+        total, sung_end, words or [""]
     )
 
 
@@ -1942,7 +1942,7 @@ def planned_video_total_sec(project: Project, midi_end_credit: str = "") -> floa
     total = _resolve_total_sec(sung_end, expected_audio)
     words = used_words(project)
     return extend_for_endroll(
-        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+        total, sung_end, words or [""]
     )
 
 
@@ -1988,7 +1988,7 @@ def prepare_video(
     minimum = extend_for_endroll(
         sung_end,
         sung_end,
-        endroll_words or ([""] if midi_end_credit.strip() else []),
+        endroll_words or [""],
     )
     if total_sec + 1e-6 < minimum:
         # The planned duration is an optimization hint computed before audio
@@ -2186,7 +2186,7 @@ def make_video(
     extended_sec = extend_for_endroll(
         total_sec,
         sung_end_sec,
-        endroll_words or ([""] if midi_end_credit.strip() else []),
+        endroll_words or [""],
     )
     if extended_sec > total_sec:
         logger.info(

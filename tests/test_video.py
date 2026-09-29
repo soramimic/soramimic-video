@@ -727,6 +727,7 @@ def test_image_cues_bake_app_credit(tmp_path: Path):
 
     lay = tmp_path / "l.json"
     lay.write_text(json.dumps({
+        "app_credit": True,
         "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2],
                       "size": 0.1}],
     }), encoding="utf-8")
@@ -1520,8 +1521,8 @@ def test_parallel_video_totals_reserve_midi_end_credit_page_without_words(
     monkeypatch.setattr(video_mod, "_audio_duration_sec", lambda path: sung_end)
     monkeypatch.setattr(video_mod, "used_words", lambda project: [])
 
-    assert video_mod.planned_video_total_sec(project) == sung_end
-    assert video_mod.actual_video_total_sec(project, audio) == sung_end
+    assert video_mod.planned_video_total_sec(project) == sung_end + 6.0
+    assert video_mod.actual_video_total_sec(project, audio) == sung_end + 6.0
     assert video_mod.planned_video_total_sec(project, "MIDI：制作者") == sung_end + 6.0
     assert video_mod.actual_video_total_sec(project, audio, "MIDI：制作者") == sung_end + 6.0
 
@@ -2102,8 +2103,9 @@ def test_midi_credit_is_available_only_to_final_credit_section(tmp_path: Path):
     assert midi_credit not in app_credit_text(original_song="曲")
 
 
-def test_midi_end_credit_gets_final_page_even_without_used_words(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("midi_credit", ["", "MIDI：制作者"])
+def test_end_credit_gets_final_page_even_without_used_words(
+    tmp_path: Path, monkeypatch, midi_credit: str
 ):
     from soramimic_video import video as video_mod
     from soramimic_video.layout import load_layout
@@ -2118,7 +2120,7 @@ def test_midi_end_credit_gets_final_page_even_without_used_words(
         tmp_path / "v",
         320,
         180,
-        midi_end_credit="MIDI：制作者",
+        midi_end_credit=midi_credit,
     )
     assert len(got) == 1
     assert got[0].start == 10.0 and got[0].end == 20.0
