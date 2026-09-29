@@ -23,7 +23,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from threading import RLock
+from typing import TYPE_CHECKING, Any
 
 from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
 from .kana import split_fine_moras, split_moras, vowel_of
@@ -559,6 +560,8 @@ def _run_audio_models(
     run_separation: bool,
     run_whisper: bool,
     shared_inference: bool,
+    on_detail: Callable[[str], None] | None = None,
+    on_model_progress: Callable[[float], None] | None = None,
 ) -> tuple[
     Path,
     Path | None,
@@ -574,18 +577,51 @@ def _run_audio_models(
     from .separation import separate
     from .transcribe import transcribe_lines
 
+    lock = RLock()
+    active: dict[str, str] = {}
+    fractions: dict[str, float] = {}
+    weights = {"歌声と伴奏の分離": 0.15, "歌詞認識": 0.12, "メロディー解析": 0.20}
+
+    def publish() -> None:
+        if on_detail is not None:
+            on_detail(" / ".join(active.values()))
+
+    def run(label: str, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        with lock:
+            active[label] = label
+            publish()
+        result = function(*args, **kwargs)
+        with lock:
+            del active[label]
+            fractions[label] = 1.0
+            if on_model_progress is not None:
+                on_model_progress(sum(weights[key] * value for key, value in fractions.items()))
+            publish()
+        return result
+
+    def melody_progress(value: float) -> None:
+        with lock:
+            value = max(0.0, min(1.0, value))
+            fractions["メロディー解析"] = max(fractions.get("メロディー解析", 0.0), value)
+            active["メロディー解析"] = f"メロディー解析 · {round(value * 100)}%"
+            if on_model_progress is not None:
+                on_model_progress(sum(weights[key] * frac for key, frac in fractions.items()))
+            publish()
+            on_sheetsage_progress(value)
+
     with ThreadPoolExecutor(
         max_workers=3 if shared_inference else 1,
         thread_name_prefix="audio-analysis",
     ) as executor:
         separation_future = (
-            executor.submit(separate, audio_path, project_dir / SEPARATION_DIR)
+            executor.submit(run, "歌声と伴奏の分離", separate,
+                            audio_path, project_dir / SEPARATION_DIR)
             if run_separation
             else None
         )
         whisper_future = (
             executor.submit(
-                transcribe_lines,
+                run, "歌詞認識", transcribe_lines,
                 audio_path,
                 whisper_model,
                 whisper_device,
@@ -596,11 +632,11 @@ def _run_audio_models(
             else None
         )
         sheetsage_future = executor.submit(
-            _run_sheetsage,
+            run, "メロディー解析", _run_sheetsage,
             audio_path,
             project_dir,
             sheetsage_device,
-            on_sheetsage_progress,
+            melody_progress,
         )
         vocals, accompaniment = (
             separation_future.result()
@@ -803,11 +839,14 @@ def analyze_audio(
     device: str | None = None,
     progress: Callable[[float], None] | None = None,
     adjust_lyrics: bool = False,
+    progress_detail: Callable[[str], None] | None = None,
 ) -> Project:
     from .mora_align import (
         CTCWindowCapacityError,
-        align_moras_with_variants,
         retry_pathological_line_alignments,
+    )
+    from .mora_align import (
+        align_moras_with_variants as align_variants,
     )
     from .reading import automatic_reading_candidates, reading_candidates
 
@@ -845,17 +884,44 @@ def analyze_audio(
     vocal_activity_profile = None
 
     last_progress = 0.0
+    progress_lock = RLock()
 
     def report(value: float) -> None:
         nonlocal last_progress
         from . import runproc
 
         runproc.raise_if_cancelled()
-        last_progress = max(last_progress, max(0.0, min(1.0, value)))
-        if progress is not None:
-            progress(last_progress)
+        with progress_lock:
+            last_progress = max(last_progress, max(0.0, min(1.0, value)))
+            if progress is not None:
+                progress(last_progress)
+
+    def report_detail(label: str) -> None:
+        from . import runproc
+
+        runproc.raise_if_cancelled()
+        if progress_detail is not None:
+            progress_detail(label)
+
+    def alignment_progress(done: int, total: int) -> None:
+        report_detail(f"歌詞の時刻合わせ · {done}/{total}行")
+        report(0.62 + 0.10 * done / max(1, total))
+
+    def align_moras_with_variants(*args: Any, **kwargs: Any) -> Any:
+        report_detail("歌詞の時刻合わせ")
+        if progress_detail is not None:
+            kwargs["on_progress"] = alignment_progress
+        result = align_variants(*args, **kwargs)
+        if last_progress >= 0.72:
+            report_detail("歌詞の対応調整")
+        return result
+
+    def choose_readings(*args: Any, **kwargs: Any) -> Any:
+        report_detail("歌詞の読み確認")
+        return _choose_readings_with_kana(*args, **kwargs)
 
     report(0.01)
+    report_detail("音源解析")
     prefetched_lines = None
     sheetsage_notes = None
     sheetsage_was_run = False
@@ -888,10 +954,12 @@ def analyze_audio(
                 whisper_model,
                 device or "auto",
                 sheetsage_device,
-                lambda value: report(0.01 + value * 0.47),
+                lambda value: None,
                 run_separation=not skip_separation,
                 run_whisper=lyrics_path is None or adjust_lyrics,
                 shared_inference=shared_inference,
+                on_detail=report_detail,
+                on_model_progress=lambda value: report(0.01 + value),
             )
         )
         sheetsage_was_run = True
@@ -902,7 +970,8 @@ def analyze_audio(
         from .separation import separate
 
         vocals, accompaniment = separate(audio_path, project_dir / SEPARATION_DIR)
-    report(0.22)
+    report(0.48)
+    report_detail("歌詞認識")
 
     def normalize_vocalization_line(
         line: TranscribedLine,
@@ -1150,6 +1219,7 @@ def analyze_audio(
     # 得た閉じた発音候補の再順位付けだけに使う。
     # 元歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。カナ化には記法つきの
     # 行を渡し、字幕・表示に使うテキスト(line_texts)は素テキストに直しておく。
+    report_detail("歌詞の読み確認")
     candidate_builder = (
         automatic_reading_candidates if recognition_mode is not None else reading_candidates
     )
@@ -1163,7 +1233,18 @@ def analyze_audio(
     line_texts = [strip_ruby(text) for text in line_texts]
     from .mora_align import compute_emissions
 
-    emissions = emissions or compute_emissions(vocals, device)
+    report_detail("歌詞の時刻合わせ")
+    report(0.50)
+
+    def emissions_progress(done: int, total: int) -> None:
+        report_detail(f"歌詞の時刻合わせ · 音声解析 {done}/{total}区間")
+        report(0.50 + 0.12 * done / max(1, total))
+
+    emissions = emissions or compute_emissions(
+        vocals, device,
+        **({"on_progress": emissions_progress} if progress_detail is not None else {}),
+    )
+    report(0.62)
     def prepare_automatic_alignment(
         current_lines: list[TranscribedLine], phase: str,
     ) -> tuple[
@@ -1192,7 +1273,7 @@ def analyze_audio(
                 current_variants,
                 automatic_texts=current_texts,
             ):
-                current_choices, current_reading_evidence = _choose_readings_with_kana(
+                current_choices, current_reading_evidence = choose_readings(
                     audio_path,
                     vocals,
                     current_texts,
@@ -1318,7 +1399,7 @@ def analyze_audio(
         reading_evidence = None
         chosen = [0] * len(line_variants)
         if _has_kana_choice(line_variants):
-            chosen, reading_evidence = _choose_readings_with_kana(
+            chosen, reading_evidence = choose_readings(
                 audio_path,
                 vocals,
                 line_texts,
@@ -1343,6 +1424,8 @@ def analyze_audio(
                 line_windows=None,
             )
 
+    report(0.72)
+    report_detail("歌詞の対応調整")
     if recognition_mode is not None:
         from .semantic_lyrics import MIN_CTC_MEDIAN_SCORE, apply_ctc_support
 
@@ -1900,6 +1983,8 @@ def analyze_audio(
                 chosen, reading_evidence, selected_variants, aligned,
             ) = prepare_automatic_alignment(retained_lines, "deficit-recovery")
 
+    report(0.80)
+    report_detail("歌詞の対応調整")
     if recognition_mode is not None:
         # Stage 3 is the only component which knows whether a SheetSage note is
         # truly unowned after lyric alignment.  Run it once as a read-only probe,
@@ -2505,7 +2590,9 @@ def analyze_audio(
 
     supplied_overlay = None
     supplied_reading_reviews: list[dict[str, object]] = []
+    report(0.85)
     if supplied_lyrics is not None:
+        report_detail("歌詞の対応調整")
         from .known_lyrics import plan_supplied_alignment
 
         automatic_readings = [
@@ -2531,7 +2618,7 @@ def analyze_audio(
         prepared_choices = [0] * len(prepared)
         supplied_evidence = None
         if _has_kana_choice(prepared_variants):
-            prepared_choices, supplied_evidence = _choose_readings_with_kana(
+            prepared_choices, supplied_evidence = choose_readings(
                 audio_path, vocals, [strip_ruby(line.text) for line in prepared],
                 prepared_variants, prepared_windows,
                 device=device or "auto", shared_inference=shared_inference,
@@ -2571,10 +2658,8 @@ def analyze_audio(
         chosen = prepared_choices
         raw_alignment = [replace(mora) for mora in aligned]
 
-    report(0.48)
-
-    # Keep the measured CTC interval and delegate pitch entirely to SheetSage/Stage 3.
-    report(0.62)
+    report(0.90)
+    report_detail("歌詞とメロディーの対応付け")
 
     # 6. モーラ音符列の確定
     if sheetsage_notes is None:
@@ -2690,7 +2775,7 @@ def analyze_audio(
         ),
         encoding="utf-8",
     )
-    report(0.97)
+    report(0.92)
     project = build_project(
         audio_path=audio_path,
         vocals_path=None if skip_separation else vocals,
@@ -2848,6 +2933,8 @@ def analyze_audio(
             json.dumps(analysis_data, ensure_ascii=False, indent=1), encoding="utf-8",
         )
 
+    report(0.98)
+    report_detail("解析結果の保存")
     # 目視検証用SRT
     out = project_dir / ANALYZE_DIR
     out.mkdir(parents=True, exist_ok=True)

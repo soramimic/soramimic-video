@@ -2540,7 +2540,7 @@ function queueWaitLabel(job) {
   return `開始待ち：前に${ahead}件・開始まで約${estimate}`;
 }
 
-// 音源解析の最初のモデル処理は開始(1%)と完了(48%)の間に進捗通知が
+// 音源解析の最初のモデル処理は、完了や区間進捗の通知まで割合が
 // 来ないことがある。この区間だけは数値ではなく不定進捗として見せる。
 function audioAnalysisIsStarting(job) {
   return job?.status === "running"
@@ -2642,9 +2642,13 @@ async function poll(id, seq = pollSeq) {
       setJobStatus("中断しています…");
     } else if (audioAnalysisIsStarting(job)) {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`);
+      const text = `${job.stage_detail || label}${elapsed}`;
+      setJobStatus(text, text);
     } else if (job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
+      if (job.stage === "analyze" && job.params.input_kind === "audio" && job.stage_detail) {
+        tail += ` · ${job.stage_detail}`;
+      }
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
       setJobStatus(`${label}${tail}`, `${label}${tail}`);

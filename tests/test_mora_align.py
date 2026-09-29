@@ -183,10 +183,13 @@ def test_recognition_windows_keep_absolute_frame_times_and_do_not_recompute_mode
     monkeypatch.setattr(mora_align, "_forced_align", align)
     monkeypatch.setattr(mora_align, "compute_emissions",
                         lambda *a: pytest.fail("cached emissions required"))
+    progress = []
     result, chosen = mora_align.align_moras_with_variants(
         Path("unused.wav"), [[["カ"]], [["キ"]]], device="cpu", emissions=emissions,
         line_windows=[(2.011, 2.099), (6., 6.1)],
+        on_progress=lambda done, total: progress.append((done, total)),
     )
+    assert progress == [(1, 2), (2, 2)]
     assert calls == [(126, 4, [1]), (325, 5, [2])]
     assert chosen == [0, 0]
     assert [(m.line, m.mora, m.kana) for m in result] == [(0, 0, "カ"), (1, 0, "キ")]

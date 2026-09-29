@@ -412,7 +412,7 @@ def test_initial_audio_analysis_uses_live_indeterminate_progress():
     assert 'fill.classList.toggle("indeterminate", analysisStarting)' in progress
     assert 'fill.style.width = "32%"' in progress
     assert "audioAnalysisIsStarting(job)" in poll
-    assert "setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`)" in poll
+    assert "const text = `${job.stage_detail || label}${elapsed}`;" in poll
     html = INDEX.read_text(encoding="utf-8")
     assert ".builder-bar span.indeterminate" in html
     assert "@keyframes builder-progress-slide" in html

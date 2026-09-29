@@ -2,6 +2,8 @@ import sys
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from soramimic_video.audio_melody import MelodyNote
 from soramimic_video.mora_align import AlignedMora
 from soramimic_video.transcribe import TranscribedLine
@@ -240,7 +242,8 @@ def test_kana_choice_detects_hidden_automatic_token_alternative():
     )
 
 
-def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_details", [False, True])
+def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path, with_details):
     from soramimic_video import (
         analyze_audio as analyze_audio_module,
     )
@@ -287,7 +290,16 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         lambda: {"sheetsage2": True},
     )
     monkeypatch.setattr(reading, "reading_candidates", lambda _text: ["カキ"])
-    monkeypatch.setattr(mora_align, "compute_emissions", lambda *args: object())
+    details = []
+    fractions = []
+
+    def emissions(*args, **kwargs):
+        if kwargs.get("on_progress"):
+            kwargs["on_progress"](1, 2)
+            kwargs["on_progress"](2, 2)
+        return object()
+
+    monkeypatch.setattr(mora_align, "compute_emissions", emissions)
     monkeypatch.setattr(
         mora_align,
         "align_moras_with_variants",
@@ -353,8 +365,21 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         tmp_path / "input.wav",
         tmp_path / "project",
         device="cuda",
+        progress=fractions.append,
+        progress_detail=details.append if with_details else None,
     )
 
+    assert fractions == sorted(fractions)
+    assert fractions[-1] == 1.0
+    assert 0.50 in fractions and 0.80 in fractions and 0.92 in fractions
+    if with_details:
+        assert "歌詞の時刻合わせ · 音声解析 1/2区間" in details
+        assert "歌詞の読み確認" in details
+        assert "歌詞の対応調整" in details
+        assert "歌詞とメロディーの対応付け" in details
+        assert details[-1] == "解析結果の保存"
+    else:
+        assert details == []
     assert len(calls) == 1
     assert calls[0][0][:5] == (
         tmp_path / "input.wav",
@@ -363,6 +388,8 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
         "cuda",
         "cuda",
     )
+    assert callable(calls[0][1].pop("on_detail"))
+    assert callable(calls[0][1].pop("on_model_progress"))
     assert calls[0][1] == {
         "run_separation": True,
         "run_whisper": True,
@@ -392,3 +419,37 @@ def test_audio_pipeline_prefetches_all_shared_models(monkeypatch, tmp_path):
     assert project.notes[0].midi_note == 60
     assert project.notes[0].source == "spoken"
     assert project.lyric_layers["omissions"] == []
+
+
+def test_model_progress_reports_active_work_and_weighted_completion(monkeypatch, tmp_path):
+    from soramimic_video import analyze_audio, audio_melody, separation, transcribe
+
+    details = []
+    fractions = []
+    melody_fractions = []
+
+    def separate(*args):
+        assert details[-1] == "歌声と伴奏の分離"
+        return tmp_path / "vocals.wav", tmp_path / "backing.wav"
+
+    def whisper(*args, **kwargs):
+        assert details[-1] == "歌詞認識"
+        return []
+
+    def melody(*args, **kwargs):
+        assert details[-1] == "メロディー解析"
+        kwargs["on_progress"](0.5)
+        assert details[-1] == "メロディー解析 · 50%"
+        return []
+
+    monkeypatch.setattr(separation, "separate", separate)
+    monkeypatch.setattr(transcribe, "transcribe_lines", whisper)
+    monkeypatch.setattr(audio_melody, "transcribe_sheetsage", melody)
+    analyze_audio._run_audio_models(
+        tmp_path / "input.wav", tmp_path / "project", "large-v3", "cpu", "cpu",
+        melody_fractions.append, run_separation=True, run_whisper=True,
+        shared_inference=False, on_detail=details.append, on_model_progress=fractions.append,
+    )
+    assert fractions == pytest.approx([0.15, 0.27, 0.37, 0.47])
+    assert melody_fractions == [0.5]
+    assert details[-1] == ""
