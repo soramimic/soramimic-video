@@ -75,3 +75,15 @@ PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIG
 HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
 CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
 THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## PrettyPitch / LeapSinger — 波音リツ
+
+The optional PrettyPitch / LeapSinger singing backend uses models trained with
+波音リツ (Namine Ritsu) singing voice data. Voice recordings and database
+distribution: カノン (Canon).
+
+- Voice database: https://www.canon-voice.com/voicebanks/
+- PrettyPitch: https://github.com/wavtechyukky/PrettyPitch
+- LeapSinger: https://github.com/wavtechyukky/LeapSinger
+
+The voice database and pretrained models retain their own terms of use.
