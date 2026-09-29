@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+from collections import defaultdict, deque
 from pathlib import Path
 
 import mido
@@ -43,21 +44,85 @@ MIX_SAMPLE_RATE = 44100
 DRUM_CHANNEL = 9
 
 
+def _drum_note_events(src: mido.MidiFile) -> set[tuple[int, int]]:
+    """Identify percussion notes in playback order, including XG bank selection.
+
+    Track-local scans miss setup messages on other tracks. Keep note releases
+    paired with their attacks even if the channel changes mode in between.
+    """
+    events = []
+    for track_index, track in enumerate(src.tracks):
+        tick = 0
+        for message_index, msg in enumerate(track):
+            tick += msg.time
+            events.append((tick, track_index, message_index, msg))
+    events.sort(key=lambda event: event[:3])
+    mode = "gs"  # FluidSynth's default bank-selection mode
+    drums = {DRUM_CHANNEL}
+    active: dict[tuple[int, int], deque[bool]] = defaultdict(deque)
+    drum_events: set[tuple[int, int]] = set()
+    for _, track_index, message_index, msg in events:
+        if msg.type == "sysex":
+            data = tuple(msg.data)
+            if len(data) == 4 and data[0] == 0x7E and data[2] == 9 and data[3] in (1, 3):
+                mode, drums = "gm", {DRUM_CHANNEL}
+            elif (
+                len(data) == 7 and data[0] == 0x43 and data[2] == 0x4C
+                and data[3:5] == (0, 0) and data[5] in (0x7E, 0x7F) and data[6] == 0
+            ):
+                mode, drums = "xg", {DRUM_CHANNEL}
+            elif (
+                len(data) == 9 and data[0] == 0x41 and data[2:4] == (0x42, 0x12)
+                and sum(data[4:]) % 128 == 0
+            ):
+                if data[4:7] == (0x40, 0, 0x7F) and data[7] in (0, 0x7F):
+                    mode = "gs" if data[7] == 0 else "gm"
+                    drums = {DRUM_CHANNEL}
+                elif (
+                    mode == "gs" and data[4] == 0x40 and 0x10 <= data[5] <= 0x1F
+                    and data[6] == 0x15 and data[7] <= 2
+                ):
+                    part = data[5] & 0x0F
+                    channel = part if part >= 10 else (9 if part == 0 else part - 1)
+                    if data[7]:
+                        drums.add(channel)
+                    else:
+                        drums.discard(channel)
+            continue
+        if msg.type == "control_change" and msg.control == 0 and mode == "xg":
+            if msg.value in (120, 126, 127):
+                drums.add(msg.channel)
+            else:
+                drums.discard(msg.channel)
+        if msg.type not in ("note_on", "note_off"):
+            continue
+        key = (msg.channel, msg.note)
+        is_drum = msg.channel in drums
+        if msg.type == "note_on" and msg.velocity > 0:
+            active[key].append(is_drum)
+        elif active[key]:
+            is_drum = active[key].popleft()
+        if is_drum:
+            drum_events.add((track_index, message_index))
+    return drum_events
+
+
 def make_accompaniment_midi(project: Project, out_path: Path) -> Path:
     """元MIDIからメロディchのnoteを抜いた伴奏MIDIを書き出す。
 
-    project.song.key_shift が非0なら、ドラム(ch9)以外のnoteを同じだけ移調する
+    project.song.key_shift が非0なら、GM/XG/GSのドラム指定以外のnoteを同じだけ移調する
     (歌の自動キー変更に伴奏を合わせる)。移調後の音高は0〜127にクランプする。
     """
     src = mido.MidiFile(project.song.midi_path, clip=True)
     melody = project.song.melody_channel
     key_shift = project.song.key_shift
+    drum_events = _drum_note_events(src) if key_shift else set()
     transposed = 0
-    for track in src.tracks:
+    for track_index, track in enumerate(src.tracks):
         removed: list = []
         tick_carry = 0
         new_msgs = []
-        for msg in track:
+        for message_index, msg in enumerate(track):
             time = msg.time + tick_carry
             tick_carry = 0
             is_note = msg.type in ("note_on", "note_off")
@@ -67,7 +132,7 @@ def make_accompaniment_midi(project: Project, out_path: Path) -> Path:
                 removed.append(msg)
                 continue
             new = msg.copy(time=time)
-            if key_shift and is_note and channel != DRUM_CHANNEL:
+            if key_shift and is_note and (track_index, message_index) not in drum_events:
                 new.note = max(0, min(127, new.note + key_shift))
                 transposed += 1
             new_msgs.append(new)
@@ -76,8 +141,8 @@ def make_accompaniment_midi(project: Project, out_path: Path) -> Path:
             logger.debug("%d noteイベントをメロディch=%sから除去", len(removed), melody)
     if key_shift:
         logger.info(
-            "歌のキー変更に合わせて伴奏を%+d半音移調しました(%dイベント。ドラムch%dは除く)",
-            key_shift, transposed, DRUM_CHANNEL,
+            "歌のキー変更に合わせて伴奏を%+d半音移調しました(%dイベント。ドラムは除く)",
+            key_shift, transposed,
         )
     src.save(str(out_path))
     return out_path
@@ -92,7 +157,10 @@ def render_midi(midi_path: Path, wav_path: Path, soundfont: str | None) -> Path:
         raise RuntimeError(
             "サウンドフォント(.sf2)を --soundfont か環境変数 SOUNDFONT で指定してください"
         )
-    cmd = [fluidsynth, "-ni", "-g", "1.0", "-F", str(wav_path), "-r", "44100",
+    # A MIDI file can address XG/GS setup to a non-default device ID. Accept its
+    # setup commands so XG percussion banks remain drums on every channel.
+    cmd = [fluidsynth, "-ni", "-g", "1.0", "-o", "synth.device-id=127",
+           "-F", str(wav_path), "-r", "44100",
            str(sf), str(midi_path)]
     proc = runproc.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0 or not wav_path.exists():
