@@ -346,6 +346,13 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
     if not csv_paths:
         print(f"単語リストCSVがありません: {wordlists}", file=sys.stderr)
         return 2
+    compatibility_paths: list[Path] = []
+    for directory in args.compatibility_wordlists_dir:
+        paths = wordlist_csv_paths(Path(directory))
+        if not paths:
+            print(f"互換単語リストCSVがありません: {directory}", file=sys.stderr)
+            return 2
+        compatibility_paths.extend(paths)
     priority_paths: list[Path] = []
     for name in args.priority_wordlist:
         if Path(name).name != name or not name:
@@ -368,6 +375,7 @@ def cmd_sync_assets(args: argparse.Namespace) -> int:
             source_manifest_url=args.source_manifest_url,
             allow_noncommercial_fanwork=args.noncommercial_fanwork,
             allow_builtin_fanwork=args.builtin_fanwork,
+            compatibility_csv_paths=compatibility_paths,
         )
     except (OSError, ValueError, RuntimeError) as e:
         print(f"asset sync失敗(last-goodを維持): {e}", file=sys.stderr)
@@ -799,6 +807,10 @@ def build_parser() -> argparse.ArgumentParser:
             "release-image-source-manifest-v1/source-manifest.json"
         ),
         help="wordlists Release画像source manifest URL",
+    )
+    p.add_argument(
+        "--compatibility-wordlists-dir", action="append", default=[], metavar="DIR",
+        help="旧クライアントの画像URLを単語IDへ対応づけるCSVディレクトリ(複数指定可)",
     )
     p.add_argument(
         "--priority-wordlist", action="append", default=[], metavar="NAME",

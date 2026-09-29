@@ -3198,7 +3198,9 @@ def create_app(
             ) from exc
         return resolved
 
-    def _asset_preview_rows(wordlist: str, url: str) -> Iterator[dict[str, str]]:
+    def _asset_preview_rows(
+        wordlist: str, url: str, word_id: str = "", variant: str = "",
+    ) -> Iterator[dict[str, str]]:
         """指定URLまたは代表画像候補をCSV順に返す。"""
         try:
             path = _asset_preview_wordlist_path(wordlist)
@@ -3206,9 +3208,17 @@ def create_app(
             with os.fdopen(fd, encoding="utf-8") as f:
                 for row in csv.DictReader(f):
                     image = row.get("image")
-                    if image and (not url or image == url):
-                        yield row
-                        if url:
+                    matches = (
+                        str(row.get("id") or "") == word_id
+                        and (not variant or str(row.get("original") or "") == variant)
+                    ) if word_id else (image and (not url or image == url))
+                    if matches:
+                        from .asset_store import resolve_word_row
+
+                        yield resolve_word_row(
+                            wordlist, row, variant=variant if word_id else None,
+                        )
+                        if url or word_id:
                             return
         except (FileNotFoundError, OSError):
             return
@@ -3219,7 +3229,10 @@ def create_app(
 
         path = _asset_preview_wordlist_path(wordlist)
         with path.open(encoding="utf-8", newline="") as handle:
-            return distinct_credits([row for row in csv.DictReader(handle) if row.get("image")])
+            from .asset_store import resolve_word_row
+
+            rows = [resolve_word_row(wordlist, row) for row in csv.DictReader(handle)]
+            return distinct_credits([row for row in rows if row.get("image")])
 
     @app.get("/api/asset-preview", dependencies=[Depends(_require_api_key)])
     @app.get("/api/wordlist-image", dependencies=[Depends(_require_api_key)])
@@ -3227,11 +3240,14 @@ def create_app(
         request: Request,
         wordlist: str = "",
         url: str = "",
+        word_id: str = "",
+        variant: str = "",
         noncommercial_fanwork: bool = False,
     ) -> FileResponse:
         """レイアウト編集用に、原本から作った安全な派生PNGだけを返す。
 
-        url指定時はプレビューのキュー画像を返す。オープンプロキシ化を避けるため、
+        word_idで共有画像を取得し、variantで別名の画像を指定する。
+        url指定も既存クライアント向けに受け付ける。オープンプロキシ化を避けるため、
         指定した名前付き単語リストのimage列に実在するURLだけを対象にする。
         url未指定時は代表行(単語リストの最初の画像あり行)の画像。
         """
@@ -3248,9 +3264,13 @@ def create_app(
         # request cheaply skip a stale/unavailable first row. A URL-specific
         # request must remain exact, and an installation without a store keeps
         # the old single-network-fetch behavior.
-        allow_representative_fallback = not url and configured_asset_store() is not None
+        if word_id and url:
+            raise HTTPException(status_code=400, detail="単語IDとURLは同時に指定できません")
+        allow_representative_fallback = (
+            not url and not word_id and configured_asset_store() is not None
+        )
         failure_detail = "画像が見つかりません"
-        for row in _asset_preview_rows(wordlist, url):
+        for row in _asset_preview_rows(wordlist, url, word_id, variant):
             target = row["image"]
             try:
                 require_image_usage(
@@ -3538,9 +3558,12 @@ def create_app(
         item = cues[index]
         image_url = ""
         if item["image"]:
-            query: dict[str, Any] = {
-                "wordlist": result["wordlist"], "url": item["image"]
-            }
+            query: dict[str, Any] = {"wordlist": result["wordlist"]}
+            if item["data"].get("id"):
+                query.update({"word_id": item["data"]["id"],
+                              "variant": item["data"].get("original", "")})
+            else:
+                query["url"] = item["image"]
             if allow_noncommercial_fanwork:
                 query["noncommercial_fanwork"] = "true"
             image_url = "/api/asset-preview?" + urlencode(query)
