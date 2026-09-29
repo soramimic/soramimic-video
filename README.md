@@ -51,6 +51,8 @@ uv run soramimic-video video --project work/song --layout caption
 開発環境ではPrettyPitchも試験バックエンドとして使えます。PrettyPitchとLeapSinger、
 配布モデルはこのリポジトリへ同梱せず、各プロジェクトの手順と利用条件に従って別途配置します。
 配布モデルは個人・非商用利用が前提です。
+波音リツの自動音域調整は、VOICEVOXと同じ F♯3〜F♯5（MIDI 54〜78）を
+仮の得意音域として使います。無効にするには `--no-auto-octave` を指定します。
 
 ```sh
 PRETTYPITCH_ROOT=/path/to/PrettyPitch \
