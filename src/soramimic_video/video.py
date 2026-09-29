@@ -1066,11 +1066,23 @@ def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
     """
     if project.parody is None:
         return []
+    from .asset_store import resolve_word_row
+    from .convert import _is_packaged_wordlist, resolve_wordlist
+
+    shared_wordlist = ""
+    try:
+        csv_path = resolve_wordlist(project.parody.wordlist)
+        if _is_packaged_wordlist(csv_path):
+            shared_wordlist = csv_path.stem
+    except FileNotFoundError:
+        pass
     frames: list[WordFrame] = []
     row_keys: set[str] = set()
     for pline in project.parody.lines:
         for w in pline.words:
             row = w.wordlist_row or {}
+            if shared_wordlist and row:
+                row = resolve_word_row(shared_wordlist, row)
             row_keys |= set(row)
             # 単語リストに行がない単語(手入力の未知語など)はfallback側で描く
             use_fallback = not row

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import json
@@ -32,7 +33,14 @@ import requests
 from PIL import Image, UnidentifiedImageError
 
 from . import runproc
-from .asset_store import MANIFEST_NAME, PENDING_MANIFEST_NAME, is_builtin_asset_url, load_manifest
+from .asset_store import (
+    IMAGE_ROW_FIELDS,
+    MANIFEST_NAME,
+    PENDING_MANIFEST_NAME,
+    is_builtin_asset_url,
+    load_manifest,
+    word_asset_key,
+)
 from .image_credit import (
     commons_file_title,
     fetch_commons_assets_batch,
@@ -130,6 +138,94 @@ def _collect_rows(
                     if not str(existing.get(key) or "").strip() and str(row.get(key) or "").strip():
                         existing[key] = row[key]
     return rows
+
+
+def _word_image_references(csv_paths: list[Path]) -> dict[str, list[dict]]:
+    references: dict[str, list[dict]] = {}
+    seen: set[tuple[str, str, str, str]] = set()
+    for path in csv_paths:
+        with path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                word_id = str(row.get("id") or "").strip()
+                url = str(row.get("image") or "").strip()
+                if not word_id or not url.startswith(("https://", "http://")):
+                    continue
+                reference: dict = {
+                    "key": word_asset_key(path.stem, word_id),
+                    "variant": str(row.get("original") or ""),
+                    "row": {field: str(row.get(field) or "") for field in IMAGE_ROW_FIELDS},
+                }
+                identity = (
+                    url, reference["key"], reference["variant"],
+                    json.dumps(reference["row"], sort_keys=True),
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    references.setdefault(url, []).append(reference)
+    return references
+
+
+def _publish_word_images(
+    old: dict, assets: dict[str, dict], rows: dict[str, dict], store: Path,
+    references: dict[str, list[dict]], compatibility: dict[str, list[dict]],
+) -> dict:
+    """Publish shared identities and safe URL aliases in the same atomic manifest."""
+    words = copy.deepcopy(old.get("words", {}))
+    seen: dict[tuple[str, str], str] = {}
+    representatives: dict[str, str] = {}
+    for url in rows:
+        entry = assets[url]
+        refs = references.get(url, [])
+        entry["word_refs"] = refs
+        if not _entry_available(entry, store) or entry.get("credit", {}).get("status") not in {
+            "known", "not_applicable",
+        }:
+            continue
+        for ref in refs:
+            identity = (ref["key"], ref["variant"])
+            if identity in seen and seen[identity] != url:
+                raise ValueError(f"同じ単語・別名に複数の画像があります: {identity}")
+            seen[identity] = url
+            representatives.setdefault(ref["key"], ref["variant"])
+            selected = {**entry, "row": ref["row"]}
+            selected.pop("word_refs", None)
+            selected.pop("orphaned_at", None)
+            selected.pop("word_alias", None)
+            group = words.setdefault(ref["key"], {"variants": {}})
+            group["variants"][ref["variant"]] = selected
+    for key, variant in representatives.items():
+        words[key]["default"] = words[key]["variants"][variant]
+    # Retired identities remain readable; absence in a newer CSV is not removal
+    # permission for another client still referring to that identity.
+    for group in words.values():
+        for selected in group.get("variants", {}).values():
+            url = selected["source_url"]
+            if url not in rows and url in assets:
+                assets[url].pop("orphaned_at", None)
+
+    # Imported old CSVs only associate old URLs with identities. They never choose
+    # the adopted image. This bridges clients that still send their packaged URL.
+    for url, refs in compatibility.items():
+        if url not in rows and url in assets:
+            assets[url]["word_refs"] = refs
+    for url, entry in list(assets.items()):
+        if url in rows:
+            continue
+        refs = entry.get("word_refs", [])
+        selected_entries = []
+        for ref in refs:
+            selected = words.get(ref["key"], {}).get("variants", {}).get(ref["variant"])
+            if not isinstance(selected, dict):
+                break
+            # Older clients use their own usage/credit fields. Only forward aliases
+            # when these still describe the adopted image accurately.
+            if ref.get("row") != selected.get("row"):
+                break
+            selected_entries.append(selected)
+        else:
+            if selected_entries and len({e["source_url"] for e in selected_entries}) == 1:
+                assets[url] = {**selected_entries[0], "word_refs": refs, "word_alias": True}
+    return words
 
 
 def wordlist_csv_paths(wordlists_dir: Path) -> list[Path]:
@@ -454,6 +550,7 @@ def sync_asset_store(
     source_manifest_url: str = SOURCE_MANIFEST_URL,
     allow_noncommercial_fanwork: bool = False,
     allow_builtin_fanwork: bool = False,
+    compatibility_csv_paths: list[Path] | None = None,
 ) -> dict[str, int]:
     """Synchronize all built-in wordlist assets into an atomic persistent manifest."""
     if mode not in {"manifest", "full"}:
@@ -465,6 +562,8 @@ def sync_asset_store(
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         allow_builtin_fanwork=allow_builtin_fanwork,
     )
+    references = _word_image_references(csv_paths)
+    compatibility = _word_image_references(compatibility_csv_paths or [])
     skip_revalidate_urls = skip_revalidate_urls or set()
     controlled_urls = {
         url for url in rows if url.startswith(SOURCE_RELEASE_URL_PREFIX)
@@ -526,7 +625,13 @@ def sync_asset_store(
             # Another synchronizer may have promoted while this process fetched the
             # marker. Compare again under the store lock before deriving any diff.
             _validate_source_progress(source_manifest, source_manifest_sha256, old)
-        assets = {url: dict(entry) for url, entry in old_assets.items() if isinstance(entry, dict)}
+        assets = {url: copy.deepcopy(entry)
+                  for url, entry in old_assets.items() if isinstance(entry, dict)}
+        # A legacy URL alias is not a cached copy of that URL's source. If the
+        # source returns to an earlier URL, validate it again before adopting it.
+        for url in rows:
+            if assets.get(url, {}).get("word_alias"):
+                del assets[url]
         staging = store / ".download-cache"
         new = updated = unchanged = failed = credit_failed = 0
         commons_pending: dict[str, str] = {}
@@ -732,7 +837,9 @@ def sync_asset_store(
                 entry.setdefault("orphaned_at", marked_at)
             else:
                 entry.pop("orphaned_at", None)
+        words = _publish_word_images(old, assets, rows, store, references, compatibility)
         manifest = {
+            "words": words,
             "version": MANIFEST_VERSION,
             "generated_at": _now(),
             "source": str(wordlists_dir.resolve()),
@@ -775,7 +882,7 @@ def sync_asset_store(
         "credit_unknown": sum(
             assets[url].get("credit", {}).get("status") == "unknown" for url in rows
         ),
-        "orphaned": sum(url not in rows for url in assets),
+        "orphaned": sum("orphaned_at" in entry for entry in assets.values()),
         "promoted": int(promote),
     }
 

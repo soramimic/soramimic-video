@@ -79,6 +79,17 @@ API response と UI で利用者に通知します。
 外部から渡された file は形式と size を検証します。位置情報等の不要な metadata は、対応する
 画像形式の再保存時に除去されます。
 
+## Shared word images
+
+共有画像は単語リスト名と単語IDで取得でき、同じ単語・別名には環境を問わず同じ採用画像を
+使用します。画像と出典・利用条件は一緒に更新され、更新の取得・検証に失敗した場合は
+直前の採用画像を維持します。自作単語リストの画像は共有画像と区別します。
+
+`GET /api/asset-preview?wordlist=<name>&word_id=<id>` は代表画像の派生PNGを返します。
+別名ごとの画像は `variant=<original>` で指定できます。既存の `url` 指定も利用できますが、
+`word_id` と同時には指定できません。利用条件の確認と単語リストの公開範囲の制限は
+画像の指定方法によらず適用されます。
+
 ## Rights
 
 同梱 sample の権利根拠は [docs/sample-rights.md](docs/sample-rights.md)、曲 preset の判断基準は
