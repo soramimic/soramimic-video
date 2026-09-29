@@ -657,7 +657,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-auto-octave",
         action="store_true",
         help="エンジンの音域に合わせた自動オクターブ調整を無効にする"
-        "(VOICEVOX/NEUTRINO共通)",
+        "(VOICEVOX/NEUTRINO/PrettyPitch共通)",
     )
     p.add_argument(
         # 旧名。--no-auto-octave に統合したが後方互換で受け続ける(deprecated)
