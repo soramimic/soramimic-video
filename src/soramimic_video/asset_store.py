@@ -47,6 +47,45 @@ def load_manifest(store: Path) -> dict:
     return _read_manifest(str(path), mtime)
 
 
+IMAGE_ROW_FIELDS = ("image_page", "image_credit", "image_usage", "image_terms_page")
+
+
+def word_asset_key(wordlist: str, word_id: str) -> str:
+    # JSON preserves arbitrary IDs without separator collisions.
+    return json.dumps([wordlist, str(word_id)], ensure_ascii=False, separators=(",", ":"))
+
+
+def word_asset_entry(
+    wordlist: str, word_id: str, variant: str = "", store: Path | None = None,
+) -> dict | None:
+    root = store or configured_asset_store()
+    if root is None or not word_id:
+        return None
+    group = load_manifest(root).get("words", {}).get(word_asset_key(wordlist, word_id))
+    if not isinstance(group, dict):
+        return None
+    entry = group.get("variants", {}).get(variant) if variant else None
+    entry = entry if isinstance(entry, dict) else group.get("default")
+    return entry if isinstance(entry, dict) else None
+
+
+def resolve_word_row(wordlist: str, row: dict, *, variant: str | None = None) -> dict:
+    """Use one shared image and its attribution, regardless of the caller's CSV revision."""
+    entry = word_asset_entry(
+        wordlist, str(row.get("id") or ""),
+        str(row.get("original") or "") if variant is None else variant,
+    )
+    if entry is None:
+        return row
+    result = dict(row)
+    result["image"] = str(entry.get("source_url") or "")
+    metadata = entry.get("row", {})
+    for field in IMAGE_ROW_FIELDS:
+        result[field] = str(metadata.get(field) or "")
+    result["image_credit"] = str(entry.get("credit", {}).get("credit_text") or "")
+    return result
+
+
 def manifest_entry(url: str, store: Path | None = None) -> dict | None:
     root = store or configured_asset_store()
     if root is None:
