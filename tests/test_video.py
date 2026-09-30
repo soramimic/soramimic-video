@@ -676,21 +676,20 @@ def test_image_cues_fallback_for_missing_image(tmp_path: Path):
     assert len(cues2) == 1 and cues2[0].frame.exists()
 
 
-def test_app_credit_text_appends_synth_credit():
+def test_app_credit_text_keeps_non_synth_credits():
     from soramimic_video.layout import APP_CREDIT
     from soramimic_video.video import app_credit_text
 
     assert app_credit_text() == APP_CREDIT
     assert app_credit_text("  ") == APP_CREDIT
-    assert app_credit_text("VOICEVOX:四国めたん") == f"{APP_CREDIT} / VOICEVOX:四国めたん"
+    assert app_credit_text("VOICEVOX:四国めたん") == APP_CREDIT
     assert app_credit_text(
         "VOICEVOX:四国めたん",
         "作詞・作曲: 作者",
         "権利者指定表記",
         original_song="権利曲",
     ) == (
-        f"{APP_CREDIT} / VOICEVOX:四国めたん / "
-        "Original: 権利曲 — 権利者指定表記"
+        f"{APP_CREDIT} / Original: 権利曲 — 権利者指定表記"
     )
     # 著作者等の詳細はエンドロールへ出し、常時表示を長文化させない。
     assert "作者" not in app_credit_text(
@@ -2395,7 +2394,7 @@ def test_fanmade_credit_is_limited_to_vtuber(tmp_path, wordlist):
     project.parody.wordlist = wordlist
     credit = app_credit_text("VOICEVOX:四国めたん", original_song="曲", wordlist=wordlist)
     assert ("非公式・ファンメイド" in credit) == (wordlist == "vtuber")
-    assert "VOICEVOX:四国めたん" in credit and "Original: 曲" in credit
+    assert "VOICEVOX:四国めたん" not in credit and "Original: 曲" in credit
     assert ("非公式・ファンメイド" in idle_frame_data(project)["app_credit"]) == (
         wordlist == "vtuber"
     )

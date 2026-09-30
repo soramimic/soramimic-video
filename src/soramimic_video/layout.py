@@ -65,10 +65,11 @@
   限り、出典文言({image_credit})を画像の右下に自動で焼き込む。
   "credit": false で無効化できる。位置や見た目を変えたいときは text 要素で
   {image_credit} を自分で参照すれば自動追加はされない
-- アプリ・歌声合成・元曲のクレジットは、既定では最後の credits 画面にまとめる。
-  フレーム左下にも表示したい場合は "app_credit": true を指定する。
+- アプリ・元曲のクレジットは、既定ではフレーム左下に表示する。
+  歌声合成のクレジットは最後の credits 画面に表示する。
+  左下の表示は "app_credit": false で無効化できる。
   text 要素で {app_credit} を配置した場合は、その位置に表示する。
-  credits を無効化する場合は、必要な表記を別途行うこと。
+  credits を無効化する場合は、歌声合成など必要な表記を別途行うこと。
 
 歌唱がない区間(前奏・間奏・後奏)の表示は次の2つで指定できる(任意・opt-in):
 
@@ -657,10 +658,10 @@ def _auto_app_credit_element(
 ) -> TextElement | None:
     """アプリクレジットの自動焼き込み要素(フレーム左下に小さく載せる)。
 
-    "app_credit": true を指定していないレイアウトと、text要素で {app_credit} を自分で
+    "app_credit": false のレイアウトと、text要素で {app_credit} を自分で
     配置しているレイアウト(サムネなど)では追加しない。
     """
-    if raw.get("app_credit") is not True:
+    if raw.get("app_credit") is False:
         return None
     for group in element_groups:
         for el in group:
