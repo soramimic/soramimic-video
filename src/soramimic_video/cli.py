@@ -68,7 +68,8 @@ def cmd_validate_samples(args: argparse.Namespace) -> int:
 
 
 def cmd_analyze_audio(args: argparse.Namespace) -> int:
-    from .analyze_audio import ANALYZE_DIR, analyze_audio
+    from .analyze_audio import ANALYZE_DIR
+    from .score_audio import analyze_audio
 
     project = analyze_audio(
         Path(args.audio),
