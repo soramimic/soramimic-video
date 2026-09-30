@@ -105,7 +105,7 @@ def test_layout_texts_with_word():
     texts = [t for t in layout.render_texts(data) if t]
     assert "【米原】" in texts
     assert "夜に駆ける を 駅名 で歌ってみた" in texts
-    assert SIGNATURE not in texts
+    assert SIGNATURE in texts
 
 
 def test_caption_breaks_at_the_meaningful_spot_when_long():
@@ -143,8 +143,8 @@ def test_layout_texts_fallback_without_word():
     layout = thumbnail_layout(has_word=False, has_image=False)
     data = thumbnail_data("夜に駆ける", "駅名")
     texts = [t for t in layout.render_texts(data) if t]
-    # 言い換えなし: キャプションだけ(【】の見出しは出ない)
-    assert texts == ["夜に駆ける を 駅名 で歌ってみた"]
+    # 言い換えなし: キャプションと署名だけ(【】の見出しは出ない)
+    assert texts == ["夜に駆ける を 駅名 で歌ってみた", SIGNATURE]
 
 
 def test_fullbleed_texts_are_outlined_without_band():
@@ -278,8 +278,8 @@ def test_adaptive_flips_to_dark_text_on_a_bright_background():
     dark = thumb_mod.apply_adaptive_colors(
         spec, Image.new("RGB", (320, 180), "black"), design
     )
-    assert _text_colors(bright) == [design.dark_ink] * 3
-    assert _text_colors(dark) == [design.light_ink] * 3
+    assert _text_colors(bright) == [design.dark_ink] * 4
+    assert _text_colors(dark) == [design.light_ink] * 4
     # 縁と影は文字の反対色になる(黒文字なら白い縁・白い光背)
     headline = bright["elements"][0]
     assert headline["strokes"][0]["color"] == design.light_ink
@@ -295,8 +295,8 @@ def test_adaptive_judges_each_element_independently():
             background.putpixel((x, y), (255, 255, 255))
     spec = thumb_mod.thumbnail_layout_spec(True, True, design=design)
     applied = thumb_mod.apply_adaptive_colors(spec, background, design)
-    # 見出し(上部)/ キャプション・画像クレジット(下部)
-    assert _text_colors(applied) == [design.dark_ink] + [design.light_ink] * 2
+    # 見出し(上部)/ キャプション・クレジット・署名(下部)
+    assert _text_colors(applied) == [design.dark_ink] + [design.light_ink] * 3
 
 
 def test_non_adaptive_designs_keep_white_text():
@@ -307,7 +307,7 @@ def test_non_adaptive_designs_keep_white_text():
             spec, Image.new("RGB", (320, 180), "white"), design
         )
         assert applied == spec
-        assert _text_colors(applied) == [design.light_ink] * 3
+        assert _text_colors(applied) == [design.light_ink] * 4
 
 
 def test_adaptive_render_is_readable_on_a_white_photo(tmp_path: Path):
@@ -347,15 +347,18 @@ def test_layout_image_credit_hidden_when_empty():
     assert "山田太郎 (CC BY)" in texts_with
 
 
-def test_thumbnail_omits_synth_credit():
-    # 歌声合成の表記は末尾へまとめ、冒頭サムネには出さない。
+def test_layout_signature_keeps_app_credit_without_synth_credit():
+    # 歌声合成の表記は末尾に置き、冒頭サムネにはアプリの署名だけを残す。
+    from soramimic_video.video import app_credit_text
+
     layout = thumbnail_layout(has_word=True, has_image=False)
     data = thumbnail_data(
         "夜に駆ける", "駅名", word="米原",
-        app_credit=f"{SIGNATURE} / VOICEVOX:四国めたん",
+        app_credit=app_credit_text("VOICEVOX:四国めたん", original_song="夜に駆ける"),
     )
     texts = [t for t in layout.render_texts(data) if t]
-    assert not any("Soramimic" in t or "VOICEVOX" in t for t in texts)
+    assert any(SIGNATURE in text and "Original: 夜に駆ける" in text for text in texts)
+    assert not any("VOICEVOX" in text for text in texts)
     # サムネは署名を自前で配置するので、レイアウト側の自動追加は行われない
     assert layout.app_credit is None
 

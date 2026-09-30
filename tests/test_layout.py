@@ -607,11 +607,12 @@ def test_render_idle_frame(tmp_path):
     assert other != out
 
 
-def test_render_idle_frame_absent_has_no_app_credit_by_default(tmp_path):
-    # 間奏にも常時署名だけの画面は出さない。
+def test_render_idle_frame_absent_has_app_credit_only(tmp_path):
+    # idleセクションが無くても、アプリクレジットだけを載せたフレームは作る
+    # (間奏でだけ表記が消えないように)
     layout = load_layout("caption")
     out = render_idle_frame(layout, {"title": "x"}, 320, 180, tmp_path / "f")
-    assert out is None
+    assert out is not None and out.exists()
 
 
 def test_render_idle_frame_absent_is_none_without_app_credit(tmp_path):
@@ -682,15 +683,19 @@ def test_render_frame_draws_credit(tmp_path):
     assert empty == plain
 
 
-def test_app_credit_element_requires_opt_in(tmp_path):
+def test_app_credit_element_auto_added(tmp_path):
+    # どのレイアウトにも {app_credit} の自動焼き込み要素が付く(既定は左下)
     for name in builtin_layout_names():
-        assert load_layout(name).app_credit is None, name
-    p = tmp_path / "app.json"
-    p.write_text(json.dumps({
-        "app_credit": True,
-        "elements": [{"type": "text", "text": "{surface}", "box": [0, 0, 1, 1]}],
-    }), encoding="utf-8")
-    assert load_layout(str(p)).app_credit is not None
+        layout = load_layout(name)
+        assert layout.app_credit is not None, name
+        assert layout.app_credit.template == "{app_credit}"
+        assert layout.app_credit.align == "left"
+        assert layout.app_credit.valign == "bottom"
+        # 画像クレジットより小さく、既定字幕(下端0.945)と重ならない最下段
+        assert layout.app_credit.size <= 0.025
+        assert layout.app_credit.box[1] >= 0.945
+    # elements自体には混ぜない(render_textsや要素数は従来どおり)
+    assert len(load_layout(None).elements) == 1
 
 
 def test_app_credit_element_disabled_by_flag(tmp_path):
@@ -724,14 +729,7 @@ def test_app_credit_element_skipped_when_placed_manually(tmp_path):
 
 
 def test_render_frame_draws_app_credit(tmp_path):
-    from dataclasses import replace
-
-    from soramimic_video.layout import _auto_app_credit_element
-
-    layout = replace(
-        load_layout("caption"),
-        app_credit=_auto_app_credit_element([], {"app_credit": True}),
-    )
+    layout = load_layout("caption")
     data = {"surface": "ホシズム", "original": "静岡駅"}
     plain = render_frame(layout, None, data, 320, 180, tmp_path / "f")
     # 署名の文言が変わればフレーム(キャッシュキー)も変わる
@@ -952,7 +950,6 @@ def test_section_app_credit_not_duplicated(tmp_path):
     p = tmp_path / "sec.json"
     p.write_text(json.dumps({
         "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.1, 0.8, 0.1]}],
-        "app_credit": True,
         "outro": [{"type": "text", "text": "{app_credit}", "box": [0.1, 0.8, 0.8, 0.1]}],
     }), encoding="utf-8")
     layout = load_layout(str(p))
@@ -1176,14 +1173,3 @@ def test_require_prefix_rejects_non_dict(tmp_path):
     }), encoding="utf-8")
     with pytest.raises(ValueError):
         load_layout(str(p))
-
-
-def test_default_word_frame_omits_app_and_synth_credit(tmp_path):
-    layout = load_layout("caption")
-    data = {"surface": "駅", "original": "米原"}
-    plain = render_frame(layout, None, data, 320, 180, tmp_path / "f")
-    credited = render_frame(
-        layout, None, {**data, "app_credit": f"{APP_CREDIT} / VOICEVOX:四国めたん"},
-        320, 180, tmp_path / "f",
-    )
-    assert plain is not None and credited == plain

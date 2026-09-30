@@ -719,7 +719,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--synth-credit",
         default="",
         help="歌声合成のクレジット表記(例 'VOICEVOX:四国めたん')。"
-        "指定するとフレーム左下の署名に「lyrics & video by Soramimic / ...」と併記する",
+        "動画最後のクレジットページに表示する",
     )
     p.add_argument(
         "--song-title",

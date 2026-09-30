@@ -436,7 +436,7 @@ def thumbnail_data(
         "headline": f"【{headline}】" if headline else "",
         "caption": caption,
         "image_credit": credit_text,
-        # 動画本編の隅と同じ署名(歌声合成のクレジットが要るときは連結済みで渡る)
+        # 動画本編の隅と同じ署名。歌声合成の表記は最後のクレジットページに載せる。
         "app_credit": app_credit or SIGNATURE,
     }
 

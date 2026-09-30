@@ -22,7 +22,7 @@
     "  画像ありのときは写真の主役部分を隠さないよう見出しとキャプションを上下に",
     "  離して置くが、画像が無い(word_only)とその間隔がそのまま「真ん中だけ空いた",
     "  黒い帯」になって文字が上下の端に貼り付いて見えるので、ひと塊にまとめて",
-    "  画面の中央へ寄せ、絵に負ける必要が無いぶん",
+    "  画面の中央(隅の署名のぶんだけ上)へ寄せ、絵に負ける必要が無いぶん",
     "  文字自体も一回り大きくして「文字だけで目を引くサムネ」にしている。",
     "  見出しは折り返さないので、長い単語では枠に収まるまでフォントが縮む。",
     "  可読性デザイン scrim のグラデーションは見出し 0.10〜0.48 /",
@@ -38,7 +38,9 @@
         {"type": "text", "text": "{caption}", "box": [0.05, 0.60, 0.90, 0.23],
          "size": 0.075, "wrap": true, "outline": true},
         {"type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
-         "size": 0.024, "align": "left", "valign": "bottom", "outline": true}
+         "size": 0.024, "align": "left", "valign": "bottom", "outline": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
+         "size": 0.032, "align": "right", "valign": "bottom", "outline": true}
       ]
     },
     "word_only": {
@@ -49,7 +51,9 @@
         {"type": "text", "text": "{caption}", "box": [0.04, 0.51, 0.92, 0.26],
          "size": 0.095, "wrap": true, "outline": true},
         {"type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
-         "size": 0.024, "align": "left", "valign": "bottom", "outline": true}
+         "size": 0.024, "align": "left", "valign": "bottom", "outline": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
+         "size": 0.032, "align": "right", "valign": "bottom", "outline": true}
       ]
     },
     "no_word": {
@@ -58,7 +62,9 @@
         {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
          "size": 0.11, "wrap": true, "outline": true},
         {"type": "text", "text": "{image_credit}", "box": [0.03, 0.895, 0.50, 0.055],
-         "size": 0.024, "align": "left", "valign": "bottom", "outline": true}
+         "size": 0.024, "align": "left", "valign": "bottom", "outline": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.55, 0.895, 0.42, 0.055],
+         "size": 0.032, "align": "right", "valign": "bottom", "outline": true}
       ]
     }
   },
@@ -73,7 +79,9 @@
          "size": 0.024, "color": "#dddddd", "align": "right", "valign": "bottom",
          "background": "#00000080", "credit_box": true},
         {"type": "text", "text": "{caption}", "box": [0.05, 0.70, 0.90, 0.15],
-         "size": 0.075, "color": "white", "wrap": true}
+         "size": 0.075, "color": "white", "wrap": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
+         "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom"}
       ]
     },
     "word_only": {
@@ -82,14 +90,18 @@
         {"type": "text", "text": "{headline}", "box": [0.06, 0.12, 0.88, 0.45],
          "size": 0.2, "color": "white", "stroke_width": 0.004},
         {"type": "text", "text": "{caption}", "box": [0.05, 0.70, 0.90, 0.15],
-         "size": 0.075, "color": "white", "wrap": true}
+         "size": 0.075, "color": "white", "wrap": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
+         "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom"}
       ]
     },
     "no_word": {
       "background": "black",
       "elements": [
         {"type": "text", "text": "{caption}", "box": [0.06, 0.28, 0.88, 0.34],
-         "size": 0.11, "color": "white", "wrap": true}
+         "size": 0.11, "color": "white", "wrap": true},
+        {"type": "text", "text": "{app_credit}", "box": [0.04, 0.89, 0.92, 0.05],
+         "size": 0.032, "color": "#b8b8b8", "align": "right", "valign": "bottom"}
       ]
     }
   }
