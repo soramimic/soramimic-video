@@ -672,3 +672,28 @@ def test_thumbnail_fanmade_credit_is_limited_to_vtuber(tmp_path, monkeypatch, wo
     monkeypatch.setattr(thumb_mod, "render_thumbnail", render)
     thumb_mod.build_thumbnail(tmp_path / "thumb.png", "曲", wordlist)
     assert ("非公式・ファンメイド" in credits[0]) == (wordlist == "vtuber")
+
+
+def test_thumbnail_skips_exponential_title_before_conversion(tmp_path: Path, monkeypatch):
+    seen = []
+
+    def unexpected(*args, **kwargs):
+        seen.append(args)
+        raise AssertionError("unsafe title reached candidate expansion")
+
+    monkeypatch.setattr(thumb_mod, "run_convert", unexpected)
+    calls = _capture_render(monkeypatch)
+    title = "アン" * 20
+    out = generate_thumbnail(
+        _project(_wordlist_csv(tmp_path)), tmp_path, title=title, width=320, height=180
+    )
+    assert out is not None and out.exists()
+    assert calls == [f"{title}|mylist||"]
+    assert seen == []
+
+
+def test_title_budget_preserves_safe_readings():
+    assert thumb_mod._title_conversion_within_budget("モミジ", {})
+    assert thumb_mod._title_conversion_within_budget("カ" * 30, {})
+    assert not thumb_mod._title_conversion_within_budget("アン" * 20, {})
+    assert not thumb_mod._title_conversion_within_budget("カ" * 200, {})
