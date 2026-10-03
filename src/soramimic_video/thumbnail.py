@@ -69,7 +69,7 @@ from .layout import (
     render_image,
 )
 from .project import Project
-from .soramimic_engine import run_convert
+from .soramimic_engine import run_convert, run_tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +615,31 @@ def song_title(project: Project, fallback: str | None = None) -> str:
     return ""
 
 
+# Bound optional headline work before expanding any pronunciation candidates.
+# Count candidate units across every contiguous segment considered by the maker.
+TITLE_VARIATION_UNIT_BUDGET = 100_000
+
+
+def _title_conversion_within_budget(title: str, params: dict[str, Any]) -> bool:
+    from soramimic.kana_to_syllable import syllable_variations
+
+    for line in run_tokenize([title], params):
+        variants = [syllable_variations(u["pronunciation"]) for u in line]
+        branches = [len(v) for v in variants]
+        max_units = [max(len(units) for units, _cost in v) for v in variants]
+        remaining = TITLE_VARIATION_UNIT_BUDGET
+        for start in range(len(branches)):
+            count = 1
+            units = 0
+            for end in range(start, len(branches)):
+                count *= branches[end]
+                units += max_units[end]
+                remaining -= count * units
+                if remaining < 0:
+                    return False
+    return True
+
+
 def title_paraphrase(
     title: str,
     wordlist: str,
@@ -633,6 +658,9 @@ def title_paraphrase(
     # 辞書が来る。エンジン既定(VARIATION_COST=0等)のままだと音の近さより
     # 変形の自由度が勝ってしまうので、本編と同じ既定解決を必ず通す
     eff_where, coerced, _alpha = resolve_convert_settings(csv_path, where, params)
+    if not _title_conversion_within_budget(title, coerced):
+        logger.warning("曲名の変換量が上限を超えるため、言い換えなしのサムネにします")
+        return []
     result = run_convert([title], csv_path, eff_where, coerced)
     lines = result.get("lines") or []
     words = lines[0].get("words") if lines else []
