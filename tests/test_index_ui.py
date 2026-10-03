@@ -228,6 +228,12 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         let wordlist = "stations";
         const wordlistPhrases = { stations: "駅名", vtuber: "VTuber名" };
         const currentWordlistName = () => wordlist;
+        let fixedSynthesizer = "voicevox";
+        let fixedVoicevoxStyle = 6000;
+        $("voicevox-style").options = [
+          { value: "6000", dataset: { name: "波音リツ" } },
+          { value: "6001", dataset: { name: "四国めたん" } },
+        ];
         $("builder-image").setAttribute("src", "blob:thumbnail");
         $("song-title").value = "夜に駆ける";
         $("original-credit").value = "作詞・作曲: 作者";
@@ -239,11 +245,35 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
-          "lyrics & video by Soramimic / VOICEVOX:波音リツ / Original: 夜に駆ける — © 権利者");
+          "lyrics & video by Soramimic / Original: 夜に駆ける — © 権利者");
         assert.equal($("song-preview-credits-original").textContent,
           "夜に駆ける — © 権利者");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
+
+        assert.equal($("song-preview-thumb-credit").textContent,
+          $("song-preview-footer").textContent);
+        assert.equal($("song-preview-credits-synth").textContent,
+          "Vocal Synthesis　VOICEVOX:波音リツ");
+        assert.equal($("song-preview-credits-synth").hidden, false);
+        fixedVoicevoxStyle = 6001;
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent,
+          "Vocal Synthesis　VOICEVOX:四国めたん");
+        fixedVoicevoxStyle = 9999;
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent, "Vocal Synthesis　VOICEVOX");
+        fixedSynthesizer = "prettypitch";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent,
+          "Vocal Synthesis　PrettyPitch / 波音リツ");
+        assert.equal($("song-preview-credits-synth").hidden, false);
+        assert.doesNotMatch($("song-preview-thumb-credit").textContent, /VOICEVOX|PrettyPitch/);
+        assert.doesNotMatch($("song-preview-footer").textContent, /VOICEVOX|PrettyPitch/);
+        fixedSynthesizer = "neutrino";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent, "");
+        assert.equal($("song-preview-credits-synth").hidden, true);
 
         // 最後のクレジットは指定表記が無ければ著作者を使う。
         $("credit-notice").value = "";
