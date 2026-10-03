@@ -1232,7 +1232,7 @@
           <p class="song-text-credits-heading">Credits</p>
           <p class="song-text-credits-original" id="song-preview-credits-original"></p>
           <p class="song-text-credits-app">Parody Lyrics &amp; Video　Soramimic</p>
-          <p class="song-text-credits-synth">Vocal Synthesis　VOICEVOX:波音リツ</p>
+          <p class="song-text-credits-synth" id="song-preview-credits-synth" hidden></p>
           <p class="song-text-credits-sites">soramimic.com / video.soramimic.com</p>
         </div>
       </figure>
@@ -3281,7 +3281,7 @@ function updateSongTextPreviews() {
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
   const original = [title, notice].filter(Boolean).join(" — ");
-  const footer = [baseCredit, "VOICEVOX:波音リツ",
+  const footer = [baseCredit,
     original ? "Original: " + original : ""].filter(Boolean).join(" / ");
   const finalCredit = [title, notice || author].filter(Boolean).join(" — ");
 
@@ -3289,6 +3289,16 @@ function updateSongTextPreviews() {
   $("song-preview-thumb-credit").textContent = footer;
   $("song-preview-footer").textContent = footer;
   $("song-preview-credits-original").textContent = finalCredit;
+  let synthCredit = "";
+  if (fixedSynthesizer === "prettypitch") {
+    synthCredit = "PrettyPitch / 波音リツ";
+  } else if (fixedSynthesizer === "voicevox") {
+    const style = [...$("voicevox-style").options]
+      .find((option) => Number(option.value) === fixedVoicevoxStyle);
+    synthCredit = style?.dataset.name ? `VOICEVOX:${style.dataset.name}` : "VOICEVOX";
+  }
+  $("song-preview-credits-synth").textContent = synthCredit ? `Vocal Synthesis　${synthCredit}` : "";
+  $("song-preview-credits-synth").hidden = !synthCredit;
 
   const builderImage = $("builder-image").getAttribute("src") || "";
   for (const id of ["song-preview-thumb-bg", "song-preview-footer-bg"]) {
