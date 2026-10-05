@@ -64,3 +64,84 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, adjust_lyrics=True)
     with pytest.raises(ValueError, match="BPM"):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
+
+
+@pytest.mark.parametrize("with_melody", [True, False])
+def test_pinned_score_speech_reaches_voicevox_once_without_losing_sung_notes(
+    monkeypatch, tmp_path, with_melody,
+):
+    import soramimic_score
+    from soramimic_score import (
+        AlignedMora,
+        AudioAdapters,
+        LyricLine,
+        MelodyNote,
+        ReadingSelection,
+    )
+    from soramimic_score.vocal_activity import VocalActivity
+
+    from soramimic_video import analyze_audio as legacy_audio
+    from soramimic_video.project import Project
+    from soramimic_video.voicevox import build_score
+
+    melody = (MelodyNote(0, .4, 65), MelodyNote(3, 3.4, 67)) if with_melody else ()
+    adapters = AudioAdapters(
+        reading_selector=lambda _path, lines: tuple(
+            ReadingSelection(line.text, "test", 1) for line in lines),
+        mora_aligner=lambda *_args: (
+            AlignedMora(0, 0, "カ", .05, .15, .8),
+            AlignedMora(1, 0, "キ", 1.96, 1.98, 1e-8),
+            AlignedMora(1, 1, "ク", 2, 2.02, 1e-8),
+            AlignedMora(2, 0, "ケ", 3.05, 3.2, .8),
+        ),
+        melody_transcriber=lambda _path: melody,
+        lyric_recognizer=lambda _path: (
+            LyricLine("カ", 0, .4), LyricLine("キク", 1, 2.4), LyricLine("ケ", 3, 3.4),
+        ),
+        vocal_activity=lambda _path, windows: tuple(
+            VocalActivity(-20, -3, 1, True) for _ in windows),
+    )
+    real_analyze = soramimic_score.analyze_audio
+
+    def analyze_with_test_models(path, **kwargs):
+        return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
+                            on_progress=kwargs["on_progress"])
+
+    def no_duplicate_recovery(*_args, **_kwargs):
+        pytest.fail("Score output must not run through legacy speech recovery again")
+
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
+    monkeypatch.setattr(legacy_audio, "_recover_synthesis_units", no_duplicate_recovery)
+    monkeypatch.setattr(legacy_audio, "_continuize_spoken_synthesis_lines", no_duplicate_recovery)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output)
+
+    assert [note.kana for note in project.notes] == list("カキクケ")
+    assert [(note.start_sec, note.end_sec) for note in project.notes[1:3]] == [
+        (1, 1.7), (1.7, 2.4),
+    ]
+    assert all(note.source == "spoken" and note.pitch_confidence is None
+               for note in project.notes[1:3])
+    if with_melody:
+        assert [(note.start_sec, note.end_sec, note.midi_note)
+                for note in project.notes if note.source != "spoken"] == [
+            (0, .4, 65), (3, 3.4, 67),
+        ]
+    else:
+        assert all(note.source == "spoken" for note in project.notes)
+    assert project.lyric_layers["omissions"] == []
+    assert project.lyric_layers["unresolved_unit_ids"] == []
+    saved = json.loads((output / "analyze_audio/score.json").read_text())
+    assert saved["score"]["synthesis_plan"] == project.lyric_layers["synthesis_plan"]
+    project.save(output)
+    reloaded = Project.load(output)
+    assert reloaded.notes == project.notes
+    synth = build_score(reloaded)
+    assert [note["lyric"] for note in synth["notes"] if note["key"] is not None] == list("カキクケ")
+    analysis = json.loads((output / "analyze_audio/analysis.json").read_text())
+    assert analysis["sources"]["spoken"] == (2 if with_melody else 4)
+    assert analysis["limitations"] == []
