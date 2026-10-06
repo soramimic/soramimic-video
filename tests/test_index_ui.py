@@ -266,7 +266,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         fixedSynthesizer = "prettypitch";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-synth").textContent,
-          "Vocal Synthesis　PrettyPitch / 波音リツ（音源収録・配布：カノン）");
+          "Vocal Synthesis　PrettyPitch / 波音リツ（カノン）");
         assert.equal($("song-preview-credits-synth").hidden, false);
         assert.doesNotMatch($("song-preview-thumb-credit").textContent, /VOICEVOX|PrettyPitch/);
         assert.doesNotMatch($("song-preview-footer").textContent, /VOICEVOX|PrettyPitch/);
