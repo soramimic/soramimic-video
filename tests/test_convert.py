@@ -1,3 +1,4 @@
+import copy
 import json
 from collections import Counter
 from pathlib import Path
@@ -8,21 +9,25 @@ from soramimic_video.convert import (
     _align_positions,
     _coerce_params,
     _dropout_flags,
+    _layer_unit_note_indices,
     _map_word_to_notes,
     _offset_map,
     _pair_score,
     _paired_sokuon,
     apply_converted_lines,
     convert_project,
+    engine_phrases,
     note_length_weights,
     parse_convert_params,
     pop_note_length_weight,
     project_note_length_weights,
+    project_word_boundaries,
     unit_note_seconds,
 )
-from soramimic_video.kana import split_moras
+from soramimic_video.kana import split_fine_moras, split_moras
 from soramimic_video.lyric_layers import apply_lyric_layers
 from soramimic_video.project import Line, Note, Project, SongInfo
+from soramimic_video.soramimic_engine import run_tokenize
 from soramimic_video.synthesize import build_lyric_map
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -439,9 +444,10 @@ def _assert_no_shared_notes(project: Project) -> None:
             assert c == 1, f"音符 {nid} が {c} 単語に二重割り当て"
 
 
-def _repeated_layer_project() -> Project:
-    """同じ読みが連続し、1モーラを3合成スロットで歌うプロジェクト。"""
-    mora_ids = [f"m{i}" for i in range(9)]
+def _repeated_layer_project(kana: str = "ダ" * 9) -> Project:
+    """1モーラを3合成スロットで歌うプロジェクト。"""
+    moras = split_fine_moras(kana)
+    mora_ids = [f"m{i}" for i in range(len(moras))]
     performed = [
         {
             "singing_unit_id": f"s{i}", "mora_ids": [mora_id],
@@ -458,7 +464,7 @@ def _repeated_layer_project() -> Project:
                 "id": f"slot-{i}-{j}", "utterance_id": "u0",
                 "singing_unit_id": f"s{i}", "mora_ids": [mora_id],
                 "note_candidate_id": f"n{i}-{j}", "link_ids": [f"l{i}"],
-                "kana": "ダ" if j == 0 else "ー",
+                "kana": moras[i] if j == 0 else "ー",
                 "start_sec": i * 0.3 + j * 0.1,
                 "end_sec": i * 0.3 + (j + 1) * 0.1,
                 "midi_pitch": 60, "operation": "stack_split",
@@ -467,9 +473,9 @@ def _repeated_layer_project() -> Project:
                 "continuation": j > 0,
             })
     layers = {
-        "schema_version": 1, "canonical_text": "だ" * 9,
+        "schema_version": 1, "canonical_text": kana,
         "canonical": [{
-            "utterance_id": "u0", "text": "だ" * 9, "kana": "ダ" * 9,
+            "utterance_id": "u0", "text": kana, "kana": kana,
             "mora_ids": mora_ids,
         }],
         "performed": performed, "synthesis_plan": plan,
@@ -479,6 +485,120 @@ def _repeated_layer_project() -> Project:
     project = Project(SongInfo("", 480, tempo_map=[[0, 500000]]))
     apply_lyric_layers(project, layers)
     return project
+
+
+@pytest.mark.parametrize(
+    ("kana", "unit_moras", "boundaries"),
+    [
+        ("イェカイェ", [[0], [0], [1], [2], [2]], [0, 2, 3, 5]),
+        ("クヮカクヮ", [[0], [0], [1], [2], [2]], [0, 2, 3, 5]),
+        ("カャカカャ", [[0], [0], [1], [2], [2]], [0, 2, 3, 5]),
+        ("ァカュ", [[0], [1], [1]], [0, 1, 3]),
+        ("ティカファカウィカシェ", [[0], [1], [2], [3], [4], [5], [6]], list(range(8))),
+        ("セェカドーー", [[0], [1], [2, 3], [4]], [0, 1, 2, 3, 4]),
+        ("イェイェ", [[0], [0, 1], [1]], [0, 3]),
+    ],
+)
+def test_layered_engine_kana_keeps_canonical_mora_ownership(kana, unit_moras, boundaries):
+    project = _repeated_layer_project(kana)
+    original = copy.deepcopy(project)
+    # Use the actual engine tokenizer: its small-kana rules differ from the
+    # canonical fine-mora splitter, including across engine unit boundaries.
+    units = run_tokenize(engine_phrases(project))[0]
+    groups = _layer_unit_note_indices(project, project.lines[0], units)
+    assert groups == [
+        [3 * mora + slot for mora in moras for slot in range(3)]
+        for moras in unit_moras
+    ]
+    weights = project_note_length_weights(project, 1.0)([units])
+    assert weights[0] == pytest.approx([0.3 * len(moras) for moras in unit_moras])
+    assert project_word_boundaries(project)([units]) == [boundaries]
+    assert project == original
+
+
+@pytest.mark.parametrize("kana", ["イェカイェ", "クヮカクヮ", "カャカカャ", "セェカドーー"])
+def test_layered_conversion_keeps_notes_after_small_kana_expansion(tmp_path: Path, kana: str):
+    project = _repeated_layer_project(kana)
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        f"id,original,surface,pronunciation\n0,表記,表記,{kana}",
+        encoding="utf-8",
+    )
+    original_layers = json.dumps(project.lyric_layers, ensure_ascii=False)
+    convert_project(project, wordlist=str(csv_path), params={"NOTE_LENGTH_WEIGHT": 1})
+    assert project.parody is not None
+    assert project.parody.lines[0].words
+    counts = Counter(
+        note_id for word in project.parody.lines[0].words for note_id in word.note_ids
+    )
+    assert counts == Counter({note.id: 1 for note in project.notes})
+    assert set(build_lyric_map(project)) == set(counts)
+    assert json.dumps(project.lyric_layers, ensure_ascii=False) == original_layers
+    assert project.lines[0].canonical_kana == kana
+
+
+@pytest.mark.parametrize(("pair", "normalized"), [
+    ("イェ", "イエ"), ("クヮ", "クワ"), ("カャ", "カヤ"), ("カュ", "カユ"),
+])
+def test_layered_conversion_cannot_split_mora_between_words(tmp_path: Path, pair, normalized):
+    project = _repeated_layer_project(pair + "サ" + pair)
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n"
+        f"0,前,前,{normalized[0]}\n1,後,後,{normalized[1]}\n"
+        f"2,全,全,{pair}\n3,サ,サ,サ", encoding="utf-8",
+    )
+    convert_project(project, wordlist=str(csv_path), params={
+        "DUPLICATE": "true", "WORD_NUMBER_PENALTY": "-100", "NOTE_LENGTH_WEIGHT": "0.25",
+    })
+    assert project.parody is not None
+    words = project.parody.lines[0].words
+    assert [word.surface for word in words] == ["全", "サ", "全"]
+    assert [word.note_ids for word in words] == [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+
+
+def test_layered_filler_keeps_expanded_mora_as_one_word(tmp_path: Path):
+    project = _repeated_layer_project("イェ")
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation", encoding="utf-8")
+    convert_project(project, wordlist=str(csv_path))
+    assert project.parody is not None
+    words = project.parody.lines[0].words
+    assert len(words) == 1
+    assert words[0].note_ids == [0, 1, 2]
+    assert words[0].kana == "イエ"
+    assert set(build_lyric_map(project)) == {0, 1, 2}
+
+
+def test_word_boundaries_keep_multi_mora_synthesis_slot_together():
+    project = _repeated_layer_project("カキク")
+    assert project.lyric_layers is not None
+    # A slot can own more than one canonical mora even when the engine has a
+    # normal syllable boundary between them.
+    layers = copy.deepcopy(project.lyric_layers)
+    layers["performed"][0]["mora_ids"] = ["m0", "m1"]
+    layers["performed"][0]["end_sec"] = 0.6
+    layers["performed"].pop(1)
+    for slot in layers["synthesis_plan"][:6]:
+        slot["mora_ids"] = ["m0", "m1"]
+        slot["singing_unit_id"] = "s0"
+    apply_lyric_layers(project, layers)
+    units = run_tokenize(engine_phrases(project))
+    assert project_word_boundaries(project)(units) == [[0, 2, 3]]
+
+
+def test_layered_analysis_only_seed_uses_same_normalized_units():
+    from soramimic_video.api import editor_setup_seed
+
+    project = _repeated_layer_project("イェカイェ")
+    before = copy.deepcopy(project)
+    payload = editor_setup_seed(project, "", None, {})
+    assert payload["phrases"] == engine_phrases(project)
+    units = run_tokenize(payload["phrases"])
+    assert payload["noteLengthRawList"] == project_note_length_weights(project, 1.0)(units)
+    assert payload["noteLengthRawList"][0] == pytest.approx([0.3] * 5)
+    assert "results" not in payload and "tokensList" not in payload
+    assert project == before
 
 
 def _converted_repeated_line() -> list[dict]:
@@ -513,12 +633,17 @@ def test_apply_converted_lines_uses_layer_identity_for_repeated_moras(tmp_path: 
     assert "ダ" not in lyric_map.values()
 
 
-def test_layered_conversion_rejects_text_mismatch_instead_of_fuzzy_mapping(
-    tmp_path: Path,
-):
+@pytest.mark.parametrize("change", ["substitute", "insert", "delete"])
+def test_layered_conversion_rejects_text_mismatch_instead_of_fuzzy_mapping(tmp_path: Path, change):
     project = _repeated_layer_project()
     converted = _converted_repeated_line()
-    converted[0]["units"][4]["pronunciation"] = "ナ"
+    units = converted[0]["units"]
+    if change == "substitute":
+        units[4]["pronunciation"] = "ナ"
+    elif change == "insert":
+        units.insert(4, {"pronunciation": "ダ"})
+    else:
+        units.pop(4)
     with pytest.raises(ValueError, match="変換元の音節と完全歌詞が一致しません"):
         apply_converted_lines(
             project, converted,
@@ -1086,7 +1211,10 @@ def _weights_spy(monkeypatch) -> dict:
     real = convert_mod.run_convert
     seen: dict = {}
 
-    def spy(phrases, csv_path, where, params, weights_per_line=None, cache_db=True):
+    def spy(
+        phrases, csv_path, where, params, weights_per_line=None, cache_db=True,
+        word_boundaries_per_line=None,
+    ):
         seen["params"] = params
         seen["weights_per_line"] = weights_per_line
         if callable(weights_per_line):
@@ -1099,10 +1227,12 @@ def _weights_spy(monkeypatch) -> dict:
             return real(
                 phrases, csv_path, where, params,
                 weights_per_line=wrapped, cache_db=cache_db,
+                word_boundaries_per_line=word_boundaries_per_line,
             )
         return real(
             phrases, csv_path, where, params,
             weights_per_line=weights_per_line, cache_db=cache_db,
+            word_boundaries_per_line=word_boundaries_per_line,
         )
 
     monkeypatch.setattr(convert_mod, "run_convert", spy)
