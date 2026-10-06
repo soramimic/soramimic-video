@@ -411,10 +411,11 @@ def _layered_note_frames(
     Stage 3 timings are acoustic observations, while VOICEVOX requires every score
     element to occupy at least two integer frames.  Rounding can therefore leave a
     densely sung line one frame short even though an adjacent rest has ample room.
-    Borrow from the following rest first, then the preceding rest.  If neither has
-    enough capacity, extend this line and shift only the immediately following
-    material; a later rest naturally absorbs that shift.  The Project itself stays
-    unchanged and every canonical mora remains represented.
+    Borrow from the following rest first, then the preceding rest.  The longer
+    articulation target for spoken notes is optional: it must never push the next
+    line out of sync. Only the engine's mandatory two-frame minimum can extend a
+    line beyond the available rests. The Project itself stays unchanged and every
+    canonical mora remains represented.
     """
     result: dict[int, tuple[int, int]] = {}
     groups = [list(members) for _line, members in groupby(notes, key=lambda n: n.line)]
@@ -431,11 +432,33 @@ def _layered_note_frames(
         shift = max(0, previous_end - original_start)
         if shift:
             preferred = [value + shift for value in preferred]
+        next_start = (
+            round(groups[group_index + 1][0].start_sec * FRAME_RATE)
+            if group_index + 1 < len(groups)
+            else None
+        )
+        counts = [max(1, len(split_voicevox_moras(lyric_map.get(n.id) or ""))) for n in group]
+        head_rest = (
+            max(0, HEAD_REST_FRAMES - preferred[0]) if group[0] is notes[0] else 0
+        )
+        spoken_count = sum(count for n, count in zip(group, counts, strict=True)
+                           if n.source == "spoken")
+        spoken_frames = SPOKEN_ARTICULATION_FRAMES
+        if spoken_count and next_start is not None:
+            # Articulation padding is not an engine requirement. Limit it to the
+            # line and adjacent idle time so a dense spoken passage cannot build
+            # up seconds of delay while images, subtitles and accompaniment keep
+            # using the original timeline.
+            sung_frames = (sum(counts) - spoken_count) * MIN_ELEMENT_FRAMES
+            capacity = next_start - previous_end - sung_frames - head_rest
+            spoken_frames = max(
+                MIN_ELEMENT_FRAMES,
+                min(SPOKEN_ARTICULATION_FRAMES, capacity // spoken_count),
+            )
         gaps = []
-        for n in group:
-            count = max(1, len(split_voicevox_moras(lyric_map.get(n.id) or "")))
+        for n, count in zip(group, counts, strict=True):
             per_mora = (
-                SPOKEN_ARTICULATION_FRAMES
+                spoken_frames
                 if n.source == "spoken"
                 else MIN_ELEMENT_FRAMES
             )
@@ -447,11 +470,6 @@ def _layered_note_frames(
         available = preferred[-1] - preferred[0]
         shortage = max(0, required - available)
         if shortage:
-            next_start = (
-                round(groups[group_index + 1][0].start_sec * FRAME_RATE)
-                if group_index + 1 < len(groups)
-                else None
-            )
             after = shortage if next_start is None else max(0, next_start - preferred[-1])
             take_after = min(shortage, after)
             preferred[-1] += take_after
