@@ -372,6 +372,51 @@ def test_edge_speech_regularizes_overlapping_ctc_units_in_one_utterance():
     )
 
 
+@pytest.mark.parametrize("intervals", [
+    [(1.0, 2.0), (1.0, 2.0)],
+    [(1.0, 2.5), (1.2, 1.8)],
+    [(1.0, 2.0), (1.8, 2.5)],
+])
+def test_overlapping_recovery_remains_valid_when_line_continuity_is_blocked(intervals):
+    data = layers()
+    for unit, (start, end) in zip(data["performed"][1:], intervals, strict=True):
+        unit.update(start_sec=start, end_sec=end)
+    # Another utterance falls inside the complete first-line window. Its real
+    # note must remain unchanged and prevents whole-line continuity adjustment.
+    for i, (kana, start, end) in enumerate([("サ", 0.5, 0.7), ("シ", 3.0, 3.2)], 3):
+        data["canonical"].append({
+            "utterance_id": f"u{i}", "text": kana, "kana": kana, "mora_ids": [f"m{i}"],
+        })
+        unit = dict(data["performed"][0], singing_unit_id=f"s{i}", mora_ids=[f"m{i}"],
+                    start_sec=start, end_sec=end)
+        data["performed"].append(unit)
+        slot = dict(data["synthesis_plan"][0], id=f"slot-{i}", utterance_id=f"u{i}",
+                    singing_unit_id=f"s{i}", mora_ids=[f"m{i}"], kana=kana,
+                    start_sec=start, end_sec=end)
+        data["synthesis_plan"].append(slot)
+    data["synthesis_plan"] = [data["synthesis_plan"][i] for i in (0, 3, 4)]
+    anchors = copy.deepcopy(data["synthesis_plan"])
+    canonical, performed = copy.deepcopy((data["canonical"], data["performed"]))
+    data["unresolved_unit_ids"] = ["s2", "s1"]
+
+    assert _recover_synthesis_units(data) == 2
+    assert _continuize_spoken_synthesis_lines(data) == (0, 0)
+    assert data["canonical"] == canonical and data["performed"] == performed
+    slots = data["synthesis_plan"]
+    assert [s for s in slots if s["pitch_sources"] != ["spoken"]] == anchors
+    recovered = [s for s in slots if s["pitch_sources"] == ["spoken"]]
+    assert [s["singing_unit_id"] for s in recovered] == ["s1", "s2"]
+    assert recovered[0]["start_sec"] == min(start for start, _ in intervals)
+    assert recovered[-1]["end_sec"] == max(end for _, end in intervals)
+    assert recovered[0]["end_sec"] == recovered[1]["start_sec"]
+    assert [(s["timing_original_start_sec"], s["timing_original_end_sec"])
+            for s in recovered] == intervals
+    value = project()
+    apply_lyric_layers(value, data)
+    assert len(value.notes) == 5
+    assert [value.notes[i].kana for i in value.lines[0].note_ids] == list("カキク")
+
+
 def test_spoken_recovery_preserves_fine_long_vowel_mora_ids():
     data = layers()
     data["canonical"][0]["kana"] = "オーケイ"
