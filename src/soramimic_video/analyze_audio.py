@@ -144,6 +144,41 @@ def _omit_unresolved_synthesis_units(layers: dict) -> int:
     return len(unresolved)
 
 
+def _split_overlapping_spoken_recoveries(
+    plan: list[dict], recovered_ids: set[str], mora_order: dict[str, int],
+) -> None:
+    """Share overlapping recovery intervals in canonical order, preserving all units."""
+    recovered = sorted(
+        (slot for slot in plan if slot["singing_unit_id"] in recovered_ids),
+        key=lambda slot: (slot["start_sec"], slot["end_sec"]),
+    )
+    groups: list[list[dict]] = []
+    group_end = 0.0
+    for slot in recovered:
+        if not groups or slot["start_sec"] >= group_end:
+            groups.append([slot])
+            group_end = slot["end_sec"]
+        else:
+            groups[-1].append(slot)
+            group_end = max(group_end, slot["end_sec"])
+    for group in groups:
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda slot: min(mora_order[mid] for mid in slot["mora_ids"]))
+        start = min(slot["start_sec"] for slot in group)
+        end = max(slot["end_sec"] for slot in group)
+        total = sum(len(slot["mora_ids"]) for slot in group)
+        offset = 0
+        for slot in group:
+            slot["timing_original_start_sec"] = slot["start_sec"]
+            slot["timing_original_end_sec"] = slot["end_sec"]
+            slot["start_sec"] = start + (end - start) * offset / total
+            offset += len(slot["mora_ids"])
+            slot["end_sec"] = start + (end - start) * offset / total
+            slot["timing_source"] = "mora_ctc_shared_interval"
+            slot["timing_adjustment"] = "spoken_overlap_split"
+
+
 def _recover_synthesis_units(
     layers: dict,
     *,
@@ -301,8 +336,13 @@ def _recover_synthesis_units(
 
     if not recovered:
         return 0
-    plan.sort(key=lambda item: (item["start_sec"], item["end_sec"], item["id"]))
     recovered_set = set(recovered)
+    # Whole-line continuity may be blocked by another utterance. The recovered
+    # slots must already be non-overlapping before that optional adjustment.
+    _split_overlapping_spoken_recoveries(
+        plan, recovered_set, {mid: index for index, mid in enumerate(mora_details)},
+    )
+    plan.sort(key=lambda item: (item["start_sec"], item["end_sec"], item["id"]))
     layers["unresolved_unit_ids"] = [
         unit_id for unit_id in unresolved if unit_id not in recovered_set
     ]
@@ -468,8 +508,8 @@ def _continuize_spoken_synthesis_lines(layers: dict) -> tuple[int, int]:
         })
         for slot in slots:
             start, end = candidate[slot["singing_unit_id"]]
-            slot["timing_original_start_sec"] = float(slot["start_sec"])
-            slot["timing_original_end_sec"] = float(slot["end_sec"])
+            slot.setdefault("timing_original_start_sec", float(slot["start_sec"]))
+            slot.setdefault("timing_original_end_sec", float(slot["end_sec"]))
             slot["start_sec"] = start
             slot["end_sec"] = end
             slot["timing_source"] = "mora_ctc_continuous"
