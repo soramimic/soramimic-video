@@ -3291,7 +3291,7 @@ function updateSongTextPreviews() {
   $("song-preview-credits-original").textContent = finalCredit;
   let synthCredit = "";
   if (fixedSynthesizer === "prettypitch") {
-    synthCredit = "PrettyPitch / 波音リツ（音源収録・配布：カノン）";
+    synthCredit = "PrettyPitch / 波音リツ（カノン）";
   } else if (fixedSynthesizer === "voicevox") {
     const style = [...$("voicevox-style").options]
       .find((option) => Number(option.value) === fixedVoicevoxStyle);
