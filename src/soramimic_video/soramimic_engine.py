@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # run_convert に渡すと、エンジン内部と同じユニット列を使って重みを計算できる
 # (トークナイズをやり直さずに済む)。None を返せば重み無し(従来動作)。
 UnitWeightsFunc = Callable[[list[list[dict[str, Any]]]], "list[list[float]] | None"]
+WordBoundariesFunc = Callable[[list[list[dict[str, Any]]]], "list[list[int]] | None"]
 
 _base: dict[str, Any] | None = None  # 辞書データ(monotie行列)+ トークナイザ
 _apps: dict[str, Any] = {}  # r(小数2桁キー) → Soramimic インスタンス
@@ -88,6 +89,7 @@ def _get_app(vowel_ratio: Any = None) -> Any:
             },
             tokenize_sentenses=tok.tokenize,  # type: ignore[arg-type]
             get_yomi=tok.get_yomi,
+            preserve_reading_positions=True,
         )
     return _apps[key]
 
@@ -383,6 +385,7 @@ def run_convert(
     params: dict[str, Any],
     weights_per_line: list[list[float]] | UnitWeightsFunc | None = None,
     cache_db: bool = True,
+    word_boundaries_per_line: list[list[int]] | WordBoundariesFunc | None = None,
 ) -> dict:
     """bridge/convert.mjs と同じ入出力の変換。
 
@@ -398,6 +401,10 @@ def run_convert(
         重みの計算にユニット列そのものが要る場合は UnitWeightsFunc(callable)を
         渡せる。エンジンが使うのと同じユニット列を引数に呼ばれるので、
         MeCabトークナイズを二重に走らせずに済む。
+
+    word_boundaries_per_line: 各行で単語を区切れるユニット位置。コールバックなら
+        重みと同じユニット列から求める。歌詞モーラや合成音符の途中で単語を
+        分けない制約として、候補生成時から適用する。
 
     単語DBは、この歌詞が引きうる最大ユニット数(_max_variation_units)を上限に
     作る。上限を超えるバリエーションは照合されようがないので、出力は上限無しの
@@ -417,6 +424,11 @@ def run_convert(
     # 単語DBの上限(max_units)と、callable な重み計算の両方で使う。
     # tokenize_together(MeCab)は上の1回きりで、ここでは走らない。
     units_per_line = [app.text_analyzer.get_yomi_and_phrase_break(t) for t in tokens_list]
+    boundaries = (
+        word_boundaries_per_line(units_per_line)
+        if callable(word_boundaries_per_line)
+        else word_boundaries_per_line
+    )
 
     # DBは歌詞が引きうる範囲だけ作る(結果は上限無しと完全に同一)
     db = _get_db(
@@ -448,7 +460,8 @@ def run_convert(
         ]
 
     results = app.soramimi_maker.generate_from_tokens(
-        tokens_list, db, params, update_func, weights_per_line=weights
+        tokens_list, db, params, update_func, weights_per_line=weights,
+        word_boundaries_per_line=boundaries,
     )
 
     lines = [
