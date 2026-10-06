@@ -2134,10 +2134,10 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
-def test_synth_credit_of_prettypitch_names_engine_and_voice():
+def test_synth_credit_of_prettypitch_names_engine_voice_and_provider():
     assert api_mod.synth_credit_of(
         {"synthesizer": "prettypitch"}, {}
-    ) == "PrettyPitch / 波音リツ"
+    ) == "PrettyPitch / 波音リツ（音源収録・配布：カノン）"
 
 
 def test_index_html_has_platform_appropriate_save_share_buttons():
