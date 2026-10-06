@@ -264,7 +264,7 @@
     overflow: hidden; color: #ffffffb3; font-size: min(.58rem, 1.05vw);
     line-height: 1.1; white-space: nowrap; text-align: left;
   }
-  .song-text-credits-stage { background: #000; }
+  .song-text-credits-stage { background: #000; container-type: inline-size; }
   .song-text-credits-stage::after { display: none; }
   .song-text-credits-heading,
   .song-text-credits-original,
@@ -278,7 +278,7 @@
   .song-text-credits-heading { top: 8%; height: 7%; color: #a8a8a8; font-size: clamp(.55rem, 1.8vw, .9rem); }
   .song-text-credits-original { top: 23%; height: 10%; font-size: clamp(.68rem, 2.25vw, 1.15rem); font-weight: 600; }
   .song-text-credits-app { top: 56%; height: 8%; font-size: clamp(.62rem, 2.15vw, 1.05rem); }
-  .song-text-credits-synth { top: 65%; height: 7%; font-size: clamp(.55rem, 1.8vw, .9rem); }
+  .song-text-credits-synth { top: 65%; height: 7%; font-size: min(.9rem, 2.2cqw); }
   .song-text-credits-sites { top: 78%; height: 5%; color: #a8a8a8; font-size: clamp(.46rem, 1.5vw, .75rem); }
   /* 詳細設定は単語リストのすぐ下へ差し込む。親カードと同じ面へ直接置き、
      二重カードに見える外枠・角丸・別背景を付けない。 */
@@ -3291,7 +3291,7 @@ function updateSongTextPreviews() {
   $("song-preview-credits-original").textContent = finalCredit;
   let synthCredit = "";
   if (fixedSynthesizer === "prettypitch") {
-    synthCredit = "PrettyPitch / 波音リツ";
+    synthCredit = "PrettyPitch / 波音リツ（音源収録・配布：カノン）";
   } else if (fixedSynthesizer === "voicevox") {
     const style = [...$("voicevox-style").options]
       .find((option) => Number(option.value) === fixedVoicevoxStyle);
