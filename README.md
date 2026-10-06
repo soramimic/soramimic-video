@@ -21,6 +21,19 @@ uv sync
 
 歌唱音源から解析する場合は audio extra、Web API を使う場合は api extra を追加してください。
 
+## 関連リポジトリの取り込み
+
+| リポジトリ | このリポジトリで固定する場所 | 更新時の作業 |
+|---|---|---|
+| [Soramimic Score](https://github.com/soramimic/soramimic-score) | `pyproject.toml` の `[tool.uv.sources]` にある `rev` と `uv.lock` | 採用するコミットへ `rev` を変更し、`uv lock` を更新する |
+| [Soramimic Yomi](https://github.com/soramimic/soramimic-yomi) | Git の `main` を参照し、実際のコミットは `uv.lock` に固定 | 採用するコミットへ `uv.lock` を更新する |
+| [Soramimic Wordlists](https://github.com/soramimic/soramimic-wordlists) | `external/soramimic-wordlists` の submodule コミット | 採用するコミットへ submodule の参照を更新する |
+
+上流の更新は自動で取り込みません。更新時は各リポジトリの変更点を確認し、
+このリポジトリの PR で固定先を変更します。CI に加え、Score・Yomi の変更は
+音源解析結果、Wordlists の変更は CSV と画像・出典を確認してください。
+画像の利用条件は [サンプルと画像の利用条件](docs/sample-rights.md) に従います。
+
 ## CLI
 
 ```sh
@@ -162,7 +175,7 @@ journaldへ出力しません。
 
 SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
 ローカルディレクトリだけをofflineで読みます。音源解析は
-[Soramimic Score](https://github.com/jiroshimaya/soramimic-score) が歌詞認識・読み・時刻・音高の
+[Soramimic Score](https://github.com/soramimic/soramimic-score) が歌詞認識・読み・時刻・音高の
 対応を一括して行います。`uv sync`で検証済みの版が一緒にインストールされます。
 音高が未解決の歌唱単位は推測で補わず、合成から省略して解析結果に記録します。
 SheetSage2が未設定の場合、別方式へ黙ってフォールバックしません。
