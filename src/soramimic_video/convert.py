@@ -19,15 +19,15 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from soramimic import normalize_kana_reading
+
 from .kana import (
-    normalize_small_vowels,
-    open_long_vowel_runs,
     split_fine_moras,
     split_moras,
     vowel_of,
 )
 from .project import Line, Parody, ParodyLine, ParodyWord, Project
-from .soramimic_engine import UnitWeightsFunc, run_convert
+from .soramimic_engine import UnitWeightsFunc, WordBoundariesFunc, run_convert
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,12 @@ def _engine_kana(kana: str) -> str:
 
     小書き母音の開き(セェ→セエ)と連続長音の開き(ドーー→ドーオ)。どちらも
     「一致する単語が無い単独ユニットができて行の変換が丸ごと空になる」
-    エンジンのトークナイズ起因の問題への前処理。1文字→1文字なので
-    文字オフセットの対応は恒等に保たれる。
+    エンジンのトークナイズ起因の問題への前処理。さらにエンジンと同じ関数で
+    未対応の小書きの組み合わせ(イェ→イエ・クヮ→クワ)も開く。すべて1文字→
+    1文字なので文字オフセットの対応は恒等に保たれ、元の歌詞・モーラIDには
+    触れずにエンジンの音節を正規モーラへ対応付けられる。
     """
-    return open_long_vowel_runs(normalize_small_vowels(kana))
+    return normalize_kana_reading(kana)
 
 
 def engine_phrases(project: Project) -> list[str]:
@@ -58,7 +60,17 @@ def _layer_unit_note_indices(
     line: Line,
     units: list[dict[str, Any]],
 ) -> list[list[int]] | None:
-    """Return each engine unit's line-local note indices from lyric-layer identity.
+    """Return the synthesis notes owned by each engine unit, or legacy fallback."""
+    mapping = _layer_unit_mapping(project, line, units)
+    return mapping[0] if mapping is not None else None
+
+
+def _layer_unit_mapping(
+    project: Project,
+    line: Line,
+    units: list[dict[str, Any]],
+) -> tuple[list[list[int]], list[set[str]]] | None:
+    """Return each engine unit's line-local note indices and canonical mora IDs.
 
     ``apply_lyric_layers`` creates one project note for every synthesis-plan slot in
     plan order.  The plan already carries canonical mora IDs, so layered projects
@@ -160,7 +172,35 @@ def _layer_unit_note_indices(
     covered = {index for group in groups for index in group}
     if covered != set(range(len(line.note_ids))):
         raise ValueError(f"行{line.id}: 合成音符を完全歌詞のモーラIDへ投影できません")
-    return groups
+    return groups, unit_mora_ids
+
+
+def project_word_boundaries(project: Project) -> WordBoundariesFunc:
+    """Keep each canonical mora and synthesis note within one generated word."""
+
+    def compute(units_per_line: list[list[dict[str, Any]]]) -> list[list[int]] | None:
+        if project.lyric_layers is None:
+            return None
+        out: list[list[int]] = []
+        for line, units in zip(project.lines, units_per_line, strict=True):
+            mapping = _layer_unit_mapping(project, line, units)
+            assert mapping is not None
+            note_groups, mora_groups = mapping
+            owner_units: dict[tuple[str, str | int], list[int]] = {}
+            for i, (note_ids, mora_ids) in enumerate(zip(note_groups, mora_groups, strict=True)):
+                for note_id in note_ids:
+                    owner_units.setdefault(("note", note_id), []).append(i)
+                for mora_id in mora_ids:
+                    owner_units.setdefault(("mora", mora_id), []).append(i)
+            forbidden = {
+                boundary
+                for indices in owner_units.values()
+                for boundary in range(indices[0] + 1, indices[-1] + 1)
+            }
+            out.append([i for i in range(len(units) + 1) if i not in forbidden])
+        return out
+
+    return compute
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1442,7 +1482,8 @@ def convert_project(
     # α>0 のときだけ重みを渡す。α=0(既定)は weights_per_line=None で従来と完全に同一
     weights = project_note_length_weights(project, alpha) if alpha > 0 else None
     result = run_convert(
-        phrases, csv_path, where, coerced, weights_per_line=weights, cache_db=cache_db
+        phrases, csv_path, where, coerced, weights_per_line=weights, cache_db=cache_db,
+        word_boundaries_per_line=project_word_boundaries(project),
     )
     apply_converted_lines(project, result["lines"], wordlist, where, coerced)
     return result

@@ -59,6 +59,49 @@ def test_spoken_fallback_units_get_audible_articulation_time():
     assert sum(note["frame_length"] for note in score) == 60
 
 
+@pytest.mark.parametrize("rest_frames", [0, 20])
+def test_dense_spoken_lines_do_not_delay_following_singing(rest_frames):
+    specs = [(20, 40, "ア", 0)]
+    cursor = 40
+    for line in range(1, 13):
+        specs.extend((cursor + i * 5, cursor + (i + 1) * 5, "カ", line)
+                     for i in range(16))
+        cursor += 80 + rest_frames
+    specs.append((cursor, cursor + 40, "キ", 13))
+    value = layered(specs)
+    for note in value.notes[1:-1]:
+        note.source = "spoken"
+    before = copy.deepcopy(value)
+
+    score = vv.build_score(value)["notes"]
+
+    assert [note["lyric"] for note in score if note["key"] is not None] == (
+        ["ア"] + ["カ"] * 192 + ["キ"]
+    )
+    assert all(note["frame_length"] >= vv.MIN_ELEMENT_FRAMES for note in score)
+    assert sum(note["frame_length"] for note in score[:-1]) == cursor
+    assert score[-1]["frame_length"] == 40
+    assert value == before
+
+
+def test_dense_spoken_padding_accounts_for_mixed_notes_and_stacked_moras():
+    value = layered([
+        (20, 40, "ア", 0),
+        (40, 48, "カキ", 1),
+        (48, 60, "ク", 1),
+        (60, 68, "ケコ", 1),
+        (68, 100, "サ", 2),
+    ])
+    value.notes[1].source = value.notes[3].source = "spoken"
+
+    score = vv.build_score(value)["notes"]
+
+    assert [note["lyric"] for note in score if note["key"] is not None] == list("アカキクケコサ")
+    assert all(note["frame_length"] >= vv.MIN_ELEMENT_FRAMES for note in score)
+    assert sum(note["frame_length"] for note in score[:-1]) == 68
+    assert score[-1]["frame_length"] == 32
+
+
 @pytest.mark.parametrize("specs", [
     [(20, 23, "カキ", 0)], [(0, 3, "カ", 0)],
     [(20, 21, "カ", 0), (21, 23, "キ", 0)],
