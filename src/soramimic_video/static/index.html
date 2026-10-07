@@ -4937,10 +4937,21 @@ function currentWordlistName() {
   return $("wordlist").value.trim();
 }
 
+function currentPreviewCustomList() {
+  if (simpleMode) return null;
+  const list = activeCustomList();
+  if (list) return list;
+  if (!showsEditorWordlist()) return null;
+  const entry = editorSessionWordlist();
+  return typeof entry?.csvText === "string" && entry.csvText.trim()
+    ? { name: entry.text || "自作リスト", text: entry.csvText } : null;
+}
+
 // いま選ばれている組み合わせ
 const currentCombo = () => ({
   sampleId: ownSongFile() ? OWN_SONG_VALUE : $("sample-select").value,
   wordlistName: currentWordlistName() || "",
+  customList: currentPreviewCustomList(),
 });
 
 // 単語リストの代表画像(サムネプレビューが取れなかったときのフォールバック)。
@@ -5004,7 +5015,7 @@ function loadThumbnailPreview(combo) {
     $("builder-image-hidden").hidden = true;
     return;
   }
-  if (!combo.wordlistName) {
+  if (!combo.wordlistName && !combo.customList) {
     loadWordlistImage(combo.wordlistName, seq);
     return;
   }
@@ -5013,7 +5024,7 @@ function loadThumbnailPreview(combo) {
 
   const ctrl = new AbortController();
   previewAbort = ctrl;
-  const timer = setTimeout(() => ctrl.abort(), PREVIEW_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), combo.customList ? 25000 : PREVIEW_TIMEOUT_MS);
   // 持ち込み曲にはサンプルIDがないので、入力中の曲名(初期値はファイル名)を渡す。
   // サムネ生成は音声そのものではなく曲名を同じ単語リストで変換するため、WAVでも
   // 完成時と同じ経路で事前に作れる。登録済みの音声サンプルは従来どおりIDを渡す。
@@ -5022,9 +5033,20 @@ function loadThumbnailPreview(combo) {
     : { sample: combo.sampleId, wordlist: combo.wordlistName };
   params.noncommercial_fanwork = "true";
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
-  const url = "/api/thumbnail-preview?" + new URLSearchParams(params);
+  const url = combo.customList ? "/api/thumbnail-preview"
+    : "/api/thumbnail-preview?" + new URLSearchParams(params);
+  const options = { headers: headers(), signal: ctrl.signal };
+  if (combo.customList) {
+    options.method = "POST";
+    options.headers = { ...options.headers, "Content-Type": "application/json" };
+    options.body = JSON.stringify({
+      ...(combo.sampleId === OWN_SONG_VALUE ? { title: params.title } : { sample: params.sample }),
+      wordlist_name: combo.customList.name,
+      wordlist_text: combo.customList.text,
+    });
+  }
   let pending = false;
-  fetch(url, { headers: headers(), signal: ctrl.signal })
+  fetch(url, options)
     .then((res) => {
       if (!res.ok) throw new Error(String(res.status));
       pending = res.headers.get("X-Preview-Images") === "pending";
@@ -5040,6 +5062,12 @@ function loadThumbnailPreview(combo) {
       if (seq !== previewSeq) return;
       // まずは代表画像で場を持たせ、そのあとも本物ができていないか聞き直す
       loadWordlistImage(combo.wordlistName, seq);
+      if (combo.customList) {
+        // Uploaded lists are uncached: automatic retries would repeat expensive work.
+        $("builder-note").textContent = "プレビューを作成できませんでした。そのまま生成できます。";
+        $("builder-note").hidden = false;
+        return;
+      }
       setPreviewPending(true);
       retryPreviewAfterFallback(url, seq, PREVIEW_FALLBACK_RETRIES,
         PREVIEW_FALLBACK_RETRY_MS);
@@ -5118,18 +5146,16 @@ function retryThumbnailPreview(url, seq) {
 // releaseBuilderDone から renderBuilder へ戻ってくる)
 let previewDeferred = false;
 
-// いまの選択でカードの表示(自作リストの注意 + プレビュー)を作り直す。
+// いまの選択でカードの表示を作り直す。
 function renderBuilder() {
   // 生成中はサムネ枠を進捗表示が使っている。ここで作り直すと state が preview に
   // 戻って進捗が消えるので、選択だけ受けて作り直しは終わるまで先送りする
   if (submitBusy) { previewDeferred = true; return; }
   previewDeferred = false;
   const c = currentCombo();
-  // 自作リスト(エディタの⚙で書いたもの)はサーバーに置いていないのでサムネの
-  // プレビューが作れない。黙って空枠にせず、その旨だけ静かに出して生成には進める
-  const custom = !!activeCustomList() || showsEditorWordlist();
-  const note = custom
-    ? "自作リストはプレビューに対応していません。そのまま生成できます。"
+  // 古い編集データにCSV本文がない場合も、生成には進める。
+  const note = showsEditorWordlist() && !c.customList
+    ? "この編集データにはプレビュー用の単語データがありません。そのまま生成できます。"
     : "";
   $("builder-note").hidden = !note;
   $("builder-note").textContent = note;
@@ -5143,9 +5169,10 @@ function schedulePreview(force) {
   if (!builderLive || $("lucky-card").hidden) return;
   showBuilderMsg("");
   const c = currentCombo();
-  const list = activeCustomList();
+  const list = c.customList;
   const ownTitle = c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "";
-  const combo = `${c.sampleId}\n${ownTitle}\n${c.wordlistName}\n${list?.id || ""}:${list?.updatedAt || ""}`;
+  const combo = JSON.stringify([c.sampleId, ownTitle, c.wordlistName,
+    list?.id || "", list?.name || "", list?.text || ""]);
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -6707,7 +6734,7 @@ function editorWhereOf(data) {
 // エディタ側が「名前で引けないリスト」を使っている状態か。
 //   ORIGINAL    … エディタの⚙モーダルで書いた自作リスト(中身は csvText)
 //   custom:<sid>… 撤去した video側の自作リストで作った古い編集(読めるよう残す)
-// どちらも表示は「自作リスト」で、サムネのプレビューは作れない。
+// CSV本文があればサムネプレビューにも使用する。
 function usesEditorWordlist() {
   const v = String((editorSessionWordlist() || {}).value || "");
   return v === "ORIGINAL" || v.startsWith("custom:");
@@ -7053,6 +7080,7 @@ async function syncEditorSessionOnce() {
   // 自作リストへの出入りは正本の change を伴わないことがある(セッションを
   // 捨てたときなど)ので、カードのプルダウンはここでも合わせ直す
   syncBuilderValues();
+  schedulePreview();
 }
 
 let editorWatchTimer = null;

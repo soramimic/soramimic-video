@@ -49,7 +49,7 @@ def _project(wordlist: Path | str, midi_path: str = "mysong.mid") -> Project:
 def _fake_convert(*surfaces: str):
     """run_convert の戻り値(1フレーズぶん)を作るモック。"""
 
-    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None, *, cache_db=True):
         words = [{"surface": s, "id": str(i + 1)} for i, s in enumerate(surfaces)]
         return {
             "lines": [{"units": [], "words": words}],
@@ -490,7 +490,7 @@ def _capture_convert_input(monkeypatch) -> list[list[str]]:
     """run_convert に渡った変換入力(フレーズ列)を記録する。"""
     seen: list[list[str]] = []
 
-    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None, *, cache_db=True):
         seen.append(list(phrases))
         return {
             "lines": [{"units": [], "words": [{"surface": "モミジ", "id": "1"}]}],

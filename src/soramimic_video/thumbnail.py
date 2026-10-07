@@ -620,6 +620,8 @@ def title_paraphrase(
     wordlist: str,
     where: str | None,
     params: dict[str, Any] | None,
+    *,
+    cache_db: bool = True,
 ) -> list[tuple[dict[str, Any], dict[str, str] | None]]:
     """曲名を1フレーズだけ空耳変換し、見出しに使う (単語, 単語リスト行) を返す。
 
@@ -633,7 +635,7 @@ def title_paraphrase(
     # 辞書が来る。エンジン既定(VARIATION_COST=0等)のままだと音の近さより
     # 変形の自由度が勝ってしまうので、本編と同じ既定解決を必ず通す
     eff_where, coerced, _alpha = resolve_convert_settings(csv_path, where, params)
-    result = run_convert([title], csv_path, eff_where, coerced)
+    result = run_convert([title], csv_path, eff_where, coerced, cache_db=cache_db)
     lines = result.get("lines") or []
     words = lines[0].get("words") if lines else []
     picked = pick_headline_words(words or [])
