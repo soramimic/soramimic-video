@@ -645,6 +645,8 @@ def title_paraphrase(
     wordlist: str,
     where: str | None,
     params: dict[str, Any] | None,
+    *,
+    cache_db: bool = True,
 ) -> list[tuple[dict[str, Any], dict[str, str] | None]]:
     """曲名を1フレーズだけ空耳変換し、見出しに使う (単語, 単語リスト行) を返す。
 
@@ -661,7 +663,7 @@ def title_paraphrase(
     if not _title_conversion_within_budget(title, coerced):
         logger.warning("曲名の変換量が上限を超えるため、言い換えなしのサムネにします")
         return []
-    result = run_convert([title], csv_path, eff_where, coerced)
+    result = run_convert([title], csv_path, eff_where, coerced, cache_db=cache_db)
     lines = result.get("lines") or []
     words = lines[0].get("words") if lines else []
     picked = pick_headline_words(words or [])

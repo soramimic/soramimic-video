@@ -703,12 +703,6 @@ def test_index_html_gates_neutrino_by_config():
     assert 'id="synth-unavailable"' in html
 
 
-def test_index_html_explains_missing_custom_wordlist_preview():
-    html = _index_html()
-    assert "自作リストはプレビューに対応していません。" in html
-    assert "const custom = !!activeCustomList() || showsEditorWordlist();" in html
-
-
 def test_index_html_hides_preview_for_sensitive_wordlists():
     """ビルダーカードのサムネプレビューで、昆虫などの画像を初期非表示にする。
 

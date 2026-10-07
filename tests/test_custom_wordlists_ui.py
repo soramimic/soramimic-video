@@ -49,6 +49,154 @@ def frontend_function(name: str) -> str:
     return match.group()
 
 
+def test_preview_selects_saved_or_editor_list_without_reusing_stale_editor_data():
+    run_node(frontend_function("currentPreviewCustomList") + """
+let simpleMode = false;
+let selected = {id: 'one', name: '動物', text: 'ねこ,ネコ'};
+let editorSelected = true;
+let entry = {value: 'ORIGINAL', text: '編集した動物', csvText: 'いぬ,イヌ'};
+const activeCustomList = () => selected;
+const showsEditorWordlist = () => editorSelected;
+const editorSessionWordlist = () => entry;
+assert.equal(currentPreviewCustomList(), selected);
+selected = null;
+assert.deepEqual(currentPreviewCustomList(), {name: entry.text, text: entry.csvText});
+editorSelected = false;
+assert.equal(currentPreviewCustomList(), null);
+editorSelected = true;
+entry = {value: 'custom:old'};
+assert.equal(currentPreviewCustomList(), null);
+simpleMode = true;
+selected = {name: '動物', text: 'ねこ,ネコ'};
+assert.equal(currentPreviewCustomList(), null);
+""")
+
+
+def test_preview_posts_private_list_and_discards_stale_responses():
+    run_node(frontend_function("loadThumbnailPreview") + r"""
+const elements = new Map();
+const $ = id => {
+  if (!elements.has(id)) elements.set(id, {hidden: false, removeAttribute() {}});
+  return elements.get(id);
+};
+let previewSeq = 0, previewAbort = null, previewUrl = '', previewHasReal = false;
+const setBuilderState = () => {};
+const setPreviewPending = () => {};
+const updateBuilderOverlay = () => {};
+const hiddenPreviewReason = () => '';
+const headers = () => ({'X-API-Key': 'secret'});
+const OWN_SONG_VALUE = 'own', PREVIEW_TIMEOUT_MS = 8000;
+const ownSongFile = () => ({name: '持ち込み.wav'});
+const songTitleOf = () => '持ち込み曲';
+const setTimeout = () => 1;
+const clearTimeout = () => {};
+const calls = [], shown = [], fallbacks = [];
+const fetch = (url, options) => new Promise(resolve => calls.push({url, options, resolve}));
+const showPreviewBlob = blob => shown.push(blob);
+const loadWordlistImage = (...args) => fallbacks.push(args);
+const retryThumbnailPreview = () => assert.fail('custom previews do not fetch images');
+const retryPreviewAfterFallback = () => assert.fail('custom failures must not auto-retry');
+const first = {sampleId: 'sample', wordlistName: '',
+  customList: {name: '動物', text: 'ねこ,ネコ'}};
+loadThumbnailPreview(first);
+assert.equal(calls[0].url, '/api/thumbnail-preview');
+assert.equal(calls[0].options.method, 'POST');
+assert.equal(calls[0].options.headers['X-API-Key'], 'secret');
+assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+assert.deepEqual(JSON.parse(calls[0].options.body), {
+  sample: 'sample', wordlist_name: '動物', wordlist_text: 'ねこ,ネコ',
+});
+loadThumbnailPreview({...first, sampleId: OWN_SONG_VALUE,
+  customList: {name: '動物', text: 'いぬ,イヌ'}});
+assert.equal(calls[0].options.signal.aborted, true);
+assert.deepEqual(JSON.parse(calls[1].options.body), {
+  title: '持ち込み曲', wordlist_name: '動物', wordlist_text: 'いぬ,イヌ',
+});
+const respond = (call, blob) => call.resolve({
+  ok: true, headers: {get: () => 'ready'}, blob: async () => blob,
+});
+respond(calls[1], 'new');
+await new Promise(setImmediate);
+respond(calls[0], 'old');
+await new Promise(setImmediate);
+assert.deepEqual(shown, ['new']);
+loadThumbnailPreview(first);
+calls[2].resolve({ok: false, status: 429});
+await new Promise(setImmediate);
+assert.equal(fallbacks.length, 1);
+assert.equal($('builder-note').hidden, false);
+assert.match($('builder-note').textContent, /そのまま生成できます/);
+loadThumbnailPreview({sampleId: 'sample', wordlistName: 'stations'});
+assert.match(calls[3].url, /^\/api\/thumbnail-preview\?/);
+assert.equal(calls[3].options.method, undefined);
+respond(calls[3], 'builtin');
+await new Promise(setImmediate);
+assert.deepEqual(shown, ['new', 'builtin']);
+""")
+
+
+def test_preview_refreshes_when_custom_contents_or_label_change():
+    run_node(frontend_function("schedulePreview") + """
+let builderLive = true, previewShowImages = false, previewComboKey = '', previewKey = '';
+let previewTimer = null;
+const $ = () => ({hidden: false});
+const showBuilderMsg = () => {};
+const c = {sampleId: 'sample', wordlistName: '',
+  customList: {id: 'one', name: '動物', text: 'ねこ,ネコ'}};
+const currentCombo = () => c;
+const OWN_SONG_VALUE = 'own', PREVIEW_DEBOUNCE_MS = 400;
+const renderBuilder = () => {};
+let scheduled = 0;
+const setTimeout = (fn, ms) => {assert.equal(ms, 400); return ++scheduled;};
+const clearTimeout = () => {};
+schedulePreview();
+schedulePreview();
+assert.equal(scheduled, 1);
+c.customList.text = 'いぬ,イヌ';
+schedulePreview();
+assert.equal(scheduled, 2);
+c.customList.name = '生き物';
+schedulePreview();
+assert.equal(scheduled, 3);
+c.customList.id = 'two';
+schedulePreview();
+assert.equal(scheduled, 4);
+c.customList = null;
+c.wordlistName = 'stations';
+schedulePreview();
+assert.equal(scheduled, 5);
+""")
+
+
+def test_builder_previews_custom_data_and_explains_legacy_missing_data():
+    run_node(frontend_function("renderBuilder") + """
+let submitBusy = false, previewDeferred = false;
+let editorSelected = true;
+const showsEditorWordlist = () => editorSelected;
+const note = {};
+const $ = () => note;
+const combo = {sampleId: 'sample', wordlistName: '',
+  customList: {name: '動物', text: 'ねこ,ネコ'}};
+const currentCombo = () => combo;
+const requested = [];
+const loadThumbnailPreview = value => requested.push(value);
+renderBuilder();
+assert.equal(note.hidden, true);
+assert.equal(requested[0], combo);
+combo.customList = null;
+renderBuilder();
+assert.equal(note.hidden, false);
+assert.match(note.textContent, /単語データがありません/);
+editorSelected = false;
+renderBuilder();
+assert.equal(note.hidden, true);
+submitBusy = true;
+renderBuilder();
+assert.equal(previewDeferred, true);
+assert.equal(requested.length, 3);
+""")
+
+
 def test_indexeddb_storage_and_migration():
     result = subprocess.run(
         ["node", "--test", "tests/custom-wordlists-storage.mjs"],

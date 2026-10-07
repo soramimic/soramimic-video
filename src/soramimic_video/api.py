@@ -3338,6 +3338,83 @@ def create_app(
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return str(entry.get("title") or sample_id), str(entry.get("title_kana") or "")
 
+    @app.post("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
+    async def custom_thumbnail_preview(request: Request) -> Response:
+        """Return a private PNG for a text list supplied in the JSON body."""
+        from .custom_thumbnail_preview import render_custom_preview
+
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューの作成が続いています。少し待ってからお試しください。",
+            )
+        if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+            raise HTTPException(status_code=415, detail="JSON形式で送信してください")
+        # Bound the actual stream, including chunked requests, before parsing JSON.
+        # JSON.stringify can double quotes/backslashes in the CSV.
+        maximum = 2 * wordlist_csv_mod.max_bytes() + 4096
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > maximum:
+                raise HTTPException(status_code=413, detail="入力が大きすぎます")
+            data.extend(chunk)
+        try:
+            payload = json.loads(data)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            raise HTTPException(status_code=400, detail="JSONを読み取れません") from exc
+        fields = {"sample", "title", "wordlist_name", "wordlist_text"}
+        if (
+            not isinstance(payload, dict)
+            or payload.keys() - fields
+            or any(not isinstance(value, str) for value in payload.values())
+        ):
+            raise HTTPException(status_code=400, detail="プレビューの入力形式が不正です")
+        sample = payload.get("sample", "").strip()
+        title = payload.get("title", "").strip()
+        name = payload.get("wordlist_name", "").strip() or "自作リスト"
+        if len(sample) > 200 or len(title) > 200 or len(name) > 100:
+            raise HTTPException(status_code=400, detail="曲名またはリスト名が長すぎます")
+        try:
+            (sample + title + name).encode("utf-8")
+        except UnicodeError as exc:
+            raise HTTPException(
+                status_code=400, detail="曲名またはリスト名の文字が不正です",
+            ) from exc
+        title_kana = ""
+        if sample:
+            title, title_kana = _sample_title(sample)
+        elif not title:
+            raise HTTPException(status_code=400, detail="サンプル曲(sample)か曲名(title)が必要です")
+        try:
+            custom = wordlist_csv_mod.parse(payload.get("wordlist_text", "").encode("utf-8"))
+        except (wordlist_csv_mod.WordlistCsvError, UnicodeError) as exc:
+            # The CSV parser's diagnostics can include the user's words.
+            raise HTTPException(
+                status_code=400, detail="自作リストの形式または容量を確認してください",
+            ) from exc
+        try:
+            content = await run_in_threadpool(
+                render_custom_preview, custom.text, title, name, title_kana,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューを作成できませんでした。少し待つか、リストを小さくしてお試しください。",
+            ) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=500, detail="プレビューを作成できませんでした") from exc
+        return Response(
+            content=content,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Preview-Cache": "private",
+                "X-Preview-Images": "ready",
+            },
+        )
+
     @app.get("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
     def thumbnail_preview(
         request: Request,
