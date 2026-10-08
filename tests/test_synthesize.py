@@ -356,3 +356,45 @@ def test_prettypitch_wide_range_respects_backing_capability(
     synthesize(project, tmp_path, synthesizer="prettypitch")
     assert captured["transpose"] == expected_transpose
     assert project.song.key_shift == expected_key
+
+
+@pytest.mark.parametrize("auto_octave,expected", [(True, []), (False, [80, 82, 84])])
+def test_hybrid_selects_phrases_after_common_octave_shift(
+    tmp_path, monkeypatch, auto_octave, expected,
+):
+    from soramimic_video import hybrid
+
+    project = _high_project(tmp_path)
+    captured = []
+    original = hybrid.plan_phrases
+
+    def plan(score):
+        captured.extend(n["key"] for n in score["notes"]
+                        if n["key"] is not None and not 54 <= n["key"] <= 78)
+        return original(score)
+
+    monkeypatch.setattr(hybrid, "plan_phrases", plan)
+    synthesize(project, tmp_path, synthesizer="hybrid", auto_octave=auto_octave, dry_run=True)
+    assert captured == expected
+    assert project.song.key_shift == 0
+
+
+def test_hybrid_safe_song_does_not_run_prettypitch(tmp_path, monkeypatch):
+    from soramimic_video import hybrid
+
+    project = _project(tmp_path)
+    monkeypatch.setattr(hybrid.prettypitch, "installation_error",
+                        lambda: pytest.fail("no PrettyPitch work is needed"))
+    monkeypatch.setattr(hybrid.prettypitch, "run_partial_score",
+                        lambda *a, **k: pytest.fail("no PrettyPitch work is needed"))
+    captured = {}
+
+    def voicevox(score, **kwargs):
+        captured.update(kwargs)
+        return b"unchanged voicevox output"
+
+    monkeypatch.setattr(hybrid.vv, "synthesize_partial_score", voicevox)
+    output = synthesize(project, tmp_path, synthesizer="hybrid", voicevox_style=3003)
+    assert output.read_bytes() == b"unchanged voicevox output"
+    assert captured["style_id"] == 6000
+    assert captured["skip_frames"] == []

@@ -10,6 +10,7 @@ dependencies = [
     "mido>=1.3",
     "jaconv>=0.3",
     "requests>=2.31",
+    "numpy>=1.24,<2.3",
     # 0.2.0(本家JS現行版の新パラメータモデル #98/#102/#105 対応)。PyPI 未リリースの
     # ため tool.uv.sources で git ピン。リリース後はピンを外して PyPI に戻してよい
     "soramimic[mecab]>=0.2.0",
@@ -120,6 +121,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 
 [tool.uv.sources]
-soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "06aae0e498a7d6018017ef9c4dd3e80c893ec19c" }
+soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "06f3be9bcc879da5f27ca9f5adee9c642d634f40" }
 soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi" }
 soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "4cc9c15318193a7888529af43643b337c0bb3696" }

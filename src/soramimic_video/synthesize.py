@@ -82,7 +82,7 @@ def synthesize(
     """歌唱合成を実行して vocal.wav のパスを返す。
 
     synthesizer で使うバックエンドを選ぶ("neutrino" / "voicevox" /
-    "prettypitch")。PrettyPitchは開発用の外部ランタイムを環境変数で指定する。
+    "prettypitch" / "hybrid")。PrettyPitchは開発用の外部ランタイムを環境変数で指定する。
     auto_octave(既定ON)はエンジンの安全音域に収まるよう曲全体をオクターブ単位で
     自動移調する(全バックエンド共通。移調はユーザー指定transposeに加算)。
     オクターブ調整だけでは収まらない広音域の曲では、曲全体のキー変更(半音)も
@@ -97,6 +97,14 @@ def synthesize(
     if not auto_octave:
         # 自動調整OFFなら歌は原調(ユーザーtransposeのみ)。伴奏も原調に戻す
         project.song.key_shift = 0
+    if synthesizer == "hybrid":
+        from .hybrid import run_hybrid
+
+        return run_hybrid(
+            project, project_dir, engine_url=voicevox_url, transpose=transpose,
+            auto_octave=auto_octave, octave_keys=octave_keys, threads=threads,
+            dry_run=dry_run, progress_cb=progress_cb,
+        )
     if synthesizer == "voicevox":
         from .voicevox import run_voicevox
 
