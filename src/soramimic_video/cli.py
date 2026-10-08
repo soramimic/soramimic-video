@@ -631,7 +631,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--synthesizer",
         default="voicevox",
-        choices=["voicevox", "neutrino", "prettypitch"],
+        choices=["voicevox", "neutrino", "prettypitch", "hybrid"],
     )
     p.add_argument("--model", default="MERROW", help="NEUTRINOの歌声モデル名")
     p.add_argument("--soundfont", help="伴奏レンダリング用のsf2(MIDI入力のプロジェクト)")
@@ -647,7 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default="MERROW", help="NEUTRINOの歌声モデル名")
     p.add_argument(
         "--synthesizer",
-        choices=["neutrino", "voicevox", "prettypitch"],
+        choices=["neutrino", "voicevox", "prettypitch", "hybrid"],
         default="neutrino",
         help="合成エンジン(既定: neutrino)",
     )

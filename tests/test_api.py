@@ -585,14 +585,15 @@ def test_accepts_voicevox_params(client):
     assert body["params"]["voicevox_style"] == 3001
 
 
-def test_accepts_prettypitch_only_for_noncommercial_fanwork(client, monkeypatch):
+@pytest.mark.parametrize("synthesizer", ["prettypitch", "hybrid"])
+def test_accepts_prettypitch_only_for_noncommercial_fanwork(client, monkeypatch, synthesizer):
     from soramimic_video import prettypitch as pp_mod
 
     monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
     rejected = client.post(
         "/api/jobs",
         files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
-        data={"wordlist": "stations", "synthesizer": "prettypitch"},
+        data={"wordlist": "stations", "synthesizer": synthesizer},
     )
     assert rejected.status_code == 422
     assert "非商用" in rejected.json()["detail"]
@@ -600,12 +601,14 @@ def test_accepts_prettypitch_only_for_noncommercial_fanwork(client, monkeypatch)
     job_id = submit(
         client,
         wordlist="stations",
-        synthesizer="prettypitch",
+        synthesizer=synthesizer,
         allow_noncommercial_fanwork="true",
     )
     body = wait_done(client, job_id)
     assert body["status"] == "done"
-    assert body["params"]["synthesizer"] == "prettypitch"
+    assert body["params"]["synthesizer"] == synthesizer
+    if synthesizer == "hybrid":
+        assert body["params"]["voicevox_style"] == 6000
 
 
 def test_auto_octave_defaults_on(client):
@@ -946,16 +949,17 @@ def test_config_has_voicevox_key(client):
     assert body["fixed_synthesizer"] == "voicevox"
 
 
-def test_config_can_fix_web_synthesis_to_prettypitch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("synthesizer", ["prettypitch", "hybrid"])
+def test_config_can_fix_web_synthesis_to_prettypitch(tmp_path, monkeypatch, synthesizer):
     from soramimic_video import prettypitch as pp_mod
 
-    monkeypatch.setenv(api_mod.FIXED_SYNTHESIZER_ENV, "prettypitch")
+    monkeypatch.setenv(api_mod.FIXED_SYNTHESIZER_ENV, synthesizer)
     monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
     monkeypatch.setattr(pp_mod, "available", lambda: True)
     browser = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
 
     body = browser.get("/api/config").json()
-    assert body["fixed_synthesizer"] == "prettypitch"
+    assert body["fixed_synthesizer"] == synthesizer
     assert body["prettypitch"] == {"speaker": "波音リツ", "experimental": True}
 
 
@@ -2903,3 +2907,9 @@ def test_audio_analysis_detail_is_live_and_cleared_between_stages(tmp_path):
         assert "stage_detail" not in job.to_dict()
     job.status = "done"
     assert "stage_detail" not in job.to_dict()
+
+
+def test_hybrid_credit_names_both_engines_and_voice_provider():
+    assert api_mod.synth_credit_of({"synthesizer": "hybrid"}, {}) == (
+        "VOICEVOX:波音リツ / PrettyPitch・波音リツ（カノン）"
+    )

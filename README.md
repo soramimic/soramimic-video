@@ -79,6 +79,11 @@ PRETTYPITCH_PYTHON=/path/to/PrettyPitch/.venv/bin/python \
 Web UIの固定歌声として試す場合は、上記に加えて
 `SORAMIMIC_FIXED_SYNTHESIZER=prettypitch` を設定します。未設定時の既定はVOICEVOXのままです。
 
+`--synthesizer hybrid` は波音リツのVOICEVOX歌唱を使い、音域調整後も
+F♯3〜F♯5に収まらない音を含むフレーズをPrettyPitchで補います。
+両エンジンの設定が必要で、PrettyPitchモデルと同じ非商用の利用条件が適用されます。
+Web UIの固定歌声には `SORAMIMIC_FIXED_SYNTHESIZER=hybrid` を指定できます。
+
 モーラの位置・長さ・読みは timing editor で調整できます。
 
 ```sh

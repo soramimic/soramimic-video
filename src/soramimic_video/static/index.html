@@ -1114,6 +1114,7 @@
         <select id="synthesizer" aria-label="合成エンジン">
           <option value="neutrino" id="synth-neutrino-opt">NEUTRINO</option>
           <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
+          <option value="hybrid" id="synth-hybrid-opt" disabled>波音リツ(音域補完・未設定)</option>
           <option value="prettypitch" id="synth-prettypitch-opt" disabled>PrettyPitch(試験・未設定)</option>
         </select>
         <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
@@ -1128,6 +1129,7 @@
         </span>
       </div>
       <p class="hint" id="voicevox-credit"></p>
+      <p class="hint" id="hybrid-credit" hidden>VOICEVOX:波音リツ / PrettyPitch・波音リツ（カノン）。音域に応じてフレーズごとに歌声を補います。非商用ファン作品に限ります。</p>
       <p class="hint" id="prettypitch-credit" hidden>試験用PrettyPitch・波音リツモデルです。歌声DBの音源収録・配布：カノン。非商用ファン作品に限ります。</p>
       <p class="hint" id="synth-unavailable" hidden>このサーバーでは歌声合成エンジンが使えません(サーバー側の設定が必要です)。</p>
     </div>
@@ -1789,6 +1791,9 @@ function setupVoicevox(vv) {
 function setupPrettyPitch(pp) {
   const opt = $("synth-prettypitch-opt");
   opt.disabled = !pp;
+  $("synth-hybrid-opt").disabled = !pp || $("synth-voicevox-opt").disabled;
+  $("synth-hybrid-opt").textContent = $("synth-hybrid-opt").disabled
+    ? "波音リツ(音域補完・未設定)" : "波音リツ(音域補完)";
   opt.textContent = pp ? "PrettyPitch(波音リツ・試験)" : "PrettyPitch(試験・未設定)";
 }
 
@@ -2124,6 +2129,7 @@ function toggleSynthOpts() {
   const isVv = $("synthesizer").value === "voicevox";
   const isNeutrino = $("synthesizer").value === "neutrino";
   const isPrettyPitch = $("synthesizer").value === "prettypitch";
+  const isHybrid = $("synthesizer").value === "hybrid";
   $("neutrino-opts").hidden = !isNeutrino;
   $("voicevox-opts").hidden = !isVv;
   // どちらのエンジンも使えないサーバーでは、投入前に理由が分かるよう案内を出す
@@ -2133,8 +2139,11 @@ function toggleSynthOpts() {
   // クレジット表記はVOICEVOXを選んでいるときだけ(歌声セレクトの外に置いてあるので明示的に)
   $("voicevox-credit").hidden = !isVv;
   $("prettypitch-credit").hidden = !isPrettyPitch;
+  $("hybrid-credit").hidden = !isHybrid;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
-  $("auto-octave-hint").textContent = isPrettyPitch
+  $("auto-octave-hint").textContent = isHybrid
+    ? "曲全体の音域を調整し、音域外の音を含むフレーズを補います。"
+    : isPrettyPitch
     ? "PrettyPitchの波音リツはVOICEVOXと同じ音域と仮定し、曲全体をオクターブ単位で自動移調します。"
     : isVv
       ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
@@ -3290,7 +3299,9 @@ function updateSongTextPreviews() {
   $("song-preview-footer").textContent = footer;
   $("song-preview-credits-original").textContent = finalCredit;
   let synthCredit = "";
-  if (fixedSynthesizer === "prettypitch") {
+  if (fixedSynthesizer === "hybrid") {
+    synthCredit = "VOICEVOX:波音リツ / PrettyPitch・波音リツ（カノン）";
+  } else if (fixedSynthesizer === "prettypitch") {
     synthCredit = "PrettyPitch / 波音リツ（カノン）";
   } else if (fixedSynthesizer === "voicevox") {
     const style = [...$("voicevox-style").options]
@@ -8025,6 +8036,8 @@ async function doRestoreForm() {
     } else if (state.synthesizer === "neutrino" && neutrinoAvailable()) {
       $("synthesizer").value = "neutrino";
       synthesizerTouched = true;
+    } else if (state.synthesizer === "hybrid" && !$("synth-hybrid-opt").disabled) {
+      $("synthesizer").value = "hybrid";
     } else if (state.synthesizer === "prettypitch"
         && !$("synth-prettypitch-opt").disabled) {
       $("synthesizer").value = "prettypitch";
