@@ -3818,7 +3818,7 @@ def create_app(
         if adjust_lyrics and (input_kind != "audio" or auto_lyrics or not lyrics.strip()):
             raise HTTPException(
                 status_code=422,
-                detail="歌詞の削除・補完は、音源と入力歌詞を使う場合だけ選択できます",
+                detail="不足する歌詞の補完は、音源と入力歌詞を使う場合だけ選択できます",
             )
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
