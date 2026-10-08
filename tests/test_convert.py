@@ -517,6 +517,43 @@ def test_layered_engine_kana_keeps_canonical_mora_ownership(kana, unit_moras, bo
     assert project == original
 
 
+def test_cross_token_long_vowel_keeps_notes_and_converts(tmp_path: Path, monkeypatch):
+    from soramimic_video.soramimic_engine import _get_app
+
+    project = _repeated_layer_project("コーラ")
+    analyzer = _get_app().text_analyzer
+    original_tokenize = analyzer.tokenize_sentenses
+
+    def tokenize(phrases):
+        # Pin the tokenizer boundary while exercising the real syllable engine.
+        return [[{
+            "surface_form": part, "pronunciation": part, "reading": part,
+            "basic_form": part, "pos": "名詞", "pos_detail_1": "一般",
+            "pos_detail_2": "*", "pos_detail_3": "*",
+            "conjugated_form": "*", "conjugated_type": "*", "word_position": i + 1,
+        } for i, part in enumerate(["コ", "ーラ"])] if phrase == "コーラ"
+            else original_tokenize([phrase])[0] for phrase in phrases]
+
+    monkeypatch.setattr(analyzer, "tokenize_sentenses", tokenize)
+    units = run_tokenize(engine_phrases(project))[0]
+    assert [u["pronunciation"] for u in units] == ["コー", "ラ"]
+    assert _layer_unit_note_indices(project, project.lines[0], units) == [
+        list(range(6)), list(range(6, 9)),
+    ]
+    assert project_word_boundaries(project)([units]) == [[0, 1, 2]]
+    original_layers = copy.deepcopy(project.lyric_layers)
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,コーラ,コーラ,コーラ", encoding="utf-8",
+    )
+    convert_project(project, wordlist=str(csv_path), params={"NOTE_LENGTH_WEIGHT": 1})
+    words = project.parody.lines[0].words
+    assert len(words) == 1 and words[0].surface == "コーラ" and not words[0].filler
+    assert words[0].note_ids == project.lines[0].note_ids
+    assert set(build_lyric_map(project)) == set(project.lines[0].note_ids)
+    assert project.lyric_layers == original_layers
+
+
 @pytest.mark.parametrize("kana", ["イェカイェ", "クヮカクヮ", "カャカカャ", "セェカドーー"])
 def test_layered_conversion_keeps_notes_after_small_kana_expansion(tmp_path: Path, kana: str):
     project = _repeated_layer_project(kana)
