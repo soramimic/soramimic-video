@@ -748,6 +748,22 @@ def _clean_name(value: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", value).strip("_")[:40]
 
 
+async def read_wordlist_text(value: str | UploadFile) -> str:
+    if isinstance(value, str):
+        return value
+    limit = wordlist_csv_mod.max_bytes()
+    data = await value.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"自作リストが大きすぎます(上限は{limit / 1024 / 1024:.1f}MBです)。",
+        )
+    try:
+        return wordlist_csv_mod.decode(data)
+    except wordlist_csv_mod.WordlistCsvError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def custom_wordlist_name(filename: str) -> str:
     """アップロードされたCSVのファイル名から、リストの表示名(=保存名)を作る。
 
@@ -3294,6 +3310,83 @@ def create_app(
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return str(entry.get("title") or sample_id), str(entry.get("title_kana") or "")
 
+    @app.post("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
+    async def custom_thumbnail_preview(request: Request) -> Response:
+        """Return a private PNG for a text list supplied in the JSON body."""
+        from .custom_thumbnail_preview import render_custom_preview
+
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューの作成が続いています。少し待ってからお試しください。",
+            )
+        if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+            raise HTTPException(status_code=415, detail="JSON形式で送信してください")
+        # Bound the actual stream, including chunked requests, before parsing JSON.
+        # JSON.stringify can double quotes/backslashes in the CSV.
+        maximum = 2 * wordlist_csv_mod.max_bytes() + 4096
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > maximum:
+                raise HTTPException(status_code=413, detail="入力が大きすぎます")
+            data.extend(chunk)
+        try:
+            payload = json.loads(data)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            raise HTTPException(status_code=400, detail="JSONを読み取れません") from exc
+        fields = {"sample", "title", "wordlist_name", "wordlist_text"}
+        if (
+            not isinstance(payload, dict)
+            or payload.keys() - fields
+            or any(not isinstance(value, str) for value in payload.values())
+        ):
+            raise HTTPException(status_code=400, detail="プレビューの入力形式が不正です")
+        sample = payload.get("sample", "").strip()
+        title = payload.get("title", "").strip()
+        name = payload.get("wordlist_name", "").strip() or "自作リスト"
+        if len(sample) > 200 or len(title) > 200 or len(name) > 100:
+            raise HTTPException(status_code=400, detail="曲名またはリスト名が長すぎます")
+        try:
+            (sample + title + name).encode("utf-8")
+        except UnicodeError as exc:
+            raise HTTPException(
+                status_code=400, detail="曲名またはリスト名の文字が不正です",
+            ) from exc
+        title_kana = ""
+        if sample:
+            title, title_kana = _sample_title(sample)
+        elif not title:
+            raise HTTPException(status_code=400, detail="サンプル曲(sample)か曲名(title)が必要です")
+        try:
+            custom = wordlist_csv_mod.parse(payload.get("wordlist_text", "").encode("utf-8"))
+        except (wordlist_csv_mod.WordlistCsvError, UnicodeError) as exc:
+            # The CSV parser's diagnostics can include the user's words.
+            raise HTTPException(
+                status_code=400, detail="自作リストの形式または容量を確認してください",
+            ) from exc
+        try:
+            content = await run_in_threadpool(
+                render_custom_preview, custom.text, title, name, title_kana,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューを作成できませんでした。少し待つか、リストを小さくしてお試しください。",
+            ) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=500, detail="プレビューを作成できませんでした") from exc
+        return Response(
+            content=content,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Preview-Cache": "private",
+                "X-Preview-Images": "ready",
+            },
+        )
+
     @app.get("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
     def thumbnail_preview(
         request: Request,
@@ -3611,7 +3704,7 @@ def create_app(
         wordlist_csv: UploadFile | None = None,
         # 画面に貼り付けた単語リスト(zipを作らずに画像を付ける経路)。
         # wordlist_csv が付いていないときだけ見る。画像は名前で行に結びつく
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
         lyrics: str = Form(""),
@@ -3696,6 +3789,7 @@ def create_app(
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
+        wordlist_text = await read_wordlist_text(wordlist_text)
         if (is_public_mode() or is_simple_ui()) and (
             (editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
@@ -3777,21 +3871,9 @@ def create_app(
                 status_code=422,
                 detail="editorの書き出しJSONか単語リスト(名前かCSV)のどちらかが必要です",
             )
+        custom_columns = custom.csv.columns if custom is not None else None
         layout = layout.strip()
         layout_json = layout_json.strip()
-        # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
-        if layout_json:
-            try:
-                parse_layout(json.loads(layout_json), "layout_json")
-            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
-                ) from exc
-        elif layout:
-            try:
-                load_layout(layout)
-            except (FileNotFoundError, ValueError) as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if synthesizer not in ("neutrino", "voicevox"):
             raise HTTPException(
                 status_code=422, detail="synthesizerは neutrino か voicevox です"
@@ -3843,7 +3925,7 @@ def create_app(
                         f"(上限は{wordlist_csv_mod.max_bytes() / 1024 / 1024:.1f}MBです)。",
                     )
                 try:
-                    wordlist_csv_mod.parse_editor_text(csv_text)
+                    custom_columns = wordlist_csv_mod.parse_editor_text(csv_text).columns
                 except wordlist_csv_mod.WordlistCsvError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
                 # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
@@ -3852,12 +3934,19 @@ def create_app(
             elif sid:
                 # 自作リストで作った替え歌。単語リスト行(=単語画像)は
                 # editorセッションのCSVから引くので、無ければ受け付けない
-                if session_wordlist_path(config["editor_sessions"], sid) is None:
+                session_csv = session_wordlist_path(config["editor_sessions"], sid)
+                if session_csv is None:
                     raise HTTPException(
                         status_code=422,
                         detail="自作リストの単語データが見つかりません。"
                         "替え歌エディタを開き直してから生成してください。",
                     )
+                try:
+                    custom_columns = wordlist_csv_mod.parse_editor_text(
+                        session_csv.read_text(encoding="utf-8")
+                    ).columns
+                except wordlist_csv_mod.WordlistCsvError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
                 # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
                 wordlist = CUSTOM_WORDLIST_TEXT
             else:
@@ -3880,6 +3969,24 @@ def create_app(
             # レイアウトは単一の共通デザインではなく、選んだリストに
             # 対応する検証済みの既定デザインにサーバー側で固定する。
             layout = load_wordlist_layouts().get(wordlist, "")
+        if custom_columns is not None:
+            layout = (
+                "custom_description" if "description" in custom_columns else "custom_original"
+            )
+            layout_json = ""
+        # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
+        if layout_json:
+            try:
+                parse_layout(json.loads(layout_json), "layout_json")
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
+                ) from exc
+        elif layout:
+            try:
+                load_layout(layout)
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
@@ -3963,7 +4070,7 @@ def create_app(
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
     async def wordlist_check(
         wordlist_csv: UploadFile | None = None,
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
     ) -> dict[str, Any]:
@@ -3979,6 +4086,7 @@ def create_app(
         """
         if is_simple_ui():
             raise HTTPException(status_code=404, detail="Not Found")
+        wordlist_text = await read_wordlist_text(wordlist_text)
         has_file = wordlist_csv is not None and bool(wordlist_csv.filename)
         has_text = bool(wordlist_text.strip())
         if is_public_mode() and any(bool(image.filename) for image in wordlist_images):
@@ -4269,7 +4377,7 @@ def create_app(
         # 自作の単語リスト。/api/jobs と同じ2通りの入口(zip/CSV1ファイル、または
         # 貼り付けテキスト+画像)。付いていればリスト名(wordlist)より優先する
         wordlist_csv: UploadFile | None = None,
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
     ) -> dict[str, Any]:
@@ -4325,6 +4433,7 @@ def create_app(
         )
         from .xfparse import analyze_midi
 
+        wordlist_text = await read_wordlist_text(wordlist_text)
         midi_bytes, _resolved_sample_id, _midi_filename = await resolve_midi_input(
             midi, sample_id
         )

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import threading
 import time
@@ -19,6 +20,7 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from soramimic_video import api as api_mod  # noqa: E402
+from soramimic_video import custom_thumbnail_preview as custom_preview  # noqa: E402
 from soramimic_video import thumbnail as thumb_mod  # noqa: E402
 from soramimic_video import thumbnail_preview as preview_mod  # noqa: E402
 
@@ -30,7 +32,7 @@ SAMPLE_KANA = "ヨルニカケル"
 def _fake_convert(surface: str = "米原"):
     """run_convert の戻り値(1フレーズぶん)を返すモック。"""
 
-    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None, *, cache_db=True):
         return {
             "lines": [{"units": [], "words": [{"surface": surface, "id": "1"}]}],
             "tokensList": [],
@@ -77,6 +79,126 @@ def get_preview(client: TestClient, **params):
     return client.get("/api/thumbnail-preview", params={
         "sample": SAMPLE_ID, "wordlist": "mylist", **params
     })
+
+
+def post_custom_preview(client: TestClient, **fields):
+    return client.post(
+        "/api/thumbnail-preview",
+        content=json.dumps({
+            "title": "ねこ", "wordlist_name": "動物",
+            "wordlist_text": "ねこ,ネコ\nいぬ,イヌ", **fields,
+        }),
+        headers={"Content-Type": "application/json"},
+    )
+
+
+def test_custom_preview_renders_real_private_png(client, tmp_path, caplog):
+    response = post_custom_preview(client)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-preview-cache"] == "private"
+    assert response.headers["x-preview-images"] == "ready"
+    with Image.open(io.BytesIO(response.content)) as png:
+        assert png.size == (preview_mod.PREVIEW_WIDTH, preview_mod.PREVIEW_HEIGHT)
+    edited = post_custom_preview(client, wordlist_text="ぞう,ゾー")
+    assert edited.status_code == 200
+    assert edited.content != response.content
+    assert not list(preview_mod.preview_cache_dir(tmp_path / "jobs").glob("*.png"))
+    assert "動物" not in caplog.text
+    assert "ねこ" not in caplog.text
+
+
+def test_custom_preview_normalizes_and_drops_image_references(client, samples, monkeypatch):
+    seen = []
+    (samples / "samples.json").write_text(json.dumps([{
+        "id": SAMPLE_ID, "title": SAMPLE_TITLE, "title_kana": SAMPLE_KANA,
+    }]), encoding="utf-8")
+
+    def render(*args):
+        seen.append(args)
+        return b"png"
+
+    monkeypatch.setattr(custom_preview, "render_custom_preview", render)
+    response = post_custom_preview(
+        client, sample=SAMPLE_ID, wordlist_name="../動物",
+        wordlist_text=(
+            "surface,pronunciation,image,image_page\n"
+            "ねこ,ネコ,http://127.0.0.1/private,file:///etc/passwd\n"
+            "いぬ,イヌ,/etc/passwd,http://internal/"
+        ),
+    )
+    assert response.status_code == 200
+    csv_text, title, name, kana = seen[0]
+    assert csv_text == "id,original,surface,pronunciation\n1,ねこ,ねこ,ネコ\n2,いぬ,いぬ,イヌ"
+    assert title == SAMPLE_TITLE
+    assert name == "../動物"  # Display text; never used as a path.
+    assert kana == SAMPLE_KANA
+
+
+@pytest.mark.parametrize("fields", [
+    {"wordlist_text": ""},
+    {"wordlist_text": "ねこ,invalid"},
+    {"wordlist_text": "\ud800"},
+    {"wordlist_name": "\ud800"},
+    {"title": "\ud800"},
+    {"wordlist_text": ["ねこ"]},
+    {"wordlist": "/etc/passwd"},
+    {"wordlist_name": "x" * 101},
+    {"title": "x" * 201},
+    {"title": ""},
+])
+def test_custom_preview_rejects_invalid_input_before_render(client, monkeypatch, fields):
+    def forbidden(*args):
+        pytest.fail("invalid input reached the renderer")
+
+    monkeypatch.setattr(custom_preview, "render_custom_preview", forbidden)
+    assert post_custom_preview(client, **fields).status_code == 400
+
+
+def test_custom_preview_bounds_stream_csv_bytes_and_rows(client, monkeypatch):
+    monkeypatch.setenv("SORAMIMIC_MAX_WORDLIST_BYTES", "32")
+    monkeypatch.setenv("SORAMIMIC_MAX_WORDLIST_ROWS", "1")
+    assert post_custom_preview(client).status_code == 400  # Two rows.
+    assert post_custom_preview(client, wordlist_text="ね" * 12).status_code == 400
+    response = client.post(
+        "/api/thumbnail-preview",
+        content=iter([b'{"wordlist_text":"', b"x" * 5000, b'"}']),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize("public", [False, True])
+def test_custom_preview_is_rate_limited_before_parsing(tmp_path, monkeypatch, public):
+    monkeypatch.setenv(api_mod.PUBLIC_ENV, "1" if public else "0")
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "0")
+    monkeypatch.setenv(preview_mod.RATE_LIMIT_ENV, "1")
+    app = api_mod.create_app(jobs_dir=tmp_path / "jobs")
+    client = TestClient(app)
+    assert client.post("/api/thumbnail-preview", json={}).status_code == 400
+    assert client.post("/api/thumbnail-preview", json={}).status_code == 429
+
+
+def test_custom_preview_preserves_api_key_and_simple_mode(client, monkeypatch):
+    monkeypatch.setenv(api_mod.API_KEY_ENV, "secret")
+    assert post_custom_preview(client).status_code == 401
+    monkeypatch.setenv(api_mod.SIMPLE_UI_ENV, "1")
+    response = client.post(
+        "/api/thumbnail-preview", json={}, headers={"X-API-Key": "secret"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("error, status", [(TimeoutError("private words"), 429),
+                                         (ValueError("private words"), 500)])
+def test_custom_preview_failure_does_not_echo_input(client, monkeypatch, error, status):
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(custom_preview, "render_custom_preview", fail)
+    response = post_custom_preview(client)
+    assert response.status_code == status
+    assert "private words" not in response.text
 
 
 # ---- 正常系・キャッシュ ----
@@ -134,7 +256,7 @@ def test_preview_converts_the_sample_reading(
     )
     seen: list[list[str]] = []
 
-    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None, *, cache_db=True):
         seen.append(list(phrases))
         return {
             "lines": [{"units": [], "words": [{"surface": "米原", "id": "1"}]}],
@@ -153,7 +275,7 @@ def test_preview_without_reading_converts_the_title(
     # 読みの無い(古い・差し替えの)samples.json では従来どおり曲名を変換に渡す
     seen: list[list[str]] = []
 
-    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None, *, cache_db=True):
         seen.append(list(phrases))
         return {
             "lines": [{"units": [], "words": [{"surface": "米原", "id": "1"}]}],
@@ -172,7 +294,7 @@ def test_uploaded_song_title_returns_uncached_private_preview(
     """持ち込み曲名の派生PNGを共有ディスクキャッシュへ残さない。"""
     seen: list[list[str]] = []
 
-    def fake(phrases, wordlist_csv, where, params, weights_per_line=None):
+    def fake(phrases, wordlist_csv, where, params, weights_per_line=None, *, cache_db=True):
         seen.append(list(phrases))
         return {
             "lines": [{"units": [], "words": [{"surface": "米原", "id": "1"}]}],

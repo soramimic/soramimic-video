@@ -663,12 +663,6 @@ def test_index_html_gates_neutrino_by_config():
     assert 'id="synth-unavailable"' in html
 
 
-def test_index_html_explains_missing_custom_wordlist_preview():
-    html = _index_html()
-    assert "自作リストはプレビューに対応していません。" in html
-    assert "const custom = !!activeCustomList() || showsEditorWordlist();" in html
-
-
 def test_index_html_hides_preview_for_sensitive_wordlists():
     """ビルダーカードのサムネプレビューで、昆虫などの画像を初期非表示にする。
 
@@ -698,10 +692,10 @@ def test_index_html_builder_card_has_selects():
     # サンプル曲と単語リストはサムネ枠より上で選べる。
     assert '<div class="builder-selects">' in card
     assert '<select id="builder-sample" aria-label="サンプル曲"></select>' in card
-    assert (
-        '<select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>'
-        in card
-    )
+    assert 'id="builder-wordlist-trigger" class="builder-wordlist-trigger"' in card
+    assert 'aria-controls="custom-wordlist-menu" aria-expanded="false">' in card
+    assert '<select id="builder-wordlist" hidden aria-hidden="true" tabindex="-1"></select>' in card
+    assert 'id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"' in card
     assert card.index('class="builder-selects"') < card.index('id="builder-figure"')
     # 写し同期(選択肢と値)。正本は #sample-select / #wordlist-select のまま
     assert "function syncBuilderOptions() {" in html

@@ -272,3 +272,130 @@ def test_run_pipeline_prefers_the_uploaded_wordlist(client, tmp_path, monkeypatc
     assert REAL_RUN_PIPELINE(job, {"parallel_video": False}) == out
     assert calls["wordlist"] == str(job.dir / api_mod.WORDLIST_DIRNAME / "mine.csv")
     assert calls["cache_db"] is False
+
+
+def test_wordlist_check_returns_safe_normalized_text(client):
+    response = client.post(
+        "/api/wordlist-check",
+        data={"wordlist_text": (
+            "surface,pronunciation,image,image_page\n"
+            "猫,ネコ,http://127.0.0.1/private,file:///etc/passwd\n"
+        )},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["csv_text"] == "id,original,surface,pronunciation\n1,猫,猫,ネコ"
+    assert result["dropped_columns"] == ["image", "image_page"]
+    assert result["images"] == 0
+
+
+def test_wordlist_check_import_returns_normalized_shift_jis_csv(client):
+    response = client.post(
+        "/api/wordlist-check",
+        files={"wordlist_csv": (
+            "鳥.csv", "単語,読み\n雀,スズメ\n".encode("cp932"), "text/csv"
+        )},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["csv_text"] == (
+        "id,original,surface,pronunciation\n1,雀,雀,スズメ"
+    )
+
+
+@pytest.mark.parametrize("public", [False, True])
+def test_custom_wordlist_script_is_served_without_cookie(client, monkeypatch, public):
+    if public:
+        monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
+    response = client.get("/custom-wordlists.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.text == (api_mod.STATIC_DIR / "custom-wordlists.js").read_text(
+        encoding="utf-8"
+    )
+    assert "set-cookie" not in response.headers
+
+
+@pytest.mark.parametrize("upload", [False, True])
+@pytest.mark.parametrize("extra_header,extra_cell,expected", [
+    ("", "", "custom_original"),
+    (",description", ",動物", "custom_description"),
+    (", Description ", ",", "custom_description"),
+])
+def test_custom_layout_uses_columns_and_ignores_previous_layout(
+    client, tmp_path, upload, extra_header, extra_cell, expected,
+):
+    text = f"original,surface,pronunciation{extra_header}\n猫,ねこ,ネコ{extra_cell}\n"
+    files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
+    data = {"layout": "caption", "layout_json": '{"elements": []}'}
+    if upload:
+        files["wordlist_csv"] = ("list.csv", text.encode(), "text/csv")
+    else:
+        data["wordlist_text"] = text
+    res = client.post("/api/jobs", files=files, data=data)
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    assert client.get(f"/api/jobs/{job_id}").json()["params"]["layout"] == expected
+    assert not (tmp_path / "jobs" / job_id / api_mod.LAYOUT_FILENAME).exists()
+
+
+
+def large_wordlist_bytes(size: int) -> bytes:
+    header = b"original,surface,pronunciation,description\n"
+    prefix = "猫,ねこ,ネコ,".encode()
+    count = 100
+    width, remainder = divmod(size - len(header) - count * (len(prefix) + 1), count)
+    return header + b"".join(
+        prefix + b"a" * (width + (index < remainder)) + b"\n"
+        for index in range(count)
+    )
+
+
+@pytest.mark.parametrize("size", [1024 * 1024 + 1, 10 * 1024 * 1024])
+def test_file_valued_text_checks_and_generates_large_lists(client, tmp_path, size):
+    data = large_wordlist_bytes(size)
+    assert len(data) == size
+    field = ("wordlist.txt", data, "text/plain;charset=utf-8")
+    checked = client.post("/api/wordlist-check", files={"wordlist_text": field})
+    assert checked.status_code == 200, checked.text[:500]
+    assert checked.json()["rows"] == 100
+    res = client.post(
+        "/api/jobs",
+        files={"midi": ("song.mid", FAKE_MIDI, "audio/midi"), "wordlist_text": field},
+        data={"wordlist_name": "大きいリスト"},
+    )
+    assert res.status_code == 200, res.text
+    job_id = res.json()["id"]
+    params = client.get(f"/api/jobs/{job_id}").json()["params"]
+    assert params["wordlist"] == "大きいリスト"
+    assert params["wordlist_rows"] == 100
+    assert params["layout"] == "custom_description"
+    saved = tmp_path / "jobs" / job_id / api_mod.WORDLIST_DIRNAME / params["wordlist_csv"]
+    assert saved.read_text(encoding="utf-8") == checked.json()["csv_text"]
+
+
+@pytest.mark.parametrize("endpoint", ["/api/wordlist-check", "/api/jobs", "/api/editor-session"])
+def test_file_valued_text_enforces_application_size_limit(client, monkeypatch, endpoint):
+    monkeypatch.setenv(wc.MAX_BYTES_ENV, "1024")
+    res = client.post(
+        endpoint,
+        files={
+            "midi": ("song.mid", FAKE_MIDI, "audio/midi"),
+            "wordlist_text": ("wordlist.txt", b"a" * 1025, "text/plain"),
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "大きすぎます" in res.json()["detail"]
+
+
+def test_file_valued_text_keeps_row_limit_and_validation(client, monkeypatch):
+    monkeypatch.setenv(wc.MAX_ROWS_ENV, "1")
+    res = client.post("/api/wordlist-check", files={
+        "wordlist_text": ("wordlist.txt", "ねこ,ネコ\nいぬ,イヌ".encode(), "text/plain"),
+    })
+    assert res.status_code == 400
+    assert "1" in res.json()["detail"]
+    res = client.post("/api/wordlist-check", files={
+        "wordlist_text": ("wordlist.txt", b"\x81", "text/plain"),
+    })
+    assert res.status_code == 400
