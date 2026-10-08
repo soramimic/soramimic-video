@@ -137,7 +137,7 @@ def adjust_supplied_lines(
         result = adjust_known_lyrics(supplied, retained, reading=text_to_kana)
     except (ValueError, RuntimeError) as exc:
         raise RuntimeError(
-            "入力歌詞と音源の対応を確認できず、歌詞の削除・補完を停止しました。"
-            "歌詞と音源を確認するか、削除・補完をオフにしてください。"
+            "入力歌詞と音源の対応を確認できず、不足する歌詞の補完を停止しました。"
+            "歌詞と音源を確認するか、補完をオフにしてください。"
         ) from exc
     return [line.text for line in result.lines], result.detail

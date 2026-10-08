@@ -891,7 +891,7 @@ def analyze_audio(
     from .reading import automatic_reading_candidates, reading_candidates
 
     if adjust_lyrics and lyrics_path is None:
-        raise ValueError("歌詞の削除・補完には入力歌詞が必要です")
+        raise ValueError("不足する歌詞の補完には入力歌詞が必要です")
     supplied_lyrics = None
     if lyrics_path is not None and not adjust_lyrics:
         supplied_lyrics = [line.strip() for line in lyrics_path.read_text(
@@ -1145,7 +1145,7 @@ def analyze_audio(
                 )
                 sheetsage_was_run = True
             if sheetsage_notes is None:
-                raise RuntimeError("歌詞の削除・補完にはSheetSage2モデル設定が必要です")
+                raise RuntimeError("不足する歌詞の補完にはSheetSage2モデル設定が必要です")
             recognized = prefetched_lines if prefetched_lines is not None else transcribe_lines(
                 audio_path, whisper_model, device or "auto", vad_filter=False,
                 condition_on_previous_text=False,
@@ -1254,7 +1254,7 @@ def analyze_audio(
         recognition_mode = "whisper-mix-semantic-gate"
         if not retained:
             raise RuntimeError("Whisperが採用可能な歌詞を認識できませんでした")
-    # 3. カナ化 + forced alignment。正式歌詞の行は、明示的な削除・補完を除いて
+    # 3. カナ化 + forced alignment。正式歌詞の行は、不足行を追加する場合も
     # Whisperで変更しない。KanaWhisperは文字列を書き換えず、ルビ・辞書から
     # 得た閉じた発音候補の再順位付けだけに使う。
     # 元歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。カナ化には記法つきの
@@ -2735,7 +2735,7 @@ def analyze_audio(
     limitations = []
     if lyric_adjustment is not None:
         limitations.append(
-            "入力歌詞を音声認識に合わせて行単位で削除・補完しました。"
+            "入力歌詞を保持し、音声認識から不足する行を補完しました。"
             "認識ミスで誤って変更される場合があります。lyric_adjustmentを確認してください。"
         )
     if recognition_mode is not None:

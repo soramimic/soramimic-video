@@ -145,3 +145,71 @@ def test_pinned_score_speech_reaches_voicevox_once_without_losing_sung_notes(
     analysis = json.loads((output / "analyze_audio/analysis.json").read_text())
     assert analysis["sources"]["spoken"] == (2 if with_melody else 4)
     assert analysis["limitations"] == []
+
+
+@pytest.mark.parametrize("complete_lyrics", [False, True])
+def test_pinned_score_preserves_supplied_lyrics_through_save_and_synthesis(
+    monkeypatch, tmp_path, complete_lyrics,
+):
+    import soramimic_score
+    from soramimic_score import (
+        AlignedMora,
+        AudioAdapters,
+        LyricLine,
+        MelodyNote,
+        ReadingSelection,
+    )
+    from soramimic_score.vocal_activity import VocalActivity
+
+    from soramimic_video.project import Project
+    from soramimic_video.voicevox import build_score
+
+    supplied = ["ア", "カ", "キ", "ク", "ケ", "オ"]
+    aligned = []
+
+    def align(_path, lines, readings):
+        aligned.extend(line.text for line in lines)
+        return tuple(AlignedMora(i, 0, reading.kana,
+                                 line.start_sec + .05, line.start_sec + .25, .9)
+                     for i, (line, reading) in enumerate(zip(lines, readings, strict=True)))
+
+    adapters = AudioAdapters(
+        reading_selector=lambda _path, lines: tuple(
+            ReadingSelection(line.text, "test", 1) for line in lines),
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(
+            MelodyNote(start + .05, start + .25, 60 + i, confidence=.9)
+            for i, start in enumerate([0, 1, 2, 4, 5, 6, 7])),
+        lyric_recognizer=lambda _: (
+            LyricLine("カ", 1, 2), LyricLine("ズ", 2, 3), LyricLine("ク", 4, 5),
+            LyricLine("コ", 5, 6), LyricLine("ケ", 6, 7),
+        ),
+        audio_duration=lambda _: 8.,
+        vocal_activity=lambda _path, windows: tuple(
+            VocalActivity(-20, -3, 1, True) for _ in windows),
+    )
+    real_analyze = soramimic_score.analyze_audio
+
+    def analyze_with_test_models(path, **kwargs):
+        return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
+                            adjust_lyrics=kwargs["adjust_lyrics"])
+
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("\n".join(supplied), encoding="utf-8")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output, lyrics_path=lyrics,
+                                        adjust_lyrics=complete_lyrics)
+    expected = ["ア", "カ", "キ", "ク", "コ", "ケ", "オ"] if complete_lyrics else supplied
+    assert aligned == expected
+    assert project.lyric_layers["canonical_text"] == "\n".join(expected)
+    assert [note.kana for note in project.notes] == expected
+    project.save(output)
+    reloaded = Project.load(output)
+    assert reloaded.lyric_layers == project.lyric_layers
+    synth = build_score(reloaded)
+    assert [note["lyric"] for note in synth["notes"] if note["key"] is not None] == expected

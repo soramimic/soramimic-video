@@ -38,7 +38,7 @@ def analyze_audio(
     from .lyric_layers import apply_lyric_layers
 
     if adjust_lyrics and lyrics_path is None:
-        raise ValueError("歌詞の削除・補完には入力歌詞が必要です")
+        raise ValueError("不足する歌詞の補完には入力歌詞が必要です")
     if bpm <= 0:
         raise ValueError("BPMは正の値が必要です")
     lyrics = None
