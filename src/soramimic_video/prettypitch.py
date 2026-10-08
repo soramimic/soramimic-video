@@ -258,7 +258,8 @@ def run_partial_score(
     score.write_bytes(ust.encode("cp932"))
     _write_mora_table(root, mora)
     command = [
-        str(configured_python(root)), str(Path(__file__).with_name("_prettypitch_worker.py")),
+        str(configured_python(root)), "-I",
+        str(Path(__file__).with_name("_prettypitch_worker.py")),
         "--root", str(root), "--leapsinger-root", str(configured_leapsinger_root(root)),
         "--score", str(score), "--mora-table", str(mora), "--output", str(output),
         "--device", configured_device(), "--duration", str(duration),
