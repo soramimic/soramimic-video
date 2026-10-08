@@ -10,7 +10,7 @@ from soramimic_video.project import Line, Note, Project, SongInfo
 from soramimic_video.transcribe import TranscribedLine
 
 
-def test_known_lyrics_adjustment_drops_inactive_recognition(monkeypatch, tmp_path):
+def test_known_lyrics_adjustment_keeps_input_without_active_recognition(monkeypatch, tmp_path):
     monkeypatch.setattr(known_lyrics, "text_to_kana", lambda text: text)
     monkeypatch.setattr(vocal_activity, "measure_vocal_activity", lambda *_: SimpleNamespace(
         lines=[SimpleNamespace(supported=True), SimpleNamespace(supported=False)],
@@ -20,16 +20,17 @@ def test_known_lyrics_adjustment_drops_inactive_recognition(monkeypatch, tmp_pat
         [TranscribedLine(0, 1, "かき"), TranscribedLine(1, 2, "さし")],
         [MelodyNote(0, 2, 60)], vocals=tmp_path / "vocals.wav",
     )
-    assert lines == ["かき"]
+    assert lines == ["かき", "さし"]
     assert audit["supplied_lines"] == ["かき", "さし"]
 
 
-def test_known_lyrics_adjustment_reports_unrelated_audio(monkeypatch):
+def test_known_lyrics_adjustment_retains_input_when_recognition_disagrees(monkeypatch):
     monkeypatch.setattr(known_lyrics, "text_to_kana", lambda text: text)
-    with pytest.raises(RuntimeError, match="削除・補完をオフ"):
-        known_lyrics.adjust_supplied_lines(
-            ["かき"], [TranscribedLine(0, 1, "さし")], [MelodyNote(0, 1, 60)], vocals=None,
-        )
+    lines, audit = known_lyrics.adjust_supplied_lines(
+        ["かき"], [TranscribedLine(0, 1, "さし")], [MelodyNote(0, 1, 60)], vocals=None,
+    )
+    assert lines == ["かき"]
+    assert audit["mode"] == "additive-audio-completion"
 
 
 def test_supplied_lyrics_are_grouped_before_mora_alignment(monkeypatch):

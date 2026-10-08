@@ -275,7 +275,7 @@ def test_known_lyrics_audio_path_always_calls_whisper(monkeypatch, tmp_path, adj
         audio_melody, "configured_capabilities", lambda: {"sheetsage2": True}
     )
     lyrics = tmp_path / "lyrics.txt"
-    original = "余分な行\nかき" if adjust else "かき"
+    original = "かき"
     lyrics.write_text(original, encoding="utf-8")
     value = analyze_audio(
         tmp_path / "input.wav", tmp_path / "project", lyrics_path=lyrics,
@@ -291,8 +291,8 @@ def test_known_lyrics_audio_path_always_calls_whisper(monkeypatch, tmp_path, adj
     assert analysis["lyric_asr_used"] is True
     assert analysis["adjust_lyrics"] is adjust
     if adjust:
-        assert value.lyric_layers["lyric_adjustment"]["supplied_lines"] == ["余分な行", "かき"]
-        assert analysis["lyric_adjustment"]["decisions"][-1]["operation"] == "remove"
+        assert value.lyric_layers["lyric_adjustment"]["supplied_lines"] == ["かき"]
+        assert analysis["lyric_adjustment"]["decisions"][-1]["operation"] == "keep"
 
 
 @pytest.mark.parametrize("adjust", [True])
@@ -319,7 +319,7 @@ def test_known_lyrics_kana_selection_is_independent_of_line_adjustment(
     monkeypatch.delenv("SORAMIMIC_AUDIO_INFERENCE_URL", raising=False)
     audio, vocals = tmp_path / "input.wav", tmp_path / "vocals.wav"
     supplied = "｜明日《あす》" if scenario == "ruby" else "明日"
-    original = f"余分な行\n{supplied}" if adjust else supplied
+    original = supplied
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text(original, encoding="utf-8")
     lyric_calls, kana_calls, alignment_calls = [], [], []
