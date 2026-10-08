@@ -4260,7 +4260,6 @@ const HIDDEN_PREVIEW_WORDLISTS = {
 };
 
 // ---- メイン画面の名前付き自作リスト ----
-const CUSTOM_LIST_MANAGEMENT_ENABLED = true;
 const customListsRepository = VideoCustomWordlists.createRepository();
 let customLists = [];
 let activeCustomListId = "";
@@ -4269,11 +4268,10 @@ let customListBusy = false;
 let customListOpener = null;
 let customListInitialValues = { name: "", text: "" };
 async function refreshCustomLists() {
-  if (!CUSTOM_LIST_MANAGEMENT_ENABLED) { customLists = []; return; }
   customLists = await customListsRepository.lists();
 }
 function activeCustomList() {
-  return !CUSTOM_LIST_MANAGEMENT_ENABLED || simpleMode
+  return simpleMode
     ? null
     : customLists.find((list) => list.id === activeCustomListId) || null;
 }
@@ -4294,7 +4292,7 @@ function appendCustomWordlist(form) {
   form.set("wordlist_name", list.name);
 }
 function selectCustomList(id) {
-  if (!CUSTOM_LIST_MANAGEMENT_ENABLED || simpleMode
+  if (simpleMode
       || !customLists.some((list) => list.id === id)) return;
   activeCustomListId = id;
   $("wordlist-select").selectedIndex = -1;
@@ -7981,7 +7979,7 @@ async function doRestoreForm() {
       $("where").value = state.where || "";
       $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
     }
-    if (CUSTOM_LIST_MANAGEMENT_ENABLED && !simpleMode
+    if (!simpleMode
         && customLists.some((list) => list.id === state.customWordlistId)) {
       selectCustomList(state.customWordlistId);
     }
