@@ -32,6 +32,7 @@ UST_TICKS_PER_BEAT = 480
 # PrettyPitch 0.1.0の日本語表に無い、実際の替え歌生成で現れる無声母音表記。
 # 外部checkoutを書き換えず、ジョブごとの派生表へ追記する。
 _MORA_ADDITIONS = (
+    "リャ ry A",
     "リュ ry U",
     "リョ ry O",
     "ヴィ v I",
@@ -239,4 +240,37 @@ def run_prettypitch(
     if progress_cb is not None:
         progress_cb(1.0)
     runproc.log_generated_path(logger, "PrettyPitchで歌唱wavを合成しました", output)
+    return output
+
+
+def run_partial_score(
+    ust: str, work_dir: Path, *, duration: float, threads: int = 4,
+) -> Path:
+    """Render context phrases at absolute times with the external runtime."""
+    error = installation_error()
+    if error:
+        raise RuntimeError(error)
+    root = configured_root()
+    assert root is not None
+    work_dir = work_dir.resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    score, mora, output = (work_dir / name for name in ("score.ust", "ja.mora", "pretty.npy"))
+    score.write_bytes(ust.encode("cp932"))
+    _write_mora_table(root, mora)
+    command = [
+        str(configured_python(root)), str(Path(__file__).with_name("_prettypitch_worker.py")),
+        "--root", str(root), "--leapsinger-root", str(configured_leapsinger_root(root)),
+        "--score", str(score), "--mora-table", str(mora), "--output", str(output),
+        "--device", configured_device(), "--duration", str(duration),
+        "--threads", str(max(1, threads)),
+    ]
+    output.unlink(missing_ok=True)
+    proc = runproc.run(command, cwd=root, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "PrettyPitchのフレーズ合成に失敗しました\n"
+            f"stdout: {proc.stdout[-2000:]}\nstderr: {proc.stderr[-2000:]}"
+        )
+    if not output.is_file() or output.stat().st_size <= 44:
+        raise RuntimeError("PrettyPitchが歌唱WAVを生成しませんでした")
     return output

@@ -1209,6 +1209,30 @@ def _synthesize_chunk(
     score: dict[str, Any],
 ) -> bytes:
     """1チャンクを sing_frame_audio_query → frame_synthesis して WAV バイトを返す。"""
+    query = _query_score(base, engine_url, teacher, score)
+    try:
+        r2 = requests.post(
+            f"{base}/frame_synthesis",
+            params={"speaker": style_id},
+            json=query,
+            timeout=_TIMEOUT,
+        )
+    except requests.ConnectionError:
+        # 接続断(合成中のクラッシュ or 死んでいる間のリクエスト)は呼び出し側で
+        # 復帰待ち・再試行するため、そのまま送出する。
+        raise
+    except requests.RequestException as exc:
+        raise _request_error(engine_url, exc) from exc
+    if r2.status_code != 200:
+        raise VoicevoxScoreError(
+            "frame_synthesis", r2.status_code, r2.text
+        )
+    return r2.content
+
+
+def _query_score(
+    base: str, engine_url: str, teacher: int, score: dict[str, Any],
+) -> dict[str, Any]:
     try:
         r = requests.post(
             f"{base}/sing_frame_audio_query",
@@ -1231,24 +1255,7 @@ def _synthesize_chunk(
     if corrected:
         logger.info("VOICEVOXの音域外F0を%d音符補正しました", corrected)
 
-    try:
-        r2 = requests.post(
-            f"{base}/frame_synthesis",
-            params={"speaker": style_id},
-            json=query,
-            timeout=_TIMEOUT,
-        )
-    except requests.ConnectionError:
-        # 接続断(合成中のクラッシュ or 死んでいる間のリクエスト)は呼び出し側で
-        # 復帰待ち・再試行するため、そのまま送出する。
-        raise
-    except requests.RequestException as exc:
-        raise _request_error(engine_url, exc) from exc
-    if r2.status_code != 200:
-        raise VoicevoxScoreError(
-            "frame_synthesis", r2.status_code, r2.text
-        )
-    return r2.content
+    return query
 
 
 def _correct_out_of_range_f0(
@@ -1310,3 +1317,115 @@ def _correct_out_of_range_f0(
             f0[frame] = value * ratio**weight
         corrected += 1
     return corrected
+
+
+def slice_frame_query(query: dict[str, Any], start: int, end: int) -> dict[str, Any]:
+    """Crop every frame-aligned field, retaining synthesis settings and phoneme metadata."""
+    total = len(query["f0"])
+    if not 0 <= start < end <= total or len(query["volume"]) != total:
+        raise ValueError("VOICEVOXクエリのフレーム範囲が不正です")
+    result = dict(query, f0=query["f0"][start:end], volume=query["volume"][start:end])
+    phonemes = []
+    cursor = 0
+    for phoneme in query["phonemes"]:
+        next_frame = cursor + int(phoneme["frame_length"])
+        length = min(next_frame, end) - max(cursor, start)
+        if length > 0:
+            phonemes.append(dict(phoneme, frame_length=length))
+        cursor = next_frame
+    if cursor != total or sum(p["frame_length"] for p in phonemes) != end - start:
+        raise ValueError("VOICEVOXクエリの音素とフレーム数が一致しません")
+    result["phonemes"] = phonemes
+    return result
+
+
+def _retained_ranges(
+    start: int, end: int, skip_frames: Sequence[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    ranges = []
+    cursor = start
+    for left, right in sorted(skip_frames):
+        left, right = max(start, left), min(end, right)
+        if right <= left:
+            continue
+        if left > cursor:
+            ranges.append((cursor, left))
+        cursor = max(cursor, right)
+    if cursor < end:
+        ranges.append((cursor, end))
+    return ranges
+
+
+def _partial_chunk(
+    chunk: ScoreChunk, engine_url: str, style_id: int,
+    ranges: Sequence[tuple[int, int]],
+) -> bytes:
+    base = engine_url.rstrip("/")
+    for attempt in range(CHUNK_MAX_RETRIES + 1):
+        try:
+            query = _query_score(base, engine_url, SING_TEACHER_ID, chunk.to_score())
+            if len(query["f0"]) != chunk.frame_length:
+                raise RuntimeError("VOICEVOXクエリが楽譜の長さと一致しません")
+            parts = []
+            spans = []
+            for start, end in ranges:
+                runproc.raise_if_cancelled()
+                left, right = start - chunk.start_frame, end - chunk.start_frame
+                response = requests.post(
+                    f"{base}/frame_synthesis", params={"speaker": style_id},
+                    json=slice_frame_query(query, left, right), timeout=_TIMEOUT,
+                )
+                if response.status_code != 200:
+                    raise VoicevoxScoreError(
+                        "frame_synthesis", response.status_code, response.text,
+                    )
+                parts.append(response.content)
+                spans.append(ScoreChunk(start_frame=left, notes=[
+                    {"key": None, "lyric": "", "frame_length": right - left},
+                ]))
+            return _concat_chunks(parts, spans, chunk.frame_length)
+        except VoicevoxScoreError as exc:
+            if exc.endpoint != "sing_frame_audio_query" or exc.status_code != 500:
+                raise
+            # Compatibility fallback preserves the complete timeline and existing
+            # short-note recovery. Only this exceptional chunk loses the saving.
+            return _synthesize_chunk_with_score_fallback(
+                base, engine_url, SING_TEACHER_ID, style_id, chunk.to_score(),
+            )
+        except requests.ConnectionError as exc:
+            if attempt >= CHUNK_MAX_RETRIES or not _wait_for_engine(base):
+                raise _request_error(engine_url, exc) from exc
+        except requests.RequestException as exc:
+            raise _request_error(engine_url, exc) from exc
+    raise RuntimeError("VOICEVOX部分合成が予期せず終了しました")
+
+
+def synthesize_partial_score(
+    score: dict[str, Any], *, engine_url: str, style_id: int,
+    skip_frames: Sequence[tuple[int, int]],
+    progress_cb: Callable[[float], None] | None = None,
+) -> bytes:
+    """Query complete score chunks; decode only the retained waveform ranges."""
+    chunks = split_score(score, max_sec=DEFAULT_CHUNK_SEC)
+    parts: list[bytes | None] = []
+    for i, chunk in enumerate(chunks):
+        runproc.raise_if_cancelled()
+        ranges = _retained_ranges(
+            chunk.start_frame, chunk.start_frame + chunk.frame_length, skip_frames,
+        )
+        if ranges and any(note["key"] is not None for note in chunk.notes):
+            parts.append(_partial_chunk(chunk, engine_url, style_id, ranges))
+        else:
+            parts.append(None)
+        if progress_cb:
+            progress_cb((i + 1) / len(chunks))
+    if all(part is None for part in parts):
+        # Every sung frame belongs to the other engine.
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as target:
+            target.setnchannels(1)
+            target.setsampwidth(2)
+            target.setframerate(24000)
+            target.writeframes(b"\x00\x00" * sum(c.frame_length for c in chunks) * 256)
+        return buffer.getvalue()
+    return _concat_chunks(parts, chunks, sum(c.frame_length for c in chunks))

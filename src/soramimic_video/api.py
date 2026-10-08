@@ -224,11 +224,11 @@ def is_simple_ui() -> bool:
 def fixed_synthesizer() -> str:
     """Web UIから使う固定歌声。未指定時は従来どおりVOICEVOX。"""
     value = os.environ.get(FIXED_SYNTHESIZER_ENV, "voicevox").strip().lower()
-    if value not in {"voicevox", "neutrino", "prettypitch"}:
+    if value not in {"voicevox", "neutrino", "prettypitch", "hybrid"}:
         raise RuntimeError(
-            f"{FIXED_SYNTHESIZER_ENV}はvoicevox、neutrino、prettypitchのいずれかです"
+            f"{FIXED_SYNTHESIZER_ENV}はvoicevox、neutrino、prettypitch、hybridのいずれかです"
         )
-    if value == "prettypitch":
+    if value in {"prettypitch", "hybrid"}:
         from .prettypitch import installation_error
 
         if error := installation_error():
@@ -1127,6 +1127,8 @@ def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
     synthesizer = str(params.get("synthesizer") or "neutrino")
     # PrettyPitch試験ランタイムは波音リツモデルに固定する。モデルの利用条件に
     # 沿って、生成動画にもエンジン名と歌声名を残す。
+    if synthesizer == "hybrid":
+        return "VOICEVOX:波音リツ / PrettyPitch・波音リツ（カノン）"
     if synthesizer == "prettypitch":
         return "PrettyPitch / 波音リツ"
     # 既定値のvoicevoxではなくneutrinoで補うのは、synthesizerを記録していない
@@ -1514,7 +1516,7 @@ def _run_synthesize(
     """
     # 未記録の古いジョブはNEUTRINO時代のものなので neutrino 扱い(見積りの互換のため据え置く)
     synthesizer = job.params.get("synthesizer", "neutrino")
-    uses_external_estimate = synthesizer in {"voicevox", "prettypitch"}
+    uses_external_estimate = synthesizer in {"voicevox", "prettypitch", "hybrid"}
     # VOICEVOX/PrettyPitchはNEUTRINOとは速度特性が違うので、NEUTRINO用の
     # 所要見積り・実績記録へ混ぜない。
     store: Path | None = None if uses_external_estimate else config.get("throughput_store")
@@ -1686,7 +1688,7 @@ class JobManager:
         if input_kind not in {"audio", "midi"}:
             input_kind = "unknown"
         synthesizer = str(params.get("synthesizer") or "unknown")
-        if synthesizer not in {"voicevox", "neutrino", "prettypitch"}:
+        if synthesizer not in {"voicevox", "neutrino", "prettypitch", "hybrid"}:
             synthesizer = "unknown"
         wordlist = str(params.get("wordlist") or "")
         if wordlist not in launch_wordlist_names():
@@ -3912,10 +3914,10 @@ def create_app(
         custom_columns = custom.csv.columns if custom is not None else None
         layout = layout.strip()
         layout_json = layout_json.strip()
-        if synthesizer not in ("neutrino", "voicevox", "prettypitch"):
+        if synthesizer not in ("neutrino", "voicevox", "prettypitch", "hybrid"):
             raise HTTPException(
                 status_code=422,
-                detail="synthesizerは neutrino、voicevox、prettypitch のいずれかです",
+                detail="synthesizerは neutrino、voicevox、prettypitch、hybrid のいずれかです",
             )
         # NEUTRINO未設定のサーバー(公開インスタンスなど)は合成の途中で必ず落ちる。
         # 走らせてから失敗させず、受付時に理由を返す(UI側も選択肢を無効化している)
@@ -3924,7 +3926,7 @@ def create_app(
                 status_code=422,
                 detail="このサーバーではNEUTRINOを使えません(synthesizerは voicevox です)",
             )
-        if synthesizer == "prettypitch":
+        if synthesizer in {"prettypitch", "hybrid"}:
             from .prettypitch import installation_error
 
             if error := installation_error():
@@ -3937,6 +3939,8 @@ def create_app(
                     status_code=422,
                     detail="PrettyPitch試験モデルは非商用ファン作品への同意が必要です",
                 )
+        if synthesizer == "hybrid":
+            voicevox_style = 6000
         # 新名 auto_octave を優先し、無ければ旧名、どちらも無ければ既定True(自動調整ON)
         if auto_octave is None:
             auto_octave = (
