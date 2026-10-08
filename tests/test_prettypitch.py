@@ -127,3 +127,23 @@ def test_configured_speaker_id_rejects_non_integer(monkeypatch):
     monkeypatch.setenv(prettypitch.SPEAKER_ID_ENV, "ritsu")
     with pytest.raises(ValueError, match=prettypitch.SPEAKER_ID_ENV):
         prettypitch.configured_speaker_id()
+
+
+def test_partial_runtime_ignores_application_pythonpath(tmp_path, monkeypatch):
+    import sys
+
+    root, leapsinger, _ = _runtime(tmp_path)
+    monkeypatch.setenv(prettypitch.ROOT_ENV, str(root))
+    monkeypatch.setenv(prettypitch.PYTHON_ENV, sys.executable)
+    monkeypatch.setenv(prettypitch.LEAPSINGER_ROOT_ENV, str(leapsinger))
+    application_packages = tmp_path / "application-packages"
+    application_packages.mkdir()
+    monkeypatch.setenv("PYTHONPATH", str(application_packages))
+    monkeypatch.setattr(prettypitch, "__file__", str(tmp_path / "prettypitch.py"))
+    (tmp_path / "_prettypitch_worker.py").write_text(
+        "import os, sys\nfrom pathlib import Path\n"
+        "assert os.environ['PYTHONPATH'] not in sys.path\n"
+        "Path(sys.argv[sys.argv.index('--output') + 1]).write_bytes(b'x' * 64)\n"
+    )
+    output = prettypitch.run_partial_score("score", tmp_path / "job", duration=1)
+    assert output.is_file()
