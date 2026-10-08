@@ -131,6 +131,23 @@ def _break_quality(left: str, right: str) -> float | None:
     return .4
 
 
+def _visible_spans(
+    start: float, end: float, clear_ranges: Sequence[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Subtract dedicated screens without discarding the later singing interval."""
+    spans = []
+    cursor = start
+    for clear_start, clear_end in sorted(clear_ranges):
+        if clear_end <= cursor or clear_start >= end or clear_end <= clear_start:
+            continue
+        if cursor < clear_start:
+            spans.append((cursor, clear_start))
+        cursor = min(end, clear_end)
+    if cursor < end:
+        spans.append((cursor, end))
+    return spans
+
+
 def paginate_subtitle(
     project: Project,
     segment: SubtitleSegment,
@@ -141,22 +158,58 @@ def paginate_subtitle(
     max_width: float,
     sep: str = "  ",
     lead_sec: float = .15,
+    clear_ranges: Sequence[tuple[float, float]] = (),
 ) -> list[SubtitlePage]:
-    """Split oversized captions at readable, timed boundaries; leave short ones intact.
+    """Split at dedicated screens, then fit each singing interval to readable pages.
 
     Shared or overlapping notes remain on one page. An indivisible oversized word
     stays whole and is fitted by the renderer. Only display text/times are returned;
     the project, synthesis, and caller's lyric grouping are never modified.
     """
-    whole = SubtitlePage(segment.text, segment.start, segment.end, words)
-    if measure(segment.text) <= max_width or segment.end <= segment.start:
+    spans = _visible_spans(segment.start, segment.end, clear_ranges)
+    if not spans:
+        return []
+    whole = SubtitlePage(segment.text, spans[0][0], spans[-1][1], words)
+    if len(spans) == 1 and measure(segment.text) <= max_width:
         return [whole]
     atoms = (_parody_atoms(project, words, sep) if source == "parody" and words
              else _original_atoms(project, segment, lines))
+    if len(spans) == 1:
+        return _paginate_atoms(whole, atoms, source, measure, max_width, lead_sec)
+
+    groups: list[list[_Atom]] = [[] for _ in spans]
+    for atom in atoms:
+        owners = [i for i, (start, end) in enumerate(spans)
+                  if atom.start < end and start < atom.end]
+        # Untimed punctuation and unmatched readings stay with the nearest singing
+        # interval. A single word sung on both sides is shown again after the break.
+        if not owners:
+            owners = [min(range(len(spans)), key=lambda i: max(
+                spans[i][0] - atom.start, atom.start - spans[i][1], 0.0,
+            ))]
+        for i in owners:
+            groups[i].append(atom)
+    pages = []
+    for (start, end), group in zip(spans, groups, strict=True):
+        if not group:
+            continue
+        part = SubtitlePage("".join(a.text for a in group).strip(), start, end,
+                            [word for atom in group for word in atom.words])
+        pages.extend(_paginate_atoms(part, group, source, measure, max_width, lead_sec))
+    return pages
+
+
+def _paginate_atoms(
+    whole: SubtitlePage, atoms: list[_Atom], source: str,
+    measure: Callable[[str], float], max_width: float, lead_sec: float,
+) -> list[SubtitlePage]:
+    """Fit one uninterrupted display interval; all cut times stay inside it."""
+    if measure(whole.text) <= max_width:
+        return [whole]
     if len(atoms) < 2:
         return [whole]
     cuts = [0]
-    times = [segment.start]
+    times = [whole.start]
     penalties = [0.0]
     latest_end = atoms[0].end
     for i in range(1, len(atoms)):
@@ -164,13 +217,13 @@ def paginate_subtitle(
         quality = .15 if source == "parody" else _break_quality(previous.text, current.text)
         when = current.start - lead_sec
         if (quality is not None and current.start >= latest_end - 1e-6
-                and when >= times[-1] + .2 and when <= segment.end - .2):
+                and when >= times[-1] + .2 and when <= whole.end - .2):
             cuts.append(i)
             times.append(when)
             penalties.append(quality)
         latest_end = max(latest_end, current.end)
     cuts.append(len(atoms))
-    times.append(segment.end)
+    times.append(whole.end)
     penalties.append(0.0)
     if len(cuts) == 2:
         return [whole]

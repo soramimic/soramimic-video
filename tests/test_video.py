@@ -927,6 +927,57 @@ def test_subtitle_clears_when_interlude_frame_starts(tmp_path: Path):
     assert spans[1][0] >= cues[1].start
 
 
+@pytest.mark.parametrize("same_line", [True, False])
+@pytest.mark.parametrize("granularity", ["line", "cue", "phrase"])
+@pytest.mark.parametrize("ruby", [False, True])
+def test_subtitles_resume_with_images_after_interlude_in_one_input_line(
+    tmp_path: Path, same_line: bool, granularity: str, ruby: bool,
+):
+    from dataclasses import asdict
+
+    from soramimic_video.layout import parse_layout
+    from soramimic_video.video import build_section_cues
+
+    project = _two_word_project(second_start=12.5)
+    project.lines[0].xf_kana = "アオ"
+    project.lines[1].xf_kana = "ソラ"
+    for note, kana in zip(project.notes, ["アオ", "ソラ"], strict=True):
+        note.kana = kana
+    for line in project.lines:
+        line.original_text = "アオ ソラ"
+        line.original_line_index = 0
+    if same_line:
+        project.lines[0].note_ids.extend(project.lines[1].note_ids)
+        project.lines[0].xf_kana += project.lines[1].xf_kana
+        project.lines.pop()
+        project.notes[1].line = 0
+        project.parody.lines[0].words.extend(project.parody.lines[1].words)
+        project.parody.lines.pop()
+    before = asdict(project)
+    layout = parse_layout({"elements": [
+        *_TEXT_LAYOUT["elements"],
+        *[{"type": "subtitle", "source": source, "box": [0, .8, 1, .1],
+           "size": .04, "ruby": ruby, "granularity": granularity}
+          for source in ["original", "parody"]],
+    ]})
+    cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=layout)
+    sections = build_section_cues(project, cues, 14, layout, tmp_path, 320, 180)
+    assert len(sections) == 1
+    gap = sections[0]
+    assert gap.start == pytest.approx(cues[0].end)
+    assert gap.end == pytest.approx(cues[1].start)
+    ass = build_ass(project, 1280, 720, "Font", layout,
+                    clear_ranges=[(gap.start, gap.end)])
+    for style in ["Original", "Parody"]:
+        spans = _dialogue_spans(ass, style)
+        assert all(end <= gap.start + .01 or start >= gap.end - .01 for start, end in spans)
+        assert any(start >= gap.end - .01 and end >= project.notes[1].end_sec
+                   for start, end in spans)
+    if same_line or granularity != "cue":
+        assert _orig_texts(ass) == ["アオ", "ソラ"]
+    assert asdict(project) == before
+
+
 def test_subtitle_end_kept_when_next_line_is_close(tmp_path: Path):
     # 次の行がすぐ来る通常の並びでは、従来どおり次の行の開始で詰める
     from soramimic_video.video import SUB_PAD_SEC
