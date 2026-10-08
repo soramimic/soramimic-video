@@ -118,6 +118,7 @@ def test_run_prettypitch_builds_score_and_uses_external_python(tmp_path, monkeyp
     assert progress == [0.0, 1.0]
     mora = (tmp_path / "job" / "prettypitch" / "ja.mora").read_text(encoding="utf-8")
     assert mora.count("リュ ry u") == 1
+    assert "リャ ry A" in mora
     assert "リョ ry O" in mora
     assert "ヴィ v I" in mora
 
