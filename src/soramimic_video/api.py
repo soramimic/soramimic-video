@@ -1128,7 +1128,7 @@ def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
     # PrettyPitch試験ランタイムは波音リツモデルに固定する。モデルの利用条件に
     # 沿って、生成動画にもエンジン名と歌声名を残す。
     if synthesizer == "hybrid":
-        return "VOICEVOX:波音リツ / PrettyPitch・波音リツ（カノン）"
+        return "PrettyPitch / VOICEVOX:波音リツ（カノン）"
     if synthesizer == "prettypitch":
         return "PrettyPitch / 波音リツ"
     # 既定値のvoicevoxではなくneutrinoで補うのは、synthesizerを記録していない

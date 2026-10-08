@@ -2894,5 +2894,5 @@ def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automati
 
 def test_hybrid_credit_names_both_engines_and_voice_provider():
     assert api_mod.synth_credit_of({"synthesizer": "hybrid"}, {}) == (
-        "VOICEVOX:波音リツ / PrettyPitch・波音リツ（カノン）"
+        "PrettyPitch / VOICEVOX:波音リツ（カノン）"
     )
