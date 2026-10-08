@@ -153,3 +153,42 @@ def test_ass_parody_pages_keep_every_word_with_its_ruby(ruby):
         assert [a[1:3] for a in annotations] == [b[1:3] for b in bodies]
     else:
         assert annotations == []
+
+
+@pytest.mark.parametrize("source", ["original", "parody"])
+@pytest.mark.parametrize("width", [5, 1000])
+def test_interludes_split_even_short_captions_and_preserve_later_words(monkeypatch, source, width):
+    monkeypatch.setattr(subtitle_pages, "_default_reader",
+                        lambda text: [(t, t) for t in text.split()])
+    project = _project("アオイ ソラ ヒカル ホシ シロイ クモ")
+    for note in project.notes:
+        offset = 20 if note.id >= 10 else 10 if note.id >= 5 else 0
+        note.start_sec += offset
+        note.end_sec += offset
+    words = [ParodyWord(t, t, "", "", "", list(range(a, b)))
+             for t, a, b in [("アオイ", 0, 3), ("ソラ", 3, 5), ("ヒカル", 5, 8),
+                              ("ホシ", 8, 10), ("シロイ", 10, 13), ("クモ", 13, 15)]]
+    text = "  ".join(w.surface for w in words)
+    segment = SubtitleSegment(text, .85, 30, [0])
+    before = asdict(project)
+    # Deliberately unordered/overlapping ranges must still describe two breaks.
+    clear = [(18, 24.9), (5.9, 12.9), (17.9, 20)]
+    pages = paginate_subtitle(project, segment, source, project.lines, words, len, width,
+                              clear_ranges=clear)
+    assert "".join(p.text.replace(" ", "") for p in pages) == text.replace(" ", "")
+    assert all(not (p.start < end and start < p.end)
+               for p in pages for start, end in clear)
+    assert any(p.start >= 12.9 and "ヒカル" in p.text for p in pages)
+    assert any(p.start >= 24.9 and "シロイ" in p.text for p in pages)
+    assert all("ヒカル" not in p.text and "シロイ" not in p.text
+               for p in pages if p.start < 5.9)
+    if source == "parody":
+        assert [w for page in pages for w in page.words] == words
+    assert asdict(project) == before
+
+
+def test_clear_range_covering_entire_caption_emits_no_page():
+    project = _project()
+    segment = SubtitleSegment("アオイ", 1, 2, [0])
+    assert paginate_subtitle(project, segment, "original", project.lines, [], len, 100,
+                             clear_ranges=[(0, 3)]) == []
