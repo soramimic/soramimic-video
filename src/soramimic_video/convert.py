@@ -28,6 +28,7 @@ from .kana import (
 )
 from .project import Line, Parody, ParodyLine, ParodyWord, Project
 from .soramimic_engine import UnitWeightsFunc, WordBoundariesFunc, run_convert
+from .word_reading import restore_word_reading
 
 logger = logging.getLogger(__name__)
 
@@ -1597,6 +1598,8 @@ def apply_converted_lines(
 
         # 3rd pass: ParodyWord を生成
         for word, note_idx, note_kana, _start_c, _end_c in pending:
+            if note_idx and word.get("kana"):
+                note_kana = restore_word_reading(word["kana"], note_kana)
             note_kana = [k or "ー" for k in note_kana]
             if note_idx and all(k == "ー" for k in note_kana):
                 logger.warning(
