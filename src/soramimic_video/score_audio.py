@@ -38,7 +38,7 @@ def analyze_audio(
     from .lyric_layers import apply_lyric_layers
 
     if adjust_lyrics and lyrics_path is None:
-        raise ValueError("不足する歌詞の補完には入力歌詞が必要です")
+        raise ValueError("歌詞の調整には入力歌詞が必要です")
     if bpm <= 0:
         raise ValueError("BPMは正の値が必要です")
     lyrics = None
@@ -86,6 +86,10 @@ def analyze_audio(
     runproc.raise_if_cancelled()
     (out / "score.json").write_text(document.to_json(), encoding="utf-8")
     layers = copy.deepcopy(document.to_dict()["score"])
+    if not layers["canonical"]:
+        raise ValueError(
+            "歌唱の根拠を確認できる歌詞が残りませんでした。音源と入力歌詞を確認してください。"
+        )
     omitted = _omit_unresolved_synthesis_units(layers)
     tempo = round(60_000_000 / bpm)
     project = Project(SongInfo(

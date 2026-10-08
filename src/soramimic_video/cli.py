@@ -526,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
     p.add_argument("--bpm", type=float, default=120.0, help="tick換算用の固定BPM")
     p.add_argument("--adjust-lyrics", action="store_true",
-                   help="入力歌詞を保持し、音源から不足する行だけを追加する（--lyrics必須）")
+                   help="不足行を補い、歌唱の根拠がないと確認できた行だけ除外する（--lyrics必須）")
     p.add_argument(
         "--whisper-model",
         default="large-v3",
