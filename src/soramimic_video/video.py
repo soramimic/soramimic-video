@@ -68,6 +68,7 @@ from .layout import (
 )
 from .mix import MIX_DIR
 from .project import ParodyWord, Project
+from .subtitle_pages import paginate_subtitle
 from .synthesize import NEUTRINO_DIR
 from .thumbnail import generate_thumbnail
 from .xfparse import tick_to_sec
@@ -1742,6 +1743,7 @@ def build_ass(
     (Web UIの一括指定)、それも無ければ source 既定に従う。
     clear_ranges はサムネ・間奏・後奏など専用画面の表示区間。この区間に入る字幕は
     専用画面の開始時刻で消し、直前の歌詞が画面上に残らないようにする。
+    表示幅を超える字幕は、語句・改行と歌唱時刻に合わせて複数画面へ分ける。
     """
     from .align import build_subtitle_segments, resolve_granularity
 
@@ -1848,30 +1850,45 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         x, y, w, h = el.box
         px = {"left": x, "right": x + w}.get(el.align, x + w / 2) * width
         py = {"top": y, "middle": y + h / 2}.get(el.valign, y + h) * height
+        max_width = max(1.0, w * width - 8)  # 輪郭線と影もbox内へ収める
+        base_size = int(el.size * height)
+
+        def measure(text: str, size: int = base_size) -> float:
+            return _ass_text_width(font_path, size, _ass_escape(text))
+
         for seg in segments:
             if not seg.text:
                 continue
-            # ルビ(ふりがな): 替え歌字幕のみ。本文と同一レイヤー・同一区間で、
-            # 本文も単語ごとの別イベントにしてルビと同じ中心へ置く。
-            # 行マージ(parody=line)時はグループ内の全単語を連結して並べる。
-            if el.source == "parody" and el.ruby:
-                words = []
+            words = []
+            if el.source == "parody":
                 for k in seg.indices:
                     pl = plines[k]
                     if pl is not None:
                         words.extend(pl.words)
-                if words:
+            pages = paginate_subtitle(
+                project, seg, el.source, shown, words, measure, max_width,
+                sep=WORD_SEP, lead_sec=SUB_PAD_SEC,
+            )
+            for page in pages:
+                # ルビと本文は同じ単語・表示区間で改ページする。
+                if el.source == "parody" and el.ruby and page.words:
                     events.extend(
                         _ruby_events(
-                            el, name, layer, seg.start, seg.end, words, px, py, an,
-                            height, font_path, w * width,
+                            el, name, layer, page.start, page.end, page.words, px, py, an,
+                            height, font_path, max_width,
                         )
                     )
                     continue
-            events.append(
-                f"Dialogue: {layer},{_ass_time(seg.start)},{_ass_time(seg.end)},{name},,0,0,0,,"
-                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(seg.text)}"
-            )
+                # 1語だけで幅を超える場合や、分割できる歌唱時刻がない場合の最終手段。
+                size = base_size
+                text = _ass_escape(page.text)
+                while size > 1 and _ass_text_width(font_path, size, text) > max_width:
+                    size -= 1
+                size_override = f"\\fs{size}" if size != base_size else ""
+                events.append(
+                    f"Dialogue: {layer},{_ass_time(page.start)},{_ass_time(page.end)},{name},,0,0,0,,"
+                    f"{{\\an{an}\\pos({px:.0f},{py:.0f}){size_override}}}{text}"
+                )
     return header + "\n".join(events) + "\n"
 
 
