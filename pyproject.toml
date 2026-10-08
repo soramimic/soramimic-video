@@ -122,4 +122,4 @@ testpaths = ["tests"]
 [tool.uv.sources]
 soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "c22ff5a2bf35e9c8a4371205f632874dbdf24f8d" }
 soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi" }
-soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "8c4c5b68ba51148817d26c8d9f050141378b72ae" }
+soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "4cc9c15318193a7888529af43643b337c0bb3696" }
