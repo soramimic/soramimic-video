@@ -2195,7 +2195,7 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         midi_end_credit="MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）",
     )
     texts = _element_texts(elements, data)
-    assert "シャイニングスター — 音楽：魔王魂" in texts
+    assert "シャイニングスター（音楽：魔王魂）" in texts
     assert not any("森田交一" in text for text in texts)
     assert "MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）" in texts
     compact = section_frame_data(
@@ -2205,7 +2205,7 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         original_display_credit="cosMo＠暴走P",
         original_credit="作詞・作曲・編曲: cosMo＠暴走P",
     )
-    assert compact["original_song_credit"] == "初音ミクの消失 — cosMo＠暴走P"
+    assert compact["original_song_credit"] == "初音ミクの消失（cosMo＠暴走P）"
 
 
 def test_midi_credit_is_available_only_to_final_credit_section(tmp_path: Path):
@@ -2252,7 +2252,7 @@ def test_original_song_credit_works_without_notice(tmp_path: Path):
         original_song="Lemon",
         original_credit="作詞・作曲・歌: 米津玄師",
     )
-    assert data["original_song_credit"] == "Lemon — 作詞・作曲・歌: 米津玄師"
+    assert data["original_song_credit"] == "Lemon（作詞・作曲・歌: 米津玄師）"
 
 
 def test_build_section_cues_without_credits_extends_last_page(tmp_path: Path):

@@ -844,7 +844,7 @@ def section_frame_data(
       (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
     - original_song: 元曲名
     - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
-    - original_song_credit: 元曲名と表記を「 — 」でつないた簡潔な表示
+    - original_song_credit: 元曲名と簡潔な表記。最終ページでは表記を丸括弧で囲む
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - midi_end_credit: 最終クレジットにだけ載せるMIDI制作者表記
@@ -861,6 +861,8 @@ def section_frame_data(
     # 二重表示を避ける。指定がないアップロード曲は従来どおり著作者表記を残す。
     compact_credit = display_credit or notice or author
     original_song_credit = " — ".join(part for part in (song, compact_credit) if part)
+    if section == "credits" and song and compact_credit:
+        original_song_credit = f"{song}（{compact_credit}）"
     data = idle_frame_data(project, app_credit)
     data.update(
         {

@@ -247,7 +247,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-footer").textContent,
           "lyrics & video by Soramimic / Original: 夜に駆ける — © 権利者");
         assert.equal($("song-preview-credits-original").textContent,
-          "夜に駆ける — © 権利者");
+          "夜に駆ける（© 権利者）");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
 
@@ -279,7 +279,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         $("credit-notice").value = "";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
-          "夜に駆ける — 作詞・作曲: 作者");
+          "夜に駆ける（作詞・作曲: 作者）");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";

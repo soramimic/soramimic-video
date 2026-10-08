@@ -1129,7 +1129,7 @@
         </span>
       </div>
       <p class="hint" id="voicevox-credit"></p>
-      <p class="hint" id="hybrid-credit" hidden>PrettyPitch / VOICEVOX:波音リツ（カノン）。音域に応じてフレーズごとに歌声を補います。非商用ファン作品に限ります。</p>
+      <p class="hint" id="hybrid-credit" hidden>VOICEVOX・PrettyPitch：波音リツ（カノン）。音域に応じてフレーズごとに歌声を補います。非商用ファン作品に限ります。</p>
       <p class="hint" id="prettypitch-credit" hidden>試験用PrettyPitch・波音リツモデルです。歌声DBの音源収録・配布：カノン。非商用ファン作品に限ります。</p>
       <p class="hint" id="synth-unavailable" hidden>このサーバーでは歌声合成エンジンが使えません(サーバー側の設定が必要です)。</p>
     </div>
@@ -3292,7 +3292,8 @@ function updateSongTextPreviews() {
   const original = [title, notice].filter(Boolean).join(" — ");
   const footer = [baseCredit,
     original ? "Original: " + original : ""].filter(Boolean).join(" / ");
-  const finalCredit = [title, notice || author].filter(Boolean).join(" — ");
+  const finalAuthor = notice || author;
+  const finalCredit = finalAuthor ? `${title}（${finalAuthor}）` : title;
 
   $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
   $("song-preview-thumb-credit").textContent = footer;
@@ -3300,7 +3301,7 @@ function updateSongTextPreviews() {
   $("song-preview-credits-original").textContent = finalCredit;
   let synthCredit = "";
   if (fixedSynthesizer === "hybrid") {
-    synthCredit = "PrettyPitch / VOICEVOX:波音リツ（カノン）";
+    synthCredit = "VOICEVOX・PrettyPitch：波音リツ（カノン）";
   } else if (fixedSynthesizer === "prettypitch") {
     synthCredit = "PrettyPitch / 波音リツ（カノン）";
   } else if (fixedSynthesizer === "voicevox") {

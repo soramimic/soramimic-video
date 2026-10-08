@@ -117,7 +117,7 @@
     - page / pages: 後奏が複数枚に分かれたときのページ番号と総ページ数
     - original_song: 元曲名
     - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
-    - original_song_credit: 元曲名と指定クレジットを「 — 」でつないた簡潔な表示
+    - original_song_credit: 元曲名と簡潔な表記。最終ページでは表記を丸括弧で囲む
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - midi_end_credit: MIDI制作者の表記。最終creditsページでのみ使う

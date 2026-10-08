@@ -2911,5 +2911,5 @@ def test_audio_analysis_detail_is_live_and_cleared_between_stages(tmp_path):
 
 def test_hybrid_credit_names_both_engines_and_voice_provider():
     assert api_mod.synth_credit_of({"synthesizer": "hybrid"}, {}) == (
-        "PrettyPitch / VOICEVOX:波音リツ（カノン）"
+        "VOICEVOX・PrettyPitch：波音リツ（カノン）"
     )
