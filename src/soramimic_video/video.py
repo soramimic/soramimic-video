@@ -832,6 +832,7 @@ def section_frame_data(
     original_credit: str = "",
     credit_notice: str = "",
     midi_end_credit: str = "",
+    song_credit: str | None = None,
 ) -> dict:
     """区間フレームのテンプレートに渡す値(idle_frame_data に区間固有の列を足す)。
 
@@ -845,6 +846,7 @@ def section_frame_data(
     - original_song: 元曲名
     - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
     - original_song_credit: 元曲名と簡潔な表記。最終ページでは表記を丸括弧で囲む
+    - song_credit: 指定時は元曲のクレジット表示文をそのまま使用する
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - midi_end_credit: 最終クレジットにだけ載せるMIDI制作者表記
@@ -863,6 +865,8 @@ def section_frame_data(
     original_song_credit = " — ".join(part for part in (song, compact_credit) if part)
     if section == "credits" and song and compact_credit:
         original_song_credit = f"{song}（{compact_credit}）"
+    if song_credit is not None:
+        original_song_credit = song_credit
     data = idle_frame_data(project, app_credit)
     data.update(
         {
@@ -901,6 +905,7 @@ def build_section_cues(
     credit_notice: str = "",
     midi_end_credit: str = "",
     beat_offset_sec: float = 0.0,
+    song_credit: str | None = None,
 ) -> list[ImageCue]:
     """前奏・間奏・後奏の専用フレームをキューにする(専用定義が無い区間は空)。
 
@@ -940,6 +945,7 @@ def build_section_cues(
                     original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
+                    song_credit=song_credit,
                     midi_end_credit=midi_end_credit,
                 )
                 frame = render_section_frame(
@@ -973,6 +979,7 @@ def build_section_cues(
                     original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
+                    song_credit=song_credit,
                     midi_end_credit=midi_end_credit,
                 )
                 frame = render_section_frame(
@@ -996,12 +1003,14 @@ def app_credit_text(
     original_credit: str = "",
     credit_notice: str = "",
     *,
+    song_credit: str | None = None,
     original_song: str = "",
     original_display_credit: str = "",
     wordlist: str = "",
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
+    song_credit が指定されていれば入力文をそのまま付ける。
     既定は「lyrics & video by Soramimic」。元曲・権利者の表記があるときは
     後ろに足す。歌声合成側の表記は最後のクレジットページだけに載せる。
     常時表示には元曲名と必須表記だけを簡潔に載せ、作詞・作曲・歌唱者などの
@@ -1011,6 +1020,8 @@ def app_credit_text(
     notice = (credit_notice or "").strip()
     display_credit = (original_display_credit or "").strip()
     parts = [app_credit_for_wordlist(wordlist)]
+    if song_credit is not None:
+        return " / ".join([*parts, song_credit] if song_credit else parts)
     original = " — ".join(part for part in (song, display_credit or notice) if part)
     if original:
         parts.append(f"Original: {original}" if song else original)
@@ -1981,6 +1992,8 @@ def prepare_video(
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
     allow_noncommercial_fanwork: bool = False,
+    song_credit: str | None = None,
+    thumbnail_wordlist_label: str = "",
 ) -> PreparedVideo:
     """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
     if fps <= 0:
@@ -1992,6 +2005,7 @@ def prepare_video(
         original_credit=original_credit,
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
+        song_credit=song_credit,
         original_song=original_song,
         wordlist=project.parody.wordlist if project.parody else "",
     )
@@ -2042,6 +2056,7 @@ def prepare_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        wordlist_label=thumbnail_wordlist_label,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )
@@ -2061,6 +2076,7 @@ def prepare_video(
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
+        song_credit=song_credit,
         midi_end_credit=midi_end_credit.strip(),
         beat_offset_sec=audio_delay_sec,
     )
@@ -2165,6 +2181,8 @@ def make_video(
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
     allow_noncommercial_fanwork: bool = False,
+    song_credit: str | None = None,
+    thumbnail_wordlist_label: str = "",
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
@@ -2176,6 +2194,7 @@ def make_video(
         original_credit=original_credit,
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
+        song_credit=song_credit,
         original_song=original_song,
         wordlist=project.parody.wordlist if project.parody else "",
     )
@@ -2238,6 +2257,7 @@ def make_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        wordlist_label=thumbnail_wordlist_label,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )
@@ -2258,6 +2278,7 @@ def make_video(
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
+        song_credit=song_credit,
         midi_end_credit=midi_end_credit.strip(),
         beat_offset_sec=audio_delay_sec,
     )

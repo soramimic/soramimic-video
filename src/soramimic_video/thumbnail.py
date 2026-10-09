@@ -908,6 +908,7 @@ def build_thumbnail(
     song_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
     used_images: list[dict] | None = None,
+    wordlist_label: str = "",
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -924,7 +925,7 @@ def build_thumbnail(
     サンプル曲は samples.json の title_kana から来る)。キャプションに出す
     曲名は読みの有無にかかわらず song(漢字まじりの表記)のまま。
     """
-    wordlist_text = wordlist_text_of(wordlist)
+    wordlist_text = wordlist_label.strip() or wordlist_text_of(wordlist)
     resolved_images: list[dict] = []
     words, image_paths, image_credits = resolve_headline(
         song,
@@ -974,6 +975,7 @@ def generate_thumbnail(
     title_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
     used_images: list[dict] | None = None,
+    wordlist_label: str = "",
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
@@ -996,4 +998,5 @@ def generate_thumbnail(
         song_kana=title_kana,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=used_images,
+        wordlist_label=wordlist_label,
     )

@@ -2558,3 +2558,60 @@ def test_saved_project_uses_current_shared_word_image(tmp_path, monkeypatch):
     assert frames[0].data["image_credit"] == "new credit"
     assert frames[0].data["image_page"] == "new page"
     assert project.parody.lines[0].words[0].wordlist_row == original_row
+
+
+@pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts", "曲 - 作者\n© 指定表記", ""])
+def test_custom_song_credit_is_verbatim_in_footer_and_final_page(tmp_path, credit):
+    from soramimic_video.layout import APP_CREDIT, _element_texts, load_layout
+    from soramimic_video.video import app_credit_text, section_frame_data
+
+    footer = app_credit_text(original_song="別の曲名", song_credit=credit)
+    assert footer == (f"{APP_CREDIT} / {credit}" if credit else APP_CREDIT)
+    data = section_frame_data(
+        _endroll_project(tmp_path), section="credits", original_song="別の曲名",
+        original_credit="旧著作者", credit_notice="旧指定表記", song_credit=credit,
+    )
+    assert data["original_song_credit"] == credit
+    elements, _, _ = load_layout("default").section_elements("credits")
+    texts = _element_texts(elements, data)
+    if credit:
+        assert credit in texts
+    assert all("別の曲名" not in text and "旧著作者" not in text for text in texts)
+
+
+def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch):
+    from soramimic_video import video as video_mod
+    from soramimic_video.layout import APP_CREDIT
+
+    project = _project(tmp_path)
+    seen = {}
+
+    def capture_images(*args, **kwargs):
+        seen["footer"] = args[6]
+        return [], []
+
+    def capture_thumbnail(*args, **kwargs):
+        seen["thumbnail_footer"] = args[6]
+        seen["label"] = kwargs["wordlist_label"]
+        return None
+
+    def capture_sections(*args, **kwargs):
+        seen["final_credit"] = kwargs["song_credit"]
+        return []
+
+    monkeypatch.setattr(video_mod, "build_image_cues", capture_images)
+    monkeypatch.setattr(video_mod, "generate_thumbnail", capture_thumbnail)
+    monkeypatch.setattr(video_mod, "build_section_cues", capture_sections)
+    monkeypatch.setattr(video_mod, "render_idle_frame", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "_write_slideshow_concat", lambda *a, **k: tmp_path / "slides")
+    monkeypatch.setattr(video_mod, "build_ass", lambda *a, **k: "")
+    monkeypatch.setattr(video_mod, "write_credits", lambda *a, **k: None)
+    video_mod.prepare_video(
+        project, tmp_path, 10, song_title="サムネの曲名",
+        song_credit="オトノケ - Creepy Nuts", thumbnail_wordlist_label="好きな駅",
+    )
+    assert seen == {
+        "footer": f"{APP_CREDIT} / オトノケ - Creepy Nuts",
+        "thumbnail_footer": f"{APP_CREDIT} / オトノケ - Creepy Nuts",
+        "label": "好きな駅", "final_credit": "オトノケ - Creepy Nuts",
+    }

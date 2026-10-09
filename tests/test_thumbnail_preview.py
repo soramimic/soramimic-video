@@ -671,3 +671,22 @@ def test_prune_cache_by_ttl_and_count(tmp_path: Path):
     removed = preview_mod.prune_cache(cache, max_entries=2, ttl_seconds=0, now=2000)
     assert len(removed) == 3
     assert len(list(cache.glob("*.png"))) == 2
+
+
+def test_edited_preview_label_is_private_and_reaches_renderer(client, tmp_path, monkeypatch):
+    seen = []
+    original = thumb_mod.render_thumbnail
+
+    def capture(path, song, wordlist_text, **kwargs):
+        seen.append(wordlist_text)
+        return original(path, song, wordlist_text, **kwargs)
+
+    monkeypatch.setattr(thumb_mod, "render_thumbnail", capture)
+    first = get_preview(client, wordlist_label="好きな駅")
+    second = get_preview(client, wordlist_label="旅先の駅")
+    assert first.status_code == second.status_code == 200
+    assert first.headers["x-preview-cache"] == second.headers["x-preview-cache"] == "private"
+    assert first.content != second.content
+    assert seen == ["好きな駅", "旅先の駅"]
+    assert not list(preview_mod.preview_cache_dir(tmp_path / "jobs").glob("*.png"))
+    assert get_preview(client, wordlist_label="あ" * 101).status_code == 400

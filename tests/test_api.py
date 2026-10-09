@@ -1380,7 +1380,8 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     )
     job = api_mod.Job(
         id="parallel", dir=job_dir,
-        params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations"},
+        params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations",
+                "song_credit": "オトノケ - Creepy Nuts", "thumbnail_wordlist_label": "好きな駅"},
     )
     audio_started = threading.Event()
     visual_started = threading.Event()
@@ -1394,6 +1395,8 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
             assert visual_started.wait(1)
 
     def fake_prepare(*args, **kwargs):
+        assert kwargs["song_credit"] == "オトノケ - Creepy Nuts"
+        assert kwargs["thumbnail_wordlist_label"] == "好きな駅"
         visual_started.set()
         assert audio_started.wait(1)
         return type("Prepared", (), {"audio_delay_sec": 1.0})()
@@ -2572,8 +2575,8 @@ def test_index_html_advanced_groups_hide_controls_and_expose_song_text():
     credit = g["曲情報・クレジット"]
     assert credit.startswith('<section class="opt-group" id="song-credit-section">')
     assert 'id="song-title"' in credit
-    assert 'id="original-credit"' in credit
-    assert 'id="credit-notice"' in credit
+    assert 'id="song-credit"' in credit
+    assert 'id="thumbnail-wordlist-label"' in credit
     for preview in ("thumb-caption", "footer", "credits-original"):
         assert f'id="song-preview-{preview}"' in credit
 
@@ -2913,3 +2916,24 @@ def test_hybrid_credit_names_both_engines_and_voice_provider():
     assert api_mod.synth_credit_of({"synthesizer": "hybrid"}, {}) == (
         "VOICEVOX・PrettyPitch：波音リツ（カノン）"
     )
+
+
+@pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts\n© 指定表記", ""])
+def test_custom_song_text_is_stored_without_changing_wordlist(client, credit):
+    job_id = submit(
+        client, wordlist="stations", song_title="別の曲名",
+        song_credit=credit, thumbnail_wordlist_label=" 好きな駅 ",
+    )
+    params = wait_done(client, job_id)["params"]
+    assert params["song_credit"] == credit
+    assert params["thumbnail_wordlist_label"] == "好きな駅"
+    assert params["wordlist"] == "stations"
+
+
+@pytest.mark.parametrize("field,length", [("song_credit", 2001), ("thumbnail_wordlist_label", 101)])
+def test_custom_song_text_has_size_limits(client, field, length):
+    res = client.post(
+        "/api/jobs", files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
+        data={"wordlist": "stations", field: "あ" * length},
+    )
+    assert res.status_code == 422
