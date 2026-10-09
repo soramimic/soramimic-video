@@ -66,7 +66,8 @@ def cmd_validate_samples(args: argparse.Namespace) -> int:
 
 
 def cmd_analyze_audio(args: argparse.Namespace) -> int:
-    from .analyze_audio import ANALYZE_DIR, analyze_audio
+    from .analyze_audio import ANALYZE_DIR
+    from .score_audio import analyze_audio
 
     project = analyze_audio(
         Path(args.audio),
@@ -81,7 +82,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
     print(f"解析完了: {len(project.notes)}モーラ / {len(project.lines)}行 -> {path}")
     if not args.lyrics:
         print("元歌詞にWhisper認識結果を使用しました(誤認識は edit ステージで修正可能)")
-    print(f"タイミングの目視検証用SRT: {Path(args.project) / ANALYZE_DIR}/")
+    print(f"解析結果: {Path(args.project) / ANALYZE_DIR / 'score.json'}")
     return 0
 
 

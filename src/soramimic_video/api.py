@@ -1244,7 +1244,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             job.params.get("auto_lyrics") is False and lyrics_path.exists()
         )
         if job.params.get("input_kind") == "audio":
-            from .analyze_audio import analyze_audio
+            from .score_audio import analyze_audio
 
             supplied_audio_lyrics = (
                 lyrics_path

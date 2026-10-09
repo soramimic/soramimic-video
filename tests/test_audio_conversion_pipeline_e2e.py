@@ -18,6 +18,7 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
         mix,
         mora_align,
         reading,
+        score_audio,
         stage3,
         synthesize,
         video,
@@ -160,6 +161,7 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
         return real_analyze_audio(*args, **kwargs)
 
     monkeypatch.setattr(analyze_audio_module, "analyze_audio", analyze_without_external_separation)
+    monkeypatch.setattr(score_audio, "analyze_audio", analyze_without_external_separation)
 
     def fake_synthesize(project, project_dir, **_kwargs):
         assert project.parody is not None

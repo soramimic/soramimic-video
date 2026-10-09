@@ -26,6 +26,7 @@ dependencies = [
     "mecab-python3>=1.0",
     "unidic-lite>=1.0",
     "kanasim==0.0.11",
+    "soramimic-score==0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -39,9 +40,9 @@ api = [
 # analyze-audio(歌唱音源入力)用の重い依存。uv sync --extra audio で入れる
 audio = [
     "demucs>=4.0",
-    "torch>=2.1",
-    "torchaudio>=2.1",
-    "torchcodec>=0.2",  # 新しめのtorchaudioは音声保存をtorchcodecに委譲する(要ffmpeg)
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "torchcodec==0.7.0",  # torchaudioの音声保存用。Torch 2.8対応版(要ffmpeg)
     # SheetSage2の検証済みcustom model APIと互換の範囲。
     "transformers>=4.45.2,<4.46",
     "librosa>=0.10",
@@ -53,8 +54,8 @@ audio = [
     "pretty-midi>=0.2.10",
     "faster-whisper>=1.0",
     "soramimic-yomi",
-    # librosa imports Numba, whose current runtime rejects NumPy 2.5.
-    "numpy>=1.24,<2.5",
+    # Keep the installed NumPy in Soramimic Score's tested audio range.
+    "numpy>=1.24,<2.3",
 ]
 # 同梱WAVサンプルの再生成用。実行時サーバーには不要
 sample-audio = [
@@ -119,5 +120,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 
 [tool.uv.sources]
+soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "06f3be9bcc879da5f27ca9f5adee9c642d634f40" }
 soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi" }
 soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "4cc9c15318193a7888529af43643b337c0bb3696" }

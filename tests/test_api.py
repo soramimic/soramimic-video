@@ -451,7 +451,7 @@ def test_wav_upload_limit_is_configurable(client, monkeypatch):
 
 
 def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
-    from soramimic_video import analyze_audio as analyze_audio_mod
+    from soramimic_video import score_audio as analyze_audio_mod
 
     class ReachedAnalyzer(Exception):
         pass
@@ -476,7 +476,7 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
 
 
 def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monkeypatch):
-    from soramimic_video import analyze_audio as analyze_audio_mod
+    from soramimic_video import score_audio as analyze_audio_mod
 
     class ReachedAnalyzer(Exception):
         pass
