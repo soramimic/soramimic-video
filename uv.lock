@@ -2525,7 +2525,7 @@ mecab = [
 [[package]]
 name = "soramimic-score"
 version = "0.1.0"
-source = { git = "https://github.com/jiroshimaya/soramimic-score?rev=06f3be9bcc879da5f27ca9f5adee9c642d634f40#06f3be9bcc879da5f27ca9f5adee9c642d634f40" }
+source = { git = "https://github.com/jiroshimaya/soramimic-score?rev=303bd07f19bb28edc5fbeaf10cd48bf05222d823#303bd07f19bb28edc5fbeaf10cd48bf05222d823" }
 dependencies = [
     { name = "jasyllablesep" },
     { name = "kanasim" },
@@ -2617,9 +2617,9 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31" },
     { name = "scipy", marker = "extra == 'audio'", specifier = ">=1.13" },
     { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=32c8260aeb682daf1b2d3f18de76bc40c6ad0eda" },
-    { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=06f3be9bcc879da5f27ca9f5adee9c642d634f40" },
-    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi" },
-    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi" },
+    { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=303bd07f19bb28edc5fbeaf10cd48bf05222d823" },
+    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=e9542850a49a8c424ba6685ca6814dcbb5b139a9" },
+    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=e9542850a49a8c424ba6685ca6814dcbb5b139a9" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.12" },
     { name = "torch", marker = "extra == 'audio'", specifier = "==2.8.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = "==2.8.0" },
@@ -2646,7 +2646,7 @@ dev = [
 [[package]]
 name = "soramimic-yomi"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-yomi#db8a5406732be25ca827dc5faa4d02f43c9927b2" }
+source = { git = "https://github.com/soramimic/soramimic-yomi?rev=e9542850a49a8c424ba6685ca6814dcbb5b139a9#e9542850a49a8c424ba6685ca6814dcbb5b139a9" }
 dependencies = [
     { name = "arpakana" },
     { name = "e2k" },
