@@ -583,7 +583,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference-midi", help="背景に薄く表示する参照メロディMIDI(既定: 編集前の音符)"
     )
     # 「🎤この行」「🔄合成」で使う合成設定(synthesize/mixと同じ意味)
-    p.add_argument("--synthesizer", default="voicevox", choices=["voicevox", "neutrino"])
+    p.add_argument(
+        "--synthesizer",
+        default="voicevox",
+        choices=["voicevox", "neutrino", "prettypitch", "hybrid"],
+    )
     p.add_argument("--model", default="MERROW", help="NEUTRINOの歌声モデル名")
     p.add_argument("--soundfont", help="伴奏レンダリング用のsf2(MIDI入力のプロジェクト)")
     p.add_argument("--voicevox-url", help="VOICEVOXエンジンのURL")
@@ -591,12 +595,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--transpose", type=int, default=0, help="移調(半音)")
     p.set_defaults(func=cmd_edit_timing)
 
-    p = sub.add_parser("synthesize", help="替え歌を歌唱合成する(NEUTRINO/VOICEVOX)")
+    p = sub.add_parser(
+        "synthesize", help="替え歌を歌唱合成する(NEUTRINO/VOICEVOX/PrettyPitch)"
+    )
     p.add_argument("--project", required=True)
     p.add_argument("--model", default="MERROW", help="NEUTRINOの歌声モデル名")
     p.add_argument(
         "--synthesizer",
-        choices=["neutrino", "voicevox"],
+        choices=["neutrino", "voicevox", "prettypitch", "hybrid"],
         default="neutrino",
         help="合成エンジン(既定: neutrino)",
     )
@@ -615,7 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-auto-octave",
         action="store_true",
         help="エンジンの音域に合わせた自動オクターブ調整を無効にする"
-        "(VOICEVOX/NEUTRINO共通)",
+        "(VOICEVOX/NEUTRINO/PrettyPitch共通)",
     )
     p.add_argument(
         # 旧名。--no-auto-octave に統合したが後方互換で受け続ける(deprecated)

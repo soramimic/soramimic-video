@@ -1114,6 +1114,8 @@
         <select id="synthesizer" aria-label="合成エンジン">
           <option value="neutrino" id="synth-neutrino-opt">NEUTRINO</option>
           <option value="voicevox" id="synth-voicevox-opt" disabled>VOICEVOX(エンジン未起動)</option>
+          <option value="hybrid" id="synth-hybrid-opt" disabled>波音リツ(音域補完・未設定)</option>
+          <option value="prettypitch" id="synth-prettypitch-opt" disabled>PrettyPitch(試験・未設定)</option>
         </select>
         <!-- iOS Safari は datalist 候補を出さないため select + 手入力に変更。
              送信値の正本は隠し input#model。選択肢は /api/config の models。 -->
@@ -1127,6 +1129,8 @@
         </span>
       </div>
       <p class="hint" id="voicevox-credit"></p>
+      <p class="hint" id="hybrid-credit" hidden>VOICEVOX・PrettyPitch：波音リツ（カノン）。音域に応じてフレーズごとに歌声を補います。非商用ファン作品に限ります。</p>
+      <p class="hint" id="prettypitch-credit" hidden>試験用PrettyPitch・波音リツモデルです。歌声DBの音源収録・配布：カノン。非商用ファン作品に限ります。</p>
       <p class="hint" id="synth-unavailable" hidden>このサーバーでは歌声合成エンジンが使えません(サーバー側の設定が必要です)。</p>
     </div>
 
@@ -1230,7 +1234,7 @@
           <p class="song-text-credits-heading">Credits</p>
           <p class="song-text-credits-original" id="song-preview-credits-original"></p>
           <p class="song-text-credits-app">Parody Lyrics &amp; Video　Soramimic</p>
-          <p class="song-text-credits-synth">Vocal Synthesis　VOICEVOX:波音リツ</p>
+          <p class="song-text-credits-synth" id="song-preview-credits-synth">Vocal Synthesis　VOICEVOX:波音リツ</p>
           <p class="song-text-credits-sites">soramimic.com / video.soramimic.com</p>
         </div>
       </figure>
@@ -1642,6 +1646,7 @@ let simpleMode = false;
 let launchWordlists = [];
 // Web UIの歌声はVOICEVOX 波音リツ(ノーマル・歌唱)に固定する。
 let fixedVoicevoxStyle = 6000;
+let fixedSynthesizer = "voicevox";
 let maxAudioUploadBytes = 200 * 1024 * 1024;
 let maxSongSeconds = 7 * 60;
 let audioInputReady = false;
@@ -1657,6 +1662,7 @@ async function loadConfig() {
   catch (err) { showBuilderMsg(err.message); }
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
+  fixedSynthesizer = String(conf.fixed_synthesizer || "voicevox");
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
   const configuredMaxSongSeconds = Number(conf.max_song_seconds);
   if (Number.isFinite(configuredMaxSongSeconds) && configuredMaxSongSeconds >= 0) {
@@ -1688,6 +1694,11 @@ async function loadConfig() {
   setChoice("model", model0);
   setupNeutrino(conf.neutrino);  // VOICEVOXより先(未設定ならVOICEVOX側へ倒すため)
   setupVoicevox(conf.voicevox);
+  setupPrettyPitch(conf.prettypitch);
+  if (!$("synth-" + fixedSynthesizer + "-opt")?.disabled) {
+    $("synthesizer").value = fixedSynthesizer;
+  }
+  toggleSynthOpts();
   // 空値の表示は「(指定なし)」: 英語のプリセットIDの並びに説明文っぽい日本語が
   // 混ざると浮くので、特別な選択肢の定石の括弧書きにする(意味はⓘで説明)
   fillChoiceOptions("layout", conf.layouts || [], "(指定なし)");
@@ -1718,7 +1729,7 @@ async function loadConfig() {
 
 function applyFixedUiDefaults() {
   synthesizerTouched = true;
-  $("synthesizer").value = "voicevox";
+  $("synthesizer").value = fixedSynthesizer;
   const style = [...$("voicevox-style").options]
     .find((o) => Number(o.value) === fixedVoicevoxStyle);
   if (style) $("voicevox-style").value = style.value;
@@ -1780,6 +1791,15 @@ function setupVoicevox(vv) {
   toggleSynthOpts();
 }
 
+function setupPrettyPitch(pp) {
+  const opt = $("synth-prettypitch-opt");
+  opt.disabled = !pp;
+  $("synth-hybrid-opt").disabled = !pp || $("synth-voicevox-opt").disabled;
+  $("synth-hybrid-opt").textContent = $("synth-hybrid-opt").disabled
+    ? "波音リツ(音域補完・未設定)" : "波音リツ(音域補完)";
+  opt.textContent = pp ? "PrettyPitch(波音リツ・試験)" : "PrettyPitch(試験・未設定)";
+}
+
 function updateVoicevoxCredit() {
   const sel = $("voicevox-style");
   const o = sel.options[sel.selectedIndex];
@@ -1825,9 +1845,14 @@ function updatePublicCredit() {
   const sel = $("voicevox-style");
   const o = sel.options[sel.selectedIndex];
   const name = o ? (o.getAttribute("data-name") || "") : "";
-  $("public-credit").textContent = $("synthesizer").value === "voicevox"
-    ? `歌声合成: VOICEVOX${name ? ":" + name : ""}`
-    : `歌声合成: NEUTRINO${$("model").value ? "(" + $("model").value + ")" : ""}`;
+  const engine = $("synthesizer").value;
+  $("public-credit").textContent = engine === "hybrid"
+    ? "歌声合成: VOICEVOX・PrettyPitch：波音リツ（カノン）"
+    : engine === "prettypitch"
+      ? "歌声合成: PrettyPitch / 波音リツ（カノン）"
+      : engine === "voicevox"
+        ? `歌声合成: VOICEVOX${name ? ":" + name : ""}`
+        : `歌声合成: NEUTRINO${$("model").value ? "(" + $("model").value + ")" : ""}`;
   $("public-footer").hidden = false;
 }
 
@@ -2124,20 +2149,31 @@ async function ensureTurnstileToken(timeoutMs = 120000) {
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
 function toggleSynthOpts() {
   const isVv = $("synthesizer").value === "voicevox";
-  $("neutrino-opts").hidden = isVv;
+  const isNeutrino = $("synthesizer").value === "neutrino";
+  const isPrettyPitch = $("synthesizer").value === "prettypitch";
+  const isHybrid = $("synthesizer").value === "hybrid";
+  $("neutrino-opts").hidden = !isNeutrino;
   $("voicevox-opts").hidden = !isVv;
   // どちらのエンジンも使えないサーバーでは、投入前に理由が分かるよう案内を出す
   $("synth-unavailable").hidden =
-    neutrinoAvailable() || !$("synth-voicevox-opt").disabled;
+    neutrinoAvailable() || !$("synth-voicevox-opt").disabled
+      || !$("synth-prettypitch-opt").disabled;
   // クレジット表記はVOICEVOXを選んでいるときだけ(歌声セレクトの外に置いてあるので明示的に)
   $("voicevox-credit").hidden = !isVv;
+  $("prettypitch-credit").hidden = !isPrettyPitch;
+  $("hybrid-credit").hidden = !isHybrid;
   // 自動オクターブ調整は両エンジン共通。説明文だけエンジンに合わせて出し分ける。
   updatePublicCredit();
-  $("auto-octave-hint").textContent = isVv
-    ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
-      + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"
-    : "NEUTRINOは音域外の音だと苦しそうな発声になります。"
-      + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。";
+  $("auto-octave-hint").textContent = isHybrid
+    ? "曲全体の音域を調整し、音域外の音を含むフレーズを補います。"
+    : isPrettyPitch
+    ? "PrettyPitchの波音リツはVOICEVOXと同じ音域と仮定し、曲全体をオクターブ単位で自動移調します。"
+    : isVv
+      ? "VOICEVOXの歌声は音域が狭く、範囲外の音はピッチが大きく崩れます(音痴になります)。"
+        + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。"
+      : "NEUTRINOは音域外の音だと苦しそうな発声になります。"
+        + "曲全体をオクターブ単位で自動移調して音域に収めます(移調欄の指定に加算)。";
+
 }
 
 // 自動オクターブ調整ONのあいだは高さの決定を自動に任せるので、移調欄を
@@ -3182,7 +3218,7 @@ async function submitJob(previewSec, previewMode) {
   if (editorSrc.file) form.append("editor", editorSrc.file);
   appendSongLyrics(form);
   form.append("model", $("model").value);
-  form.append("synthesizer", "voicevox");
+  form.append("synthesizer", fixedSynthesizer);
   form.append("voicevox_style", String(fixedVoicevoxStyle));
   form.append("auto_octave", "true");
   form.append("transpose", "0");
@@ -3274,7 +3310,17 @@ function updateSongTextPreviews() {
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
   const original = [title, notice].filter(Boolean).join(" — ");
-  const footer = [baseCredit, "VOICEVOX:波音リツ",
+  let synthCredit = "";
+  if (fixedSynthesizer === "hybrid") {
+    synthCredit = "VOICEVOX・PrettyPitch：波音リツ（カノン）";
+  } else if (fixedSynthesizer === "prettypitch") {
+    synthCredit = "PrettyPitch / 波音リツ（カノン）";
+  } else if (fixedSynthesizer === "voicevox") {
+    const style = [...$("voicevox-style").options]
+      .find((option) => Number(option.value) === fixedVoicevoxStyle);
+    synthCredit = style?.dataset.name ? `VOICEVOX:${style.dataset.name}` : "VOICEVOX";
+  }
+  const footer = [baseCredit, synthCredit,
     original ? "Original: " + original : ""].filter(Boolean).join(" / ");
   const finalCredit = [title, notice || author].filter(Boolean).join(" — ");
 
@@ -3282,6 +3328,8 @@ function updateSongTextPreviews() {
   $("song-preview-thumb-credit").textContent = footer;
   $("song-preview-footer").textContent = footer;
   $("song-preview-credits-original").textContent = finalCredit;
+  $("song-preview-credits-synth").textContent = synthCredit ? `Vocal Synthesis　${synthCredit}` : "";
+  $("song-preview-credits-synth").hidden = !synthCredit;
 
   const builderImage = $("builder-image").getAttribute("src") || "";
   for (const id of ["song-preview-thumb-bg", "song-preview-footer-bg"]) {
@@ -8016,6 +8064,12 @@ async function doRestoreForm() {
       synthesizerTouched = true;
     } else if (state.synthesizer === "neutrino" && neutrinoAvailable()) {
       $("synthesizer").value = "neutrino";
+      synthesizerTouched = true;
+    } else if (state.synthesizer === "hybrid" && !$("synth-hybrid-opt").disabled) {
+      $("synthesizer").value = "hybrid";
+    } else if (state.synthesizer === "prettypitch"
+        && !$("synth-prettypitch-opt").disabled) {
+      $("synthesizer").value = "prettypitch";
       synthesizerTouched = true;
     }
     toggleSynthOpts();

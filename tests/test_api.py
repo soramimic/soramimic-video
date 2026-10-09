@@ -573,6 +573,32 @@ def test_accepts_voicevox_params(client):
     assert body["params"]["voicevox_style"] == 3001
 
 
+@pytest.mark.parametrize("synthesizer", ["prettypitch", "hybrid"])
+def test_accepts_prettypitch_only_for_noncommercial_fanwork(client, monkeypatch, synthesizer):
+    from soramimic_video import prettypitch as pp_mod
+
+    monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
+    rejected = client.post(
+        "/api/jobs",
+        files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
+        data={"wordlist": "stations", "synthesizer": synthesizer},
+    )
+    assert rejected.status_code == 422
+    assert "非商用" in rejected.json()["detail"]
+
+    job_id = submit(
+        client,
+        wordlist="stations",
+        synthesizer=synthesizer,
+        allow_noncommercial_fanwork="true",
+    )
+    body = wait_done(client, job_id)
+    assert body["status"] == "done"
+    assert body["params"]["synthesizer"] == synthesizer
+    if synthesizer == "hybrid":
+        assert body["params"]["voicevox_style"] == 6000
+
+
 def test_auto_octave_defaults_on(client):
     job_id = submit(client, wordlist="stations")
     body = wait_done(client, job_id)
@@ -907,6 +933,22 @@ def test_running_job_reports_stage_elapsed(tmp_path):
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone
+    assert "prettypitch" in body
+    assert body["fixed_synthesizer"] == "voicevox"
+
+
+@pytest.mark.parametrize("synthesizer", ["prettypitch", "hybrid"])
+def test_config_can_fix_web_synthesis_to_prettypitch(tmp_path, monkeypatch, synthesizer):
+    from soramimic_video import prettypitch as pp_mod
+
+    monkeypatch.setenv(api_mod.FIXED_SYNTHESIZER_ENV, synthesizer)
+    monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pp_mod, "available", lambda: True)
+    browser = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    body = browser.get("/api/config").json()
+    assert body["fixed_synthesizer"] == synthesizer
+    assert body["prettypitch"] == {"speaker": "波音リツ", "experimental": True}
 
 
 def test_preview_returns_audio(tmp_path, monkeypatch):
@@ -2078,6 +2120,12 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
+def test_synth_credit_of_prettypitch_names_engine_and_voice():
+    assert api_mod.synth_credit_of(
+        {"synthesizer": "prettypitch"}, {}
+    ) == "PrettyPitch / 波音リツ（カノン）"
+
+
 def test_index_html_has_platform_appropriate_save_share_buttons():
     # モバイルは保存・共有1ボタン、PCはダウンロードと共有を分ける。
     html = _index_html()
@@ -2842,3 +2890,9 @@ def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automati
     )
     assert res.status_code == 422
     assert "音源と入力歌詞" in res.json()["detail"]
+
+
+def test_hybrid_credit_names_both_engines_and_voice_provider():
+    assert api_mod.synth_credit_of({"synthesizer": "hybrid"}, {}) == (
+        "VOICEVOX・PrettyPitch：波音リツ（カノン）"
+    )
