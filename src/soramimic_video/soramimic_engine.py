@@ -28,6 +28,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .parenthetical_ruby import normalize_parenthetical_ruby
+
 logger = logging.getLogger(__name__)
 
 # 「行ごとのユニット列(音節単位)」から「行ごとのユニット重み列」を作る関数。
@@ -364,7 +366,9 @@ def run_tokenize(
     :func:`convert.project_note_length_weights` にそのまま渡せる。
     """
     app = _get_app((params or {}).get("VOWEL_RATIO"))
-    tokens_list = app.text_analyzer.tokenize_together(phrases)
+    tokens_list = app.text_analyzer.tokenize_together(
+        [normalize_parenthetical_ruby(phrase) for phrase in phrases]
+    )
     return [
         [
             {
@@ -418,7 +422,9 @@ def run_convert(
     app = _get_app(params.get("VOWEL_RATIO"))
 
     # 生成画面(app.js)と同じ経路: トークナイズ → 生成
-    tokens_list = app.text_analyzer.tokenize_together(phrases)
+    tokens_list = app.text_analyzer.tokenize_together(
+        [normalize_parenthetical_ruby(phrase) for phrase in phrases]
+    )
 
     # エンジンが内部で作るのと同じユニット列(get_yomi_and_phrase_break の結果)。
     # 単語DBの上限(max_units)と、callable な重み計算の両方で使う。

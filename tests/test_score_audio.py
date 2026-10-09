@@ -66,6 +66,56 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
 
 
+@pytest.mark.parametrize("adjust", [False, True])
+def test_pinned_score_uses_parenthetical_reading_and_keeps_chorus(monkeypatch, tmp_path, adjust):
+    import soramimic_score
+    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote
+    from soramimic_score.japanese import kana_to_moras
+    from soramimic_score.readings import dictionary_readings
+    from soramimic_score.vocal_activity import VocalActivity
+
+    source_text = "未来（みらい）（ラララ）"
+
+    def align(_path, lines, readings):
+        assert [reading.kana for reading in readings] == ["ミライラララ"]
+        return tuple(AlignedMora(0, index, mora, .1 + index * .3, .3 + index * .3, .9)
+                     for index, mora in enumerate(kana_to_moras(readings[0].kana)))
+
+    adapters = AudioAdapters(
+        reading_selector=dictionary_readings,
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(
+            MelodyNote(.1 + i * .3, .3 + i * .3, 60, confidence=.9) for i in range(6)),
+        lyric_recognizer=lambda _: (LyricLine("未来（ラララ）", 0, 2),),
+        audio_duration=lambda _: 2.,
+        vocal_activity=lambda _path, windows: tuple(
+            VocalActivity(-20, -3, 1, True) for _ in windows),
+    )
+    real_analyze = soramimic_score.analyze_audio
+
+    def analyze_with_test_models(path, **kwargs):
+        assert kwargs["lyrics"] == ["｜未来《ミライ》（ラララ）"]
+        return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
+                            adjust_lyrics=kwargs["adjust_lyrics"])
+
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text(source_text, encoding="utf-8")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output, lyrics_path=lyrics, adjust_lyrics=adjust)
+    assert project.lyric_layers["canonical_text"] == "未来（ラララ）"
+    assert project.lines[0].canonical_kana == "ミライラララ"
+    assert "".join(note.kana for note in project.notes) == "ミライラララ"
+    assert lyrics.read_text(encoding="utf-8") == source_text
+    assert json.loads((output / "analyze_audio/lyric_annotations.json").read_text()) == {
+        "supplied_lines": [source_text], "normalized_lines": ["｜未来《ミライ》（ラララ）"],
+    }
+
+
 @pytest.mark.parametrize("with_melody", [True, False])
 def test_pinned_score_speech_reaches_voicevox_once_without_losing_sung_notes(
     monkeypatch, tmp_path, with_melody,
