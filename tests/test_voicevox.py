@@ -15,7 +15,7 @@ import pytest
 
 import soramimic_video.voicevox as vv
 from helpers import build_xf_midi
-from soramimic_video.project import Note, Project, SongInfo
+from soramimic_video.project import Note, Parody, ParodyLine, ParodyWord, Project, SongInfo
 from soramimic_video.voicevox import (
     FRAME_RATE,
     LEAD_REST_FRAMES,
@@ -340,6 +340,47 @@ def test_recovered_melody_limits_each_source_note_to_one_syllable(tmp_path):
     # 4実音節を3つの元MIDI音へ詰めず、語頭・語尾を含む3音節だけを1つずつ載せる。
     assert [note["lyric"] for note in pitched] == ["ワ", "ビ", "ル", "ラ"]
     assert [note["key"] for note in pitched] == [60, 62, 64, 65]
+
+
+def test_parody_reading_keeps_all_syllables_on_recovered_melody(tmp_path):
+    midi = build_xf_midi(
+        tmp_path / "parody-capacity.mid",
+        notes=[(480, 230, 60), (720, 230, 62), (960, 230, 64), (1200, 230, 65)],
+        lyric_events=[(480, "ワルビル"), (1200, "ラ")],
+    )
+    project = analyze_midi(midi)
+    project.parody = Parody("", lines=[ParodyLine(0, [
+        ParodyWord("ワルビル", "ワルビル", "", "", "", [0], ["ワルビル"]),
+        ParodyWord("ラ", "ラ", "", "", "", [1], ["ラ"]),
+    ])])
+    pitched = [n for n in build_score(project)["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["ワ", "ル", "ビ", "ル", "ラ"]
+    assert [n["key"] for n in pitched] == [60, 60, 62, 64, 65]
+    assert all(n["frame_length"] >= vv.MIN_ELEMENT_FRAMES for n in pitched)
+
+
+@pytest.mark.parametrize("mode", ["auto", "first", "front", "back"])
+def test_parody_reading_keeps_dense_moras_in_each_mode(monkeypatch, mode):
+    monkeypatch.setenv("SORAMIMIC_VIDEO_STACKED_MORA_MODE", mode)
+    project = _project([_note(0, 60, 0, 0.12, "カ"), _note(1, 62, 0.12, 0.5, "キ")])
+    project.parody = Parody("", lines=[ParodyLine(0, [
+        ParodyWord("カンカッ", "カンカッ", "", "", "", [0], ["カンカッ"]),
+        ParodyWord("キ", "キ", "", "", "", [1], ["キ"]),
+    ])])
+    score = build_score(project)
+    pitched = [n for n in score["notes"] if n["key"] is not None]
+    assert [n["lyric"] for n in pitched] == ["カ", "ン", "カ", "ッ", "キ"]
+    assert all(n["frame_length"] >= vv.MIN_ELEMENT_FRAMES for n in pitched)
+    assert sum(n["frame_length"] for n in score["notes"]) == round(0.5 * FRAME_RATE)
+
+
+def test_parody_reading_rejects_insufficient_frames_instead_of_deleting_moras():
+    project = _project([_note(0, 60, 0, 0.01, "カ")])
+    project.parody = Parody("", lines=[ParodyLine(0, [
+        ParodyWord("カン", "カン", "", "", "", [0], ["カン"]),
+    ])])
+    with pytest.raises(ValueError, match="歌詞は保持されています"):
+        build_score(project)
 
 
 def test_long_vowels_and_codas_stay_in_the_same_syllable_group():

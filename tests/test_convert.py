@@ -29,6 +29,7 @@ from soramimic_video.lyric_layers import apply_lyric_layers
 from soramimic_video.project import Line, Note, Project, SongInfo
 from soramimic_video.soramimic_engine import run_tokenize
 from soramimic_video.synthesize import build_lyric_map
+from soramimic_video.voicevox import build_score
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -100,7 +101,7 @@ def test_map_word_to_notes_restore_compressed_moras():
     # ふるさと3行目「夢は今もめぐりて」相当。元歌詞ユニット [マ][モ][メエ][グウ][リイ][テ]
     # (9音符)に、単語「アンドレイリンデ」pron=[アー,ド,レ,イ,リー,デ] を載せる。
     # リン(要素リー)は空き音符が1つあるので「リ」「ン」に復元される。
-    # アン(要素アー)は復元先(マ=1音符)が無いので現状どおり「アー」のまま。
+    # 音符割り当て時点のアンはアーのまま。最終読みは全単語の音符確定後に復元する。
     unit_lens = [1, 1, 2, 2, 2, 1]  # マ モ メエ グウ リイ テ
     note_lens = [1] * 9
     identity = list(range(10))
@@ -641,7 +642,7 @@ def test_layered_analysis_only_seed_uses_same_normalized_units():
 def _converted_repeated_line() -> list[dict]:
     def word(surface: str, period: list[int], count: int) -> dict:
         return {
-            "surface": surface, "kana": surface, "period": period,
+            "surface": surface, "kana": surface * count, "period": period,
             "pronunciation": [surface] * count, "original": "",
             "original_surface": "", "originalkana": "", "locked": False,
         }
@@ -668,6 +669,41 @@ def test_apply_converted_lines_uses_layer_identity_for_repeated_moras(tmp_path: 
         ["カ", "ー", "ー"] * 3 + ["サ", "ー", "ー"] * 6
     )
     assert "ダ" not in lyric_map.values()
+
+
+@pytest.mark.parametrize(("kana", "pronunciation", "expected"), [
+    ("リン", ["リー"], ["リン"]),
+    ("バンビ", ["バー", "ビ"], ["バン", "ビ"]),
+    ("テンジン", ["テ", "ジン"], ["テン", "ジン"]),
+    ("カッパ", ["カ", "パ"], ["カッ", "パ"]),
+])
+def test_selected_word_reading_survives_conversion_and_synthesis(
+    tmp_path, kana, pronunciation, expected,
+):
+    project = _line_project(["ダ"] * len(pronunciation))
+    original_notes = copy.deepcopy(project.notes)
+    converted = [{
+        "units": [{"pronunciation": "ダ"} for _ in pronunciation],
+        "words": [{
+            "surface": kana, "kana": kana, "period": [0, len(pronunciation)],
+            "pronunciation": pronunciation, "original": "", "original_surface": "",
+            "originalkana": "", "locked": False,
+        }],
+    }]
+    original_result = copy.deepcopy(converted)
+    apply_converted_lines(
+        project, converted, wordlist=_empty_wordlist(tmp_path), where=None, params={},
+    )
+    assert project.parody is not None
+    (word,) = project.parody.lines[0].words
+    assert word.surface == kana
+    assert word.note_ids == list(range(len(pronunciation)))
+    assert word.note_kana == expected
+    assert project.notes == original_notes
+    assert converted == original_result
+    assert [n["lyric"] for n in build_score(project)["notes"] if n["key"] is not None] == (
+        split_fine_moras(kana)
+    )
 
 
 @pytest.mark.parametrize("change", ["substitute", "insert", "delete"])
@@ -752,9 +788,9 @@ def test_apply_converted_lines_resolves_compound_note_double_assignment(
     # 「アロ」が複合音符(index1)を保持し、末尾モーラ「ロ」を歌う
     assert words["アロ"].note_ids == [0, 1]
     assert words["アロ"].note_kana == ["ア", "ロ"]
-    # 「ガト」は複合音符を失い、後続音符だけを持つ(モーラ数が1減る)
+    # 「ガト」は後続音符だけを持つが、読みは同じ音符内に全モーラを保持する。
     assert words["ガト"].note_ids == [2]
-    assert words["ガト"].note_kana == ["ト"]
+    assert words["ガト"].note_kana == ["ガト"]
 
 
 def test_apply_converted_lines_tiebreak_favors_earlier_word(tmp_path: Path):
