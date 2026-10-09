@@ -682,11 +682,11 @@ def test_edited_preview_label_is_private_and_reaches_renderer(client, tmp_path, 
         return original(path, song, wordlist_text, **kwargs)
 
     monkeypatch.setattr(thumb_mod, "render_thumbnail", capture)
-    first = get_preview(client, wordlist_label="好きな駅")
-    second = get_preview(client, wordlist_label="旅先の駅")
+    first = get_preview(client, wordlist_label="Stations A")
+    second = get_preview(client, wordlist_label="Stations B")
     assert first.status_code == second.status_code == 200
     assert first.headers["x-preview-cache"] == second.headers["x-preview-cache"] == "private"
     assert first.content != second.content
-    assert seen == ["好きな駅", "旅先の駅"]
+    assert seen == ["Stations A", "Stations B"]
     assert not list(preview_mod.preview_cache_dir(tmp_path / "jobs").glob("*.png"))
     assert get_preview(client, wordlist_label="あ" * 101).status_code == 400
