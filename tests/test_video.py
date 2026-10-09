@@ -676,20 +676,20 @@ def test_image_cues_fallback_for_missing_image(tmp_path: Path):
     assert len(cues2) == 1 and cues2[0].frame.exists()
 
 
-def test_app_credit_text_appends_synth_credit():
+def test_app_credit_text_keeps_synth_credit_for_final_page_only():
     from soramimic_video.layout import APP_CREDIT
     from soramimic_video.video import app_credit_text
 
     assert app_credit_text() == APP_CREDIT
     assert app_credit_text("  ") == APP_CREDIT
-    assert app_credit_text("VOICEVOX:四国めたん") == f"{APP_CREDIT} / VOICEVOX:四国めたん"
+    assert app_credit_text("VOICEVOX:四国めたん") == APP_CREDIT
     assert app_credit_text(
         "VOICEVOX:四国めたん",
         "作詞・作曲: 作者",
         "権利者指定表記",
         original_song="権利曲",
     ) == (
-        f"{APP_CREDIT} / VOICEVOX:四国めたん / "
+        f"{APP_CREDIT} / "
         "Original: 権利曲 — 権利者指定表記"
     )
     # 著作者等の詳細はエンドロールへ出し、常時表示を長文化させない。
@@ -1532,8 +1532,8 @@ def test_parallel_video_totals_reserve_midi_end_credit_page_without_words(
     monkeypatch.setattr(video_mod, "_audio_duration_sec", lambda path: sung_end)
     monkeypatch.setattr(video_mod, "used_words", lambda project: [])
 
-    assert video_mod.planned_video_total_sec(project) == sung_end
-    assert video_mod.actual_video_total_sec(project, audio) == sung_end
+    assert video_mod.planned_video_total_sec(project) == sung_end + 6.0
+    assert video_mod.actual_video_total_sec(project, audio) == sung_end + 6.0
     assert video_mod.planned_video_total_sec(project, "MIDI：制作者") == sung_end + 6.0
     assert video_mod.actual_video_total_sec(project, audio, "MIDI：制作者") == sung_end + 6.0
 
@@ -2114,8 +2114,9 @@ def test_midi_credit_is_available_only_to_final_credit_section(tmp_path: Path):
     assert midi_credit not in app_credit_text(original_song="曲")
 
 
-def test_midi_end_credit_gets_final_page_even_without_used_words(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("midi_credit", ["", "MIDI：制作者"])
+def test_end_credit_gets_final_page_even_without_used_words(
+    tmp_path: Path, monkeypatch, midi_credit: str
 ):
     from soramimic_video import video as video_mod
     from soramimic_video.layout import load_layout
@@ -2130,7 +2131,7 @@ def test_midi_end_credit_gets_final_page_even_without_used_words(
         tmp_path / "v",
         320,
         180,
-        midi_end_credit="MIDI：制作者",
+        midi_end_credit=midi_credit,
     )
     assert len(got) == 1
     assert got[0].start == 10.0 and got[0].end == 20.0
@@ -2170,18 +2171,24 @@ def test_build_section_cues_without_credits_extends_last_page(tmp_path: Path):
     assert all(a.end == b.start for a, b in zip(got, got[1:], strict=False))
 
 
-def test_credits_page_omits_empty_synth_credit(tmp_path: Path):
+@pytest.mark.parametrize("synth_credit", [
+    "VOICEVOX:四国めたん",
+    "PrettyPitch / 波音リツ（カノン）",
+    "VOICEVOX・PrettyPitch：波音リツ（カノン）",
+])
+def test_credits_page_omits_empty_synth_credit(tmp_path: Path, synth_credit: str):
     from soramimic_video.layout import _element_texts, load_layout
-    from soramimic_video.video import section_frame_data
+    from soramimic_video.video import app_credit_text, section_frame_data
 
     elements, _raw, tag = load_layout("default").section_elements("credits")
     assert tag == "credits"
     project = _project(tmp_path)
     shown = _element_texts(
         elements,
-        section_frame_data(project, section="credits", synth_credit="VOICEVOX:四国めたん"),
+        section_frame_data(project, section="credits", synth_credit=synth_credit),
     )
-    assert any("VOICEVOX:四国めたん" in t for t in shown)
+    assert any(synth_credit in t for t in shown)
+    assert synth_credit not in app_credit_text(synth_credit)
     # 表記が要らない合成では「歌声合成」の行ごと出さない(require)
     hidden = _element_texts(elements, section_frame_data(project, section="credits"))
     assert not any("Vocal Synthesis" in t for t in hidden)
@@ -2405,7 +2412,7 @@ def test_fanmade_credit_is_limited_to_vtuber(tmp_path, wordlist):
     project.parody.wordlist = wordlist
     credit = app_credit_text("VOICEVOX:四国めたん", original_song="曲", wordlist=wordlist)
     assert ("非公式・ファンメイド" in credit) == (wordlist == "vtuber")
-    assert "VOICEVOX:四国めたん" in credit and "Original: 曲" in credit
+    assert "VOICEVOX:四国めたん" not in credit and "Original: 曲" in credit
     assert ("非公式・ファンメイド" in idle_frame_data(project)["app_credit"]) == (
         wordlist == "vtuber"
     )

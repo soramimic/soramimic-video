@@ -242,7 +242,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
-          "lyrics & video by Soramimic / VOICEVOX:波音リツ / Original: 夜に駆ける — © 権利者");
+          "lyrics & video by Soramimic / Original: 夜に駆ける — © 権利者");
         assert.equal($("song-preview-credits-original").textContent,
           "夜に駆ける — © 権利者");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
@@ -253,8 +253,10 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-credits-synth").textContent,
           "Vocal Synthesis　VOICEVOX・PrettyPitch：波音リツ（カノン）");
         assert.equal($("song-preview-credits-synth").hidden, false);
-        assert.match($("song-preview-footer").textContent,
-          /VOICEVOX・PrettyPitch：波音リツ（カノン）/);
+        assert.doesNotMatch($("song-preview-footer").textContent,
+          /VOICEVOX|PrettyPitch|波音リツ/);
+        assert.doesNotMatch($("song-preview-thumb-credit").textContent,
+          /VOICEVOX|PrettyPitch|波音リツ/);
 
         // 最後のクレジットは指定表記が無ければ著作者を使う。
         $("credit-notice").value = "";
