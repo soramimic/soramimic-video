@@ -293,9 +293,13 @@ def _one_syllable_per_segment(morae: list[str], segment_count: int) -> list[str]
 def _syllables_by_pitch_segment(
     morae: list[str], segment_count: int
 ) -> list[list[str]]:
-    """最大1音節を各旋律音符へ順序どおり、全区間に広げて配置する。"""
+    """全音節を各旋律音符へ順序どおり、全区間に広げて配置する。"""
     assigned: list[list[str]] = [[] for _ in range(segment_count)]
     groups = _syllable_groups(morae)
+    if len(groups) > segment_count:
+        for index, group in enumerate(groups):
+            assigned[index * segment_count // len(groups)].extend(group)
+        return assigned
     positions = _evenly_spaced_indices(list(range(segment_count)), len(groups))
     for position, group in zip(positions, groups, strict=True):
         assigned[position] = group
@@ -514,6 +518,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
 
     lyric_map = build_lyric_map(project)
     preserve_units = project.lyric_layers is not None
+    preserve_reading = preserve_units or project.parody is not None
     notes = sorted(project.notes, key=lambda n: n.start_sec if preserve_units else n.start_tick)
     layered_frames = _layered_note_frames(notes, lyric_map) if preserve_units else {}
     continuations = {} if preserve_units else melody_continuations(project)
@@ -533,7 +538,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
         if sf < cursor:  # 重なり: 前音に食い込む分を切り詰め
             sf = cursor
         if ef <= sf:  # 長さが無い(丸めで消えた)音符は捨てる
-            if preserve_units:
+            if preserve_reading:
                 raise ValueError(
                     f"合成フレームを確保できません(音符{n.id})。歌詞は保持されています"
                 )
@@ -579,7 +584,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
                 pitch_segments.append((continuation_sf, continuation_ef, raw.note))
 
         has_pitch_continuations = len(pitch_segments) > 1
-        if has_pitch_continuations:
+        if has_pitch_continuations and not preserve_reading:
             one_per_segment = _one_syllable_per_segment(morae, len(pitch_segments))
             if one_per_segment != morae:
                 logger.debug(
@@ -615,12 +620,12 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             # 歌詞イベントのない継続旋律音符は、独立した発音容量として使える。
             # 次の歌詞付き音符が近くても first に落とさない。
             note_mode = "back"
-        if preserve_units and note_mode == "first":
-            # Layered plans may omit only explicitly classified source omissions,
-            # already absent from the plan. A short following gap is not evidence.
+        if preserve_reading and note_mode == "first":
+            # Keep both layered source units and selected parody word readings.
+            # A short following gap must not remove restored word moras.
             note_mode = "back"
         total = active_total
-        articulated = articulation_moras(morae, total) if not preserve_units else morae
+        articulated = articulation_moras(morae, total) if not preserve_reading else morae
         if articulated != morae:
             logger.debug(
                 "音符%d: %dフレームに%dモーラは過密なため発音核を%dモーラに削減 (%s -> %s)",
@@ -658,7 +663,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
             if not assigned:
                 assigned = [continued_vowel]
             bounds = mora_frame_bounds(segment_total, len(assigned), note_mode)
-            if preserve_units:
+            if preserve_reading:
                 minimums = [MIN_ELEMENT_FRAMES] * len(assigned)
                 if not out_notes:
                     minimums[0] += HEAD_REST_FRAMES
@@ -676,7 +681,7 @@ def build_score(project: Project, transpose: int = 0) -> dict[str, Any]:
 
     if not out_notes:
         raise ValueError("音符がありません")
-    if (preserve_units and out_notes[0]["key"] is not None
+    if (preserve_reading and out_notes[0]["key"] is not None
             and out_notes[0]["frame_length"] < HEAD_REST_FRAMES + MIN_ELEMENT_FRAMES):
         raise ValueError("先頭休符と発音のフレームが不足しています。歌詞は保持されています")
     return {"notes": _ensure_head_rest(out_notes)}
