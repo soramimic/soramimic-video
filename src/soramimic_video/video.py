@@ -1113,20 +1113,6 @@ def layout_column_mismatch(layout: Layout, row_keys: set[str]) -> list[str]:
     return sorted(columns)
 
 
-def _word_frame_spans(project: Project, word: ParodyWord) -> list[tuple[float, float]]:
-    """単語の途中にある長い休符も、単語間と同じ表示の余韻で区切る。"""
-    notes = sorted((project.notes[i] for i in word.note_ids), key=lambda n: n.start_sec)
-    start, end = notes[0].start_sec, notes[0].end_sec
-    spans = []
-    for note in notes[1:]:
-        if note.start_sec - end > HOLD_MAX_SEC:
-            spans.append((start, end))
-            start = note.start_sec
-        end = max(end, note.end_sec)
-    spans.append((start, end))
-    return spans
-
-
 def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
     """このレイアウトで表示できる替え歌単語を、歌唱順に並べたフレーム候補列。
 
@@ -1164,12 +1150,8 @@ def collect_word_frames(project: Project, layout: Layout) -> list[WordFrame]:
             )
             if not word_is_shown(layout, data, use_fallback):
                 continue  # このレイアウトでは表示できるものがない単語
-            # 一語の最初と最後の音符だけで囲むと、途中の間奏まで歌唱中になる。
-            # hold=next の明示指定以外では休符の前後に同じカードを分けて置く。
-            spans = ([project.word_time_range(w)] if layout.hold_next
-                     else _word_frame_spans(project, w))
-            for start, end in spans:
-                frames.append(WordFrame(pline.line_id, start, end, data, use_fallback))
+            start, end = project.word_time_range(w)
+            frames.append(WordFrame(pline.line_id, start, end, data, use_fallback))
     frames.sort(key=lambda f: f.start)
     missing = layout_column_mismatch(layout, row_keys)
     if missing:
