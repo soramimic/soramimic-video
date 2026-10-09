@@ -15,6 +15,7 @@ from pathlib import Path
 from .audio_project import MoraNote, build_project
 from .kana import split_moras
 from .melody_align import MelodyNote, load_midi_notes, monophony_ratio, skyline
+from .parenthetical_ruby import normalize_parenthetical_ruby
 from .project import Project
 from .reading import text_to_kana
 from .ruby import strip_ruby
@@ -90,7 +91,8 @@ def build_from_melody_midi(
     # その読み(カナ)を1音符1モーラでフレーズの音符に配る(足りなければ循環)。
     # ベース歌詞は青空文庫ルビ記法(｜表層《よみ》)で読みを指定できる。読みの生成には
     # 記法つきの行を、字幕・表示には素テキストを使う。
-    lyric_lines = [ln for ln in (lyrics or "").splitlines() if ln.strip()]
+    lyric_lines = [normalize_parenthetical_ruby(ln)
+                   for ln in (lyrics or "").splitlines() if ln.strip()]
 
     mora_notes: list[MoraNote] = []
     line_texts: list[str] = []

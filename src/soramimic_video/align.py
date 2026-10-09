@@ -22,6 +22,7 @@ from difflib import SequenceMatcher
 import jaconv
 
 from .kana import normalize_long_vowels
+from .parenthetical_ruby import normalize_parenthetical_ruby
 from .project import Line, Project
 from .ruby import strip_ruby
 
@@ -88,6 +89,7 @@ def align_texts(xf_lines: list[str], lyric_lines: list[str]) -> list[int | None]
     if n == 0 or m == 0:
         return [None] * n
 
+    lyric_lines = [normalize_parenthetical_ruby(line) for line in lyric_lines]
     xf_norm = [_normalize(t) for t in xf_lines]
     lyr_norm = [_normalize(strip_ruby(t)) for t in lyric_lines]
     # 元歌詞行の読み(発音形)との比較も取り、表記比較と高い方を採用する
@@ -158,7 +160,7 @@ def align_lines(project: Project, lyric_lines: list[str]) -> None:
     元歌詞にルビ記法が含まれていても、original_text には素テキストだけを入れる
     (字幕・フレーズ切り出しに ``｜``/``《》`` が漏れない)。読みは注釈を尊重する。
     """
-    lyrics = [ln.strip() for ln in lyric_lines]
+    lyrics = [normalize_parenthetical_ruby(ln.strip()) for ln in lyric_lines]
     lyrics = [ln for ln in lyrics if ln]
     xf_texts = [ln.xf_surface or ln.xf_kana for ln in project.lines]
     assignments = align_texts(xf_texts, lyrics)
