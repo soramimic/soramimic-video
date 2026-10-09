@@ -112,28 +112,18 @@ journaldへ出力しません。
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420秒 | MIDI/音声共通の曲長上限 |
 | `SORAMIMIC_JOB_TTL_HOURS` | 0（自動削除なし） | 完了後に動画・サムネイル・出典情報を自動削除するまでの時間（入力・中間物は処理終了時に削除） |
 | `SORAMIMIC_REQUIRE_PUBLIC` | 0 | `1`なら`SORAMIMIC_PUBLIC=1`が無い状態での起動を拒否（公開サービスの設定漏れ防止） |
-| `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | ローカルSheetSage2モデル（設定時に主ノートとして使用） |
+| `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | 音源解析に必要なローカルSheetSage2モデル |
 | `SORAMIMIC_SHEETSAGE_BASE_DIR` | 未設定 | ローカルMERT-v2-FullSong親モデル |
 
 SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
-ローカルディレクトリだけをofflineで読みます。音源解析の推定音高候補は
-SheetSage2だけから取得します。前後をSheetSage2ノートに挟まれたラップ・台詞調の内部空白は、
-歌詞を無音化しないためCTCのモーラ時刻を保持し、近い側のノート音高を合成専用の
-`spoken` 値として使います。この値は推定音高とは扱わず、解析結果に由来を記録します。
-
-音源解析は `wav-to-xf` パッケージを使用します。利用可能なローカル
-チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
-全SheetSageノート候補と各モーラのかなCTC中心を
-境界なし設定のStage 3へ渡し、モーラ→ノート対応を決定します。母音・子音境界は入力せず、
-CTC中心を含む後続ノートがある場合、その
-モーラを直前ノートのスタックやmelismaへ隠しません。SheetSage2を必須とし、
-未設定時に別方式へ黙ってフォールバックしません。
-未知歌詞では、隣接するWhisper行の境界を近傍のSheetSage2ノート間休符へ補正してから、
-行外から始まるノートへ小さな所有コストを加えます。ノート内のCTC位置やXF正解データは
-この境界補正に使用しません。
+ローカルディレクトリだけをofflineで読みます。音源解析は
+[Soramimic Score](https://github.com/jiroshimaya/soramimic-score) が歌詞認識・読み・時刻・音高の
+対応を一括して行います。`uv sync`で検証済みの版が一緒にインストールされます。
+音高が未解決の歌唱単位は推測で補わず、合成から省略して解析結果に記録します。
+SheetSage2が未設定の場合、別方式へ黙ってフォールバックしません。
 
 ```sh
-uv run --no-sync soramimic-video analyze-audio --audio song.wav --project work/song
+uv run soramimic-video analyze-audio --audio song.wav --project work/song
 uv run soramimic-video apply-lyric-layers --project work/song --layers work/realization.json
 uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
 ```
