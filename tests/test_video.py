@@ -981,7 +981,7 @@ def test_subtitles_resume_with_images_after_interlude_in_one_input_line(
     assert asdict(project) == before
 
 
-def test_word_card_and_subtitles_pause_inside_one_word(tmp_path: Path):
+def test_word_card_and_subtitles_stay_visible_inside_one_word(tmp_path: Path):
     from dataclasses import asdict
 
     from soramimic_video.layout import parse_layout
@@ -1003,23 +1003,18 @@ def test_word_card_and_subtitles_pause_inside_one_word(tmp_path: Path):
           for source in ["original", "parody"]],
     ]})
     cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=layout)
-    assert len(cues) == 2
-    assert cues[0].frame == cues[1].frame
-    assert cues[0].end == pytest.approx(.75 + 3 - DEFAULT_IMAGE_LEAD_SEC)
-    assert cues[1].start == pytest.approx(12.5 - DEFAULT_IMAGE_LEAD_SEC)
+    assert len(cues) == 1
+    assert cues[0].start == pytest.approx(.5 - DEFAULT_IMAGE_LEAD_SEC)
+    assert cues[0].end >= project.notes[1].end_sec
     sections = build_section_cues(project, cues, 14, layout, tmp_path, 320, 180)
-    assert len(sections) == 1
-    gap = sections[0]
-    assert (gap.start, gap.end) == (cues[0].end, cues[1].start)
+    assert not sections
     ass = build_ass(project, 1280, 720, "Font", layout,
-                    clear_ranges=[(gap.start, gap.end)])
+                    clear_ranges=[(section.start, section.end) for section in sections])
     for style in ["Original", "Parody"]:
         spans = _dialogue_spans(ass, style)
-        assert all(end <= gap.start + .01 or start >= gap.end - .01 for start, end in spans)
-        assert any(start >= gap.end - .01 and end >= project.notes[1].end_sec
+        assert any(start <= project.notes[0].start_sec and end >= project.notes[1].end_sec
                    for start, end in spans)
-    # 語を削ったり読みを変えたりせず、同じ字幕を休符の前後に表示する。
-    assert sum("青空" in line for line in ass.splitlines() if line.startswith("Dialogue:")) == 2
+    assert sum("青空" in line for line in ass.splitlines() if line.startswith("Dialogue:")) == 1
     assert asdict(project) == before
 
 
