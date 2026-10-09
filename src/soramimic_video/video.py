@@ -68,7 +68,7 @@ from .layout import (
 )
 from .mix import MIX_DIR
 from .project import ParodyWord, Project
-from .subtitle_pages import paginate_subtitle
+from .subtitle_pages import SubtitlePage, SubtitleTrack, paginate_subtitle_tracks
 from .synthesize import NEUTRINO_DIR
 from .thumbnail import generate_thumbnail
 from .xfparse import tick_to_sec
@@ -1787,7 +1787,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     show_ends = line_show_ends(project, layout or load_layout(None))
     spans = []
     for line in shown:
-        start, end = project.line_time_range(line)
+        _start, end = project.line_time_range(line)
+        # Canonical bounds can include an unvoiced search window before the line.
+        # It must not replace the preceding caption before singing actually starts.
+        start = min(project.notes[n].start_sec for n in line.note_ids)
         stop = max(end + SUB_PAD_SEC, show_ends.get(line.id, end))
         spans.append([start - SUB_PAD_SEC, stop])
     for j in range(len(spans) - 1):
@@ -1816,8 +1819,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # spans は上の重なり調整で可変listにしていたので、区間は (start, end) に固める
     span_pairs = [(s[0], s[1]) for s in spans]
 
-    events = []
-    for el, name in zip(subs, names, strict=True):
+    track_groups: dict[tuple, list[tuple[int, SubtitleTrack]]] = {}
+    for index, el in enumerate(subs):
         gran = resolve_granularity(el.source, getattr(el, "granularity", None), granularity)
         full_texts = parody_full if el.source == "parody" else original_full
         segments = build_subtitle_segments(
@@ -1830,6 +1833,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             sep=WORD_SEP,
             original_groups=original_groups,
         )
+        base_size = int(el.size * height)
+
+        def measure(text: str, size: int = base_size) -> float:
+            return _ass_text_width(font_path, size, _ass_escape(text))
+
+        for seg in segments:
+            if not seg.text:
+                continue
+            words = [word for k in seg.indices if (pline := plines[k]) is not None
+                     for word in pline.words] if el.source == "parody" else []
+            track = SubtitleTrack(seg, el.source, words, measure, max(1.0, el.box[2] * width - 8))
+            # Explicitly different grouping choices remain independent. Matching
+            # original/parody groups share every width-driven page boundary.
+            key = (gran, tuple(seg.indices), seg.start, seg.end)
+            track_groups.setdefault(key, []).append((index, track))
+    pages_by_element: list[list[SubtitlePage]] = [[] for _ in subs]
+    for entries in track_groups.values():
+        grouped_pages = paginate_subtitle_tracks(
+            project, [track for _, track in entries], shown,
+            sep=WORD_SEP, lead_sec=SUB_PAD_SEC, clear_ranges=clear_ranges or (),
+        )
+        for (index, _), track_pages in zip(entries, grouped_pages, strict=True):
+            pages_by_element[index].extend(track_pages)
+
+    events = []
+    for el, name, pages in zip(subs, names, pages_by_element, strict=True):
         # \posで固定配置(boxのalign/valign側の辺が基準点)。
         # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
         # 元歌詞が衝突回避で入れ替わらない(衝突判定は同一レイヤー内のみ)
@@ -1841,45 +1870,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         max_width = max(1.0, w * width - 8)  # 輪郭線と影もbox内へ収める
         base_size = int(el.size * height)
 
-        def measure(text: str, size: int = base_size) -> float:
-            return _ass_text_width(font_path, size, _ass_escape(text))
-
-        for seg in segments:
-            if not seg.text:
-                continue
-            words = []
-            if el.source == "parody":
-                for k in seg.indices:
-                    pl = plines[k]
-                    if pl is not None:
-                        words.extend(pl.words)
-            pages = paginate_subtitle(
-                project, seg, el.source, shown, words, measure, max_width,
-                sep=WORD_SEP, lead_sec=SUB_PAD_SEC,
-                # 元歌詞の行結合後に分ける。同じ行の後半を切り捨てたり、結合で
-                # 間奏へ字幕を戻したりせず、音符に対応した本文とルビを残す。
-                clear_ranges=clear_ranges or (),
-            )
-            for page in pages:
-                # ルビと本文は同じ単語・表示区間で改ページする。
-                if el.source == "parody" and el.ruby and page.words:
-                    events.extend(
-                        _ruby_events(
-                            el, name, layer, page.start, page.end, page.words, px, py, an,
-                            height, font_path, max_width,
-                        )
+        for page in sorted(pages, key=lambda page: page.start):
+            # ルビと本文は同じ単語・表示区間で改ページする。
+            if el.source == "parody" and el.ruby and page.words:
+                events.extend(
+                    _ruby_events(
+                        el, name, layer, page.start, page.end, page.words, px, py, an,
+                        height, font_path, max_width,
                     )
-                    continue
-                # 1語だけで幅を超える場合や、分割できる歌唱時刻がない場合の最終手段。
-                size = base_size
-                text = _ass_escape(page.text)
-                while size > 1 and _ass_text_width(font_path, size, text) > max_width:
-                    size -= 1
-                size_override = f"\\fs{size}" if size != base_size else ""
-                events.append(
-                    f"Dialogue: {layer},{_ass_time(page.start)},{_ass_time(page.end)},{name},,0,0,0,,"
-                    f"{{\\an{an}\\pos({px:.0f},{py:.0f}){size_override}}}{text}"
                 )
+                continue
+            # 1語だけで幅を超える場合や、分割できる歌唱時刻がない場合の最終手段。
+            size = base_size
+            text = _ass_escape(page.text)
+            while size > 1 and _ass_text_width(font_path, size, text) > max_width:
+                size -= 1
+            size_override = f"\\fs{size}" if size != base_size else ""
+            events.append(
+                f"Dialogue: {layer},{_ass_time(page.start)},{_ass_time(page.end)},{name},,0,0,0,,"
+                f"{{\\an{an}\\pos({px:.0f},{py:.0f}){size_override}}}{text}"
+            )
     return header + "\n".join(events) + "\n"
 
 
