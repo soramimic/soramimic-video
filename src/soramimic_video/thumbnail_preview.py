@@ -147,6 +147,7 @@ class PreviewSpec:
         with_images: bool = True,
         title_kana: str = "",
         allow_noncommercial_fanwork: bool = False,
+        wordlist_label: str = "",
     ) -> PreviewSpec:
         """where・変換パラメータの既定をジョブ本体と同じ経路で解決して組み立てる。
 
@@ -158,7 +159,7 @@ class PreviewSpec:
             title=title,
             wordlist=wordlist,
             csv_path=csv_path,
-            wordlist_text=wordlist_text_of(wordlist),
+            wordlist_text=wordlist_label.strip() or wordlist_text_of(wordlist),
             where=eff_where,
             params=coerced,
             width=width,
@@ -246,6 +247,7 @@ class PreviewSpec:
             missing_images=missing,
             image_wait_sec=wait_sec if image_cache is not None else 0.0,
             song_kana=self.title_kana,
+            wordlist_label=self.wordlist_text,
             allow_noncommercial_fanwork=self.allow_noncommercial_fanwork,
         )
         if out is None:

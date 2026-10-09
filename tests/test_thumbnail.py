@@ -724,3 +724,23 @@ def test_title_budget_preserves_safe_readings():
     assert thumb_mod._title_conversion_within_budget("カ" * 30, {})
     assert not thumb_mod._title_conversion_within_budget("アン" * 20, {})
     assert not thumb_mod._title_conversion_within_budget("カ" * 200, {})
+
+
+@pytest.mark.parametrize("label", ["好きな駅", ""])
+def test_generate_thumbnail_edits_caption_without_changing_conversion(tmp_path, monkeypatch, label):
+    csv_path = _wordlist_csv(tmp_path)
+    project = _project(csv_path)
+    seen = []
+    convert = _fake_convert("米原")
+
+    def capture_convert(phrases, wordlist_csv, *args, **kwargs):
+        seen.append(wordlist_csv)
+        return convert(phrases, wordlist_csv, *args, **kwargs)
+
+    monkeypatch.setattr(thumb_mod, "run_convert", capture_convert)
+    calls = _capture_render(monkeypatch)
+    generate_thumbnail(project, tmp_path, title="曲", wordlist_label=label)
+    assert seen == [csv_path]
+    expected = label or thumb_mod.wordlist_text_of(str(csv_path))
+    assert calls == [f"曲|{expected}|米原|"]
+    assert project.parody.wordlist == str(csv_path)

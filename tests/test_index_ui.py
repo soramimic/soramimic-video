@@ -156,7 +156,7 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
     assert '<section class="opt-group" hidden>\n    <h3 class="opt-group-title">① 歌声' in advanced
     assert '<section class="opt-group" hidden>\n    <!-- 中身がレイアウトだけ' in advanced
     assert '<h3 class="opt-group-title">曲情報・クレジット</h3>' in advanced
-    for field in ("song-title", "original-credit", "credit-notice"):
+    for field in ("song-title", "song-credit", "thumbnail-wordlist-label"):
         assert f'id="{field}"' in advanced
 
     script = _script()
@@ -222,6 +222,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         const ownSongFile = () => ({ name: "upload.mid" });
         let midiSampleId = "";
         const sampleTitleOf = () => "サンプル曲";
+        const sampleCredits = {};
         const activeCustomList = () => null;
         const selectedWordlistGroup = () => ({ text: "駅名" });
         const showsEditorWordlist = () => false;
@@ -236,8 +237,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         ];
         $("builder-image").setAttribute("src", "blob:thumbnail");
         $("song-title").value = "夜に駆ける";
-        $("original-credit").value = "作詞・作曲: 作者";
-        $("credit-notice").value = "© 権利者";
+        $("song-credit").value = "オトノケ - Creepy Nuts";
         """
     ) + functions + textwrap.dedent(
         """
@@ -245,9 +245,9 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
-          "lyrics & video by Soramimic / Original: 夜に駆ける — © 権利者");
+          "lyrics & video by Soramimic / オトノケ - Creepy Nuts");
         assert.equal($("song-preview-credits-original").textContent,
-          "夜に駆ける（© 権利者）");
+          "オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
 
@@ -275,11 +275,15 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-credits-synth").textContent, "");
         assert.equal($("song-preview-credits-synth").hidden, true);
 
-        // 最後のクレジットは指定表記が無ければ著作者を使う。
-        $("credit-notice").value = "";
+        $("thumbnail-wordlist-label").value = "好きな駅";
         updateSongTextPreviews();
-        assert.equal($("song-preview-credits-original").textContent,
-          "夜に駆ける（作詞・作曲: 作者）");
+        assert.equal($("song-preview-thumb-caption").textContent,
+          "夜に駆ける を 好きな駅 で歌ってみた");
+        assert.equal(wordlist, "stations");
+        $("song-credit").value = "";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-original").textContent, "");
+        assert.equal($("song-preview-footer").textContent, "lyrics & video by Soramimic");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
@@ -832,7 +836,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         """
         $("midi").files = [{ name: "my-song.mid" }];
         $("editor").files = [{ name: "parody.json" }];
-        for (const id of ["lyrics", "original-credit", "credit-notice"]) {
+        for (const id of ["lyrics", "song-credit"]) {
           $(id).value = "old song data";
         }
         syncBuilderValues();
@@ -842,12 +846,12 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         switchSongInputMode("sample");
         assert.deepEqual($("midi").files, [], "a hidden MIDI must not remain active");
         assert.deepEqual($("editor").files, []);
-        for (const id of ["lyrics", "original-credit", "credit-notice"]) {
+        for (const id of ["lyrics", "song-credit"]) {
           assert.equal($(id).value, "");
         }
         assert.equal($("song-upload-panel").hidden, true);
         assert.equal($("sample-picker").hidden, false);
-        for (const id of ["song-title", "original-credit", "credit-notice"]) {
+        for (const id of ["song-title", "song-credit"]) {
           assert.equal($(id).disabled, true, "sample metadata must be read-only");
         }
         assert.equal($("song-upload-selection").hidden, true);
@@ -865,7 +869,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         assert.equal($("audio-sample-credit").hidden, true);
         assert.equal($("song-upload-panel").hidden, false);
         assert.equal($("sample-picker").hidden, true);
-        for (const id of ["song-title", "original-credit", "credit-notice"]) {
+        for (const id of ["song-title", "song-credit"]) {
           assert.equal($(id).disabled, false, "own-song metadata must be editable");
         }
         assert.equal(focused, "song-upload-button");
@@ -910,7 +914,7 @@ def test_sample_body_finishing_after_source_switch_cannot_replace_current_song()
           assert.equal(sampleLyricsId, "");
           assert.equal(sampleLyricsBaseline, null);
           assert.equal($("sample-status").textContent, "");
-          assert.equal($("original-credit").value, "");
+          assert.equal($("song-credit").value, "");
           assert.equal(saves, savedBefore);
           assert.equal(builderMessage, "", "a canceled request must not show a fetch error");
         })().catch((error) => { console.error(error); process.exit(1); });
@@ -2864,3 +2868,21 @@ def test_image_credit_cards():
         ["node", "tests/image-credits.mjs"], cwd=INDEX.parents[3],
         check=True, text=True, capture_output=True,
     )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_legacy_song_credit_keeps_both_saved_fields():
+    function = _function_body(_script(), "function legacySongCredit(state)") + "\n}"
+    node = function + textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        assert.equal(legacySongCredit({
+          songTitle: "曲", originalCredit: "作者", creditNotice: "© 指定表記",
+        }), "曲\\n作者\\n© 指定表記");
+        assert.equal(legacySongCredit({
+          songTitle: "曲", originalCredit: "同じ表記", creditNotice: "同じ表記",
+        }), "曲\\n同じ表記");
+        assert.equal(legacySongCredit({}), "");
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

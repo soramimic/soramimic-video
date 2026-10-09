@@ -1361,6 +1361,10 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         "synth_credit": synth_credit_of(job.params, config),
         "fps": config.get("video_fps", 30),
         "image_lead_sec": config.get("video_image_lead_sec", 0.1),
+        "song_credit": (
+            None if _sample_entry_of(job.params) is not None else job.params.get("song_credit")
+        ),
+        "thumbnail_wordlist_label": job.params.get("thumbnail_wordlist_label", ""),
         "original_credit": original_credit_of(job.params),
         "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
@@ -3427,6 +3431,7 @@ def create_app(
         convert_params: str = "",
         images: bool = True,
         noncommercial_fanwork: bool = False,
+        wordlist_label: str = "",
     ) -> Response:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
@@ -3455,6 +3460,8 @@ def create_app(
         from .convert import parse_convert_params
         from .thumbnail_preview import PreviewSpec, render_slot
 
+        if len(wordlist_label) > 100:
+            raise HTTPException(status_code=400, detail="単語リスト名は100文字以内です")
         catalog_sample = bool(sample.strip())
         if catalog_sample:
             title, title_kana = _sample_title(sample.strip())
@@ -3481,16 +3488,17 @@ def create_app(
                 where=where.strip() or None,
                 params=parse_convert_params(convert_params),
                 with_images=images,
+                wordlist_label=wordlist_label,
                 title_kana=title_kana,
                 allow_noncommercial_fanwork=noncommercial_fanwork,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        # A user-supplied title is private input.  Render it in PrivateTmp and
+        # User-supplied titles and display names are private. Render in PrivateTmp and
         # return bytes so neither the title nor its derived PNG enters a shared
         # on-disk cache.  Catalog samples remain safe to cache across sessions.
-        if not catalog_sample:
+        if not catalog_sample or wordlist_label.strip():
             if not _allow_expensive_get(request, preview_session_limiter):
                 raise HTTPException(
                     status_code=429,
@@ -3758,6 +3766,8 @@ def create_app(
         # サムネ・表示用の曲名。WebUIはサンプル曲なら samples.json の title、
         # 自分のMIDIならファイル名(拡張子なし)を送る。未指定なら midi_filename を使う
         song_title: str = Form(""),
+        song_credit: str = Form("", max_length=2000),
+        thumbnail_wordlist_label: str = Form("", max_length=100),
         original_credit: str = Form(""),
         credit_notice: str = Form(""),
         allow_noncommercial_fanwork: bool = Form(False),
@@ -3898,6 +3908,7 @@ def create_app(
             model = "MERROW"
             layout = ""
             layout_json = ""
+            song_credit = ""
             original_credit = ""
             credit_notice = ""
             # 簡易UIでも明示チェックがある場合だけ許可する。
@@ -4064,6 +4075,10 @@ def create_app(
             "adjust_lyrics": adjust_lyrics,
             "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),
+            "song_credit": (
+                song_credit.strip() if "song_credit" in await request.form() else None
+            ),
+            "thumbnail_wordlist_label": thumbnail_wordlist_label.strip(),
             "original_credit": original_credit.strip(),
             "credit_notice": credit_notice.strip(),
             "allow_noncommercial_fanwork": allow_noncommercial_fanwork,

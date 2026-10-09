@@ -225,7 +225,6 @@
   .opt-group-lead { margin: .15rem 0 .7rem; }
   /* ---- 曲情報が実際に入る3か所の16:9プレビュー ---- */
   .song-text-previews { display: grid; gap: .8rem; margin-top: 1rem; }
-  #song-credit-section.is-readonly > .field { opacity: .55; }
   .song-text-preview { margin: 0; }
   .song-text-preview > figcaption {
     margin-bottom: .25rem; font-size: .8rem; font-weight: 700; color: var(--muted);
@@ -254,7 +253,7 @@
   .song-text-thumb-credit {
     position: absolute; right: 3%; bottom: 5%; width: 42%; margin: 0;
     overflow: hidden; color: #fff; font-size: min(.66rem, .75vw);
-    line-height: 1.1; text-align: right; white-space: nowrap; text-shadow: 0 1px 3px #000;
+    line-height: 1.1; text-align: right; white-space: pre-wrap; text-shadow: 0 1px 3px #000;
   }
   .song-text-footer-stage::after {
     background: linear-gradient(180deg, #0002 0 86%, #000 90% 100%);
@@ -262,7 +261,7 @@
   .song-text-footer {
     position: absolute; left: 1.2%; bottom: 1%; width: 70%; margin: 0;
     overflow: hidden; color: #ffffffb3; font-size: min(.58rem, 1.05vw);
-    line-height: 1.1; white-space: nowrap; text-align: left;
+    line-height: 1.1; white-space: pre-wrap; text-align: left;
   }
   .song-text-credits-stage { background: #000; container-type: inline-size; }
   .song-text-credits-stage::after { display: none; }
@@ -276,7 +275,7 @@
     line-height: 1.2;
   }
   .song-text-credits-heading { top: 8%; height: 7%; color: #a8a8a8; font-size: clamp(.55rem, 1.8vw, .9rem); }
-  .song-text-credits-original { top: 23%; height: 10%; font-size: clamp(.68rem, 2.25vw, 1.15rem); font-weight: 600; }
+  .song-text-credits-original { white-space: pre-wrap; top: 23%; height: 10%; font-size: clamp(.68rem, 2.25vw, 1.15rem); font-weight: 600; }
   .song-text-credits-app { top: 56%; height: 8%; font-size: clamp(.62rem, 2.15vw, 1.05rem); }
   .song-text-credits-synth { top: 65%; height: 7%; font-size: min(.9rem, 2.2cqw); }
   .song-text-credits-sites { top: 78%; height: 5%; color: #a8a8a8; font-size: clamp(.46rem, 1.5vw, .75rem); }
@@ -1195,21 +1194,20 @@
     <div class="field">
       <label for="song-title">曲名</label>
       <input type="text" id="song-title" maxlength="200" placeholder="例: ふるさと">
-      <p class="hint" data-info>サムネイル、フッター、最後のクレジットに表示します。サンプル曲は登録済みの曲名が使われます。</p>
+      <p class="hint" data-info>サムネイルに表示する曲名です。サンプル曲は登録済みの曲名が使われます。</p>
     </div>
 
     <div class="field">
-      <label for="original-credit">元曲の著作者</label>
-      <textarea id="original-credit" rows="2" maxlength="500"
-        placeholder="例: 作詞: ○○ / 作曲: △△"></textarea>
-      <p class="hint" data-info>作詞・作曲・編曲など。最後のクレジットに表示します。不明なら空欄のままにせず、公開前に権利情報を確認してください。</p>
+      <label for="song-credit">クレジット表記</label>
+      <textarea id="song-credit" rows="3" maxlength="2000"
+        placeholder="例: オトノケ - Creepy Nuts"></textarea>
+      <p class="hint" data-info>動画の左下と最後のクレジットに、入力した文章をそのまま表示します。著作者名や権利者から指定された表記もここに入力してください。</p>
     </div>
 
     <div class="field">
-      <label for="credit-notice">権利者から指定された表記</label>
-      <textarea id="credit-notice" rows="3" maxlength="1000"
-        placeholder="例: ©表記、ライセンス名、許諾番号など"></textarea>
-      <p class="hint" data-info>入力文を改変せず、フッターと最後のクレジットに表示します。</p>
+      <label for="thumbnail-wordlist-label">単語リスト名</label>
+      <input type="text" id="thumbnail-wordlist-label" maxlength="100" placeholder="選択した単語リスト名">
+      <p class="hint" data-info>サムネイルの「○○で歌ってみた」に表示する名前です。空欄なら選択した単語リスト名を使います。</p>
     </div>
 
     <div class="song-text-previews" aria-label="曲情報の表示プレビュー">
@@ -3205,8 +3203,8 @@ async function submitJob(previewSec, previewMode) {
   form.append("preview", String(previewSec));
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(audio || midi));
-  form.append("original_credit", $("original-credit").value.trim());
-  form.append("credit_notice", $("credit-notice").value.trim());
+  form.append("song_credit", $("song-credit").value.trim());
+  form.append("thumbnail_wordlist_label", $("thumbnail-wordlist-label").value.trim());
   form.append("allow_noncommercial_fanwork", "true");
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
@@ -3275,6 +3273,12 @@ function songTitleOf(file) {
   return $("song-title").value.trim() || base;
 }
 
+// 保存済みの著作者・指定表記は、両方とも新しい欄に引き継ぐ。
+function legacySongCredit(state) {
+  const details = [...new Set([state.originalCredit, state.creditNotice].filter(Boolean))];
+  return [state.songTitle, ...details].filter(Boolean).join("\n");
+}
+
 // 曲情報の文字が入る3か所を、実際と同じ16:9・固定位置で即時確認する。
 // 背景には現在のビルダー画像を借りるが、文字は入力値から組み直すため、
 // 持ち込み曲の曲名を変えたときもジョブ生成を待たずに反映される。
@@ -3282,18 +3286,23 @@ function updateSongTextPreviews() {
   const title = songTitleOf(ownSongFile()) || "曲名";
   const custom = activeCustomList();
   const group = selectedWordlistGroup();
-  const wordlistLabel = custom?.name || wordlistPhrases[currentWordlistName()] || group?.text
+  const defaultWordlistLabel = custom?.name || wordlistPhrases[currentWordlistName()] || group?.text
     || (showsEditorWordlist() ? "自作リスト" : "単語リスト");
-  const author = $("original-credit").value.trim();
-  const notice = $("credit-notice").value.trim();
+  $("thumbnail-wordlist-label").placeholder = defaultWordlistLabel;
+  const wordlistLabel = $("thumbnail-wordlist-label").value.trim() || defaultWordlistLabel;
+  const credit = $("song-credit").value.trim();
   const baseCredit = currentWordlistName().toLowerCase() === "vtuber"
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
-  const original = [title, notice].filter(Boolean).join(" — ");
-  const footer = [baseCredit,
-    original ? "Original: " + original : ""].filter(Boolean).join(" / ");
-  const finalAuthor = notice || author;
-  const finalCredit = finalAuthor ? `${title}（${finalAuthor}）` : title;
+  let footer = [baseCredit, credit].filter(Boolean).join(" / ");
+  let finalCredit = credit;
+  if (midiSampleId) {
+    const preset = sampleCredits[midiSampleId] || {};
+    const notice = preset.displayCredit || preset.creditNotice || "";
+    const author = notice || preset.originalCredit || "";
+    footer = `${baseCredit} / Original: ${[title, notice].filter(Boolean).join(" — ")}`;
+    finalCredit = author ? `${title}（${author}）` : title;
+  }
 
   $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
   $("song-preview-thumb-credit").textContent = footer;
@@ -3321,7 +3330,7 @@ function updateSongTextPreviews() {
   }
 }
 
-for (const id of ["song-title", "original-credit", "credit-notice"]) {
+for (const id of ["song-title", "song-credit", "thumbnail-wordlist-label"]) {
   $(id).addEventListener("input", updateSongTextPreviews);
   $(id).addEventListener("change", updateSongTextPreviews);
 }
@@ -3385,9 +3394,10 @@ async function loadSamples() {
       if (s.license_url) sampleLicenseUrls[s.id] = s.license_url;
       if (s.description) sampleDescriptions[s.id] = s.description;
       const credit = {};
+      if (s.original_display_credit) credit.displayCredit = s.original_display_credit;
       if (s.original_credit) credit.originalCredit = s.original_credit;
       if (s.credit_notice) credit.creditNotice = s.credit_notice;
-      if (credit.originalCredit || credit.creditNotice) sampleCredits[s.id] = credit;
+      if (credit.displayCredit || credit.originalCredit || credit.creditNotice) sampleCredits[s.id] = credit;
     });
     renderSampleOptions();
   } catch {
@@ -3766,9 +3776,7 @@ function showSongInputMode(mode) {
   $("song-upload-panel").hidden = mode !== "upload";
   $("sample-picker").hidden = mode !== "sample";
   const readonly = mode !== "upload";
-  $("song-credit-section").classList.toggle("is-readonly", readonly);
-  $("song-credit-section").setAttribute("aria-disabled", String(readonly));
-  for (const id of ["song-title", "original-credit", "credit-notice"]) {
+  for (const id of ["song-title", "song-credit"]) {
     $(id).disabled = readonly;
   }
   $("song-source-switch").textContent = mode === "upload"
@@ -3811,7 +3819,7 @@ function switchSongInputMode(mode) {
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioPresentation();
   clearEditorFile();
-  for (const id of ["lyrics", "song-title", "original-credit", "credit-notice"]) {
+  for (const id of ["lyrics", "song-title", "song-credit"]) {
     $(id).value = "";
     $(id).dispatchEvent(new Event("change", { bubbles: true }));
   }
@@ -4021,10 +4029,10 @@ async function applySample(opts = {}) {
     // 残らないよう消す。keepLyrics(復元)では触らない(復元値に任せる)
     if (!opts.keepLyrics) {
       const credit = sampleCredits[sid] || {};
-      $("original-credit").value = credit.originalCredit || "";
-      $("credit-notice").value = credit.creditNotice || "";
-      $("original-credit").dispatchEvent(new Event("change", { bubbles: true }));
-      $("credit-notice").dispatchEvent(new Event("change", { bubbles: true }));
+      $("song-credit").value = [title,
+        credit.displayCredit || credit.creditNotice || credit.originalCredit,
+      ].filter(Boolean).join(" — ");
+      $("song-credit").dispatchEvent(new Event("change", { bubbles: true }));
     }
     // 単語リスト: 曲を選ぶ操作でリストの選択は変えない。confが取れない構成
     // (リスト名を直接指定する)で未指定のときだけ、既定のリスト名を入れておく
@@ -5065,6 +5073,8 @@ function loadThumbnailPreview(combo) {
   const params = combo.sampleId === OWN_SONG_VALUE
     ? { title: songTitleOf(ownSongFile()), wordlist: combo.wordlistName }
     : { sample: combo.sampleId, wordlist: combo.wordlistName };
+  const displayLabel = $("thumbnail-wordlist-label").value.trim();
+  if (displayLabel) params.wordlist_label = displayLabel;
   params.noncommercial_fanwork = "true";
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = combo.customList ? "/api/thumbnail-preview"
@@ -5075,7 +5085,7 @@ function loadThumbnailPreview(combo) {
     options.headers = { ...options.headers, "Content-Type": "application/json" };
     options.body = JSON.stringify({
       ...(combo.sampleId === OWN_SONG_VALUE ? { title: params.title } : { sample: params.sample }),
-      wordlist_name: combo.customList.name,
+      wordlist_name: displayLabel || combo.customList.name,
       wordlist_text: combo.customList.text,
     });
   }
@@ -5206,7 +5216,8 @@ function schedulePreview(force) {
   const list = c.customList;
   const ownTitle = c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "";
   const combo = JSON.stringify([c.sampleId, ownTitle, c.wordlistName,
-    list?.id || "", list?.name || "", list?.text || ""]);
+    list?.id || "", list?.name || "", list?.text || "",
+    $("thumbnail-wordlist-label").value.trim()]);
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -5282,6 +5293,7 @@ $("wordlist").addEventListener("change", () => {
 });
 // 持ち込み曲は曲名そのものをサムネ変換に使う。入力を確定したら作り直す。
 $("song-title").addEventListener("change", () => schedulePreview(true));
+$("thumbnail-wordlist-label").addEventListener("change", () => schedulePreview(true));
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
   previewShowImages = true;
@@ -7821,8 +7833,8 @@ function saveForm() {
       // 「〈ベース名〉の編集(●)」として表示し、↺や📄項目も再構成できるようにする
       layoutBaseKey: leBaseKey,
       layoutBaseline: leBaseline,
-      originalCredit: $("original-credit").value,
-      creditNotice: $("credit-notice").value,
+      songCredit: $("song-credit").value,
+      thumbnailWordlistLabel: $("thumbnail-wordlist-label").value,
       model: $("model").value,
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
@@ -7915,7 +7927,7 @@ $("layout-select").addEventListener("change", async () => {
 // model / layout は上の syncChoice が保存するのでここには入れない。
 ["lyrics", "song-title", "wordlist", "where",
  "transpose", "layout-json",
- "original-credit", "credit-notice",
+ "song-credit", "thumbnail-wordlist-label",
  "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
@@ -8023,8 +8035,8 @@ async function doRestoreForm() {
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
       ? state.sampleLyricsBaseline : null;
-    $("original-credit").value = state.originalCredit || "";
-    $("credit-notice").value = state.creditNotice || "";
+    $("song-credit").value = state.songCredit ?? legacySongCredit(state);
+    $("thumbnail-wordlist-label").value = state.thumbnailWordlistLabel || "";
     // 旧版の保存(duplicate / preset / convertSliders)はもう画面に対応する項目が
     // ないので読まない(エディタの「変換のしかた」に移した)。残っていても無視するだけ
     if (state.transpose != null) $("transpose").value = state.transpose;
