@@ -930,6 +930,28 @@ def test_subtitle_clears_when_interlude_frame_starts(tmp_path: Path):
     assert spans[1][0] >= cues[1].start
 
 
+def test_early_canonical_start_does_not_clear_preceding_sung_caption(tmp_path: Path):
+    from dataclasses import asdict
+
+    from soramimic_video.video import SUB_PAD_SEC
+
+    project = _two_word_project(second_start=20)
+    project.lines[0].original_text = "静かな道"
+    project.lines[1].original_text = "遠い山"
+    project.lines[1].canonical_start_sec = .7
+    before = asdict(project)
+    cap, _ = _text_layouts(tmp_path)
+    cues, _ = build_image_cues(project, tmp_path / "frames", 320, 180, layout=cap)
+    ass = build_ass(project, 1280, 720, "Font", cap,
+                    clear_ranges=[(cues[0].end, cues[1].start)])
+    for source in ["Original", "Parody"]:
+        spans = _dialogue_spans(ass, source)
+        assert spans[0][1] == pytest.approx(cues[0].end)
+        assert spans[0][1] > project.notes[0].end_sec
+        assert spans[1][0] == pytest.approx(max(20 - SUB_PAD_SEC, cues[1].start))
+    assert asdict(project) == before
+
+
 @pytest.mark.parametrize("same_line", [True, False])
 @pytest.mark.parametrize("granularity", ["line", "cue", "phrase"])
 @pytest.mark.parametrize("ruby", [False, True])

@@ -21,6 +21,15 @@ class SubtitlePage:
 
 
 @dataclass
+class SubtitleTrack:
+    segment: SubtitleSegment
+    source: str
+    words: list[ParodyWord]
+    measure: Callable[[str], float]
+    max_width: float
+
+
+@dataclass
 class _Atom:
     text: str
     start: float
@@ -197,6 +206,106 @@ def paginate_subtitle(
                             [word for atom in group for word in atom.words])
         pages.extend(_paginate_atoms(part, group, source, measure, max_width, lead_sec))
     return pages
+
+
+def paginate_subtitle_tracks(
+    project: Project, tracks: Sequence[SubtitleTrack], lines: Sequence[Line],
+    sep: str = "  ", lead_sec: float = .15,
+    clear_ranges: Sequence[tuple[float, float]] = (),
+) -> list[list[SubtitlePage]]:
+    """Paginate matching lyric groups at boundaries safe for every displayed track.
+
+    A wide replacement caption also splits its original counterpart (and vice
+    versa). Words, ruby and original tokens stay whole, even when the only safe
+    result requires the renderer to reduce the font size.
+    """
+    if len({track.source for track in tracks}) < 2:
+        return [paginate_subtitle(
+            project, t.segment, t.source, lines, t.words, t.measure, t.max_width,
+            sep, lead_sec, clear_ranges,
+        ) for t in tracks]
+    segment = tracks[0].segment
+    spans = _visible_spans(segment.start, segment.end, clear_ranges)
+    result: list[list[SubtitlePage]] = [[] for _ in tracks]
+    if not spans:
+        return result
+    if len(spans) == 1 and all(t.measure(t.segment.text) <= t.max_width for t in tracks):
+        return [[SubtitlePage(t.segment.text, *spans[0], t.words)] for t in tracks]
+    atoms = [(_parody_atoms(project, t.words, sep) if t.source == "parody" and t.words
+              else _original_atoms(project, t.segment, lines)) for t in tracks]
+    grouped: list[list[list[_Atom]]] = [[[] for _ in spans] for _ in tracks]
+    for groups, track_atoms in zip(grouped, atoms, strict=True):
+        for atom in track_atoms:
+            owners = [i for i, (start, end) in enumerate(spans)
+                      if atom.start < end and start < atom.end]
+            if not owners:
+                owners = [min(range(len(spans)), key=lambda i: max(
+                    spans[i][0] - atom.start, atom.start - spans[i][1], 0.0,
+                ))]
+            for i in owners:
+                groups[i].append(atom)
+    for i, (start, end) in enumerate(spans):
+        groups = [g[i] for g in grouped]
+        cuts = [tuple(0 for _ in tracks)]
+        times = [start]
+        penalties = [0.0]
+        for when in sorted({a.start for group in groups for a in group}):
+            if when - lead_sec < times[-1] + .2 or when - lead_sec > end - .2:
+                continue
+            indices = []
+            qualities = []
+            for track, group in zip(tracks, groups, strict=True):
+                k = next((j for j, a in enumerate(group) if a.start >= when - 1e-6),
+                         len(group))
+                if k == 0 or k == len(group) or max(a.end for a in group[:k]) > when + 1e-6:
+                    break
+                quality = (.15 if track.source == "parody"
+                           else _break_quality(group[k - 1].text, group[k].text))
+                if quality is None:
+                    break
+                indices.append(k)
+                qualities.append(quality)
+            if len(indices) == len(tracks) and tuple(indices) != cuts[-1]:
+                cuts.append(tuple(indices))
+                times.append(when - lead_sec)
+                penalties.append(sum(qualities) / len(qualities))
+        cuts.append(tuple(len(g) for g in groups))
+        times.append(end)
+        penalties.append(0.0)
+
+        @cache
+        def page_text(
+            track: int, a: int, b: int, groups=groups, cuts=cuts,
+        ) -> str:
+            return "".join(atom.text for atom in groups[track][cuts[a][track]:cuts[b][track]]
+                           ).strip()
+
+        costs = [float("inf")] * len(cuts)
+        following = [len(cuts) - 1] * len(cuts)
+        costs[-1] = 0.0
+        for a in range(len(cuts) - 2, -1, -1):
+            for b in range(a + 1, len(cuts)):
+                ratio = max(t.measure(page_text(j, a, b)) / max(1, t.max_width)
+                            for j, t in enumerate(tracks))
+                if ratio > 1 and b > a + 1:
+                    break
+                duration = times[b] - times[a]
+                cost = (1 + .8 * (1 - min(ratio, 1)) ** 2 + penalties[b]
+                        + 3 * max(0, 1 - duration / .8) ** 2
+                        + 5 * max(0, ratio - 1) + costs[b])
+                if cost < costs[a]:
+                    costs[a] = cost
+                    following[a] = b
+        a = 0
+        while a < len(cuts) - 1:
+            b = following[a]
+            for j, group in enumerate(groups):
+                text = page_text(j, a, b)
+                if text:
+                    words = [w for atom in group[cuts[a][j]:cuts[b][j]] for w in atom.words]
+                    result[j].append(SubtitlePage(text, times[a], times[b], words))
+            a = b
+    return result
 
 
 def _paginate_atoms(
