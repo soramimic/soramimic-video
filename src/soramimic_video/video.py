@@ -20,8 +20,8 @@
 単語リストによっては画像がSVG(生成カード画像)なので、PillowがSVGを開けない
 ぶんはダウンロード時にPNGへラスタライズしてキャッシュする(svg_to_png)。
 
-フレームの左下には「lyrics & video by Soramimic」(歌声合成のクレジット表記が要るときは
-「lyrics & video by Soramimic / VOICEVOX:キャラ名」)を小さく焼き込む。単語フレーム・
+フレームの左下には「lyrics & video by Soramimic」や元曲の表記を小さく焼き込む。
+歌声合成のクレジットは最後のクレジットページに載せる。単語フレーム・
 fallback・idle・サムネで共通で、レイアウトの "app_credit": false で外せる
 (layout.py 参照)。
 """
@@ -864,8 +864,8 @@ def build_section_cues(
             continue
         if sec.kind == "outro":
             # 後奏が短い曲ではエンドロールを出さない。使用単語が無くても
-            # MIDI表記があれば最終クレジットページだけは出す。
-            if sec.duration < OUTRO_MIN_SEC or (not words and not midi_end_credit.strip()):
+            # 最終クレジットページは出す。
+            if sec.duration < OUTRO_MIN_SEC or (not words and not layout.has_section("credits")):
                 continue
             show_credits = layout.has_section("credits")
             # クレジットページに最低1枚ぶんを残し、残りを単語ページに割り振る
@@ -944,18 +944,15 @@ def app_credit_text(
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
-    既定は「lyrics & video by Soramimic」。歌声合成側にもクレジット表記が要るとき
-    (VOICEVOXのキャラ名など)や、元曲・権利者の表記があるときは後ろに足す。
+    既定は「lyrics & video by Soramimic」。元曲・権利者の表記があるときは
+    後ろに足す。歌声合成側の表記は最後のクレジットページだけに載せる。
     常時表示には元曲名と必須表記だけを簡潔に載せ、作詞・作曲・歌唱者などの
     ``original_credit`` 詳細はエンドロールだけに載せる。
     """
-    synth = (synth_credit or "").strip()
     song = (original_song or "").strip()
     notice = (credit_notice or "").strip()
     display_credit = (original_display_credit or "").strip()
     parts = [app_credit_for_wordlist(wordlist)]
-    if synth:
-        parts.append(synth)
     original = " — ".join(part for part in (song, display_credit or notice) if part)
     if original:
         parts.append(f"Original: {original}" if song else original)
@@ -1864,7 +1861,7 @@ def actual_video_total_sec(
     total = _resolve_total_sec(sung_end, _audio_duration_sec(audio_path))
     words = used_words(project)
     return extend_for_endroll(
-        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+        total, sung_end, words or [""]
     )
 
 
@@ -1892,7 +1889,7 @@ def planned_video_total_sec(project: Project, midi_end_credit: str = "") -> floa
     total = _resolve_total_sec(sung_end, expected_audio)
     words = used_words(project)
     return extend_for_endroll(
-        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+        total, sung_end, words or [""]
     )
 
 
@@ -1938,7 +1935,7 @@ def prepare_video(
     minimum = extend_for_endroll(
         sung_end,
         sung_end,
-        endroll_words or ([""] if midi_end_credit.strip() else []),
+        endroll_words or [""],
     )
     if total_sec + 1e-6 < minimum:
         # The planned duration is an optimization hint computed before audio
@@ -2136,7 +2133,7 @@ def make_video(
     extended_sec = extend_for_endroll(
         total_sec,
         sung_end_sec,
-        endroll_words or ([""] if midi_end_credit.strip() else []),
+        endroll_words or [""],
     )
     if extended_sec > total_sec:
         logger.info(

@@ -3320,7 +3320,7 @@ function updateSongTextPreviews() {
       .find((option) => Number(option.value) === fixedVoicevoxStyle);
     synthCredit = style?.dataset.name ? `VOICEVOX:${style.dataset.name}` : "VOICEVOX";
   }
-  const footer = [baseCredit, synthCredit,
+  const footer = [baseCredit,
     original ? "Original: " + original : ""].filter(Boolean).join(" / ");
   const finalCredit = [title, notice || author].filter(Boolean).join(" — ");
 
