@@ -247,7 +247,10 @@ def test_joint_pages_do_not_cut_overlapping_original_tokens(monkeypatch):
 
 
 @pytest.mark.parametrize("ruby", [False, True])
-def test_ass_original_and_parody_change_pages_together(monkeypatch, ruby):
+@pytest.mark.parametrize("fallback_font", [False, True])
+def test_ass_original_and_parody_change_pages_together(monkeypatch, ruby, fallback_font):
+    if fallback_font:
+        monkeypatch.setattr("soramimic_video.video.resolve_font_path", lambda _: None)
     monkeypatch.setattr(subtitle_pages, "_default_reader",
                         lambda text: [(t, t) for t in text.split()])
     project = _project("アオイ ソラオ ミアゲ ユック アルコ ハナオ")
@@ -255,7 +258,7 @@ def test_ass_original_and_parody_change_pages_together(monkeypatch, ruby):
              for i in range(6)]
     project.parody = Parody("test", lines=[ParodyLine(0, words)])
     layout = parse_layout({"elements": [
-        {"type": "subtitle", "source": "parody", "box": [.25, .7, .5, .1],
+        {"type": "subtitle", "source": "parody", "box": [.4, .7, .2, .1],
          "size": .1, "ruby": ruby},
         {"type": "subtitle", "source": "original", "box": [0, .9, 1, .1], "size": .03},
     ]})
