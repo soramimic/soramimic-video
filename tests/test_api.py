@@ -2123,7 +2123,7 @@ def test_synth_credit_of_neutrino_is_empty():
 def test_synth_credit_of_prettypitch_names_engine_and_voice():
     assert api_mod.synth_credit_of(
         {"synthesizer": "prettypitch"}, {}
-    ) == "PrettyPitch / 波音リツ"
+    ) == "PrettyPitch / 波音リツ（カノン）"
 
 
 def test_index_html_has_platform_appropriate_save_share_buttons():
@@ -2894,5 +2894,5 @@ def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automati
 
 def test_hybrid_credit_names_both_engines_and_voice_provider():
     assert api_mod.synth_credit_of({"synthesizer": "hybrid"}, {}) == (
-        "PrettyPitch / VOICEVOX:波音リツ（カノン）"
+        "VOICEVOX・PrettyPitch：波音リツ（カノン）"
     )

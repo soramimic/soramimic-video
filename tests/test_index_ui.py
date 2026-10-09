@@ -141,7 +141,7 @@ def test_public_ui_filters_wordlists_and_simple_ui_hides_advanced():
     assert "if (launchWordlists.length)" in script
     assert "return allowed.has(name);" in script
     defaults = _function_body(script, "function applyFixedUiDefaults()")
-    assert '$("synthesizer").value = "voicevox"' in defaults
+    assert '$("synthesizer").value = fixedSynthesizer' in defaults
     assert '$("auto-octave").checked = true' in defaults
     assert '$("transpose").value = "0"' in defaults
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
@@ -221,6 +221,9 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         const $ = element;
         const ownSongFile = () => ({ name: "upload.mid" });
         let midiSampleId = "";
+        let fixedSynthesizer = "voicevox";
+        const fixedVoicevoxStyle = 6000;
+        $("voicevox-style").options = [{ value: "6000", dataset: { name: "波音リツ" } }];
         const sampleTitleOf = () => "サンプル曲";
         const activeCustomList = () => null;
         const selectedWordlistGroup = () => ({ text: "駅名" });
@@ -244,6 +247,14 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
           "夜に駆ける — © 権利者");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
+
+        fixedSynthesizer = "hybrid";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent,
+          "Vocal Synthesis　VOICEVOX・PrettyPitch：波音リツ（カノン）");
+        assert.equal($("song-preview-credits-synth").hidden, false);
+        assert.match($("song-preview-footer").textContent,
+          /VOICEVOX・PrettyPitch：波音リツ（カノン）/);
 
         // 最後のクレジットは指定表記が無ければ著作者を使う。
         $("credit-notice").value = "";

@@ -1129,7 +1129,7 @@
         </span>
       </div>
       <p class="hint" id="voicevox-credit"></p>
-      <p class="hint" id="hybrid-credit" hidden>PrettyPitch / VOICEVOX:波音リツ（カノン）。音域に応じてフレーズごとに歌声を補います。非商用ファン作品に限ります。</p>
+      <p class="hint" id="hybrid-credit" hidden>VOICEVOX・PrettyPitch：波音リツ（カノン）。音域に応じてフレーズごとに歌声を補います。非商用ファン作品に限ります。</p>
       <p class="hint" id="prettypitch-credit" hidden>試験用PrettyPitch・波音リツモデルです。歌声DBの音源収録・配布：カノン。非商用ファン作品に限ります。</p>
       <p class="hint" id="synth-unavailable" hidden>このサーバーでは歌声合成エンジンが使えません(サーバー側の設定が必要です)。</p>
     </div>
@@ -1729,7 +1729,7 @@ async function loadConfig() {
 
 function applyFixedUiDefaults() {
   synthesizerTouched = true;
-  $("synthesizer").value = "voicevox";
+  $("synthesizer").value = fixedSynthesizer;
   const style = [...$("voicevox-style").options]
     .find((o) => Number(o.value) === fixedVoicevoxStyle);
   if (style) $("voicevox-style").value = style.value;
@@ -1845,9 +1845,14 @@ function updatePublicCredit() {
   const sel = $("voicevox-style");
   const o = sel.options[sel.selectedIndex];
   const name = o ? (o.getAttribute("data-name") || "") : "";
-  $("public-credit").textContent = $("synthesizer").value === "voicevox"
-    ? `歌声合成: VOICEVOX${name ? ":" + name : ""}`
-    : `歌声合成: NEUTRINO${$("model").value ? "(" + $("model").value + ")" : ""}`;
+  const engine = $("synthesizer").value;
+  $("public-credit").textContent = engine === "hybrid"
+    ? "歌声合成: VOICEVOX・PrettyPitch：波音リツ（カノン）"
+    : engine === "prettypitch"
+      ? "歌声合成: PrettyPitch / 波音リツ（カノン）"
+      : engine === "voicevox"
+        ? `歌声合成: VOICEVOX${name ? ":" + name : ""}`
+        : `歌声合成: NEUTRINO${$("model").value ? "(" + $("model").value + ")" : ""}`;
   $("public-footer").hidden = false;
 }
 
@@ -3305,17 +3310,9 @@ function updateSongTextPreviews() {
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
   const original = [title, notice].filter(Boolean).join(" — ");
-  const footer = [baseCredit, "VOICEVOX:波音リツ",
-    original ? "Original: " + original : ""].filter(Boolean).join(" / ");
-  const finalCredit = [title, notice || author].filter(Boolean).join(" — ");
-
-  $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
-  $("song-preview-thumb-credit").textContent = footer;
-  $("song-preview-footer").textContent = footer;
-  $("song-preview-credits-original").textContent = finalCredit;
   let synthCredit = "";
   if (fixedSynthesizer === "hybrid") {
-    synthCredit = "PrettyPitch / VOICEVOX:波音リツ（カノン）";
+    synthCredit = "VOICEVOX・PrettyPitch：波音リツ（カノン）";
   } else if (fixedSynthesizer === "prettypitch") {
     synthCredit = "PrettyPitch / 波音リツ（カノン）";
   } else if (fixedSynthesizer === "voicevox") {
@@ -3323,6 +3320,14 @@ function updateSongTextPreviews() {
       .find((option) => Number(option.value) === fixedVoicevoxStyle);
     synthCredit = style?.dataset.name ? `VOICEVOX:${style.dataset.name}` : "VOICEVOX";
   }
+  const footer = [baseCredit, synthCredit,
+    original ? "Original: " + original : ""].filter(Boolean).join(" / ");
+  const finalCredit = [title, notice || author].filter(Boolean).join(" — ");
+
+  $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
+  $("song-preview-thumb-credit").textContent = footer;
+  $("song-preview-footer").textContent = footer;
+  $("song-preview-credits-original").textContent = finalCredit;
   $("song-preview-credits-synth").textContent = synthCredit ? `Vocal Synthesis　${synthCredit}` : "";
   $("song-preview-credits-synth").hidden = !synthCredit;
 
