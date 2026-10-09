@@ -1261,6 +1261,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
                 # アップロード音源の自動認識時はWhisperで歌詞行を決める。
                 lyrics_path=supplied_audio_lyrics,
+                adjust_lyrics=bool(job.params.get("adjust_lyrics", False)),
                 whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
                 device=config.get("audio_device"),
                 progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
@@ -3710,6 +3711,7 @@ def create_app(
         lyrics: str = Form(""),
         # 省略時はMIDI・音源アップロードとも歌詞を自動認識する。
         auto_lyrics: bool = Form(True),
+        adjust_lyrics: bool = Form(False),
         model: str = Form("MERROW"),
         # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
         # 未設定のサーバーだと下の422ゲートで弾かれてしまうため既定にしない)
@@ -3786,6 +3788,11 @@ def create_app(
                 )
         elif not auto_lyrics and not lyrics.strip():
             raise HTTPException(status_code=422, detail="正解歌詞を入力してください")
+        if adjust_lyrics and (input_kind != "audio" or auto_lyrics or not lyrics.strip()):
+            raise HTTPException(
+                status_code=422,
+                detail="歌詞の調整は、音源と入力歌詞を使う場合だけ選択できます",
+            )
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
@@ -4009,6 +4016,7 @@ def create_app(
             "input_kind": input_kind,
             "input_seconds": round(input_seconds, 3) if input_seconds is not None else None,
             "auto_lyrics": auto_lyrics,
+            "adjust_lyrics": adjust_lyrics,
             "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),
             "original_credit": original_credit.strip(),

@@ -2434,3 +2434,65 @@ def test_saved_project_uses_current_shared_word_image(tmp_path, monkeypatch):
     assert frames[0].data["image_credit"] == "new credit"
     assert frames[0].data["image_page"] == "new page"
     assert project.parody.lines[0].words[0].wordlist_row == original_row
+
+
+def test_word_card_and_subtitles_stay_visible_inside_one_word(tmp_path: Path):
+    from dataclasses import asdict
+
+    from soramimic_video.layout import parse_layout
+    from soramimic_video.video import build_section_cues
+
+    project = _two_word_project(second_start=12.5)
+    project.lines = [Line(0, "青い 空", "アオイソラ", [0, 1])]
+    project.notes[0].kana = "アオイ"
+    project.notes[1].kana = "ソラ"
+    project.notes[1].line = 0
+    project.parody.lines = [ParodyLine(0, [ParodyWord(
+        "青空", "アオゾラ", "青空", "", "", [0, 1], ["アオ", "ゾラ"],
+    )])]
+    before = asdict(project)
+    layout = parse_layout({"elements": [
+        *_TEXT_LAYOUT["elements"],
+        *[{"type": "subtitle", "source": source, "box": [0, .8, 1, .1],
+           "size": .04, "ruby": True}
+          for source in ["original", "parody"]],
+    ]})
+    cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=layout)
+    assert len(cues) == 1
+    assert cues[0].start == pytest.approx(.5 - DEFAULT_IMAGE_LEAD_SEC)
+    assert cues[0].end >= project.notes[1].end_sec
+    sections = build_section_cues(project, cues, 14, layout, tmp_path, 320, 180)
+    assert not sections
+    ass = build_ass(project, 1280, 720, "Font", layout,
+                    clear_ranges=[(section.start, section.end) for section in sections])
+    for style in ["Original", "Parody"]:
+        spans = _dialogue_spans(ass, style)
+        assert any(start <= project.notes[0].start_sec and end >= project.notes[1].end_sec
+                   for start, end in spans)
+    assert sum("青空" in line for line in ass.splitlines() if line.startswith("Dialogue:")) == 1
+    assert asdict(project) == before
+
+
+@pytest.mark.parametrize("sustain", [False, True])
+def test_word_card_keeps_short_gaps_and_held_notes(tmp_path: Path, sustain: bool):
+    project = _two_word_project(second_start=3.5 if not sustain else 12.5)
+    if sustain:
+        project.notes[0].end_sec = 12.5
+    word = project.parody.lines[0].words[0]
+    word.note_ids = [0, 1]
+    project.parody.lines.pop()
+    cap, _hold = _text_layouts(tmp_path)
+    frames = collect_word_frames(project, cap)
+    assert len(frames) == 1
+    assert frames[0].end == project.notes[1].end_sec
+
+
+def test_explicit_hold_next_keeps_word_card_across_long_rest(tmp_path: Path):
+    project = _two_word_project(second_start=12.5)
+    project.parody.lines[0].words[0].note_ids = [0, 1]
+    project.parody.lines.pop()
+    _cap, hold = _text_layouts(tmp_path)
+    cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=hold)
+    assert len(cues) == 1
+    assert cues[0].start == pytest.approx(.5 - DEFAULT_IMAGE_LEAD_SEC)
+    assert cues[0].end == pytest.approx(12.75 - DEFAULT_IMAGE_LEAD_SEC)

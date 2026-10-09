@@ -157,6 +157,7 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
     real_analyze_audio = analyze_audio_module.analyze_audio
 
     def analyze_without_external_separation(*args, **kwargs):
+        assert kwargs.pop("adjust_lyrics") is False
         kwargs["skip_separation"] = True
         return real_analyze_audio(*args, **kwargs)
 

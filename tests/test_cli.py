@@ -104,3 +104,12 @@ def test_serve_rejects_invalid_configured_asset_store(monkeypatch, tmp_path):
     args = build_parser().parse_args(["serve"])
 
     assert cli.cmd_serve(args) == 2
+
+
+def test_audio_lyric_adjustment_is_opt_in():
+    parser = build_parser()
+    argv = [
+        "analyze-audio", "--audio", "input.wav", "--project", "work/song", "--lyrics", "lyrics.txt",
+    ]
+    assert parser.parse_args(argv).adjust_lyrics is False
+    assert parser.parse_args(argv + ["--adjust-lyrics"]).adjust_lyrics is True
