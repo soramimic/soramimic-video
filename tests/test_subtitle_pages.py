@@ -7,7 +7,11 @@ from soramimic_video import subtitle_pages
 from soramimic_video.align import SubtitleSegment
 from soramimic_video.layout import parse_layout
 from soramimic_video.project import Line, Note, Parody, ParodyLine, ParodyWord, Project, SongInfo
-from soramimic_video.subtitle_pages import paginate_subtitle
+from soramimic_video.subtitle_pages import (
+    SubtitleTrack,
+    paginate_subtitle,
+    paginate_subtitle_tracks,
+)
 from soramimic_video.video import _ass_text_width, build_ass
 
 
@@ -192,3 +196,74 @@ def test_clear_range_covering_entire_caption_emits_no_page():
     segment = SubtitleSegment("アオイ", 1, 2, [0])
     assert paginate_subtitle(project, segment, "original", project.lines, [], len, 100,
                              clear_ranges=[(0, 3)]) == []
+
+
+@pytest.mark.parametrize("narrow_source", ["original", "parody"])
+@pytest.mark.parametrize("interlude", [False, True])
+def test_matching_tracks_share_pages_when_only_one_caption_overflows(
+    monkeypatch, narrow_source, interlude,
+):
+    monkeypatch.setattr(subtitle_pages, "_default_reader",
+                        lambda text: [(t, t) for t in text.split()])
+    project = _project("アオイ ソラオ ミアゲ ユック アルコ ハナオ")
+    if interlude:
+        for note in project.notes[9:]:
+            note.start_sec += 10
+            note.end_sec += 10
+    words = [ParodyWord(f"名前{i}", "ナマエ", "", "", "", list(range(i * 3, i * 3 + 3)))
+             for i in range(6)]
+    project.parody = Parody("test", lines=[ParodyLine(0, words)])
+    before = asdict(project)
+    end = project.notes[-1].end_sec + .15
+    tracks = [SubtitleTrack(
+        SubtitleSegment(text, .85, end, [0]), source,
+        words if source == "parody" else [], len, 8 if source == narrow_source else 1000,
+    ) for source, text in [("original", project.lines[0].original_text),
+                          ("parody", "  ".join(w.surface for w in words))]]
+    clear = [(4.6, 14.4)] if interlude else []
+    original, parody = paginate_subtitle_tracks(project, tracks, project.lines, clear_ranges=clear)
+    assert len(original) >= 3
+    assert [(p.start, p.end) for p in original] == [(p.start, p.end) for p in parody]
+    for track, pages in zip(tracks, [original, parody], strict=True):
+        combined = "".join(p.text.replace(" ", "") for p in pages)
+        assert combined == track.segment.text.replace(" ", "")
+        assert all(track.measure(p.text) <= track.max_width for p in pages)
+        assert all(not (p.start < b and a < p.end) for p in pages for a, b in clear)
+    assert [w for p in parody for w in p.words] == words
+    assert asdict(project) == before
+
+
+def test_joint_pages_do_not_cut_overlapping_original_tokens(monkeypatch):
+    monkeypatch.setattr(subtitle_pages, "_default_reader", lambda text: [(text, text)])
+    project = _project("アオイソラオ")
+    words = [ParodyWord(f"名前{i}", "ナマエ", "", "", "", [i * 3, i * 3 + 1, i * 3 + 2])
+             for i in range(2)]
+    tracks = [SubtitleTrack(SubtitleSegment(text, .85, 3.5, [0]), source, ws, len, 4)
+              for source, text, ws in [("original", "アオイソラオ", []),
+                                       ("parody", "名前0  名前1", words)]]
+    pages = paginate_subtitle_tracks(project, tracks, project.lines)
+    assert all(len(p) == 1 for p in pages)
+    assert [p[0].text for p in pages] == [t.segment.text for t in tracks]
+
+
+@pytest.mark.parametrize("ruby", [False, True])
+def test_ass_original_and_parody_change_pages_together(monkeypatch, ruby):
+    monkeypatch.setattr(subtitle_pages, "_default_reader",
+                        lambda text: [(t, t) for t in text.split()])
+    project = _project("アオイ ソラオ ミアゲ ユック アルコ ハナオ")
+    words = [ParodyWord(f"名前{i}", "ナマエ", "", "", "", list(range(i * 3, i * 3 + 3)))
+             for i in range(6)]
+    project.parody = Parody("test", lines=[ParodyLine(0, words)])
+    layout = parse_layout({"elements": [
+        {"type": "subtitle", "source": "parody", "box": [.25, .7, .5, .1],
+         "size": .1, "ruby": ruby},
+        {"type": "subtitle", "source": "original", "box": [0, .9, 1, .1], "size": .03},
+    ]})
+    events = [s.split(",", 9) for s in build_ass(project, 640, 360, "Font", layout).splitlines()
+              if s.startswith("Dialogue:")]
+    original = [e for e in events if e[3] == "Original"]
+    parody = [e for e in events if e[3] == "Parody" and not e[4]]
+    assert len(original) > 1
+    assert {tuple(e[1:3]) for e in original} == {tuple(e[1:3]) for e in parody}
+    if ruby:
+        assert [e[1:3] for e in events if e[4] == "Ruby"] == [e[1:3] for e in parody]
