@@ -375,7 +375,16 @@ def test_known_lyrics_kana_selection_is_independent_of_line_adjustment(
     expected = "アス" if scenario in {"correction", "ruby"} else "アシタ"
     assert project.lyric_layers["canonical_text"] == "明日"
     assert project.lyric_layers["canonical"][0]["kana"] == expected
-    assert "".join(note.kana for note in project.notes) == expected
+    plan = project.lyric_layers["synthesis_plan"]
+    assert [note.midi_note for note in project.notes] == [60, 61, 62]
+    assert "".join(
+        note.kana for note, slot in zip(project.notes, plan, strict=True)
+        if not slot["continuation"]
+    ) == expected
+    assert all(
+        note.kana == "ー" for note, slot in zip(project.notes, plan, strict=True)
+        if slot["continuation"]
+    )
     assert lyrics.read_text(encoding="utf-8") == original
     assert len(lyric_calls) == int(adjust)
     assert alignment_calls == (["アシタ", "アス"] if scenario == "correction" else [expected])
