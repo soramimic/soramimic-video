@@ -42,6 +42,9 @@ project directory の `project.json` が処理段階間の公開 exchange format
 音源解析の `evidence` 経路では、`lyric_layers` に完全な `canonical`、音源に対応した
 `performed`、合成ノートの `synthesis_plan` を別々に保持します。替え歌変換は完全な読みを
 入力に使い、字幕は完全な表記を保持します。実演の省略で元歌詞を削りません。
+自動認識で再認識した歌詞や定型文に似た歌詞に音符の裏付けがあれば、低いCTCスコアだけを
+理由に除外しません。Scoreの`lyric-alignment-warning`を`analysis.json`の診断と制約へ引き継ぎ、
+`generation_quality.status`を`warning`にして完成結果の確認を促します。
 変換用の読みと単語リストの読みには、文字位置を保つ共通のかな正規化を適用します。
 保存された完全歌詞とモーラIDは変更しません。正規化で1モーラが複数の音節に
 分かれても、同じモーラや合成音符を所有する音節の間では替え歌単語を区切りません。

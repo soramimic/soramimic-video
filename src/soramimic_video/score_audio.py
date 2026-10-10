@@ -108,6 +108,26 @@ def analyze_audio(
     ))
     apply_lyric_layers(project, layers)
     quality = _generation_quality_assessment(layers)
+    limitations = ([f"音高が未解決の{omitted}歌唱単位を合成から省略しました。"]
+                   if omitted else [])
+    diagnostics = ([{"stage": "score", "status": "synthesis-omission",
+                     "unit_count": omitted}] if omitted else [])
+    alignment_warnings = [item for item in layers.get("evidence", [])
+                          if item.get("kind") == "lyric-alignment-warning"
+                          and item.get("detail", {}).get("status") == "retained"]
+    if alignment_warnings:
+        quality["status"] = "warning"
+        quality["reason"] = quality["reason"] or "uncertain-lyric-alignment"
+        quality["uncertain_lyric_lines"] = len(alignment_warnings)
+        limitations.append(
+            f"音符の裏付けを優先して{len(alignment_warnings)}行の歌唱を保持しました。"
+            "歌詞や発音時刻が不確かなため、確認してください。"
+        )
+        diagnostics.append({
+            "stage": "score", "status": "uncertain-lyric-alignment",
+            "line_count": len(alignment_warnings),
+            "evidence_ids": [item["id"] for item in alignment_warnings],
+        })
     (out / "analysis.json").write_text(json.dumps({
         "audio_pipeline": "soramimic-score",
         "official_lyrics": lyrics is not None,
@@ -116,10 +136,8 @@ def analyze_audio(
         "sources": {source: sum(note.source == source for note in project.notes)
                     for source in {note.source for note in project.notes}},
         "generation_quality": quality,
-        "limitations": ([f"音高が未解決の{omitted}歌唱単位を合成から省略しました。"]
-                        if omitted else []),
-        "diagnostics": ([{"stage": "score", "status": "synthesis-omission",
-                         "unit_count": omitted}] if omitted else []),
+        "limitations": limitations,
+        "diagnostics": diagnostics,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
     if progress is not None:
         progress(1.0)
