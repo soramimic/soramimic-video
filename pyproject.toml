@@ -121,6 +121,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 
 [tool.uv.sources]
-soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "0960bfebf27fa743df2401e2efe38cc55b0620f0" }
+soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "d7c2db0adff0d222f793bb992b46baa1449f058d" }
 soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi", rev = "e9542850a49a8c424ba6685ca6814dcbb5b139a9" }
 soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "32c8260aeb682daf1b2d3f18de76bc40c6ad0eda" }

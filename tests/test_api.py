@@ -214,6 +214,23 @@ def test_manual_correct_lyrics_mode_requires_lyrics(client):
     assert "正式な元歌詞" in res.json()["detail"]
 
 
+@pytest.mark.parametrize("upload", [False, True])
+@pytest.mark.parametrize("control", ["\0", "\x1b"])
+def test_audio_lyrics_reject_controls_before_creating_a_job(client, upload, control):
+    source = "か\u3099" + control + "くせい"
+    files = {"audio": ("voice.wav", fake_wav(), "audio/wav")}
+    data = {"wordlist": "stations", "auto_lyrics": "false"}
+    if upload:
+        files["lyrics_file"] = ("lyrics.txt", source.encode(), "text/plain")
+    else:
+        data["lyrics"] = source
+    res = client.post("/api/jobs", files=files, data=data)
+    assert res.status_code == 400
+    assert "position 3" in res.json()["detail"]
+    assert f"U+{ord(control):04X}" in res.json()["detail"]
+    assert client.app.state.manager.jobs == {}
+
+
 @pytest.mark.parametrize("kind,automatic", [("audio", True), ("midi", False)])
 def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic):
     content = fake_wav() if kind == "audio" else FAKE_MIDI
