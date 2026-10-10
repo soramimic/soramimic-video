@@ -679,6 +679,7 @@ class Job:
     layout_source: str | None = None
     video: Path | None = None
     generation_quality_warning: bool = False
+    wordlist_exhausted: bool = False
     # A cleanup failure is never treated as success. Keep it durable so startup
     # and the periodic privacy scrubber continue retrying after transient I/O errors.
     cleanup_pending: bool = False
@@ -755,6 +756,8 @@ class Job:
                 d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
             if self.generation_quality_warning:
                 d["generation_quality_warning"] = True
+            if self.wordlist_exhausted:
+                d["wordlist_exhausted"] = True
         if with_log and not is_public_mode():
             d["log"] = list(self.log)
         return d
@@ -1348,6 +1351,9 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             save_raw(raw, d)
             project.save(d)
 
+    from .convert import wordlist_exhausted
+
+    job.wordlist_exhausted = wordlist_exhausted(project)
     layout, job.layout_source = resolve_layout(job, config)
     from .align import parse_granularity_override
 
@@ -1611,6 +1617,7 @@ class JobManager:
                 generation_quality_warning=bool(
                     data.get("generation_quality_warning", False)
                 ),
+                wordlist_exhausted=bool(data.get("wordlist_exhausted", False)),
                 cleanup_pending=bool(data.get("cleanup_pending", False)),
                 usage_finished_recorded=bool(
                     data.get("usage_finished_recorded", False)

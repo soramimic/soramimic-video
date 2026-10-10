@@ -2842,6 +2842,75 @@ def test_difficult_audio_result_links_to_song_generation_tips():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function poll(", "function setBuilderState(",
+            "function showWordlistExhaustionNotice(", "function historyCard(",
+        )
+    )
+    message = next(line for line in script.splitlines()
+                   if line.startswith("const WORDLIST_EXHAUSTED_NOTICE ="))
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        function element() {
+          return {hidden: true, textContent: "", children: [],
+            getAttribute() { return null; }, removeAttribute() {}, setAttribute() {},
+            pause() {}, load() {}, addEventListener() {},
+            append(...children) { this.children.push(...children); },
+            appendChild(child) { this.children.push(child); }};
+        }
+        const elements = new Map();
+        const $ = (id) => {
+          if (!elements.has(id)) elements.set(id, element());
+          return elements.get(id);
+        };
+        const document = {createElement: element}, navigator = {};
+        const historyButton = element;
+        const historyCreatedLabel = () => "", historyStatusLabel = () => "";
+        let builderState = "preview", pollSeq = 1, currentJob = "job", pollLastAt = 0;
+        let pollFailures = 0, reviewJobId = null;
+        const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], STAGE_LABELS = {};
+        const headers = () => ({}), qs = (url) => url;
+        const renderStages = () => {}, renderBuilderBar = () => {}, finish = () => {};
+        const setJobStatus = () => {}, resetVideoSharePreparation = () => {};
+        const setPreviewPending = () => {}, updateBuilderOverlay = () => {};
+        const showBuilderVideo = () => setBuilderState("done");
+        let result = {status: "done", params: {}, total_seconds: 1,
+          result_kind: "video", playback_url: "/video", wordlist_exhausted: true};
+        const fetch = async () => ({ok: true, status: 200, json: async () => result});
+        const texts = (node) => [node.textContent, ...node.children.flatMap(texts)];
+        """
+    ) + message + functions + textwrap.dedent(
+        """
+        (async () => {
+          await poll("job");
+          const notice = $("wordlist-exhausted-notice");
+          assert.equal(notice.hidden, false);
+          assert.ok(notice.textContent.length > 0);
+          assert.ok(texts(historyCard(result, 0)).includes(notice.textContent));
+          for (const state of ["preview", "running"]) {
+            setBuilderState(state);
+            assert.equal(notice.hidden, true);
+            assert.equal(notice.textContent, "");
+            await poll("job");
+            assert.equal(notice.hidden, false);
+          }
+          delete result.wordlist_exhausted; // Next result and older saved jobs.
+          await poll("job");
+          assert.equal(notice.hidden, true);
+          assert.equal(notice.textContent, "");
+          assert.ok(!texts(historyCard(result, 0)).includes(WORDLIST_EXHAUSTED_NOTICE));
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_image_credit_cards():
     subprocess.run(
         ["node", "tests/image-credits.mjs"], cwd=INDEX.parents[3],

@@ -980,6 +980,7 @@
   <p class="hint" id="builder-preview-pending" hidden>プレビューを準備中…</p>
   <!-- 完成した動画のシェア導線。枠のすぐ下に出す(中身は SHARE_HTML) -->
   <div id="builder-share" hidden></div>
+  <p class="hint" id="wordlist-exhausted-notice" role="status" hidden></p>
   <p class="generation-quality-warning" id="generation-quality-warning" role="status" hidden>
     この曲は音声解析の難易度が高く、全体的にうまく生成できていない可能性があります。
     <a href="/guidelines#generation-tips" target="_blank" rel="noopener noreferrer">生成しやすい曲のヒント</a>
@@ -2275,6 +2276,12 @@ function historyCard(job, index) {
   status.className = `history-status history-status-${job.status || "unknown"}`;
   status.textContent = historyStatusLabel(job);
   copy.append(title, wordlist, created, status);
+  if (complete && job.wordlist_exhausted) {
+    const notice = document.createElement("p");
+    notice.className = "history-meta";
+    notice.textContent = WORDLIST_EXHAUSTED_NOTICE;
+    copy.appendChild(notice);
+  }
   if (job.generation_quality_warning) {
     const warning = document.createElement("p");
     warning.className = "history-meta";
@@ -2704,6 +2711,7 @@ async function poll(id, seq = pollSeq) {
     if (job.result_kind === "audio") setBuilderState("preview");
     else showBuilderVideo(job);
     $("generation-quality-warning").hidden = !job.generation_quality_warning;
+    showWordlistExhaustionNotice(!!job.wordlist_exhausted);
     finish();
   } else if (job.status === "canceled") {
     setJobStatus("中断しました");
@@ -2724,6 +2732,14 @@ async function poll(id, seq = pollSeq) {
 }
 
 // ---- 完成した動画を保存・共有する ----
+const WORDLIST_EXHAUSTED_NOTICE = "単語リストを使い切ったため、一部は元の読みで歌っています。";
+
+function showWordlistExhaustionNotice(exhausted) {
+  const notice = $("wordlist-exhausted-notice");
+  notice.textContent = exhausted ? WORDLIST_EXHAUSTED_NOTICE : "";
+  notice.hidden = !exhausted;
+}
+
 // UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
 // 誤判定しやすい。iPadのデスクトップ表示も含めてモバイルOSかを判定したうえで、
 // Web Share APIの有無を見る。PCでは共有シートを保存導線にせず、直接ダウンロードと
@@ -4893,6 +4909,7 @@ function setBuilderState(state) {
     $("builder-share").hidden = true;
     $("builder-share").innerHTML = "";
     $("generation-quality-warning").hidden = true;
+    showWordlistExhaustionNotice(false);
   }
   if (state === "running") {
     $("builder-figure").hidden = false;   // サムネが無い組み合わせでも進捗は枠に出す

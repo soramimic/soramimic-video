@@ -155,6 +155,56 @@ def test_audio_job_persists_generation_quality_warning(tmp_path, monkeypatch):
     assert body["generation_quality_warning"] is True
 
 
+def test_wordlist_exhaustion_notice_survives_cleanup_and_restart(tmp_path, monkeypatch):
+    def exhausted_pipeline(job, config):
+        job.wordlist_exhausted = True
+        (job.dir / "project.json").write_text("{}")
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", exhausted_pipeline)
+    jobs_dir = tmp_path / "jobs"
+    app = api_mod.create_app(jobs_dir=jobs_dir)
+    app.state.manager.config["scrub_private_artifacts"] = True
+    browser = TestClient(app)
+    job_id = submit(browser, wordlist="stations")
+    body = wait_done(browser, job_id)
+    assert body["status"] == "done"
+    assert body["wordlist_exhausted"] is True
+    assert not (jobs_dir / job_id / "project.json").exists()
+    restarted = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    assert restarted.get(f"/api/jobs/{job_id}").json()["wordlist_exhausted"] is True
+    assert restarted.get("/api/jobs").json()[0]["wordlist_exhausted"] is True
+
+
+def test_run_pipeline_detects_wordlist_exhaustion(tmp_path, monkeypatch):
+    from soramimic_video import mix as mix_mod
+    from soramimic_video import video as video_mod
+    from soramimic_video import xfparse
+    from soramimic_video.project import Line, Note, Project, SongInfo
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation\n0,カ,カ,カ", encoding="utf-8")
+    project = Project(
+        song=SongInfo(midi_path="", ticks_per_beat=480),
+        notes=[Note(i, 60, i * 480, (i + 1) * 480, i, i + 1, 0, "カ", "カ", "カ")
+               for i in range(3)],
+        lines=[Line(0, "カカカ", "カカカ", [0, 1, 2])],
+    )
+    monkeypatch.setattr(xfparse, "analyze_midi", lambda path: project)
+    monkeypatch.setattr(api_mod, "_run_synthesize", lambda *a, **k: None)
+    monkeypatch.setattr(mix_mod, "mix", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "make_video", lambda *a, **k: tmp_path / "out.mp4")
+    job = api_mod.Job(id="notice", dir=tmp_path, params={"wordlist": str(csv_path)})
+    api_mod.run_pipeline(job, {"parallel_video": False})
+    assert job.wordlist_exhausted
+    assert "wordlist_exhausted" not in job.to_dict()  # 完成前は表示しない
+    job.video = tmp_path / "out.mp4"
+    job.status = "done"
+    assert job.to_dict()["wordlist_exhausted"] is True
+
+
 def test_retried_audio_submission_returns_the_same_job(client):
     fields = {
         "wordlist": "stations",
