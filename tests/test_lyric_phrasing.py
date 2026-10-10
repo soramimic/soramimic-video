@@ -57,8 +57,8 @@ def _project(*, text=TEXT, kana=KANA, rest_at=(), whisper_at=(), repeat=1):
     return project
 
 
-def test_whisper_is_snapped_to_bunsetsu_and_rest_adds_a_missing_break():
-    # Whisper ends inside 照らして; the safe end is mora 14. It misses the rest at 28.
+def test_whisper_is_snapped_to_bunsetsu_without_requiring_a_break_at_every_rest():
+    # Whisper ends inside 照らして; the safe end is mora 14. The later rest is optional.
     source = _project(whisper_at=(13,), rest_at=(28,))
     outputs = {}
     for strategy in ("whisper", "rest", "hybrid"):
@@ -69,7 +69,17 @@ def test_whisper_is_snapped_to_bunsetsu_and_rest_adds_a_missing_break():
         assert project.lyric_layers == source.lyric_layers
     assert outputs["whisper"] == [TEXT[:10], TEXT[10:]]
     assert outputs["rest"] == [TEXT[:20], TEXT[20:]]
-    assert outputs["hybrid"] == [TEXT[:10], TEXT[10:20], TEXT[20:]]
+    assert outputs["hybrid"] == outputs["whisper"]
+
+
+def test_rests_help_locate_a_needed_split_without_creating_short_phrases():
+    project = _project(rest_at=(21,))
+    prepare_lyric_phrases(project, enabled=True)
+    assert [line.original_text for line in project.lines] == [TEXT[:15], TEXT[15:]]
+    frequent = _project(rest_at=(7, 14, 21, 28, 35))
+    prepare_lyric_phrases(frequent, enabled=True)
+    assert len(frequent.lines) == 2
+    assert "".join(line.original_text for line in frequent.lines) == TEXT
 
 
 def test_no_recognition_or_rests_still_bounds_long_phrases_without_forcing_word_cuts():
