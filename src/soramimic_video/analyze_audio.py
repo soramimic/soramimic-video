@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from .audio_project import DEFAULT_BPM, MoraNote, build_project, write_srt
 from .kana import split_fine_moras, split_moras, vowel_of
+from .parenthetical_ruby import normalize_parenthetical_ruby
 from .project import Project
 from .ruby import strip_ruby
 from .semantic_lyrics import (
@@ -964,7 +965,8 @@ def analyze_audio(
     # 2. 歌詞行の決定
     if lyrics_path is not None:
         line_texts = [
-            ln.strip() for ln in lyrics_path.read_text(encoding="utf-8").splitlines()
+            normalize_parenthetical_ruby(ln.strip())
+            for ln in lyrics_path.read_text(encoding="utf-8").splitlines()
         ]
         line_texts = [ln for ln in line_texts if ln]
         logger.info("元歌詞: %d行 (%s)", len(line_texts), lyrics_path)

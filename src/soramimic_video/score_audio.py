@@ -64,6 +64,8 @@ def analyze_audio(
     )
     out = project_dir / "analyze_audio"
     out.mkdir(parents=True, exist_ok=True)
+    annotation_path = out / "lyric_annotations.json"
+    annotation_path.unlink(missing_ok=True)
     accompaniment = out / "no_vocals.wav" if not skip_separation else None
     if progress is not None:
         progress(0.01)
@@ -86,6 +88,13 @@ def analyze_audio(
     runproc.raise_if_cancelled()
     (out / "score.json").write_text(document.to_json(), encoding="utf-8")
     layers = copy.deepcopy(document.to_dict()["score"])
+    selections = [item["detail"] for item in layers.get("evidence", [])
+                  if item.get("kind") == "reading-selection"
+                  and "parenthetical_readings" in item.get("detail", {})]
+    if selections:
+        annotation_path.write_text(json.dumps({
+            "supplied_lines": lyrics, "resolved_groups": selections,
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
     if not layers["canonical"]:
         raise ValueError(
             "歌唱の根拠を確認できる歌詞が残りませんでした。音源と入力歌詞を確認してください。"

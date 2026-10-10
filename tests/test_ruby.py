@@ -131,10 +131,11 @@ def _project_from_kana(lines_kana: list[str]) -> Project:
     )
 
 
-def test_align_lines_stores_plain_text():
+@pytest.mark.parametrize("lyrics", ["｜紅葉《もみじ》が散る", "紅葉（もみじ）が散る"])
+def test_align_lines_stores_plain_text(lyrics: str):
     _reading_module()
     project = _project_from_kana(["モミジガチル"])
-    align_lines(project, ["｜紅葉《もみじ》が散る"])
+    align_lines(project, [lyrics])
     assert project.lines[0].original_text == "紅葉が散る"
     _assert_no_markup(project.lines[0].original_text or "")
 
@@ -174,13 +175,14 @@ def _plain_midi(path: Path, notes: list[tuple[int, int, int]]) -> Path:
     return path
 
 
-def test_build_from_melody_midi_ruby_forces_reading(tmp_path: Path):
+@pytest.mark.parametrize("lyrics", ["｜紅葉《もみじ》", "紅葉（もみじ）"])
+def test_build_from_melody_midi_ruby_forces_reading(tmp_path: Path, lyrics: str):
     _reading_module()
     from soramimic_video.midi_project import build_from_melody_midi
 
     midi = _plain_midi(tmp_path / "m.mid", [(i * 240, 240, 60 + i) for i in range(3)])
     project = build_from_melody_midi(
-        midi, tmp_path / "proj", lyrics="｜紅葉《もみじ》", render_backing=False
+        midi, tmp_path / "proj", lyrics=lyrics, render_backing=False
     )
     # 字幕・元歌詞は素テキスト、音符の読みは注釈どおり
     assert project.lines[0].original_text == "紅葉"
@@ -214,7 +216,8 @@ def test_convert_after_ruby_lyrics(tmp_path: Path):
     assert any(w.surface == "もみじ" for w in words)
 
 
-def test_run_convert_accepts_ruby_notation(tmp_path: Path):
+@pytest.mark.parametrize("lyrics", ["｜紅葉《もみじ》", "紅葉（もみじ）"])
+def test_run_convert_accepts_ruby_notation(tmp_path: Path, lyrics: str):
     """エンジン(soramimic)の記法対応そのもの: 記法つきフレーズを直接渡せる。"""
     from soramimic_video.soramimic_engine import run_convert
 
@@ -223,7 +226,7 @@ def test_run_convert_accepts_ruby_notation(tmp_path: Path):
         "id,original,surface,pronunciation\n0,もみじ饅頭,もみじ,モミジ\n1,鈴鹿,鈴鹿,スズカ",
         encoding="utf-8",
     )
-    result = run_convert(["｜紅葉《もみじ》"], csv_path, None, {}, cache_db=False)
+    result = run_convert([lyrics], csv_path, None, {}, cache_db=False)
     units = result["lines"][0]["units"]
     # 注釈区間の読みが強制されている(既定の コーヨー ではない)
     assert "".join(u["pronunciation"] for u in units) == "モミジ"
