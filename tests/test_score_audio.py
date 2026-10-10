@@ -68,6 +68,59 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
 
 
+@pytest.mark.parametrize("recovered", ["Hello world", "雲の先へ", "空へ fly"])
+def test_pinned_score_recovers_lyrics_from_template_and_preserves_project_reading(
+    monkeypatch, tmp_path, recovered,
+):
+    import soramimic_score
+    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote
+    from soramimic_score.japanese import kana_to_moras
+    from soramimic_score.readings import dictionary_readings
+
+    from soramimic_video.project import Project
+    from soramimic_video.voicevox import build_score
+
+    reading = dictionary_readings(None, (LyricLine(recovered),))[0].kana
+
+    def align(_path, lines, readings):
+        assert lines[0].text == recovered
+        assert readings[0].kana == reading
+        moras = kana_to_moras(reading)
+        return tuple(AlignedMora(0, i, mora, i * 4 / len(moras),
+                                 (i + 1) * 4 / len(moras), .9)
+                     for i, mora in enumerate(moras))
+
+    adapters = AudioAdapters(
+        reading_selector=dictionary_readings,
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(MelodyNote(i * .5, (i + 1) * .5, 60)
+                                            for i in range(8)),
+        lyric_recognizer=lambda _: (LyricLine("ご視聴ありがとうございました", 0, 4),),
+        lyric_reading=lambda text: dictionary_readings(None, (LyricLine(text),))[0].kana,
+        template_lyric_recoverer=lambda *_: (LyricLine(recovered, 0, 4),),
+    )
+    real_analyze = soramimic_score.analyze_audio
+    monkeypatch.setattr(soramimic_score, "analyze_audio",
+                        lambda path, **kw: real_analyze(path, adapters, lyrics=kw["lyrics"]))
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output)
+    project.save(output)
+    reloaded = Project.load(output)
+    assert reloaded.lyric_layers["canonical_text"] == recovered
+    assert reloaded.lines[0].canonical_kana == reading
+    assert reloaded.notes and all(note.kana for note in reloaded.notes)
+    assert build_score(reloaded)["notes"]
+    raw = json.loads((output / "analyze_audio/score.json").read_text())
+    decision = next(e["detail"] for e in raw["observations"]["evidence"]
+                    if e["kind"] == "lyric-language-recovery")
+    assert decision["recognition_language"] == "auto"
+    assert decision["source_surfaces"] == ["ご視聴ありがとうございました"]
+
+
 @pytest.mark.parametrize("adjust", [False, True])
 @pytest.mark.parametrize("source_text,recognized,expected_text,kana,status", [
     ("未来（みらい）（ラララ）", "未来（ラララ）", "未来（ラララ）", "ミライラララ", "resolved"),
