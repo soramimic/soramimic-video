@@ -662,7 +662,10 @@ class Job:
     # 大きな音源の送信が端末側で切れ、同じmultipartを再送したときの重複防止ID。
     # APIレスポンスには出さず、status.jsonにだけ保存する。
     submission_id: str | None = None
-    status: str = "queued"  # queued / running / done / canceled / error
+    status: str = "queued"  # queued / running / awaiting_review / done / canceled / error
+    review_approved: bool = False
+    review_started_at: float | None = None
+    queued_at: float | None = None
     stage: str | None = None
     stages: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
@@ -1263,43 +1266,48 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         if job.params.get("input_kind") == "audio"
         else 2.0
     )
-    with _stage(job, "analyze", estimated_total=analyze_estimate):
-        lyrics_path = d / "lyrics.txt"
-        correct_lyrics = (
-            job.params.get("auto_lyrics") is False and lyrics_path.exists()
-        )
-        if job.params.get("input_kind") == "audio":
-            from .score_audio import analyze_audio
+    if job.review_approved:
+        from .project import Project
 
-            supplied_audio_lyrics = (
-                lyrics_path
-                if lyrics_path.exists()
-                and (
-                    job.params.get("auto_lyrics") is False
-                    or bool(job.params.get("sample_id"))
+        project = Project.load(d)
+    else:
+        with _stage(job, "analyze", estimated_total=analyze_estimate):
+            lyrics_path = d / "lyrics.txt"
+            correct_lyrics = (
+                job.params.get("auto_lyrics") is False and lyrics_path.exists()
+            )
+            if job.params.get("input_kind") == "audio":
+                from .score_audio import analyze_audio
+
+                supplied_audio_lyrics = (
+                    lyrics_path
+                    if lyrics_path.exists()
+                    and (
+                        job.params.get("auto_lyrics") is False
+                        or bool(job.params.get("sample_id"))
+                    )
+                    else None
                 )
-                else None
-            )
-            project = analyze_audio(
-                d / "input.wav",
-                d,
-                # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
-                # アップロード音源の自動認識時はWhisperで歌詞行を決める。
-                lyrics_path=supplied_audio_lyrics,
-                adjust_lyrics=bool(job.params.get("adjust_lyrics", False)),
-                whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
-                device=config.get("audio_device"),
-                progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
-                progress_detail=lambda value: setattr(job, "stage_detail", value),
-            )
-        else:
-            from .xfparse import analyze_midi
+                project = analyze_audio(
+                    d / "input.wav",
+                    d,
+                    # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
+                    # アップロード音源の自動認識時はWhisperで歌詞行を決める。
+                    lyrics_path=supplied_audio_lyrics,
+                    adjust_lyrics=bool(job.params.get("adjust_lyrics", False)),
+                    whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
+                    device=config.get("audio_device"),
+                    progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
+                    progress_detail=lambda value: setattr(job, "stage_detail", value),
+                )
+            else:
+                from .xfparse import analyze_midi
 
-            project = analyze_midi(d / "input.mid")
-            if lyrics_path.exists():
-                aligner = align_correct_lyrics if correct_lyrics else align_lines
-                aligner(project, lyrics_path.read_text(encoding="utf-8").splitlines())
-        project.save(d)
+                project = analyze_midi(d / "input.mid")
+                if lyrics_path.exists():
+                    aligner = align_correct_lyrics if correct_lyrics else align_lines
+                    aligner(project, lyrics_path.read_text(encoding="utf-8").splitlines())
+            project.save(d)
 
     preview_sec = float(job.params.get("preview") or 0)
     if preview_sec > 0:
@@ -1349,6 +1357,13 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             )
             save_raw(raw, d)
             project.save(d)
+
+    if job.params.get("review_lyrics") and not job.review_approved:
+        from .lyric_review import ReviewRequired, prepare_review
+
+        prepare_review(project, d, custom_csv=custom_wordlist_path(job),
+                       title=song_title_of(job.params))
+        raise ReviewRequired()
 
     layout, job.layout_source = resolve_layout(job, config)
     from .align import parse_granularity_override
@@ -1612,6 +1627,9 @@ class JobManager:
                 client_hash=data.get("client_hash"),
                 submission_id=data.get("submission_id"),
                 status=data.get("status", "error"),
+                review_approved=bool(data.get("review_approved", False)),
+                review_started_at=data.get("review_started_at"),
+                queued_at=data.get("queued_at"),
                 stages=data.get("stages", []),
                 error=data.get("error"),
                 layout_source=data.get("layout_source"),
@@ -1907,8 +1925,11 @@ class JobManager:
             )
 
     def active_count(self) -> int:
-        """待機中+実行中のジョブ数(キュー上限の判定用。ワーカーは1本で全員共用)。"""
-        return sum(1 for j in self.jobs.values() if j.status in ("queued", "running"))
+        """Count queued, running and review-pending jobs against the admission limit."""
+        return sum(
+            1 for j in self.jobs.values()
+            if j.status in ("queued", "running", "awaiting_review")
+        )
 
     @staticmethod
     def _remaining_range(job: Job, now: float) -> tuple[int, int]:
@@ -1936,7 +1957,7 @@ class JobManager:
                     for candidate in self.jobs.values()
                     if candidate.status in {"queued", "running"}
                 ),
-                key=lambda candidate: (candidate.created_at, candidate.id),
+                key=lambda candidate: (candidate.queued_at or candidate.created_at, candidate.id),
             )
         ahead: list[Job] = []
         for candidate in active:
@@ -1953,7 +1974,7 @@ class JobManager:
                 "queue_ahead": len(ahead),
                 "queue_wait_min_seconds": low,
                 "queue_wait_max_seconds": high,
-                "queued_elapsed_seconds": max(0, round(now - job.created_at)),
+                "queued_elapsed_seconds": max(0, round(now - (job.queued_at or job.created_at))),
             }
         )
         return data
@@ -1974,7 +1995,9 @@ class JobManager:
 
     def status_counts(self) -> dict[str, int]:
         """metrics向けの状態別件数。投入と同時でもdict反復を壊さない。"""
-        counts = {name: 0 for name in ("queued", "running", "done", "error", "canceled")}
+        counts = dict.fromkeys(
+            ("queued", "running", "awaiting_review", "done", "error", "canceled"), 0
+        )
         with self._lock:
             for job in self.jobs.values():
                 if job.status in counts:
@@ -2012,20 +2035,24 @@ class JobManager:
         )
 
     def cleanup_expired(self, now: float | None = None) -> list[str]:
-        """SORAMIMIC_JOB_TTL_HOURS を過ぎた完了ジョブを削除し、そのIDを返す。
+        """Remove expired results and reviews, preserving queued and running jobs.
 
-        TTLが0以下(既定)なら何もしない。実行中・待機中のジョブは対象外。
+        Public reviews expire after 24 hours when result retention is disabled.
         """
         hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
-        if hours <= 0:
+        if hours <= 0 and not self.config.get("scrub_private_artifacts"):
             return []
-        deadline = (now or time.time()) - hours * 3600
+        current_time = now or time.time()
+        deadline = current_time - hours * 3600
+        review_deadline = current_time - (hours if hours > 0 else 24) * 3600
         with self._lock:
             expired = [
                 job
                 for job in self.jobs.values()
-                if job.status in ("done", "error", "canceled")
-                and (job.finished_at or job.created_at) <= deadline
+                if (hours > 0 and job.status in ("done", "error", "canceled")
+                    and (job.finished_at or job.created_at) <= deadline)
+                or (job.status == "awaiting_review"
+                    and (job.review_started_at or job.created_at) <= review_deadline)
             ]
             for job in expired:
                 self.jobs.pop(job.id, None)
@@ -2067,6 +2094,12 @@ class JobManager:
         # 持ち主判定・自動削除ができるよう status.json には残す
         if job.owner:
             data["owner"] = job.owner
+        if job.review_approved:
+            data["review_approved"] = True
+        if job.review_started_at is not None:
+            data["review_started_at"] = job.review_started_at
+        if job.queued_at is not None:
+            data["queued_at"] = job.queued_at
         if job.client_hash:
             data["client_hash"] = job.client_hash
         if job.submission_id:
@@ -2106,23 +2139,61 @@ class JobManager:
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    def cancel(self, job_id: str, owner: str | None = None) -> Job:
-        job = self.get(job_id, owner)
-        if job.status not in ("queued", "running"):
+    def review_data(self, job_id: str, owner: str | None = None) -> dict[str, Any]:
+        from .lyric_review import REVIEW_FILENAME
+
+        with self._lock:
+            job = self.get(job_id, owner)
+            if job.status != "awaiting_review":
+                raise HTTPException(
+                    status_code=409, detail="このジョブは歌詞の確認待ちではありません"
+                )
+            return json.loads((job.dir / REVIEW_FILENAME).read_text(encoding="utf-8"))
+
+    def resume_review(self, job_id: str, payload: Any, owner: str | None = None) -> Job:
+        from .lyric_review import validate_review
+
+        with self._lock:
+            job = self.get(job_id, owner)
+            # A lost response may be retried after the worker has already started.
+            if job.review_approved:
+                return job
+            if job.status != "awaiting_review":
+                raise HTTPException(
+                    status_code=409, detail="このジョブは歌詞の確認待ちではありません"
+                )
+            try:
+                data = validate_review(
+                    job.dir, payload, sessions_dir=self.config["editor_sessions"]
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            (job.dir / "editor.json").write_bytes(data)
+            job.review_approved = True
+            job.params["parody_source"] = "editor"
+            job.queued_at = time.time()
+            job.status = "queued"
+            self._save(job)
+            self._queue.put(job)
             return job
-        job.cancel_event.set()
-        if job.status == "running":
-            # 実行中のNEUTRINO/ffmpeg等をプロセスグループごと止める。
-            # ワーカーは1本なので、実行中プロセス=このジョブのもの
-            runproc.kill_current()
-        else:
-            with self._lock:
+
+    def cancel(self, job_id: str, owner: str | None = None) -> Job:
+        with self._lock:
+            job = self.get(job_id, owner)
+            if job.status not in ("queued", "running", "awaiting_review"):
+                return job
+            job.cancel_event.set()
+            if job.status == "running":
+                # 実行中のNEUTRINO/ffmpeg等をプロセスグループごと止める。
+                # ワーカーは1本なので、実行中プロセス=このジョブのもの
+                runproc.kill_current()
+            else:
                 job.status = "canceled"
                 job.finished_at = time.time()
                 self._record_finished_usage(job, failed_stage=None)
                 self._cleanup_failed_artifacts(job)
                 self._save(job)
-        return job
+            return job
 
     def _cleanup_failed_artifacts(self, job: Job) -> bool:
         """Remove uploads/intermediates after errors and cancellation, retaining status."""
@@ -2223,6 +2294,8 @@ class JobManager:
                         logger.exception("[job %s] 状態の保存に失敗", job.id)
 
     def _run_one(self, job: Job) -> None:
+        from .lyric_review import ReviewRequired
+
         if job.cancel_event.is_set():
             self._cleanup_failed_artifacts(job)
             job.status = "canceled"
@@ -2231,7 +2304,10 @@ class JobManager:
         handler = _JobLogHandler(job)
         logging.getLogger("soramimic_video").addHandler(handler)
         job.status = "running"
-        job.started_at = time.time()
+        if job.review_approved and job.started_at and job.review_started_at:
+            job.started_at += time.time() - job.review_started_at
+            job.review_started_at = None
+        job.started_at = job.started_at or time.time()
         runproc.set_cancel_check(job.cancel_event.is_set)
         self._save(job)
         final_status = "error"
@@ -2247,6 +2323,8 @@ class JobManager:
             if self.config.get("scrub_private_artifacts"):
                 self._cleanup_completed_artifacts(job)
             final_status = "done"
+        except ReviewRequired:
+            final_status = "awaiting_review"
         except runproc.Cancelled:
             logger.info("[job %s] 中断されました", job.id)
             self._cleanup_failed_artifacts(job)
@@ -2271,7 +2349,12 @@ class JobManager:
             # status are ready.  Polling clients therefore cannot race result TTL
             # cleanup against the final status write.
             with self._lock:
-                job.finished_at = time.time()
+                if final_status == "awaiting_review":
+                    if job.cancel_event.is_set():
+                        final_status = "canceled"
+                    else:
+                        job.review_started_at = time.time()
+                job.finished_at = None if final_status == "awaiting_review" else time.time()
                 if final_status in ("error", "canceled"):
                     self._cleanup_failed_artifacts(job)
                 job.status = final_status
@@ -3742,6 +3825,7 @@ def create_app(
         sample_id: str = Form(""),
         lyrics_file: UploadFile | None = File(None),
         editor: UploadFile | None = None,
+        review_lyrics: bool = Form(False),
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
         wordlist_csv: UploadFile | None = None,
         # 画面に貼り付けた単語リスト(zipを作らずに画像を付ける経路)。
@@ -3846,6 +3930,8 @@ def create_app(
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
+        if review_lyrics and (is_simple_ui() or not editor_available):
+            raise HTTPException(status_code=422, detail="替え歌歌詞の確認は現在利用できません")
         wordlist_text = await read_wordlist_text(wordlist_text)
         if (is_public_mode() or is_simple_ui()) and (
             (editor is not None and bool(editor.filename))
@@ -4067,6 +4153,7 @@ def create_app(
             "voicevox_style": voicevox_style,
             "auto_octave": auto_octave,
             "transpose": transpose,
+            "review_lyrics": review_lyrics and preview <= 0,
             "preview": max(0.0, min(preview, 60.0)),
             "preview_mode": (
                 preview_mode.strip() if preview_mode.strip() in PREVIEW_MODES else ""
@@ -4220,6 +4307,35 @@ def create_app(
         return manager.job_dict(
             manager.cancel(job_id, owner_of(request)), with_log=False
         )
+
+    @app.get("/api/jobs/{job_id}/review", dependencies=[Depends(_require_api_key)])
+    def get_lyric_review(job_id: str, request: Request) -> JSONResponse:
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        return JSONResponse(
+            manager.review_data(job_id, owner_of(request)),
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.post("/api/jobs/{job_id}/resume", dependencies=[Depends(_require_api_key)])
+    async def resume_lyric_review(
+        job_id: str, request: Request, editor: UploadFile = File(...),
+    ) -> dict[str, Any]:
+        from .lyric_review import MAX_REVIEW_BYTES
+
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        owner = owner_of(request)
+        manager.get(job_id, owner)
+        raw = await editor.read(MAX_REVIEW_BYTES + 1)
+        if len(raw) > MAX_REVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="編集データが大きすぎます")
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="編集データのJSONが読めません") from exc
+        job = await run_in_threadpool(manager.resume_review, job_id, payload, owner)
+        return manager.job_dict(job, with_log=False)
 
     @app.get("/api/jobs/{job_id}/credits", dependencies=[Depends(_require_api_key)])
     def get_credits(job_id: str, request: Request, download: bool = False) -> FileResponse:

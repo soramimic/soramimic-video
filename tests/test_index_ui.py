@@ -132,6 +132,93 @@ def test_builder_omits_editor_entry_button():
         assert btn in ids
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function poll(", "async function openLyricReview(",
+            "async function confirmLyricReview(", "function closeEditor()",
+            "async function syncEditorSessionOnce()",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        const $ = (id) => {
+          if (!elements.has(id)) elements.set(id, {hidden: true, textContent: "", focus() {}});
+          return elements.get(id);
+        };
+        const stored = new Map();
+        const sessionStorage = {
+          getItem: (key) => stored.get(key) || null,
+          setItem: (key, value) => stored.set(key, value),
+          removeItem: (key) => stored.delete(key),
+        };
+        const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "review", EDITOR_SEED_KEY = "seed";
+        let currentJob = "job1", reviewJobId = null, reviewOpenedJob = null;
+        let reviewOpening = false, reviewSubmitting = false, pollSeq = 1, pollLastAt = 0;
+        let pollFailures = 0, cancelPendingJob = null, openCount = 0, requests = [];
+        const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], POLL_INTERVAL_MS = 2000;
+        const STAGE_LABELS = {}, document = {body: {classList: {remove() {}}}};
+        const headers = () => ({});
+        const renderStages = () => {}, renderBuilderBar = () => {}, schedulePoll = () => {};
+        const setJobStatus = () => {}, watchEditorSession = () => {};
+        let message = "", watched = null, rejectResume = true;
+        const showBuilderMsg = (text) => { message = text; };
+        const showEditorFrame = () => { openCount++; $("editor-frame-wrap").hidden = false; };
+        const editorSessionData = () => JSON.parse(sessionStorage.getItem(EDITOR_KEY) || "null");
+        const watch = (id) => { watched = id; pollSeq++; };
+        const seed = {format: "soramimic-editor/1", phrases: ["シズム"], results: [["original"]]};
+        const fetch = async (url, options = {}) => {
+          requests.push(url);
+          if (url.endsWith("/review")) return {ok: true, json: async () => seed};
+          if (url.endsWith("/resume")) {
+            assert.deepEqual(JSON.parse(await options.body.get("editor").text()),
+              {...seed, results: [["edited"]]});
+            return {ok: !rejectResume, json: async () => ({detail: "再試行してください"})};
+          }
+          return {ok: true, status: 200, json: async () => ({
+            status: "awaiting_review", params: {}, stages: [],
+          })};
+        };
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 1);
+          assert.equal(reviewJobId, "job1");
+          assert.equal($("builder-review").hidden, false);
+          sessionStorage.setItem(EDITOR_KEY, JSON.stringify({...seed, results: [["edited"]]}));
+          await syncEditorSessionOnce(); // Review must not change the next song's form.
+          closeEditor();
+          assert.equal($("editor-frame-wrap").hidden, true);
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 1); // Closing does not auto-open or auto-resume.
+          assert.equal(requests.filter((url) => url.endsWith("/resume")).length, 0);
+          reviewJobId = null; reviewOpenedJob = null; // Reload with the same tab storage.
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 2);
+          assert.deepEqual(editorSessionData().results, [["edited"]]);
+          await confirmLyricReview();
+          assert.equal(reviewJobId, "job1");
+          assert.equal($("editor-frame-wrap").hidden, false);
+          assert.match($("lyric-review-error").textContent, /再試行してください/);
+          rejectResume = false;
+          await confirmLyricReview();
+          assert.equal(watched, "job1");
+          assert.equal(reviewJobId, null);
+          assert.equal($("editor-frame-wrap").hidden, true);
+          assert.equal($("confirm-lyric-review").disabled, false);
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True)
+
+
 def test_public_ui_filters_wordlists_and_simple_ui_hides_advanced():
     """公開UIはカタログだけを出し、簡易UIではさらに詳細設定を隠す。"""
     script = _script()
