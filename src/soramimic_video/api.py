@@ -326,8 +326,12 @@ async def read_lyrics_upload(upload: UploadFile) -> str:
         raise HTTPException(
             status_code=400, detail="歌詞ファイルはUTF-8で保存してください"
         ) from exc
-    if "\x00" in text:
-        raise HTTPException(status_code=400, detail="歌詞ファイルに使用できない文字があります")
+    from soramimic_score import normalize_lyric_input
+
+    try:
+        normalize_lyric_input(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return text
 
 
@@ -3827,6 +3831,13 @@ def create_app(
                 )
         elif not auto_lyrics and not lyrics.strip():
             raise HTTPException(status_code=422, detail="正解歌詞を入力してください")
+        if input_kind == "audio":
+            from soramimic_score import normalize_lyric_input
+
+            try:
+                normalize_lyric_input(lyrics)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if adjust_lyrics and (input_kind != "audio" or auto_lyrics or not lyrics.strip()):
             raise HTTPException(
                 status_code=422,
