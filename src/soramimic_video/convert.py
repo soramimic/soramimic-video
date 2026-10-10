@@ -93,12 +93,28 @@ def _layer_unit_mapping(
     if len(plan) != len(project.notes):
         raise ValueError("歌詞レイヤーの合成計画と音符列の対応が失われています")
 
-    canonical_index = line.original_line_index
-    if canonical_index is None:
-        canonical_index = line.id
-    if not isinstance(canonical_index, int) or not 0 <= canonical_index < len(canonical):
-        raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
-    canonical_line = canonical[canonical_index]
+    slot_by_note_id = {
+        note.id: slot for note, slot in zip(project.notes, plan, strict=True)
+    }
+    if len(slot_by_note_id) != len(project.notes):
+        raise ValueError("歌詞レイヤーの音符IDが重複しています")
+    # Display groups may span several acoustic lines. Resolve the utterance from
+    # the actual owned synthesis slots, never from a supplied-lyric display index.
+    if line.note_ids:
+        owners = {slot_by_note_id.get(nid, {}).get("utterance_id") for nid in line.note_ids}
+        matches = [row for row in canonical if row.get("utterance_id") in owners]
+        if len(owners) != 1 or None in owners or len(matches) != 1:
+            raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
+        canonical_line = matches[0]
+    else:
+        canonical_index = line.canonical_line_index
+        if canonical_index is None:
+            canonical_index = line.id if layers.get("lyric_surface") else line.original_line_index
+        if canonical_index is None:
+            canonical_index = line.id
+        if not isinstance(canonical_index, int) or not 0 <= canonical_index < len(canonical):
+            raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
+        canonical_line = canonical[canonical_index]
     utterance_id = canonical_line.get("utterance_id")
     mora_ids = canonical_line.get("mora_ids")
     canonical_kana = canonical_line.get("kana")
@@ -111,6 +127,18 @@ def _layer_unit_mapping(
     moras = split_fine_moras(canonical_kana)
     if len(moras) != len(mora_ids):
         raise ValueError(f"行{line.id}: 完全歌詞のモーラIDと読みが一致しません")
+    if line.canonical_mora_ids is not None:
+        selected = line.canonical_mora_ids
+        if not selected or selected[0] not in mora_ids:
+            raise ValueError(f"行{line.id}: フレーズのモーラIDが不正です")
+        start = mora_ids.index(selected[0])
+        end = start + len(selected)
+        if mora_ids[start:end] != selected:
+            raise ValueError(f"行{line.id}: フレーズのモーラIDが連続していません")
+        moras, mora_ids = moras[start:end], selected
+        canonical_kana = "".join(moras)
+        if canonical_kana != line.canonical_kana:
+            raise ValueError(f"行{line.id}: フレーズの読みが完全歌詞と一致しません")
     unit_prons: list[str] = []
     for unit in units:
         value = unit.get("pronunciation")
@@ -145,13 +173,6 @@ def _layer_unit_mapping(
             raise ValueError(f"行{line.id}: 変換元音節のモーラIDを特定できません")
         unit_mora_ids.append(owned)
         cursor = end
-
-    slot_by_note_id = {
-        note.id: slot
-        for note, slot in zip(project.notes, plan, strict=True)
-    }
-    if len(slot_by_note_id) != len(project.notes):
-        raise ValueError("歌詞レイヤーの音符IDが重複しています")
 
     note_mora_ids: list[set[str]] = []
     for note_id in line.note_ids:
@@ -1463,6 +1484,7 @@ def convert_project(
     where: str | None = None,
     params: dict[str, str] | None = None,
     cache_db: bool = True,
+    auto_phrase_lyrics: bool = False,
 ) -> dict:
     """project.parody を埋める(破壊的)。変換エンジンの生の応答を返す。
 
@@ -1474,6 +1496,10 @@ def convert_project(
     """
     csv_path = resolve_wordlist(wordlist)
     where, coerced, alpha = resolve_convert_settings(csv_path, where, params)
+
+    from .lyric_phrasing import prepare_lyric_phrases
+
+    prepare_lyric_phrases(project, enabled=auto_phrase_lyrics)
 
     # 同母音の小書き(ウッセェワ)はエンジンのトークナイズで「セ」「ェ」に割れ、
     # 「ェ」に一致する単語が無いためその行の変換結果が空になる。1文字→1文字で
