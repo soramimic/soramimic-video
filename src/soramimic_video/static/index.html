@@ -963,6 +963,7 @@
       <span class="spinner" aria-hidden="true"></span>
       <p id="builder-status" aria-live="polite">送信中…</p>
       <div class="builder-bar"><span id="builder-bar-fill"></span></div>
+      <button type="button" id="builder-review" class="btn-primary btn-sm" hidden>歌詞を確認する</button>
       <button type="button" id="builder-cancel" class="btn-danger btn-sm">中断</button>
     </div>
   </div>
@@ -1083,6 +1084,11 @@
   <summary aria-disabled="true">⚙️ 詳細設定
     <span class="advanced-lock-hint" id="advanced-lock-hint">曲と単語リストを選ぶと開けます</span>
   </summary>
+
+  <div class="field" id="review-lyrics-field" hidden>
+    <label><input type="checkbox" id="review-lyrics"> 替え歌歌詞を確認する</label>
+    <p class="hint" data-info>音楽解析と替え歌への変換が終わると編集画面が開きます。確認してから動画を生成できます。</p>
+  </div>
 
   <!-- 選択中の単語リストに facets があるときだけ表示する。チェック状態は #where
        の正本と同期し、サムネイル・生成・替え歌エディタへ同じ条件を渡す。 -->
@@ -1326,9 +1332,14 @@
   aria-labelledby="editor-modal-title">
   <div class="editor-modal-head">
     <h2 id="editor-modal-title">✏️ 替え歌エディタ</h2>
-    <p class="hint">編集はエディタ内で自動保存され、閉じても生成に使われます。「動画作成に戻る」またはEscで閉じられます。</p>
+    <p class="hint" id="editor-modal-hint">編集はエディタ内で自動保存され、閉じても生成に使われます。「動画作成に戻る」またはEscで閉じられます。</p>
   </div>
   <iframe id="editor-frame" title="soramimic editor"></iframe>
+  <div class="editor-modal-foot" id="lyric-review-actions" hidden>
+    <button type="button" id="confirm-lyric-review" class="btn-primary">確認して動画を生成</button>
+    <button type="button" id="close-lyric-review" class="btn-sm">閉じる</button>
+    <p class="hint" id="lyric-review-error" role="alert"></p>
+  </div>
   <!-- 替え歌JSONの読み書き。エディタと同じ「替え歌そのもの」を扱う操作なので、
        詳細設定ではなくエディタの中に置く。出番が少ないのでフッタで控えめに。
        #editor は生成時の参照・自動取り込みの正本のままで、DOMの位置だけ移した。 -->
@@ -1652,6 +1663,8 @@ async function loadConfig() {
   $("auth").hidden = !conf.auth_required;
   updateAdvancedSettingsAvailability();
   simpleMode = !!conf.simple_ui;
+  $("review-lyrics-field").hidden = simpleMode || !conf.editor;
+  $("review-lyrics").disabled = simpleMode || !conf.editor;
   if (simpleMode) closeCustomListMenu(false);
   try { await refreshCustomLists(); }
   catch (err) { showBuilderMsg(err.message); }
@@ -1712,7 +1725,7 @@ async function loadConfig() {
   updateSongTextPreviews();
   const jobs = await loadHistory();
   // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
-  const active = (jobs || []).find((j) => j.status === "running" || j.status === "queued");
+  const active = (jobs || []).find((j) => ["running", "queued", "awaiting_review"].includes(j.status));
   if (active && !resumed) {
     resumed = true;
     setBusy(true);
@@ -2183,7 +2196,7 @@ let activeHistoryPlayback = null;
 let preparedHistoryShare = null;
 
 const HISTORY_STATUS_LABELS = {
-  queued: "開始待ち", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
+  awaiting_review: "歌詞の確認待ち", queued: "開始待ち", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
 };
 
 function historyStatusLabel(job) {
@@ -2567,6 +2580,10 @@ function renderBuilderBar(job) {
     fill.style.width = "0%";
     return;
   }
+  if (job?.status === "awaiting_review") {
+    fill.style.width = "45%";
+    return;
+  }
   if (job?.params?.input_kind === "audio") {
     if (analysisStarting) {
       fill.style.width = "32%";
@@ -2641,6 +2658,11 @@ async function poll(id, seq = pollSeq) {
   pollFailures = 0;
   renderStages(job);
   renderBuilderBar(job);
+  $("builder-review").hidden = job.status !== "awaiting_review";
+  if (reviewJobId === id && job.status !== "awaiting_review") {
+    closeEditor();
+    reviewJobId = null;
+  }
   $("log").textContent = (job.log || []).slice(-15).join("\n");
   const label = job.stage === "analyze" && job.params.input_kind === "audio"
     ? "音源解析" : (STAGE_LABELS[job.stage] || job.stage || "…");
@@ -2669,6 +2691,10 @@ async function poll(id, seq = pollSeq) {
     const waiting = queueWaitLabel(job);
     setJobStatus(cancelPendingJob === id ? "中断しています…" : waiting, waiting);
     schedulePoll(id, seq, POLL_INTERVAL_MS);
+  } else if (job.status === "awaiting_review") {
+    setJobStatus("替え歌歌詞を確認してください");
+    if (reviewOpenedJob !== id && !cancelPendingJob) await openLyricReview(id);
+    if (seq === pollSeq) schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "done") {
     setJobStatus(`完成!(合計 ${Math.round(job.total_seconds)}秒)`);
     // 動画はサムネ枠がそのままプレイヤーに変わる。詳細側にはサムネ画像のリンクだけ
@@ -2948,6 +2974,10 @@ let submitBusy = false;
 
 function finish() {
   stopPolling();
+  if (reviewJobId) closeEditor();
+  reviewJobId = null;
+  reviewOpenedJob = null;
+  $("builder-review").hidden = true;
   $("cancel").hidden = true;
   cancelPendingJob = null;
   setCancelPending(false);
@@ -3201,6 +3231,8 @@ async function submitJob(previewSec, previewMode) {
   form.append("auto_octave", "true");
   form.append("transpose", "0");
   form.append("preview", String(previewSec));
+  form.append("review_lyrics", String(previewSec === 0
+    && !$("review-lyrics").disabled && $("review-lyrics").checked));
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(audio || midi));
   form.append("song_credit", $("song-credit").value.trim());
@@ -6665,6 +6697,69 @@ $("layout-json").addEventListener("change", () => {
 // 同一オリジンのiframeなので sessionStorage を親子で共有できる。シードを書いて
 // から /editor/editor.html を開くと editor がそれを読んで編集を開始する。
 const EDITOR_KEY = "soramimic-editor";
+const REVIEW_JOB_KEY = "soramimic-video-review-job";
+let reviewJobId = null;
+let reviewOpenedJob = null;
+let reviewOpening = false;
+let reviewSubmitting = false;
+
+async function openLyricReview(id) {
+  if (!id || reviewOpening || reviewSubmitting) return;
+  reviewOpening = true;
+  reviewOpenedJob = id;
+  try {
+    const res = await fetch(`/api/jobs/${id}/review`, { headers: headers(), cache: "no-store" });
+    const seed = await res.json();
+    if (!res.ok) throw new Error(seed.detail || res.status);
+    if (currentJob !== id) return;
+    // The shared editor storage can contain another song. Reuse it only for this job.
+    if (sessionStorage.getItem(REVIEW_JOB_KEY) !== id || !editorSessionData()) {
+      sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
+      sessionStorage.setItem(REVIEW_JOB_KEY, id);
+    }
+    sessionStorage.removeItem(EDITOR_SEED_KEY);
+    reviewJobId = id;
+    $("lyric-review-error").textContent = "";
+    showEditorFrame();
+  } catch (err) {
+    showBuilderMsg("編集画面を開けませんでした。「歌詞を確認する」から再試行してください: " + err.message);
+  } finally {
+    reviewOpening = false;
+  }
+}
+
+async function confirmLyricReview() {
+  if (!reviewJobId || reviewSubmitting) return;
+  const id = reviewJobId;
+  reviewSubmitting = true;
+  $("confirm-lyric-review").disabled = true;
+  $("lyric-review-error").textContent = "";
+  try {
+    const raw = sessionStorage.getItem(EDITOR_KEY);
+    if (!raw || sessionStorage.getItem(REVIEW_JOB_KEY) !== id) {
+      throw new Error("編集データがありません。編集画面を開き直してください");
+    }
+    const form = new FormData();
+    form.append("editor", new Blob([raw], { type: "application/json" }), "editor.json");
+    const res = await fetch(`/api/jobs/${id}/resume`, { method: "POST", headers: headers(), body: form });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    closeEditor();
+    reviewJobId = null;
+    showBuilderMsg("");
+    setJobStatus("動画生成を再開しています…");
+    watch(id);
+  } catch (err) {
+    $("lyric-review-error").textContent = "動画生成を再開できませんでした: " + err.message;
+  } finally {
+    reviewSubmitting = false;
+    $("confirm-lyric-review").disabled = false;
+  }
+}
+
+$("builder-review").addEventListener("click", () => openLyricReview(currentJob));
+$("confirm-lyric-review").addEventListener("click", confirmLyricReview);
+$("close-lyric-review").addEventListener("click", closeEditor);
 
 // ---- 編集内容の自動取り込みと、その来歴(provenance)ガード ----
 // エディタは編集のたびに sessionStorage[EDITOR_KEY] を書き換える(起動しただけでは
@@ -7122,6 +7217,7 @@ function syncEditorSession() {
   return editorSyncPending;
 }
 async function syncEditorSessionOnce() {
+  if (reviewJobId) return;
   await applyEditorWordlist();
   applyEditorLyrics();   // 元歌詞(字幕用)の書き戻しも同じ経路で拾う
   // 「曲を変えたい」の依頼もここで拾う(非同期。開いているあいだだけ応える)
@@ -7272,6 +7368,7 @@ async function convertAndOpenEditor() {
 }
 
 async function importEditor() {
+  if (reviewJobId) { closeEditor(); return; }
   await syncEditorSession();
   const raw = sessionStorage.getItem(EDITOR_KEY);
   if (!raw) { alert("編集データがありません"); return; }
@@ -7290,6 +7387,10 @@ function closeEditor() {
   $("editor-frame").src = "about:blank";
   document.body.classList.remove("modal-open");
   watchEditorSession(false);
+  if (reviewJobId) {
+    $("builder-review").focus();
+    return;
+  }
   // 応えないまま閉じた依頼は持ち越さない(次に開いたときに突然曲が変わらないように)
   clearHostRequest();
   // 閉じても編集は生きている(その旨を出す)。エディタの中で単語リストを
@@ -7300,6 +7401,12 @@ function closeEditor() {
 }
 
 function showEditorFrame() {
+  if (!reviewJobId) sessionStorage.removeItem(REVIEW_JOB_KEY);
+  $("lyric-review-actions").hidden = !reviewJobId;
+  $("parody-io").hidden = !!reviewJobId;
+  $("editor-modal-hint").textContent = reviewJobId
+    ? "替え歌歌詞を確認・編集して「確認して動画を生成」を押してください。閉じても動画生成は始まりません。曲と単語リストは変更できません。"
+    : "編集はエディタ内で自動保存され、閉じても生成に使われます。「動画作成に戻る」またはEscで閉じられます。";
   const wordlist = editorSessionWordlist();
   if (wordlist?.value === "ORIGINAL" && typeof wordlist.csvText === "string") {
     try { localStorage.setItem("originalWordlist", wordlist.csvText); }
@@ -7863,6 +7970,7 @@ function saveForm() {
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
       autoOctave: $("auto-octave").checked,
+      reviewLyrics: $("review-lyrics").checked,
     }));
   } catch { /* QuotaExceededError等でUIを壊さない */ }
 }
@@ -7952,7 +8060,7 @@ $("layout-select").addEventListener("change", async () => {
 ["lyrics", "song-title", "wordlist", "where",
  "transpose", "layout-json",
  "song-credit", "thumbnail-wordlist-label",
- "synthesizer", "voicevox-style", "auto-octave"]
+ "synthesizer", "voicevox-style", "auto-octave", "review-lyrics"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
 // 持ち込みMIDIはバイナリなのでdataURL化して保存する。WAVは大きくなりやすく、
@@ -8056,6 +8164,7 @@ async function doRestoreForm() {
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
     $("song-title").value = state.songTitle || "";
+    $("review-lyrics").checked = state.reviewLyrics === true;
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
       ? state.sampleLyricsBaseline : null;

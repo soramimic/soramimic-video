@@ -308,10 +308,13 @@ def test_editor_frame_receives_current_original_csv_before_opening(storage_fails
     ])
     run_node(functions + f"const storageFails = {json.dumps(storage_fails)};\n" + r"""
 const EDITOR_KEY = 'editor-session';
+const REVIEW_JOB_KEY = 'review-job';
+const reviewJobId = null;
 const currentCsv = 'text,yomi\nねこ,ネコ\nいぬ,イヌ';
 const sessionStorage = {
   getItem: (key) => key === EDITOR_KEY
     ? JSON.stringify({ wordlist: { value: 'ORIGINAL', csvText: currentCsv } }) : null,
+  removeItem: () => {},
 };
 const localValues = new Map([['originalWordlist', 'text,yomi\nりんご,リンゴ']]);
 const events = [];
@@ -330,7 +333,7 @@ const frame = {
   focus: () => events.push('focused'),
 };
 const wrapper = { hidden: true };
-const $ = (id) => ({ 'editor-frame': frame, 'editor-frame-wrap': wrapper })[id];
+const $ = (id) => ({ 'editor-frame': frame, 'editor-frame-wrap': wrapper })[id] || {};
 const document = { body: { classList: { add: () => events.push('modal') } } };
 const showBuilderMsg = (text) => messages.push(text);
 const hideEditorResume = () => events.push('resume-hidden');
