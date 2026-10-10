@@ -69,8 +69,13 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
 
 
 @pytest.mark.parametrize("supplied", [False, True])
-def test_pinned_score_keeps_repeated_small_kana_through_audio_import(
-    monkeypatch, tmp_path, supplied,
+@pytest.mark.parametrize("kana,normalized,moras", [
+    ("ウォォォ", "ウォォォ", ("ウォ", "ォ", "ォ")),
+    ("ｶﾞゐ", "ガイ", ("ガ", "イ")),
+    ("ヷ", "ヴァ", ("ヴァ",)),
+])
+def test_pinned_score_normalizes_readings_through_audio_import(
+    monkeypatch, tmp_path, supplied, kana, normalized, moras,
 ):
     import soramimic_score
     from soramimic_score import (
@@ -83,15 +88,17 @@ def test_pinned_score_keeps_repeated_small_kana_through_audio_import(
 
     from soramimic_video.project import Project
 
-    kana = "ウォォォ"
+    def align(_path, _lines, selected):
+        assert selected[0].kana == normalized
+        return tuple(AlignedMora(0, i, mora, i * .5, (i + 1) * .5, .9)
+                     for i, mora in enumerate(moras))
+
     adapters = AudioAdapters(
-        lyric_recognizer=lambda _: (LyricLine(kana, 0, 1.5),),
+        lyric_recognizer=lambda _: (LyricLine(kana, 0, len(moras) * .5),),
         reading_selector=lambda *_: (ReadingSelection(kana, "test", 1),),
-        mora_aligner=lambda *_: tuple(
-            AlignedMora(0, i, mora, i * .5, (i + 1) * .5, .9)
-            for i, mora in enumerate(("ウォ", "ォ", "ォ"))),
+        mora_aligner=align,
         melody_transcriber=lambda _: tuple(
-            MelodyNote(i * .5, (i + 1) * .5, 60, confidence=.9) for i in range(3)),
+            MelodyNote(i * .5, (i + 1) * .5, 60, confidence=.9) for i in range(len(moras))),
     )
     real_analyze = soramimic_score.analyze_audio
 
@@ -111,10 +118,15 @@ def test_pinned_score_keeps_repeated_small_kana_through_audio_import(
     project.save(output)
     reloaded = Project.load(output)
     assert reloaded.lyric_layers["canonical_text"] == kana
-    assert reloaded.lines[0].canonical_kana == kana
-    assert "".join(note.kana for note in reloaded.notes) == kana
+    assert reloaded.lines[0].canonical_kana == normalized
+    assert "".join(note.kana for note in reloaded.notes) == normalized
     assert [(note.start_sec, note.end_sec) for note in reloaded.notes] == [
-        (0, .5), (.5, 1.), (1., 1.5)]
+        (i * .5, (i + 1) * .5) for i in range(len(moras))]
+    if kana != normalized:
+        raw = json.loads((output / "analyze_audio/score.json").read_text())
+        decision = next(e["detail"] for e in raw["observations"]["evidence"]
+                        if e["kind"] == "reading-selection")
+        assert decision["reading_normalization"]["selected_before"] == kana
 
 
 @pytest.mark.parametrize("adjust", [False, True])
