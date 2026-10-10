@@ -897,7 +897,7 @@ def _song_input_node_harness() -> str:
         const activeCustomList = () => null;
         const simpleMode = false;
         const renderCustomListMenu = () => {};
-        const updateNoncommercialFanworkNotice = () => {};
+        const updateWordlistUsageNotice = () => {};
         const updateAdvancedSettingsAvailability = () => {};
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
@@ -2700,7 +2700,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
-            "function updateNoncommercialFanworkNotice()",
+            "async function updateWordlistUsageNotice()",
             "function wordlistWhereContains(where, frag)",
             "function loadWordlistImage(name, seq)",
             "function automaticLyricsEnabled()",
@@ -2713,6 +2713,12 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         """
         const assert = require("node:assert/strict");
         let selected = "fanwork", songInputMode = "sample";
+        let wordlistUsageRequest = null, wordlistUsageAbort = null;
+        const currentPreviewCustomList = () => null;
+        const headers = () => ({});
+        const fetch = async (url, options) => ({ ok: true, json: async () => ({
+          required: options.body.get("wordlist") === "vtuber", terms: [],
+        }) });
         const currentWordlistName = () => selected;
         const elements = new Map();
         const $ = (id) => {
@@ -2760,7 +2766,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
           ]) {
             selected = name;
             $("wordlist").value = name;
-            updateNoncommercialFanworkNotice();
+            await updateWordlistUsageNotice();
             assert.equal($("builder-fanwork-notice").hidden, name !== "vtuber");
             const guidance = new URL($("builder-fanwork-guidelines").href, "https://example.com");
             assert.equal(guidance.pathname, "/guidelines");

@@ -88,6 +88,12 @@ XF MIDI は読みと音符 timing を保持するため最も確定的です。�
 単語リストは tidy CSV を基本形式とし、`surface` を必須列とします。`pronunciation`、
 `original`、`image` と表示用の任意列を利用できます。
 
+`usage_notice=guidelines` は、単語を候補に含める際の注意表示を指定します。
+確認先は `usage_terms_page` に記録し、画像固有の条件は `image_usage` と
+`image_terms_page` で管理します。Web UIは現在の絞り込みに該当する行に注意属性が
+あれば共通の注意文を表示し、対象のガイドラインを開けるようにします。
+リスト名や人物区分による判定は行いません。未指定の行を利用許諾済みとは扱いません。
+
 画像を動画へ使用する場合、出典・作者・ライセンス等の credit 情報を保持し、必要な表示を
 生成物へ反映します。外部素材の再配布可否は、アプリで利用できるかどうかとは別に確認します。
 
@@ -131,6 +137,12 @@ API response と UI で利用者に通知します。
 
 外部から渡された file は形式と size を検証します。位置情報等の不要な metadata は、対応する
 画像形式の再保存時に除去されます。
+
+`POST /api/wordlist-usage` は、`wordlist`（同梱リスト名）または
+`wordlist_text`（自作CSV）と `where` を受け取り、注意表示の要否を `required`、
+該当する確認先を `terms`（`url` と `label` の配列）として返します。
+`where` が空なら全行を対象とし、候補が0行なら `required=false` になります。
+単語や確認先URLの取得・保存は行わず、同梱データまたは受け取ったCSVだけを調べます。
 
 ## Shared word images
 
