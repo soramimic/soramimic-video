@@ -281,3 +281,68 @@ def test_pinned_score_removes_only_verified_absent_lyrics_when_enabled(
     expected_removed = ([0, 1, 2] if all_silent else [1]) if adjust else []
     assert surface["removed_supplied_indices"] == expected_removed
     assert lyrics.read_text(encoding="utf-8") == "\n".join(supplied)
+
+
+@pytest.mark.parametrize("with_intro_notes", [True, False])
+def test_pinned_score_keeps_note_supported_recovery_and_reports_uncertain_alignment(
+    monkeypatch, tmp_path, with_intro_notes,
+):
+    import soramimic_score
+    from soramimic_score import (
+        AlignedMora,
+        AudioAdapters,
+        LyricLine,
+        MelodyNote,
+        ReadingSelection,
+    )
+    from soramimic_score.japanese import kana_to_moras
+
+    from soramimic_video.project import Project
+    from soramimic_video.voicevox import build_score
+
+    notes = tuple(MelodyNote(i * .5, (i + 1) * .5, 60 + i, source="sheetsage2-vocal")
+                  for i in range(4))
+    adapters = AudioAdapters(
+        reading_selector=lambda _path, lines: tuple(
+            ReadingSelection(line.text, "test", 1) for line in lines),
+        mora_aligner=lambda _path, lines, readings: tuple(
+            AlignedMora(i, j, mora, line.start_sec + j * .5,
+                        line.start_sec + (j + 1) * .5, 1e-5 if line.start_sec < 2 else .9)
+            for i, (line, reading) in enumerate(zip(lines, readings, strict=True))
+            for j, mora in enumerate(kana_to_moras(reading.kana))),
+        melody_transcriber=lambda _: (
+            *(notes if with_intro_notes else ()),
+            MelodyNote(2.2, 2.7, 65, source="sheetsage2-vocal")),
+        lyric_recognizer=lambda _: (
+            LyricLine("作詞・作曲・編曲 初音ミク", 0, 2), LyricLine("コ", 2.2, 2.7)),
+        lyric_recoverer=lambda _path, start, end: (LyricLine("カキクケ", start, end),),
+    )
+    real_analyze = soramimic_score.analyze_audio
+
+    def analyze_with_test_models(path, **kwargs):
+        assert kwargs["lyrics"] is None
+        return real_analyze(path, adapters)
+
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output)
+    project.save(output)
+    reloaded = Project.load(output)
+    expected = "カキクケコ" if with_intro_notes else "コ"
+    assert "".join(note.kana for note in reloaded.notes) == expected
+    assert "".join(note["lyric"] for note in build_score(reloaded)["notes"]
+                   if note["key"] is not None) == expected
+    analysis = json.loads((output / "analyze_audio/analysis.json").read_text())
+    assert analysis["generation_quality"]["status"] == (
+        "warning" if with_intro_notes else "ok")
+    if with_intro_notes:
+        assert analysis["generation_quality"]["reason"] == "uncertain-lyric-alignment"
+        assert analysis["generation_quality"]["uncertain_lyric_lines"] == 1
+        assert analysis["diagnostics"][-1]["evidence_ids"] == ["audio-ctc-note-supported-0"]
+        assert len(analysis["limitations"]) == 1
+    else:
+        assert analysis["limitations"] == []
