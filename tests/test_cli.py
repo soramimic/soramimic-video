@@ -12,6 +12,13 @@ def test_synthesize_accepts_prettypitch_backend():
     assert args.synthesizer == "prettypitch"
 
 
+def test_conversion_lyric_phrasing_is_opt_in():
+    parser = build_parser()
+    argv = ["convert", "--project", "work/song", "--wordlist", "stations"]
+    assert parser.parse_args(argv).auto_phrase_lyrics is False
+    assert parser.parse_args(argv + ["--auto-phrase-lyrics"]).auto_phrase_lyrics is True
+
+
 @pytest.mark.parametrize(
     "removed_option",
     ["--lyric-pipeline", "--melody-midi", "--melody-channel"],

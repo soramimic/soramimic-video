@@ -1343,6 +1343,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 where=job.params.get("where") or None,
                 params=parse_convert_params(job.params.get("convert_params")),
                 cache_db=custom_csv is None,
+                auto_phrase_lyrics=bool(job.params.get("auto_phrase_lyrics", False)),
             )
             save_raw(raw, d)
             project.save(d)
@@ -3745,6 +3746,7 @@ def create_app(
         # 省略時はMIDI・音源アップロードとも歌詞を自動認識する。
         auto_lyrics: bool = Form(True),
         adjust_lyrics: bool = Form(False),
+        auto_phrase_lyrics: bool = Form(False),
         model: str = Form("MERROW"),
         # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
         # 未設定のサーバーだと下の422ゲートで弾かれてしまうため既定にしない)
@@ -3825,6 +3827,14 @@ def create_app(
             raise HTTPException(
                 status_code=422,
                 detail="歌詞の調整は、音源と入力歌詞を使う場合だけ選択できます",
+            )
+        if auto_phrase_lyrics and (
+            input_kind != "audio" or not lyrics.strip() or (auto_lyrics and not launch_sample_id)
+            or editor is not None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="歌詞の自動分割は、音源と入力歌詞から替え歌へ変換する場合だけ選択できます",
             )
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
@@ -4066,6 +4076,7 @@ def create_app(
             "input_seconds": round(input_seconds, 3) if input_seconds is not None else None,
             "auto_lyrics": auto_lyrics,
             "adjust_lyrics": adjust_lyrics,
+            "auto_phrase_lyrics": auto_phrase_lyrics,
             "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),
             "original_credit": original_credit.strip(),

@@ -79,6 +79,19 @@ uv run soramimic-video edit-timing --project work/song
 各 command と option の詳細は `uv run soramimic-video --help` および各 subcommand の
 `--help` を参照してください。
 
+入力歌詞付きの音源解析で1行が長すぎる場合は、変換時に `--auto-phrase-lyrics` を指定できます。
+Whisperの認識行と休符を手がかりに、文節の境界で変換・字幕のフレーズを分けます。
+既定はオフです。入力の表記・読み・音符は保持し、オプションなしで再変換すると元の区切りへ戻ります。
+短い行や、読みと文節の対応を確定できない箇所はそのままにします。
+
+```sh
+uv run soramimic-video convert \
+  --project work/song --wordlist stations --auto-phrase-lyrics
+```
+
+APIでは `POST /api/jobs` に `auto_phrase_lyrics=true` を指定します。
+対象は入力歌詞付きの音源からの変換です。画面には設定項目を追加していません。
+
 ## Web UI
 
 ```sh

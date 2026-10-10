@@ -146,6 +146,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
         wordlist=args.wordlist,
         where=args.where,
         params=dict(kv.split("=", 1) for kv in args.param or []),
+        auto_phrase_lyrics=args.auto_phrase_lyrics,
     )
     save_raw(raw, Path(args.project))
     project.save(Path(args.project))
@@ -536,6 +537,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True)
     p.add_argument("--wordlist", required=True, help="単語リスト名(例: stations)またはCSVパス")
     p.add_argument("--where", help="単語リストの絞り込み(例: 'status=current')")
+    p.add_argument("--auto-phrase-lyrics", action="store_true",
+                   help="入力歌詞付き音源の長い行を、認識行・文節・休符から自動分割する")
     p.add_argument(
         "--param",
         action="append",

@@ -104,3 +104,4 @@ def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
         ))
     project.notes, project.lines = notes, lines
     project.lyric_layers = _json_compatible(layers)
+    project.lyric_phrasing = None
