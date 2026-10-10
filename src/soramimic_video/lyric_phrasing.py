@@ -61,13 +61,21 @@ def _surface_boundaries(text: str, kana: str) -> list[tuple[int, int]]:
     cursor = 0
     for part in parts:
         surface = part["surface_form"]
-        start = text.find(surface, cursor)
-        if not surface or start < 0 or text[cursor:start].strip():
+        if not surface:
             return []
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        start = cursor
+        # MeCab removes whitespace even inside one bunsetsu (e.g. 輝いて いる).
+        for char in surface:
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            if cursor == len(text) or text[cursor] != char:
+                return []
+            cursor += 1
         # Leading whitespace belongs to the preceding phrase, except at offset 0.
         if offsets:
             offsets[-1] = start
-        cursor = start + len(surface)
         offsets.append(cursor)
         readings.append(_pron_normalize(part["pronunciation"]))
     if not offsets or text[cursor:].strip():
