@@ -64,6 +64,12 @@ project directory の `project.json` が処理段階間の公開 exchange format
 既定はfalseで、MIDI入力や入力歌詞なしでは指定できません。
 入力歌詞の読み候補はKanaWhisperで原音・分離ボーカルと照合し、選択後にCTCで整列します。
 明示したルビを優先し、改行をまたぐ対応でも入力歌詞を使います。
+音源入力の括弧は原文のままScoreへ渡します。漢字を含む語に隣接した丸括弧・角括弧内の
+かなについて、本文読み・注釈読み・両方を歌う読みを比較します。辞書外の読みも候補に含め、
+通常Whisperで区別できなければKanaWhisperと照合します。不確かな括弧は保持します。
+比較した原文・解決後のまとまり・候補の根拠はScore JSONの`reading-selection`と
+`analyze_audio/lyric_annotations.json`の`supplied_lines`・`resolved_groups`に保存します。
+音源のない入力では辞書と一致する括弧内の読みをルビとして扱います。
 対応・音響上の未観測・追加行の由来は`lyric_surface`に残します。
 根拠のない省略や合成先が未解決のレイヤーは取り込み時にエラーにします。
 VOICEVOXで短い音符をフレームへ丸める際は、同じ歌詞行の範囲内で長さを再配分して

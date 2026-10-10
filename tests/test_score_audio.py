@@ -1,5 +1,7 @@
 import copy
 import json
+import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -64,6 +66,72 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, adjust_lyrics=True)
     with pytest.raises(ValueError, match="BPM"):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
+
+
+@pytest.mark.parametrize("adjust", [False, True])
+@pytest.mark.parametrize("source_text,recognized,expected_text,kana,status", [
+    ("未来（みらい）（ラララ）", "未来（ラララ）", "未来（ラララ）", "ミライラララ", "resolved"),
+    ("運命（さだめ）", "運命", "運命", "サダメ", "resolved"),
+    ("誰だ（だれだ）", "誰だ誰だ", "誰だ（だれだ）", "ダレダダレダ", "retained-sung"),
+])
+def test_pinned_score_uses_parenthetical_reading_and_keeps_chorus(
+    monkeypatch, tmp_path, adjust, source_text, recognized, expected_text, kana, status,
+):
+    import soramimic_score
+    from soramimic_score import AlignedMora, LyricLine, MelodyNote, ModelConfig
+    from soramimic_score.japanese import kana_to_moras
+    from soramimic_score.models import create_adapters
+    from soramimic_score.vocal_activity import VocalActivity
+
+    from soramimic_video.convert import engine_phrases
+
+    monkeypatch.setattr(ModelConfig, "validate", lambda _: None)
+    monkeypatch.setitem(sys.modules, "librosa", SimpleNamespace(get_duration=lambda **_: 2.))
+    monkeypatch.setattr("soramimic_score.models.transcribe_kana_views",
+                        lambda *_, **__: {"mix": (kana,), "vocals": (kana,)})
+
+    def align(_path, lines, readings):
+        assert [reading.kana for reading in readings] == [kana]
+        return tuple(AlignedMora(0, index, mora, .1 + index * .3, .3 + index * .3, .9)
+                     for index, mora in enumerate(kana_to_moras(readings[0].kana)))
+
+    adapters = replace(
+        create_adapters(ModelConfig(tmp_path, tmp_path, device="cpu"),
+                        vocals_path=tmp_path / "vocals.wav"),
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(
+            MelodyNote(.1 + i * .3, .3 + i * .3, 60, confidence=.9)
+            for i in range(len(kana_to_moras(kana)))),
+        lyric_recognizer=lambda _: (LyricLine(recognized, 0, 2),),
+        audio_duration=lambda _: 2.,
+        vocal_activity=lambda _path, windows: tuple(
+            VocalActivity(-20, -3, 1, True) for _ in windows),
+    )
+    real_analyze = soramimic_score.analyze_audio
+
+    def analyze_with_test_models(path, **kwargs):
+        assert kwargs["lyrics"] == [source_text]
+        return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
+                            adjust_lyrics=kwargs["adjust_lyrics"])
+
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text(source_text, encoding="utf-8")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output, lyrics_path=lyrics, adjust_lyrics=adjust)
+    assert project.lyric_layers["canonical_text"] == expected_text
+    assert project.lines[0].canonical_kana == kana
+    assert "".join(note.kana for note in project.notes) == kana
+    assert engine_phrases(project) == [kana]
+    assert lyrics.read_text(encoding="utf-8") == source_text
+    annotations = json.loads((output / "analyze_audio/lyric_annotations.json").read_text())
+    assert annotations["supplied_lines"] == [source_text]
+    decision = annotations["resolved_groups"][0]["parenthetical_readings"][0]
+    assert decision["status"] == status
 
 
 @pytest.mark.parametrize("with_melody", [True, False])
