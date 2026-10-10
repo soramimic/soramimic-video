@@ -2614,6 +2614,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         _function_body(script, head) + "\n}"
         for head in (
             "function updateNoncommercialFanworkNotice()",
+            "function wordlistWhereContains(where, frag)",
             "function loadWordlistImage(name, seq)",
             "function automaticLyricsEnabled()",
             "function songLyricsForRequest()",
@@ -2668,7 +2669,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         """
         (async () => {
           for (const name of [
-            "vtuber", "pokemon", "youtuber", "fanwork", "ordinary", "legacy", "custom",
+            "vtuber", "scientist", "pokemon", "youtuber", "fanwork", "ordinary", "legacy", "custom",
           ]) {
             selected = name;
             $("wordlist").value = name;

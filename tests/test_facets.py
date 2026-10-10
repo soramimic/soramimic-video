@@ -48,10 +48,17 @@ DOM_SHIM = """
 class El {
 	constructor(tag) {
 		this.tag = tag; this.children = []; this.className = ""; this.textContent = "";
-		this.attributes = {};
+		this.attributes = {}; this.listeners = new Map();
 	}
 	setAttribute(name, value) { this.attributes[name] = String(value); }
-	addEventListener() {}
+	addEventListener(type, listener) {
+		if (!this.listeners.has(type)) this.listeners.set(type, []);
+		this.listeners.get(type).push(listener);
+	}
+	dispatchEvent(event) {
+		for (const listener of this.listeners.get(event.type) || []) listener(event);
+	}
+	replaceChildren(...children) { this.children = children; }
 	set innerHTML(v) {
 		if (v !== "") throw new Error("innerHTMLへの代入はクリアだけを想定: " + v);
 		this.children = [];
@@ -243,6 +250,108 @@ def test_football_defaults_to_jleague_scope_only():
     assert "(scope=jleague)" in where
     assert "scope=world" not in where
     assert "scope=overseas_japanese" not in where
+
+
+def test_scientist_opt_in_and_notice_follow_filter_changes(tmp_path):
+    """対象の選択・全解除・旧設定復元で、送信条件と共通注意文を同時に更新する。"""
+    entry = next(e for e in _conf_entries() if e["value"] == "SCIENTIST")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    heads = (
+        "function setWhere(v)",
+        "function wordlistFacetClause(f, item)",
+        "function wordlistWhereContains(where, frag)",
+        "function compileWordlistFilter(g)",
+        "function commitWordlistFilter()",
+        "function renderWordlistFilter()",
+        "function updateNoncommercialFanworkNotice()",
+    )
+    functions = "\n".join(head + " {" + html.split(head + " {")[1].split("\n}")[0]
+                          + "\n}" for head in heads)
+    listeners = "\n".join(line for line in html.splitlines()
+                          if line.startswith('$("where").addEventListener("change", '))
+    where = default_where(entry)
+    legacy = where.replace("((celebrity_doctorate=no)) and ", "")
+    assert "celebrity_doctorate" not in legacy
+    script = (
+        DOM_SHIM
+        + 'const assert = (await import("node:assert/strict")).default;\n'
+        + f'const m = await import("file://{CONVERT_CONTROLS}");\n'
+        + f"const entry = {json.dumps(entry, ensure_ascii=False)};\n"
+        + f"const initialWhere = {json.dumps(where)}, legacyWhere = {json.dumps(legacy)};\n"
+        + """
+const elements = new Map();
+const $ = (id) => {
+  if (!elements.has(id)) elements.set(id, new El("div"));
+  return elements.get(id);
+};
+const selectedWordlistGroup = () => ({ entries: [entry] });
+let name = "scientist", previews = 0;
+const currentWordlistName = () => name;
+const clearEditorFile = () => {};
+const schedulePreview = () => { previews++; };
+"""
+        + functions + "\n" + listeners
+        + """
+const notice = () => !$("builder-fanwork-notice").hidden;
+const targetGroup = () => $("wordlist-facets").querySelectorAll(".facet-group")
+  .find((group) => group.__defaultClauses.length);
+const checkbox = (value) => targetGroup().querySelectorAll("input.facet-value")
+  .find((cb) => cb.value === value);
+const change = (cb, checked) => { cb.checked = checked; cb.dispatchEvent(new Event("change")); };
+setWhere(initialWhere);
+assert.equal(notice(), false);
+assert.equal(checkbox("no").checked, true);
+assert.equal(checkbox("yes").checked, false);
+change(checkbox("yes"), true);
+const included = $("where").value;
+assert.equal(notice(), true);
+assert.equal($("builder-fanwork-guidelines").href, "/guidelines?wordlist=scientist");
+change(checkbox("no"), false);
+const celebrityOnly = $("where").value;
+assert.equal(notice(), true);
+change(checkbox("yes"), false);
+assert.equal($("where").value, initialWhere);
+assert.equal(notice(), false);
+assert.equal(checkbox("no").checked, true);
+change(targetGroup().querySelector("input.facet-select-all-input"), true);
+assert.equal(notice(), true);
+change(targetGroup().querySelector("input.facet-select-all-input"), false);
+assert.equal($("where").value, initialWhere);
+assert.equal(notice(), false);
+setWhere(legacyWhere);
+const restoredLegacy = $("where").value;
+assert.equal(checkbox("no").checked, true);
+assert.equal(checkbox("yes").checked, false);
+assert.equal(notice(), false);
+setWhere(included); // エディタや保存済み設定からの復元
+assert.equal(notice(), true);
+setWhere(initialWhere);
+assert.equal(notice(), false);
+name = "vtuber";
+updateNoncommercialFanworkNotice();
+assert.equal(notice(), true);
+name = "youtuber";
+updateNoncommercialFanworkNotice();
+assert.equal(notice(), false);
+assert.equal(previews, 5);
+const editor = document.createElement("div");
+m.renderFacets(editor, entry);
+m.restoreFacets(editor, legacyWhere);
+const editorRestored = m.compileWhere(editor, entry);
+console.log(JSON.stringify({ included, celebrityOnly, restoredLegacy, editorRestored }));
+"""
+    )
+    result = _run_node(script, tmp_path)
+    assert result["editorRestored"] == restored_where(entry, legacy) == where
+    csv_path = WORDLISTS / "scientist.csv"
+    header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    flag_index = header.index("celebrity_doctorate")
+    ordinary = _select(csv_path, where)
+    assert ordinary and all(row[flag_index] == "no" for row in ordinary)
+    assert _select(csv_path, result["restoredLegacy"]) == ordinary
+    celebrities = _select(csv_path, result["celebrityOnly"])
+    assert celebrities and all(row[flag_index] == "yes" for row in celebrities)
+    assert set(_select(csv_path, result["included"])) == set(ordinary + celebrities)
 
 
 def _flat_default_where(entry: dict[str, Any]) -> str:
