@@ -184,9 +184,11 @@ def _choose_boundaries(
                 and candidate.left_end - left.right_start >= MIN_SECONDS
                 and right.left_end - candidate.right_start >= MIN_SECONDS)
 
-    preferred = [c for c in candidates if
-                 (strategy != "rest" and c.whisper)
-                 or (strategy != "whisper" and c.rest >= REST_SECONDS)]
+    # The public policy follows recognition. Rests only help locate an extra
+    # boundary when a remaining span is too long; they do not demand a split.
+    # Keep the rest-only policy as an offline comparison baseline.
+    preferred = ([c for c in candidates if c.rest >= REST_SECONDS] if strategy == "rest"
+                 else [c for c in candidates if c.whisper])
     for candidate in sorted(preferred, key=lambda c: (-int(c.whisper), -c.rest, c.mora)):
         for i, (left, right) in enumerate(pairwise(edges)):
             if left.mora < candidate.mora < right.mora and fits(candidate, left, right):
