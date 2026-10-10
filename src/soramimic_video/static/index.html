@@ -4813,7 +4813,10 @@ function syncBuilderValues() {
 }
 
 function updateNoncommercialFanworkNotice() {
-  $("builder-fanwork-notice").hidden = currentWordlistName().toLowerCase() !== "vtuber";
+  const name = currentWordlistName().toLowerCase();
+  const includesCelebrityDoctorates = name === "scientist"
+    && wordlistWhereContains($("where").value, "celebrity_doctorate=yes");
+  $("builder-fanwork-notice").hidden = name !== "vtuber" && !includesCelebrityDoctorates;
   $("builder-fanwork-guidelines").href = "/guidelines?"
     + new URLSearchParams({ wordlist: currentWordlistName() });
 }
@@ -7499,6 +7502,18 @@ async function loadWordlistSelect(editorAvailable) {
 
 // #where を設定し、その change を発火する(不一致警告の再描画がこれを見ている)
 function setWhere(v) {
+  // 旧設定に任意追加の対象が無い場合も、既定でオフの条件を送信する。
+  for (const f of selectedWordlistGroup()?.entries[0]?.facets || []) {
+    if (!f.defaultWhenEmpty) continue;
+    const values = f.values || [];
+    if (values.some((item) => wordlistWhereContains(v, wordlistFacetClause(f, item)))) continue;
+    const defaults = values.filter((item) => item.default === true)
+      .map((item) => wordlistFacetClause(f, item));
+    if (defaults.length) {
+      const clause = "(" + defaults.join(" or ") + ")";
+      v = v ? "(" + v + ") and " + clause : clause;
+    }
+  }
   $("where").value = v;
   $("where").dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -7564,8 +7579,9 @@ function compileWordlistFilter(g) {
   if (!facets.length) return g?.entries[0]?.where || "";
   const clauses = [];
   for (const group of $("wordlist-facets").querySelectorAll(".facet-group")) {
-    const frags = [...group.querySelectorAll("input.facet-value:checked")]
+    let frags = [...group.querySelectorAll("input.facet-value:checked")]
       .map((cb) => cb.__where);
+    if (!frags.length) frags = group.__defaultClauses || [];
     if (frags.length) clauses.push("(" + frags.join(" or ") + ")");
   }
   return clauses.join(" and ");
@@ -7591,6 +7607,10 @@ function renderWordlistFilter() {
   for (const f of facets) {
     const group = document.createElement("div");
     group.className = "facet-group";
+    group.__defaultClauses = f.defaultWhenEmpty
+      ? (f.values || []).filter((item) => item.default === true)
+        .map((item) => wordlistFacetClause(f, item))
+      : [];
     const header = document.createElement("div");
     header.className = "facet-header";
     const label = document.createElement("span");
@@ -7647,6 +7667,9 @@ function renderWordlistFilter() {
   }
   for (const group of container.querySelectorAll(".facet-group")) {
     const values = [...group.querySelectorAll("input.facet-value")];
+    if (!values.some((cb) => cb.checked) && group.__defaultClauses.length) {
+      for (const cb of values) cb.checked = group.__defaultClauses.includes(cb.__where);
+    }
     const selectAll = group.querySelector("input.facet-select-all-input");
     const checkedCount = values.filter((cb) => cb.checked).length;
     selectAll.checked = checkedCount === values.length;
@@ -7655,6 +7678,7 @@ function renderWordlistFilter() {
 }
 
 $("where").addEventListener("change", renderWordlistFilter);
+$("where").addEventListener("change", updateNoncommercialFanworkNotice);
 
 // 選択内容を canonical な #wordlist / #where に反映する。
 // 選択なし(selectedIndex=-1)は「名前で引けないリスト」——エディタの中で書いた
