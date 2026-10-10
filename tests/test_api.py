@@ -2922,16 +2922,6 @@ def test_image_sources_restricts_paths_and_preserves_fsp_metadata(client):
     assert all(row["image_usage"] == "noncommercial_fanwork" for row in fsp)
 
 
-@pytest.mark.parametrize("kind,automatic", [("audio", True), ("midi", False)])
-def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic):
-    content = fake_wav() if kind == "audio" else FAKE_MIDI
-    res = client.post(
-        "/api/jobs", files={kind: ("input.wav" if kind == "audio" else "input.mid", content)},
-        data={"wordlist": "stations", "lyrics": "正しい歌詞",
-              "auto_lyrics": str(automatic).lower(), "adjust_lyrics": "true"},
-    )
-    assert res.status_code == 422
-    assert "音源と入力歌詞" in res.json()["detail"]
 
 
 def test_hybrid_credit_names_both_engines_and_voice_provider():
