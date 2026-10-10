@@ -25,7 +25,7 @@ def analyze_audio(
     progress_detail: Callable[[str], None] | None = None,
 ) -> Project:
     """Run the Score pipeline and import only its supported synthesis slots."""
-    from soramimic_score import ModelConfig
+    from soramimic_score import ModelConfig, normalize_lyric_input
     from soramimic_score import analyze_audio as analyze_score
 
     from . import runproc
@@ -43,8 +43,9 @@ def analyze_audio(
         raise ValueError("BPMは正の値が必要です")
     lyrics = None
     if lyrics_path is not None:
-        lyrics = [line.strip() for line in lyrics_path.read_text(encoding="utf-8").splitlines()
-                  if line.strip()]
+        original_lyrics = lyrics_path.read_text(encoding="utf-8")
+        normalize_lyric_input(original_lyrics)
+        lyrics = [line.strip() for line in original_lyrics.splitlines() if line.strip()]
         if not lyrics:
             raise ValueError("入力歌詞が空です")
 

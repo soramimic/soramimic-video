@@ -68,6 +68,61 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
 
 
+@pytest.mark.parametrize("control", ["\0", "\x85"])
+def test_score_audio_rejects_controls_before_splitting_lines_or_loading_models(tmp_path, control):
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("か\u3099" + control + "くせい", encoding="utf-8")
+    with pytest.raises(ValueError, match=f"position 3:.*U\\+{ord(control):04X}"):
+        score_audio.analyze_audio(tmp_path / "input.wav", tmp_path, lyrics_path=lyrics)
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+@pytest.mark.parametrize("source_text", ["か\u3099くせい", "カ゛クセイ"])
+def test_pinned_score_normalizes_before_real_reading_generation(
+    monkeypatch, tmp_path, supplied, source_text,
+):
+    import soramimic_score
+    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote
+    from soramimic_score.readings import dictionary_readings
+
+    from soramimic_video.project import Project
+
+    def align(_path, lines, readings):
+        assert lines[0].text == source_text
+        assert readings[0].kana == "ガクセイ"
+        return tuple(AlignedMora(0, i, mora, i * .3, (i + 1) * .3, .9)
+                     for i, mora in enumerate("ガクセイ"))
+
+    adapters = AudioAdapters(
+        reading_selector=dictionary_readings,
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(MelodyNote(i * .3, (i + 1) * .3, 60)
+                                            for i in range(4)),
+        lyric_recognizer=lambda _: (LyricLine(source_text, 0, 1.2),),
+    )
+    real_analyze = soramimic_score.analyze_audio
+    monkeypatch.setattr(soramimic_score, "analyze_audio",
+                        lambda path, **kw: real_analyze(path, adapters, lyrics=kw["lyrics"]))
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic audio model boundary")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text(source_text, encoding="utf-8")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output, lyrics_path=lyrics if supplied else None)
+    project.save(output)
+    reloaded = Project.load(output)
+    assert reloaded.lyric_layers["canonical_text"] == source_text
+    assert reloaded.lines[0].canonical_kana == "ガクセイ"
+    assert "".join(note.kana for note in reloaded.notes) == "ガクセイ"
+    assert lyrics.read_text(encoding="utf-8") == source_text
+    raw = json.loads((output / "analyze_audio/score.json").read_text())
+    decision = next(e["detail"] for e in raw["observations"]["evidence"]
+                    if e["kind"] == "reading-selection")
+    assert decision["lyric_input_normalization"]["original_text"] == source_text
+
+
 @pytest.mark.parametrize("supplied", [False, True])
 @pytest.mark.parametrize("kana,normalized,moras", [
     ("ウォォォ", "ウォォォ", ("ウォ", "ォ", "ォ")),
