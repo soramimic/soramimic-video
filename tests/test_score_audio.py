@@ -68,8 +68,9 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
 
 
-def test_pinned_score_recovers_english_from_template_and_preserves_project_reading(
-    monkeypatch, tmp_path,
+@pytest.mark.parametrize("recovered", ["Hello world", "雲の先へ", "空へ fly"])
+def test_pinned_score_recovers_lyrics_from_template_and_preserves_project_reading(
+    monkeypatch, tmp_path, recovered,
 ):
     import soramimic_score
     from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote
@@ -79,7 +80,6 @@ def test_pinned_score_recovers_english_from_template_and_preserves_project_readi
     from soramimic_video.project import Project
     from soramimic_video.voicevox import build_score
 
-    recovered = "Hello world"
     reading = dictionary_readings(None, (LyricLine(recovered),))[0].kana
 
     def align(_path, lines, readings):
