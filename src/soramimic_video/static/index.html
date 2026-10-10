@@ -938,6 +938,11 @@
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
     <p class="hint">本アプリは、動画に使用する画像の権利者や、登場する人物・団体とは関係ありません。動画の内容に応じて、各権利者の<a id="builder-fanwork-guidelines" href="/guidelines"
       target="_blank" rel="noopener noreferrer">利用ガイドライン</a>を守ってください。</p>
+    <details class="hint" id="builder-usage-links" hidden>
+      <summary>対象の利用ガイドライン</summary>
+      <ul id="builder-usage-terms"></ul>
+    </details>
+    <p class="hint" id="builder-usage-status" role="status" hidden></p>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
        姿を変える(場所を動かさない)。中身はグリッドで重ねてあり、表示中のもの
@@ -4857,16 +4862,64 @@ function syncBuilderValues() {
   $("builder-wordlist-trigger-label").textContent = selectedLabel;
   $("builder-wordlist-trigger").title = selectedLabel;
   renderCustomListMenu();
-  updateNoncommercialFanworkNotice();
+  updateWordlistUsageNotice();
 }
 
-function updateNoncommercialFanworkNotice() {
-  const name = currentWordlistName().toLowerCase();
-  const includesCelebrityDoctorates = name === "scientist"
-    && wordlistWhereContains($("where").value, "celebrity_doctorate=yes");
-  $("builder-fanwork-notice").hidden = name !== "vtuber" && !includesCelebrityDoctorates;
+let wordlistUsageRequest = null;
+let wordlistUsageAbort = null;
+async function updateWordlistUsageNotice() {
+  const custom = currentPreviewCustomList();
+  const request = {
+    name: custom ? "" : currentWordlistName(),
+    text: custom?.text || "",
+    where: activeCustomList() ? "" : $("where").value,
+    auth: apiKey(),
+  };
+  if (wordlistUsageRequest && Object.keys(request)
+      .every((key) => request[key] === wordlistUsageRequest[key])) return;
+  wordlistUsageRequest = request;
+  wordlistUsageAbort?.abort();
+  wordlistUsageAbort = new AbortController();
+  const notice = $("builder-fanwork-notice");
+  const terms = $("builder-usage-terms"), status = $("builder-usage-status");
+  notice.hidden = true;
+  terms.replaceChildren();
+  $("builder-usage-links").hidden = true;
+  status.hidden = true;
   $("builder-fanwork-guidelines").href = "/guidelines?"
-    + new URLSearchParams({ wordlist: currentWordlistName() });
+    + new URLSearchParams({ wordlist: request.name });
+  if (!request.name && !request.text) return;
+  const form = new FormData();
+  form.set("wordlist", request.name);
+  form.set("where", request.where);
+  if (request.text) setCustomWordlistText(form, request.text);
+  try {
+    const res = await fetch("/api/wordlist-usage", {
+      method: "POST", body: form, headers: headers(), signal: wordlistUsageAbort.signal,
+    });
+    if (!res.ok) throw new Error("usage lookup failed");
+    const body = await res.json();
+    if (wordlistUsageRequest !== request) return;
+    notice.hidden = !body.required;
+    for (const term of body.terms || []) {
+      let url;
+      try { url = new URL(term.url); } catch { continue; }
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) continue;
+      const item = document.createElement("li"), link = document.createElement("a");
+      link.href = url.href;
+      link.textContent = term.label || url.hostname;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      item.appendChild(link);
+      terms.appendChild(item);
+    }
+    $("builder-usage-links").hidden = !terms.children.length;
+  } catch (err) {
+    if (wordlistUsageRequest !== request || err.name === "AbortError") return;
+    notice.hidden = false;
+    status.textContent = "利用上の注意を確認できませんでした。";
+    status.hidden = false;
+  }
 }
 
 // カード下部の案内(曲の取得に失敗したときなど)。空文字で消す。
@@ -7802,7 +7855,7 @@ function renderWordlistFilter() {
 }
 
 $("where").addEventListener("change", renderWordlistFilter);
-$("where").addEventListener("change", updateNoncommercialFanworkNotice);
+$("where").addEventListener("change", updateWordlistUsageNotice);
 
 // 選択内容を canonical な #wordlist / #where に反映する。
 // 選択なし(selectedIndex=-1)は「名前で引けないリスト」——エディタの中で書いた

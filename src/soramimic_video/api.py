@@ -3240,6 +3240,40 @@ def create_app(
         except (FileNotFoundError, OSError):
             return None
 
+    @app.post("/api/wordlist-usage", dependencies=[Depends(_require_api_key)])
+    async def wordlist_usage(
+        request: Request,
+        wordlist: str = Form(""),
+        where: str = Form("", max_length=4096),
+        wordlist_text: str | UploadFile = File(""),
+    ) -> dict[str, Any]:
+        """Return the notice and guideline links for the currently eligible words."""
+        from .convert import resolve_wordlist
+        from .usage_notices import summarize_csv_usage, summarize_file_usage
+
+        if not _allow_expensive_get(request, cache_hit=True):
+            raise HTTPException(status_code=429, detail="単語リストの取得が続いています")
+        text = await read_wordlist_text(wordlist_text)
+        if text.strip():
+            if is_simple_ui():
+                raise HTTPException(status_code=404, detail="Not Found")
+            if wordlist.strip():
+                raise HTTPException(status_code=400, detail="単語リストは1つだけ指定してください")
+            try:
+                parsed = await run_in_threadpool(wordlist_csv_mod.parse, text.encode("utf-8"))
+                return await run_in_threadpool(summarize_csv_usage, parsed.text, where)
+            except (wordlist_csv_mod.WordlistCsvError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not wordlist.strip():
+            return {"required": False, "terms": []}
+        name = require_launch_wordlist(wordlist)
+        try:
+            return await run_in_threadpool(summarize_file_usage, resolve_wordlist(name), where)
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail="単語リストが見つかりません") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/wordlist-columns", dependencies=[Depends(_require_api_key)])
     def wordlist_columns(request: Request, wordlist: str = "") -> dict[str, Any]:
         """単語リストの列名一覧と代表行(レイアウト編集のWYSIWYG表示向け)。
