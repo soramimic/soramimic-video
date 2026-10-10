@@ -257,7 +257,9 @@ def test_run_pipeline_prefers_the_uploaded_wordlist(client, tmp_path, monkeypatc
 
     calls: dict = {}
 
-    def fake_convert(project, wordlist, where=None, params=None, cache_db=True):
+    def fake_convert(project, wordlist, where=None, params=None, cache_db=True,
+                     auto_phrase_lyrics=False):
+        assert auto_phrase_lyrics is False
         calls.update(wordlist=wordlist, cache_db=cache_db)
         return {"lines": []}
 

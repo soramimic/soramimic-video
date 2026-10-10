@@ -184,7 +184,8 @@ def test_rejects_invalid_audio_submission_id(client):
 
 
 @pytest.mark.parametrize("adjust", [False, True])
-def test_manual_correct_lyrics_mode_is_persisted(client, adjust):
+@pytest.mark.parametrize("auto_phrase", [False, True])
+def test_manual_correct_lyrics_mode_is_persisted(client, adjust, auto_phrase):
     wav = fake_wav()
     res = client.post(
         "/api/jobs",
@@ -194,6 +195,7 @@ def test_manual_correct_lyrics_mode_is_persisted(client, adjust):
             "auto_lyrics": "false",
             "lyrics": "正しい歌詞",
             "adjust_lyrics": str(adjust).lower(),
+            "auto_phrase_lyrics": str(auto_phrase).lower(),
         },
     )
     assert res.status_code == 200, res.text
@@ -201,6 +203,7 @@ def test_manual_correct_lyrics_mode_is_persisted(client, adjust):
     job = client.app.state.manager.jobs[body["id"]]
     assert body["params"]["auto_lyrics"] is False
     assert body["params"]["adjust_lyrics"] is adjust
+    assert body["params"]["auto_phrase_lyrics"] is auto_phrase
     assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正しい歌詞"
 
 
@@ -232,12 +235,13 @@ def test_audio_lyrics_reject_controls_before_creating_a_job(client, upload, cont
 
 
 @pytest.mark.parametrize("kind,automatic", [("audio", True), ("midi", False)])
-def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic):
+@pytest.mark.parametrize("option", ["adjust_lyrics", "auto_phrase_lyrics"])
+def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic, option):
     content = fake_wav() if kind == "audio" else FAKE_MIDI
     res = client.post(
         "/api/jobs", files={kind: ("input.wav" if kind == "audio" else "input.mid", content)},
         data={"wordlist": "stations", "lyrics": "正しい歌詞",
-              "auto_lyrics": str(automatic).lower(), "adjust_lyrics": "true"},
+              "auto_lyrics": str(automatic).lower(), option: "true"},
     )
     assert res.status_code == 422
     assert "音源と入力歌詞" in res.json()["detail"]
@@ -534,6 +538,32 @@ def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monke
     )
 
     with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_audio_pipeline_forwards_lyric_phrasing_to_conversion(tmp_path, monkeypatch, enabled):
+    from soramimic_video import convert, score_audio
+    from soramimic_video.project import Project, SongInfo
+
+    class ReachedConversion(Exception):
+        pass
+
+    project = Project(SongInfo("", 480))
+    monkeypatch.setattr(score_audio, "analyze_audio", lambda *_args, **_kwargs: project)
+
+    def convert_spy(actual, **kwargs):
+        assert actual is project
+        assert kwargs["auto_phrase_lyrics"] is enabled
+        raise ReachedConversion
+
+    monkeypatch.setattr(convert, "convert_project", convert_spy)
+    (tmp_path / "lyrics.txt").write_text("入力した歌詞", encoding="utf-8")
+    job = api_mod.Job(id="phrase", dir=tmp_path, params={
+        "input_kind": "audio", "auto_lyrics": False, "wordlist": "stations",
+        "auto_phrase_lyrics": enabled,
+    })
+    with pytest.raises(ReachedConversion):
         api_mod.run_pipeline(job, {})
 
 
