@@ -23,6 +23,7 @@ from soramimic_video.convert import (
     project_note_length_weights,
     project_word_boundaries,
     unit_note_seconds,
+    wordlist_exhausted,
 )
 from soramimic_video.kana import split_fine_moras, split_moras
 from soramimic_video.lyric_layers import apply_lyric_layers
@@ -380,7 +381,58 @@ def test_convert_project_filler_fills_unmatched_line(tmp_path: Path):
     assert all(w.filler for w in words)
     assert all(w.wordlist_row is None for w in words)  # 単語画像なし=文字フレーム
     assert all(w.note_ids for w in words)              # 音符には載る(歌える)
+    assert not wordlist_exhausted(project)  # 合う長さの語が無いだけで、使い切ってはいない
     _assert_no_shared_notes(project)
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_wordlist_exhaustion_counts_filtered_ids_not_aliases(tmp_path: Path, duplicate):
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation,status\n"
+        "0,カ,カ,カ,current\n"
+        "0,カア,カア,カア,current\n"
+        "1,ナ,ナ,ナ,former", encoding="utf-8",
+    )
+    project = _line_project(["カ"] * 6)
+    raw = convert_project(
+        project, wordlist=str(csv_path), where="status=current",
+        params={"DUPLICATE": str(duplicate).lower()},
+    )
+    assert wordlist_exhausted(project) is not duplicate
+    # Project round trips and editor imports keep enough evidence for the notice.
+    project.save(tmp_path)
+    assert wordlist_exhausted(Project.load(tmp_path)) is not duplicate
+    from soramimic_video.editor_io import export_editor, import_editor, save_raw
+
+    save_raw(raw, tmp_path)
+    export_editor(project, tmp_path, wordlist_entry={
+        "filepath": str(csv_path), "where": "status=current",
+    })
+    restored = _line_project(["カ"] * 6)
+    import_editor(restored, tmp_path)
+    assert wordlist_exhausted(restored) is not duplicate
+
+
+def test_wordlist_exhaustion_requires_filler_after_the_last_available_word(tmp_path: Path):
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation\n0,カ,カ,カ", encoding="utf-8")
+    project = _line_project(["カ"] * 3)
+    convert_project(project, wordlist=str(csv_path))
+    assert wordlist_exhausted(project)
+    assert project.parody is not None
+    words = project.parody.lines[0].words
+    real = [w for w in words if not w.filler]
+    fillers = [w for w in words if w.filler]
+    project.parody.lines[0].words = fillers + real
+    assert not wordlist_exhausted(project)  # 使い切る前にあった未変換部分は別の理由
+    project.parody.lines[0].words = real
+    assert not wordlist_exhausted(project)  # 全語を使っても全区間を変換できれば案内不要
+    project.parody.lines[0].words = real + fillers
+    csv_path.write_text("id,surface,pronunciation\n0,カ,カ\n1,ナ,ナ\n", encoding="utf-8")
+    assert not wordlist_exhausted(project)  # 未使用の語が残っている
+    csv_path.write_text("id,surface,pronunciation\n", encoding="utf-8")
+    assert not wordlist_exhausted(project)  # 空の候補集合を使い切り扱いしない
 
 
 def test_convert_project_filler_keeps_multi_char_mora(tmp_path: Path):

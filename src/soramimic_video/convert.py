@@ -1437,6 +1437,48 @@ def _find_row(
     return rows[0]
 
 
+def wordlist_exhausted(project: Project) -> bool:
+    """Return whether original-reading fillers remain after all eligible IDs were used."""
+    parody = project.parody
+    if parody is None or parody.params.get("DUPLICATE") is not False:
+        return False
+    words = [word for line in parody.lines for word in line.words]
+    if not any(word.filler for word in words):
+        return False
+
+    from soramimic.word_list import Parser
+
+    # Count IDs, not aliases or pronunciation variants, using the conversion filter.
+    try:
+        with resolve_wordlist(parody.wordlist).open(encoding="utf-8-sig") as stream:
+            reader = csv.reader(stream)
+            header = next(reader, [])
+            rows = [row for row in reader if row]
+        if "id" not in header:
+            return False
+        if parody.where:
+            filtered = Parser().filter(parody.where, header, rows)
+            if not isinstance(filtered, list):
+                return False
+            rows = filtered
+        id_index = header.index("id")
+        eligible = {row[id_index] for row in rows}
+    except (OSError, ValueError, IndexError):
+        logger.warning("単語リストの使用状況を確認できませんでした", exc_info=True)
+        return False
+    if not eligible:
+        return False
+
+    used: set[str] = set()
+    for word in words:
+        if word.filler:
+            if eligible <= used:
+                return True
+        elif word.wordlist_row is not None and "id" in word.wordlist_row:
+            used.add(str(word.wordlist_row["id"]))
+    return False
+
+
 def resolve_convert_settings(
     csv_path: Path | None,
     where: str | None = None,
