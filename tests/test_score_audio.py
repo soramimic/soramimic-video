@@ -68,6 +68,55 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
 
 
+@pytest.mark.parametrize("supplied", [False, True])
+def test_pinned_score_keeps_repeated_small_kana_through_audio_import(
+    monkeypatch, tmp_path, supplied,
+):
+    import soramimic_score
+    from soramimic_score import (
+        AlignedMora,
+        AudioAdapters,
+        LyricLine,
+        MelodyNote,
+        ReadingSelection,
+    )
+
+    from soramimic_video.project import Project
+
+    kana = "ウォォォ"
+    adapters = AudioAdapters(
+        lyric_recognizer=lambda _: (LyricLine(kana, 0, 1.5),),
+        reading_selector=lambda *_: (ReadingSelection(kana, "test", 1),),
+        mora_aligner=lambda *_: tuple(
+            AlignedMora(0, i, mora, i * .5, (i + 1) * .5, .9)
+            for i, mora in enumerate(("ウォ", "ォ", "ォ"))),
+        melody_transcriber=lambda _: tuple(
+            MelodyNote(i * .5, (i + 1) * .5, 60, confidence=.9) for i in range(3)),
+    )
+    real_analyze = soramimic_score.analyze_audio
+
+    def analyze_with_test_models(path, **kwargs):
+        assert kwargs["lyrics"] == ([kana] if supplied else None)
+        return real_analyze(path, adapters, lyrics=kwargs["lyrics"])
+
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text(kana, encoding="utf-8")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output, lyrics_path=lyrics if supplied else None)
+    project.save(output)
+    reloaded = Project.load(output)
+    assert reloaded.lyric_layers["canonical_text"] == kana
+    assert reloaded.lines[0].canonical_kana == kana
+    assert "".join(note.kana for note in reloaded.notes) == kana
+    assert [(note.start_sec, note.end_sec) for note in reloaded.notes] == [
+        (0, .5), (.5, 1.), (1., 1.5)]
+
+
 @pytest.mark.parametrize("adjust", [False, True])
 @pytest.mark.parametrize("source_text,recognized,expected_text,kana,status", [
     ("未来（みらい）（ラララ）", "未来（ラララ）", "未来（ラララ）", "ミライラララ", "resolved"),
