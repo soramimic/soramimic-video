@@ -154,6 +154,9 @@ def test_surface_mapping_preserves_spaces_and_avoids_ambiguous_custom_readings()
     text = "朝の光が  窓を照らして小さな鳥が空を渡って"
     boundaries = _surface_boundaries(text, KANA[:28])
     assert (6, 7) in boundaries
+    assert _surface_boundaries(
+        "光が 輝いて いるから空を見ていた", "ヒカリガカガヤイテイルカラソラヲミテイタ",
+    ) == [(3, 4), (11, 13), (13, 16)]
     # A non-dictionary pronunciation can be kept whole, but is not divided by interpolation.
     assert _surface_boundaries("朝の光が", "アオゾラ") == []
     assert _surface_boundaries("｜朝《あさ》の光が", "アサノヒカリガ") == []
