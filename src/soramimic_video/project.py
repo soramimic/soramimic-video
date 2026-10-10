@@ -71,6 +71,9 @@ class Line:
     canonical_kana: str | None = None  # 完全な読み。実演/合成の省略で削らない
     canonical_start_sec: float | None = None
     canonical_end_sec: float | None = None
+    # Optional conversion phrase: a contiguous slice of an unchanged canonical line.
+    canonical_line_index: int | None = None
+    canonical_mora_ids: list[str] | None = None
 
 
 @dataclass
@@ -112,6 +115,7 @@ class Project:
     parody: Parody | None = None
     version: int = SCHEMA_VERSION
     lyric_layers: dict[str, Any] | None = None
+    lyric_phrasing: dict[str, Any] | None = None
 
     # ---- 参照ヘルパ ----
 
@@ -167,4 +171,5 @@ class Project:
                 ],
             )
         return cls(song=song, notes=notes, lines=lines, parody=parody,
-                   lyric_layers=data.get("lyric_layers"))
+                   lyric_layers=data.get("lyric_layers"),
+                   lyric_phrasing=data.get("lyric_phrasing"))
