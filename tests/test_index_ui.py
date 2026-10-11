@@ -140,6 +140,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         for head in (
             "async function poll(", "async function openLyricReview(",
             "async function confirmLyricReview(", "function closeEditor()",
+            "function lyricReviewCoverage(",
             "async function saveLyricReview(",
             "async function syncEditorSessionOnce()",
         )
@@ -225,7 +226,10 @@ def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
-        for head in ("async function saveLyricReview(", "async function closeLyricReview(")
+        for head in (
+            "async function saveLyricReview(", "async function closeLyricReview(",
+            "function resumeHistoryReview(",
+        )
     )
     node = textwrap.dedent("""
         const assert = require("node:assert/strict");
@@ -242,6 +246,12 @@ def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
         const headers = () => ({});
         const sessionStorage = {getItem: key => key === EDITOR_KEY ? raw : "one"};
         const closeEditor = () => { closeCount++; };
+        let historyLoads = 0, resumed = false, reviewOpening = false;
+        let reviewOpenedJob = 'one', watched = null, busy = false, progress = false;
+        const loadHistory = async () => { historyLoads++; };
+        const setBusy = value => { busy = value; };
+        const showProgress = () => { progress = true; };
+        const watch = id => { watched = id; };
         const fetch = async (url, options) => {
           active++; maxActive = Math.max(maxActive, active);
           writes.push(await options.body.get("editor").text());
@@ -269,6 +279,153 @@ def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
           assert.equal(closeCount, 1);
           assert.equal(writes.length, 3);
           assert.equal($("lyric-review-error").textContent, "");
+          assert.equal(historyLoads, 1);
+          reviewSubmitting = true;
+          resumeHistoryReview({id: 'other'});
+          assert.equal(watched, null);
+          reviewSubmitting = false;
+          resumeHistoryReview({id: 'other'});
+          assert.equal(watched, 'other');
+          assert.equal(reviewOpenedJob, null);
+          assert(resumed && busy && progress);
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    """)
+    subprocess.run(["node", "-e", node], check=True)
+
+
+def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confirmation():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function lyricReviewCoverage(", "function confirmReviewRegeneration(",
+            "async function confirmLyricReview(", "function onEditorModalKeydown(",
+        )
+    )
+    node = textwrap.dedent("""
+        const assert = require('node:assert/strict');
+        const EDITOR_KEY = 'editor', REVIEW_JOB_KEY = 'job', REVIEW_REGENERATE_KEY = 'auto';
+        const store = new Map(), preferences = new Map(), elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) {
+            elements.set(id, {disabled: false, hidden: false, textContent: '', focus() {}});
+          }
+          return elements.get(id);
+        };
+        const sessionStorage = {getItem: key => store.get(key) || null};
+        let denyStorage = false;
+        const localStorage = {
+          getItem: key => {if (denyStorage) throw Error('storage'); return preferences.get(key);},
+          setItem: (key, value) => {
+            if (denyStorage) throw Error('storage'); preferences.set(key, value);
+          },
+        };
+        let reviewJobId = 'one', reviewSubmitting = false, reviewSavePending = null;
+        let dialogCount = 0, regenerateCount = 0, watched = null, closed = false;
+        const resumePayloads = [];
+        let regenerateError = null, regenerateResult = null, closeListener = null;
+        const dialog = $('lyric-review-confirm');
+        dialog.addEventListener = (event, listener) => {
+          assert.equal(event, 'close'); closeListener = listener;
+        };
+        dialog.showModal = () => {dialog.open = true; dialogCount++;};
+        dialog.close = value => {dialog.open = false; dialog.returnValue = value; closeListener();};
+        const complete = {unitsList: [[{}, {}, {}]], results: [[
+          {surface: '固定', period: [0, 1], locked: true}, {surface: '補完', period: [1, 3]},
+        ]]};
+        const partial = {...complete, results: [[complete.results[0][0]]]};
+        const remaining = {...complete, results: [[
+          complete.results[0][0], {...complete.results[0][1], filler: true},
+        ]]};
+        $('editor-frame').contentWindow = {soramimicVideoReview: {
+          async regenerateUnlocked() {
+            regenerateCount++;
+            assert.equal($('editor-frame').inert, true);
+            assert.equal($('close-lyric-review').disabled, true);
+            if (regenerateError) throw Error(regenerateError);
+            store.set(EDITOR_KEY, JSON.stringify(regenerateResult));
+          },
+        }};
+        const headers = () => ({}), showBuilderMsg = () => {}, setJobStatus = () => {};
+        const closeEditor = () => {closed = true;}, watch = id => {watched = id;};
+        const fetch = async (url, options) => {
+          assert.equal(url, '/api/jobs/one/resume');
+          resumePayloads.push(JSON.parse(await options.body.get('editor').text()));
+          return {ok: true, json: async () => ({})};
+        };
+        const reset = payload => {
+          store.set(EDITOR_KEY, JSON.stringify(payload)); store.set(REVIEW_JOB_KEY, 'one');
+          reviewJobId = 'one'; regenerateResult = complete; regenerateError = null;
+          closed = false; watched = null;
+        };
+        const tick = () => new Promise(setImmediate);
+    """) + functions + textwrap.dedent("""
+        (async () => {
+          assert.deepEqual(lyricReviewCoverage(partial), {unmatched: true, gaps: true});
+          assert.deepEqual(lyricReviewCoverage(remaining), {unmatched: true, gaps: false});
+          assert.deepEqual(lyricReviewCoverage(complete), {unmatched: false, gaps: false});
+          assert.deepEqual(lyricReviewCoverage({unitsList: [[]], results: [[]]}),
+            {unmatched: false, gaps: false});
+          reset(complete);
+          await confirmLyricReview();
+          assert.equal(dialogCount, 0); assert.equal(regenerateCount, 0);
+          assert.deepEqual(resumePayloads, [complete]);
+
+          reset(partial);
+          let pending = confirmLyricReview();
+          assert(dialog.open);
+          await confirmLyricReview(); // Repeated clicks do not open another confirmation.
+          assert.equal(dialogCount, 1);
+          $('lyric-review-skip').checked = true;
+          let prevented = false;
+          onEditorModalKeydown({key: 'Escape', preventDefault() {prevented = true;}});
+          assert.equal(prevented, false, 'Escape must reach the native confirmation dialog');
+          dialog.close('cancel');
+          await pending;
+          assert.equal(preferences.size, 0); assert.equal(regenerateCount, 0);
+          assert.equal(resumePayloads.length, 1); assert.equal(closed, false);
+          assert.equal($('editor-frame').inert, false);
+
+          pending = confirmLyricReview();
+          $('lyric-review-skip').checked = true;
+          dialog.close('generate');
+          await pending;
+          assert.equal(preferences.get(REVIEW_REGENERATE_KEY), '1');
+          assert.equal(regenerateCount, 1); assert.deepEqual(resumePayloads[1], complete);
+          assert.equal(watched, 'one'); assert.equal(closed, true);
+
+          reset(partial);
+          await confirmLyricReview();
+          assert.equal(dialogCount, 2, 'remembered consent skips only the first confirmation');
+          assert.equal(regenerateCount, 2); assert.equal(resumePayloads.length, 3);
+
+          reset(partial); regenerateError = '再生成エラー';
+          await confirmLyricReview();
+          assert.match($('lyric-review-error').textContent, /再生成エラー/);
+          assert.equal(resumePayloads.length, 3); assert.equal(closed, false);
+          assert.equal($('confirm-lyric-review').disabled, false);
+
+          reset(partial); regenerateResult = remaining;
+          pending = confirmLyricReview(); await tick();
+          assert(dialog.open); assert($('lyric-review-skip-label').hidden);
+          dialog.close('cancel'); await pending;
+          assert.equal(resumePayloads.length, 3); assert.equal(closed, false);
+          assert.deepEqual(JSON.parse(store.get(EDITOR_KEY)), remaining);
+          pending = confirmLyricReview(); await tick();
+          dialog.close('generate'); await pending;
+          assert.deepEqual(resumePayloads[3], remaining);
+
+          reset(partial); regenerateResult = partial;
+          await confirmLyricReview();
+          assert.equal(resumePayloads.length, 4);
+          assert.match($('lyric-review-error').textContent, /対応づけられない/);
+          assert.equal(reviewSubmitting, false); assert.equal($('editor-frame').inert, false);
+
+          preferences.clear(); denyStorage = true; reset(partial);
+          pending = confirmLyricReview();
+          assert(dialog.open); $('lyric-review-skip').checked = true;
+          dialog.close('generate'); await pending;
+          assert.equal(resumePayloads.length, 5, 'storage denial must not prevent regeneration');
         })().catch(error => {console.error(error); process.exitCode = 1;});
     """)
     subprocess.run(["node", "-e", node], check=True)

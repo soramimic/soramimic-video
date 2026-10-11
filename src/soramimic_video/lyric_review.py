@@ -69,7 +69,7 @@ def load_review(directory: Path, *, draft: bool = True) -> dict[str, Any]:
 
 
 def validate_review(
-    directory: Path, payload: Any, *, sessions_dir: Path | None = None
+    directory: Path, payload: Any, *, sessions_dir: Path | None = None, draft: bool = False
 ) -> bytes:
     """Validate before resuming, keeping source timing and wordlist paths trusted."""
     seed = load_review(directory, draft=False)
@@ -98,9 +98,11 @@ def validate_review(
         raise ValueError("編集データの行数が解析結果と一致しません")
     if not isinstance(accepted.get("param"), dict):
         raise ValueError("変換設定の形式が正しくありません")
+    validation_results = []
     for words, units in zip(results, units_list, strict=True):
         if not isinstance(words, list) or not isinstance(units, list):
             raise ValueError("編集データの行が正しくありません")
+        covered = [False] * len(units)
         for word in words:
             if not isinstance(word, dict):
                 raise ValueError("編集データの単語が正しくありません")
@@ -111,11 +113,32 @@ def validate_review(
                 or not 0 <= period[0] < period[1] <= len(units)
             ):
                 raise ValueError("編集データの単語位置が正しくありません")
+            covered[period[0]:period[1]] = [True] * (period[1] - period[0])
+        if not all(covered) and not draft:
+            raise ValueError(
+                "未対応の範囲があります。固定以外を再生成してから動画を生成してください"
+            )
+        # A draft may contain gaps. Fill only the temporary validation copy so the
+        # note-mapping checks still exercise edited words without saving fillers.
+        checked_words = list(words)
+        for index, present in enumerate(covered):
+            if not present:
+                kana = units[index]["pronunciation"]
+                checked_words.append({
+                    "surface": kana, "kana": kana, "pronunciation": kana,
+                    "originalkana": kana, "filler": True, "period": [index, index + 1],
+                })
+        validation_results.append(
+            words if all(covered) else sorted(checked_words, key=lambda word: word["period"][0])
+        )
     encoded = json.dumps(accepted, ensure_ascii=False).encode("utf-8")
     # Exercise the same note mapping as the worker without modifying the saved analysis.
     with tempfile.TemporaryDirectory(prefix="soramimic-review-") as temporary:
         path = Path(temporary) / "editor.json"
-        path.write_bytes(encoded)
+        path.write_text(
+            json.dumps({**accepted, "results": validation_results}, ensure_ascii=False),
+            encoding="utf-8",
+        )
         try:
             import_editor(Project.load(directory), Path(temporary), path, sessions_dir)
         except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:

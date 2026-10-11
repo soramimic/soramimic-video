@@ -2169,7 +2169,7 @@ class JobManager:
                 )
             try:
                 data = validate_review(
-                    job.dir, payload, sessions_dir=self.config["editor_sessions"]
+                    job.dir, payload, sessions_dir=self.config["editor_sessions"], draft=True
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
