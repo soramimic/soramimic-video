@@ -95,6 +95,7 @@ API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 PUBLIC_ENV = "SORAMIMIC_PUBLIC"  # 1/true で公開モード
 REQUIRE_PUBLIC_ENV = "SORAMIMIC_REQUIRE_PUBLIC"  # 1/true なら公開モード設定漏れで起動しない
 SIMPLE_UI_ENV = "SORAMIMIC_SIMPLE_UI"  # 初回公開用の選択肢を絞ったUI
+FIXED_SYNTHESIZER_ENV = "SORAMIMIC_FIXED_SYNTHESIZER"
 QUEUE_LIMIT_ENV = "SORAMIMIC_QUEUE_LIMIT"  # 待機+実行中ジョブの上限
 DAILY_QUOTA_ENV = "SORAMIMIC_DAILY_QUOTA"  # セッションあたり24時間の投入上限
 IP_DAILY_QUOTA_ENV = "SORAMIMIC_IP_DAILY_QUOTA"
@@ -218,6 +219,21 @@ def is_simple_ui() -> bool:
         "false",
         "no",
     )
+
+
+def fixed_synthesizer() -> str:
+    """Web UIから使う固定歌声。未指定時は従来どおりVOICEVOX。"""
+    value = os.environ.get(FIXED_SYNTHESIZER_ENV, "voicevox").strip().lower()
+    if value not in {"voicevox", "neutrino", "prettypitch", "hybrid"}:
+        raise RuntimeError(
+            f"{FIXED_SYNTHESIZER_ENV}はvoicevox、neutrino、prettypitch、hybridのいずれかです"
+        )
+    if value in {"prettypitch", "hybrid"}:
+        from .prettypitch import installation_error
+
+        if error := installation_error():
+            raise RuntimeError(f"PrettyPitchを固定歌声にできません: {error}")
+    return value
 
 
 def load_launch_catalog() -> dict[str, Any]:
@@ -663,6 +679,7 @@ class Job:
     layout_source: str | None = None
     video: Path | None = None
     generation_quality_warning: bool = False
+    wordlist_exhausted: bool = False
     # A cleanup failure is never treated as success. Keep it durable so startup
     # and the periodic privacy scrubber continue retrying after transient I/O errors.
     cleanup_pending: bool = False
@@ -739,6 +756,8 @@ class Job:
                 d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
             if self.generation_quality_warning:
                 d["generation_quality_warning"] = True
+            if self.wordlist_exhausted:
+                d["wordlist_exhausted"] = True
         if with_log and not is_public_mode():
             d["log"] = list(self.log)
         return d
@@ -746,6 +765,22 @@ class Job:
 
 def _clean_name(value: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", value).strip("_")[:40]
+
+
+async def read_wordlist_text(value: str | UploadFile) -> str:
+    if isinstance(value, str):
+        return value
+    limit = wordlist_csv_mod.max_bytes()
+    data = await value.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"自作リストが大きすぎます(上限は{limit / 1024 / 1024:.1f}MBです)。",
+        )
+    try:
+        return wordlist_csv_mod.decode(data)
+    except wordlist_csv_mod.WordlistCsvError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def custom_wordlist_name(filename: str) -> str:
@@ -1092,9 +1127,16 @@ def synth_credit_of(params: dict[str, Any], config: dict[str, Any]) -> str:
     任意なので焼き込まない(ライブラリ個別の規約はWeb UIの「公開時のクレジット
     表記」で案内している)。
     """
+    synthesizer = str(params.get("synthesizer") or "neutrino")
+    # PrettyPitch試験ランタイムは波音リツモデルに固定する。モデルの利用条件に
+    # 沿って、生成動画にもエンジン名と歌声名を残す。
+    if synthesizer == "hybrid":
+        return "VOICEVOX・PrettyPitch：波音リツ（カノン）"
+    if synthesizer == "prettypitch":
+        return "PrettyPitch / 波音リツ（カノン）"
     # 既定値のvoicevoxではなくneutrinoで補うのは、synthesizerを記録していない
     # 古いジョブがNEUTRINO時代のものだから(過去ジョブの表記を変えないため据え置く)
-    if str(params.get("synthesizer") or "neutrino") != "voicevox":
+    if synthesizer != "voicevox":
         return ""
     from .voicevox import list_singers
 
@@ -1228,7 +1270,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             job.params.get("auto_lyrics") is False and lyrics_path.exists()
         )
         if job.params.get("input_kind") == "audio":
-            from .analyze_audio import analyze_audio
+            from .score_audio import analyze_audio
 
             supplied_audio_lyrics = (
                 lyrics_path
@@ -1245,6 +1287,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
                 # アップロード音源の自動認識時はWhisperで歌詞行を決める。
                 lyrics_path=supplied_audio_lyrics,
+                adjust_lyrics=bool(job.params.get("adjust_lyrics", False)),
                 whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
                 device=config.get("audio_device"),
                 progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
@@ -1303,10 +1346,14 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 where=job.params.get("where") or None,
                 params=parse_convert_params(job.params.get("convert_params")),
                 cache_db=custom_csv is None,
+                auto_phrase_lyrics=bool(job.params.get("auto_phrase_lyrics", False)),
             )
             save_raw(raw, d)
             project.save(d)
 
+    from .convert import wordlist_exhausted
+
+    job.wordlist_exhausted = wordlist_exhausted(project)
     layout, job.layout_source = resolve_layout(job, config)
     from .align import parse_granularity_override
 
@@ -1322,6 +1369,10 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         "synth_credit": synth_credit_of(job.params, config),
         "fps": config.get("video_fps", 30),
         "image_lead_sec": config.get("video_image_lead_sec", 0.1),
+        "song_credit": (
+            None if _sample_entry_of(job.params) is not None else job.params.get("song_credit")
+        ),
+        "thumbnail_wordlist_label": job.params.get("thumbnail_wordlist_label", ""),
         "original_credit": original_credit_of(job.params),
         "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
@@ -1476,9 +1527,10 @@ def _run_synthesize(
     """
     # 未記録の古いジョブはNEUTRINO時代のものなので neutrino 扱い(見積りの互換のため据え置く)
     synthesizer = job.params.get("synthesizer", "neutrino")
-    is_voicevox = synthesizer == "voicevox"
-    # VOICEVOXは速く進捗内訳も出ないので、NEUTRINO用の所要見積り・実績記録は行わない
-    store: Path | None = None if is_voicevox else config.get("throughput_store")
+    uses_external_estimate = synthesizer in {"voicevox", "prettypitch", "hybrid"}
+    # VOICEVOX/PrettyPitchはNEUTRINOとは速度特性が違うので、NEUTRINO用の
+    # 所要見積り・実績記録へ混ぜない。
+    store: Path | None = None if uses_external_estimate else config.get("throughput_store")
     score_seconds = max((n.end_sec for n in project.notes), default=0.0)
     with _stage(job, "synthesize"):
         if store is not None:
@@ -1486,7 +1538,7 @@ def _run_synthesize(
                 store, score_seconds
             )
         else:
-            # VOICEVOXにも工程内の概算を表示する。実進捗が届けばそちらを優先する。
+            # 外部バックエンドにも工程内の概算を表示する。実進捗が届けばそちらを優先する。
             job.stage_estimated_total = max(3.0, min(45.0, score_seconds * 0.07))
 
         def on_progress(frac: float) -> None:
@@ -1569,6 +1621,7 @@ class JobManager:
                 generation_quality_warning=bool(
                     data.get("generation_quality_warning", False)
                 ),
+                wordlist_exhausted=bool(data.get("wordlist_exhausted", False)),
                 cleanup_pending=bool(data.get("cleanup_pending", False)),
                 usage_finished_recorded=bool(
                     data.get("usage_finished_recorded", False)
@@ -1647,7 +1700,7 @@ class JobManager:
         if input_kind not in {"audio", "midi"}:
             input_kind = "unknown"
         synthesizer = str(params.get("synthesizer") or "unknown")
-        if synthesizer not in {"voicevox", "neutrino"}:
+        if synthesizer not in {"voicevox", "neutrino", "prettypitch", "hybrid"}:
             synthesizer = "unknown"
         wordlist = str(params.get("wordlist") or "")
         if wordlist not in launch_wordlist_names():
@@ -2294,6 +2347,7 @@ def create_app(
         "threads": threads,
         "layout": layout,
         "voicevox_url": voicevox_url,
+        "fixed_synthesizer": fixed_synthesizer(),
         "video_fps": video_fps,
         "video_image_lead_sec": video_image_lead_sec,
         "parallel_video": parallel_video,
@@ -3002,6 +3056,8 @@ def create_app(
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "voicevox": _voicevox_config(),
+            "prettypitch": _prettypitch_config(),
+            "fixed_synthesizer": config["fixed_synthesizer"],
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
@@ -3069,6 +3125,12 @@ def create_app(
             return {"styles": list_singers(str(config["voicevox_url"]), timeout=1.0)}
         except RuntimeError:
             return None
+
+    def _prettypitch_config() -> dict[str, Any] | None:
+        """外部PrettyPitchランタイムが完全なら、試験歌声を公開する。"""
+        from .prettypitch import available
+
+        return {"speaker": "波音リツ", "experimental": True} if available() else None
 
     @app.get("/api/layouts/{name}", dependencies=[Depends(_require_api_key)])
     def get_layout(name: str) -> dict[str, Any]:
@@ -3294,6 +3356,83 @@ def create_app(
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return str(entry.get("title") or sample_id), str(entry.get("title_kana") or "")
 
+    @app.post("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
+    async def custom_thumbnail_preview(request: Request) -> Response:
+        """Return a private PNG for a text list supplied in the JSON body."""
+        from .custom_thumbnail_preview import render_custom_preview
+
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューの作成が続いています。少し待ってからお試しください。",
+            )
+        if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+            raise HTTPException(status_code=415, detail="JSON形式で送信してください")
+        # Bound the actual stream, including chunked requests, before parsing JSON.
+        # JSON.stringify can double quotes/backslashes in the CSV.
+        maximum = 2 * wordlist_csv_mod.max_bytes() + 4096
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > maximum:
+                raise HTTPException(status_code=413, detail="入力が大きすぎます")
+            data.extend(chunk)
+        try:
+            payload = json.loads(data)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            raise HTTPException(status_code=400, detail="JSONを読み取れません") from exc
+        fields = {"sample", "title", "wordlist_name", "wordlist_text"}
+        if (
+            not isinstance(payload, dict)
+            or payload.keys() - fields
+            or any(not isinstance(value, str) for value in payload.values())
+        ):
+            raise HTTPException(status_code=400, detail="プレビューの入力形式が不正です")
+        sample = payload.get("sample", "").strip()
+        title = payload.get("title", "").strip()
+        name = payload.get("wordlist_name", "").strip() or "自作リスト"
+        if len(sample) > 200 or len(title) > 200 or len(name) > 100:
+            raise HTTPException(status_code=400, detail="曲名またはリスト名が長すぎます")
+        try:
+            (sample + title + name).encode("utf-8")
+        except UnicodeError as exc:
+            raise HTTPException(
+                status_code=400, detail="曲名またはリスト名の文字が不正です",
+            ) from exc
+        title_kana = ""
+        if sample:
+            title, title_kana = _sample_title(sample)
+        elif not title:
+            raise HTTPException(status_code=400, detail="サンプル曲(sample)か曲名(title)が必要です")
+        try:
+            custom = wordlist_csv_mod.parse(payload.get("wordlist_text", "").encode("utf-8"))
+        except (wordlist_csv_mod.WordlistCsvError, UnicodeError) as exc:
+            # The CSV parser's diagnostics can include the user's words.
+            raise HTTPException(
+                status_code=400, detail="自作リストの形式または容量を確認してください",
+            ) from exc
+        try:
+            content = await run_in_threadpool(
+                render_custom_preview, custom.text, title, name, title_kana,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューを作成できませんでした。少し待つか、リストを小さくしてお試しください。",
+            ) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=500, detail="プレビューを作成できませんでした") from exc
+        return Response(
+            content=content,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Preview-Cache": "private",
+                "X-Preview-Images": "ready",
+            },
+        )
+
     @app.get("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
     def thumbnail_preview(
         request: Request,
@@ -3304,6 +3443,7 @@ def create_app(
         convert_params: str = "",
         images: bool = True,
         noncommercial_fanwork: bool = False,
+        wordlist_label: str = "",
     ) -> Response:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
@@ -3332,6 +3472,8 @@ def create_app(
         from .convert import parse_convert_params
         from .thumbnail_preview import PreviewSpec, render_slot
 
+        if len(wordlist_label) > 100:
+            raise HTTPException(status_code=400, detail="単語リスト名は100文字以内です")
         catalog_sample = bool(sample.strip())
         if catalog_sample:
             title, title_kana = _sample_title(sample.strip())
@@ -3358,16 +3500,17 @@ def create_app(
                 where=where.strip() or None,
                 params=parse_convert_params(convert_params),
                 with_images=images,
+                wordlist_label=wordlist_label,
                 title_kana=title_kana,
                 allow_noncommercial_fanwork=noncommercial_fanwork,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        # A user-supplied title is private input.  Render it in PrivateTmp and
+        # User-supplied titles and display names are private. Render in PrivateTmp and
         # return bytes so neither the title nor its derived PNG enters a shared
         # on-disk cache.  Catalog samples remain safe to cache across sessions.
-        if not catalog_sample:
+        if not catalog_sample or wordlist_label.strip():
             if not _allow_expensive_get(request, preview_session_limiter):
                 raise HTTPException(
                     status_code=429,
@@ -3611,12 +3754,14 @@ def create_app(
         wordlist_csv: UploadFile | None = None,
         # 画面に貼り付けた単語リスト(zipを作らずに画像を付ける経路)。
         # wordlist_csv が付いていないときだけ見る。画像は名前で行に結びつく
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
         lyrics: str = Form(""),
         # 省略時はMIDI・音源アップロードとも歌詞を自動認識する。
         auto_lyrics: bool = Form(True),
+        adjust_lyrics: bool = Form(False),
+        auto_phrase_lyrics: bool = Form(False),
         model: str = Form("MERROW"),
         # 省略時はどのサーバーでも通るVOICEVOXにする(NEUTRINOはNEUTRINO_ROOT
         # 未設定のサーバーだと下の422ゲートで弾かれてしまうため既定にしない)
@@ -3634,6 +3779,8 @@ def create_app(
         # サムネ・表示用の曲名。WebUIはサンプル曲なら samples.json の title、
         # 自分のMIDIならファイル名(拡張子なし)を送る。未指定なら midi_filename を使う
         song_title: str = Form(""),
+        song_credit: str = Form("", max_length=2000),
+        thumbnail_wordlist_label: str = Form("", max_length=100),
         original_credit: str = Form(""),
         credit_notice: str = Form(""),
         allow_noncommercial_fanwork: bool = Form(False),
@@ -3693,9 +3840,23 @@ def create_app(
                 )
         elif not auto_lyrics and not lyrics.strip():
             raise HTTPException(status_code=422, detail="正解歌詞を入力してください")
+        if adjust_lyrics and (input_kind != "audio" or auto_lyrics or not lyrics.strip()):
+            raise HTTPException(
+                status_code=422,
+                detail="歌詞の調整は、音源と入力歌詞を使う場合だけ選択できます",
+            )
+        if auto_phrase_lyrics and (
+            input_kind != "audio" or not lyrics.strip() or (auto_lyrics and not launch_sample_id)
+            or editor is not None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="歌詞の自動分割は、音源と入力歌詞から替え歌へ変換する場合だけ選択できます",
+            )
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
+        wordlist_text = await read_wordlist_text(wordlist_text)
         if (is_public_mode() or is_simple_ui()) and (
             (editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
@@ -3761,13 +3922,14 @@ def create_app(
             # 画面から選ばせないだけでなく、過去のlocalStorageや任意の
             # HTTPクライアントから来た値もここで固定する。
             launch = load_launch_catalog()
-            synthesizer = "voicevox"
+            synthesizer = str(config["fixed_synthesizer"])
             voicevox_style = int(launch.get("voicevox_style", 3003))
             auto_octave = True
             transpose = 0
             model = "MERROW"
             layout = ""
             layout_json = ""
+            song_credit = ""
             original_credit = ""
             credit_notice = ""
             # 簡易UIでも明示チェックがある場合だけ許可する。
@@ -3777,24 +3939,13 @@ def create_app(
                 status_code=422,
                 detail="editorの書き出しJSONか単語リスト(名前かCSV)のどちらかが必要です",
             )
+        custom_columns = custom.csv.columns if custom is not None else None
         layout = layout.strip()
         layout_json = layout_json.strip()
-        # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
-        if layout_json:
-            try:
-                parse_layout(json.loads(layout_json), "layout_json")
-            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
-                ) from exc
-        elif layout:
-            try:
-                load_layout(layout)
-            except (FileNotFoundError, ValueError) as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if synthesizer not in ("neutrino", "voicevox"):
+        if synthesizer not in ("neutrino", "voicevox", "prettypitch", "hybrid"):
             raise HTTPException(
-                status_code=422, detail="synthesizerは neutrino か voicevox です"
+                status_code=422,
+                detail="synthesizerは neutrino、voicevox、prettypitch、hybrid のいずれかです",
             )
         # NEUTRINO未設定のサーバー(公開インスタンスなど)は合成の途中で必ず落ちる。
         # 走らせてから失敗させず、受付時に理由を返す(UI側も選択肢を無効化している)
@@ -3803,6 +3954,21 @@ def create_app(
                 status_code=422,
                 detail="このサーバーではNEUTRINOを使えません(synthesizerは voicevox です)",
             )
+        if synthesizer in {"prettypitch", "hybrid"}:
+            from .prettypitch import installation_error
+
+            if error := installation_error():
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"このサーバーではPrettyPitchを使えません: {error}",
+                )
+            if not allow_noncommercial_fanwork:
+                raise HTTPException(
+                    status_code=422,
+                    detail="PrettyPitch試験モデルは非商用ファン作品への同意が必要です",
+                )
+        if synthesizer == "hybrid":
+            voicevox_style = 6000
         # 新名 auto_octave を優先し、無ければ旧名、どちらも無ければ既定True(自動調整ON)
         if auto_octave is None:
             auto_octave = (
@@ -3843,7 +4009,7 @@ def create_app(
                         f"(上限は{wordlist_csv_mod.max_bytes() / 1024 / 1024:.1f}MBです)。",
                     )
                 try:
-                    wordlist_csv_mod.parse_editor_text(csv_text)
+                    custom_columns = wordlist_csv_mod.parse_editor_text(csv_text).columns
                 except wordlist_csv_mod.WordlistCsvError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
                 # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
@@ -3852,12 +4018,19 @@ def create_app(
             elif sid:
                 # 自作リストで作った替え歌。単語リスト行(=単語画像)は
                 # editorセッションのCSVから引くので、無ければ受け付けない
-                if session_wordlist_path(config["editor_sessions"], sid) is None:
+                session_csv = session_wordlist_path(config["editor_sessions"], sid)
+                if session_csv is None:
                     raise HTTPException(
                         status_code=422,
                         detail="自作リストの単語データが見つかりません。"
                         "替え歌エディタを開き直してから生成してください。",
                     )
+                try:
+                    custom_columns = wordlist_csv_mod.parse_editor_text(
+                        session_csv.read_text(encoding="utf-8")
+                    ).columns
+                except wordlist_csv_mod.WordlistCsvError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
                 # 履歴・ダウンロード名に出る表示名(リスト名では引けない)
                 wordlist = CUSTOM_WORDLIST_TEXT
             else:
@@ -3880,6 +4053,24 @@ def create_app(
             # レイアウトは単一の共通デザインではなく、選んだリストに
             # 対応する検証済みの既定デザインにサーバー側で固定する。
             layout = load_wordlist_layouts().get(wordlist, "")
+        if custom_columns is not None:
+            layout = (
+                "custom_description" if "description" in custom_columns else "custom_original"
+            )
+            layout_json = ""
+        # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
+        if layout_json:
+            try:
+                parse_layout(json.loads(layout_json), "layout_json")
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"レイアウトJSONが読めません: {exc}"
+                ) from exc
+        elif layout:
+            try:
+                load_layout(layout)
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         params = {
             "model": model.strip() or "MERROW",
             "synthesizer": synthesizer,
@@ -3902,8 +4093,14 @@ def create_app(
             "input_kind": input_kind,
             "input_seconds": round(input_seconds, 3) if input_seconds is not None else None,
             "auto_lyrics": auto_lyrics,
+            "adjust_lyrics": adjust_lyrics,
+            "auto_phrase_lyrics": auto_phrase_lyrics,
             "sample_id": launch_sample_id or "",
             "song_title": song_title.strip(),
+            "song_credit": (
+                song_credit.strip() if "song_credit" in await request.form() else None
+            ),
+            "thumbnail_wordlist_label": thumbnail_wordlist_label.strip(),
             "original_credit": original_credit.strip(),
             "credit_notice": credit_notice.strip(),
             "allow_noncommercial_fanwork": allow_noncommercial_fanwork,
@@ -3963,7 +4160,7 @@ def create_app(
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
     async def wordlist_check(
         wordlist_csv: UploadFile | None = None,
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
     ) -> dict[str, Any]:
@@ -3979,6 +4176,7 @@ def create_app(
         """
         if is_simple_ui():
             raise HTTPException(status_code=404, detail="Not Found")
+        wordlist_text = await read_wordlist_text(wordlist_text)
         has_file = wordlist_csv is not None and bool(wordlist_csv.filename)
         has_text = bool(wordlist_text.strip())
         if is_public_mode() and any(bool(image.filename) for image in wordlist_images):
@@ -4269,7 +4467,7 @@ def create_app(
         # 自作の単語リスト。/api/jobs と同じ2通りの入口(zip/CSV1ファイル、または
         # 貼り付けテキスト+画像)。付いていればリスト名(wordlist)より優先する
         wordlist_csv: UploadFile | None = None,
-        wordlist_text: str = Form(""),
+        wordlist_text: str | UploadFile = File(""),
         wordlist_images: list[UploadFile] = File(default_factory=list),
         wordlist_name: str = Form(""),
     ) -> dict[str, Any]:
@@ -4325,6 +4523,7 @@ def create_app(
         )
         from .xfparse import analyze_midi
 
+        wordlist_text = await read_wordlist_text(wordlist_text)
         midi_bytes, _resolved_sample_id, _midi_filename = await resolve_midi_input(
             midi, sample_id
         )

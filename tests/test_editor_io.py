@@ -145,14 +145,15 @@ def test_import_editor_aligns_the_editor_lyrics_when_the_project_has_none(tmp_pa
     assert [ln.original_text for ln in project.lines] == ["しずむ"]
 
 
-def test_import_editor_lyrics_keep_the_ruby_reading(tmp_path: Path):
+@pytest.mark.parametrize("lyrics", ["｜沈《しず》む", "沈（しず）む"])
+def test_import_editor_lyrics_keep_the_ruby_reading(tmp_path: Path, lyrics: str):
     """lyrics のルビ記法は剥がさずに渡す(読みが align_lines に効く)。
 
     字幕に入るのは素テキスト(｜/《》 は漏れない)。
     """
     project, path = _converted(tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["lyrics"] = "｜沈《しず》む"
+    payload["lyrics"] = lyrics
     _write(path, payload)
     import_editor(project, tmp_path)
     assert [ln.original_text for ln in project.lines] == ["沈む"]

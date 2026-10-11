@@ -2,8 +2,8 @@
 
 SheetSage2 is an optional, local-only primary note source.  Its non-commercial
 weights are never downloaded by the application: operators must explicitly
-configure already-reviewed model directories. Official lyrics are aligned by
-``mora_align`` separately; this module only supplies note candidates.
+configure already-reviewed model directories. Soramimic Score handles lyric
+alignment; this module supplies note candidates for shared inference.
 """
 
 from __future__ import annotations

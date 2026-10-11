@@ -20,8 +20,8 @@
 単語リストによっては画像がSVG(生成カード画像)なので、PillowがSVGを開けない
 ぶんはダウンロード時にPNGへラスタライズしてキャッシュする(svg_to_png)。
 
-フレームの左下には「lyrics & video by Soramimic」(歌声合成のクレジット表記が要るときは
-「lyrics & video by Soramimic / VOICEVOX:キャラ名」)を小さく焼き込む。単語フレーム・
+フレームの左下には「lyrics & video by Soramimic」や元曲の表記を小さく焼き込む。
+歌声合成のクレジットは最後のクレジットページに載せる。単語フレーム・
 fallback・idle・サムネで共通で、レイアウトの "app_credit": false で外せる
 (layout.py 参照)。
 """
@@ -68,6 +68,7 @@ from .layout import (
 )
 from .mix import MIX_DIR
 from .project import ParodyWord, Project
+from .subtitle_pages import SubtitlePage, SubtitleTrack, paginate_subtitle_tracks
 from .synthesize import NEUTRINO_DIR
 from .thumbnail import generate_thumbnail
 from .xfparse import tick_to_sec
@@ -775,6 +776,7 @@ def section_frame_data(
     original_credit: str = "",
     credit_notice: str = "",
     midi_end_credit: str = "",
+    song_credit: str | None = None,
 ) -> dict:
     """区間フレームのテンプレートに渡す値(idle_frame_data に区間固有の列を足す)。
 
@@ -787,7 +789,8 @@ def section_frame_data(
       (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
     - original_song: 元曲名
     - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
-    - original_song_credit: 元曲名と表記を「 — 」でつないた簡潔な表示
+    - original_song_credit: 元曲名と表記を「 — 」でつないだ表示、または指定された文章
+    - song_credit: 指定時は元曲のクレジット表示文をそのまま使用する
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - midi_end_credit: 最終クレジットにだけ載せるMIDI制作者表記
@@ -804,6 +807,8 @@ def section_frame_data(
     # 二重表示を避ける。指定がないアップロード曲は従来どおり著作者表記を残す。
     compact_credit = display_credit or notice or author
     original_song_credit = " — ".join(part for part in (song, compact_credit) if part)
+    if song_credit is not None:
+        original_song_credit = song_credit
     data = idle_frame_data(project, app_credit)
     data.update(
         {
@@ -842,6 +847,7 @@ def build_section_cues(
     credit_notice: str = "",
     midi_end_credit: str = "",
     beat_offset_sec: float = 0.0,
+    song_credit: str | None = None,
 ) -> list[ImageCue]:
     """前奏・間奏・後奏の専用フレームをキューにする(専用定義が無い区間は空)。
 
@@ -863,8 +869,8 @@ def build_section_cues(
             continue
         if sec.kind == "outro":
             # 後奏が短い曲ではエンドロールを出さない。使用単語が無くても
-            # MIDI表記があれば最終クレジットページだけは出す。
-            if sec.duration < OUTRO_MIN_SEC or (not words and not midi_end_credit.strip()):
+            # 最終クレジットページは出す。
+            if sec.duration < OUTRO_MIN_SEC or (not words and not layout.has_section("credits")):
                 continue
             show_credits = layout.has_section("credits")
             # クレジットページに最低1枚ぶんを残し、残りを単語ページに割り振る
@@ -881,6 +887,7 @@ def build_section_cues(
                     original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
+                    song_credit=song_credit,
                     midi_end_credit=midi_end_credit,
                 )
                 frame = render_section_frame(
@@ -914,6 +921,7 @@ def build_section_cues(
                     original_display_credit=original_display_credit,
                     original_credit=original_credit,
                     credit_notice=credit_notice,
+                    song_credit=song_credit,
                     midi_end_credit=midi_end_credit,
                 )
                 frame = render_section_frame(
@@ -937,24 +945,25 @@ def app_credit_text(
     original_credit: str = "",
     credit_notice: str = "",
     *,
+    song_credit: str | None = None,
     original_song: str = "",
     original_display_credit: str = "",
     wordlist: str = "",
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
-    既定は「lyrics & video by Soramimic」。歌声合成側にもクレジット表記が要るとき
-    (VOICEVOXのキャラ名など)や、元曲・権利者の表記があるときは後ろに足す。
+    song_credit が指定されていれば入力文をそのまま付ける。
+    既定は「lyrics & video by Soramimic」。元曲・権利者の表記があるときは
+    後ろに足す。歌声合成側の表記は最後のクレジットページだけに載せる。
     常時表示には元曲名と必須表記だけを簡潔に載せ、作詞・作曲・歌唱者などの
     ``original_credit`` 詳細はエンドロールだけに載せる。
     """
-    synth = (synth_credit or "").strip()
     song = (original_song or "").strip()
     notice = (credit_notice or "").strip()
     display_credit = (original_display_credit or "").strip()
     parts = [app_credit_for_wordlist(wordlist)]
-    if synth:
-        parts.append(synth)
+    if song_credit is not None:
+        return " / ".join([*parts, song_credit] if song_credit else parts)
     original = " — ".join(part for part in (song, display_credit or notice) if part)
     if original:
         parts.append(f"Original: {original}" if song else original)
@@ -1687,8 +1696,9 @@ def build_ass(
     決める。subtitle要素のないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
     表示粒度(元歌詞行/対応行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
     (Web UIの一括指定)、それも無ければ source 既定に従う。
-    clear_ranges は間奏・後奏など専用画面の表示区間。この区間に入る字幕は
-    専用画面の開始時刻で消し、直前の歌詞が画面上に残らないようにする。
+    clear_ranges は間奏・後奏など専用画面の表示区間。歌詞の時刻に沿って
+    前後の字幕を分け、専用画面の間は消して、歌唱再開時に続きから表示する。
+    表示幅を超える字幕は、語句・改行と歌唱時刻に合わせて複数画面へ分ける。
     """
     from .align import build_subtitle_segments, resolve_granularity
 
@@ -1730,27 +1740,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     show_ends = line_show_ends(project, layout or load_layout(None))
     spans = []
     for line in shown:
-        start, end = project.line_time_range(line)
+        _start, end = project.line_time_range(line)
+        # Canonical bounds can include an unvoiced search window before the line.
+        # It must not replace the preceding caption before singing actually starts.
+        start = min(project.notes[n].start_sec for n in line.note_ids)
         stop = max(end + SUB_PAD_SEC, show_ends.get(line.id, end))
         spans.append([start - SUB_PAD_SEC, stop])
     for j in range(len(spans) - 1):
         spans[j][1] = min(spans[j][1], spans[j + 1][0])
         spans[j][1] = max(spans[j][1], spans[j][0] + 0.2)  # 行の重なりが極端でも一瞬は出す
         spans[j + 1][0] = max(spans[j + 1][0], spans[j][1])
-    # 間奏カード等は画像キューの隙間へ差し込まれるが、字幕は歌唱時刻から別に
-    # 作るため、カードの先行表示ぶんだけ直前の歌詞と重なり得る。専用画面が
-    # 始まったら字幕をそこで切る。通常の短い歌間(専用画面なし)は従来どおり。
-    # 行同士の最短表示時間調整より後に適用し、そこで再び間奏へはみ出させない。
-    for span in spans:
-        for clear_start, clear_end in clear_ranges or []:
-            if clear_end <= span[0] or clear_start >= span[1]:
-                continue
-            if span[0] < clear_start:
-                span[1] = clear_start
-            else:
-                # 専用画面内から始まる字幕は、その画面が終わるまで出さない。
-                span[0] = min(span[1], clear_end)
-
     font_path = resolve_font_path(layout.font if layout else None)
     # 行ごとの素材(グループ化・切り出し・マージは align 側の共通ロジックで行う)
     plines = [parody_lines.get(line.id) for line in shown]
@@ -1773,8 +1772,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # spans は上の重なり調整で可変listにしていたので、区間は (start, end) に固める
     span_pairs = [(s[0], s[1]) for s in spans]
 
-    events = []
-    for el, name in zip(subs, names, strict=True):
+    track_groups: dict[tuple, list[tuple[int, SubtitleTrack]]] = {}
+    for index, el in enumerate(subs):
         gran = resolve_granularity(el.source, getattr(el, "granularity", None), granularity)
         full_texts = parody_full if el.source == "parody" else original_full
         segments = build_subtitle_segments(
@@ -1787,6 +1786,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             sep=WORD_SEP,
             original_groups=original_groups,
         )
+        base_size = int(el.size * height)
+
+        def measure(text: str, size: int = base_size) -> float:
+            return _ass_text_width(font_path, size, _ass_escape(text))
+
+        for seg in segments:
+            if not seg.text:
+                continue
+            words = [word for k in seg.indices if (pline := plines[k]) is not None
+                     for word in pline.words] if el.source == "parody" else []
+            track = SubtitleTrack(seg, el.source, words, measure, max(1.0, el.box[2] * width - 8))
+            # Explicitly different grouping choices remain independent. Matching
+            # original/parody groups share every width-driven page boundary.
+            key = (gran, tuple(seg.indices), seg.start, seg.end)
+            track_groups.setdefault(key, []).append((index, track))
+    pages_by_element: list[list[SubtitlePage]] = [[] for _ in subs]
+    for entries in track_groups.values():
+        grouped_pages = paginate_subtitle_tracks(
+            project, [track for _, track in entries], shown,
+            sep=WORD_SEP, lead_sec=SUB_PAD_SEC, clear_ranges=clear_ranges or (),
+        )
+        for (index, _), track_pages in zip(entries, grouped_pages, strict=True):
+            pages_by_element[index].extend(track_pages)
+
+    events = []
+    for el, name, pages in zip(subs, names, pages_by_element, strict=True):
         # \posで固定配置(boxのalign/valign側の辺が基準点)。
         # レイヤーをsourceで分けておくと、万一区間が重なっても替え歌と
         # 元歌詞が衝突回避で入れ替わらない(衝突判定は同一レイヤー内のみ)
@@ -1795,29 +1820,28 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         x, y, w, h = el.box
         px = {"left": x, "right": x + w}.get(el.align, x + w / 2) * width
         py = {"top": y, "middle": y + h / 2}.get(el.valign, y + h) * height
-        for seg in segments:
-            if not seg.text:
-                continue
-            # ルビ(ふりがな): 替え歌字幕のみ。本文と同一レイヤー・同一区間で、
-            # 本文も単語ごとの別イベントにしてルビと同じ中心へ置く。
-            # 行マージ(parody=line)時はグループ内の全単語を連結して並べる。
-            if el.source == "parody" and el.ruby:
-                words = []
-                for k in seg.indices:
-                    pl = plines[k]
-                    if pl is not None:
-                        words.extend(pl.words)
-                if words:
-                    events.extend(
-                        _ruby_events(
-                            el, name, layer, seg.start, seg.end, words, px, py, an,
-                            height, font_path, w * width,
-                        )
+        max_width = max(1.0, w * width - 8)  # 輪郭線と影もbox内へ収める
+        base_size = int(el.size * height)
+
+        for page in sorted(pages, key=lambda page: page.start):
+            # ルビと本文は同じ単語・表示区間で改ページする。
+            if el.source == "parody" and el.ruby and page.words:
+                events.extend(
+                    _ruby_events(
+                        el, name, layer, page.start, page.end, page.words, px, py, an,
+                        height, font_path, max_width,
                     )
-                    continue
+                )
+                continue
+            # 1語だけで幅を超える場合や、分割できる歌唱時刻がない場合の最終手段。
+            size = base_size
+            text = _ass_escape(page.text)
+            while size > 1 and _ass_text_width(font_path, size, text) > max_width:
+                size -= 1
+            size_override = f"\\fs{size}" if size != base_size else ""
             events.append(
-                f"Dialogue: {layer},{_ass_time(seg.start)},{_ass_time(seg.end)},{name},,0,0,0,,"
-                f"{{\\an{an}\\pos({px:.0f},{py:.0f})}}{_ass_escape(seg.text)}"
+                f"Dialogue: {layer},{_ass_time(page.start)},{_ass_time(page.end)},{name},,0,0,0,,"
+                f"{{\\an{an}\\pos({px:.0f},{py:.0f}){size_override}}}{text}"
             )
     return header + "\n".join(events) + "\n"
 
@@ -1858,7 +1882,7 @@ def actual_video_total_sec(
     total = _resolve_total_sec(sung_end, _audio_duration_sec(audio_path))
     words = used_words(project)
     return extend_for_endroll(
-        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+        total, sung_end, words or [""]
     )
 
 
@@ -1886,7 +1910,7 @@ def planned_video_total_sec(project: Project, midi_end_credit: str = "") -> floa
     total = _resolve_total_sec(sung_end, expected_audio)
     words = used_words(project)
     return extend_for_endroll(
-        total, sung_end, words or ([""] if midi_end_credit.strip() else [])
+        total, sung_end, words or [""]
     )
 
 
@@ -1910,6 +1934,8 @@ def prepare_video(
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
     allow_noncommercial_fanwork: bool = False,
+    song_credit: str | None = None,
+    thumbnail_wordlist_label: str = "",
 ) -> PreparedVideo:
     """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
     if fps <= 0:
@@ -1921,6 +1947,7 @@ def prepare_video(
         original_credit=original_credit,
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
+        song_credit=song_credit,
         original_song=original_song,
         wordlist=project.parody.wordlist if project.parody else "",
     )
@@ -1932,7 +1959,7 @@ def prepare_video(
     minimum = extend_for_endroll(
         sung_end,
         sung_end,
-        endroll_words or ([""] if midi_end_credit.strip() else []),
+        endroll_words or [""],
     )
     if total_sec + 1e-6 < minimum:
         # The planned duration is an optimization hint computed before audio
@@ -1971,6 +1998,7 @@ def prepare_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        wordlist_label=thumbnail_wordlist_label,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )
@@ -1990,6 +2018,7 @@ def prepare_video(
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
+        song_credit=song_credit,
         midi_end_credit=midi_end_credit.strip(),
         beat_offset_sec=audio_delay_sec,
     )
@@ -2094,6 +2123,8 @@ def make_video(
     midi_end_credit: str = "",
     image_lead_sec: float = DEFAULT_IMAGE_LEAD_SEC,
     allow_noncommercial_fanwork: bool = False,
+    song_credit: str | None = None,
+    thumbnail_wordlist_label: str = "",
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
@@ -2105,6 +2136,7 @@ def make_video(
         original_credit=original_credit,
         original_display_credit=original_display_credit,
         credit_notice=credit_notice,
+        song_credit=song_credit,
         original_song=original_song,
         wordlist=project.parody.wordlist if project.parody else "",
     )
@@ -2130,7 +2162,7 @@ def make_video(
     extended_sec = extend_for_endroll(
         total_sec,
         sung_end_sec,
-        endroll_words or ([""] if midi_end_credit.strip() else []),
+        endroll_words or [""],
     )
     if extended_sec > total_sec:
         logger.info(
@@ -2167,6 +2199,7 @@ def make_video(
         song_title,
         credit_text,
         title_kana=song_title_kana,
+        wordlist_label=thumbnail_wordlist_label,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )
@@ -2187,6 +2220,7 @@ def make_video(
         original_display_credit=original_display_credit.strip(),
         original_credit=original_credit.strip(),
         credit_notice=credit_notice.strip(),
+        song_credit=song_credit,
         midi_end_credit=midi_end_credit.strip(),
         beat_offset_sec=audio_delay_sec,
     )

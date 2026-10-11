@@ -155,6 +155,56 @@ def test_audio_job_persists_generation_quality_warning(tmp_path, monkeypatch):
     assert body["generation_quality_warning"] is True
 
 
+def test_wordlist_exhaustion_notice_survives_cleanup_and_restart(tmp_path, monkeypatch):
+    def exhausted_pipeline(job, config):
+        job.wordlist_exhausted = True
+        (job.dir / "project.json").write_text("{}")
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.setattr(api_mod, "run_pipeline", exhausted_pipeline)
+    jobs_dir = tmp_path / "jobs"
+    app = api_mod.create_app(jobs_dir=jobs_dir)
+    app.state.manager.config["scrub_private_artifacts"] = True
+    browser = TestClient(app)
+    job_id = submit(browser, wordlist="stations")
+    body = wait_done(browser, job_id)
+    assert body["status"] == "done"
+    assert body["wordlist_exhausted"] is True
+    assert not (jobs_dir / job_id / "project.json").exists()
+    restarted = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
+    assert restarted.get(f"/api/jobs/{job_id}").json()["wordlist_exhausted"] is True
+    assert restarted.get("/api/jobs").json()[0]["wordlist_exhausted"] is True
+
+
+def test_run_pipeline_detects_wordlist_exhaustion(tmp_path, monkeypatch):
+    from soramimic_video import mix as mix_mod
+    from soramimic_video import video as video_mod
+    from soramimic_video import xfparse
+    from soramimic_video.project import Line, Note, Project, SongInfo
+
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation\n0,カ,カ,カ", encoding="utf-8")
+    project = Project(
+        song=SongInfo(midi_path="", ticks_per_beat=480),
+        notes=[Note(i, 60, i * 480, (i + 1) * 480, i, i + 1, 0, "カ", "カ", "カ")
+               for i in range(3)],
+        lines=[Line(0, "カカカ", "カカカ", [0, 1, 2])],
+    )
+    monkeypatch.setattr(xfparse, "analyze_midi", lambda path: project)
+    monkeypatch.setattr(api_mod, "_run_synthesize", lambda *a, **k: None)
+    monkeypatch.setattr(mix_mod, "mix", lambda *a, **k: None)
+    monkeypatch.setattr(video_mod, "make_video", lambda *a, **k: tmp_path / "out.mp4")
+    job = api_mod.Job(id="notice", dir=tmp_path, params={"wordlist": str(csv_path)})
+    api_mod.run_pipeline(job, {"parallel_video": False})
+    assert job.wordlist_exhausted
+    assert "wordlist_exhausted" not in job.to_dict()  # 完成前は表示しない
+    job.video = tmp_path / "out.mp4"
+    job.status = "done"
+    assert job.to_dict()["wordlist_exhausted"] is True
+
+
 def test_retried_audio_submission_returns_the_same_job(client):
     fields = {
         "wordlist": "stations",
@@ -183,7 +233,9 @@ def test_rejects_invalid_audio_submission_id(client):
     assert res.json()["detail"] == "送信IDが不正です"
 
 
-def test_manual_correct_lyrics_mode_is_persisted(client):
+@pytest.mark.parametrize("adjust", [False, True])
+@pytest.mark.parametrize("auto_phrase", [False, True])
+def test_manual_correct_lyrics_mode_is_persisted(client, adjust, auto_phrase):
     wav = fake_wav()
     res = client.post(
         "/api/jobs",
@@ -192,12 +244,16 @@ def test_manual_correct_lyrics_mode_is_persisted(client):
             "wordlist": "stations",
             "auto_lyrics": "false",
             "lyrics": "正しい歌詞",
+            "adjust_lyrics": str(adjust).lower(),
+            "auto_phrase_lyrics": str(auto_phrase).lower(),
         },
     )
     assert res.status_code == 200, res.text
     body = wait_done(client, res.json()["id"])
     job = client.app.state.manager.jobs[body["id"]]
     assert body["params"]["auto_lyrics"] is False
+    assert body["params"]["adjust_lyrics"] is adjust
+    assert body["params"]["auto_phrase_lyrics"] is auto_phrase
     assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正しい歌詞"
 
 
@@ -209,6 +265,19 @@ def test_manual_correct_lyrics_mode_requires_lyrics(client):
     )
     assert res.status_code == 422
     assert "正式な元歌詞" in res.json()["detail"]
+
+
+@pytest.mark.parametrize("kind,automatic", [("audio", True), ("midi", False)])
+@pytest.mark.parametrize("option", ["adjust_lyrics", "auto_phrase_lyrics"])
+def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic, option):
+    content = fake_wav() if kind == "audio" else FAKE_MIDI
+    res = client.post(
+        "/api/jobs", files={kind: ("input.wav" if kind == "audio" else "input.mid", content)},
+        data={"wordlist": "stations", "lyrics": "正しい歌詞",
+              "auto_lyrics": str(automatic).lower(), option: "true"},
+    )
+    assert res.status_code == 422
+    assert "音源と入力歌詞" in res.json()["detail"]
 
 
 def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path):
@@ -451,7 +520,7 @@ def test_wav_upload_limit_is_configurable(client, monkeypatch):
 
 
 def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
-    from soramimic_video import analyze_audio as analyze_audio_mod
+    from soramimic_video import score_audio as analyze_audio_mod
 
     class ReachedAnalyzer(Exception):
         pass
@@ -475,8 +544,9 @@ def test_run_pipeline_dispatches_wav_to_audio_analyzer(tmp_path, monkeypatch):
         api_mod.run_pipeline(job, {})
 
 
-def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monkeypatch):
-    from soramimic_video import analyze_audio as analyze_audio_mod
+@pytest.mark.parametrize("adjust", [False, True])
+def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monkeypatch, adjust):
+    from soramimic_video import score_audio as analyze_audio_mod
 
     class ReachedAnalyzer(Exception):
         pass
@@ -489,6 +559,7 @@ def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monke
         assert audio_path == audio
         assert project_dir == tmp_path
         assert kwargs["lyrics_path"] == lyrics
+        assert kwargs["adjust_lyrics"] is adjust
         assert callable(kwargs["progress"])
         raise ReachedAnalyzer
 
@@ -496,10 +567,36 @@ def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monke
     job = api_mod.Job(
         id="wav-correct-lyrics",
         dir=tmp_path,
-        params={"input_kind": "audio", "auto_lyrics": False},
+        params={"input_kind": "audio", "auto_lyrics": False, "adjust_lyrics": adjust},
     )
 
     with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_audio_pipeline_forwards_lyric_phrasing_to_conversion(tmp_path, monkeypatch, enabled):
+    from soramimic_video import convert, score_audio
+    from soramimic_video.project import Project, SongInfo
+
+    class ReachedConversion(Exception):
+        pass
+
+    project = Project(SongInfo("", 480))
+    monkeypatch.setattr(score_audio, "analyze_audio", lambda *_args, **_kwargs: project)
+
+    def convert_spy(actual, **kwargs):
+        assert actual is project
+        assert kwargs["auto_phrase_lyrics"] is enabled
+        raise ReachedConversion
+
+    monkeypatch.setattr(convert, "convert_project", convert_spy)
+    (tmp_path / "lyrics.txt").write_text("入力した歌詞", encoding="utf-8")
+    job = api_mod.Job(id="phrase", dir=tmp_path, params={
+        "input_kind": "audio", "auto_lyrics": False, "wordlist": "stations",
+        "auto_phrase_lyrics": enabled,
+    })
+    with pytest.raises(ReachedConversion):
         api_mod.run_pipeline(job, {})
 
 
@@ -566,6 +663,32 @@ def test_accepts_voicevox_params(client):
     body = wait_done(client, job_id)
     assert body["params"]["synthesizer"] == "voicevox"
     assert body["params"]["voicevox_style"] == 3001
+
+
+@pytest.mark.parametrize("synthesizer", ["prettypitch", "hybrid"])
+def test_accepts_prettypitch_only_for_noncommercial_fanwork(client, monkeypatch, synthesizer):
+    from soramimic_video import prettypitch as pp_mod
+
+    monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
+    rejected = client.post(
+        "/api/jobs",
+        files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
+        data={"wordlist": "stations", "synthesizer": synthesizer},
+    )
+    assert rejected.status_code == 422
+    assert "非商用" in rejected.json()["detail"]
+
+    job_id = submit(
+        client,
+        wordlist="stations",
+        synthesizer=synthesizer,
+        allow_noncommercial_fanwork="true",
+    )
+    body = wait_done(client, job_id)
+    assert body["status"] == "done"
+    assert body["params"]["synthesizer"] == synthesizer
+    if synthesizer == "hybrid":
+        assert body["params"]["voicevox_style"] == 6000
 
 
 def test_auto_octave_defaults_on(client):
@@ -663,12 +786,6 @@ def test_index_html_gates_neutrino_by_config():
     assert 'id="synth-unavailable"' in html
 
 
-def test_index_html_explains_missing_custom_wordlist_preview():
-    html = _index_html()
-    assert "自作リストはプレビューに対応していません。" in html
-    assert "const custom = !!activeCustomList() || showsEditorWordlist();" in html
-
-
 def test_index_html_hides_preview_for_sensitive_wordlists():
     """ビルダーカードのサムネプレビューで、昆虫などの画像を初期非表示にする。
 
@@ -698,10 +815,10 @@ def test_index_html_builder_card_has_selects():
     # サンプル曲と単語リストはサムネ枠より上で選べる。
     assert '<div class="builder-selects">' in card
     assert '<select id="builder-sample" aria-label="サンプル曲"></select>' in card
-    assert (
-        '<select id="builder-wordlist" aria-label="単語リスト(何に空耳させるか)"></select>'
-        in card
-    )
+    assert 'id="builder-wordlist-trigger" class="builder-wordlist-trigger"' in card
+    assert 'aria-controls="custom-wordlist-menu" aria-expanded="false">' in card
+    assert '<select id="builder-wordlist" hidden aria-hidden="true" tabindex="-1"></select>' in card
+    assert 'id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"' in card
     assert card.index('class="builder-selects"') < card.index('id="builder-figure"')
     # 写し同期(選択肢と値)。正本は #sample-select / #wordlist-select のまま
     assert "function syncBuilderOptions() {" in html
@@ -908,6 +1025,22 @@ def test_running_job_reports_stage_elapsed(tmp_path):
 def test_config_has_voicevox_key(client):
     body = client.get("/api/config").json()
     assert "voicevox" in body  # 起動していればstyles、いなければNone
+    assert "prettypitch" in body
+    assert body["fixed_synthesizer"] == "voicevox"
+
+
+@pytest.mark.parametrize("synthesizer", ["prettypitch", "hybrid"])
+def test_config_can_fix_web_synthesis_to_prettypitch(tmp_path, monkeypatch, synthesizer):
+    from soramimic_video import prettypitch as pp_mod
+
+    monkeypatch.setenv(api_mod.FIXED_SYNTHESIZER_ENV, synthesizer)
+    monkeypatch.setattr(pp_mod, "installation_error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pp_mod, "available", lambda: True)
+    browser = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+
+    body = browser.get("/api/config").json()
+    assert body["fixed_synthesizer"] == synthesizer
+    assert body["prettypitch"] == {"speaker": "波音リツ", "experimental": True}
 
 
 def test_preview_returns_audio(tmp_path, monkeypatch):
@@ -1327,7 +1460,8 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     )
     job = api_mod.Job(
         id="parallel", dir=job_dir,
-        params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations"},
+        params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations",
+                "song_credit": "オトノケ - Creepy Nuts", "thumbnail_wordlist_label": "好きな駅"},
     )
     audio_started = threading.Event()
     visual_started = threading.Event()
@@ -1341,6 +1475,8 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
             assert visual_started.wait(1)
 
     def fake_prepare(*args, **kwargs):
+        assert kwargs["song_credit"] == "オトノケ - Creepy Nuts"
+        assert kwargs["thumbnail_wordlist_label"] == "好きな駅"
         visual_started.set()
         assert audio_started.wait(1)
         return type("Prepared", (), {"audio_delay_sec": 1.0})()
@@ -2079,6 +2215,12 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
+def test_synth_credit_of_prettypitch_names_engine_and_voice():
+    assert api_mod.synth_credit_of(
+        {"synthesizer": "prettypitch"}, {}
+    ) == "PrettyPitch / 波音リツ（カノン）"
+
+
 def test_index_html_has_platform_appropriate_save_share_buttons():
     # モバイルは保存・共有1ボタン、PCはダウンロードと共有を分ける。
     html = _index_html()
@@ -2513,8 +2655,8 @@ def test_index_html_advanced_groups_hide_controls_and_expose_song_text():
     credit = g["曲情報・クレジット"]
     assert credit.startswith('<section class="opt-group" id="song-credit-section">')
     assert 'id="song-title"' in credit
-    assert 'id="original-credit"' in credit
-    assert 'id="credit-notice"' in credit
+    assert 'id="song-credit"' in credit
+    assert 'id="thumbnail-wordlist-label"' in credit
     for preview in ("thumb-caption", "footer", "credits-original"):
         assert f'id="song-preview-{preview}"' in credit
 
@@ -2831,3 +2973,32 @@ def test_image_sources_restricts_paths_and_preserves_fsp_metadata(client):
     assert len(fsp) == 26
     assert all(row["image"] and row["image_page"] and row["image_credit"] for row in fsp)
     assert all(row["image_usage"] == "noncommercial_fanwork" for row in fsp)
+
+
+
+
+def test_hybrid_credit_names_both_engines_and_voice_provider():
+    assert api_mod.synth_credit_of({"synthesizer": "hybrid"}, {}) == (
+        "VOICEVOX・PrettyPitch：波音リツ（カノン）"
+    )
+
+
+@pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts\n© 指定表記", ""])
+def test_custom_song_text_is_stored_without_changing_wordlist(client, credit):
+    job_id = submit(
+        client, wordlist="stations", song_title="別の曲名",
+        song_credit=credit, thumbnail_wordlist_label=" 好きな駅 ",
+    )
+    params = wait_done(client, job_id)["params"]
+    assert params["song_credit"] == credit
+    assert params["thumbnail_wordlist_label"] == "好きな駅"
+    assert params["wordlist"] == "stations"
+
+
+@pytest.mark.parametrize("field,length", [("song_credit", 2001), ("thumbnail_wordlist_label", 101)])
+def test_custom_song_text_has_size_limits(client, field, length):
+    res = client.post(
+        "/api/jobs", files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
+        data={"wordlist": "stations", field: "あ" * length},
+    )
+    assert res.status_code == 422

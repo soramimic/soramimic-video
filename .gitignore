@@ -24,3 +24,5 @@ thumbnail-samples/
 # ローカルのエージェント作業状態・生成用scratch(成果物ではない)
 .claude/
 .tmp-imagegen/
+
+node_modules/

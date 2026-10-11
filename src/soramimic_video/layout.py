@@ -65,13 +65,11 @@
   限り、出典文言({image_credit})を画像の右下に自動で焼き込む。
   "credit": false で無効化できる。位置や見た目を変えたいときは text 要素で
   {image_credit} を自分で参照すれば自動追加はされない
-- アプリのクレジット表記: どのレイアウトでも {app_credit}(既定
-  「lyrics & video by Soramimic」。歌声合成のクレジットが必要なときは
-  「lyrics & video by Soramimic / VOICEVOX:キャラ名」のように連結される)を
-  フレーム左下に小さく自動で焼き込む。画像クレジット(画像の右下)や既定字幕
-  (〜画面高95%)と重ならない最下段に置く。"app_credit": false で無効化でき、
-  位置や見た目を変えたいときは text 要素で {app_credit} を自分で参照すれば
-  自動追加はされない(無効化する場合は動画の説明欄などで表記すること)
+- アプリ・元曲のクレジットは、既定ではフレーム左下に表示する。
+  歌声合成のクレジットは最後の credits 画面に表示する。
+  左下の表示は "app_credit": false で無効化できる。
+  text 要素で {app_credit} を配置した場合は、その位置に表示する。
+  credits を無効化する場合は、歌声合成など必要な表記を別途行うこと。
 
 歌唱がない区間(前奏・間奏・後奏)の表示は次の2つで指定できる(任意・opt-in):
 
@@ -189,8 +187,7 @@ _COLUMN_OVERFLOW_RATIO = 0.15
 _COLUMN_MIN_ROWS = 4
 
 # 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
-# 歌声合成側のクレジット表記が要るときは呼び出し側が
-# 「lyrics & video by Soramimic / VOICEVOX:キャラ名」のように連結して data に入れる
+# 呼び出し側が元曲や権利者の表記を連結して data に入れる。
 APP_CREDIT = "lyrics & video by Soramimic"
 # 自動追加するアプリクレジットの位置(フレーム左下)と見た目。
 # 画像クレジット(画像の右下)・既定字幕(下端0.945)と重ならない最下段に、
@@ -661,8 +658,8 @@ def _auto_app_credit_element(
 def resolve_app_credit(data: dict) -> str:
     """{app_credit} に入れる文言。dataに指定があればそれ、無ければ既定の署名。
 
-    歌声合成のクレジット表記が要るジョブでは video.py が
-    「lyrics & video by Soramimic / VOICEVOX:キャラ名」を data に入れてくる。
+    video.py が元曲や権利者の表記を連結して data に入れてくる。
+    歌声合成の表記は最後のクレジットページに渡す。
     """
     text = str(data.get("app_credit") or "").strip()
     return text or APP_CREDIT

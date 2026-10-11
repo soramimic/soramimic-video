@@ -21,6 +21,7 @@ from typing import Any
 from .convert import REPO_ROOT, apply_converted_lines, resolve_wordlist
 from .facets import survives_editor_facets
 from .layout import Layout
+from .parenthetical_ruby import normalize_parenthetical_ruby
 from .project import ParodyWord, Project
 from .ruby import strip_ruby
 from .wordlist_catalog import WORDLIST_CATALOG_PATH, load_wordlist_catalog
@@ -482,7 +483,8 @@ def build_editor_preview(
     # フォームに元歌詞が無ければ、JSONが持つ生テキストで対応づける
     # (editor.json だけを持ち込んだケース。import_editor と同じ考え方)
     source = lyrics if lyrics.strip() else (editor_lyrics(payload) or "")
-    lyric_lines = [ln.strip() for ln in source.splitlines() if ln.strip()]
+    lyric_lines = [normalize_parenthetical_ruby(ln.strip())
+                   for ln in source.splitlines() if ln.strip()]
     if lyric_lines and phrases:
         from .align import align_texts
 

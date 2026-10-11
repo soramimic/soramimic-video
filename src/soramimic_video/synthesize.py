@@ -1,4 +1,4 @@
-"""歌唱合成ステージ: 替え歌歌詞 → MusicXML → NEUTRINO → vocal.wav。"""
+"""歌唱合成ステージ: 替え歌歌詞 → 選択した歌声合成器 → vocal.wav。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from .neutrino import model_pitch_range, run_neutrino
 from .octave import (
     NEUTRINO_SAFE_KEY_MAX,
     NEUTRINO_SAFE_KEY_MIN,
+    VOICEVOX_SAFE_KEY_MAX,
+    VOICEVOX_SAFE_KEY_MIN,
     resolve_auto_shift,
 )
 from .project import Project
@@ -22,7 +24,7 @@ NEUTRINO_DIR = "neutrino"
 
 
 def vocal_path(project_dir: Path) -> Path:
-    """合成した歌唱wavの正規パス。バックエンド(NEUTRINO/VOICEVOX)共通。
+    """合成した歌唱wavの正規パス。全バックエンド共通。
 
     ミックスはこの1箇所の定義を参照する(mix.pyが同じ関数を使う)。
     ディスク上の場所は歴史的経緯で neutrino/ 配下だが、両バックエンド共通。
@@ -79,9 +81,10 @@ def synthesize(
 ) -> Path | None:
     """歌唱合成を実行して vocal.wav のパスを返す。
 
-    synthesizer で使うバックエンドを選ぶ("neutrino" 既定 / "voicevox")。
+    synthesizer で使うバックエンドを選ぶ("neutrino" / "voicevox" /
+    "prettypitch" / "hybrid")。PrettyPitchは開発用の外部ランタイムを環境変数で指定する。
     auto_octave(既定ON)はエンジンの安全音域に収まるよう曲全体をオクターブ単位で
-    自動移調する(VOICEVOX/NEUTRINO共通。移調はユーザー指定transposeに加算)。
+    自動移調する(全バックエンド共通。移調はユーザー指定transposeに加算)。
     オクターブ調整だけでは収まらない広音域の曲では、曲全体のキー変更(半音)も
     併用する。キー変更ぶんは project.song.key_shift に記録され、mixが伴奏MIDIに
     同じだけ適用する(octave.resolve_auto_shift 参照)。
@@ -94,6 +97,14 @@ def synthesize(
     if not auto_octave:
         # 自動調整OFFなら歌は原調(ユーザーtransposeのみ)。伴奏も原調に戻す
         project.song.key_shift = 0
+    if synthesizer == "hybrid":
+        from .hybrid import run_hybrid
+
+        return run_hybrid(
+            project, project_dir, engine_url=voicevox_url, transpose=transpose,
+            auto_octave=auto_octave, octave_keys=octave_keys, threads=threads,
+            dry_run=dry_run, progress_cb=progress_cb,
+        )
     if synthesizer == "voicevox":
         from .voicevox import run_voicevox
 
@@ -108,6 +119,24 @@ def synthesize(
             auto_octave=auto_octave,
             progress_cb=progress_cb,
             octave_keys=octave_keys,
+        )
+    if synthesizer == "prettypitch":
+        from .prettypitch import run_prettypitch
+
+        # 波音リツの得意音域をVOICEVOXと同じと仮定する。
+        # 実測したPrettyPitchモデル固有の推奨音域ではない。
+        if auto_octave:
+            transpose += resolve_auto_shift(
+                project, octave_keys, transpose,
+                VOICEVOX_SAFE_KEY_MIN, VOICEVOX_SAFE_KEY_MAX, "PrettyPitch",
+            )
+        return run_prettypitch(
+            project,
+            project_dir,
+            lyric_map=build_lyric_map(project),
+            transpose=transpose,
+            dry_run=dry_run,
+            progress_cb=progress_cb,
         )
     if synthesizer != "neutrino":
         raise ValueError(f"未対応の合成エンジンです: {synthesizer}")

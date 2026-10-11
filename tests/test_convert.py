@@ -23,12 +23,14 @@ from soramimic_video.convert import (
     project_note_length_weights,
     project_word_boundaries,
     unit_note_seconds,
+    wordlist_exhausted,
 )
 from soramimic_video.kana import split_fine_moras, split_moras
 from soramimic_video.lyric_layers import apply_lyric_layers
 from soramimic_video.project import Line, Note, Project, SongInfo
 from soramimic_video.soramimic_engine import run_tokenize
 from soramimic_video.synthesize import build_lyric_map
+from soramimic_video.voicevox import build_score
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -100,7 +102,7 @@ def test_map_word_to_notes_restore_compressed_moras():
     # ふるさと3行目「夢は今もめぐりて」相当。元歌詞ユニット [マ][モ][メエ][グウ][リイ][テ]
     # (9音符)に、単語「アンドレイリンデ」pron=[アー,ド,レ,イ,リー,デ] を載せる。
     # リン(要素リー)は空き音符が1つあるので「リ」「ン」に復元される。
-    # アン(要素アー)は復元先(マ=1音符)が無いので現状どおり「アー」のまま。
+    # 音符割り当て時点のアンはアーのまま。最終読みは全単語の音符確定後に復元する。
     unit_lens = [1, 1, 2, 2, 2, 1]  # マ モ メエ グウ リイ テ
     note_lens = [1] * 9
     identity = list(range(10))
@@ -379,7 +381,58 @@ def test_convert_project_filler_fills_unmatched_line(tmp_path: Path):
     assert all(w.filler for w in words)
     assert all(w.wordlist_row is None for w in words)  # 単語画像なし=文字フレーム
     assert all(w.note_ids for w in words)              # 音符には載る(歌える)
+    assert not wordlist_exhausted(project)  # 合う長さの語が無いだけで、使い切ってはいない
     _assert_no_shared_notes(project)
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_wordlist_exhaustion_counts_filtered_ids_not_aliases(tmp_path: Path, duplicate):
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation,status\n"
+        "0,カ,カ,カ,current\n"
+        "0,カア,カア,カア,current\n"
+        "1,ナ,ナ,ナ,former", encoding="utf-8",
+    )
+    project = _line_project(["カ"] * 6)
+    raw = convert_project(
+        project, wordlist=str(csv_path), where="status=current",
+        params={"DUPLICATE": str(duplicate).lower()},
+    )
+    assert wordlist_exhausted(project) is not duplicate
+    # Project round trips and editor imports keep enough evidence for the notice.
+    project.save(tmp_path)
+    assert wordlist_exhausted(Project.load(tmp_path)) is not duplicate
+    from soramimic_video.editor_io import export_editor, import_editor, save_raw
+
+    save_raw(raw, tmp_path)
+    export_editor(project, tmp_path, wordlist_entry={
+        "filepath": str(csv_path), "where": "status=current",
+    })
+    restored = _line_project(["カ"] * 6)
+    import_editor(restored, tmp_path)
+    assert wordlist_exhausted(restored) is not duplicate
+
+
+def test_wordlist_exhaustion_requires_filler_after_the_last_available_word(tmp_path: Path):
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation\n0,カ,カ,カ", encoding="utf-8")
+    project = _line_project(["カ"] * 3)
+    convert_project(project, wordlist=str(csv_path))
+    assert wordlist_exhausted(project)
+    assert project.parody is not None
+    words = project.parody.lines[0].words
+    real = [w for w in words if not w.filler]
+    fillers = [w for w in words if w.filler]
+    project.parody.lines[0].words = fillers + real
+    assert not wordlist_exhausted(project)  # 使い切る前にあった未変換部分は別の理由
+    project.parody.lines[0].words = real
+    assert not wordlist_exhausted(project)  # 全語を使っても全区間を変換できれば案内不要
+    project.parody.lines[0].words = real + fillers
+    csv_path.write_text("id,surface,pronunciation\n0,カ,カ\n1,ナ,ナ\n", encoding="utf-8")
+    assert not wordlist_exhausted(project)  # 未使用の語が残っている
+    csv_path.write_text("id,surface,pronunciation\n", encoding="utf-8")
+    assert not wordlist_exhausted(project)  # 空の候補集合を使い切り扱いしない
 
 
 def test_convert_project_filler_keeps_multi_char_mora(tmp_path: Path):
@@ -516,6 +569,43 @@ def test_layered_engine_kana_keeps_canonical_mora_ownership(kana, unit_moras, bo
     assert project == original
 
 
+def test_cross_token_long_vowel_keeps_notes_and_converts(tmp_path: Path, monkeypatch):
+    from soramimic_video.soramimic_engine import _get_app
+
+    project = _repeated_layer_project("コーラ")
+    analyzer = _get_app().text_analyzer
+    original_tokenize = analyzer.tokenize_sentenses
+
+    def tokenize(phrases):
+        # Pin the tokenizer boundary while exercising the real syllable engine.
+        return [[{
+            "surface_form": part, "pronunciation": part, "reading": part,
+            "basic_form": part, "pos": "名詞", "pos_detail_1": "一般",
+            "pos_detail_2": "*", "pos_detail_3": "*",
+            "conjugated_form": "*", "conjugated_type": "*", "word_position": i + 1,
+        } for i, part in enumerate(["コ", "ーラ"])] if phrase == "コーラ"
+            else original_tokenize([phrase])[0] for phrase in phrases]
+
+    monkeypatch.setattr(analyzer, "tokenize_sentenses", tokenize)
+    units = run_tokenize(engine_phrases(project))[0]
+    assert [u["pronunciation"] for u in units] == ["コー", "ラ"]
+    assert _layer_unit_note_indices(project, project.lines[0], units) == [
+        list(range(6)), list(range(6, 9)),
+    ]
+    assert project_word_boundaries(project)([units]) == [[0, 1, 2]]
+    original_layers = copy.deepcopy(project.lyric_layers)
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text(
+        "id,original,surface,pronunciation\n0,コーラ,コーラ,コーラ", encoding="utf-8",
+    )
+    convert_project(project, wordlist=str(csv_path), params={"NOTE_LENGTH_WEIGHT": 1})
+    words = project.parody.lines[0].words
+    assert len(words) == 1 and words[0].surface == "コーラ" and not words[0].filler
+    assert words[0].note_ids == project.lines[0].note_ids
+    assert set(build_lyric_map(project)) == set(project.lines[0].note_ids)
+    assert project.lyric_layers == original_layers
+
+
 @pytest.mark.parametrize("kana", ["イェカイェ", "クヮカクヮ", "カャカカャ", "セェカドーー"])
 def test_layered_conversion_keeps_notes_after_small_kana_expansion(tmp_path: Path, kana: str):
     project = _repeated_layer_project(kana)
@@ -604,7 +694,7 @@ def test_layered_analysis_only_seed_uses_same_normalized_units():
 def _converted_repeated_line() -> list[dict]:
     def word(surface: str, period: list[int], count: int) -> dict:
         return {
-            "surface": surface, "kana": surface, "period": period,
+            "surface": surface, "kana": surface * count, "period": period,
             "pronunciation": [surface] * count, "original": "",
             "original_surface": "", "originalkana": "", "locked": False,
         }
@@ -631,6 +721,41 @@ def test_apply_converted_lines_uses_layer_identity_for_repeated_moras(tmp_path: 
         ["カ", "ー", "ー"] * 3 + ["サ", "ー", "ー"] * 6
     )
     assert "ダ" not in lyric_map.values()
+
+
+@pytest.mark.parametrize(("kana", "pronunciation", "expected"), [
+    ("リン", ["リー"], ["リン"]),
+    ("バンビ", ["バー", "ビ"], ["バン", "ビ"]),
+    ("テンジン", ["テ", "ジン"], ["テン", "ジン"]),
+    ("カッパ", ["カ", "パ"], ["カッ", "パ"]),
+])
+def test_selected_word_reading_survives_conversion_and_synthesis(
+    tmp_path, kana, pronunciation, expected,
+):
+    project = _line_project(["ダ"] * len(pronunciation))
+    original_notes = copy.deepcopy(project.notes)
+    converted = [{
+        "units": [{"pronunciation": "ダ"} for _ in pronunciation],
+        "words": [{
+            "surface": kana, "kana": kana, "period": [0, len(pronunciation)],
+            "pronunciation": pronunciation, "original": "", "original_surface": "",
+            "originalkana": "", "locked": False,
+        }],
+    }]
+    original_result = copy.deepcopy(converted)
+    apply_converted_lines(
+        project, converted, wordlist=_empty_wordlist(tmp_path), where=None, params={},
+    )
+    assert project.parody is not None
+    (word,) = project.parody.lines[0].words
+    assert word.surface == kana
+    assert word.note_ids == list(range(len(pronunciation)))
+    assert word.note_kana == expected
+    assert project.notes == original_notes
+    assert converted == original_result
+    assert [n["lyric"] for n in build_score(project)["notes"] if n["key"] is not None] == (
+        split_fine_moras(kana)
+    )
 
 
 @pytest.mark.parametrize("change", ["substitute", "insert", "delete"])
@@ -715,9 +840,9 @@ def test_apply_converted_lines_resolves_compound_note_double_assignment(
     # 「アロ」が複合音符(index1)を保持し、末尾モーラ「ロ」を歌う
     assert words["アロ"].note_ids == [0, 1]
     assert words["アロ"].note_kana == ["ア", "ロ"]
-    # 「ガト」は複合音符を失い、後続音符だけを持つ(モーラ数が1減る)
+    # 「ガト」は後続音符だけを持つが、読みは同じ音符内に全モーラを保持する。
     assert words["ガト"].note_ids == [2]
-    assert words["ガト"].note_kana == ["ト"]
+    assert words["ガト"].note_kana == ["ガト"]
 
 
 def test_apply_converted_lines_tiebreak_favors_earlier_word(tmp_path: Path):

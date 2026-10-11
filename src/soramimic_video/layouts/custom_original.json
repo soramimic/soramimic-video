@@ -1,0 +1,18 @@
+{
+  "background": "black",
+  "elements": [
+    {
+      "type": "text",
+      "text": "{original}",
+      "box": [
+        0.08,
+        0.3,
+        0.84,
+        0.22
+      ],
+      "size": 0.1,
+      "align": "center",
+      "valign": "middle"
+    }
+  ]
+}

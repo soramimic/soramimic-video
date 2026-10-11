@@ -141,7 +141,7 @@ def test_public_ui_filters_wordlists_and_simple_ui_hides_advanced():
     assert "if (launchWordlists.length)" in script
     assert "return allowed.has(name);" in script
     defaults = _function_body(script, "function applyFixedUiDefaults()")
-    assert '$("synthesizer").value = "voicevox"' in defaults
+    assert '$("synthesizer").value = fixedSynthesizer' in defaults
     assert '$("auto-octave").checked = true' in defaults
     assert '$("transpose").value = "0"' in defaults
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
@@ -156,17 +156,18 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
     assert '<section class="opt-group" hidden>\n    <h3 class="opt-group-title">① 歌声' in advanced
     assert '<section class="opt-group" hidden>\n    <!-- 中身がレイアウトだけ' in advanced
     assert '<h3 class="opt-group-title">曲情報・クレジット</h3>' in advanced
-    for field in ("song-title", "original-credit", "credit-notice"):
+    for field in ("song-title", "song-credit", "thumbnail-wordlist-label"):
         assert f'id="{field}"' in advanced
 
     script = _script()
     submit = _function_body(script, "async function submitJob(previewSec, previewMode)")
-    assert 'form.append("synthesizer", "voicevox")' in submit
+    assert 'form.append("synthesizer", fixedSynthesizer)' in submit
     assert 'form.append("voicevox_style", String(fixedVoicevoxStyle))' in submit
     assert 'form.append("auto_octave", "true")' in submit
     assert 'form.append("transpose", "0")' in submit
     assert 'form.append("layout_json"' not in submit
     assert "let fixedVoicevoxStyle = 6000;" in script
+    assert 'let fixedSynthesizer = "voicevox";' in script
 
     title = _function_body(script, "function songTitleOf(file)")
     assert '$("song-title").value.trim() || base' in title
@@ -220,7 +221,11 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         const $ = element;
         const ownSongFile = () => ({ name: "upload.mid" });
         let midiSampleId = "";
+        let fixedSynthesizer = "voicevox";
+        const fixedVoicevoxStyle = 6000;
+        $("voicevox-style").options = [{ value: "6000", dataset: { name: "波音リツ" } }];
         const sampleTitleOf = () => "サンプル曲";
+        const sampleCredits = {};
         const activeCustomList = () => null;
         const selectedWordlistGroup = () => ({ text: "駅名" });
         const showsEditorWordlist = () => false;
@@ -229,8 +234,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         const currentWordlistName = () => wordlist;
         $("builder-image").setAttribute("src", "blob:thumbnail");
         $("song-title").value = "夜に駆ける";
-        $("original-credit").value = "作詞・作曲: 作者";
-        $("credit-notice").value = "© 権利者";
+        $("song-credit").value = "オトノケ - Creepy Nuts";
         """
     ) + functions + textwrap.dedent(
         """
@@ -238,17 +242,41 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
-          "lyrics & video by Soramimic / VOICEVOX:波音リツ / Original: 夜に駆ける — © 権利者");
+          "lyrics & video by Soramimic / オトノケ - Creepy Nuts");
         assert.equal($("song-preview-credits-original").textContent,
-          "夜に駆ける — © 権利者");
+          "オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
 
-        // 最後のクレジットは指定表記が無ければ著作者を使う。
-        $("credit-notice").value = "";
+        fixedSynthesizer = "hybrid";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent,
+          "Vocal Synthesis　VOICEVOX・PrettyPitch：波音リツ（カノン）");
+        assert.equal($("song-preview-credits-synth").hidden, false);
+        assert.doesNotMatch($("song-preview-footer").textContent,
+          /VOICEVOX|PrettyPitch|波音リツ/);
+        assert.doesNotMatch($("song-preview-thumb-credit").textContent,
+          /VOICEVOX|PrettyPitch|波音リツ/);
+
+        $("thumbnail-wordlist-label").value = "好きな駅";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-thumb-caption").textContent,
+          "夜に駆ける を 好きな駅 で歌ってみた");
+        assert.equal(wordlist, "stations");
+        $("song-credit").value = "";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-original").textContent, "");
+        assert.equal($("song-preview-footer").textContent, "lyrics & video by Soramimic");
+
+        midiSampleId = "sample";
+        sampleCredits.sample = { displayCredit: "登録済み作者" };
+        $("song-credit").value = "持ち込み曲の表記";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
-          "夜に駆ける — 作詞・作曲: 作者");
+          "サンプル曲 — 登録済み作者");
+        assert.equal($("song-preview-footer").textContent,
+          "lyrics & video by Soramimic / Original: サンプル曲 — 登録済み作者");
+        midiSampleId = "";
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
@@ -774,6 +802,7 @@ def _song_input_node_harness() -> str:
         const showsEditorWordlist = () => false;
         const activeCustomList = () => null;
         const simpleMode = false;
+        const renderCustomListMenu = () => {};
         const updateNoncommercialFanworkNotice = () => {};
         const updateAdvancedSettingsAvailability = () => {};
         const selectedSampleIsAudio = () => false;
@@ -800,7 +829,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         """
         $("midi").files = [{ name: "my-song.mid" }];
         $("editor").files = [{ name: "parody.json" }];
-        for (const id of ["lyrics", "original-credit", "credit-notice"]) {
+        for (const id of ["lyrics", "song-credit"]) {
           $(id).value = "old song data";
         }
         syncBuilderValues();
@@ -810,12 +839,12 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         switchSongInputMode("sample");
         assert.deepEqual($("midi").files, [], "a hidden MIDI must not remain active");
         assert.deepEqual($("editor").files, []);
-        for (const id of ["lyrics", "original-credit", "credit-notice"]) {
+        for (const id of ["lyrics", "song-credit"]) {
           assert.equal($(id).value, "");
         }
         assert.equal($("song-upload-panel").hidden, true);
         assert.equal($("sample-picker").hidden, false);
-        for (const id of ["song-title", "original-credit", "credit-notice"]) {
+        for (const id of ["song-title", "song-credit"]) {
           assert.equal($(id).disabled, true, "sample metadata must be read-only");
         }
         assert.equal($("song-upload-selection").hidden, true);
@@ -833,7 +862,7 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         assert.equal($("audio-sample-credit").hidden, true);
         assert.equal($("song-upload-panel").hidden, false);
         assert.equal($("sample-picker").hidden, true);
-        for (const id of ["song-title", "original-credit", "credit-notice"]) {
+        for (const id of ["song-title", "song-credit"]) {
           assert.equal($(id).disabled, false, "own-song metadata must be editable");
         }
         assert.equal(focused, "song-upload-button");
@@ -878,7 +907,7 @@ def test_sample_body_finishing_after_source_switch_cannot_replace_current_song()
           assert.equal(sampleLyricsId, "");
           assert.equal(sampleLyricsBaseline, null);
           assert.equal($("sample-status").textContent, "");
-          assert.equal($("original-credit").value, "");
+          assert.equal($("song-credit").value, "");
           assert.equal(saves, savedBefore);
           assert.equal(builderMessage, "", "a canceled request must not show a fetch error");
         })().catch((error) => { console.error(error); process.exit(1); });
@@ -2050,6 +2079,43 @@ def test_card_selects_mirror_the_canonical_form():
     assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
 
 
+def test_custom_wordlists_use_the_soramimic_row_menu():
+    """統合メニューに組み込みリストと、自作リストの作成・行操作をまとめる。"""
+    html = INDEX.read_text(encoding="utf-8")
+    script = _script()
+    assert 'id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"' in html
+    assert 'id="custom-wordlist-edit"' not in html
+
+    assert 'id="builder-wordlist-trigger" class="builder-wordlist-trigger"' in html
+    assert '<select id="builder-wordlist" hidden aria-hidden="true" tabindex="-1"></select>' in html
+
+    render = _function_body(script, "function renderCustomListMenu()")
+    assert 'for (const child of $("builder-wordlist").children)' in render
+    assert "appendBuilderWordlistOption(menu, option, true);" in render
+    assert 'appendCustomListMenuHeading(menu, "自作リスト");' in render
+    assert render.index('for (const child of $("builder-wordlist").children)') < render.index(
+        'appendCustomListMenuHeading(menu, "自作リスト");'
+    )
+    assert 'add.textContent = "＋ 新しいリスト";' in render
+    assert (
+        'row.className = "custom-wordlist-menu-row custom-wordlist-menu-subitem";' in render
+    )
+    assert 'choose.setAttribute("role", "menuitemradio");' in render
+    assert 'choose.setAttribute("aria-checked", String(list.id === activeCustomListId));' in render
+    assert 'edit.setAttribute("aria-label", `「${list.name}」を編集`);' in render
+    assert 'remove.setAttribute("aria-label", `「${list.name}」を削除`);' in render
+
+    opening = _function_body(script, "async function openCustomListMenu(")
+    assert 'menu.querySelector("[role=\'menuitemradio\'][aria-checked=\'true\']")' in opening
+    assert '$("builder-wordlist-trigger").setAttribute("aria-expanded", "true");' in opening
+    wiring = script[script.index('$("builder-wordlist-trigger").addEventListener("click"') :]
+    wiring = wiring[: wiring.index('// 正本(詳細設定の曲')]
+    assert 'openCustomListMenu({ focus: false });' in wiring
+    assert 'event.key !== "ArrowDown" && event.key !== "ArrowUp"' in wiring
+    assert 'if (event.key === "Escape")' in script
+    assert 'if (event.key === "ArrowDown")' in script
+
+
 def test_public_mode_shows_private_use_notice():
     setup = _function_body(_script(), "function setupPublicMode(conf)")
     assert 'publicMode = !!conf.public;' in setup
@@ -2353,6 +2419,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
             "function ownSongFile()",
             "function automaticLyricsEnabled()",
             "function songLyricsForRequest()",
+            "function appendSongLyrics(form)",
             "function syncLyricsRecognition()",
         )
     )
@@ -2384,12 +2451,32 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal($("lyrics").required, false);
         assert.equal(automaticLyricsEnabled(), true);
         assert.equal(songLyricsForRequest(), "");
+        assert.equal($("adjust-lyrics").disabled, true);
         $("auto-lyrics").checked = false;
         syncLyricsRecognition();
         assert.equal($("lyrics-correction-panel").hidden, false);
         assert.equal($("lyrics").required, true);
         assert.equal(automaticLyricsEnabled(), false);
         assert.equal(songLyricsForRequest(), "manual lyrics");
+        assert.equal($("adjust-lyrics-panel").hidden, false);
+        assert.equal($("adjust-lyrics").disabled, false);
+        let values = new Map();
+        const form = {append: (key, value) => values.set(key, value)};
+        appendSongLyrics(form);
+        assert.equal(values.get("adjust_lyrics"), "false");
+        $("adjust-lyrics").checked = true;
+        appendSongLyrics(form);
+        assert.equal(values.get("adjust_lyrics"), "true");
+        $("auto-lyrics").checked = true;
+        syncLyricsRecognition();
+        appendSongLyrics(form);
+        assert.equal(values.get("adjust_lyrics"), "false");
+        $("auto-lyrics").checked = false;
+        $("midi").files = [{name: "song.mid"}];
+        syncLyricsRecognition();
+        appendSongLyrics(form);
+        assert.equal($("adjust-lyrics-panel").hidden, true);
+        assert.equal(values.get("adjust_lyrics"), "false");
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
@@ -2477,7 +2564,7 @@ def test_audio_sample_skips_midi_check():
 
 
 def test_card_wordlist_select_shows_the_editor_own_list():
-    """エディタの中で自作リストを使っているあいだは、合成の選択肢で選択済みに見せる。
+    """エディタの中で自作リストを使っているあいだも、トリガーとメニューに表示する。
 
     自作リスト(ORIGINAL/csvText)のときは正本 #wordlist が空になるので、その
     ままだとカードのプルダウンが「未選択」になって何に空耳させているか分からない。
@@ -2490,11 +2577,12 @@ def test_card_wordlist_select_shows_the_editor_own_list():
     assert "return !currentWordlistName() && usesEditorWordlist();" in shows
     body = _function_body(script, "function syncBuilderValues()")
     assert "const own = !selectedCustom && showsEditorWordlist();" in body
-    assert "card.appendChild(o);" in body     # 自作リストのあいだだけ足す
-    assert "synth.remove();" in body          # 名前付きリストに戻ったら取り除く
-    assert 'card.value = selectedCustom ? CUSTOM_LIST_PREFIX + selectedCustom.id' in body
-    # 選び直されても正本は触らない(「何も選ばない」に落とさない)
-    assert "if (v === EDITOR_WORDLIST_VALUE) { syncBuilderValues(); return; }" in script
+    assert "if (selectedCustom || own) card.selectedIndex = -1;" in body
+    assert 'selectedCustom?.name || (own ? EDITOR_WORDLIST_LABEL : "")' in body
+    assert '$("builder-wordlist-trigger-label").textContent = selectedLabel;' in body
+    render = _function_body(script, "function renderCustomListMenu()")
+    assert "if (showsEditorWordlist())" in render
+    assert 'editorList.textContent = EDITOR_WORDLIST_LABEL;' in render
 def test_layout_preview_image_needs_a_wordlist_name():
     """レイアウトプレビューの代表画像は、単語リスト名が空なら取りに行かない。
 
@@ -2554,7 +2642,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         const parodyMismatch = () => true, confirm = () => true;
         const editorWordlist = { name: "fanwork" }, leDirty = true;
         let simpleMode = true;
-        const fixedVoicevoxStyle = 6000, turnstileSiteKey = "";
+        const fixedVoicevoxStyle = 6000, fixedSynthesizer = "voicevox", turnstileSiteKey = "";
         const songTitleOf = () => "sample", buildConvertParams = () => "{}";
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
         const activeCustomList = () => selected === "custom" ? {} : null;
@@ -2768,8 +2856,95 @@ def test_difficult_audio_result_links_to_song_generation_tips():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function poll(", "function setBuilderState(",
+            "function showWordlistExhaustionNotice(", "function historyCard(",
+        )
+    )
+    message = next(line for line in script.splitlines()
+                   if line.startswith("const WORDLIST_EXHAUSTED_NOTICE ="))
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        function element() {
+          return {hidden: true, textContent: "", children: [],
+            getAttribute() { return null; }, removeAttribute() {}, setAttribute() {},
+            pause() {}, load() {}, addEventListener() {},
+            append(...children) { this.children.push(...children); },
+            appendChild(child) { this.children.push(child); }};
+        }
+        const elements = new Map();
+        const $ = (id) => {
+          if (!elements.has(id)) elements.set(id, element());
+          return elements.get(id);
+        };
+        const document = {createElement: element}, navigator = {};
+        const historyButton = element;
+        const historyCreatedLabel = () => "", historyStatusLabel = () => "";
+        let builderState = "preview", pollSeq = 1, currentJob = "job", pollLastAt = 0;
+        let pollFailures = 0, reviewJobId = null;
+        const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], STAGE_LABELS = {};
+        const headers = () => ({}), qs = (url) => url;
+        const renderStages = () => {}, renderBuilderBar = () => {}, finish = () => {};
+        const setJobStatus = () => {}, resetVideoSharePreparation = () => {};
+        const setPreviewPending = () => {}, updateBuilderOverlay = () => {};
+        const showBuilderVideo = () => setBuilderState("done");
+        let result = {status: "done", params: {}, total_seconds: 1,
+          result_kind: "video", playback_url: "/video", wordlist_exhausted: true};
+        const fetch = async () => ({ok: true, status: 200, json: async () => result});
+        const texts = (node) => [node.textContent, ...node.children.flatMap(texts)];
+        """
+    ) + message + functions + textwrap.dedent(
+        """
+        (async () => {
+          await poll("job");
+          const notice = $("wordlist-exhausted-notice");
+          assert.equal(notice.hidden, false);
+          assert.ok(notice.textContent.length > 0);
+          assert.ok(texts(historyCard(result, 0)).includes(notice.textContent));
+          for (const state of ["preview", "running"]) {
+            setBuilderState(state);
+            assert.equal(notice.hidden, true);
+            assert.equal(notice.textContent, "");
+            await poll("job");
+            assert.equal(notice.hidden, false);
+          }
+          delete result.wordlist_exhausted; // Next result and older saved jobs.
+          await poll("job");
+          assert.equal(notice.hidden, true);
+          assert.equal(notice.textContent, "");
+          assert.ok(!texts(historyCard(result, 0)).includes(WORDLIST_EXHAUSTED_NOTICE));
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_image_credit_cards():
     subprocess.run(
         ["node", "tests/image-credits.mjs"], cwd=INDEX.parents[3],
         check=True, text=True, capture_output=True,
     )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_legacy_song_credit_keeps_both_saved_fields():
+    function = _function_body(_script(), "function legacySongCredit(state)") + "\n}"
+    node = function + textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        assert.equal(legacySongCredit({
+          songTitle: "曲", originalCredit: "作者", creditNotice: "© 指定表記",
+        }), "曲\\n作者\\n© 指定表記");
+        assert.equal(legacySongCredit({
+          songTitle: "曲", originalCredit: "同じ表記", creditNotice: "同じ表記",
+        }), "曲\\n同じ表記");
+        assert.equal(legacySongCredit({}), "");
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

@@ -69,7 +69,7 @@ from .layout import (
     render_image,
 )
 from .project import Project
-from .soramimic_engine import run_convert
+from .soramimic_engine import run_convert, run_tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -615,11 +615,38 @@ def song_title(project: Project, fallback: str | None = None) -> str:
     return ""
 
 
+# Bound optional headline work before expanding any pronunciation candidates.
+# Count candidate units across every contiguous segment considered by the maker.
+TITLE_VARIATION_UNIT_BUDGET = 100_000
+
+
+def _title_conversion_within_budget(title: str, params: dict[str, Any]) -> bool:
+    from soramimic.kana_to_syllable import syllable_variations
+
+    for line in run_tokenize([title], params):
+        variants = [syllable_variations(u["pronunciation"]) for u in line]
+        branches = [len(v) for v in variants]
+        max_units = [max(len(units) for units, _cost in v) for v in variants]
+        remaining = TITLE_VARIATION_UNIT_BUDGET
+        for start in range(len(branches)):
+            count = 1
+            units = 0
+            for end in range(start, len(branches)):
+                count *= branches[end]
+                units += max_units[end]
+                remaining -= count * units
+                if remaining < 0:
+                    return False
+    return True
+
+
 def title_paraphrase(
     title: str,
     wordlist: str,
     where: str | None,
     params: dict[str, Any] | None,
+    *,
+    cache_db: bool = True,
 ) -> list[tuple[dict[str, Any], dict[str, str] | None]]:
     """曲名を1フレーズだけ空耳変換し、見出しに使う (単語, 単語リスト行) を返す。
 
@@ -633,7 +660,10 @@ def title_paraphrase(
     # 辞書が来る。エンジン既定(VARIATION_COST=0等)のままだと音の近さより
     # 変形の自由度が勝ってしまうので、本編と同じ既定解決を必ず通す
     eff_where, coerced, _alpha = resolve_convert_settings(csv_path, where, params)
-    result = run_convert([title], csv_path, eff_where, coerced)
+    if not _title_conversion_within_budget(title, coerced):
+        logger.warning("曲名の変換量が上限を超えるため、言い換えなしのサムネにします")
+        return []
+    result = run_convert([title], csv_path, eff_where, coerced, cache_db=cache_db)
     lines = result.get("lines") or []
     words = lines[0].get("words") if lines else []
     picked = pick_headline_words(words or [])
@@ -878,6 +908,7 @@ def build_thumbnail(
     song_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
     used_images: list[dict] | None = None,
+    wordlist_label: str = "",
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -894,7 +925,7 @@ def build_thumbnail(
     サンプル曲は samples.json の title_kana から来る)。キャプションに出す
     曲名は読みの有無にかかわらず song(漢字まじりの表記)のまま。
     """
-    wordlist_text = wordlist_text_of(wordlist)
+    wordlist_text = wordlist_label.strip() or wordlist_text_of(wordlist)
     resolved_images: list[dict] = []
     words, image_paths, image_credits = resolve_headline(
         song,
@@ -944,6 +975,7 @@ def generate_thumbnail(
     title_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
     used_images: list[dict] | None = None,
+    wordlist_label: str = "",
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
@@ -966,4 +998,5 @@ def generate_thumbnail(
         song_kana=title_kana,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=used_images,
+        wordlist_label=wordlist_label,
     )

@@ -1,0 +1,33 @@
+{
+  "background": "black",
+  "elements": [
+    {
+      "type": "text",
+      "text": "{original}",
+      "box": [
+        0.08,
+        0.2,
+        0.84,
+        0.22
+      ],
+      "size": 0.1,
+      "align": "center",
+      "valign": "middle"
+    },
+    {
+      "type": "text",
+      "text": "{description}",
+      "box": [
+        0.08,
+        0.44,
+        0.84,
+        0.16
+      ],
+      "size": 0.045,
+      "color": "#ccc",
+      "align": "center",
+      "valign": "middle",
+      "wrap": true
+    }
+  ]
+}

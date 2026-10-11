@@ -48,6 +48,28 @@ uv run soramimic-video mix \
 uv run soramimic-video video --project work/song --layout caption
 ```
 
+開発環境ではPrettyPitchも試験バックエンドとして使えます。PrettyPitchとLeapSinger、
+配布モデルはこのリポジトリへ同梱せず、各プロジェクトの手順と利用条件に従って別途配置します。
+配布モデルは個人・非商用利用が前提です。
+波音リツの自動音域調整は、VOICEVOXと同じ F♯3〜F♯5（MIDI 54〜78）を
+仮の得意音域として使います。無効にするには `--no-auto-octave` を指定します。
+
+```sh
+PRETTYPITCH_ROOT=/path/to/PrettyPitch \
+PRETTYPITCH_LEAPSINGER_ROOT=/path/to/LeapSinger \
+PRETTYPITCH_PYTHON=/path/to/PrettyPitch/.venv/bin/python \
+  uv run soramimic-video synthesize \
+    --project work/song --synthesizer prettypitch
+```
+
+Web UIの固定歌声として試す場合は、上記に加えて
+`SORAMIMIC_FIXED_SYNTHESIZER=prettypitch` を設定します。未設定時の既定はVOICEVOXのままです。
+
+`--synthesizer hybrid` は波音リツのVOICEVOX歌唱を使い、音域調整後も
+F♯3〜F♯5に収まらない音を含むフレーズをPrettyPitchで補います。
+両エンジンの設定が必要で、PrettyPitchモデルと同じ非商用の利用条件が適用されます。
+Web UIの固定歌声には `SORAMIMIC_FIXED_SYNTHESIZER=hybrid` を指定できます。
+
 モーラの位置・長さ・読みは timing editor で調整できます。
 
 ```sh
@@ -56,6 +78,20 @@ uv run soramimic-video edit-timing --project work/song
 
 各 command と option の詳細は `uv run soramimic-video --help` および各 subcommand の
 `--help` を参照してください。
+
+入力歌詞付きの音源解析で1行が長すぎる場合は、変換時に `--auto-phrase-lyrics` を指定できます。
+Whisperの認識行を基本に、文節の境界で変換・字幕のフレーズを分けます。
+まだ長すぎる部分を分ける場合は、休符も位置を選ぶ手がかりにします。
+既定はオフです。入力の表記・読み・音符は保持し、オプションなしで再変換すると元の区切りへ戻ります。
+短い行や、読みと文節の対応を確定できない箇所はそのままにします。
+
+```sh
+uv run soramimic-video convert \
+  --project work/song --wordlist stations --auto-phrase-lyrics
+```
+
+APIでは `POST /api/jobs` に `auto_phrase_lyrics=true` を指定します。
+対象は入力歌詞付きの音源からの変換です。画面には設定項目を追加していません。
 
 ## Web UI
 
@@ -67,6 +103,11 @@ uv run soramimic-video serve
 Web UI では、曲と単語リストの選択、替え歌編集、動画生成、進捗確認、完成動画の保存・共有が
 できます。公開 instance では、混雑防止や不正利用防止のため、投稿数・入力サイズ・曲長などが
 制限される場合があります。画面に表示された案内に従ってください。
+
+メイン画面の単語リストメニューでは、同梱リストと名前を付けて保存した自作リストを同じ一覧から選べます。自作リストは一覧の末尾に表示されます。
+自作リストを選ぶと、その内容で曲名を変換したサムネイルを生成前にプレビューできます。
+「＋ 新しいリスト」で追加し、自作リストの各行から選択・編集・削除できます。単語は手入力するか
+CSV・テキストファイルから読み込みます。保存先は使用中のブラウザです。
 
 音源を入力するサーバーは、音源解析用の依存もインストールして起動します。
 
@@ -81,8 +122,14 @@ uv run soramimic-video serve
 「曲をアップロード」で戻れます。入力方法を切り替えると前の曲選択は解除されます。
 形式は拡張子とファイル内容から自動で判定し、
 圧縮音声は解析前にPCM WAVへ変換します。持ち込み音源では正式な元歌詞を
-画面へ入力するか、UTF-8のテキストファイルとして同時にアップロードできます。歌詞を指定しない場合は
-自動認識し、指定した正式歌詞は正解文字列としてforced alignmentしてASRで書き換えません。
+画面へ入力するか、UTF-8のテキストファイルとして同時にアップロードできます。
+歌詞を入力した場合は、入力した表記・順序・繰り返しを保って読みと発音時刻を推定します。
+音声認識と一致しない行も省かず、前後の対応箇所を手がかりに音源と照合します。
+調整オフでは、音符・音声認識・ボーカル活動の根拠がない箇所も、本文を保持して未解決として扱います。
+「音源に合わせて歌詞を調整」をオンにすると、不足する行や繰り返しを追加します。
+また、音符・音声認識・ボーカル活動の根拠がすべてないと確認できた入力行だけを除外します。
+短い発声でも検出があれば残し、未測定や位置が不明な場合も除外しません。認識結果への置き換えは行いません。
+認識ミスによる追加や除外がないか、結果を確認してください。
 音源分離・タイミング推定・音高推定を
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
@@ -107,31 +154,42 @@ journaldへ出力しません。
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420秒 | MIDI/音声共通の曲長上限 |
 | `SORAMIMIC_JOB_TTL_HOURS` | 0（自動削除なし） | 完了後に動画・サムネイル・出典情報を自動削除するまでの時間（入力・中間物は処理終了時に削除） |
 | `SORAMIMIC_REQUIRE_PUBLIC` | 0 | `1`なら`SORAMIMIC_PUBLIC=1`が無い状態での起動を拒否（公開サービスの設定漏れ防止） |
-| `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | ローカルSheetSage2モデル（設定時に主ノートとして使用） |
+| `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | 音源解析に必要なローカルSheetSage2モデル |
 | `SORAMIMIC_SHEETSAGE_BASE_DIR` | 未設定 | ローカルMERT-v2-FullSong親モデル |
 
 SheetSage2/MERT2のweightはCC BY-NC 4.0です。アプリはモデルを自動取得せず、設定した
-ローカルディレクトリだけをofflineで読みます。音源解析の推定音高候補は
-SheetSage2だけから取得します。前後をSheetSage2ノートに挟まれたラップ・台詞調の内部空白は、
-歌詞を無音化しないためCTCのモーラ時刻を保持し、近い側のノート音高を合成専用の
-`spoken` 値として使います。この値は推定音高とは扱わず、解析結果に由来を記録します。
-
-音源解析は `wav-to-xf` パッケージを使用します。利用可能なローカル
-チェックアウトを `uv pip install <checkout>` で導入し、`uv run --no-sync` で実行してください。
-全SheetSageノート候補と各モーラのかなCTC中心を
-境界なし設定のStage 3へ渡し、モーラ→ノート対応を決定します。母音・子音境界は入力せず、
-CTC中心を含む後続ノートがある場合、その
-モーラを直前ノートのスタックやmelismaへ隠しません。SheetSage2を必須とし、
-未設定時に別方式へ黙ってフォールバックしません。
-未知歌詞では、隣接するWhisper行の境界を近傍のSheetSage2ノート間休符へ補正してから、
-行外から始まるノートへ小さな所有コストを加えます。ノート内のCTC位置やXF正解データは
-この境界補正に使用しません。
+ローカルディレクトリだけをofflineで読みます。音源解析は
+[Soramimic Score](https://github.com/jiroshimaya/soramimic-score) が歌詞認識・読み・時刻・音高の
+対応を一括して行います。`uv sync`で検証済みの版が一緒にインストールされます。
+音高が未解決の歌唱単位は推測で補わず、合成から省略して解析結果に記録します。
+SheetSage2が未設定の場合、別方式へ黙ってフォールバックしません。
 
 ```sh
-uv run --no-sync soramimic-video analyze-audio --audio song.wav --project work/song
+uv run soramimic-video analyze-audio --audio song.wav --project work/song
 uv run soramimic-video apply-lyric-layers --project work/song --layers work/realization.json
 uv run soramimic-video export-xf --project work/song --output work/song/selected.mid
 ```
+
+入力歌詞の補完と、根拠のない行の除外を行う場合は、`analyze-audio`に
+`--lyrics lyrics.txt --adjust-lyrics`を付けます。元の歌詞ファイルは変更しません。
+APIでは音源入力・`auto_lyrics=false`とともに`adjust_lyrics=true`を指定します（既定はfalse）。
+追加・除外の判断と除外した区間の根拠はScore JSONの`lyric-adjustment`に記録され、公開モードでは他の解析中間物と
+同じく処理終了時に削除されます。
+
+既知歌詞を入力した場合も、**KanaWhisperによる読み補正は有効**です。
+soramimic-yomiとUniDicで作った読み候補が複数ある場合、原音と分離ボーカルを照合して選び直します。
+認識結果は入力歌詞の位置を探す手がかりに使い、入力歌詞から決めた読みをCTCへ渡します。
+改行位置が認識結果と違う場合も、対応するまとまりで読みと時刻を推定します。
+`｜明日《あす》`のようにルビを指定した部分は、その読みを優先します。
+この読み補正は「音源に合わせて歌詞を調整」のオン・オフとは独立して働き、歌詞本文は変更しません。
+
+音源入力では、`運命（さだめ）`のような辞書にない括弧内の読みも候補にします。
+本文だけの読み、括弧内の読み、両方を歌う読みを、前後の歌詞と音声認識の結果で比較します。
+通常Whisperで区別できなければ原音・分離ボーカルのKanaWhisperと照合し、判断できない括弧は残します。
+丸括弧・角括弧の半角・全角と、引用符で囲まれた語に対応します。
+`夢 （ゆめ）`のように括弧の前へ空白を入れると、この判定の対象外になります。
+読みを明示する場合は`｜未来《あす》`を使えます。
+音源のない入力では、辞書の読みと一致する括弧内のかなをルビとして扱います。
 
 未知歌詞では原音mixをWhisper large-v3（既定）のVADなし・前セグメント文脈なしの単一パスで認識します。
 対応区間にSheetSage2ノートがなく、かつ認識全文が限定的な視聴案内・字幕・クレジット文型に
@@ -145,7 +203,7 @@ uv run soramimic-video export-xf --project work/song --output work/song/selected
 推定します。`analyze_audio/recognition.json` に通常Whisperの歌詞認識を、
 `analyze_audio/reading.json` に読み候補・KanaWhisper根拠・選択結果を保存します。対応範囲は日本語の
 主旋律で、英語・会話・コーラスが完全に復元される保証はありません。正式歌詞の指定時は
-通常Whisperによる表層認識を行わず、指定文字列も書き換えません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
+Whisperの結果は対応の手がかりとして使い、指定文字列を認識結果へ置換しません。生成JSON・MIDI・試聴音源は作業用ディレクトリへ保存してください。
 Demucs、Whisper、SheetSage2は入力取得後に独立ジョブとして投入されます。共有推論サービスは
 優先度付きワーカーとGPU容量ゲートで必要な実行を安全に直列化します。KanaWhisperは歌詞行区間の
 確定後にだけ実行し、同じモデルを共有プロセス内で再利用します。

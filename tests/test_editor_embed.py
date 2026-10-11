@@ -1012,3 +1012,35 @@ def test_config_editor_flag_false(tmp_path):
     assert client.get("/api/config").json()["editor"] is False
     # dist が無ければ /editor 配下は配信されない
     assert client.get("/editor/editor.html").status_code == 404
+
+
+@pytest.mark.parametrize("description", [False, True])
+def test_embedded_custom_list_uses_centered_layout(job_client, description):
+    csv_text = "id,original,surface,pronunciation"
+    csv_text += ",description\n42,猫,ねこ,ネコ,動物\n" if description else "\n42,猫,ねこ,ネコ\n"
+    res = _post_job(job_client, _preview_payload(csv_text))
+    assert res.status_code == 200, res.text
+    params = job_client.get(f"/api/jobs/{res.json()['id']}").json()["params"]
+    assert params["layout"] == ("custom_description" if description else "custom_original")
+
+
+
+def test_editor_session_accepts_large_file_valued_text(client, tmp_path):
+    description = "a" * 2048
+    csv_text = "original,surface,pronunciation,description\n" + (
+        f"猫,ねこ,ネコ,{description}\n" * 600
+    )
+    assert len(csv_text.encode()) > 1024 * 1024
+    res = client.post(
+        "/api/editor-session",
+        files={
+            "midi": ("song.mid", _xf_midi(tmp_path).read_bytes(), "audio/midi"),
+            "wordlist_text": ("wordlist.txt", csv_text.encode(), "text/plain"),
+        },
+        data={"wordlist_name": "大きいリスト", "convert": "false"},
+    )
+    assert res.status_code == 200, res.text[:500]
+    entry = res.json()["wordlist"]
+    assert entry["value"] == "ORIGINAL"
+    assert entry["text"] == "大きいリスト"
+    assert entry["csvText"].count(description) == 600
