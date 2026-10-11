@@ -10,8 +10,10 @@ from typing import Any
 from .convert import pop_note_length_weight, project_note_length_weights
 from .editor_io import export_editor, import_editor, seed_with_lyrics
 from .project import Project
+from .ruby import strip_ruby
 
 REVIEW_FILENAME = "lyric-review.json"
+REVIEW_DRAFT_FILENAME = "lyric-review-draft.json"
 MAX_REVIEW_BYTES = 5 * 1024 * 1024
 
 
@@ -45,21 +47,39 @@ def prepare_review(
     seed_with_lyrics(payload, "\n".join(line.original_text or line.xf_kana
                                        for line in project.lines))
     payload["song"] = {"title": title}
-    payload["host"] = {"songs": [], "canUploadSong": False}
+    _review_display(payload, project)
     (directory / REVIEW_FILENAME).write_text(
         json.dumps(payload, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def _review_display(payload: dict[str, Any], project: Project) -> None:
+    payload["host"] = {"songs": [], "canUploadSong": False, "review": True}
+    payload["originalLines"] = [strip_ruby(line.original_text or "") for line in project.lines]
+
+
+def load_review(directory: Path, *, draft: bool = True) -> dict[str, Any]:
+    path = directory / REVIEW_DRAFT_FILENAME
+    if not draft or not path.is_file():
+        path = directory / REVIEW_FILENAME
+    payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    # Also upgrade reviews prepared before the compact review UI was introduced.
+    _review_display(payload, Project.load(directory))
+    return payload
 
 
 def validate_review(
     directory: Path, payload: Any, *, sessions_dir: Path | None = None
 ) -> bytes:
     """Validate before resuming, keeping source timing and wordlist paths trusted."""
-    seed = json.loads((directory / REVIEW_FILENAME).read_text(encoding="utf-8"))
+    seed = load_review(directory, draft=False)
     if not isinstance(payload, dict) or payload.get("format", seed["format"]) != seed["format"]:
         raise ValueError("編集データの形式が正しくありません")
     if payload.get("phrases") != seed["phrases"]:
         raise ValueError("確認中は曲の読みを変更できません。曲を変える場合は生成し直してください")
+    for key in ("lyrics", "originalLines", "unitsList", "tokensList"):
+        if payload.get(key) != seed.get(key):
+            raise ValueError("解析済みの元歌詞は変更できません。替え歌を編集してください")
     entry = payload.get("wordlist")
     if not isinstance(entry, dict) or any(
         entry.get(key) != seed["wordlist"].get(key)

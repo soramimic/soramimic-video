@@ -2847,10 +2847,12 @@ def test_index_html_editor_opens_as_fullscreen_modal():
 
 
 def test_index_html_editor_modal_uses_the_embedded_back_navigation():
-    """親ヘッダーに閉じるボタンを重複させず、editor内の戻る導線を使う。"""
+    """通常はeditor内で戻り、確認モードだけ親の閉じる操作を使う。"""
     html = _index_html()
     head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
-    assert "<button" not in head
+    assert 'id="close-lyric-review"' in head
+    assert " hidden>×</button>" in head
+    assert '$("close-lyric-review").hidden = !reviewJobId;' in html
     assert '$("editor-frame").focus();' in html
     # ヘッダは縮まず、下のiframeだけがスクロール領域になる
     assert ".editor-modal-head {\n    flex: 0 0 auto;" in html

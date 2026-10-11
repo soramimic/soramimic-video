@@ -117,9 +117,10 @@ def test_review_reuses_analysis_and_synthesizes_edited_lyrics(review_client, inp
     payload = response.json()
     assert payload["results"] and payload["unitsList"]
     assert payload["noteLengthRawList"]
-    assert payload["host"] == {"songs": [], "canUploadSong": False}
+    assert payload["host"] == {"songs": [], "canUploadSong": False, "review": True}
     if input_kind == "audio":
         assert payload["lyrics"] == "沈む"
+        assert payload["originalLines"] == ["沈む"]
     payload["results"][0][0]["surface"] = "編集した替え歌"
     response = resume(client, job_id, payload)
     assert response.status_code == 200, response.text
@@ -157,7 +158,10 @@ def test_waiting_review_releases_worker_and_can_be_canceled(review_client):
     assert resume(client, job_id, {}).status_code == 409
 
 
-@pytest.mark.parametrize("change", ["phrases", "wordlist", "results", "period", "unitsList"])
+@pytest.mark.parametrize("change", [
+    "phrases", "wordlist", "results", "period", "unitsList", "tokensList",
+    "lyrics", "originalLines",
+])
 def test_invalid_edits_leave_review_and_analysis_intact(review_client, change):
     client, _midi, calls, _editor = review_client
     job_id = submit_review(review_client)
@@ -189,6 +193,58 @@ def test_review_survives_server_restart(review_client, tmp_path):
     assert resume(restarted, job_id, payload).status_code == 200
     wait_status(restarted, job_id, "done")
     assert calls["analyze"] == 1
+
+
+def test_review_draft_survives_restart_without_starting_generation(review_client, tmp_path):
+    client, _midi, calls, editor = review_client
+    job_id = submit_review(review_client)
+    wait_status(client, job_id, "awaiting_review")
+    payload = client.get(f"/api/jobs/{job_id}/review").json()
+    payload["results"][0][0]["surface"] = "保存した歌詞"
+    response = client.put(f"/api/jobs/{job_id}/review", files={
+        "editor": ("editor.json", json.dumps(payload), "application/json"),
+    })
+    assert response.status_code == 200, response.text
+    assert calls["synthesize"] == []
+    app = api.create_app(jobs_dir=tmp_path / "jobs", editor_dist=editor)
+    app.state.manager.config["parallel_video"] = False
+    restarted = TestClient(app)
+    assert restarted.get(f"/api/jobs/{job_id}").json()["status"] == "awaiting_review"
+    saved = restarted.get(f"/api/jobs/{job_id}/review").json()
+    assert saved["results"][0][0]["surface"] == "保存した歌詞"
+    assert saved["unitsList"] == payload["unitsList"]
+    assert resume(restarted, job_id, saved).status_code == 200
+    wait_status(restarted, job_id, "done")
+    assert calls["analyze"] == 1
+    assert calls["synthesize"][0].parody.lines[0].words[0].surface == "保存した歌詞"
+
+
+def test_review_draft_checks_owner_source_and_job_state(review_client, monkeypatch):
+    client, _midi, calls, _editor = review_client
+    job_id = submit_review(review_client)
+    wait_status(client, job_id, "awaiting_review")
+    payload = client.get(f"/api/jobs/{job_id}/review").json()
+
+    def save(using_client, body):
+        return using_client.put(f"/api/jobs/{job_id}/review", files={
+            "editor": ("editor.json", json.dumps(body), "application/json"),
+        })
+
+    monkeypatch.setenv(api.PUBLIC_ENV, "1")
+    client.get("/api/config")
+    client.app.state.manager.get(job_id).owner = client.cookies.get(api.SESSION_COOKIE)
+    assert save(TestClient(client.app), payload).status_code == 404
+    changed = copy.deepcopy(payload)
+    changed["lyrics"] = "別の歌詞"
+    assert save(client, changed).status_code == 422
+    assert client.get(f"/api/jobs/{job_id}/review").json() == payload
+    response = client.put(f"/api/jobs/{job_id}/review", files={
+        "editor": ("editor.json", b" " * (MAX_REVIEW_BYTES + 1), "application/json"),
+    })
+    assert response.status_code == 413
+    client.post(f"/api/jobs/{job_id}/cancel")
+    assert save(client, payload).status_code == 409
+    assert calls["synthesize"] == []
 
 
 def test_review_requires_owner_and_limits_upload(review_client, monkeypatch):

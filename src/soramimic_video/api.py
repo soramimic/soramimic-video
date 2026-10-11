@@ -2148,7 +2148,7 @@ class JobManager:
             tmp_path.unlink(missing_ok=True)
 
     def review_data(self, job_id: str, owner: str | None = None) -> dict[str, Any]:
-        from .lyric_review import REVIEW_FILENAME
+        from .lyric_review import load_review
 
         with self._lock:
             job = self.get(job_id, owner)
@@ -2156,7 +2156,30 @@ class JobManager:
                 raise HTTPException(
                     status_code=409, detail="このジョブは歌詞の確認待ちではありません"
                 )
-            return json.loads((job.dir / REVIEW_FILENAME).read_text(encoding="utf-8"))
+            return load_review(job.dir)
+
+    def save_review(self, job_id: str, payload: Any, owner: str | None = None) -> None:
+        from .lyric_review import REVIEW_DRAFT_FILENAME, validate_review
+
+        with self._lock:
+            job = self.get(job_id, owner)
+            if job.status != "awaiting_review":
+                raise HTTPException(
+                    status_code=409, detail="このジョブは歌詞の確認待ちではありません"
+                )
+            try:
+                data = validate_review(
+                    job.dir, payload, sessions_dir=self.config["editor_sessions"]
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            path = job.dir / REVIEW_DRAFT_FILENAME
+            temporary = path.with_suffix(".tmp")
+            try:
+                temporary.write_bytes(data)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def resume_review(self, job_id: str, payload: Any, owner: str | None = None) -> Job:
         from .lyric_review import validate_review
@@ -4374,10 +4397,7 @@ def create_app(
             headers={"Cache-Control": "private, no-store"},
         )
 
-    @app.post("/api/jobs/{job_id}/resume", dependencies=[Depends(_require_api_key)])
-    async def resume_lyric_review(
-        job_id: str, request: Request, editor: UploadFile = File(...),
-    ) -> dict[str, Any]:
+    async def read_review_upload(job_id: str, request: Request, editor: UploadFile) -> Any:
         from .lyric_review import MAX_REVIEW_BYTES
 
         if is_simple_ui():
@@ -4391,7 +4411,22 @@ def create_app(
             payload = json.loads(raw)
         except (ValueError, UnicodeDecodeError) as exc:
             raise HTTPException(status_code=400, detail="編集データのJSONが読めません") from exc
-        job = await run_in_threadpool(manager.resume_review, job_id, payload, owner)
+        return payload
+
+    @app.put("/api/jobs/{job_id}/review", dependencies=[Depends(_require_api_key)])
+    async def save_lyric_review(
+        job_id: str, request: Request, editor: UploadFile = File(...),
+    ) -> dict[str, bool]:
+        payload = await read_review_upload(job_id, request, editor)
+        await run_in_threadpool(manager.save_review, job_id, payload, owner_of(request))
+        return {"saved": True}
+
+    @app.post("/api/jobs/{job_id}/resume", dependencies=[Depends(_require_api_key)])
+    async def resume_lyric_review(
+        job_id: str, request: Request, editor: UploadFile = File(...),
+    ) -> dict[str, Any]:
+        payload = await read_review_upload(job_id, request, editor)
+        job = await run_in_threadpool(manager.resume_review, job_id, payload, owner_of(request))
         return manager.job_dict(job, with_log=False)
 
     @app.get("/api/jobs/{job_id}/credits", dependencies=[Depends(_require_api_key)])
