@@ -35,6 +35,8 @@ class _Atom:
     start: float
     end: float
     words: list[ParodyWord] = field(default_factory=list)
+    phrase_start: bool = True
+    break_before: bool | None = None
 
 
 _FALLBACK_TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*|[^\s]")
@@ -66,6 +68,53 @@ def _text_tokens(text: str) -> list[tuple[str, str]]:
     bounds = [start for start, _ in located] + [len(text)]
     return [(text[bounds[i]:bounds[i + 1]], reading)
             for i, (_, reading) in enumerate(located)]
+
+
+def _phrase_boundaries(text: str) -> tuple[set[int], set[int]] | None:
+    """Return bunsetsu starts and safe word starts in the original surface text.
+
+    Use the same bunsetsu policy as conversion phrasing. Word boundaries are a
+    fallback for oversized phrases; particles, auxiliaries, suffixes and words
+    following a prefix still stay attached. An unavailable or unmappable parse
+    leaves the existing token/punctuation safeguards in charge.
+    """
+    from soramimic_score import LyricMappingError, parse_lyric_input
+
+    parsed = parse_lyric_input(text)
+    if any(item.kind == "ruby" for item in parsed.annotations):
+        return None
+    try:
+        from jphrase import PhraseSplitter
+
+        parts = PhraseSplitter(
+            consider_non_independent_nouns_and_verbs_as_breaks=False,
+        ).split_text(parsed.text, output_type="detailed")
+    except (ImportError, RuntimeError):
+        return None
+    if any(not token["surface_form"] for part in parts for token in part):
+        return None
+    parts = [[token for token in part if not token["surface_form"].isspace()]
+             for part in parts]
+    parts = [part for part in parts if part]
+    tokens = [token for part in parts for token in part]
+    if not tokens:
+        return None
+    try:
+        spans = parsed.match_parts(tuple(token["surface_form"] for token in tokens))
+    except LyricMappingError:
+        return None
+    phrase_starts = set()
+    index = 0
+    for part in parts:
+        phrase_starts.add(spans[index][0])
+        index += len(part)
+    word_starts = set()
+    for i, (token, (start, _end)) in enumerate(zip(tokens, spans, strict=True)):
+        if (token.get("pos") not in {"助詞", "助動詞"}
+                and token.get("pos_detail_1") != "接尾"
+                and (i == 0 or tokens[i - 1].get("pos") != "接頭詞")):
+            word_starts.add(start)
+    return phrase_starts, word_starts
 
 
 def _reading_positions(source: str, target: str) -> list[int]:
@@ -100,15 +149,21 @@ def _original_atoms(
     readings = [_pron_normalize(reading) for _, reading in tokens]
     source = _pron_normalize("".join(readings))
     positions = _reading_positions(source, target)
+    boundaries = _phrase_boundaries(segment.text)
     atoms = []
-    cursor = 0
+    cursor = offset = 0
     for (text, _), reading in zip(tokens, readings, strict=True):
         a = positions[cursor]
         cursor += len(reading)
         b = positions[cursor]
         start = owners[min(a, len(owners) - 1)].start_sec
         end = owners[min(b - 1, len(owners) - 1)].end_sec if b > a else start
-        atoms.append(_Atom(text, start, end))
+        atoms.append(_Atom(
+            text, start, end,
+            phrase_start=boundaries is None or offset in boundaries[0],
+            break_before=None if boundaries is None else offset in boundaries[1],
+        ))
+        offset += len(text)
     return atoms
 
 
@@ -122,14 +177,14 @@ def _parody_atoms(project: Project, words: list[ParodyWord], sep: str) -> list[_
     return atoms
 
 
-def _break_quality(left: str, right: str) -> float | None:
+def _break_quality(left: str, right: str, *, check_particle: bool = True) -> float | None:
     """Prefer authored lines, punctuation, spaces, and phrase-ending particles."""
     before, after = left.rstrip(), right.strip()
     if not before or not after or before[-1] in _OPENING or after[0] in _CLOSING:
         return None
     if re.search(r"[A-Za-z0-9]$", left) and re.match(r"[A-Za-z0-9]", right):
         return None
-    if after in _PARTICLES:
+    if check_particle and after in _PARTICLES:
         return None
     if "\n" in left or before[-1] in "。！？.!?":
         return 0.0
@@ -138,6 +193,63 @@ def _break_quality(left: str, right: str) -> float | None:
     if left[-1].isspace():
         return .15
     return .4
+
+
+def _atom_break_quality(left: _Atom, right: _Atom, source: str) -> float | None:
+    if source == "parody":
+        return .15
+    if right.break_before is False:
+        return None
+    return _break_quality(left.text, right.text, check_particle=right.break_before is None)
+
+
+def _page_indices(
+    times: list[float], penalties: list[float], preferred: list[bool],
+    measure_ratio: Callable[[int, int], float],
+) -> list[tuple[int, int]]:
+    """Try fitting bunsetsu pages first, then relax the fewest safe boundaries.
+
+    Width is measured at the configured font size. Oversized indivisible units
+    remain whole for the renderer to fit, even after the word-boundary fallback.
+    """
+    ratio = cache(measure_ratio)
+
+    def choose(phrase_only: bool) -> list[tuple[int, int]] | None:
+        allowed = [i for i, use in enumerate(preferred) if use or not phrase_only]
+        costs = [(float("inf"), 0, 0.0)] * len(times)
+        following = [len(times) - 1] * len(times)
+        costs[-1] = (0.0, 0, 0.0)
+        for a in reversed(allowed[:-1]):
+            for b in allowed:
+                if b <= a:
+                    continue
+                width = ratio(a, b)
+                if width > 1 and (phrase_only or b > a + 1):
+                    break
+                duration = times[b] - times[a]
+                if duration < .2 - 1e-6 and (a != 0 or b != len(times) - 1):
+                    continue
+                overflow, relaxed, cost = costs[b]
+                candidate = (
+                    overflow + max(0, width - 1),
+                    relaxed + int(not preferred[b]),
+                    cost + 1 + .8 * (1 - min(width, 1)) ** 2 + penalties[b]
+                    + 3 * max(0, 1 - duration / .8) ** 2,
+                )
+                if candidate < costs[a]:
+                    costs[a] = candidate
+                    following[a] = b
+        if costs[0][0] == float("inf"):
+            return None
+        pages = []
+        a = 0
+        while a < len(times) - 1:
+            b = following[a]
+            pages.append((a, b))
+            a = b
+        return pages
+
+    return choose(True) or choose(False) or [(0, len(times) - 1)]
 
 
 def _visible_spans(
@@ -249,8 +361,9 @@ def paginate_subtitle_tracks(
         cuts = [tuple(0 for _ in tracks)]
         times = [start]
         penalties = [0.0]
+        preferred = [True]
         for when in sorted({a.start for group in groups for a in group}):
-            if when - lead_sec < times[-1] + .2 or when - lead_sec > end - .2:
+            if when - lead_sec < start + .2 or when - lead_sec > end - .2:
                 continue
             indices = []
             qualities = []
@@ -259,8 +372,7 @@ def paginate_subtitle_tracks(
                          len(group))
                 if k == 0 or k == len(group) or max(a.end for a in group[:k]) > when + 1e-6:
                     break
-                quality = (.15 if track.source == "parody"
-                           else _break_quality(group[k - 1].text, group[k].text))
+                quality = _atom_break_quality(group[k - 1], group[k], track.source)
                 if quality is None:
                     break
                 indices.append(k)
@@ -269,9 +381,12 @@ def paginate_subtitle_tracks(
                 cuts.append(tuple(indices))
                 times.append(when - lead_sec)
                 penalties.append(sum(qualities) / len(qualities))
+                preferred.append(all(group[k].phrase_start
+                                     for group, k in zip(groups, indices, strict=True)))
         cuts.append(tuple(len(g) for g in groups))
         times.append(end)
         penalties.append(0.0)
+        preferred.append(True)
 
         @cache
         def page_text(
@@ -280,31 +395,16 @@ def paginate_subtitle_tracks(
             return "".join(atom.text for atom in groups[track][cuts[a][track]:cuts[b][track]]
                            ).strip()
 
-        costs = [float("inf")] * len(cuts)
-        following = [len(cuts) - 1] * len(cuts)
-        costs[-1] = 0.0
-        for a in range(len(cuts) - 2, -1, -1):
-            for b in range(a + 1, len(cuts)):
-                ratio = max(t.measure(page_text(j, a, b)) / max(1, t.max_width)
-                            for j, t in enumerate(tracks))
-                if ratio > 1 and b > a + 1:
-                    break
-                duration = times[b] - times[a]
-                cost = (1 + .8 * (1 - min(ratio, 1)) ** 2 + penalties[b]
-                        + 3 * max(0, 1 - duration / .8) ** 2
-                        + 5 * max(0, ratio - 1) + costs[b])
-                if cost < costs[a]:
-                    costs[a] = cost
-                    following[a] = b
-        a = 0
-        while a < len(cuts) - 1:
-            b = following[a]
+        def measure_ratio(a: int, b: int) -> float:
+            return max(t.measure(page_text(j, a, b)) / max(1, t.max_width)
+                       for j, t in enumerate(tracks))
+
+        for a, b in _page_indices(times, penalties, preferred, measure_ratio):
             for j, group in enumerate(groups):
                 text = page_text(j, a, b)
                 if text:
                     words = [w for atom in group[cuts[a][j]:cuts[b][j]] for w in atom.words]
                     result[j].append(SubtitlePage(text, times[a], times[b], words))
-            a = b
     return result
 
 
@@ -320,20 +420,23 @@ def _paginate_atoms(
     cuts = [0]
     times = [whole.start]
     penalties = [0.0]
+    preferred = [True]
     latest_end = atoms[0].end
     for i in range(1, len(atoms)):
         previous, current = atoms[i - 1], atoms[i]
-        quality = .15 if source == "parody" else _break_quality(previous.text, current.text)
+        quality = _atom_break_quality(previous, current, source)
         when = current.start - lead_sec
         if (quality is not None and current.start >= latest_end - 1e-6
-                and when >= times[-1] + .2 and when <= whole.end - .2):
+                and when >= whole.start + .2 and when <= whole.end - .2):
             cuts.append(i)
             times.append(when)
             penalties.append(quality)
+            preferred.append(current.phrase_start)
         latest_end = max(latest_end, current.end)
     cuts.append(len(atoms))
     times.append(whole.end)
     penalties.append(0.0)
+    preferred.append(True)
     if len(cuts) == 2:
         return [whole]
 
@@ -341,27 +444,11 @@ def _paginate_atoms(
     def page_text(a: int, b: int) -> str:
         return "".join(atom.text for atom in atoms[cuts[a]:cuts[b]]).strip()
 
-    # Few pages, but prefer natural boundaries and avoid a tiny final page or flashes.
-    costs = [float("inf")] * len(cuts)
-    following = [len(cuts) - 1] * len(cuts)
-    costs[-1] = 0.0
-    for a in range(len(cuts) - 2, -1, -1):
-        for b in range(a + 1, len(cuts)):
-            ratio = measure(page_text(a, b)) / max(1, max_width)
-            if ratio > 1 and b > a + 1:
-                break
-            duration = times[b] - times[a]
-            cost = (1 + .8 * (1 - min(ratio, 1)) ** 2 + penalties[b]
-                    + 3 * max(0, 1 - duration / .8) ** 2
-                    + 5 * max(0, ratio - 1) + costs[b])
-            if cost < costs[a]:
-                costs[a] = cost
-                following[a] = b
+    def measure_ratio(a: int, b: int) -> float:
+        return measure(page_text(a, b)) / max(1, max_width)
+
     pages = []
-    a = 0
-    while a < len(cuts) - 1:
-        b = following[a]
+    for a, b in _page_indices(times, penalties, preferred, measure_ratio):
         page_words = [word for atom in atoms[cuts[a]:cuts[b]] for word in atom.words]
         pages.append(SubtitlePage(page_text(a, b), times[a], times[b], page_words))
-        a = b
     return pages
