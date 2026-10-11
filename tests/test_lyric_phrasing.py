@@ -172,6 +172,24 @@ def test_surface_mapping_preserves_spaces_and_avoids_ambiguous_custom_readings()
     assert _surface_boundaries("｜朝《あさ》の光が", "アサノヒカリガ") == []
 
 
+@pytest.mark.parametrize("separator", ["　", " \t　 ", "\n　"])
+def test_default_phrasing_preserves_full_width_and_mixed_whitespace(separator):
+    text = TEXT[:10] + separator + TEXT[10:]
+    project = _project(text=text, whisper_at=(14, 28))
+    layers = copy.deepcopy(project.lyric_layers)
+
+    prepare_lyric_phrases(project)
+
+    assert len(project.lines) == 3
+    assert project.lines[0].original_text == TEXT[:10] + separator
+    assert "".join(line.original_text for line in project.lines) == text
+    assert "".join(line.canonical_kana for line in project.lines) == KANA
+    assert [nid for line in project.lines for nid in line.note_ids] == list(
+        range(len(project.notes)),
+    )
+    assert project.lyric_layers == layers
+
+
 def test_convert_defaults_reach_engine_and_captions_and_disable_restores_input(
     monkeypatch, tmp_path,
 ):
