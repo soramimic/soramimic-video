@@ -905,13 +905,6 @@
         <input type="file" id="lyrics-file" accept=".txt,.md,text/plain,text/markdown">
         <p class="hint" id="lyrics-file-name" role="status" hidden></p>
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
-        <div id="adjust-lyrics-panel" hidden>
-          <label class="lyrics-recognition-toggle" for="adjust-lyrics">
-            <input type="checkbox" id="adjust-lyrics" aria-describedby="adjust-lyrics-hint">
-            音源に合わせて歌詞を調整
-          </label>
-          <p class="hint" id="adjust-lyrics-hint">オフでは入力歌詞を保持します。オンでは不足する行を追加し、音符・声・音声認識の根拠がすべてないと確認できた行だけを除外します。判定できない行は残します。</p>
-        </div>
       </div>
     </div>
     <div class="upload-use-notice" id="upload-use-notice" hidden>
@@ -1103,6 +1096,14 @@
   <div class="field" id="review-lyrics-field" hidden>
     <label><input type="checkbox" id="review-lyrics"> 替え歌歌詞を確認する</label>
     <p class="hint" data-info>音楽解析と替え歌への変換が終わると編集画面が開きます。確認してから動画を生成できます。</p>
+  </div>
+
+  <div class="field" id="adjust-lyrics-panel" hidden>
+    <label for="adjust-lyrics">
+      <input type="checkbox" id="adjust-lyrics" aria-describedby="adjust-lyrics-hint">
+      音源に合わせて歌詞を調整
+    </label>
+    <p class="hint" id="adjust-lyrics-hint" data-info>オフでは入力歌詞を保持します。オンでは不足する行を追加し、音符・声・音声認識の根拠がすべてないと確認できた行だけを除外します。判定できない行は残します。</p>
   </div>
 
   <!-- 選択中の単語リストに facets があるときだけ表示する。チェック状態は #where
