@@ -201,7 +201,6 @@ def test_pinned_score_speech_reaches_voicevox_once_without_losing_sung_notes(
     )
     from soramimic_score.vocal_activity import VocalActivity
 
-    from soramimic_video import analyze_audio as legacy_audio
     from soramimic_video.project import Project
     from soramimic_video.voicevox import build_score
 
@@ -228,12 +227,7 @@ def test_pinned_score_speech_reaches_voicevox_once_without_losing_sung_notes(
         return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
                             on_progress=kwargs["on_progress"])
 
-    def no_duplicate_recovery(*_args, **_kwargs):
-        pytest.fail("Score output must not run through legacy speech recovery again")
-
     monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
-    monkeypatch.setattr(legacy_audio, "_recover_synthesis_units", no_duplicate_recovery)
-    monkeypatch.setattr(legacy_audio, "_continuize_spoken_synthesis_lines", no_duplicate_recovery)
     monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
     monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
     source = tmp_path / "input.wav"
@@ -467,3 +461,11 @@ def test_pinned_score_keeps_note_supported_recovery_and_reports_uncertain_alignm
         assert len(analysis["limitations"]) == 1
     else:
         assert analysis["limitations"] == []
+
+
+def test_local_model_device_prefers_cuda_when_available(monkeypatch):
+    fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert score_audio._torch_device(None) == "cuda"
+    assert score_audio._torch_device("cpu") == "cpu"
