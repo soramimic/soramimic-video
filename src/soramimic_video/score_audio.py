@@ -10,6 +10,21 @@ from pathlib import Path
 
 from .audio_project import DEFAULT_BPM
 from .project import Project, SongInfo
+from .score_layers import generation_quality_assessment, omit_unresolved_synthesis_units
+
+ANALYZE_DIR = "analyze_audio"
+
+
+def _torch_device(device: str | None) -> str:
+    """Resolve local torch inference placement without loading an audio model."""
+    if device is not None:
+        return device
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
 
 
 def analyze_audio(
@@ -29,11 +44,6 @@ def analyze_audio(
     from soramimic_score import analyze_audio as analyze_score
 
     from . import runproc
-    from .analyze_audio import (
-        _generation_quality_assessment,
-        _omit_unresolved_synthesis_units,
-        _torch_device,
-    )
     from .audio_inference import configured_priority, configured_url
     from .lyric_layers import apply_lyric_layers
 
@@ -68,7 +78,7 @@ def analyze_audio(
         shared_inference_url=configured_url(),
         shared_inference_priority=configured_priority(),
     )
-    out = project_dir / "analyze_audio"
+    out = project_dir / ANALYZE_DIR
     out.mkdir(parents=True, exist_ok=True)
     input_path = out / "lyric_input.json"
     if input_receipt is not None:
@@ -112,7 +122,7 @@ def analyze_audio(
         raise ValueError(
             "歌唱の根拠を確認できる歌詞が残りませんでした。音源と入力歌詞を確認してください。"
         )
-    omitted = _omit_unresolved_synthesis_units(layers)
+    omitted = omit_unresolved_synthesis_units(layers)
     tempo = round(60_000_000 / bpm)
     project = Project(SongInfo(
         midi_path="", ticks_per_beat=480, tempo_map=[[0, tempo]],
@@ -120,7 +130,7 @@ def analyze_audio(
         accompaniment_path=str(accompaniment) if accompaniment is not None else None,
     ))
     apply_lyric_layers(project, layers)
-    quality = _generation_quality_assessment(layers)
+    quality = generation_quality_assessment(layers)
     limitations = ([f"音高が未解決の{omitted}歌唱単位を合成から省略しました。"]
                    if omitted else [])
     diagnostics = ([{"stage": "score", "status": "synthesis-omission",
