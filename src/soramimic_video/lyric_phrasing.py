@@ -63,11 +63,16 @@ def _surface_boundaries(text: str, kana: str) -> list[tuple[int, int]]:
         surface = part["surface_form"]
         if not surface:
             return []
+        if surface.isspace():
+            continue
         while cursor < len(text) and text[cursor].isspace():
             cursor += 1
         start = cursor
-        # MeCab removes whitespace even inside one bunsetsu (e.g. 輝いて いる).
+        # MeCab may omit spaces or retain them (notably full-width spaces).
+        # Match visible characters while retaining the original input offsets.
         for char in surface:
+            if char.isspace():
+                continue
             while cursor < len(text) and text[cursor].isspace():
                 cursor += 1
             if cursor == len(text) or text[cursor] != char:
