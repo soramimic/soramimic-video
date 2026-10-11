@@ -7097,7 +7097,8 @@ function pickMidiFile() {
 // 差し替えた曲で解析だけをやり直し(convert=0)、エディタのペイロードへ差し戻す。
 // 入れ替えるのは曲から作られるもの(phrases/song/noteLengthRawList)だけ——単語リストと
 // 変換のしかた(wordlist/param)はエディタ側の今の設定をそのまま残す。
-// 前の曲の変換結果(results/tokensList/unitsList)は捨てて未変換に戻すので、
+// 読み・単語境界・文節(tokensList)も新しい曲の解析結果へ差し替える。
+// 前の曲の変換結果(results/unitsList)は捨てて未変換に戻すので、
 // エディタは「この設定で変換」からやり直せる。
 async function reseedEditorSong() {
   const midi = ownSongKind() === "midi" ? ownSongFile() : null;
@@ -7130,7 +7131,7 @@ async function reseedEditorSong() {
   // 返ってきたものへ揃える(エディタ側の編集は書き戻し済み=同じ値)
   if (fresh.lyrics) data.lyrics = fresh.lyrics; else delete data.lyrics;
   delete data.results;
-  delete data.tokensList;
+  if (fresh.tokensList) data.tokensList = fresh.tokensList; else delete data.tokensList;
   delete data.unitsList;
   // 行ごとの元歌詞は前の曲の phrases に対する対応づけなので、一緒に捨てる
   delete data.originalLines;
