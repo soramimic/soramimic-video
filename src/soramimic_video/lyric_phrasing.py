@@ -63,11 +63,16 @@ def _surface_boundaries(text: str, kana: str) -> list[tuple[int, int]]:
         surface = part["surface_form"]
         if not surface:
             return []
+        if surface.isspace():
+            continue
         while cursor < len(text) and text[cursor].isspace():
             cursor += 1
         start = cursor
-        # MeCab removes whitespace even inside one bunsetsu (e.g. 輝いて いる).
+        # MeCab may omit spaces or retain them (notably full-width spaces).
+        # Match visible characters while retaining the original input offsets.
         for char in surface:
+            if char.isspace():
+                continue
             while cursor < len(text) and text[cursor].isspace():
                 cursor += 1
             if cursor == len(text) or text[cursor] != char:
@@ -225,17 +230,24 @@ def _choose_boundaries(
 
 
 def prepare_lyric_phrases(
-    project: Project, *, enabled: bool,
+    project: Project, *, enabled: bool | None = None,
     strategy: Literal["hybrid", "whisper", "rest"] = "hybrid",
 ) -> None:
     """Rebuild conversion lines while preserving canonical lyrics and note identity.
 
+    The default enables phrasing only for supplied-lyrics audio projects.
     Source lines are saved so converting again, including with the option off,
     starts from the authored grouping. Recognition/rest-only modes support offline
     comparison; the public boolean option uses the combined policy.
     """
     if strategy not in {"hybrid", "whisper", "rest"}:
         raise ValueError(f"未対応の歌詞分割方式: {strategy}")
+    layers = project.lyric_layers
+    overlay = next((e["detail"] for e in (layers or {}).get("evidence", [])
+                    if e.get("kind") == "lyric-surface"
+                    and e.get("detail", {}).get("mode") == "supplied-lyrics-first"), None)
+    if enabled is None:
+        enabled = overlay is not None
     source_lines = ([Line(**row) for row in project.lyric_phrasing["source_lines"]]
                     if project.lyric_phrasing else copy.deepcopy(project.lines))
     if not enabled:
@@ -246,10 +258,6 @@ def prepare_lyric_phrases(
                     project.notes[nid].line = line.id
             project.lyric_phrasing = None
         return
-    layers = project.lyric_layers
-    overlay = next((e["detail"] for e in (layers or {}).get("evidence", [])
-                    if e.get("kind") == "lyric-surface"
-                    and e.get("detail", {}).get("mode") == "supplied-lyrics-first"), None)
     if layers is None or overlay is None:
         raise ValueError("歌詞の自動分割には入力歌詞付きの音源解析結果が必要です")
     if len(source_lines) != len(layers["canonical"]):

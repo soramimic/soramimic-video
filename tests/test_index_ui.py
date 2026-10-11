@@ -242,9 +242,9 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
-          "lyrics & video by Soramimic / オトノケ - Creepy Nuts");
+          "lyrics & video by Soramimic / Original: オトノケ - Creepy Nuts");
         assert.equal($("song-preview-credits-original").textContent,
-          "オトノケ - Creepy Nuts");
+          "Original Song　オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
 
@@ -273,7 +273,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         $("song-credit").value = "持ち込み曲の表記";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
-          "サンプル曲 — 登録済み作者");
+          "Original Song　サンプル曲 — 登録済み作者");
         assert.equal($("song-preview-footer").textContent,
           "lyrics & video by Soramimic / Original: サンプル曲 — 登録済み作者");
         midiSampleId = "";

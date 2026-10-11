@@ -896,13 +896,6 @@
         <input type="file" id="lyrics-file" accept=".txt,.md,text/plain,text/markdown">
         <p class="hint" id="lyrics-file-name" role="status" hidden></p>
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
-        <div id="adjust-lyrics-panel" hidden>
-          <label class="lyrics-recognition-toggle" for="adjust-lyrics">
-            <input type="checkbox" id="adjust-lyrics" aria-describedby="adjust-lyrics-hint">
-            音源に合わせて歌詞を調整
-          </label>
-          <p class="hint" id="adjust-lyrics-hint">オフでは入力歌詞を保持します。オンでは不足する行を追加し、音符・声・音声認識の根拠がすべてないと確認できた行だけを除外します。判定できない行は残します。</p>
-        </div>
       </div>
     </div>
     <div class="upload-use-notice" id="upload-use-notice" hidden>
@@ -1084,6 +1077,14 @@
   <summary aria-disabled="true">⚙️ 詳細設定
     <span class="advanced-lock-hint" id="advanced-lock-hint">曲と単語リストを選ぶと開けます</span>
   </summary>
+
+  <div class="field" id="adjust-lyrics-panel" hidden>
+    <label for="adjust-lyrics">
+      <input type="checkbox" id="adjust-lyrics" aria-describedby="adjust-lyrics-hint">
+      音源に合わせて歌詞を調整
+    </label>
+    <p class="hint" id="adjust-lyrics-hint" data-info>オフでは入力歌詞を保持します。オンでは不足する行を追加し、音符・声・音声認識の根拠がすべてないと確認できた行だけを除外します。判定できない行は残します。</p>
+  </div>
 
   <!-- 選択中の単語リストに facets があるときだけ表示する。チェック状態は #where
        の正本と同期し、サムネイル・生成・替え歌エディタへ同じ条件を渡す。 -->
@@ -3330,7 +3331,7 @@ function updateSongTextPreviews() {
   const baseCredit = currentWordlistName().toLowerCase() === "vtuber"
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
-  let footer = [baseCredit, credit].filter(Boolean).join(" / ");
+  let footer = [baseCredit, credit ? `Original: ${credit}` : ""].filter(Boolean).join(" / ");
   let finalCredit = credit;
   if (midiSampleId) {
     const preset = sampleCredits[midiSampleId] || {};
@@ -3354,7 +3355,7 @@ function updateSongTextPreviews() {
   $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
   $("song-preview-thumb-credit").textContent = footer;
   $("song-preview-footer").textContent = footer;
-  $("song-preview-credits-original").textContent = finalCredit;
+  $("song-preview-credits-original").textContent = finalCredit ? `Original Song　${finalCredit}` : "";
   $("song-preview-credits-synth").textContent = synthCredit ? `Vocal Synthesis　${synthCredit}` : "";
   $("song-preview-credits-synth").hidden = !synthCredit;
 
