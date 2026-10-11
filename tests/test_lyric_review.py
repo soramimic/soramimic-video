@@ -219,6 +219,55 @@ def test_review_draft_survives_restart_without_starting_generation(review_client
     assert calls["synthesize"][0].parody.lines[0].words[0].surface == "保存した歌詞"
 
 
+def test_partial_review_can_be_saved_but_must_cover_all_notes_before_resuming(
+    review_client, monkeypatch,
+):
+    from soramimic_video import convert
+
+    # Exercise the stricter note-identity path used by analyzed singing audio.
+    monkeypatch.setattr(
+        convert, "_layer_unit_note_indices",
+        lambda _project, _line, units: [[i] for i in range(len(units))],
+    )
+    client, _midi, calls, _editor = review_client
+    job_id = submit_review(review_client)
+    wait_status(client, job_id, "awaiting_review")
+    payload = client.get(f"/api/jobs/{job_id}/review").json()
+    units = payload["unitsList"][0]
+    assert len(units) == 3
+    kana = units[1]["pronunciation"]
+    fixed = {
+        "id": "custom-fixed", "surface": "固定語", "kana": kana,
+        "pronunciation": [kana], "period": [1, 2], "locked": True,
+    }
+    payload["results"] = [[fixed]]
+    response = client.put(f"/api/jobs/{job_id}/review", files={
+        "editor": ("editor.json", json.dumps(payload), "application/json"),
+    })
+    assert response.status_code == 200, response.text
+    saved = client.get(f"/api/jobs/{job_id}/review").json()
+    assert saved["results"] == [[fixed]]  # Validation placeholders are never saved.
+    assert saved["unitsList"] == payload["unitsList"]
+    response = resume(client, job_id, saved)
+    assert response.status_code == 422
+    assert "未対応" in response.json()["detail"]
+    assert calls["synthesize"] == []
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "awaiting_review"
+    saved["results"][0] = [
+        fixed if i == 1 else {
+            "surface": unit["pronunciation"], "kana": unit["pronunciation"],
+            "pronunciation": unit["pronunciation"], "period": [i, i + 1], "filler": True,
+        }
+        for i, unit in enumerate(units)
+    ]
+    assert resume(client, job_id, saved).status_code == 200
+    wait_status(client, job_id, "done")
+    words = calls["synthesize"][0].parody.lines[0].words
+    assert [word.filler for word in words] == [True, False, True]
+    assert words[1].surface == "固定語" and words[1].locked
+    assert calls["analyze"] == 1
+
+
 def test_review_draft_checks_owner_source_and_job_state(review_client, monkeypatch):
     client, _midi, calls, _editor = review_client
     job_id = submit_review(review_client)
