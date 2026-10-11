@@ -120,6 +120,7 @@ def test_job_flow_accepts_wav_with_auto_lyrics_by_default(client):
     assert body["status"] == "done"
     assert body["params"]["input_kind"] == "audio"
     assert body["params"]["auto_lyrics"] is True
+    assert body["params"]["auto_phrase_lyrics"] is False
     assert body["song_label"] == "アップロードした曲"
     job = client.app.state.manager.jobs[job_id]
     assert (job.dir / "input.wav").read_bytes() == wav
@@ -234,7 +235,7 @@ def test_rejects_invalid_audio_submission_id(client):
 
 
 @pytest.mark.parametrize("adjust", [False, True])
-@pytest.mark.parametrize("auto_phrase", [False, True])
+@pytest.mark.parametrize("auto_phrase", [None, False, True])
 def test_manual_correct_lyrics_mode_is_persisted(client, adjust, auto_phrase):
     wav = fake_wav()
     res = client.post(
@@ -245,7 +246,8 @@ def test_manual_correct_lyrics_mode_is_persisted(client, adjust, auto_phrase):
             "auto_lyrics": "false",
             "lyrics": "正しい歌詞",
             "adjust_lyrics": str(adjust).lower(),
-            "auto_phrase_lyrics": str(auto_phrase).lower(),
+            **({"auto_phrase_lyrics": str(auto_phrase).lower()}
+               if auto_phrase is not None else {}),
         },
     )
     assert res.status_code == 200, res.text
@@ -253,7 +255,7 @@ def test_manual_correct_lyrics_mode_is_persisted(client, adjust, auto_phrase):
     job = client.app.state.manager.jobs[body["id"]]
     assert body["params"]["auto_lyrics"] is False
     assert body["params"]["adjust_lyrics"] is adjust
-    assert body["params"]["auto_phrase_lyrics"] is auto_phrase
+    assert body["params"]["auto_phrase_lyrics"] is (auto_phrase is not False)
     assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正しい歌詞"
 
 
@@ -363,6 +365,7 @@ def test_job_flow_accepts_bundled_wav_preset(client, tmp_path, monkeypatch):
     body = wait_done(client, res.json()["id"])
     assert body["params"]["input_kind"] == "audio"
     assert body["params"]["sample_id"] == "demo_audio"
+    assert body["params"]["auto_phrase_lyrics"] is True
     assert body["params"]["original_credit"] == "PD song"
     assert body["params"]["credit_notice"] == "Synthetic voice (CC BY 3.0)"
     job = client.app.state.manager.jobs[body["id"]]
@@ -591,7 +594,7 @@ def test_manual_wav_lyrics_are_sent_directly_to_forced_alignment(tmp_path, monke
         api_mod.run_pipeline(job, {})
 
 
-@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("enabled", [None, False, True])
 def test_audio_pipeline_forwards_lyric_phrasing_to_conversion(tmp_path, monkeypatch, enabled):
     from soramimic_video import convert, score_audio
     from soramimic_video.project import Project, SongInfo
@@ -611,7 +614,7 @@ def test_audio_pipeline_forwards_lyric_phrasing_to_conversion(tmp_path, monkeypa
     (tmp_path / "lyrics.txt").write_text("入力した歌詞", encoding="utf-8")
     job = api_mod.Job(id="phrase", dir=tmp_path, params={
         "input_kind": "audio", "auto_lyrics": False, "wordlist": "stations",
-        "auto_phrase_lyrics": enabled,
+        **({"auto_phrase_lyrics": enabled} if enabled is not None else {}),
     })
     with pytest.raises(ReachedConversion):
         api_mod.run_pipeline(job, {})
