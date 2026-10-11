@@ -2528,12 +2528,12 @@ def test_explicit_hold_next_keeps_word_card_across_long_rest(tmp_path: Path):
 
 
 @pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts", "曲 - 作者\n© 指定表記", ""])
-def test_custom_song_credit_is_verbatim_in_footer_and_final_page(tmp_path, credit):
+def test_custom_song_credit_keeps_original_label_and_verbatim_text(tmp_path, credit):
     from soramimic_video.layout import APP_CREDIT, _element_texts, load_layout
     from soramimic_video.video import app_credit_text, section_frame_data
 
     footer = app_credit_text(original_song="別の曲名", song_credit=credit)
-    assert footer == (f"{APP_CREDIT} / {credit}" if credit else APP_CREDIT)
+    assert footer == (f"{APP_CREDIT} / Original: {credit}" if credit else APP_CREDIT)
     data = section_frame_data(
         _endroll_project(tmp_path), section="credits", original_song="別の曲名",
         original_credit="旧著作者", credit_notice="旧指定表記", song_credit=credit,
@@ -2578,7 +2578,7 @@ def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch
         song_credit="オトノケ - Creepy Nuts", thumbnail_wordlist_label="好きな駅",
     )
     assert seen == {
-        "footer": f"{APP_CREDIT} / オトノケ - Creepy Nuts",
-        "thumbnail_footer": f"{APP_CREDIT} / オトノケ - Creepy Nuts",
+        "footer": f"{APP_CREDIT} / Original: オトノケ - Creepy Nuts",
+        "thumbnail_footer": f"{APP_CREDIT} / Original: オトノケ - Creepy Nuts",
         "label": "好きな駅", "final_credit": "オトノケ - Creepy Nuts",
     }
