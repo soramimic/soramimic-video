@@ -21,11 +21,12 @@ def test_audio_lyric_adjustment_is_opt_in():
     assert parser.parse_args(argv + ["--adjust-lyrics"]).adjust_lyrics is True
 
 
-def test_conversion_lyric_phrasing_is_opt_in():
+def test_conversion_lyric_phrasing_defaults_to_project_support():
     parser = build_parser()
     argv = ["convert", "--project", "work/song", "--wordlist", "stations"]
-    assert parser.parse_args(argv).auto_phrase_lyrics is False
+    assert parser.parse_args(argv).auto_phrase_lyrics is None
     assert parser.parse_args(argv + ["--auto-phrase-lyrics"]).auto_phrase_lyrics is True
+    assert parser.parse_args(argv + ["--no-auto-phrase-lyrics"]).auto_phrase_lyrics is False
 
 
 def test_edit_timing_accepts_full_audio_overlay_options():

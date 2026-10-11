@@ -172,7 +172,9 @@ def test_surface_mapping_preserves_spaces_and_avoids_ambiguous_custom_readings()
     assert _surface_boundaries("｜朝《あさ》の光が", "アサノヒカリガ") == []
 
 
-def test_convert_option_reaches_engine_and_disable_restores_authored_input(monkeypatch, tmp_path):
+def test_convert_defaults_reach_engine_and_captions_and_disable_restores_input(
+    monkeypatch, tmp_path,
+):
     from soramimic_video import convert
 
     project = _project(whisper_at=(14, 28))
@@ -187,22 +189,31 @@ def test_convert_option_reaches_engine_and_disable_restores_authored_input(monke
 
     monkeypatch.setattr(convert, "run_convert", run)
     original_notes = [asdict(note) for note in project.notes]
-    convert_project(project, str(wordlist), auto_phrase_lyrics=True)
+    convert_project(project, str(wordlist))
     assert len(observed[-1]) == 3
     assert [line.line_id for line in project.parody.lines] == [0, 1, 2]
     ass = build_ass(project, 1280, 720, "Font")
     captions = [line.split(",,")[-1].split("}")[-1] for line in ass.splitlines()
                 if line.startswith("Dialogue:") and ",Original," in line]
     assert captions == [TEXT[:10], TEXT[10:20], TEXT[20:]]
+    # Repeated conversion keeps the default phrases and their source mapping.
+    first_phrases = observed[-1]
     convert_project(project, str(wordlist))
+    assert observed[-1] == first_phrases
+    convert_project(project, str(wordlist), auto_phrase_lyrics=False)
     assert observed[-1] == [KANA]
     assert [asdict(note) for note in project.notes] == original_notes
 
 
-def test_automatic_or_midi_projects_are_untouched_when_off_and_rejected_when_on():
+@pytest.mark.parametrize("has_layers", [False, True])
+def test_automatic_or_midi_projects_are_untouched_by_default(has_layers):
     project = _project()
     project.lyric_layers["evidence"] = []
+    if not has_layers:
+        project.lyric_layers = None
     original = copy.deepcopy(project)
+    prepare_lyric_phrases(project)
+    assert project == original
     prepare_lyric_phrases(project, enabled=False)
     assert project == original
     with pytest.raises(ValueError, match="入力歌詞付き"):

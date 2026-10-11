@@ -574,8 +574,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True)
     p.add_argument("--wordlist", required=True, help="単語リスト名(例: stations)またはCSVパス")
     p.add_argument("--where", help="単語リストの絞り込み(例: 'status=current')")
-    p.add_argument("--auto-phrase-lyrics", action="store_true",
-                   help="入力歌詞付き音源の長い行を、認識行・文節・休符から自動分割する")
+    p.add_argument("--auto-phrase-lyrics", action=argparse.BooleanOptionalAction,
+                   help="入力歌詞付き音源の長い行を自動分割する（対象の音源では既定で有効）")
     p.add_argument(
         "--param",
         action="append",
