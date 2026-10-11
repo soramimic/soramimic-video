@@ -3357,7 +3357,7 @@ function updateSongTextPreviews() {
   const baseCredit = currentWordlistName().toLowerCase() === "vtuber"
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
-  let footer = [baseCredit, credit].filter(Boolean).join(" / ");
+  let footer = [baseCredit, credit ? `Original: ${credit}` : ""].filter(Boolean).join(" / ");
   let finalCredit = credit;
   if (midiSampleId) {
     const preset = sampleCredits[midiSampleId] || {};
@@ -3370,7 +3370,7 @@ function updateSongTextPreviews() {
   $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
   $("song-preview-thumb-credit").textContent = footer;
   $("song-preview-footer").textContent = footer;
-  $("song-preview-credits-original").textContent = finalCredit;
+  $("song-preview-credits-original").textContent = finalCredit ? `Original Song　${finalCredit}` : "";
   let synthCredit = "";
   if (fixedSynthesizer === "hybrid") {
     synthCredit = "VOICEVOX・PrettyPitch：波音リツ（カノン）";

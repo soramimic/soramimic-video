@@ -1010,7 +1010,7 @@ def app_credit_text(
 ) -> str:
     """フレームに焼き込むクレジット文言。
 
-    song_credit が指定されていれば入力文をそのまま付ける。
+    song_credit が指定されていれば Original: に続けて入力文をそのまま付ける。
     既定は「lyrics & video by Soramimic」。元曲・権利者の表記があるときは
     後ろに足す。歌声合成側の表記は最後のクレジットページだけに載せる。
     常時表示には元曲名と必須表記だけを簡潔に載せ、作詞・作曲・歌唱者などの
@@ -1021,7 +1021,7 @@ def app_credit_text(
     display_credit = (original_display_credit or "").strip()
     parts = [app_credit_for_wordlist(wordlist)]
     if song_credit is not None:
-        return " / ".join([*parts, song_credit] if song_credit else parts)
+        return " / ".join([*parts, f"Original: {song_credit}"] if song_credit else parts)
     original = " — ".join(part for part in (song, display_credit or notice) if part)
     if original:
         parts.append(f"Original: {original}" if song else original)

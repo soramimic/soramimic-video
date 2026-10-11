@@ -387,9 +387,9 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
-          "lyrics & video by Soramimic / オトノケ - Creepy Nuts");
+          "lyrics & video by Soramimic / Original: オトノケ - Creepy Nuts");
         assert.equal($("song-preview-credits-original").textContent,
-          "オトノケ - Creepy Nuts");
+          "Original Song　オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
 
