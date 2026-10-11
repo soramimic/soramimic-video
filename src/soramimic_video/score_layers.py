@@ -1,8 +1,14 @@
-"""Prepare Score layers for synthesis and summarize missing melody evidence."""
+"""Prepare Score layers for synthesis and summarize unresolved singing units."""
+
+
+def lyric_order_conflict_unit_ids(layers: dict) -> set[str]:
+    prefix = "spoken_fallback_order_conflict:"
+    return {item[len(prefix):] for item in layers.get("diagnostics", [])
+            if isinstance(item, str) and item.startswith(prefix)}
 
 
 def omit_unresolved_synthesis_units(layers: dict) -> int:
-    """Turn pitchless Stage 3 units into explicit, provenance-backed omissions."""
+    """Turn unresolved Stage 3 units into explicit, provenance-backed omissions."""
     unresolved = list(dict.fromkeys(layers.get("unresolved_unit_ids", [])))
     if not unresolved:
         return 0
@@ -17,6 +23,7 @@ def omit_unresolved_synthesis_units(layers: dict) -> int:
     occupied = {item["id"] for item in evidence}
     omissions = list(layers.get("omissions", []))
     layers["omissions"] = omissions
+    order_conflicts = lyric_order_conflict_unit_ids(layers)
     for unit_id in unresolved:
         if unit_id in existing:
             continue
@@ -32,11 +39,14 @@ def omit_unresolved_synthesis_units(layers: dict) -> int:
             "source": "stage3",
             "kind": "synthesis-omission",
             "confidence": 1.0,
-            "detail": {"reason": "pitch-unresolved"},
+            "detail": {"reason": "lyric-order-conflict" if unit_id in order_conflicts
+                       else "pitch-unresolved"},
         })
         omissions.append({
             "singing_unit_id": unit_id,
-            "reason": "Stage 3で音高を確定できないため合成から省略",
+            "reason": ("歌詞の順序と発音時刻が矛盾するため合成から省略"
+                       if unit_id in order_conflicts
+                       else "Stage 3で音高を確定できないため合成から省略"),
             "evidence_ids": [evidence_id],
         })
     layers["unresolved_unit_ids"] = []
@@ -73,10 +83,15 @@ def generation_quality_assessment(layers: dict) -> dict[str, object]:
     affected_ratio = affected / total if total else 0.0
     # One isolated gap should not condemn a whole song. Warn when melody evidence
     # is absent for multiple units and a material share of the performance.
-    warning = affected >= 2 and affected_ratio >= 0.2
+    # A lyric-order conflict always needs review, even for one omitted unit.
+    order_conflicts = lyric_order_conflict_unit_ids(layers) & {
+        item.get("singing_unit_id") for item in layers.get("omissions", [])
+    }
+    warning = bool(order_conflicts) or (affected >= 2 and affected_ratio >= 0.2)
     return {
         "status": "warning" if warning else "ok",
-        "reason": "insufficient-melody-coverage" if warning else None,
+        "reason": ("lyric-order-conflict" if order_conflicts else
+                   "insufficient-melody-coverage" if warning else None),
         "affected_singing_units": affected,
         "total_singing_units": total,
         "affected_ratio": round(affected_ratio, 4),
