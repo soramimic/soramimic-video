@@ -1762,11 +1762,15 @@ async function loadConfig() {
   // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
   await initBuilder();
   updateSongTextPreviews();
-  const jobs = await loadHistory();
-  // 実行中・順番待ちのジョブがあれば進捗表示を再開する(リロード対策)
+  restoreJobProgress(await loadHistory());
+}
+
+function restoreJobProgress(jobs) {
+  // Restore pending work without reopening lyrics that were already awaiting review.
   const active = (jobs || []).find((j) => ["running", "queued", "awaiting_review"].includes(j.status));
   if (active && !resumed) {
     resumed = true;
+    if (active.status === "awaiting_review") reviewOpenedJob = active.id;
     setBusy(true);
     showProgress();
     $("status-line").textContent = "実行中のジョブに再接続しました";
