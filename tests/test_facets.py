@@ -48,10 +48,17 @@ DOM_SHIM = """
 class El {
 	constructor(tag) {
 		this.tag = tag; this.children = []; this.className = ""; this.textContent = "";
-		this.attributes = {};
+		this.attributes = {}; this.listeners = new Map();
 	}
 	setAttribute(name, value) { this.attributes[name] = String(value); }
-	addEventListener() {}
+	addEventListener(type, listener) {
+		if (!this.listeners.has(type)) this.listeners.set(type, []);
+		this.listeners.get(type).push(listener);
+	}
+	dispatchEvent(event) {
+		for (const listener of this.listeners.get(event.type) || []) listener(event);
+	}
+	replaceChildren(...children) { this.children = children; }
 	set innerHTML(v) {
 		if (v !== "") throw new Error("innerHTMLへの代入はクリアだけを想定: " + v);
 		this.children = [];
@@ -243,6 +250,58 @@ def test_football_defaults_to_jleague_scope_only():
     assert "(scope=jleague)" in where
     assert "scope=world" not in where
     assert "scope=overseas_japanese" not in where
+
+
+def test_scientist_nobel_filter_selects_laureates_or_others(tmp_path):
+    """受賞者とその他を個別選択でき、「すべて」で初期状態へ戻せる。"""
+    entry = next(e for e in _conf_entries() if e["value"] == "SCIENTIST")
+    where = default_where(entry)
+    script = (
+        DOM_SHIM
+        + 'const assert = (await import("node:assert/strict")).default;\n'
+        + f'const m = await import("file://{CONVERT_CONTROLS}");\n'
+        + f"const entry = {json.dumps(entry, ensure_ascii=False)};\n"
+        + f"const initialWhere = {json.dumps(where)};\n"
+        + """
+const container = document.createElement("div");
+m.renderFacets(container, entry);
+const group = container.querySelectorAll(".facet-group")
+  .find((group) => group.querySelectorAll("input.facet-value")
+    .some((cb) => cb.__where === "(nobel=yes)"));
+const values = group.querySelectorAll("input.facet-value");
+const selectAll = group.querySelector("input.facet-select-all-input");
+const change = (cb, checked) => { cb.checked = checked; cb.dispatchEvent(new Event("change")); };
+assert.deepEqual(values.map((cb) => cb.value), ["yes", "other"]);
+assert(values.every((cb) => cb.checked));
+assert.equal(selectAll.checked, true);
+assert.equal(m.compileWhere(container, entry), initialWhere);
+const selections = {};
+for (const value of ["yes", "other"]) {
+  change(selectAll, false);
+  change(values.find((cb) => cb.value === value), true);
+  selections[value] = m.compileWhere(container, entry);
+  assert.equal(selectAll.checked, false);
+  assert.equal(selectAll.indeterminate, true);
+  m.restoreFacets(container, selections[value]);
+  assert.equal(m.compileWhere(container, entry), selections[value]);
+  change(selectAll, true);
+  assert.equal(m.compileWhere(container, entry), initialWhere);
+}
+console.log(JSON.stringify(selections));
+"""
+    )
+    selections = _run_node(script, tmp_path)
+    csv_path = WORDLISTS / "scientist.csv"
+    header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    nobel_index = header.index("nobel")
+    defaults = _select(csv_path, where)
+    assert {row[nobel_index] for row in defaults} >= {"yes", "no"}
+    options = {"yes": {"yes"}, "other": {"no", "NA"}}
+    for value, selected_where in selections.items():
+        assert _select(csv_path, selected_where) == [
+            row for row in defaults if row[nobel_index] in options[value]
+        ]
+        assert restored_where(entry, selected_where) == selected_where
 
 
 def _flat_default_where(entry: dict[str, Any]) -> str:
