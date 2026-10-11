@@ -139,6 +139,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         _function_body(script, head) + "\n}"
         for head in (
             "async function poll(", "async function openLyricReview(",
+            "function restoreJobProgress(",
             "async function confirmLyricReview(", "function closeEditor()",
             "function lyricReviewCoverage(",
             "async function saveLyricReview(",
@@ -162,6 +163,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "review", EDITOR_SEED_KEY = "seed";
         let currentJob = "job1", reviewJobId = null, reviewOpenedJob = null;
         let reviewOpening = false, reviewSubmitting = false, pollSeq = 1, pollLastAt = 0;
+        let resumed = false;
         let reviewSavedRaw = "", reviewSavePending = null;
         let pollFailures = 0, cancelPendingJob = null, openCount = 0, requests = [];
         const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], POLL_INTERVAL_MS = 2000;
@@ -169,6 +171,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         const headers = () => ({});
         const renderStages = () => {}, renderBuilderBar = () => {}, schedulePoll = () => {};
         const setJobStatus = () => {}, watchEditorSession = () => {};
+        const setBusy = () => {}, showProgress = () => {};
         let message = "", watched = null, rejectResume = true;
         const showBuilderMsg = (text) => { message = text; };
         const showEditorFrame = () => { openCount++; $("editor-frame-wrap").hidden = false; };
@@ -203,6 +206,14 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
           assert.equal(openCount, 1); // Closing does not auto-open or auto-resume.
           assert.equal(requests.filter((url) => url.endsWith("/resume")).length, 0);
           reviewJobId = null; reviewOpenedJob = null; // Reload with the same tab storage.
+          restoreJobProgress([{id: "job1", status: "awaiting_review"}]);
+          await poll("job1", pollSeq);
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 1);
+          assert.equal($("editor-frame-wrap").hidden, true);
+          assert.equal($("builder-review").hidden, false);
+          assert.deepEqual(editorSessionData().results, [["edited"]]);
+          await openLyricReview("job1"); // Explicitly resume the saved edits.
           await poll("job1", pollSeq);
           assert.equal(openCount, 2);
           assert.deepEqual(editorSessionData().results, [["edited"]]);
@@ -216,6 +227,12 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
           assert.equal(reviewJobId, null);
           assert.equal($("editor-frame-wrap").hidden, true);
           assert.equal($("confirm-lyric-review").disabled, false);
+          resumed = false;
+          currentJob = "job2";
+          restoreJobProgress([{id: "job2", status: "running"}]);
+          await poll("job2", pollSeq); // A newly completed conversion still opens review.
+          assert.equal(openCount, 3);
+          assert.equal(reviewJobId, "job2");
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
