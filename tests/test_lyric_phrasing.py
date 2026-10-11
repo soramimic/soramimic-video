@@ -141,6 +141,45 @@ def test_cannot_split_one_performed_unit_even_at_a_long_rest():
     assert sum(len(line.note_ids) for line in project.lines) == len(project.notes)
 
 
+@pytest.mark.parametrize("crossing", ["mora-order", "held-note", "source-order"])
+def test_distant_notes_cannot_cross_phrase_boundaries(crossing, tmp_path):
+    project = _project(whisper_at=(14, 28))
+    if crossing == "mora-order":
+        # Chronological notes can map back to an earlier canonical mora.
+        layers = project.lyric_layers
+        for collection in (layers["performed"], layers["synthesis_plan"]):
+            collection[4]["mora_ids"], collection[24]["mora_ids"] = (
+                collection[24]["mora_ids"], collection[4]["mora_ids"],
+            )
+        plan = layers["synthesis_plan"]
+        plan[4]["kana"], plan[24]["kana"] = plan[24]["kana"], plan[4]["kana"]
+        apply_lyric_layers(project, layers)
+    elif crossing == "held-note":
+        # The immediately adjacent notes do not reveal this earlier held note.
+        project.notes[4].end_sec = project.notes[24].end_sec
+    else:
+        # Preserve the authored note sequence even when it differs from time order.
+        ids = project.lines[0].note_ids
+        ids[4], ids[24] = ids[24], ids[4]
+    original = copy.deepcopy(project)
+
+    prepare_lyric_phrases(project, enabled=True, strategy="whisper")
+
+    assert len(project.lines) == 2
+    assert project.lines[0].canonical_mora_ids == [f"u0-m{i}" for i in range(28)]
+    assert [nid for line in project.lines for nid in line.note_ids] == original.lines[0].note_ids
+    assert "".join(line.original_text for line in project.lines) == TEXT
+    assert "".join(line.canonical_kana for line in project.lines) == KANA
+    left_end = project.line_time_range(project.lines[0])[1]
+    right_start = project.line_time_range(project.lines[1])[0]
+    assert left_end <= right_start
+    assert project.lyric_layers == original.lyric_layers
+    project.save(tmp_path)
+    project = Project.load(tmp_path)
+    prepare_lyric_phrases(project, enabled=False)
+    assert project == original
+
+
 def test_unvoiced_line_after_split_keeps_its_canonical_owner():
     project = _project(whisper_at=(14, 28), repeat=2)
     layers = project.lyric_layers

@@ -68,6 +68,68 @@ def test_score_audio_requires_positive_bpm_and_lyrics_for_adjustment(tmp_path):
         score_audio.analyze_audio(tmp_path / "audio.wav", tmp_path, bpm=0)
 
 
+def test_pinned_score_blocks_reversed_fallback_and_reports_the_preserved_lyric(
+    monkeypatch, tmp_path,
+):
+    import soramimic_score
+    from soramimic_score import (
+        Boundary,
+        Evidence,
+        Link,
+        LinkCost,
+        LyricSpan,
+        NoteCandidate,
+        ObservedSingingUnit,
+        ReadingCandidate,
+        build_known_lyrics_document,
+    )
+    from soramimic_score.document import from_linked_observations
+    from soramimic_score.spoken import add_spoken_fallback
+    from soramimic_score.vocal_activity import VocalActivity
+
+    observations = build_known_lyrics_document(
+        "カキ", (LyricSpan("カキ", (0, 2), (ReadingCandidate("カキ", "synthetic", 1),)),),
+        tuple(ObservedSingingUnit(
+            (kana,), Boundary(i * .3, .9, ("ctc",)), None,
+            Boundary(i * .3 + .1, .9, ("ctc",)), .9, ("ctc",),
+        ) for i, kana in enumerate("カキ")),
+        (Evidence("ctc", "synthetic", "token-alignment", .9),),
+    )
+    observations = replace(observations,
+        note_candidates=(NoteCandidate("n0", .8, 1., 67, .8, ("sheetsage2-vocal",)),),
+        links=(Link("l0", ("s0",), ("n0",), "match", 0, .8, LinkCost()),
+               Link("l1", ("s1",), (), "unit_only", 0, .8, LinkCost())))
+    document = add_spoken_fallback(
+        from_linked_observations(observations), {"u0": (0, 1.2)},
+        lambda windows: tuple(VocalActivity(-20, -3, 1, True) for _ in windows),
+    )
+    monkeypatch.setattr(soramimic_score, "analyze_audio", lambda *a, **kw: document)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.touch()
+    target = tmp_path / "project"
+
+    project = score_audio.analyze_audio(source, target, device="cpu")
+
+    assert [note.kana for note in project.notes] == ["カ"]
+    assert project.lines[0].canonical_kana == "カキ"
+    assert project.lines[0].original_text == "カキ"
+    saved = json.loads((target / "analyze_audio/score.json").read_text())
+    assert saved["score"]["unresolved_unit_ids"] == ["s1"]
+    assert saved["observations"]["singing_units"] == json.loads(observations.to_json())[
+        "singing_units"]
+    omission = project.lyric_layers["omissions"][0]
+    assert omission["singing_unit_id"] == "s1"
+    evidence = {item["id"]: item for item in project.lyric_layers["evidence"]}
+    assert evidence[omission["evidence_ids"][0]]["detail"]["reason"] == "lyric-order-conflict"
+    analysis = json.loads((target / "analyze_audio/analysis.json").read_text())
+    assert analysis["generation_quality"]["status"] == "warning"
+    assert analysis["generation_quality"]["reason"] == "lyric-order-conflict"
+    assert analysis["limitations"] == [
+        "歌詞の順序と発音時刻が矛盾する1歌唱単位を合成から省略しました。"]
+
+
 @pytest.mark.parametrize("recovered", ["Hello world", "雲の先へ", "空へ fly"])
 def test_pinned_score_recovers_lyrics_from_template_and_preserves_project_reading(
     monkeypatch, tmp_path, recovered,
