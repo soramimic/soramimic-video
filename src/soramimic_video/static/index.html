@@ -3370,7 +3370,7 @@ function updateSongTextPreviews() {
   $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
   $("song-preview-thumb-credit").textContent = footer;
   $("song-preview-footer").textContent = footer;
-  $("song-preview-credits-original").textContent = finalCredit;
+  $("song-preview-credits-original").textContent = finalCredit ? `Original Song　${finalCredit}` : "";
   let synthCredit = "";
   if (fixedSynthesizer === "hybrid") {
     synthCredit = "VOICEVOX・PrettyPitch：波音リツ（カノン）";
