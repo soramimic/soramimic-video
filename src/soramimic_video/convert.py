@@ -1526,7 +1526,7 @@ def convert_project(
     where: str | None = None,
     params: dict[str, str] | None = None,
     cache_db: bool = True,
-    auto_phrase_lyrics: bool = False,
+    auto_phrase_lyrics: bool | None = None,
 ) -> dict:
     """project.parody を埋める(破壊的)。変換エンジンの生の応答を返す。
 
