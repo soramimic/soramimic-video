@@ -152,6 +152,10 @@ class Project:
         data = json.loads((project_dir / PROJECT_FILENAME).read_text(encoding="utf-8"))
         if data.get("version") != SCHEMA_VERSION:
             raise ValueError(f"未対応のproject.jsonバージョン: {data.get('version')}")
+        if data.get("lyric_layers") is not None:
+            from .lyric_layers import validate_layer_readings
+
+            validate_layer_readings(data["lyric_layers"])
         song = SongInfo(**data["song"])
         notes = [Note(**n) for n in data["notes"]]
         lines = [Line(**ln) for ln in data["lines"]]

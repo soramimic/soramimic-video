@@ -321,7 +321,7 @@ async def read_lyrics_upload(upload: UploadFile) -> str:
     if len(raw) > MAX_LYRICS_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="歌詞ファイルが大きすぎます")
     try:
-        text = raw.decode("utf-8-sig")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(
             status_code=400, detail="歌詞ファイルはUTF-8で保存してください"

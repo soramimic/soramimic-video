@@ -25,7 +25,7 @@ def analyze_audio(
     progress_detail: Callable[[str], None] | None = None,
 ) -> Project:
     """Run the Score pipeline and import only its supported synthesis slots."""
-    from soramimic_score import ModelConfig, normalize_lyric_input
+    from soramimic_score import ModelConfig, parse_lyric_input
     from soramimic_score import analyze_audio as analyze_score
 
     from . import runproc
@@ -42,10 +42,15 @@ def analyze_audio(
     if bpm <= 0:
         raise ValueError("BPMは正の値が必要です")
     lyrics = None
+    parsed = None
+    input_receipt = None
     if lyrics_path is not None:
-        original_lyrics = lyrics_path.read_text(encoding="utf-8")
-        normalize_lyric_input(original_lyrics)
-        lyrics = [line.strip() for line in original_lyrics.splitlines() if line.strip()]
+        # Decode without universal-newline translation so the audit retains the
+        # exact supplied spelling, whitespace, blank lines, and line endings.
+        original_lyrics = lyrics_path.read_bytes().decode("utf-8")
+        parsed = parse_lyric_input(original_lyrics)
+        lyrics = parsed.lyric_lines
+        input_receipt = parsed.to_dict()
         if not lyrics:
             raise ValueError("入力歌詞が空です")
 
@@ -65,6 +70,12 @@ def analyze_audio(
     )
     out = project_dir / "analyze_audio"
     out.mkdir(parents=True, exist_ok=True)
+    input_path = out / "lyric_input.json"
+    if input_receipt is not None:
+        input_path.write_text(json.dumps(input_receipt, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+    else:
+        input_path.unlink(missing_ok=True)
     annotation_path = out / "lyric_annotations.json"
     annotation_path.unlink(missing_ok=True)
     accompaniment = out / "no_vocals.wav" if not skip_separation else None
@@ -83,7 +94,8 @@ def analyze_audio(
         progress_count += 1
 
     document = analyze_score(
-        audio_path, lyrics=lyrics, model_config=config, adjust_lyrics=adjust_lyrics,
+        audio_path, lyrics=parsed,
+        model_config=config, adjust_lyrics=adjust_lyrics,
         on_progress=on_progress, accompaniment_path=accompaniment,
     )
     runproc.raise_if_cancelled()

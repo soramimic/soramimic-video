@@ -63,6 +63,24 @@ def test_layer_import_roundtrip_keeps_canonical_and_split_timing(tmp_path):
     assert value.lyric_layers["canonical"][0]["text"] == "かきく"
 
 
+@pytest.mark.parametrize("section,bad", [("canonical", "カ★キク"), ("canonical", "カキ"),
+                                         ("synthesis_plan", "カ★"), ("synthesis_plan", "ｶ")])
+def test_reading_validation_cannot_be_bypassed_by_import_or_project_reload(tmp_path, section, bad):
+    value, data = project(), layers()
+    apply_lyric_layers(value, data)
+    before = copy.deepcopy(value)
+    data[section][0]["kana"] = bad
+    with pytest.raises(ValueError):
+        apply_lyric_layers(value, data)
+    assert value == before
+    path = value.save(tmp_path)
+    raw = json.loads(path.read_text())
+    raw["lyric_layers"][section][0]["kana"] = bad
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError):
+        Project.load(tmp_path)
+
+
 def test_omitted_performance_does_not_remove_canonical_subtitles_or_parody_input():
     data = layers()
     data["synthesis_plan"].pop(1)
