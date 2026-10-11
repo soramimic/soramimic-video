@@ -1,178 +1,62 @@
-"""Acceptance coverage for the live automatic-lyrics conversion lifecycle."""
+"""Exercise the current Score-to-video pipeline at external model boundaries."""
 
 from __future__ import annotations
 
+import json
+import wave
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote, ReadingSelection
+from soramimic_score import models as score_models
+
+from soramimic_video import api, mix, synthesize, video
+from soramimic_video.project import Project
+from soramimic_video.voicevox import build_score
 
 
 @pytest.mark.parametrize("supplied", [False, True])
-def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_reload(
-    monkeypatch,
-    tmp_path: Path,
-    supplied: bool,
+def test_score_result_reaches_weighted_conversion_without_reload(
+    monkeypatch, tmp_path: Path, supplied: bool,
 ):
-    from soramimic_video import (
-        analyze_audio as analyze_audio_module,
-    )
-    from soramimic_video import (
-        api,
-        audio_melody,
-        known_lyrics,
-        mix,
-        mora_align,
-        reading,
-        score_audio,
-        stage3,
-        synthesize,
-        video,
-    )
-    from soramimic_video.audio_melody import MelodyNote
-    from soramimic_video.mora_align import AlignedMora
-    from soramimic_video.project import Project
-    from soramimic_video.transcribe import TranscribedLine
+    expected_text = "柿" if supplied else "かき"
+    observed = []
 
-    # Keep the acceptance test deterministic at external model boundaries.  The
-    # application pipeline, analysis assembly, layer import, and conversion remain
-    # real, including the in-memory handoff that production uses before any reload.
-    monkeypatch.setattr(analyze_audio_module, "_require_audio_pipeline", lambda: None)
-    monkeypatch.setattr(
-        audio_melody,
-        "configured_capabilities",
-        lambda: {"sheetsage2": True},
-    )
-    monkeypatch.setattr(
-        analyze_audio_module,
-        "_run_audio_models",
-        lambda audio_path, *_args, **_kwargs: (
-            audio_path,
-            None,
-            [TranscribedLine(0.0, 0.5, "かき")],
-            [MelodyNote(0.0, 0.25, 60), MelodyNote(0.25, 0.5, 62)],
+    def select_reading(_path, lines):
+        assert [line.text for line in lines] == [expected_text]
+        return (ReadingSelection("カキ", "test", 1),)
+
+    adapters = AudioAdapters(
+        lyric_recognizer=lambda _: (LyricLine("かき", 0, .5),),
+        lyric_reading=lambda _: "カキ",
+        reading_selector=select_reading,
+        mora_aligner=lambda *_: (
+            AlignedMora(0, 0, "カ", .05, .15, .8),
+            AlignedMora(0, 1, "キ", .30, .40, .8),
         ),
-    )
-    monkeypatch.setattr(reading, "automatic_reading_candidates", lambda _text: ["カキ"])
-    monkeypatch.setattr(reading, "reading_candidates",
-                        lambda _text, **_kwargs: ["カキ"])
-    monkeypatch.setattr(known_lyrics, "text_to_kana", lambda _text: "カキ")
-    monkeypatch.setattr(mora_align, "compute_emissions", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(
-        mora_align,
-        "align_moras_with_variants",
-        lambda *_args, **_kwargs: (
-            [
-                AlignedMora(0, 0, "カ", 0.05, 0.15, 0.8),
-                AlignedMora(0, 1, "キ", 0.30, 0.40, 0.8),
-            ],
-            [0],
-        ),
+        melody_transcriber=lambda _: (MelodyNote(0, .25, 60), MelodyNote(.25, .5, 62)),
     )
 
-    class Stage3Document:
-        def to_json(self) -> str:
-            return '{"note_candidates": [], "links": []}'
+    @contextmanager
+    def prepare_models(path, config, *, accompaniment_path):
+        observed.append(path)
+        assert config.separate_vocals is True
+        assert accompaniment_path == job_dir / "analyze_audio/no_vocals.wav"
+        accompaniment_path.write_bytes(path.read_bytes())
+        yield adapters
 
-    class Stage3Realization:
-        """Match Realization.to_dict's tuple-valued in-memory representation."""
-
-        unresolved_unit_ids: tuple[str, ...] = ()
-
-        def to_dict(self):
-            return {
-                "schema_version": 1,
-                "canonical_text": "かき",
-                "canonical": (
-                    {
-                        "utterance_id": "u0",
-                        "text": "かき",
-                        "kana": "カキ",
-                        "mora_ids": ("m0", "m1"),
-                    },
-                ),
-                "performed": (
-                    {
-                        "singing_unit_id": "s0",
-                        "mora_ids": ("m0",),
-                        "status": "observed",
-                        "start_sec": 0.0,
-                        "end_sec": 0.25,
-                        "confidence": 0.8,
-                        "link_ids": ("l0",),
-                        "evidence_ids": (),
-                    },
-                    {
-                        "singing_unit_id": "s1",
-                        "mora_ids": ("m1",),
-                        "status": "observed",
-                        "start_sec": 0.25,
-                        "end_sec": 0.5,
-                        "confidence": 0.8,
-                        "link_ids": ("l1",),
-                        "evidence_ids": (),
-                    },
-                ),
-                "synthesis_plan": (
-                    {
-                        "id": "slot-0",
-                        "utterance_id": "u0",
-                        "singing_unit_id": "s0",
-                        "mora_ids": ("m0",),
-                        "note_candidate_id": "n0",
-                        "link_ids": ("l0",),
-                        "kana": "カ",
-                        "start_sec": 0.0,
-                        "end_sec": 0.25,
-                        "midi_pitch": 60,
-                        "operation": "match",
-                        "timing_source": "note_interval",
-                        "confidence": 0.8,
-                        "evidence_ids": (),
-                        "pitch_sources": ("sheetsage2-vocal",),
-                        "continuation": False,
-                    },
-                    {
-                        "id": "slot-1",
-                        "utterance_id": "u0",
-                        "singing_unit_id": "s1",
-                        "mora_ids": ("m1",),
-                        "note_candidate_id": "n1",
-                        "link_ids": ("l1",),
-                        "kana": "キ",
-                        "start_sec": 0.25,
-                        "end_sec": 0.5,
-                        "midi_pitch": 62,
-                        "operation": "match",
-                        "timing_source": "note_interval",
-                        "confidence": 0.8,
-                        "evidence_ids": (),
-                        "pitch_sources": ("sheetsage2-vocal",),
-                        "continuation": False,
-                    },
-                ),
-                "omissions": (),
-                "unresolved_unit_ids": (),
-                "diagnostics": (),
-                "evidence": (),
-            }
-
-    monkeypatch.setattr(
-        stage3,
-        "build_stage3_layers",
-        lambda *_args, **_kwargs: (Stage3Document(), Stage3Realization()),
-    )
-
-    real_analyze_audio = analyze_audio_module.analyze_audio
-
-    def analyze_without_external_separation(*args, **kwargs):
-        kwargs["skip_separation"] = True
-        return real_analyze_audio(*args, **kwargs)
-
-    monkeypatch.setattr(analyze_audio_module, "analyze_audio", analyze_without_external_separation)
-    monkeypatch.setattr(score_audio, "analyze_audio", analyze_without_external_separation)
+    # Keep API orchestration, Score analysis, layer import and conversion real.
+    # Only model inference, synthesis and media rendering are replaced.
+    monkeypatch.setattr(score_models, "prepared_adapters", prepare_models)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
 
     def fake_synthesize(project, project_dir, **_kwargs):
         assert project.parody is not None
+        assert project.lines[0].original_text == expected_text
+        notes = build_score(project)["notes"]
+        assert [note["lyric"] for note in notes if note["key"] is not None] == ["カ", "キ"]
         output = project_dir / "synthesis" / "vocal.wav"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"vocal")
@@ -197,43 +81,39 @@ def test_automatic_lyrics_stage3_result_reaches_weighted_conversion_without_relo
 
     job_dir = tmp_path / "job"
     job_dir.mkdir()
-    (job_dir / "input.wav").write_bytes(b"deterministic-model-boundary")
+    with wave.open(str(job_dir / "input.wav"), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        audio.writeframes(b"\0\0" * 8000)
     if supplied:
-        (job_dir / "lyrics.txt").write_text("柿", encoding="utf-8")
+        (job_dir / "lyrics.txt").write_text(expected_text, encoding="utf-8")
     wordlist = tmp_path / "words.csv"
-    wordlist.write_text(
-        "id,original,surface,pronunciation\n0,柿,柿,カキ",
-        encoding="utf-8",
-    )
+    wordlist.write_text("id,original,surface,pronunciation\n0,柿,柿,カキ", encoding="utf-8")
     job = api.Job(
-        id="automatic-lyrics-e2e",
+        id="score-conversion-e2e",
         dir=job_dir,
         params={
-            "input_kind": "audio",
-            "input_seconds": 0.5,
-            "auto_lyrics": not supplied,
-            "wordlist": str(wordlist),
-            "convert_params": "NOTE_LENGTH_WEIGHT=0.25",
-            "model": "MERROW",
-            "synthesizer": "voicevox",
+            "input_kind": "audio", "input_seconds": .5, "auto_lyrics": not supplied,
+            "wordlist": str(wordlist), "convert_params": "NOTE_LENGTH_WEIGHT=0.25",
+            "model": "MERROW", "synthesizer": "voicevox",
         },
     )
 
-    output = api.run_pipeline(job, {"parallel_video": False})
+    with monkeypatch.context() as patch:
+        patch.setattr(Project, "load", lambda *_: pytest.fail("Unexpected project reload"))
+        output = api.run_pipeline(job, {"parallel_video": False})
 
     assert output.read_bytes() == b"video"
+    assert observed == [job_dir / "input.wav"]
     assert [stage["name"] for stage in job.stages] == [
-        "analyze",
-        "convert",
-        "synthesize",
-        "mix",
-        "video",
+        "analyze", "convert", "synthesize", "mix", "video",
     ]
     saved = Project.load(job_dir)
     assert saved.lyric_layers is not None
-    assert isinstance(saved.lyric_layers["canonical"], list)
+    assert saved.lyric_layers["canonical_text"] == expected_text
+    assert saved.lines[0].original_text == expected_text
     assert saved.parody is not None
     assert [word.surface for word in saved.parody.lines[0].words] == ["柿"]
-    if supplied:
-        assert saved.lines[0].original_text == "柿"
-        assert saved.lyric_layers["canonical_text"] == "かき"
+    assert [(note.kana, note.midi_note) for note in saved.notes] == [("カ", 60), ("キ", 62)]
+    analysis = json.loads((job_dir / "analyze_audio/analysis.json").read_text())
+    assert analysis["audio_pipeline"] == "soramimic-score"
+    assert analysis["official_lyrics"] is supplied
