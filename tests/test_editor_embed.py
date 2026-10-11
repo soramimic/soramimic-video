@@ -647,8 +647,8 @@ def test_job_pipeline_keeps_the_align_lines_originals(job_client, tmp_path, monk
 
 def test_job_rejects_editor_with_unknown_session(job_client, tmp_path):
     payload = {
-        "results": [],
-        "unitsList": [],
+        "results": [[]],
+        "unitsList": [[]],
         "wordlist": {"value": "custom:" + "b" * 16, "filepath": "session-wordlists/x.csv"},
     }
     res = job_client.post(
@@ -875,7 +875,7 @@ def test_job_accepts_editor_with_embedded_original_csv(job_client, tmp_path):
 
 def test_job_rejects_original_without_csv_text(job_client):
     res = _post_job(job_client, {
-        "results": [], "unitsList": [], "wordlist": _original_entry(csv_text=None),
+        "results": [[]], "unitsList": [[]], "wordlist": _original_entry(csv_text=None),
     })
     assert res.status_code == 422
     assert "csvText" in res.json()["detail"]
@@ -883,7 +883,7 @@ def test_job_rejects_original_without_csv_text(job_client):
 
 def test_job_rejects_broken_original_csv(job_client):
     res = _post_job(job_client, {
-        "results": [], "unitsList": [],
+        "results": [[]], "unitsList": [[]],
         "wordlist": _original_entry("静岡,シズオカ\n鈴鹿,スズカ"),
     })
     assert res.status_code == 400
@@ -893,7 +893,7 @@ def test_job_rejects_broken_original_csv(job_client):
 def test_job_rejects_oversized_original_csv(job_client, monkeypatch):
     monkeypatch.setenv("SORAMIMIC_MAX_WORDLIST_BYTES", "50")
     res = _post_job(job_client, {
-        "results": [], "unitsList": [], "wordlist": _original_entry(),
+        "results": [[]], "unitsList": [[]], "wordlist": _original_entry(),
     })
     assert res.status_code == 413
     assert "大きすぎます" in res.json()["detail"]

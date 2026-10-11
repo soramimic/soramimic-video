@@ -188,7 +188,8 @@ def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
 def test_public_jobs_reject_editor_wordlists_outside_launch_catalog(public_app):
     client = TestClient(public_app)
     editor = json.dumps(
-        {"wordlist": {"filepath": "/tmp/youtuber.csv"}}
+        {"results": [[]], "unitsList": [[]],
+         "wordlist": {"filepath": "/tmp/youtuber.csv"}}
     ).encode()
     response = client.post(
         "/api/jobs",
@@ -208,7 +209,8 @@ def test_public_editor_preview_requires_a_launch_wordlist(public_app):
         files={
             "editor": (
                 "editor.json",
-                json.dumps({"wordlist": {"filepath": "/tmp/youtuber.csv"}}).encode(),
+                json.dumps({"results": [[]], "unitsList": [[]],
+         "wordlist": {"filepath": "/tmp/youtuber.csv"}}).encode(),
                 "application/json",
             )
         },
@@ -958,7 +960,7 @@ def test_public_custom_text_does_not_enable_file_inputs(public_app, endpoint, fi
     assert response.status_code == 422, response.text
 
 
-def test_public_custom_text_does_not_enable_editor_upload(public_app):
+def test_public_custom_text_does_not_accept_invalid_lyrics_json(public_app):
     client = TestClient(public_app)
     response = client.post(
         "/api/jobs",

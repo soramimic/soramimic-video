@@ -32,6 +32,31 @@ RAW_FILENAME = "soramimic_raw.json"
 EDITOR_FILENAME = "editor.json"
 EXPORT_FORMAT = "soramimic-editor/1"
 
+MAX_EDITOR_BYTES = 4 * 1024 * 1024
+
+
+def validate_editor_upload(raw: bytes) -> dict[str, Any]:
+    """Validate the portable editor export before starting an expensive job."""
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("ソラミミックで書き出した歌詞JSONを選んでください") from exc
+    if not isinstance(data, dict):
+        raise ValueError("歌詞JSONはオブジェクトである必要があります")
+    results, units = data.get("results"), data.get("unitsList")
+    if (not isinstance(results, list) or not results or not isinstance(units, list)
+            or len(results) != len(units)
+            or not all(isinstance(line, list) for line in results + units)):
+        raise ValueError("変換済みの歌詞JSONを選んでください(results/unitsListが必要です)")
+    if not all(isinstance(word, dict) for line in results for word in line):
+        raise ValueError("歌詞JSONの単語データが不正です")
+    entry = data.get("wordlist")
+    if entry is not None and (not isinstance(entry, dict)
+            or not isinstance(entry.get("filepath", ""), str)):
+        raise ValueError("歌詞JSONの単語リストが不正です")
+    return data
+
+
 SETTING_JSON = REPO_ROOT / "external" / "soramimic" / "conf" / "setting.json"
 
 # ---- 自作リスト(アップロードされたCSV)の editor セッション ----
