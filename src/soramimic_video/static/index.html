@@ -459,7 +459,8 @@
   .editor-modal.review-mode #confirm-lyric-review { width: 100%; min-height: 48px; }
   .editor-modal.review-editing #lyric-review-actions { display: none; }
   .editor-modal.review-editing .editor-modal-head { display: none; }
-  #lyric-review-error:empty { display: none; }
+  #lyric-review-error:empty, #editor-file-error:empty { display: none; }
+  #editor-file-error { color: var(--danger); }
   #lyric-review-error { margin: 0; padding: .6rem 1rem; color: var(--danger); }
   #editor-frame {
     flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: var(--panel);
@@ -1099,9 +1100,14 @@
     <span class="advanced-lock-hint" id="advanced-lock-hint">曲と単語リストを選ぶと開けます</span>
   </summary>
 
-  <div class="field" id="review-lyrics-field" hidden>
-    <label><input type="checkbox" id="review-lyrics"> 替え歌歌詞を確認する</label>
-    <p class="hint" data-info>音楽解析と替え歌への変換が終わると編集画面が開きます。確認してから動画を生成できます。</p>
+  <div class="field" id="parody-io">
+    <label for="editor">替え歌歌詞ファイル</label>
+    <div class="row">
+      <input type="file" id="editor" class="row-grow" accept=".json,application/json" aria-describedby="editor-file-error">
+      <button type="button" id="clear-parody-file" class="btn-sm" hidden aria-label="歌詞ファイルを取り消す">✕</button>
+    </div>
+    <p class="hint" data-info>ソラミミックで書き出した歌詞JSONを読み込みます。同じ曲の音源またはMIDIを選んでください。</p>
+    <p class="hint" id="editor-file-error" role="alert"></p>
   </div>
 
   <div class="field" id="adjust-lyrics-panel" hidden>
@@ -1379,14 +1385,8 @@
     <button type="button" id="confirm-lyric-review" class="btn-primary">動画を生成 →</button>
   </div>
   <p class="hint" id="lyric-review-error" role="alert"></p>
-  <!-- 替え歌JSONの読み書き。エディタと同じ「替え歌そのもの」を扱う操作なので、
-       詳細設定ではなくエディタの中に置く。出番が少ないのでフッタで控えめに。
-       #editor は生成時の参照・自動取り込みの正本のままで、DOMの位置だけ移した。 -->
-  <div class="editor-modal-foot" id="parody-io">
-    <label for="editor" class="hint">替え歌JSON:</label>
-    <input type="file" id="editor" accept=".json" aria-label="外部で編集した替え歌JSONの読み込み">
+  <div class="editor-modal-foot" id="parody-export">
     <button type="button" id="download-editor" class="btn-sm" disabled>ダウンロード</button>
-    <p class="hint" data-info data-info-standalone data-info-label="替え歌JSONの読み書き">soramimicエディタなどで別途書き出したJSONを直接読み込みます(このエディタでの編集を使う場合は不要)。「ダウンロード」は今使われている替え歌JSONの書き出しです。</p>
   </div>
 </div>
 
@@ -1702,8 +1702,6 @@ async function loadConfig() {
   $("auth").hidden = !conf.auth_required;
   updateAdvancedSettingsAvailability();
   simpleMode = !!conf.simple_ui;
-  $("review-lyrics-field").hidden = simpleMode || !conf.editor;
-  $("review-lyrics").disabled = simpleMode || !conf.editor;
   if (simpleMode) closeCustomListMenu(false);
   try { await refreshCustomLists(); }
   catch (err) { showBuilderMsg(err.message); }
@@ -3267,6 +3265,10 @@ async function submitJob(previewSec, previewMode) {
     editorSrc.file = null;
     editorSrc.live = false;
   }
+  if (editorSrc.file) {
+    try { await readParodyFile(editorSrc.file); }
+    catch (err) { setBusy(false); showSubmitMsg(err.message); return; }
+  }
   // editor.jsonがあると単語リスト指定は無視されるため、食い違ったまま
   // 高コストな生成が走る前に最終確認を挟む(自動取り込みぶんは来歴が
   // 一致していることを確かめてあるので確認は要らない)
@@ -3306,8 +3308,6 @@ async function submitJob(previewSec, previewMode) {
   form.append("auto_octave", "true");
   form.append("transpose", "0");
   form.append("preview", String(previewSec));
-  form.append("review_lyrics", String(previewSec === 0
-    && !$("review-lyrics").disabled && $("review-lyrics").checked));
   form.append("preview_mode", previewMode || "");
   form.append("song_title", songTitleOf(audio || midi));
   form.append("song_credit", $("song-credit").value.trim());
@@ -7083,6 +7083,8 @@ function liveEditorEdit() {
 //   live: エディタの編集をそのまま使った(取り込み操作なし)
 //   dropped: 来歴違いの編集を捨てて自動変換に落とした(理由を表示する)
 function editorSourceForSubmit() {
+  const selected = $("editor").files[0] || null;
+  if (selected && editorImportedFile === selected) return { file: selected };
   const live = liveEditorEdit();
   if (live.state === "ready") {
     return {
@@ -7651,9 +7653,10 @@ function closeEditor() {
 }
 
 function showEditorFrame() {
+  editorImportedFile = null;
   if (!reviewJobId) sessionStorage.removeItem(REVIEW_JOB_KEY);
   $("lyric-review-actions").hidden = !reviewJobId;
-  $("parody-io").hidden = !!reviewJobId;
+  $("parody-export").hidden = !!reviewJobId;
   $("editor-frame-wrap").classList.toggle("review-mode", !!reviewJobId);
   $("editor-frame-wrap").classList.remove("review-editing");
   $("editor-modal-title").textContent = reviewJobId ? "歌詞を確認" : "✏️ 替え歌エディタ";
@@ -8098,16 +8101,13 @@ function renderParodyStatus() {
     s.textContent = "";
     return;
   }
-  // 編集を開き直す導線は「✏️ 替え歌を編集」ボタン1本に集約したので、ここには
-  // 出さない(押すと保存済みを見つけて「続きから再開」を出す)。
-  // 残すのは、そこからは戻せない「取り消して自動変換に戻す」だけ。
-  const clear = '<a href="#" id="clear-editor">取り消して自動変換に戻す</a>';
+  if ($("editor-file-error").textContent) { s.textContent = ""; return; }
   // 生成時の判定(editorSourceForSubmit)と同じ結論を表示する。取り込み済みでも
   // 来歴違いで捨てられるなら「使用します」とは出さない(表示が嘘をつかないように)
   const src = editorSourceForSubmit();
   if (!src.file && src.dropped) {
     s.innerHTML = "⚠ 編集済みの替え歌は、作成したときと入力が変わったため使われません — "
-      + `今の選択で自動変換して生成します(${clear})`;
+      + "今の選択で自動変換して生成します";
   } else if (parodyMismatch()) {
     // 事実は1つ「編集済みが優先される」。名前が同じで絞り込みだけ違うことも
     // あるので、そのときは同じ名前を2回並べない
@@ -8115,21 +8115,28 @@ function renderParodyStatus() {
     s.innerHTML = (editorWordlist.name === cur
       ? "⚠ 編集済みの替え歌を使うため、選択中の絞り込みは使われません"
       : `⚠ 編集済みの替え歌(「${escapeHtml(editorWordlist.name)}」から作成)を使うため、`
-        + `選択中の「${escapeHtml(cur)}」は使われません`)
-      + `(${clear})`;
+        + `選択中の「${escapeHtml(cur)}」は使われません`);
   } else {
     const head = parodyWasRestored
       ? "✅ 前回の編集済み替え歌を復元しました。このまま生成に使われます"
       : "✅ 編集済みの替え歌を使用します";
-    s.innerHTML = `${head}(${clear})`;
+    s.textContent = head;
   }
-  if ($("clear-editor")) {
-    $("clear-editor").addEventListener("click", (ev) => {
-      ev.preventDefault();
-      $("editor").value = "";
-      $("editor").dispatchEvent(new Event("change", { bubbles: true }));
-    });
+}
+
+let editorImportedFile = null;
+const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+async function readParodyFile(file) {
+  if (file.size > MAX_EDITOR_BYTES) throw new Error("歌詞JSONは4MB以下にしてください。");
+  let data;
+  try { data = JSON.parse((await file.text()).replace(/^\uFEFF/, "")); }
+  catch { throw new Error("ソラミミックで書き出した歌詞JSONを選んでください。"); }
+  if (!data || !Array.isArray(data.results) || !Array.isArray(data.unitsList)
+      || !data.results.length || data.results.length !== data.unitsList.length
+      || !data.results.every(Array.isArray) || !data.unitsList.every(Array.isArray)) {
+    throw new Error("変換済みの歌詞JSONを選んでください。");
   }
+  return data;
 }
 
 async function updateParodyStatus() {
@@ -8138,9 +8145,13 @@ async function updateParodyStatus() {
   parodyWasRestored = parodyRestored;  // await前に確定させる
   editorWordlist = null;
   editorFileSig = "";
+  editorImportedFile = f || null;
+  $("editor-file-error").textContent = "";
+  $("clear-parody-file").hidden = !f;
   if (f) {
     try {
-      const data = JSON.parse(await f.text());
+      const data = await readParodyFile(f);
+      if ($("editor").files[0] !== f) return;
       editorFileSig = editorContentSig(data);
       const w = data.wordlist;
       // 自作リストは2通り。video側で選んだもの(custom:<sid>・セッションのCSV)と、
@@ -8159,11 +8170,23 @@ async function updateParodyStatus() {
           customText: data.videoCustomListText || "",
         };
       }
-    } catch { /* 生成元が読めなければ不一致判定を諦める(警告なし) */ }
+    } catch (err) {
+      if ($("editor").files[0] !== f) return;
+      $("editor-file-error").textContent = err.message;
+      $("parody-status").textContent = "";
+      $("download-editor").disabled = true;
+      return;
+    }
   }
   renderParodyStatus();
 }
 $("editor").addEventListener("change", updateParodyStatus);
+$("clear-parody-file").addEventListener("click", () => {
+  sessionStorage.removeItem(EDITOR_KEY);
+  sessionStorage.removeItem(EDITOR_SEED_KEY);
+  $("editor").value = "";
+  $("editor").dispatchEvent(new Event("change", { bubbles: true }));
+});
 // 単語リスト・変換パラメータ側の変更での出し直しは、来歴の変化をまとめて拾う
 // changeリスナーが renderParodyStatus を呼ぶ
 
@@ -8227,7 +8250,6 @@ function saveForm() {
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
       autoOctave: $("auto-octave").checked,
-      reviewLyrics: $("review-lyrics").checked,
     }));
   } catch { /* QuotaExceededError等でUIを壊さない */ }
 }
@@ -8317,7 +8339,7 @@ $("layout-select").addEventListener("change", async () => {
 ["lyrics", "song-title", "wordlist", "where",
  "transpose", "layout-json",
  "song-credit", "thumbnail-wordlist-label",
- "synthesizer", "voicevox-style", "auto-octave", "review-lyrics"]
+ "synthesizer", "voicevox-style", "auto-octave"]
   .forEach((id) => $(id).addEventListener("change", saveForm));
 
 // 持ち込みMIDIはバイナリなのでdataURL化して保存する。WAVは大きくなりやすく、
@@ -8421,7 +8443,6 @@ async function doRestoreForm() {
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
     $("song-title").value = state.songTitle || "";
-    $("review-lyrics").checked = state.reviewLyrics === true;
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
       ? state.sampleLyricsBaseline : null;
