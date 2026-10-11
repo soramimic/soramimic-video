@@ -10,7 +10,11 @@ from pathlib import Path
 
 from .audio_project import DEFAULT_BPM
 from .project import Project, SongInfo
-from .score_layers import generation_quality_assessment, omit_unresolved_synthesis_units
+from .score_layers import (
+    generation_quality_assessment,
+    lyric_order_conflict_unit_ids,
+    omit_unresolved_synthesis_units,
+)
 
 ANALYZE_DIR = "analyze_audio"
 
@@ -109,6 +113,8 @@ def analyze_audio(
         raise ValueError(
             "歌唱の根拠を確認できる歌詞が残りませんでした。音源と入力歌詞を確認してください。"
         )
+    order_conflicts = (lyric_order_conflict_unit_ids(layers)
+                       & set(layers.get("unresolved_unit_ids", [])))
     omitted = omit_unresolved_synthesis_units(layers)
     tempo = round(60_000_000 / bpm)
     project = Project(SongInfo(
@@ -118,10 +124,17 @@ def analyze_audio(
     ))
     apply_lyric_layers(project, layers)
     quality = generation_quality_assessment(layers)
-    limitations = ([f"音高が未解決の{omitted}歌唱単位を合成から省略しました。"]
-                   if omitted else [])
+    pitch_unresolved = omitted - len(order_conflicts)
+    limitations = ([f"音高が未解決の{pitch_unresolved}歌唱単位を合成から省略しました。"]
+                   if pitch_unresolved else [])
     diagnostics = ([{"stage": "score", "status": "synthesis-omission",
                      "unit_count": omitted}] if omitted else [])
+    if order_conflicts:
+        limitations.append(
+            f"歌詞の順序と発音時刻が矛盾する{len(order_conflicts)}歌唱単位を合成から省略しました。"
+        )
+        diagnostics.append({"stage": "score", "status": "lyric-order-conflict",
+                            "unit_count": len(order_conflicts)})
     alignment_warnings = [item for item in layers.get("evidence", [])
                           if item.get("kind") == "lyric-alignment-warning"
                           and item.get("detail", {}).get("status") == "retained"]
