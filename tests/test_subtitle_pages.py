@@ -246,6 +246,36 @@ def test_joint_pages_do_not_cut_overlapping_original_tokens(monkeypatch):
     assert [p[0].text for p in pages] == [t.segment.text for t in tracks]
 
 
+@pytest.mark.parametrize("space", ["", " ", "\u3000", "\n", "\t", "\r\n"],
+                         ids=["none", "space", "fullwidth", "newline", "tab", "crlf"])
+@pytest.mark.parametrize("word_boundary", [5, 6], ids=["before-particle", "after-particle"])
+def test_joint_pages_keep_particle_with_preceding_word(monkeypatch, space, word_boundary):
+    text = f"赤い花を{space}眺める"
+    monkeypatch.setattr(subtitle_pages, "_default_reader", lambda _: [
+        ("赤い", "アカイ"), ("花", "ハナ"), ("を", "ヲ"), ("眺める", "ナガメル"),
+    ])
+    project = _project("アカイハナヲナガメル")
+    project.lines[0].original_text = text
+    words = [
+        ParodyWord("アンドロメダ", "アンドロメダ", "", "", "", list(range(word_boundary))),
+        ParodyWord("カシオペア", "カシオペア", "", "", "",
+                   list(range(word_boundary, len(project.notes)))),
+    ]
+    end = project.notes[-1].end_sec + .15
+    tracks = [
+        SubtitleTrack(SubtitleSegment(text, .85, end, [0]), "original", [], len, 1000),
+        SubtitleTrack(SubtitleSegment("  ".join(w.surface for w in words), .85, end, [0]),
+                      "parody", words, len, 7),
+    ]
+    before = asdict(project)
+    original, parody = paginate_subtitle_tracks(project, tracks, project.lines)
+    expected = [text] if word_boundary == 5 else ["赤い花を", "眺める"]
+    assert [page.text for page in original] == expected
+    assert [(p.start, p.end) for p in original] == [(p.start, p.end) for p in parody]
+    assert [word for page in parody for word in page.words] == words
+    assert asdict(project) == before
+
+
 @pytest.mark.parametrize("ruby", [False, True])
 @pytest.mark.parametrize("fallback_font", [False, True])
 def test_ass_original_and_parody_change_pages_together(monkeypatch, ruby, fallback_font):
