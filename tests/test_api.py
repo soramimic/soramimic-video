@@ -81,6 +81,8 @@ def wait_done(client: TestClient, job_id: str, **kw) -> dict:
     raise AssertionError("ジョブが終わりません")
 
 
+FAKE_EDITOR = b'{"format":"soramimic-editor/1","results":[[]],"unitsList":[[]]}'
+
 def submit(client: TestClient, **fields) -> str:
     files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
     if "editor" in fields:
@@ -91,7 +93,7 @@ def submit(client: TestClient, **fields) -> str:
 
 
 def test_job_flow_with_editor(client):
-    job_id = submit(client, editor=b'{"format": "soramimic-editor/1"}')
+    job_id = submit(client, editor=FAKE_EDITOR)
     body = wait_done(client, job_id)
     assert body["status"] == "done"
     assert body["params"]["parody_source"] == "editor"
@@ -635,12 +637,12 @@ def test_audio_pipeline_forwards_lyric_phrasing_to_conversion(tmp_path, monkeypa
 
 
 def test_noncommercial_fanwork_is_explicit_and_persisted(client):
-    ordinary = submit(client, editor=b'{"format": "soramimic-editor/1"}')
+    ordinary = submit(client, editor=FAKE_EDITOR)
     assert wait_done(client, ordinary)["params"]["allow_noncommercial_fanwork"] is False
 
     opted_in = submit(
         client,
-        editor=b'{"format": "soramimic-editor/1"}',
+        editor=FAKE_EDITOR,
         allow_noncommercial_fanwork="true",
     )
     assert wait_done(client, opted_in)["params"]["allow_noncommercial_fanwork"] is True
@@ -1394,8 +1396,8 @@ def test_cancel_running_and_queued(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_mod, "run_pipeline", slow_pipeline)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
-    running = submit(client, editor=b"{}")
-    queued = submit(client, editor=b"{}")
+    running = submit(client, editor=FAKE_EDITOR)
+    queued = submit(client, editor=FAKE_EDITOR)
     time.sleep(0.1)  # 1件目が実行中になるのを待つ
 
     # 順番待ちのジョブは即座にcanceledになり、実行されない
@@ -1424,7 +1426,7 @@ def test_failed_job_removes_uploaded_and_intermediate_files(tmp_path, monkeypatc
 
     monkeypatch.setattr(api_mod, "run_pipeline", failing_pipeline)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
-    job_id = submit(client, editor=b"{}")
+    job_id = submit(client, editor=FAKE_EDITOR)
     body = wait_done(client, job_id)
     assert body["status"] == "error"
     job_dir = client.app.state.manager.jobs[job_id].dir
@@ -1758,7 +1760,8 @@ def test_editor_job_records_wordlist(client):
         resolve_wordlist("stations")
     except FileNotFoundError:
         pytest.skip("external/soramimic-wordlists のsubmoduleが無い環境")
-    editor = b'{"wordlist": {"filepath": "wordlists/stations.csv"}}'
+    editor = json.dumps({**json.loads(FAKE_EDITOR),
+                         "wordlist": {"filepath": "wordlists/stations.csv"}}).encode()
     job_id = submit(client, editor=editor, wordlist="pokemon")
     body = wait_done(client, job_id)
     assert body["params"]["wordlist"] == "stations"
@@ -1794,7 +1797,7 @@ def test_video_not_ready(client, monkeypatch):
         return slow(job, config)
 
     monkeypatch.setattr(api_mod, "run_pipeline", slow_pipeline)
-    job_id = submit(client, editor=b"{}")
+    job_id = submit(client, editor=FAKE_EDITOR)
     res = client.get(f"/api/jobs/{job_id}/video")
     assert res.status_code == 409
     wait_done(client, job_id)
@@ -1822,7 +1825,7 @@ def test_api_key_auth(tmp_path, monkeypatch):
     )
     assert res.status_code == 422  # 認証は通り、入力バリデーションで弾かれる
 
-    files["editor"] = ("editor.json", b"{}", "application/json")
+    files["editor"] = ("editor.json", FAKE_EDITOR, "application/json")
     res = client.post("/api/jobs", files=files, headers=headers)
     assert res.status_code == 200
     job_id = res.json()["id"]
@@ -1842,7 +1845,7 @@ def test_restart_recovers_history(tmp_path, monkeypatch):
     monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
     jobs_dir = tmp_path / "jobs"
     client = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
-    job_id = submit(client, editor=b"{}")
+    job_id = submit(client, editor=FAKE_EDITOR)
     wait_done(client, job_id)
 
     # APIのstatusはメモリ上で先に"done"になり、status.jsonへの保存はその直後に
@@ -2764,16 +2767,13 @@ def test_index_html_keeps_the_conf_default_filters():
     assert 'if (!facets.length) return (e && e.where) || "";' in body
 
 
-def test_index_html_parody_json_io_lives_in_the_editor_modal():
-    """替え歌JSONの読み書きはエディタの全画面モーダルのフッタに置く。"""
+def test_index_html_parody_json_import_lives_in_advanced_settings():
     html = _index_html()
-    modal = html.split('<div class="editor-modal" id="editor-frame-wrap"')[1]
-    modal = modal.split("</div>\n\n<script>")[0]
-    assert 'id="parody-io"' in modal
-    assert 'id="editor" accept=".json"' in modal
-    assert 'id="download-editor"' in modal
-    # 生成時の #editor 参照・自動取り込みはそのまま(IDで引いているので位置は無関係)
-    assert 'const f = $("editor").files[0];' in html
+    advanced = html.split('<details class="card" id="advanced">')[1].split("</details>")[0]
+    assert 'id="parody-io"' in advanced
+    assert 'id="editor" class="row-grow" accept=".json,application/json"' in advanced
+    assert 'id="review-lyrics"' not in html
+    assert 'form.append("review_lyrics"' not in html
 
 
 def test_index_html_transpose_is_greyed_out_under_auto_octave():

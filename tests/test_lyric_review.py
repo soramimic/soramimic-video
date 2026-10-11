@@ -1,10 +1,11 @@
-"""Review pauses synthesis, preserves analysis, and resumes only the owning job."""
+"""Existing review jobs remain accessible; newly submitted jobs do not pause."""
 
 from __future__ import annotations
 
 import copy
 import json
 import time
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -73,13 +74,23 @@ def wait_status(client, job_id, status):
 
 def submit_review(fixture, *, review=True, **fields):
     client, midi, _calls, _editor = fixture
-    response = client.post(
-        "/api/jobs", files={"midi": ("song.mid", midi, "audio/midi")},
-        data={
-            "wordlist_text": "静岡,シズオカ\n鈴鹿,スズカ\n清水,シミズ",
-            "review_lyrics": str(review).lower(), **fields,
-        },
-    )
+    # Seed the legacy pipeline flag as an older saved job would have it.
+    # The current upload API no longer enables review from form data.
+    manager = client.app.state.manager
+    create = manager.create
+
+    def legacy_create(midi, editor, lyrics, params, **kwargs):
+        params["review_lyrics"] = review and float(fields.get("preview", 0)) <= 0
+        return create(midi, editor, lyrics, params, **kwargs)
+
+    with patch.object(manager, "create", legacy_create):
+        response = client.post(
+            "/api/jobs", files={"midi": ("song.mid", midi, "audio/midi")},
+            data={
+                "wordlist_text": "静岡,シズオカ\n鈴鹿,スズカ\n清水,シミズ",
+                **fields,
+            },
+        )
     assert response.status_code == 200, response.text
     return response.json()["id"]
 
@@ -333,7 +344,10 @@ def test_review_unavailable_without_editor_or_in_simple_ui(review_client, monkey
     assert resume(client, "missing", {}).status_code == 404
     monkeypatch.delenv(api.SIMPLE_UI_ENV)
     no_editor = TestClient(api.create_app(jobs_dir=editor / "jobs", editor_dist=editor / "missing"))
+    no_editor.app.state.manager.config["parallel_video"] = False
     response = no_editor.post("/api/jobs", files={"midi": ("song.mid", midi)}, data={
         "wordlist": "stations", "review_lyrics": "true",
     })
-    assert response.status_code == 422
+    assert response.status_code == 200
+    job = wait_status(no_editor, response.json()["id"], "done")
+    assert job["params"]["review_lyrics"] is False

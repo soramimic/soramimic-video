@@ -2936,6 +2936,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             "function songLyricsForRequest()",
             "function appendSongLyrics(form)",
             "async function submitJob(previewSec, previewMode)",
+            "async function readParodyFile(file)",
         )
     )
     node = textwrap.dedent(
@@ -2967,6 +2968,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         const ownAudioFile = () => null, ownSongKind = () => "sample";
         const samplePending = null, midiChecking = null, midiSampleId = "sample";
         const ensureSelectedSampleMidi = async () => true;
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
         let editorFile = null;
         const editorSourceForSubmit = () => ({ file: editorFile, live: false });
         const parodyMismatch = () => true, confirm = () => true;
@@ -3011,7 +3013,8 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
           // Uploaded edits can use a different list from the current selection.
           selected = "ordinary";
           simpleMode = false;
-          editorFile = new Blob(["{}"], { type: "application/json" });
+          editorFile = new Blob([JSON.stringify({results: [[]], unitsList: [[]]})],
+            { type: "application/json" });
           const before = requests.length;
           await submitJob(0, "");
           assert.equal(requests.length, before + 1);

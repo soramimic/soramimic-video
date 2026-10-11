@@ -3894,7 +3894,6 @@ def create_app(
         sample_id: str = Form(""),
         lyrics_file: UploadFile | None = File(None),
         editor: UploadFile | None = None,
-        review_lyrics: bool = Form(False),
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
         wordlist_csv: UploadFile | None = None,
         # 画面に貼り付けた単語リスト(zipを作らずに画像を付ける経路)。
@@ -4013,11 +4012,9 @@ def create_app(
         if launch_sample_id:
             entry = sample_entry(launch_sample_id) or {}
             song_title = str(entry.get("title") or launch_sample_id)
-        if review_lyrics and (is_simple_ui() or not editor_available):
-            raise HTTPException(status_code=422, detail="替え歌歌詞の確認は現在利用できません")
         wordlist_text = await read_wordlist_text(wordlist_text)
         if (is_public_mode() or is_simple_ui()) and (
-            (editor is not None and bool(editor.filename))
+            (is_simple_ui() and editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
             or (is_simple_ui() and bool(wordlist_text.strip()))
             or any(bool(image.filename) for image in wordlist_images)
@@ -4029,32 +4026,36 @@ def create_app(
         client_hash = None if quota_exempt or not is_public_mode() else _client_hash(request)
         editor_bytes = None
         editor_payload: Any = None
+        editor_original = False
         if editor is not None and editor.filename:
-            editor_bytes = await editor.read()
+            from .editor_io import MAX_EDITOR_BYTES, validate_editor_upload
+
+            editor_bytes = await editor.read(MAX_EDITOR_BYTES + 1)
+            if len(editor_bytes) > MAX_EDITOR_BYTES:
+                raise HTTPException(status_code=413, detail="歌詞JSONは4MB以下にしてください")
             try:
-                editor_payload = json.loads(editor_bytes)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(
-                    status_code=400, detail="editorのJSONが読めません"
-                ) from exc
+                editor_payload = validate_editor_upload(editor_bytes)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             if is_public_mode():
                 from .editor_io import custom_wordlist_sid, is_original_wordlist
 
-                canonical = require_launch_wordlist(wordlist, status_code=422)
-                if not canonical:
+                editor_original = is_original_wordlist(editor_payload)
+                if custom_wordlist_sid(editor_payload):
                     raise HTTPException(
-                        status_code=422, detail="単語リストを選んでください"
+                        status_code=422, detail="単語データを含む歌詞JSONを書き出してください",
                     )
-                if is_original_wordlist(editor_payload) or custom_wordlist_sid(
-                    editor_payload
-                ):
-                    raise HTTPException(
-                        status_code=422, detail="この入力形式は現在利用できません"
+                if not editor_original:
+                    entry = editor_payload.get("wordlist") or {}
+                    filepath = entry.get("filepath", "")
+                    canonical = require_launch_wordlist(
+                        Path(filepath).stem if filepath else wordlist, status_code=422,
                     )
-                editor_payload = copy.deepcopy(editor_payload)
-                editor_payload["wordlist"] = {"filepath": f"{canonical}.csv"}
-                editor_bytes = json.dumps(editor_payload, ensure_ascii=False).encode()
-                wordlist = canonical
+                    if not canonical:
+                        raise HTTPException(status_code=422, detail="単語リストを選んでください")
+                    editor_payload["wordlist"] = {"filepath": f"{canonical}.csv"}
+                    wordlist = canonical
+            editor_bytes = json.dumps(editor_payload, ensure_ascii=False).encode()
         # 自作の単語リスト(CSV/画像入りzip、または貼り付けテキスト+画像)。
         # ジョブを走らせる前にここで検証して弾く
         custom: wordlist_zip_mod.WordlistZip | None = None
@@ -4198,7 +4199,7 @@ def create_app(
                     wordlist = (
                         Path(resolved).stem if resolved.endswith(".csv") else resolved
                     )
-        if is_public_mode() and wordlist and custom is None:
+        if is_public_mode() and wordlist and custom is None and not editor_original:
             wordlist = require_launch_wordlist(wordlist, status_code=422)
         if is_simple_ui() and preview <= 0:
             launch_wordlists = {
@@ -4236,7 +4237,7 @@ def create_app(
             "voicevox_style": voicevox_style,
             "auto_octave": auto_octave,
             "transpose": transpose,
-            "review_lyrics": review_lyrics and preview <= 0,
+            "review_lyrics": False,
             "preview": max(0.0, min(preview, 60.0)),
             "preview_mode": (
                 preview_mode.strip() if preview_mode.strip() in PREVIEW_MODES else ""
