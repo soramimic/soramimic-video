@@ -253,7 +253,7 @@ def test_football_defaults_to_jleague_scope_only():
 
 
 def test_scientist_opt_in_follows_filter_changes(tmp_path):
-    """対象の選択・全解除・旧設定復元で、送信条件の既定オフを保つ。"""
+    """受賞歴を個別選択でき、対象の選択・復元では追加対象の既定オフを保つ。"""
     entry = next(e for e in _conf_entries() if e["value"] == "SCIENTIST")
     html = INDEX_HTML.read_text(encoding="utf-8")
     heads = (
@@ -298,6 +298,23 @@ const change = (cb, checked) => { cb.checked = checked; cb.dispatchEvent(new Eve
 setWhere(initialWhere);
 assert.equal(checkbox("no").checked, true);
 assert.equal(checkbox("yes").checked, false);
+const nobelGroup = () => $("wordlist-facets").querySelectorAll(".facet-group")
+  .find((group) => group.querySelectorAll("input.facet-value")
+    .some((cb) => cb.__where === "(nobel=yes)"));
+const nobelSelections = {};
+assert.equal(nobelGroup().querySelector("input.facet-select-all-input").checked, true);
+assert.equal(nobelGroup().querySelectorAll("input.facet-value").length, 2);
+for (const value of ["yes", "other"]) {
+  change(nobelGroup().querySelector("input.facet-select-all-input"), false);
+  change(nobelGroup().querySelectorAll("input.facet-value")
+    .find((cb) => cb.value === value), true);
+  nobelSelections[value] = $("where").value;
+  const selectAll = nobelGroup().querySelector("input.facet-select-all-input");
+  assert.equal(selectAll.checked, false);
+  assert.equal(selectAll.indeterminate, true);
+  change(selectAll, true);
+  assert.equal($("where").value, initialWhere);
+}
 change(checkbox("yes"), true);
 const included = $("where").value;
 change(checkbox("no"), false);
@@ -314,12 +331,13 @@ assert.equal(checkbox("no").checked, true);
 assert.equal(checkbox("yes").checked, false);
 setWhere(included); // エディタや保存済み設定からの復元
 setWhere(initialWhere);
-assert.equal(previews, 5);
+assert.equal(previews, 11);
 const editor = document.createElement("div");
 m.renderFacets(editor, entry);
 m.restoreFacets(editor, legacyWhere);
 const editorRestored = m.compileWhere(editor, entry);
-console.log(JSON.stringify({ included, celebrityOnly, restoredLegacy, editorRestored }));
+console.log(JSON.stringify({ included, celebrityOnly, restoredLegacy,
+  editorRestored, nobelSelections }));
 """
     )
     result = _run_node(script, tmp_path)
@@ -329,6 +347,14 @@ console.log(JSON.stringify({ included, celebrityOnly, restoredLegacy, editorRest
     flag_index = header.index("celebrity_doctorate")
     ordinary = _select(csv_path, where)
     assert ordinary and all(row[flag_index] == "no" for row in ordinary)
+    nobel_index = header.index("nobel")
+    assert {row[nobel_index] for row in ordinary} == {"yes", "no", "NA"}
+    nobel_options = {"yes": {"yes"}, "other": {"no", "NA"}}
+    for value, selected_where in result["nobelSelections"].items():
+        assert _select(csv_path, selected_where) == [
+            row for row in ordinary if row[nobel_index] in nobel_options[value]
+        ]
+        assert restored_where(entry, selected_where) == selected_where
     assert _select(csv_path, result["restoredLegacy"]) == ordinary
     celebrities = _select(csv_path, result["celebrityOnly"])
     assert celebrities and all(row[flag_index] == "yes" for row in celebrities)
