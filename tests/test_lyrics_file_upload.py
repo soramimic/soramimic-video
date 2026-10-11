@@ -103,7 +103,7 @@ def test_public_import_uses_export_wordlist_and_never_a_supplied_path(review_cli
     assert response.status_code == 200, response.text
     job = wait_status(client, response.json()["id"], "done")
     assert job["params"]["wordlist"] == "stations"
-    assert calls["synthesize"][0].parody.wordlist == "stations.csv"
+    assert calls["synthesize"][0].parody.wordlist == "stations"
 
 
 def test_public_import_rejects_unknown_export_wordlist(review_client, monkeypatch):
