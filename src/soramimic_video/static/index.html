@@ -446,6 +446,15 @@
   .editor-modal-head h2 { font-size: .95rem; margin: 0; flex: 1 1 auto; }
   /* 説明は行を分けて回り込ませる(狭い画面ではボタンが先に折り返す) */
   .editor-modal-head .hint { flex: 1 0 100%; margin: 0; }
+  .editor-modal.review-mode .editor-modal-head { padding: .5rem 1rem; }
+  .editor-modal.review-mode #editor-modal-title { font-size: 1rem; }
+  #close-lyric-review { min-width: 44px; min-height: 44px; font-size: 1.2rem; }
+  .editor-modal.review-mode .editor-modal-foot { padding: .7rem 1rem max(.7rem, env(safe-area-inset-bottom)); }
+  .editor-modal.review-mode #confirm-lyric-review { width: 100%; min-height: 48px; }
+  .editor-modal.review-editing #lyric-review-actions { display: none; }
+  .editor-modal.review-editing .editor-modal-head { display: none; }
+  #lyric-review-error:empty { display: none; }
+  #lyric-review-error { margin: 0; padding: .6rem 1rem; color: var(--danger); }
   #editor-frame {
     flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: var(--panel);
   }
@@ -1338,14 +1347,14 @@
   aria-labelledby="editor-modal-title">
   <div class="editor-modal-head">
     <h2 id="editor-modal-title">✏️ 替え歌エディタ</h2>
+    <button type="button" id="close-lyric-review" class="btn-sm" aria-label="あとで続ける" title="あとで続ける" hidden>×</button>
     <p class="hint" id="editor-modal-hint">編集はエディタ内で自動保存され、閉じても生成に使われます。「動画作成に戻る」またはEscで閉じられます。</p>
   </div>
   <iframe id="editor-frame" title="soramimic editor"></iframe>
   <div class="editor-modal-foot" id="lyric-review-actions" hidden>
-    <button type="button" id="confirm-lyric-review" class="btn-primary">確認して動画を生成</button>
-    <button type="button" id="close-lyric-review" class="btn-sm">閉じる</button>
-    <p class="hint" id="lyric-review-error" role="alert"></p>
+    <button type="button" id="confirm-lyric-review" class="btn-primary">動画を生成 →</button>
   </div>
+  <p class="hint" id="lyric-review-error" role="alert"></p>
   <!-- 替え歌JSONの読み書き。エディタと同じ「替え歌そのもの」を扱う操作なので、
        詳細設定ではなくエディタの中に置く。出番が少ないのでフッタで控えめに。
        #editor は生成時の参照・自動取り込みの正本のままで、DOMの位置だけ移した。 -->
@@ -6772,6 +6781,8 @@ let reviewJobId = null;
 let reviewOpenedJob = null;
 let reviewOpening = false;
 let reviewSubmitting = false;
+let reviewSavedRaw = "";
+let reviewSavePending = null;
 
 async function openLyricReview(id) {
   if (!id || reviewOpening || reviewSubmitting) return;
@@ -6787,6 +6798,13 @@ async function openLyricReview(id) {
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
       sessionStorage.setItem(REVIEW_JOB_KEY, id);
     }
+    // Preserve local edits, but take read-only display data from the saved analysis.
+    const current = editorSessionData();
+    current.host = seed.host;
+    current.originalLines = seed.originalLines;
+    current.lyrics = seed.lyrics;
+    sessionStorage.setItem(EDITOR_KEY, JSON.stringify(current));
+    reviewSavedRaw = JSON.stringify(seed);
     sessionStorage.removeItem(EDITOR_SEED_KEY);
     reviewJobId = id;
     $("lyric-review-error").textContent = "";
@@ -6798,6 +6816,47 @@ async function openLyricReview(id) {
   }
 }
 
+async function saveLyricReview() {
+  if (reviewSavePending) {
+    await reviewSavePending;
+    return saveLyricReview();
+  }
+  const id = reviewJobId;
+  if (!id || reviewSubmitting || sessionStorage.getItem(REVIEW_JOB_KEY) !== id) return;
+  const raw = sessionStorage.getItem(EDITOR_KEY);
+  if (!raw || raw === reviewSavedRaw) return;
+  reviewSavePending = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const form = new FormData();
+      form.append("editor", new Blob([raw], { type: "application/json" }), "editor.json");
+      const res = await fetch(`/api/jobs/${id}/review`, {
+        method: "PUT", headers: headers(), body: form, signal: controller.signal,
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || "編集を保存できませんでした");
+      if (reviewJobId === id) reviewSavedRaw = raw;
+      $("lyric-review-error").textContent = "";
+    } finally { clearTimeout(timer); }
+  })();
+  try { await reviewSavePending; }
+  finally { reviewSavePending = null; }
+}
+
+async function closeLyricReview() {
+  const button = $("close-lyric-review");
+  if (button.disabled) return;
+  button.disabled = true;
+  try { await saveLyricReview(); }
+  catch (err) {
+    $("lyric-review-error").textContent = "保存できませんでした: " + err.message;
+    return;
+  }
+  finally { button.disabled = false; }
+  closeEditor();
+}
+
 async function confirmLyricReview() {
   if (!reviewJobId || reviewSubmitting) return;
   const id = reviewJobId;
@@ -6805,6 +6864,7 @@ async function confirmLyricReview() {
   $("confirm-lyric-review").disabled = true;
   $("lyric-review-error").textContent = "";
   try {
+    if (reviewSavePending) await reviewSavePending;
     const raw = sessionStorage.getItem(EDITOR_KEY);
     if (!raw || sessionStorage.getItem(REVIEW_JOB_KEY) !== id) {
       throw new Error("編集データがありません。編集画面を開き直してください");
@@ -6829,7 +6889,7 @@ async function confirmLyricReview() {
 
 $("builder-review").addEventListener("click", () => openLyricReview(currentJob));
 $("confirm-lyric-review").addEventListener("click", confirmLyricReview);
-$("close-lyric-review").addEventListener("click", closeEditor);
+$("close-lyric-review").addEventListener("click", closeLyricReview);
 
 // ---- 編集内容の自動取り込みと、その来歴(provenance)ガード ----
 // エディタは編集のたびに sessionStorage[EDITOR_KEY] を書き換える(起動しただけでは
@@ -7287,7 +7347,11 @@ function syncEditorSession() {
   return editorSyncPending;
 }
 async function syncEditorSessionOnce() {
-  if (reviewJobId) return;
+  if (reviewJobId) {
+    try { await saveLyricReview(); }
+    catch (err) { $("lyric-review-error").textContent = "保存できませんでした: " + err.message; }
+    return;
+  }
   await applyEditorWordlist();
   applyEditorLyrics();   // 元歌詞(字幕用)の書き戻しも同じ経路で拾う
   // 「曲を変えたい」の依頼もここで拾う(非同期。開いているあいだだけ応える)
@@ -7438,7 +7502,7 @@ async function convertAndOpenEditor() {
 }
 
 async function importEditor() {
-  if (reviewJobId) { closeEditor(); return; }
+  if (reviewJobId) { await closeLyricReview(); return; }
   await syncEditorSession();
   const raw = sessionStorage.getItem(EDITOR_KEY);
   if (!raw) { alert("編集データがありません"); return; }
@@ -7474,9 +7538,12 @@ function showEditorFrame() {
   if (!reviewJobId) sessionStorage.removeItem(REVIEW_JOB_KEY);
   $("lyric-review-actions").hidden = !reviewJobId;
   $("parody-io").hidden = !!reviewJobId;
-  $("editor-modal-hint").textContent = reviewJobId
-    ? "替え歌歌詞を確認・編集して「確認して動画を生成」を押してください。閉じても動画生成は始まりません。曲と単語リストは変更できません。"
-    : "編集はエディタ内で自動保存され、閉じても生成に使われます。「動画作成に戻る」またはEscで閉じられます。";
+  $("editor-frame-wrap").classList.toggle("review-mode", !!reviewJobId);
+  $("editor-frame-wrap").classList.remove("review-editing");
+  $("editor-modal-title").textContent = reviewJobId ? "歌詞を確認" : "✏️ 替え歌エディタ";
+  $("close-lyric-review").hidden = !reviewJobId;
+  $("editor-modal-hint").hidden = !!reviewJobId;
+  $("editor-modal-hint").textContent = "編集はエディタ内で自動保存され、閉じても生成に使われます。「動画作成に戻る」またはEscで閉じられます。";
   const wordlist = editorSessionWordlist();
   if (wordlist?.value === "ORIGINAL" && typeof wordlist.csvText === "string") {
     try { localStorage.setItem("originalWordlist", wordlist.csvText); }
@@ -7506,7 +7573,8 @@ function showEditorFrame() {
 function onEditorModalKeydown(ev) {
   if (ev.key !== "Escape" || ev.defaultPrevented || $("editor-frame-wrap").hidden) return;
   ev.preventDefault();
-  closeEditor();
+  if (reviewJobId) closeLyricReview();
+  else closeEditor();
 }
 document.addEventListener("keydown", onEditorModalKeydown);
 $("editor-frame").addEventListener("load", () => {
@@ -7522,9 +7590,11 @@ $("editor-frame").addEventListener("load", () => {
 function onEditorHostMessage(ev) {
   if (ev.origin !== location.origin) return;
   if (ev.source !== $("editor-frame").contentWindow) return;
-  if (!ev.data || ev.data.type !== "soramimic:request-close") return;
+  if (!ev.data) return;
   if ($("editor-frame-wrap").hidden) return;
-  importEditor();
+  if (ev.data.type === "soramimic:review-selection" && reviewJobId) {
+    $("editor-frame-wrap").classList.toggle("review-editing", ev.data.open === true);
+  } else if (ev.data.type === "soramimic:request-close") importEditor();
 }
 window.addEventListener("message", onEditorHostMessage);
 

@@ -140,6 +140,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         for head in (
             "async function poll(", "async function openLyricReview(",
             "async function confirmLyricReview(", "function closeEditor()",
+            "async function saveLyricReview(",
             "async function syncEditorSessionOnce()",
         )
     )
@@ -160,6 +161,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "review", EDITOR_SEED_KEY = "seed";
         let currentJob = "job1", reviewJobId = null, reviewOpenedJob = null;
         let reviewOpening = false, reviewSubmitting = false, pollSeq = 1, pollLastAt = 0;
+        let reviewSavedRaw = "", reviewSavePending = null;
         let pollFailures = 0, cancelPendingJob = null, openCount = 0, requests = [];
         const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], POLL_INTERVAL_MS = 2000;
         const STAGE_LABELS = {}, document = {body: {classList: {remove() {}}}};
@@ -194,7 +196,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
           assert.equal($("builder-review").hidden, false);
           sessionStorage.setItem(EDITOR_KEY, JSON.stringify({...seed, results: [["edited"]]}));
           await syncEditorSessionOnce(); // Review must not change the next song's form.
-          closeEditor();
+          await closeEditor();
           assert.equal($("editor-frame-wrap").hidden, true);
           await poll("job1", pollSeq);
           assert.equal(openCount, 1); // Closing does not auto-open or auto-resume.
@@ -216,6 +218,59 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """
     )
+    subprocess.run(["node", "-e", node], check=True)
+
+
+def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in ("async function saveLyricReview(", "async function closeLyricReview(")
+    )
+    node = textwrap.dedent("""
+        const assert = require("node:assert/strict");
+        const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "job";
+        let reviewJobId = "one", reviewSubmitting = false;
+        let reviewSavePending = null, reviewSavedRaw = "";
+        let raw = "first", reject = true, closeCount = 0, active = 0, maxActive = 0;
+        let pause = null, release = null;
+        const writes = [], elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {disabled: false, textContent: ""});
+          return elements.get(id);
+        };
+        const headers = () => ({});
+        const sessionStorage = {getItem: key => key === EDITOR_KEY ? raw : "one"};
+        const closeEditor = () => { closeCount++; };
+        const fetch = async (url, options) => {
+          active++; maxActive = Math.max(maxActive, active);
+          writes.push(await options.body.get("editor").text());
+          if (pause) await pause;
+          active--;
+          return {ok: !reject, json: async () => ({detail: "保存エラー"})};
+        };
+    """) + functions + textwrap.dedent("""
+        (async () => {
+          await closeLyricReview();
+          assert.equal(closeCount, 0);
+          assert.equal($("close-lyric-review").disabled, false);
+          assert.match($("lyric-review-error").textContent, /保存エラー/);
+          reject = false;
+          pause = new Promise(resolve => { release = resolve; });
+          const first = saveLyricReview();
+          raw = "latest";
+          const next = saveLyricReview();
+          release(); pause = null;
+          await Promise.all([first, next]);
+          assert.equal(maxActive, 1);
+          assert.deepEqual(writes, ["first", "first", "latest"]);
+          assert.equal(reviewSavedRaw, "latest");
+          await closeLyricReview();
+          assert.equal(closeCount, 1);
+          assert.equal(writes.length, 3);
+          assert.equal($("lyric-review-error").textContent, "");
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    """)
     subprocess.run(["node", "-e", node], check=True)
 
 
@@ -2865,7 +2920,7 @@ def test_embedded_editor_brand_returns_through_the_host_shell():
     handler = _function_body(script, "function onEditorHostMessage(ev)")
     assert "ev.origin !== location.origin" in handler
     assert 'ev.source !== $("editor-frame").contentWindow' in handler
-    assert 'ev.data.type !== "soramimic:request-close"' in handler
+    assert 'ev.data.type === "soramimic:request-close"' in handler
     assert 'if ($("editor-frame-wrap").hidden) return;' in handler
     assert "importEditor();" in handler
     assert 'window.addEventListener("message", onEditorHostMessage);' in script
