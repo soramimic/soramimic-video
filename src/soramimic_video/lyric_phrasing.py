@@ -162,8 +162,17 @@ def _line_boundaries(
     ):
         if mora in forbidden or not notes_by_mora[mora - 1] or not notes_by_mora[mora]:
             continue
-        left_end = max(project.notes[n].end_sec for n in notes_by_mora[mora - 1])
-        right_start = min(project.notes[n].start_sec for n in notes_by_mora[mora])
+        # Distant notes can map back across a candidate boundary. Check the full
+        # partition, not just the two adjacent moras, before changing grouping.
+        left_notes = {nid for group in notes_by_mora[:mora] for nid in group}
+        right_notes = {nid for group in notes_by_mora[mora:] for nid in group}
+        split_at = len(left_notes)
+        if (left_notes & right_notes
+                or set(line.note_ids[:split_at]) != left_notes
+                or set(line.note_ids[split_at:]) != right_notes):
+            continue
+        left_end = max(project.notes[n].end_sec for n in left_notes)
+        right_start = min(project.notes[n].start_sec for n in right_notes)
         if right_start < left_end - 1e-6:
             continue
         candidates.append(_Boundary(text_offset, mora, left_end, right_start))
