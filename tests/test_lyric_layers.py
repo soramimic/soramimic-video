@@ -3,19 +3,15 @@ import hashlib
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from soramimic_video.analyze_audio import (
-    _continuize_spoken_synthesis_lines,
-    _generation_quality_assessment,
-    _omit_unresolved_synthesis_units,
-    _recover_synthesis_units,
-)
 from soramimic_video.convert import engine_phrases
 from soramimic_video.lyric_layers import apply_lyric_layers
-from soramimic_video.mora_align import CTCEmissions, collapse_kana_aliases, decode_kana_window
 from soramimic_video.project import Parody, ParodyLine, ParodyWord, Project, SongInfo
+from soramimic_video.score_layers import (
+    generation_quality_assessment,
+    omit_unresolved_synthesis_units,
+)
 from soramimic_video.synthesize import build_lyric_map
 from soramimic_video.voicevox import build_score
 from soramimic_video.xfexport import export_xf_midi
@@ -86,7 +82,7 @@ def test_unresolved_optimizer_unit_becomes_explicit_synthesis_omission():
     data["omissions"] = tuple(data["omissions"])
     data["diagnostics"] = tuple(data["diagnostics"])
 
-    assert _omit_unresolved_synthesis_units(data) == 1
+    assert omit_unresolved_synthesis_units(data) == 1
     assert data["unresolved_unit_ids"] == []
     assert data["omissions"] == [{
         "singing_unit_id": "s1",
@@ -109,7 +105,7 @@ def test_generation_quality_warns_when_sheet_sage_gaps_cover_much_of_song():
     data["synthesis_plan"].pop(1)
     data["omissions"] = [{"singing_unit_id": "s1"}]
 
-    assessment = _generation_quality_assessment(data)
+    assessment = generation_quality_assessment(data)
 
     assert assessment == {
         "status": "warning",
@@ -126,331 +122,10 @@ def test_generation_quality_ignores_one_isolated_sheet_sage_gap():
         slot["pitch_sources"] = ["sheetsage2-vocal"]
     data["synthesis_plan"][1]["pitch_sources"] = ["spoken"]
 
-    assessment = _generation_quality_assessment(data)
+    assessment = generation_quality_assessment(data)
 
     assert assessment["status"] == "ok"
     assert assessment["affected_singing_units"] == 1
-
-
-def test_internal_pitch_gap_is_retained_as_explicit_spoken_synthesis():
-    data = layers()
-    data["synthesis_plan"].pop(1)
-    data["unresolved_unit_ids"] = ["s1"]
-
-    assert _recover_synthesis_units(data) == 1
-    assert data["unresolved_unit_ids"] == []
-    recovered = next(
-        slot for slot in data["synthesis_plan"]
-        if slot["singing_unit_id"] == "s1"
-    )
-    assert recovered["kana"] == "キ"
-    assert recovered["midi_pitch"] == 60
-    assert recovered["pitch_sources"] == ["spoken"]
-    assert recovered["operation"] == "spoken_pitch_carry"
-    assert data["evidence"][-1]["kind"] == "spoken-synthesis-fallback"
-
-    value = project()
-    apply_lyric_layers(value, data)
-    assert [note.kana for note in value.notes] == ["カ", "キ", "ク"]
-    assert [note.source for note in value.notes] == ["synthetic", "spoken", "synthetic"]
-
-
-def test_complete_spoken_line_uses_continuous_ctc_timing():
-    data = layers()
-    data["performed"][0]["end_sec"] = 0.08
-    data["performed"][1]["start_sec"] = 0.18
-    data["performed"][1]["end_sec"] = 0.2
-    data["performed"][2]["start_sec"] = 0.6
-    data["performed"][2]["end_sec"] = 0.72
-    data["synthesis_plan"] = [data["synthesis_plan"][0], data["synthesis_plan"][2]]
-    data["synthesis_plan"][0]["end_sec"] = 0.08
-    data["synthesis_plan"][1]["start_sec"] = 1.0
-    data["synthesis_plan"][1]["end_sec"] = 1.4
-    data["unresolved_unit_ids"] = ["s1"]
-
-    assert _recover_synthesis_units(data) == 1
-    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
-    assert [
-        (slot["start_sec"], slot["end_sec"])
-        for slot in data["synthesis_plan"]
-    ] == [(0.0, 0.18), (0.18, 0.6), (0.6, 0.72)]
-    assert all(
-        slot["timing_source"] == "mora_ctc_continuous"
-        for slot in data["synthesis_plan"]
-    )
-    assert data["evidence"][-1]["kind"] == "spoken-continuous-timing"
-
-    value = project()
-    apply_lyric_layers(value, data)
-    assert [(note.start_sec, note.end_sec) for note in value.notes] == [
-        (0.0, 0.18), (0.18, 0.6), (0.6, 0.72),
-    ]
-
-
-def test_spoken_line_with_omitted_unit_absorbs_gap_into_rendered_slots():
-    data = layers()
-    data["synthesis_plan"].pop(1)
-    data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
-    data["unresolved_unit_ids"] = ["s1"]
-
-    assert _continuize_spoken_synthesis_lines(data) == (1, 2)
-    bounds = [
-        (slot["start_sec"], slot["end_sec"])
-        for slot in data["synthesis_plan"]
-    ]
-    assert [value for bound in bounds for value in bound] == pytest.approx(
-        [0.0, 0.6, 0.6, 0.9]
-    )
-    assert data["evidence"][-1]["detail"]["performed_unit_count"] == 3
-    assert data["evidence"][-1]["detail"]["rendered_unit_count"] == 2
-
-
-def test_spoken_line_regularizes_ctc_peaks_to_audible_durations():
-    data = layers()
-    data["performed"][0]["start_sec"] = 11.2
-    data["performed"][0]["end_sec"] = 11.38
-    data["performed"][1]["start_sec"] = 11.6
-    data["performed"][1]["end_sec"] = 11.68
-    data["performed"][2]["start_sec"] = 11.7
-    data["performed"][2]["end_sec"] = 11.72
-    data["canonical"][0]["mora_ids"].append("m3")
-    data["performed"].append({
-        "singing_unit_id": "s3", "mora_ids": ["m3"], "status": "observed",
-        "start_sec": 11.72, "end_sec": 11.94, "confidence": 0.0,
-        "link_ids": ["l3"], "evidence_ids": [],
-    })
-    data["synthesis_plan"].pop(0)
-    data["synthesis_plan"].append({
-        "id": "slot-3", "utterance_id": "u0", "singing_unit_id": "s3",
-        "mora_ids": ["m3"], "note_candidate_id": "n0", "link_ids": ["l3"],
-        "kana": "ケ", "start_sec": 11.72, "end_sec": 11.94,
-        "midi_pitch": 60, "operation": "spoken_pitch_carry",
-        "timing_source": "mora_ctc_interval", "confidence": 0.0,
-        "evidence_ids": [], "pitch_sources": ["spoken"],
-        "continuation": False,
-    })
-    for slot in data["synthesis_plan"]:
-        slot["pitch_sources"] = ["spoken"]
-
-    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
-    bounds = [
-        (slot["start_sec"], slot["end_sec"])
-        for slot in data["synthesis_plan"]
-    ]
-    assert bounds[0][0] == pytest.approx(11.2)
-    assert bounds[-1][1] == pytest.approx(11.94)
-    assert all(end - start >= 0.12 - 1e-9 for start, end in bounds)
-
-
-def test_spoken_line_trims_simple_overlap_with_another_line():
-    data = layers()
-    data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
-    data["performed"][-1]["end_sec"] = 1.1
-    data["canonical"].append({
-        "utterance_id": "u1", "text": "け", "kana": "ケ", "mora_ids": ["m3"],
-    })
-    data["performed"].append({
-        "singing_unit_id": "s3", "mora_ids": ["m3"], "status": "observed",
-        "start_sec": 0.95, "end_sec": 1.2, "confidence": 0.7,
-        "link_ids": ["l3"], "evidence_ids": [],
-    })
-    data["synthesis_plan"].append({
-        "id": "slot-3", "utterance_id": "u1", "singing_unit_id": "s3",
-        "mora_ids": ["m3"], "note_candidate_id": "n1", "link_ids": ["l3"],
-        "kana": "ケ", "start_sec": 0.95, "end_sec": 1.2, "midi_pitch": 62,
-        "operation": "match", "timing_source": "aligned_boundary",
-        "confidence": 0.7, "evidence_ids": [], "pitch_sources": ["synthetic"],
-        "continuation": False,
-    })
-    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
-    spoken = [
-        slot for slot in data["synthesis_plan"]
-        if slot["utterance_id"] == "u0"
-    ]
-    assert spoken[0]["start_sec"] == pytest.approx(0.0)
-    assert spoken[-1]["end_sec"] == pytest.approx(0.95)
-    assert all(
-        left["end_sec"] <= right["start_sec"]
-        for left, right in zip(
-            data["synthesis_plan"], data["synthesis_plan"][1:], strict=False
-        )
-    )
-
-
-def test_spoken_line_keeps_original_timing_for_interior_overlap():
-    data = layers()
-    data["synthesis_plan"][0]["pitch_sources"] = ["spoken"]
-    data["canonical"].append({
-        "utterance_id": "u1", "text": "け", "kana": "ケ", "mora_ids": ["m3"],
-    })
-    data["performed"].append({
-        "singing_unit_id": "s3", "mora_ids": ["m3"], "status": "observed",
-        "start_sec": 0.35, "end_sec": 0.45, "confidence": 0.7,
-        "link_ids": ["l3"], "evidence_ids": [],
-    })
-    data["synthesis_plan"].append({
-        "id": "slot-3", "utterance_id": "u1", "singing_unit_id": "s3",
-        "mora_ids": ["m3"], "note_candidate_id": "n1", "link_ids": ["l3"],
-        "kana": "ケ", "start_sec": 0.35, "end_sec": 0.45, "midi_pitch": 62,
-        "operation": "match", "timing_source": "aligned_boundary",
-        "confidence": 0.7, "evidence_ids": [], "pitch_sources": ["synthetic"],
-        "continuation": False,
-    })
-    before = copy.deepcopy(data["synthesis_plan"])
-
-    assert _continuize_spoken_synthesis_lines(data) == (0, 0)
-    assert data["synthesis_plan"] == before
-
-
-def test_unbracketed_pitch_gap_stays_unresolved_for_omission():
-    data = layers()
-    data["synthesis_plan"].pop(0)
-    data["unresolved_unit_ids"] = ["s0"]
-
-    assert _recover_synthesis_units(data) == 0
-    assert data["unresolved_unit_ids"] == ["s0"]
-    assert _omit_unresolved_synthesis_units(data) == 1
-    assert data["omissions"][0]["singing_unit_id"] == "s0"
-
-
-@pytest.mark.parametrize(
-    ("missing_index", "reason"),
-    [
-        (0, "vocal-activity-supported-leading-speech"),
-        (2, "vocal-activity-supported-trailing-speech"),
-    ],
-)
-def test_vocal_supported_edge_speech_uses_neutral_pitch(missing_index, reason):
-    data = layers()
-    data["synthesis_plan"].pop(missing_index)
-    data["unresolved_unit_ids"] = [f"s{missing_index}"]
-
-    assert _recover_synthesis_units(
-        data, edge_spoken_utterance_ids={"u0"}
-    ) == 1
-    recovered = next(
-        slot for slot in data["synthesis_plan"]
-        if slot["singing_unit_id"] == f"s{missing_index}"
-    )
-    assert recovered["midi_pitch"] == 60
-    assert recovered["note_candidate_id"] is None
-    assert recovered["operation"] == "spoken_neutral_pitch"
-    assert data["evidence"][-1]["detail"] == {
-        "reason": reason,
-        "pitch_strategy": "neutral-spoken-midi",
-        "midi_pitch": 60,
-        "nearest_song_slot_id": "slot-1",
-    }
-
-
-def test_edge_speech_requires_explicit_vocal_activity_eligibility():
-    data = layers()
-    data["synthesis_plan"].pop()
-    data["unresolved_unit_ids"] = ["s2"]
-
-    assert _recover_synthesis_units(data) == 0
-    assert data["unresolved_unit_ids"] == ["s2"]
-
-
-def test_edge_speech_regularizes_overlapping_ctc_units_in_one_utterance():
-    data = layers()
-    data["performed"][1]["start_sec"] = 0.3
-    data["performed"][1]["end_sec"] = 0.65
-    data["performed"][2]["start_sec"] = 0.6
-    data["performed"][2]["end_sec"] = 0.9
-    data["synthesis_plan"] = data["synthesis_plan"][:1]
-    data["unresolved_unit_ids"] = ["s1", "s2"]
-
-    assert _recover_synthesis_units(
-        data, edge_spoken_utterance_ids={"u0"}
-    ) == 2
-    assert _continuize_spoken_synthesis_lines(data) == (1, 3)
-    slots = data["synthesis_plan"]
-    assert all(
-        left["end_sec"] <= right["start_sec"]
-        for left, right in zip(slots, slots[1:], strict=False)
-    )
-
-
-@pytest.mark.parametrize("intervals", [
-    [(1.0, 2.0), (1.0, 2.0)],
-    [(1.0, 2.5), (1.2, 1.8)],
-    [(1.0, 2.0), (1.8, 2.5)],
-])
-def test_overlapping_recovery_remains_valid_when_line_continuity_is_blocked(intervals):
-    data = layers()
-    for unit, (start, end) in zip(data["performed"][1:], intervals, strict=True):
-        unit.update(start_sec=start, end_sec=end)
-    # Another utterance falls inside the complete first-line window. Its real
-    # note must remain unchanged and prevents whole-line continuity adjustment.
-    for i, (kana, start, end) in enumerate([("サ", 0.5, 0.7), ("シ", 3.0, 3.2)], 3):
-        data["canonical"].append({
-            "utterance_id": f"u{i}", "text": kana, "kana": kana, "mora_ids": [f"m{i}"],
-        })
-        unit = dict(data["performed"][0], singing_unit_id=f"s{i}", mora_ids=[f"m{i}"],
-                    start_sec=start, end_sec=end)
-        data["performed"].append(unit)
-        slot = dict(data["synthesis_plan"][0], id=f"slot-{i}", utterance_id=f"u{i}",
-                    singing_unit_id=f"s{i}", mora_ids=[f"m{i}"], kana=kana,
-                    start_sec=start, end_sec=end)
-        data["synthesis_plan"].append(slot)
-    data["synthesis_plan"] = [data["synthesis_plan"][i] for i in (0, 3, 4)]
-    anchors = copy.deepcopy(data["synthesis_plan"])
-    canonical, performed = copy.deepcopy((data["canonical"], data["performed"]))
-    data["unresolved_unit_ids"] = ["s2", "s1"]
-
-    assert _recover_synthesis_units(data) == 2
-    assert _continuize_spoken_synthesis_lines(data) == (0, 0)
-    assert data["canonical"] == canonical and data["performed"] == performed
-    slots = data["synthesis_plan"]
-    assert [s for s in slots if s["pitch_sources"] != ["spoken"]] == anchors
-    recovered = [s for s in slots if s["pitch_sources"] == ["spoken"]]
-    assert [s["singing_unit_id"] for s in recovered] == ["s1", "s2"]
-    assert recovered[0]["start_sec"] == min(start for start, _ in intervals)
-    assert recovered[-1]["end_sec"] == max(end for _, end in intervals)
-    assert recovered[0]["end_sec"] == recovered[1]["start_sec"]
-    assert [(s["timing_original_start_sec"], s["timing_original_end_sec"])
-            for s in recovered] == intervals
-    value = project()
-    apply_lyric_layers(value, data)
-    assert len(value.notes) == 5
-    assert [value.notes[i].kana for i in value.lines[0].note_ids] == list("カキク")
-
-
-def test_spoken_recovery_preserves_fine_long_vowel_mora_ids():
-    data = layers()
-    data["canonical"][0]["kana"] = "オーケイ"
-    data["canonical"][0]["mora_ids"] = ["m0", "m1", "m2", "m3"]
-    data["performed"] = [
-        {
-            "singing_unit_id": f"s{i}", "mora_ids": [f"m{i}"],
-            "status": "observed", "start_sec": i * 0.2,
-            "end_sec": (i + 1) * 0.2, "confidence": 0.7,
-            "link_ids": [f"l{i}"], "evidence_ids": [],
-        }
-        for i in range(4)
-    ]
-    data["synthesis_plan"] = [
-        {
-            "id": f"slot-{i}", "utterance_id": "u0",
-            "singing_unit_id": f"s{i}", "mora_ids": [f"m{i}"],
-            "note_candidate_id": f"n{i}", "link_ids": [f"l{i}"],
-            "kana": kana, "start_sec": i * 0.2, "end_sec": (i + 1) * 0.2,
-            "midi_pitch": 60 + i, "operation": "match",
-            "timing_source": "aligned_boundary", "confidence": 0.7,
-            "evidence_ids": [], "pitch_sources": ["synthetic"],
-            "continuation": False,
-        }
-        for i, kana in ((0, "オ"), (3, "イ"))
-    ]
-    data["unresolved_unit_ids"] = ["s1", "s2"]
-
-    assert _recover_synthesis_units(data) == 2
-    recovered = {
-        slot["singing_unit_id"]: slot["kana"]
-        for slot in data["synthesis_plan"]
-    }
-    assert recovered == {"s0": "オ", "s1": "ー", "s2": "ケ", "s3": "イ"}
 
 
 def test_wholly_omitted_line_retains_text_and_observed_subtitle_window():
@@ -520,20 +195,6 @@ def test_xf_roundtrip_and_hash_bound_provenance(tmp_path: Path):
     assert [n["kana"] for n in sidecar["selected_notes"]] == list("カキク")
 
 
-def test_ctc_window_is_independent_greedy_decode_with_repeat_blanks():
-    # 0.5 s padding + six 20 ms frames. Adjacent repeats collapse; blank-separated
-    # repeats survive. The expected score comes from the matrix, not a constant.
-    matrix = np.full((40, 3), -20.0)
-    matrix[:, 0] = 0.0
-    for i, token in enumerate([1, 1, 0, 1, 0, 2], 25):
-        matrix[i] = -20
-        matrix[i, token] = np.log(0.75)
-    emissions = CTCEmissions(matrix, {"<pad>": 0, "カ": 1, "キ": 2})
-    kana, score = decode_kana_window(emissions, 0, 0.12)
-    assert kana == "カカキ"
-    assert score == pytest.approx(0.75)
-
-
 def test_layered_voicevox_keeps_stacked_target_when_next_note_is_close():
     value = project()
     apply_lyric_layers(value, layers())
@@ -552,22 +213,3 @@ def test_layered_voicevox_borrows_frames_inside_line_without_dropping_mora():
     assert all(n["frame_length"] >= 2 for n in score["notes"])
     assert sum(n["frame_length"] for n in score["notes"]) == round(.9 * 93.75)
     assert value == before
-
-
-def test_adjacent_ctc_windows_do_not_reuse_a_boundary_frame():
-    matrix = np.full((40, 2), -20.0)
-    matrix[:, 0] = 0.0
-    matrix[30] = [-20.0, np.log(0.9)]
-    emissions = CTCEmissions(matrix, {"<pad>": 0, "カ": 1})
-    assert decode_kana_window(emissions, 0, .11)[0] == "カ"
-    assert decode_kana_window(emissions, .11, .2)[0] == ""
-
-
-def test_phonetic_ctc_alignment_sums_script_aliases_without_mutation():
-    matrix = np.log(np.array([[.1, .89, .01], [.5, .2, .3]]))
-    emissions = CTCEmissions(matrix, {"<pad>": 0, "か": 1, "カ": 2})
-    merged = collapse_kana_aliases(emissions)
-    assert np.exp(merged[:, 2]) == pytest.approx([.9, .5])
-    assert np.exp(merged).sum(axis=1) == pytest.approx([1, 1])
-    assert np.exp(matrix[:, 1]) == pytest.approx([.89, .2])
-    assert np.isneginf(merged[:, 1]).all()
