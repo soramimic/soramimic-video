@@ -3177,6 +3177,45 @@ def test_footer_labels_guidance_links():
     assert '<a href="/guidelines#contact-title">画像の権利をお持ちの方へ</a>' in html
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_song_reseed_replaces_original_lyric_tokens():
+    reseed = _function_body(_script(), "async function reseedEditorSong()") + "\n}"
+    node = """
+        const assert = require('node:assert/strict');
+        const EDITOR_KEY = 'editor', midiSampleId = 'sample';
+        const ownSongKind = () => 'midi', ownSongFile = () => null;
+        const $ = () => ({value: ''}), headers = () => ({});
+        const appendSongLyrics = () => {}, appendCustomWordlist = () => {};
+        const buildConvertParams = () => '', songTitleOf = () => '';
+        const withHostInfo = body => body;
+        const markEditorSeed = () => {}, clearEditorFile = () => {};
+        const syncBuilderValues = () => {}, renderParodyStatus = () => {};
+        let state, fresh;
+        const editorSessionData = () => state;
+        const sessionStorage = {setItem: (key, value) => {state = JSON.parse(value);}};
+        const fetch = async () => ({ok: true, json: async () => fresh});
+    """ + reseed + """
+        (async () => {
+            state = {phrases: ['フルイ'], tokensList: [['old']], results: [['old']],
+                     unitsList: [['old']], originalLines: ['old'],
+                     wordlist: {value: 'STATION'}, param: {VOWEL_RATIO: .8}};
+            const tokens = [[{surface_form: '手', pronunciation: 'テ', phrase: 0},
+                             {surface_form: 'を', pronunciation: 'オ', phrase: 0},
+                             {surface_form: '打つ', pronunciation: 'ウツ', phrase: 1}]];
+            fresh = {phrases: ['テオウツ'], tokensList: tokens, lyrics: '手を打つ'};
+            await reseedEditorSong();
+            assert.deepEqual(state.tokensList, tokens);
+            assert.equal(state.wordlist.value, 'STATION');
+            assert.equal(state.param.VOWEL_RATIO, .8);
+            assert.ok(!state.results && !state.unitsList && !state.originalLines);
+            fresh = {phrases: ['ツギ']};
+            await reseedEditorSong();
+            assert.ok(!state.tokensList, 'stale tokens survived a token-less seed');
+        })().catch(error => {console.error(error); process.exit(1);});
+    """
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_difficult_audio_result_links_to_song_generation_tips():
     html = INDEX.read_text(encoding="utf-8")
     assert 'id="generation-quality-warning"' in html

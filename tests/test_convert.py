@@ -540,6 +540,28 @@ def _repeated_layer_project(kana: str = "ダ" * 9) -> Project:
     return project
 
 
+def test_layered_conversion_keeps_original_boundaries_and_mora_ownership(tmp_path):
+    from soramimic_video.api import editor_setup_seed
+
+    project = _repeated_layer_project("テオウツ")
+    project.lines[0].original_text = project.lines[0].xf_surface = "手を打つ"
+    project.lyric_layers["canonical"][0]["text"] = "手を打つ"
+    project.lyric_layers["canonical_text"] = "手を打つ"
+    before = copy.deepcopy(project)
+    payload = editor_setup_seed(project, "", None, {})
+    units = run_tokenize(payload["phrases"], tokens_list=payload["tokensList"])[0]
+    assert [u["pronunciation"] for u in units] == ["テ", "オ", "ウ", "ツ"]
+    assert [u["phrase"] for u in units] == [0, 0, 1, 1]
+    assert _layer_unit_note_indices(project, project.lines[0], units) == [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11],
+    ]
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation\n0,手,手,テ", encoding="utf-8")
+    convert_project(project, str(csv_path))
+    assert project.notes == before.notes and project.lyric_layers == before.lyric_layers
+    _assert_no_shared_notes(project)
+
+
 @pytest.mark.parametrize(
     ("kana", "unit_moras", "boundaries"),
     [
@@ -684,10 +706,10 @@ def test_layered_analysis_only_seed_uses_same_normalized_units():
     before = copy.deepcopy(project)
     payload = editor_setup_seed(project, "", None, {})
     assert payload["phrases"] == engine_phrases(project)
-    units = run_tokenize(payload["phrases"])
+    units = run_tokenize(payload["phrases"], tokens_list=payload["tokensList"])
     assert payload["noteLengthRawList"] == project_note_length_weights(project, 1.0)(units)
     assert payload["noteLengthRawList"][0] == pytest.approx([0.3] * 5)
-    assert "results" not in payload and "tokensList" not in payload
+    assert "results" not in payload and payload["tokensList"]
     assert project == before
 
 
@@ -1338,7 +1360,7 @@ def _weights_spy(monkeypatch) -> dict:
 
     def spy(
         phrases, csv_path, where, params, weights_per_line=None, cache_db=True,
-        word_boundaries_per_line=None,
+        word_boundaries_per_line=None, *, tokens_list=None,
     ):
         seen["params"] = params
         seen["weights_per_line"] = weights_per_line
@@ -1352,12 +1374,12 @@ def _weights_spy(monkeypatch) -> dict:
             return real(
                 phrases, csv_path, where, params,
                 weights_per_line=wrapped, cache_db=cache_db,
-                word_boundaries_per_line=word_boundaries_per_line,
+                word_boundaries_per_line=word_boundaries_per_line, tokens_list=tokens_list,
             )
         return real(
             phrases, csv_path, where, params,
             weights_per_line=weights_per_line, cache_db=cache_db,
-            word_boundaries_per_line=word_boundaries_per_line,
+            word_boundaries_per_line=word_boundaries_per_line, tokens_list=tokens_list,
         )
 
     monkeypatch.setattr(convert_mod, "run_convert", spy)

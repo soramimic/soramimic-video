@@ -56,6 +56,35 @@ def engine_phrases(project: Project) -> list[str]:
                          else line.xf_kana) for line in project.lines]
 
 
+def project_conversion_tokens(
+    project: Project, params: dict[str, Any] | None = None,
+) -> list[list[dict[str, Any]]]:
+    """Carry original word and phrase boundaries into server/browser conversion."""
+    from .align import _group_by_original, split_lyric_to_phrases
+    from .reading import reading_tokens
+    from .soramimic_engine import conversion_tokens
+
+    phrases = engine_phrases(project)
+    sources = [line.original_text or line.xf_surface for line in project.lines]
+    if project.lyric_layers is None:
+        # An XF line can be only a fragment of its aligned original lyric line.
+        # Use the same surface fragments as subtitles, then validate the reading
+        # correspondence before accepting any of their token boundaries.
+        def reader(text: str) -> list[tuple[str, str]]:
+            return [(surface, reading.replace("ヲ", "オ"))
+                    for surface, reading in reading_tokens(text)]
+
+        originals = [line.original_text for line in project.lines]
+        groups = [line.original_line_index for line in project.lines]
+        for start, end in _group_by_original(originals, groups):
+            original = originals[start]
+            if original and end - start > 1:
+                sources[start:end] = split_lyric_to_phrases(
+                    [kana.replace("ヲ", "オ") for kana in phrases[start:end]], original, reader,
+                )
+    return conversion_tokens(phrases, sources, params)
+
+
 def _layer_unit_note_indices(
     project: Project,
     line: Line,
@@ -1553,6 +1582,7 @@ def convert_project(
     result = run_convert(
         phrases, csv_path, where, coerced, weights_per_line=weights, cache_db=cache_db,
         word_boundaries_per_line=project_word_boundaries(project),
+        tokens_list=project_conversion_tokens(project, coerced),
     )
     apply_converted_lines(project, result["lines"], wordlist, where, coerced)
     return result

@@ -18,6 +18,7 @@ app(同梱辞書データ + fugashi/ipadic MeCab トークナイザ)の構築は
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import os
@@ -351,8 +352,32 @@ def _json_safe(word: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def conversion_tokens(
+    phrases: list[str], source_texts: list[str], params: dict[str, Any] | None = None,
+) -> list[list[dict[str, Any]]]:
+    """Tokenize the lyric surface, keeping the supplied reading unchanged."""
+    from .conversion_tokens import project_reading
+
+    app = _get_app((params or {}).get("VOWEL_RATIO"))
+    analyzer = app.text_analyzer
+    result = []
+    for index, (kana, source) in enumerate(zip(phrases, source_texts, strict=True)):
+        tokens = analyzer.tokenize_together([normalize_parenthetical_ruby(source or kana)])[0]
+        projected = project_reading(tokens, kana)
+        if projected is not None:
+            units = analyzer.get_yomi_and_phrase_break(copy.deepcopy(projected))
+            if "".join(unit["pronunciation"] for unit in units) == kana:
+                result.append(projected)
+                continue
+        if source and source != kana:
+            logger.warning("行%d: 元歌詞の単語境界を確定済みの読みに対応付けられません", index)
+        result.append(analyzer.tokenize_together([kana])[0])
+    return result
+
+
 def run_tokenize(
-    phrases: list[str], params: dict[str, Any] | None = None
+    phrases: list[str], params: dict[str, Any] | None = None,
+    *, tokens_list: list[list[dict[str, Any]]] | None = None,
 ) -> list[list[dict[str, Any]]]:
     """行ごとの音節ユニット列だけを作る(単語DB不要・変換なし)。
 
@@ -366,9 +391,10 @@ def run_tokenize(
     :func:`convert.project_note_length_weights` にそのまま渡せる。
     """
     app = _get_app((params or {}).get("VOWEL_RATIO"))
-    tokens_list = app.text_analyzer.tokenize_together(
-        [normalize_parenthetical_ruby(phrase) for phrase in phrases]
-    )
+    tokens_list = (copy.deepcopy(tokens_list) if tokens_list is not None
+                   else app.text_analyzer.tokenize_together(
+                       [normalize_parenthetical_ruby(phrase) for phrase in phrases]
+                   ))
     return [
         [
             {
@@ -390,6 +416,7 @@ def run_convert(
     weights_per_line: list[list[float]] | UnitWeightsFunc | None = None,
     cache_db: bool = True,
     word_boundaries_per_line: list[list[int]] | WordBoundariesFunc | None = None,
+    *, tokens_list: list[list[dict[str, Any]]] | None = None,
 ) -> dict:
     """bridge/convert.mjs と同じ入出力の変換。
 
@@ -422,9 +449,10 @@ def run_convert(
     app = _get_app(params.get("VOWEL_RATIO"))
 
     # 生成画面(app.js)と同じ経路: トークナイズ → 生成
-    tokens_list = app.text_analyzer.tokenize_together(
-        [normalize_parenthetical_ruby(phrase) for phrase in phrases]
-    )
+    tokens_list = (copy.deepcopy(tokens_list) if tokens_list is not None
+                   else app.text_analyzer.tokenize_together(
+                       [normalize_parenthetical_ruby(phrase) for phrase in phrases]
+                   ))
 
     # エンジンが内部で作るのと同じユニット列(get_yomi_and_phrase_break の結果)。
     # 単語DBの上限(max_units)と、callable な重み計算の両方で使う。
