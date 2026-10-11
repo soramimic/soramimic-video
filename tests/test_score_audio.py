@@ -9,7 +9,10 @@ import pytest
 from soramimic_video import score_audio
 
 
-def test_score_audio_imports_supported_slots_and_records_unresolved_units(monkeypatch, tmp_path):
+@pytest.mark.parametrize("raw_lyrics", ["かき\n", " \t\nかき\r\n\n"])
+def test_score_audio_imports_supported_slots_and_records_unresolved_units(
+    monkeypatch, tmp_path, raw_lyrics,
+):
     layers = {
         "schema_version": 1, "canonical_text": "かき", "canonical": [
             {"utterance_id": "u0", "text": "かき", "kana": "カキ",
@@ -42,12 +45,18 @@ def test_score_audio_imports_supported_slots_and_records_unresolved_units(monkey
     source = tmp_path / "input.wav"
     source.write_bytes(b"fake")
     lyrics = tmp_path / "lyrics.txt"
-    lyrics.write_text("かき\n", encoding="utf-8")
+    lyrics.write_bytes(raw_lyrics.encode("utf-8"))
     values = []
     project = score_audio.analyze_audio(source, tmp_path / "project", lyrics_path=lyrics,
                                         progress=values.append)
 
-    assert observed["lyrics"] == ["かき"]
+    assert observed["lyrics"].lyric_lines == ("かき",)
+    receipt = json.loads((tmp_path / "project/analyze_audio/lyric_input.json").read_text())
+    assert receipt["original_text"] == raw_lyrics
+    assert receipt["complete"] is True
+    assert [raw_lyrics[slice(*line["source_span"])] for line in receipt["line_spans"]
+            if line["included"]] == ["かき"]
+    assert lyrics.read_bytes() == raw_lyrics.encode("utf-8")
     assert observed["accompaniment_path"] == tmp_path / "project/analyze_audio/no_vocals.wav"
     assert [note.kana for note in project.notes] == ["カ"]
     assert project.lines[0].canonical_kana == "カキ"
@@ -130,7 +139,7 @@ def test_score_audio_rejects_controls_before_splitting_lines_or_loading_models(t
 
 
 @pytest.mark.parametrize("supplied", [False, True])
-@pytest.mark.parametrize("source_text", ["か\u3099くせい", "カ゛クセイ"])
+@pytest.mark.parametrize("source_text", ["か\u3099くせい", "カ゛クセイ", "　か\u3099くせい\t"])
 def test_pinned_score_normalizes_before_real_reading_generation(
     monkeypatch, tmp_path, supplied, source_text,
 ):
@@ -211,7 +220,8 @@ def test_pinned_score_normalizes_readings_through_audio_import(
     real_analyze = soramimic_score.analyze_audio
 
     def analyze_with_test_models(path, **kwargs):
-        assert kwargs["lyrics"] == ([kana] if supplied else None)
+        lines = kwargs["lyrics"].lyric_lines if supplied else kwargs["lyrics"]
+        assert lines == ((kana,) if supplied else None)
         return real_analyze(path, adapters, lyrics=kwargs["lyrics"])
 
     monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
@@ -279,7 +289,7 @@ def test_pinned_score_uses_parenthetical_reading_and_keeps_chorus(
     real_analyze = soramimic_score.analyze_audio
 
     def analyze_with_test_models(path, **kwargs):
-        assert kwargs["lyrics"] == [source_text]
+        assert kwargs["lyrics"].lyric_lines == (source_text,)
         return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
                             adjust_lyrics=kwargs["adjust_lyrics"])
 

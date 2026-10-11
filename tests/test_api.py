@@ -286,6 +286,19 @@ def test_audio_lyrics_reject_controls_before_creating_a_job(client, upload, cont
     assert client.app.state.manager.jobs == {}
 
 
+@pytest.mark.parametrize("source,position", [("ｶﾞ｜声《カ★ナ》", 7), ("\ufeff声", 1)])
+def test_audio_lyrics_reject_invalid_syntax_without_changing_source(client, source, position):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav"),
+               "lyrics_file": ("lyrics.txt", source.encode(), "text/plain")},
+        data={"wordlist": "stations", "auto_lyrics": "false"},
+    )
+    assert res.status_code == 400
+    assert f"position {position}" in res.json()["detail"]
+    assert client.app.state.manager.jobs == {}
+
+
 @pytest.mark.parametrize("kind,automatic", [("audio", True), ("midi", False)])
 @pytest.mark.parametrize("option", ["adjust_lyrics", "auto_phrase_lyrics"])
 def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic, option):
@@ -299,20 +312,21 @@ def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automati
     assert "音源と入力歌詞" in res.json()["detail"]
 
 
-def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path):
+@pytest.mark.parametrize("source", ["正式な歌詞", "\r\n 正式な歌詞\t\r\n\n"])
+def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path, source):
     escaped = tmp_path / "escaped.txt"
     res = client.post(
         "/api/jobs",
         files={
             "audio": ("voice.wav", fake_wav(), "audio/wav"),
-            "lyrics_file": ("../../escaped.txt", "正式な歌詞".encode(), "text/plain"),
+            "lyrics_file": ("../../escaped.txt", source.encode(), "text/plain"),
         },
         data={"wordlist": "stations", "auto_lyrics": "false"},
     )
     assert res.status_code == 200, res.text
     body = wait_done(client, res.json()["id"])
     job = client.app.state.manager.jobs[body["id"]]
-    assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正式な歌詞"
+    assert (job.dir / "lyrics.txt").read_bytes() == source.encode("utf-8")
     assert not escaped.exists()
 
 
