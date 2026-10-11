@@ -76,7 +76,7 @@ def test_preview_posts_private_list_and_discards_stale_responses():
     run_node(frontend_function("loadThumbnailPreview") + r"""
 const elements = new Map();
 const $ = id => {
-  if (!elements.has(id)) elements.set(id, {hidden: false, removeAttribute() {}});
+  if (!elements.has(id)) elements.set(id, {hidden: false, value: "", removeAttribute() {}});
   return elements.get(id);
 };
 let previewSeq = 0, previewAbort = null, previewUrl = '', previewHasReal = false;
@@ -106,11 +106,12 @@ assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
 assert.deepEqual(JSON.parse(calls[0].options.body), {
   sample: 'sample', wordlist_name: '動物', wordlist_text: 'ねこ,ネコ',
 });
+$("thumbnail-wordlist-label").value = "好きな動物";
 loadThumbnailPreview({...first, sampleId: OWN_SONG_VALUE,
   customList: {name: '動物', text: 'いぬ,イヌ'}});
 assert.equal(calls[0].options.signal.aborted, true);
 assert.deepEqual(JSON.parse(calls[1].options.body), {
-  title: '持ち込み曲', wordlist_name: '動物', wordlist_text: 'いぬ,イヌ',
+  title: '持ち込み曲', wordlist_name: '好きな動物', wordlist_text: 'いぬ,イヌ',
 });
 const respond = (call, blob) => call.resolve({
   ok: true, headers: {get: () => 'ready'}, blob: async () => blob,
@@ -129,6 +130,8 @@ assert.match($('builder-note').textContent, /そのまま生成できます/);
 loadThumbnailPreview({sampleId: 'sample', wordlistName: 'stations'});
 assert.match(calls[3].url, /^\/api\/thumbnail-preview\?/);
 assert.equal(calls[3].options.method, undefined);
+assert.equal(new URL(calls[3].url, 'https://example.test').searchParams.get('wordlist_label'),
+  '好きな動物');
 respond(calls[3], 'builtin');
 await new Promise(setImmediate);
 assert.deepEqual(shown, ['new', 'builtin']);
@@ -139,7 +142,8 @@ def test_preview_refreshes_when_custom_contents_or_label_change():
     run_node(frontend_function("schedulePreview") + """
 let builderLive = true, previewShowImages = false, previewComboKey = '', previewKey = '';
 let previewTimer = null;
-const $ = () => ({hidden: false});
+const label = {value: ""};
+const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false};
 const showBuilderMsg = () => {};
 const c = {sampleId: 'sample', wordlistName: '',
   customList: {id: 'one', name: '動物', text: 'ねこ,ネコ'}};
@@ -165,6 +169,14 @@ c.customList = null;
 c.wordlistName = 'stations';
 schedulePreview();
 assert.equal(scheduled, 5);
+label.value = '好きな駅';
+schedulePreview();
+assert.equal(scheduled, 6);
+schedulePreview();
+assert.equal(scheduled, 6);
+label.value = '';
+schedulePreview();
+assert.equal(scheduled, 7);
 """)
 
 
