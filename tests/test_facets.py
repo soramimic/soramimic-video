@@ -303,7 +303,8 @@ const nobelGroup = () => $("wordlist-facets").querySelectorAll(".facet-group")
     .some((cb) => cb.__where === "(nobel=yes)"));
 const nobelSelections = {};
 assert.equal(nobelGroup().querySelector("input.facet-select-all-input").checked, true);
-for (const value of ["yes", "no", "NA"]) {
+assert.equal(nobelGroup().querySelectorAll("input.facet-value").length, 2);
+for (const value of ["yes", "other"]) {
   change(nobelGroup().querySelector("input.facet-select-all-input"), false);
   change(nobelGroup().querySelectorAll("input.facet-value")
     .find((cb) => cb.value === value), true);
@@ -330,7 +331,7 @@ assert.equal(checkbox("no").checked, true);
 assert.equal(checkbox("yes").checked, false);
 setWhere(included); // エディタや保存済み設定からの復元
 setWhere(initialWhere);
-assert.equal(previews, 14);
+assert.equal(previews, 11);
 const editor = document.createElement("div");
 m.renderFacets(editor, entry);
 m.restoreFacets(editor, legacyWhere);
@@ -348,9 +349,10 @@ console.log(JSON.stringify({ included, celebrityOnly, restoredLegacy,
     assert ordinary and all(row[flag_index] == "no" for row in ordinary)
     nobel_index = header.index("nobel")
     assert {row[nobel_index] for row in ordinary} == {"yes", "no", "NA"}
+    nobel_options = {"yes": {"yes"}, "other": {"no", "NA"}}
     for value, selected_where in result["nobelSelections"].items():
         assert _select(csv_path, selected_where) == [
-            row for row in ordinary if row[nobel_index] == value
+            row for row in ordinary if row[nobel_index] in nobel_options[value]
         ]
         assert restored_where(entry, selected_where) == selected_where
     assert _select(csv_path, result["restoredLegacy"]) == ordinary
