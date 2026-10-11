@@ -124,7 +124,7 @@ def _parody_atoms(project: Project, words: list[ParodyWord], sep: str) -> list[_
 
 def _break_quality(left: str, right: str) -> float | None:
     """Prefer authored lines, punctuation, spaces, and phrase-ending particles."""
-    before, after = left.rstrip(), right.lstrip()
+    before, after = left.rstrip(), right.strip()
     if not before or not after or before[-1] in _OPENING or after[0] in _CLOSING:
         return None
     if re.search(r"[A-Za-z0-9]$", left) and re.match(r"[A-Za-z0-9]", right):
