@@ -3038,6 +3038,105 @@ def test_unified_lyrics_file_routes_json_and_text_without_stale_imports():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_editor_transfer_populates_source_lyrics_and_recognition_mode():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function receiveEditorLyrics()",
+            "async function readParodyFile(",
+            "function parodySourceLyrics(",
+            "function syncLyricsRecognition()",
+            "function originalLyricsFile()",
+            "function automaticLyricsEnabled()",
+            "function songLyricsForRequest()",
+            "function appendSongLyrics(",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const {File} = require("node:buffer");
+        const elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {
+            files: [], value: "", textContent: "", hidden: false, checked: false,
+            dispatchEvent() {}, setAttribute(key, value) {this[key] = value;},
+          });
+          return elements.get(id);
+        };
+        const stored = new Map();
+        const sessionStorage = {
+          setItem: (key, value) => stored.set(key, value),
+          removeItem: key => stored.delete(key),
+        };
+        const location = {href: "https://dev-video.soramimic.com/?lyrics-transfer=test"};
+        const EDITOR_KEY = "editor", EDITOR_SEED_KEY = "seed";
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+        const editorPeer = new URL("https://dev.soramimic.pages.dev/editor.html");
+        let bridgeReceiving = false, simpleMode = false, activeCustomListId = "old";
+        let payload, imported, songInputMode = "sample", cleared = 0, saved = 0;
+        const SoramimicBridge = {receive: async (peer, apply) => {
+          assert.equal(peer, editorPeer); await apply(payload);
+        }};
+        const clearAudioInput = () => {cleared++;};
+        const ownSongFile = () => null;
+        const showSongInputMode = mode => {songInputMode = mode;};
+        const applyEditorWordlist = async () => {
+          assert.deepEqual(JSON.parse(stored.get(EDITOR_KEY)), payload);
+        };
+        const injectFile = (input, file) => {input.files = [file];};
+        const updateParodyStatus = async () => {
+          imported = JSON.parse(await $("editor").files[0].text());
+        };
+        const syncBuilderOptions = () => {}, syncBuilderValues = () => {};
+        const saveForm = () => {saved++;};
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          const base = {results: [[{surface:"青森", period:[0,1]}]],
+            unitsList:[[{pronunciation:"ア"}]]};
+          const variants = [
+            [{phrases:["青い空", "", "白い雲"]}, "青い空\\n\\n白い雲"],
+            [{lyrics:"元の表記\\nを保つ", originalLines:["別の表記"],
+              phrases:["ベツノヒョーキ"]}, "元の表記\\nを保つ"],
+            [{originalLines:["字幕の歌詞", "次の行"], phrases:["ヨミ"]}, "字幕の歌詞\\n次の行"],
+            [{}, ""],
+          ];
+          for (const [fields, expected] of variants) {
+            elements.clear(); stored.clear(); bridgeReceiving = false;
+            payload = {...base, ...fields, song:{title:"受け渡しテスト"}};
+            $("lyrics").value = "前回の歌詞";
+            $("auto-lyrics").checked = true;
+            $("midi").value = "previous.mid";
+            $("sample-select").value = "previous-sample";
+            stored.set(EDITOR_SEED_KEY, "old seed");
+            await receiveEditorLyrics();
+            assert.equal($("lyrics").value, expected);
+            assert.equal($("auto-lyrics").checked, !expected);
+            assert.equal($("lyrics-correction-panel").hidden, !expected);
+            assert.equal($("lyrics-file-field").hidden, !expected);
+            assert.equal($("midi").value, "");
+            assert.equal($("sample-select").value, "");
+            assert.equal(songInputMode, "upload");
+            assert.equal(stored.has(EDITOR_SEED_KEY), false);
+            assert.deepEqual(imported, payload, "keep the converted assignments and readings");
+            const form = new Map();
+            appendSongLyrics({append:(key,value) => form.set(key,value)});
+            assert.equal(form.get("lyrics"), expected);
+            assert.equal(form.get("auto_lyrics"), expected ? "false" : "true");
+            assert.match($("bridge-status").textContent, /歌詞を読み込みました/);
+          }
+          assert.equal(cleared, variants.length);
+          assert.equal(saved, variants.length);
+        })().catch(error => {console.error(error); process.exit(1);});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_sample_picker_uses_each_manifest_title_as_is():
     """一番版とフル版の別項目名をsamples.jsonどおりプルダウンへ出す。"""
     load = _function_body(_script(), "async function loadSamples()")

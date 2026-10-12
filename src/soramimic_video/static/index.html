@@ -1704,7 +1704,7 @@ async function receiveEditorLyrics() {
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(payload));
       activeCustomListId = "";
       await applyEditorWordlist();
-      $("lyrics").value = typeof payload.lyrics === "string" ? payload.lyrics : "";
+      $("lyrics").value = parodySourceLyrics(payload);
       $("auto-lyrics").checked = !$("lyrics").value.trim();
       $("song-title").value = payload.song?.title || "";
       syncLyricsRecognition();
