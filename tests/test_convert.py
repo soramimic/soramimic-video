@@ -497,9 +497,9 @@ def _assert_no_shared_notes(project: Project) -> None:
             assert c == 1, f"音符 {nid} が {c} 単語に二重割り当て"
 
 
-def _repeated_layer_project(kana: str = "ダ" * 9) -> Project:
+def _repeated_layer_project(kana: str = "ダ" * 9, *, moras: list[str] | None = None) -> Project:
     """1モーラを3合成スロットで歌うプロジェクト。"""
-    moras = split_fine_moras(kana)
+    moras = split_fine_moras(kana) if moras is None else moras
     mora_ids = [f"m{i}" for i in range(len(moras))]
     performed = [
         {
@@ -560,6 +560,46 @@ def test_layered_conversion_keeps_original_boundaries_and_mora_ownership(tmp_pat
     convert_project(project, str(csv_path))
     assert project.notes == before.notes and project.lyric_layers == before.lyric_layers
     _assert_no_shared_notes(project)
+
+
+@pytest.mark.parametrize("kana", ["キャァカ", "アッァカ", "カンィナ", "コーァカ"])
+def test_layered_conversion_uses_scores_moras_for_adjacent_small_kana(tmp_path, kana):
+    from soramimic_score import kana_to_moras
+
+    project = _repeated_layer_project(kana, moras=list(kana_to_moras(kana)))
+    before = copy.deepcopy(project)
+    units = run_tokenize(engine_phrases(project))[0]
+    groups = _layer_unit_note_indices(project, project.lines[0], units)
+    assert set(index for group in groups for index in group) == set(project.lines[0].note_ids)
+    words = tmp_path / "words.csv"
+    words.write_text(f"id,original,surface,pronunciation\n0,空,空,{engine_phrases(project)[0]}")
+    convert_project(project, str(words))
+    assert project.notes == before.notes and project.lyric_layers == before.lyric_layers
+    _assert_no_shared_notes(project)
+
+
+def test_edited_phrase_does_not_join_moras_across_canonical_rows():
+    project = _repeated_layer_project("カア")
+    layers = project.lyric_layers
+    layers["canonical_text"] = "カァ"
+    layers["canonical"] = [
+        {"utterance_id": "u0", "text": "カ", "kana": "カ", "mora_ids": ["m0"]},
+        {"utterance_id": "u1", "text": "ァ", "kana": "ァ", "mora_ids": ["m1"]},
+    ]
+    for slot in layers["synthesis_plan"]:
+        if slot["mora_ids"] == ["m1"]:
+            slot["utterance_id"] = "u1"
+            if not slot["continuation"]:
+                slot["kana"] = "ァ"
+    apply_lyric_layers(project, layers)
+    line = copy.deepcopy(project.lines[0])
+    line.canonical_kana = "カァ"
+    line.canonical_mora_ids = ["m0", "m1"]
+    line.note_ids = list(range(6))
+    original = copy.deepcopy(project)
+    units = run_tokenize(["カア"])[0]
+    assert _layer_unit_note_indices(project, line, units) == [list(range(6))]
+    assert project == original
 
 
 @pytest.mark.parametrize(

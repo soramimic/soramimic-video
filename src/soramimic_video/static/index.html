@@ -4187,7 +4187,12 @@ $("midi").addEventListener("change", () => {
   }
   $("sample-select").value = "";
   midiSampleId = "";
-  if (!restoring) $("song-title").value = songFileStem(file);
+  if (!restoring) {
+    const editorTitle = activeLyricsJson()?.song?.title;
+    const title = typeof editorTitle === "string" ? editorTitle.trim() : "";
+    $("song-title").value = title
+      ? $("song-title").value.trim() || title : songFileStem(file);
+  }
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   if (!editorImportedFile) clearEditorFile();
   if (kind === "midi") {
