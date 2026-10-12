@@ -31,7 +31,12 @@ def save_result(project: Project, directory: Path, *, title: str = "") -> None:
     An oversized custom list must not prevent an otherwise valid video render.
     Such jobs have no editing link, just like older jobs without this artifact.
     """
-    from .convert import pop_note_length_weight, project_note_length_weights
+    from .convert import (
+        WORDLISTS_DIR,
+        pop_note_length_weight,
+        project_note_length_weights,
+        resolve_wordlist,
+    )
     from .editor_io import export_editor, seed_with_lyrics
     from .ruby import strip_ruby
     from .wordlist_csv import parse_editor_text
@@ -41,8 +46,8 @@ def save_result(project: Project, directory: Path, *, title: str = "") -> None:
         if project.parody is None:
             return
         entry = None
-        wordlist = Path(project.parody.wordlist)
-        if wordlist.is_absolute():
+        wordlist = resolve_wordlist(project.parody.wordlist)
+        if not wordlist.resolve().is_relative_to(WORDLISTS_DIR.resolve()):
             # Uploaded and editor-owned lists resolve to a local normalized CSV.
             # Preserve IDs while removing image paths that cannot cross apps.
             entry = {

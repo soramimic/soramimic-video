@@ -439,3 +439,22 @@ def test_completed_lyrics_omits_large_results_and_unsafe_files(
     result.write_text("result")
     manager._cleanup_failed_artifacts(job)
     assert not result.exists()
+
+
+
+def test_completed_lyrics_accepts_relative_custom_wordlist(review_client, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from soramimic_video.completed_lyrics import FILENAME, save_result
+
+    client, _midi, _calls, _editor = review_client
+    job_id = submit_review(review_client, review=False)
+    wait_status(client, job_id, "done")
+    directory = client.app.state.manager.get(job_id).dir
+    project = Project.load(directory)
+    project.parody.wordlist = str(Path(project.parody.wordlist).relative_to(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    save_result(project, directory)
+    payload = json.loads((directory / FILENAME).read_text())
+    assert payload["wordlist"]["value"] == "ORIGINAL"
+    assert "清水" in payload["wordlist"]["csvText"]
