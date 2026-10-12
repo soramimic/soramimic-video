@@ -216,10 +216,12 @@ def test_editor_analysis_keeps_known_original_reading_without_rereading_text(tmp
 def test_pipeline_uses_json_readings_before_alignment_and_preserves_edits(
     tmp_path, monkeypatch, kind,
 ):
-    import soramimic_score
-    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote
+    from contextlib import contextmanager
+
+    import soramimic_score.media
+    import soramimic_score.models
+    from soramimic_score import AlignedMora, AudioAdapters, MelodyNote
     from soramimic_score.japanese import kana_to_moras
-    from soramimic_score.readings import dictionary_readings
 
     from soramimic_video import api
 
@@ -228,39 +230,44 @@ def test_pipeline_uses_json_readings_before_alignment_and_preserves_edits(
     payload["lyrics"] = "今日晴れ"
     (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "lyrics.txt").write_text(payload["lyrics"], encoding="utf-8")
-    # Recognition/XF supplies one line with a different reading of 今日.
+    # XF supplies one line with a different reading of 今日.
     recognized = _project(tmp_path, ["キョーハレ"], False)
     notes_before = _notes(recognized)
     alignment_calls = []
-    recognition_calls = []
-
-    def recognize(_path):
-        recognition_calls.append(True)
-        return (LyricLine("今日晴れ", 0., 3.),)
+    def forbidden(*_args):
+        pytest.fail("JSON must use its fixed reading without recognition")
 
     def align(_path, lines, readings):
         alignment_calls.append([reading.kana for reading in readings])
+        assert all(line.start_sec is None and line.end_sec is None for line in lines)
         result = []
-        for i, (line, reading) in enumerate(zip(lines, readings, strict=True)):
+        offset = 0
+        for i, reading in enumerate(readings):
             moras = kana_to_moras(reading.kana)
-            duration = (line.end_sec - line.start_sec) / len(moras)
-            result.extend(AlignedMora(i, j, mora, line.start_sec + j * duration,
-                                      line.start_sec + (j + 1) * duration, .99)
+            result.extend(AlignedMora(i, j, mora, (offset + j) * .5,
+                                      (offset + j + 1) * .5, .99)
                           for j, mora in enumerate(moras))
+            offset += len(moras)
         return tuple(result)
 
     adapters = AudioAdapters(
-        reading_selector=dictionary_readings, mora_aligner=align,
+        reading_selector=forbidden, mora_aligner=align,
         melody_transcriber=lambda _: tuple(MelodyNote(i * .5, (i + 1) * .5, 60)
                                             for i in range(6)),
-        lyric_recognizer=recognize,
-        lyric_reading=lambda text: dictionary_readings(None, (LyricLine(text),))[0].kana,
+        lyric_recognizer=forbidden, lyric_reading=forbidden,
         audio_duration=lambda _: 3.,
     )
-    real_analyze = soramimic_score.analyze_audio
-    monkeypatch.setattr(soramimic_score, "analyze_audio", lambda path, **kw: real_analyze(
-        path, adapters, lyrics=kw["lyrics"], adjust_lyrics=kw["adjust_lyrics"],
-    ))
+
+    @contextmanager
+    def prepared(*_args, **_kwargs):
+        yield adapters
+
+    @contextmanager
+    def decoded(path):
+        yield path
+
+    monkeypatch.setattr(soramimic_score.models, "prepared_adapters", prepared)
+    monkeypatch.setattr(soramimic_score.media, "decoded_audio", decoded)
     monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
     monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
     (tmp_path / "input.wav").write_bytes(b"deterministic model boundary")
@@ -287,7 +294,6 @@ def test_pipeline_uses_json_readings_before_alignment_and_preserves_edits(
     assert (tmp_path / "lyrics.txt").read_text() == "今日晴れ"
     assert json.loads((tmp_path / "editor.json").read_text()) == payload
     if kind == "audio":
-        assert recognition_calls == [True]
-        assert any("".join(readings) == "コンニチハレ" for readings in alignment_calls)
+        assert alignment_calls == [["コンニチ", "ハレ"]]
     else:
         assert _notes(project) == notes_before
