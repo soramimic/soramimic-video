@@ -3727,6 +3727,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         "function readParodyText(", "function activeLyricsJson()",
         "function syncJsonInputControls()", "function syncLyricsRecognition()",
         "function currentWordlistName()", "function currentPreviewCustomList()",
+        "function editorUsesTextOnly(", "function editorTextPreviewList(",
     ))
     node = textwrap.dedent('''
         const assert = require("node:assert/strict");
@@ -3739,6 +3740,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
           return elements.get(id);
         }
         const MAX_EDITOR_BYTES=4*1024*1024, simpleMode=false, wordlistGroups=[];
+        const editorWordlists=new Set(["stations","food"]);
         let songInputMode="upload", customListBusy=false, menuClosed=false;
         const ownSongFile=()=>({name:"song.wav"});
         const closeCustomListMenu=focus=>{assert.equal(focus,false);menuClosed=true;};
@@ -3759,6 +3761,15 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.equal($("adjust-lyrics").disabled,true);
         assert.equal(currentWordlistName(),"food");
         assert.equal(currentPreviewCustomList(),null);
+        assert.equal($("builder-text-only-notice").hidden,true);
+        const before=JSON.stringify(data);
+        editorWordlists.delete("food");
+        syncJsonInputControls();
+        assert.equal($("builder-text-only-notice").hidden,false);
+        assert.equal(currentWordlistName(),"");
+        assert.equal(currentPreviewCustomList().name,"食べ物");
+        assert.equal(currentPreviewCustomList().text,"id,original,surface,pronunciation");
+        assert.equal(JSON.stringify(data),before,"keep the imported JSON unchanged");
         assert(menuClosed);
         assert.equal($("wordlist").value,"stations");
         data.wordlist={value:"ORIGINAL",text:"自作",csvText:"ねこ,ネコ"};
@@ -3767,6 +3778,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.deepEqual(currentPreviewCustomList(),{name:"自作",text:"ねこ,ネコ"});
         $("lyrics").value="通常の歌詞";
         syncJsonInputControls();syncLyricsRecognition();
+        assert.equal($("builder-text-only-notice").hidden,true);
         assert.equal($("builder-wordlist-trigger").disabled,false);
         assert.equal(facet.disabled,false);
         assert.equal($("adjust-lyrics").disabled,false);

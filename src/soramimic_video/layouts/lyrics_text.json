@@ -1,0 +1,9 @@
+{
+  "background": "black",
+  "elements": [
+    {"type": "text", "text": "{surface}", "box": [0.08, 0.3, 0.84, 0.22],
+     "size": 0.1, "align": "center", "valign": "middle"},
+    {"type": "text", "text": "{kana}", "box": [0.08, 0.53, 0.84, 0.08],
+     "size": 0.04, "align": "center", "valign": "middle", "color": "#b8b8b8"}
+  ]
+}
