@@ -846,7 +846,7 @@ def section_frame_data(
     - original_song: 元曲名
     - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
     - original_song_credit: 元曲名と簡潔な表記。最終ページでは表記を丸括弧で囲む
-    - song_credit: 指定時は元曲のクレジット表示文をそのまま使用する
+    - song_credit: 指定時は入力文をそのまま使用し、空欄なら元曲名を使用する
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - midi_end_credit: 最終クレジットにだけ載せるMIDI制作者表記
@@ -866,7 +866,7 @@ def section_frame_data(
     if section == "credits" and song and compact_credit:
         original_song_credit = f"{song}（{compact_credit}）"
     if song_credit is not None:
-        original_song_credit = song_credit
+        original_song_credit = song_credit if song_credit.strip() else song
     data = idle_frame_data(project, app_credit)
     data.update(
         {

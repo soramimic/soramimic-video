@@ -2560,13 +2560,13 @@ def test_saved_project_uses_current_shared_word_image(tmp_path, monkeypatch):
     assert project.parody.lines[0].words[0].wordlist_row == original_row
 
 
-@pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts", "曲 - 作者\n© 指定表記", ""])
+@pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts", "曲 - 作者\n© 指定表記"])
 def test_custom_song_credit_keeps_original_label_and_verbatim_text(tmp_path, credit):
     from soramimic_video.layout import APP_CREDIT, _element_texts, load_layout
     from soramimic_video.video import app_credit_text, section_frame_data
 
     footer = app_credit_text(original_song="別の曲名", song_credit=credit)
-    assert footer == (f"{APP_CREDIT} / Original: {credit}" if credit else APP_CREDIT)
+    assert footer == f"{APP_CREDIT} / Original: {credit}"
     data = section_frame_data(
         _endroll_project(tmp_path), section="credits", original_song="別の曲名",
         original_credit="旧著作者", credit_notice="旧指定表記", song_credit=credit,
@@ -2574,11 +2574,28 @@ def test_custom_song_credit_keeps_original_label_and_verbatim_text(tmp_path, cre
     assert data["original_song_credit"] == credit
     elements, _, _ = load_layout("default").section_elements("credits")
     texts = _element_texts(elements, data)
-    if credit:
-        assert f"Original Song　{credit}" in texts
+    assert f"Original Song　{credit}" in texts
+    assert all("別の曲名" not in text and "旧著作者" not in text for text in texts)
+
+
+@pytest.mark.parametrize("credit", ["", " \t\n　"])
+@pytest.mark.parametrize("title", ["三原色", ""])
+def test_blank_song_credit_uses_title_on_final_page(tmp_path, credit, title):
+    from soramimic_video.layout import _element_texts, load_layout
+    from soramimic_video.video import section_frame_data
+
+    data = section_frame_data(
+        _endroll_project(tmp_path), section="credits", original_song=title,
+        original_credit="旧著作者", credit_notice="旧指定表記", song_credit=credit,
+    )
+    assert data["original_song_credit"] == title
+    elements, _, _ = load_layout("default").section_elements("credits")
+    texts = _element_texts(elements, data)
+    if title:
+        assert f"Original Song　{title}" in texts
     else:
         assert not any("Original Song" in text for text in texts)
-    assert all("別の曲名" not in text and "旧著作者" not in text for text in texts)
+    assert all("旧著作者" not in text and "旧指定表記" not in text for text in texts)
 
 
 def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch):
