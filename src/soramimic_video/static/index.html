@@ -8230,7 +8230,7 @@ function renderParodyStatus() {
   }
   if ($("editor-file-error").textContent) { s.textContent = ""; return; }
   if (activeLyricsJson()) {
-    s.textContent = "歌詞JSONの単語・歌詞・読みを使用します。";
+    s.textContent = "歌詞JSONの単語・歌詞・読みを使用し、替え歌がない部分だけ生成します。";
     return;
   }
   if (parodyMismatch()) {

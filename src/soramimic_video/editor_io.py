@@ -602,6 +602,7 @@ def import_editor(
     project_dir: Path,
     file: Path | None = None,
     sessions_dir: Path | None = None,
+    *, fill_missing: bool = False,
 ) -> None:
     """editorが書き出したJSONを取り込み、project.parodyを作り直す。
 
@@ -618,6 +619,7 @@ def import_editor(
 
     字幕の元歌詞がまだ無いプロジェクト(align_lines を通っていない)には、
     JSONの ``lyrics``(元歌詞の生テキスト)から対応づけて埋める。
+    fill_missing=True は既存の替え歌を保持し、未作成区間だけを生成する。
     """
     path = file or (project_dir / EDITOR_FILENAME)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -696,12 +698,17 @@ def import_editor(
     # Commit the new grouping only after every word has been imported successfully.
     raw = align_editor_lines(aligned, payload)
     default_params = project.parody.params if project.parody else {}
+    params = payload.get("param") or default_params
+    if fill_missing:
+        from .editor_completion import complete_editor_gaps
+
+        raw = complete_editor_gaps(aligned, raw, wordlist, where, params)
     apply_converted_lines(
         aligned,
         raw["lines"],
         wordlist=wordlist,
         where=where,
-        params=payload.get("param") or default_params,
+        params=params,
     )
     project.lines, project.notes, project.parody = aligned.lines, aligned.notes, aligned.parody
     project.lyric_phrasing = aligned.lyric_phrasing

@@ -191,6 +191,131 @@ def test_unrelated_lyrics_do_not_discard_edits_or_mutate_project(tmp_path):
     assert project == before
 
 
+@pytest.mark.parametrize("layered", [False, True], ids=["xf", "audio"])
+@pytest.mark.parametrize("filler", [False, True], ids=["empty", "filler"])
+def test_import_generates_only_gaps_and_reserves_all_existing_words(tmp_path, layered, filler):
+    project = _project(tmp_path, ["カキクケ", "コサ", "シス"], layered)
+    before = copy.deepcopy(project)
+    payload = _payload(tmp_path, [["カ", "キ", "ク", "ケ"], ["コサ"], ["シス"]])
+    with (tmp_path / "words.csv").open("a", encoding="utf-8") as stream:
+        stream.write("\n6,蚊,蚊,カ\n7,区家,区家,クケ\n8,小差,小差,コサ")
+    # Keep an unlocked word in the middle and a locked word on a later line.
+    expected = [copy.deepcopy(payload["results"][0][1]),
+                copy.deepcopy(payload["results"][2][0])]
+    expected[1]["locked"] = True
+    payload["results"][0] = [expected[0]]
+    payload["results"][1] = []
+    payload["results"][2] = [expected[1]]
+    if filler:
+        payload["results"][0].extend([
+            {"surface": "カ", "kana": "カ", "period": [0, 1], "filler": True},
+            {"surface": "クケ", "kana": "クケ", "period": [2, 4], "filler": True},
+        ])
+    payload["param"] = {"DUPLICATE": False}
+    (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    import_editor(project, tmp_path, fill_missing=True)
+
+    raw = json.loads((tmp_path / "soramimic_raw.json").read_text())
+    words = [word for row in raw["lines"] for word in row["words"] if not word.get("filler")]
+    assert len(words) > len(expected)
+    for saved in expected:
+        assert [word for word in words if word["id"] == saved["id"]] == [saved]
+    assert len({word["id"] for word in words}) == len(words)
+    for row in raw["lines"]:
+        cursor = 0
+        for word in row["words"]:
+            assert word["period"][0] == cursor
+            cursor = word["period"][1]
+        assert cursor == len(row["units"])
+    assert _notes(project) == _notes(before)
+    assert project.lyric_layers == before.lyric_layers
+    assert json.loads((tmp_path / "editor.json").read_text()) == payload
+    assert build_score(project)["notes"]
+
+
+def test_complete_editor_import_does_not_call_generator(tmp_path, monkeypatch):
+    from soramimic_video import editor_completion
+
+    project = _project(tmp_path, ["カキ"], False)
+    payload = _payload(tmp_path, [["カキ"]])
+    (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Complete edits must not be regenerated")
+
+    monkeypatch.setattr(editor_completion, "run_convert", forbidden)
+    import_editor(project, tmp_path, fill_missing=True)
+    raw = json.loads((tmp_path / "soramimic_raw.json").read_text())
+    assert raw["lines"][0]["words"] == payload["results"][0]
+
+
+def test_gap_generation_keeps_original_reading_when_no_unused_words_remain(tmp_path):
+    project = _project(tmp_path, ["カキクケ"], False)
+    payload = _payload(tmp_path, [["カキクケ"]])
+    payload["results"][0][0]["period"] = [1, 3]
+    payload["param"] = {"DUPLICATE": False}
+    (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    import_editor(project, tmp_path, fill_missing=True)
+
+    raw = json.loads((tmp_path / "soramimic_raw.json").read_text())
+    words = raw["lines"][0]["words"]
+    assert words[1] == payload["results"][0][0]
+    assert [(word["surface"], word["period"]) for word in words if word.get("filler")] == [
+        ("カ", [0, 1]), ("ケ", [3, 4]),
+    ]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_gap_generation_respects_duplicates_with_a_custom_list(tmp_path, duplicate):
+    project = _project(tmp_path, ["カ", "カ"], False)
+    payload = _payload(tmp_path, [["カ"], ["カ"]])
+    saved = {**payload["results"][0][0], "kana": "カ", "pronunciation": ["カ"]}
+    payload["results"] = [[], [saved]]
+    payload["param"] = {"DUPLICATE": duplicate}
+    payload["wordlist"] = {
+        "value": "ORIGINAL", "csvText":
+        "id,original,surface,pronunciation\n0,元0,編集0,カ\n1,蚊,蚊,カ",
+    }
+    (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
+    import_editor(project, tmp_path, fill_missing=True)
+    raw = json.loads((tmp_path / "soramimic_raw.json").read_text())
+    assert raw["lines"][0]["words"][0]["id"] == ("0" if duplicate else "1")
+    assert raw["lines"][1]["words"] == [saved]
+
+
+def test_gap_generation_uses_editor_filter(tmp_path):
+    project = _project(tmp_path, ["カ", "カ"], False)
+    payload = _payload(tmp_path, [["カ"], ["カ"]])
+    payload["results"][0] = []
+    payload["where"] = "tag=chosen"
+    (tmp_path / "words.csv").write_text(
+        "id,original,surface,pronunciation,tag\n"
+        "0,蚊,蚊,カ,excluded\n1,元1,編集1,サクラ,chosen\n2,課,課,カ,chosen",
+        encoding="utf-8",
+    )
+    (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
+    import_editor(project, tmp_path, fill_missing=True)
+    assert project.parody.where == "tag=chosen"
+    assert [word.surface for line in project.parody.lines for word in line.words] == ["課", "編集1"]
+
+
+def test_gap_generation_keeps_edits_across_line_and_unit_changes(tmp_path):
+    project = _project(tmp_path, ["コーラキ"], False)
+    payload = _payload(tmp_path, [["コーラ"], ["キ"]])
+    payload["results"][1] = []
+    with (tmp_path / "words.csv").open("a", encoding="utf-8") as stream:
+        stream.write("\n2,木,木,キ")
+    (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
+    import_editor(project, tmp_path, fill_missing=True)
+    raw = json.loads((tmp_path / "soramimic_raw.json").read_text())
+    words = raw["lines"][0]["words"]
+    assert words[0] == {**payload["results"][0][0], "period": [0, 2]}
+    assert words[1]["surface"] == "木"
+    assert words[1]["period"] == [2, 3]
+
+
 def test_editor_analysis_keeps_known_original_reading_without_rereading_text(tmp_path, monkeypatch):
     from soramimic_score import LyricLine
     from soramimic_score.readings import dictionary_readings
@@ -213,8 +338,9 @@ def test_editor_analysis_keeps_known_original_reading_without_rereading_text(tmp
 
 
 @pytest.mark.parametrize("kind", ["midi", "audio"])
+@pytest.mark.parametrize("missing", [False, True])
 def test_pipeline_uses_json_readings_before_alignment_and_preserves_edits(
-    tmp_path, monkeypatch, kind,
+    tmp_path, monkeypatch, kind, missing,
 ):
     from contextlib import contextmanager
 
@@ -228,6 +354,10 @@ def test_pipeline_uses_json_readings_before_alignment_and_preserves_edits(
     payload = _payload(tmp_path, [["コンニチ"], ["ハレ"]])
     payload["phrases"] = ["今日", "晴れ"]
     payload["lyrics"] = "今日晴れ"
+    if missing:
+        payload["results"][1] = []
+        with (tmp_path / "words.csv").open("a", encoding="utf-8") as stream:
+            stream.write("\n2,晴れ,晴れ,ハレ")
     (tmp_path / "editor.json").write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "lyrics.txt").write_text(payload["lyrics"], encoding="utf-8")
     # XF supplies one line with a different reading of 今日.
@@ -289,8 +419,8 @@ def test_pipeline_uses_json_readings_before_alignment_and_preserves_edits(
     project, = captured
     assert "".join(line.canonical_kana or line.xf_kana for line in project.lines) == "コンニチハレ"
     words = [word for line in project.parody.lines for word in line.words]
-    assert [word.surface for word in words] == ["編集0", "編集1"]
-    assert [word.kana for word in words] == ["サクラ", "サクラ"]
+    assert [word.surface for word in words] == ["編集0", "晴れ" if missing else "編集1"]
+    assert [word.kana for word in words] == ["サクラ", "ハレ" if missing else "サクラ"]
     assert (tmp_path / "lyrics.txt").read_text() == "今日晴れ"
     assert json.loads((tmp_path / "editor.json").read_text()) == payload
     if kind == "audio":
