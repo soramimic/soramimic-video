@@ -2618,8 +2618,8 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'audio'", specifier = ">=1.13" },
     { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=32c8260aeb682daf1b2d3f18de76bc40c6ad0eda" },
     { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=ba4e7083e2a10bc2bdbd1b356c3be98354b6e800" },
-    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=c1fbee3b49ceac19567d96c82b405026e66029a2" },
-    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=c1fbee3b49ceac19567d96c82b405026e66029a2" },
+    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=ae5aca15c672620010ec84b58059018fd248a34f" },
+    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=ae5aca15c672620010ec84b58059018fd248a34f" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.12" },
     { name = "torch", marker = "extra == 'audio'", specifier = "==2.8.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = "==2.8.0" },
@@ -2646,7 +2646,7 @@ dev = [
 [[package]]
 name = "soramimic-yomi"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-yomi?rev=c1fbee3b49ceac19567d96c82b405026e66029a2#c1fbee3b49ceac19567d96c82b405026e66029a2" }
+source = { git = "https://github.com/soramimic/soramimic-yomi?rev=ae5aca15c672620010ec84b58059018fd248a34f#ae5aca15c672620010ec84b58059018fd248a34f" }
 dependencies = [
     { name = "arpakana" },
     { name = "e2k" },
