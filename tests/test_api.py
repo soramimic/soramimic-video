@@ -2767,11 +2767,16 @@ def test_index_html_keeps_the_conf_default_filters():
     assert 'if (!facets.length) return (e && e.where) || "";' in body
 
 
-def test_index_html_parody_json_import_lives_in_advanced_settings():
+def test_index_html_lyrics_file_input_accepts_text_and_json():
     html = _index_html()
     advanced = html.split('<details class="card" id="advanced">')[1].split("</details>")[0]
-    assert 'id="parody-io"' in advanced
-    assert 'id="editor" class="row-grow" accept=".json,application/json"' in advanced
+    assert 'id="parody-io"' not in html
+    assert 'id="lyrics-file"' not in advanced
+    assert (
+        'id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"'
+        in html
+    )
+    assert html.count('id="lyrics-file"') == 1
     assert 'id="review-lyrics"' not in html
     assert 'form.append("review_lyrics"' not in html
 

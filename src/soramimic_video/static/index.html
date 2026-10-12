@@ -908,9 +908,6 @@
       <div id="lyrics-correction-panel" hidden>
         <label for="lyrics">正解歌詞</label>
         <textarea id="lyrics" rows="5" placeholder="正しい歌詞を行ごとに入力してください"></textarea>
-        <label for="lyrics-file" class="hint">または歌詞ファイルから入力（UTF-8テキストファイル）</label>
-        <input type="file" id="lyrics-file" accept=".txt,.md,text/plain,text/markdown">
-        <p class="hint" id="lyrics-file-name" role="status" hidden></p>
         <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
       </div>
     </div>
@@ -927,6 +924,16 @@
   </div>
   <button type="button" id="song-source-switch" class="song-source-switch"
     aria-controls="song-upload-panel sample-picker">サンプル曲で試す</button>
+  <div class="field" id="lyrics-file-field">
+    <label for="lyrics-file">歌詞ファイル</label>
+    <div class="row">
+      <input type="file" id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json" class="row-grow" aria-describedby="lyrics-file-hint editor-file-error">
+      <button type="button" id="clear-lyrics-file" class="btn-sm" hidden aria-label="歌詞ファイルを取り消す">✕</button>
+    </div>
+    <p class="hint" id="lyrics-file-hint">元歌詞のテキスト、またはソラミミックで書き出した歌詞JSONを読み込めます。</p>
+    <p class="hint" id="lyrics-file-name" role="status" hidden></p>
+    <p class="hint" id="editor-file-error" role="alert"></p>
+  </div>
   <div class="builder-selects">
     <div class="field builder-input-row" id="builder-wordlist-field">
       <label for="builder-wordlist-trigger" title="何に空耳させるか">単語リスト</label>
@@ -1082,6 +1089,7 @@
      食い違い警告(#lyrics-midi-warn)だけはどこにも中継先が無いので、ここではなく
      ビルダーカードへ移してある。 -->
 <div id="song-store" hidden>
+  <input type="file" id="editor" accept=".json,application/json">
   <input type="file" id="midi"
     accept=".mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,audio/midi">
   <p id="midi-restore-hint" hidden></p>
@@ -1099,16 +1107,6 @@
   <summary aria-disabled="true">⚙️ 詳細設定
     <span class="advanced-lock-hint" id="advanced-lock-hint">曲と単語リストを選ぶと開けます</span>
   </summary>
-
-  <div class="field" id="parody-io">
-    <label for="editor">替え歌歌詞ファイル</label>
-    <div class="row">
-      <input type="file" id="editor" class="row-grow" accept=".json,application/json" aria-describedby="editor-file-error">
-      <button type="button" id="clear-parody-file" class="btn-sm" hidden aria-label="歌詞ファイルを取り消す">✕</button>
-    </div>
-    <p class="hint" data-info>ソラミミックで書き出した歌詞JSONを読み込みます。同じ曲の音源またはMIDIを選んでください。</p>
-    <p class="hint" id="editor-file-error" role="alert"></p>
-  </div>
 
   <div class="field" id="adjust-lyrics-panel" hidden>
     <label for="adjust-lyrics">
@@ -1702,6 +1700,12 @@ async function loadConfig() {
   $("auth").hidden = !conf.auth_required;
   updateAdvancedSettingsAvailability();
   simpleMode = !!conf.simple_ui;
+  $("lyrics-file").accept = simpleMode
+    ? ".txt,.md,text/plain,text/markdown"
+    : ".txt,.md,.json,text/plain,text/markdown,application/json";
+  $("lyrics-file-hint").textContent = simpleMode
+    ? "元歌詞のUTF-8テキストを読み込めます。"
+    : "元歌詞のテキスト、またはソラミミックで書き出した歌詞JSONを読み込めます。";
   if (simpleMode) closeCustomListMenu(false);
   try { await refreshCustomLists(); }
   catch (err) { showBuilderMsg(err.message); }
@@ -3250,7 +3254,7 @@ async function submitJob(previewSec, previewMode) {
     return;
   }
   if (audio && !automaticLyricsEnabled()
-      && !$("lyrics").value.trim() && !$("lyrics-file").files?.[0]) {
+      && !$("lyrics").value.trim() && !originalLyricsFile()) {
     setBusy(false);
     showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
     $("lyrics").focus();
@@ -3785,13 +3789,18 @@ function songLyricsForRequest() {
   return automaticLyricsEnabled() ? "" : $("lyrics").value;
 }
 
+function originalLyricsFile() {
+  const file = $("lyrics-file").files?.[0];
+  return file && !/\.json$/i.test(file.name) ? file : null;
+}
+
 function appendSongLyrics(form) {
   const lyrics = songLyricsForRequest();
   form.append("lyrics", lyrics);
   // ファイル選択はコピペの代替入力。読み込みが終わるまではファイルを送り、
   // 歌詞欄へ展開できた後は表示・編集されている文字列だけを正本として送る。
-  if (!automaticLyricsEnabled() && !lyrics.trim() && $("lyrics-file").files?.[0]) {
-    form.append("lyrics_file", $("lyrics-file").files[0]);
+  if (!automaticLyricsEnabled() && !lyrics.trim() && originalLyricsFile()) {
+    form.append("lyrics_file", originalLyricsFile());
   }
   form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");
   form.append("adjust_lyrics", !automaticLyricsEnabled()
@@ -3807,7 +3816,7 @@ function syncLyricsRecognition() {
   $("auto-lyrics").disabled = false;
   $("auto-lyrics-toggle").hidden = false;
   $("lyrics-correction-panel").hidden = automatic;
-  $("lyrics").required = !automatic && !$("lyrics-file").files?.[0];
+  $("lyrics").required = !automatic && !originalLyricsFile();
   $("lyrics-mode-hint").hidden = audio;
   $("adjust-lyrics-panel").hidden = !audio || automatic;
   $("adjust-lyrics").disabled = !audio || automatic;
@@ -3825,24 +3834,42 @@ $("adjust-lyrics").addEventListener("change", () => {
 let lyricsFileReadSequence = 0;
 async function loadLyricsFile(file) {
   const sequence = ++lyricsFileReadSequence;
+  sessionStorage.removeItem(EDITOR_KEY);
+  sessionStorage.removeItem(EDITOR_SEED_KEY);
+  clearEditorFile();
+  $("editor-file-error").textContent = "";
+  $("clear-lyrics-file").hidden = !file;
   if (!file) {
     $("lyrics-file-name").textContent = "";
     $("lyrics-file-name").hidden = true;
     syncLyricsRecognition();
     return;
   }
+  if (/\.json$/i.test(file.name)) {
+    if (simpleMode) {
+      $("lyrics-file").value = "";
+      $("clear-lyrics-file").hidden = true;
+      $("editor-file-error").textContent = "この画面では歌詞JSONを読み込めません。";
+      return;
+    }
+    if (!$("lyrics").value.trim()) $("auto-lyrics").checked = true;
+    syncLyricsRecognition();
+    injectFile($("editor"), file, true);
+    saveForm();
+    return;
+  }
   const previousLyrics = $("lyrics").value;
   try {
     if (!/\.(txt|md)$/i.test(file.name)) {
-      throw new Error("歌詞ファイルはUTF-8のテキストファイルを選んでください。");
+      throw new Error("歌詞ファイルはUTF-8のテキスト、またはソラミミックのJSONを選んでください。");
     }
     if (file.size > 256 * 1024) {
       throw new Error("歌詞ファイルは256KB以下にしてください。");
     }
     // 読み込み中に生成されても従来のファイル送信経路へフォールバックできる。
     $("lyrics").value = "";
+    $("auto-lyrics").checked = false;
     syncLyricsRecognition();
-    clearEditorFile();
     const raw = await file.arrayBuffer();
     const text = new TextDecoder("utf-8", { fatal: true }).decode(raw).replace(/^\uFEFF/, "");
     if (sequence !== lyricsFileReadSequence) return;
@@ -3858,6 +3885,7 @@ async function loadLyricsFile(file) {
     if (sequence !== lyricsFileReadSequence) return;
     $("lyrics").value = previousLyrics;
     $("lyrics-file").value = "";
+    $("clear-lyrics-file").hidden = true;
     $("lyrics-file-name").textContent = error instanceof Error && error.message.startsWith("歌詞")
       ? error.message
       : "歌詞ファイルを読み込めませんでした。UTF-8で保存されているか確認してください。";
@@ -3869,10 +3897,11 @@ $("lyrics-file").addEventListener("change", () => {
   loadLyricsFile($("lyrics-file").files[0]);
 });
 $("lyrics").addEventListener("input", () => {
-  if ($("lyrics-file").files[0]) {
+  if (originalLyricsFile()) {
     ++lyricsFileReadSequence;
     $("lyrics-file").value = "";
     $("lyrics-file-name").hidden = true;
+    $("clear-lyrics-file").hidden = true;
   }
   syncLyricsRecognition();
 });
@@ -8147,12 +8176,22 @@ async function updateParodyStatus() {
   editorFileSig = "";
   editorImportedFile = f || null;
   $("editor-file-error").textContent = "";
-  $("clear-parody-file").hidden = !f;
+  if (f) {
+    injectFile($("lyrics-file"), f, false);
+    $("clear-lyrics-file").hidden = false;
+    $("lyrics-file-name").hidden = true;
+  } else if (/\.json$/i.test($("lyrics-file").files[0]?.name || "")) {
+    $("lyrics-file").value = "";
+    $("clear-lyrics-file").hidden = true;
+    $("lyrics-file-name").hidden = true;
+  }
   if (f) {
     try {
       const data = await readParodyFile(f);
       if ($("editor").files[0] !== f) return;
       editorFileSig = editorContentSig(data);
+      $("lyrics-file-name").textContent = `${f.name} の替え歌歌詞を使います。同じ曲の音源またはMIDIを選んでください。`;
+      $("lyrics-file-name").hidden = false;
       const w = data.wordlist;
       // 自作リストは2通り。video側で選んだもの(custom:<sid>・セッションのCSV)と、
       // エディタの中で選んだもの(ORIGINAL・単語データはJSONに同梱)。後者は
@@ -8181,11 +8220,9 @@ async function updateParodyStatus() {
   renderParodyStatus();
 }
 $("editor").addEventListener("change", updateParodyStatus);
-$("clear-parody-file").addEventListener("click", () => {
-  sessionStorage.removeItem(EDITOR_KEY);
-  sessionStorage.removeItem(EDITOR_SEED_KEY);
-  $("editor").value = "";
-  $("editor").dispatchEvent(new Event("change", { bubbles: true }));
+$("clear-lyrics-file").addEventListener("click", () => {
+  $("lyrics-file").value = "";
+  loadLyricsFile(null);
 });
 // 単語リスト・変換パラメータ側の変更での出し直しは、来歴の変化をまとめて拾う
 // changeリスナーが renderParodyStatus を呼ぶ
@@ -8364,7 +8401,9 @@ $("editor").addEventListener("change", async () => {
   const f = $("editor").files[0];
   try {
     if (!f) { localStorage.removeItem(EDITOR_FILE_KEY); return; }
-    localStorage.setItem(EDITOR_FILE_KEY, JSON.stringify({ name: f.name, text: await f.text() }));
+    const text = await f.text();
+    if ($("editor").files[0] !== f) return;
+    localStorage.setItem(EDITOR_FILE_KEY, JSON.stringify({ name: f.name, text }));
   } catch { /* 保存失敗は無視 */ }
 });
 
