@@ -2493,7 +2493,10 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '$("song-record-button").addEventListener("click", startSongRecording);' in script
     assert 'id="audio-input-panel"' not in html
     assert 'id="auto-lyrics"' in html
-    assert 'id="auto-lyrics" aria-controls="lyrics-correction-panel" checked' in html
+    assert (
+        'id="auto-lyrics" aria-controls="lyrics-correction-panel lyrics-file-field" checked'
+        in html
+    )
     assert 'id="lyrics-correction-panel" hidden' in html
     assert '<textarea id="lyrics"' in html
     assert (
@@ -2784,7 +2787,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal($("auto-lyrics").disabled, false);
         assert.equal($("auto-lyrics-toggle").hidden, false);
         assert.equal($("lyrics-correction-panel").hidden, true);
-        assert.equal($("lyrics-mode-hint").hidden, true);
+        assert.equal($("lyrics-file-field").hidden, true);
         assert.equal($("lyrics").required, false);
         assert.equal(automaticLyricsEnabled(), true);
         assert.equal(songLyricsForRequest(), "");
@@ -2792,6 +2795,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         $("auto-lyrics").checked = false;
         syncLyricsRecognition();
         assert.equal($("lyrics-correction-panel").hidden, false);
+        assert.equal($("lyrics-file-field").hidden, false);
         assert.equal($("lyrics").required, true);
         assert.equal(automaticLyricsEnabled(), false);
         assert.equal(songLyricsForRequest(), "manual lyrics");
@@ -2806,6 +2810,9 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal(values.get("adjust_lyrics"), "true");
         $("auto-lyrics").checked = true;
         syncLyricsRecognition();
+        assert.equal($("lyrics-file-field").hidden, true);
+        assert.equal($("lyrics").value, "manual lyrics",
+          "hiding manual input preserves its contents");
         appendSongLyrics(form);
         assert.equal(values.get("adjust_lyrics"), "false");
         $("auto-lyrics").checked = false;
@@ -2882,6 +2889,8 @@ def test_unified_lyrics_file_routes_json_and_text_without_stale_imports():
         _function_body(script, head) + "\n}"
         for head in (
             "async function loadLyricsFile(",
+            "async function pasteLyricsJson(",
+            "function parodySourceLyrics(",
             "async function readParodyFile(",
             "async function updateParodyStatus(",
             "function clearEditorFile()",
@@ -2914,7 +2923,7 @@ def test_unified_lyrics_file_routes_json_and_text_without_stale_imports():
         let parodyWasRestored = false, parodyRestored = false, simpleMode = false;
         let songInputMode = "upload";
         const syncLyricsRecognition = () => {}, saveForm = () => {};
-        const renderParodyStatus = () => {};
+        const renderParodyStatus = () => {}, scheduleMidiCheck = () => {};
         const editorContentSig = data => JSON.stringify(data.results);
         const editorWhereOf = () => "";
         function injectFile(input, file, dispatch) {
@@ -2988,6 +2997,41 @@ def test_unified_lyrics_file_routes_json_and_text_without_stale_imports():
           await settle();
           assert.equal($("lyrics-file").files.length, 0);
           assert.equal($("clear-lyrics-file").hidden, true);
+
+          // Pasting an export uses the same import path, never the JSON text as lyrics.
+          $("auto-lyrics").checked = false;
+          await choose(new File([JSON.stringify({...payload, originalLines: ["読み込んだ元歌詞"]})],
+            "export.json"));
+          assert.equal($("lyrics").value, "読み込んだ元歌詞");
+          assert.equal($("auto-lyrics").checked, false, "import must not change recognition mode");
+          await pasteLyricsJson(JSON.stringify({...payload, lyrics: "青い空"}));
+          await settle();
+          const pastedFile = $("editor").files[0];
+          assert.equal(pastedFile.name, "soramimic-lyrics.json");
+          assert.equal($("lyrics-file").files[0], pastedFile);
+          assert.equal($("lyrics").value, "青い空");
+          assert.equal($("auto-lyrics").checked, false);
+          const pastedFields = new Map();
+          appendSongLyrics({append: (key, value) => pastedFields.set(key, value)});
+          assert.equal(pastedFields.get("lyrics"), "青い空");
+          assert.equal(pastedFields.has("lyrics_file"), false);
+          await pasteLyricsJson('{"broken":');
+          assert.match($("editor-file-error").textContent, /歌詞JSON/);
+          assert.equal($("editor").files[0], pastedFile);
+          assert.equal($("lyrics").value, "青い空");
+          await pasteLyricsJson(JSON.stringify({...payload, phrases: ["白い雲"]}));
+          await settle();
+          assert.equal($("lyrics").value, "白い雲");
+          const imported = $("editor").files[0];
+          const pendingPaste = pasteLyricsJson(JSON.stringify({...payload, lyrics: "古い歌詞"}));
+          $("lyrics").value = "新しい入力";
+          await pendingPaste;
+          assert.equal($("lyrics").value, "新しい入力");
+          assert.equal($("editor").files[0], imported);
+          simpleMode = true;
+          await pasteLyricsJson(JSON.stringify(payload));
+          assert.match($("editor-file-error").textContent, /この画面では/);
+          assert.equal($("editor").files[0], imported);
         })().catch(error => {console.error(error); process.exit(1);});
         """
     )
