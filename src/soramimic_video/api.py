@@ -1370,6 +1370,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             import_editor(
                 project, d, d / "editor.json",
                 sessions_dir=config.get("editor_sessions"),
+                fill_missing=not job.review_approved,
             )
             project.save(d)
     else:
