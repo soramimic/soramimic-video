@@ -74,6 +74,15 @@ def test_bunsetsu_priority_can_require_more_pages(joint):
 
 
 @pytest.mark.parametrize("joint", [False, True], ids=["single", "joint"])
+@pytest.mark.parametrize("number", ["2人", "１２人"])
+def test_numeric_counter_does_not_hide_surrounding_bunsetsu(number, joint):
+    project, words = _project(f"晴れた日に{number}で公園へ行った")
+    assert _pages(project, words, 6, joint) == [
+        "晴れた日に", f"{number}で", "公園へ行った",
+    ]
+
+
+@pytest.mark.parametrize("joint", [False, True], ids=["single", "joint"])
 def test_nearby_word_boundary_does_not_hide_a_fitting_bunsetsu_boundary(joint):
     project, words = _project("赤い花を眺めていた風が吹いていた")
     short_start = len("".join(reading for _, reading in reading_tokens("赤い花を眺めて")))
