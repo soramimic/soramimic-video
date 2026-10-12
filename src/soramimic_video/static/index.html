@@ -903,13 +903,12 @@
           title="選択した曲を解除">&times;</button>
       </div>
       <label class="lyrics-recognition-toggle" id="auto-lyrics-toggle" for="auto-lyrics">
-        <input type="checkbox" id="auto-lyrics" aria-controls="lyrics-correction-panel" checked>
+        <input type="checkbox" id="auto-lyrics" aria-controls="lyrics-correction-panel lyrics-file-field" checked>
         歌詞を自動認識
       </label>
       <div id="lyrics-correction-panel" hidden>
-        <label for="lyrics">正解歌詞</label>
-        <textarea id="lyrics" rows="5" placeholder="正しい歌詞を行ごとに入力してください"></textarea>
-        <p class="hint" id="lyrics-mode-hint">入力した歌詞を正解文字列として使います。</p>
+        <label for="lyrics">歌詞</label>
+        <textarea id="lyrics" rows="5" placeholder="歌詞を行ごとに入力、またはソラミミックの歌詞JSONを貼り付け"></textarea>
       </div>
     </div>
     <div class="upload-use-notice" id="upload-use-notice" hidden>
@@ -925,7 +924,7 @@
   </div>
   <button type="button" id="song-source-switch" class="song-source-switch"
     aria-controls="song-upload-panel sample-picker">サンプル曲で試す</button>
-  <div class="field" id="lyrics-file-field">
+  <div class="field" id="lyrics-file-field" hidden>
     <label for="lyrics-file">歌詞ファイル</label>
     <div class="row">
       <input type="file" id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json" class="row-grow" aria-describedby="lyrics-file-hint editor-file-error">
@@ -1760,6 +1759,9 @@ async function loadConfig() {
   $("lyrics-file-hint").textContent = simpleMode
     ? "元歌詞のUTF-8テキストを読み込めます。"
     : "元歌詞のテキスト、またはソラミミックで書き出した歌詞JSONを読み込めます。";
+  $("lyrics").placeholder = simpleMode
+    ? "歌詞を行ごとに入力してください"
+    : "歌詞を行ごとに入力、またはソラミミックの歌詞JSONを貼り付け";
   if (simpleMode) closeCustomListMenu(false);
   try { await refreshCustomLists(); }
   catch (err) { showBuilderMsg(err.message); }
@@ -3881,8 +3883,8 @@ function syncLyricsRecognition() {
   $("auto-lyrics").disabled = false;
   $("auto-lyrics-toggle").hidden = false;
   $("lyrics-correction-panel").hidden = automatic;
+  $("lyrics-file-field").hidden = automatic;
   $("lyrics").required = !automatic && !originalLyricsFile();
-  $("lyrics-mode-hint").hidden = audio;
   $("adjust-lyrics-panel").hidden = !audio || automatic;
   $("adjust-lyrics").disabled = !audio || automatic;
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
@@ -3917,7 +3919,15 @@ async function loadLyricsFile(file) {
       $("editor-file-error").textContent = "この画面では歌詞JSONを読み込めません。";
       return;
     }
-    if (!$("lyrics").value.trim()) $("auto-lyrics").checked = true;
+    try {
+      const data = await readParodyFile(file);
+      if (sequence !== lyricsFileReadSequence) return;
+      if (!$("lyrics").value.trim()) $("lyrics").value = parodySourceLyrics(data);
+    } catch (error) {
+      if (sequence !== lyricsFileReadSequence) return;
+      $("editor-file-error").textContent = error.message;
+      return;
+    }
     syncLyricsRecognition();
     injectFile($("editor"), file, true);
     saveForm();
@@ -3961,7 +3971,38 @@ async function loadLyricsFile(file) {
 $("lyrics-file").addEventListener("change", () => {
   loadLyricsFile($("lyrics-file").files[0]);
 });
+function parodySourceLyrics(data) {
+  if (typeof data.lyrics === "string" && data.lyrics.trim()) return data.lyrics;
+  const lines = data.originalLines?.length ? data.originalLines : data.phrases;
+  return Array.isArray(lines) && lines.every((line) => typeof line === "string")
+    ? lines.join("\n") : "";
+}
+async function pasteLyricsJson(text) {
+  const sequence = ++lyricsFileReadSequence;
+  const previousLyrics = $("lyrics").value;
+  try {
+    if (simpleMode) throw new Error("この画面では歌詞JSONを読み込めません。");
+    const file = new File([text], "soramimic-lyrics.json", { type: "application/json" });
+    const data = await readParodyFile(file);
+    if (sequence !== lyricsFileReadSequence || $("lyrics").value !== previousLyrics) return;
+    const original = parodySourceLyrics(data);
+    if (original.trim()) $("lyrics").value = original;
+    injectFile($("lyrics-file"), file, false);
+    await loadLyricsFile(file);
+    scheduleMidiCheck();
+  } catch (error) {
+    if (sequence !== lyricsFileReadSequence || $("lyrics").value !== previousLyrics) return;
+    $("editor-file-error").textContent = error.message;
+  }
+}
+$("lyrics").addEventListener("paste", (event) => {
+  const text = event.clipboardData?.getData("text/plain") || "";
+  if (!text.trimStart().startsWith("{")) return;
+  event.preventDefault();
+  pasteLyricsJson(text);
+});
 $("lyrics").addEventListener("input", () => {
+  $("editor-file-error").textContent = "";
   if (originalLyricsFile()) {
     ++lyricsFileReadSequence;
     $("lyrics-file").value = "";
