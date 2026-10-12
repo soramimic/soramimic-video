@@ -62,12 +62,14 @@ def analyze_audio(
     parsed = None
     input_receipt = None
     editor_rows = None
+    editor_boundaries = None
     if editor_path is not None:
-        from .editor_audio import editor_audio_lines
+        from .editor_audio import editor_audio_lines, editor_word_boundaries
         from .editor_io import validate_editor_upload
 
         payload = validate_editor_upload(editor_path.read_bytes())
         editor_rows = editor_audio_lines(payload)
+        editor_boundaries = editor_word_boundaries(payload)
         lyrics = tuple(text for text, _ in editor_rows)
         input_receipt = {"source": "editor-json", "lines": [
             {"text": text, "reading": kana} for text, kana in editor_rows],
@@ -125,7 +127,8 @@ def analyze_audio(
         from .editor_audio import align_editor_audio
 
         document = align_editor_audio(audio_path, editor_rows, config,
-                                      on_progress, accompaniment)
+                                      on_progress, accompaniment,
+                                      word_boundaries=editor_boundaries)
     else:
         document = analyze_score(
             audio_path, lyrics=parsed,
