@@ -2379,10 +2379,10 @@ def test_editor_lyrics_are_written_back_to_the_form():
     """
     script = _script()
     body = _function_body(script, "function applyEditorLyrics()")
-    assert 'if (!data || typeof data.lyrics !== "string") return;' in body
-    # 変わっていなければ何もしない(毎周期で change を撒かない)
-    assert 'if (data.lyrics === $("lyrics").value) return;' in body
-    assert '$("lyrics").value = data.lyrics;' in body
+    assert 'JSON.stringify(data, null, 2)' in body
+    assert 'text === $("lyrics").value' in body
+    assert '$("lyrics").value = text;' in body
+    assert 'syncLyricsInput(false);' in body
     assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
     # 単語リストの書き戻しと同じ経路(ポーリングと「閉じる」)で拾う
     sync = _function_body(script, "async function syncEditorSessionOnce()")
@@ -2520,8 +2520,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     append = _function_body(script, "function appendSongLyrics(")
     assert 'const lyrics = songLyricsForRequest();' in append
     assert 'form.append("lyrics", lyrics);' in append
-    assert '!automaticLyricsEnabled() && !lyrics.trim()' in append
-    assert 'form.append("lyrics_file", originalLyricsFile());' in append
+    assert 'form.append("lyrics_file"' not in append
     assert 'form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");' in append
     automatic = _function_body(script, "function automaticLyricsEnabled()")
     assert 'ownSongKind() !== "audio"' not in automatic
@@ -2758,7 +2757,9 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
             "function ownSongFile()",
             "function automaticLyricsEnabled()",
             "function songLyricsForRequest()",
-            "function originalLyricsFile()",
+            "function lyricsInput()",
+            "function readParodyText(",
+            "function parodySourceLyrics(",
             "function appendSongLyrics(form)",
             "function syncLyricsRecognition()",
         )
@@ -2849,7 +2850,9 @@ def test_lyrics_file_loads_into_editable_textarea_as_paste_alternative():
         class Event {
           constructor(type, options) { this.type = type; this.bubbles = options?.bubbles; }
         }
-        let lyricsFileReadSequence = 0;
+        let lyricsFileReadSequence = 0, lyricsFileReading = false;
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+        const syncLyricsInput = () => clearEditorFile();
         """
     ) + loader + textwrap.dedent(
         """
@@ -2883,163 +2886,144 @@ def test_lyrics_file_loads_into_editable_textarea_as_paste_alternative():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_unified_lyrics_file_routes_json_and_text_without_stale_imports():
+def test_lyrics_content_controls_json_and_text_without_stale_imports():
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
-            "async function loadLyricsFile(",
-            "async function pasteLyricsJson(",
-            "function parodySourceLyrics(",
-            "async function readParodyFile(",
-            "async function updateParodyStatus(",
-            "function clearEditorFile()",
-            "function originalLyricsFile()",
-            "function automaticLyricsEnabled()",
-            "function songLyricsForRequest()",
-            "function appendSongLyrics(",
+            "async function loadLyricsFile(", "function lyricsInput()",
+            "function readParodyText(", "async function readParodyFile(",
+            "function parodySourceLyrics(", "function syncLyricsInput(",
+            "async function updateParodyStatus(", "function clearEditorFile(",
+            "function automaticLyricsEnabled()", "function songLyricsForRequest()",
+            "function appendSongLyrics(", "function editorSourceForSubmit()",
+            "function applyEditorLyrics()",
         )
     )
+    input_listener = script[script.index('$("lyrics").addEventListener("input", () => {'):]
+    input_listener = input_listener[:input_listener.index("\n});") + len("\n});")]
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
         const {File} = require("node:buffer");
         const elements = new Map();
-        const $ = (id) => {
+        const $ = id => {
           if (!elements.has(id)) elements.set(id, {
-            files: [], _value: "", textContent: "", hidden: false, checked: true,
-            get value() { return this._value; },
-            set value(value) { this._value = value; if (!value) this.files = []; },
-            dispatchEvent() { if (id === "editor") updateParodyStatus(); },
+            files: [], _value: "", textContent: "", hidden: false, checked: false,
+            listeners: new Map(),
+            get value() {return this._value;},
+            set value(value) {this._value=value; if (!value) this.files=[];},
+            addEventListener(type, fn) {this.listeners.set(type, fn);},
+            setCustomValidity(message) {this.validationMessage=message;},
+            dispatchEvent(event) {
+              this.listeners.get(event.type)?.(event);
+              if (id === "editor") updateParodyStatus();
+            },
           });
           return elements.get(id);
         };
-        const saved = new Map();
-        const sessionStorage = {removeItem: key => saved.delete(key)};
-        const EDITOR_KEY = "editor", EDITOR_SEED_KEY = "seed";
-        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
-        let lyricsFileReadSequence = 0, editorImportedFile = null;
-        let editorWordlist = null, editorFileSig = "";
-        let parodyWasRestored = false, parodyRestored = false, simpleMode = false;
-        let songInputMode = "upload";
-        const syncLyricsRecognition = () => {}, saveForm = () => {};
-        const renderParodyStatus = () => {}, scheduleMidiCheck = () => {};
-        const editorContentSig = data => JSON.stringify(data.results);
-        const editorWhereOf = () => "";
-        function injectFile(input, file, dispatch) {
-          input.files = [file];
-          if (dispatch) input.dispatchEvent(new Event("change"));
+        const stored = new Map();
+        const sessionStorage = {
+          removeItem:key=>stored.delete(key), setItem:(key,value)=>stored.set(key,value),
+        };
+        const EDITOR_KEY="editor", EDITOR_SEED_KEY="seed", MAX_EDITOR_BYTES=4*1024*1024;
+        let lyricsFileReadSequence=0, lyricsFileReading=false, editorImportedFile=null;
+        let editorWordlist=null, editorFileSig="", simpleMode=false, songInputMode="upload";
+        let parodyWasRestored=false, parodyRestored=false;
+        const syncLyricsRecognition=()=>{}, saveForm=()=>{}, renderParodyStatus=()=>{};
+        const editorContentSig=data=>JSON.stringify(data.results), editorWhereOf=()=>"";
+        const liveEditorEdit=()=>({state:"none"});
+        const editorSessionData=()=>JSON.parse(stored.get(EDITOR_KEY)||"null");
+        function injectFile(input,file,dispatch) {
+          input.files=[file]; if(dispatch)input.dispatchEvent(new Event("change"));
         }
-        const settle = () => new Promise(resolve => setImmediate(resolve));
-        async function choose(file) {
-          $("lyrics-file").files = file ? [file] : [];
-          await loadLyricsFile(file);
-          await settle();
+        const settle=()=>new Promise(resolve=>setImmediate(resolve));
+        async function choose(text,name) {
+          const file=new File([text],name);
+          $("lyrics-file").files=[file]; await loadLyricsFile(file); await settle();
+        }
+        async function type(text) {
+          $("lyrics").value=text; $("lyrics").dispatchEvent(new Event("input")); await settle();
         }
         """
-    ) + functions + textwrap.dedent(
+    ) + functions + "\n" + input_listener + textwrap.dedent(
         """
-        (async () => {
-          const payload = {results: [[{surface: "青空"}]], unitsList: [["ア"]]};
-          const json = new File([JSON.stringify(payload)], "song.JSON");
-          saved.set(EDITOR_KEY, "stale edit");
-          await choose(json);
-          assert.equal($("editor").files[0], json);
-          assert.equal($("lyrics-file").files[0], json);
-          assert.equal($("lyrics").value, "");
-          assert.equal($("auto-lyrics").checked, true);
-          assert.equal(saved.has(EDITOR_KEY), false);
-          assert.equal(editorImportedFile, json);
-          assert.equal(originalLyricsFile(), null);
-          // JSON must never enter the API's original-lyrics text file field.
-          $("auto-lyrics").checked = false;
-          const fields = new Map();
-          appendSongLyrics({append: (key, value) => fields.set(key, value)});
-          assert.equal(fields.has("lyrics_file"), false);
-          assert.equal(fields.get("lyrics"), "");
-
-          await choose(new File(["青い空\\n白い雲"], "song.txt"));
-          assert.equal($("editor").files.length, 0);
-          assert.equal(editorImportedFile, null);
-          assert.equal($("lyrics").value, "青い空\\n白い雲");
-          assert.equal($("auto-lyrics").checked, false);
-          assert.equal($("clear-lyrics-file").hidden, false);
-          await choose(json);
-          assert.equal($("lyrics").value, "青い空\\n白い雲", "keep supplied original lyrics");
-          await choose(new File(["{}"], "broken.json"));
-          assert.match($("editor-file-error").textContent, /変換済み/);
-          assert.equal($("download-editor").disabled, true);
-          await choose(null);
-          assert.equal($("editor").files.length, 0);
-          assert.equal($("editor-file-error").textContent, "");
-          assert.equal($("clear-lyrics-file").hidden, true);
-
-          // A slow text read must not replace a later JSON selection.
-          let finishRead;
-          const slow = {name: "slow.txt", size: 16,
-            arrayBuffer: () => new Promise(resolve => {finishRead = resolve;})};
-          $("lyrics-file").files = [slow];
-          const reading = loadLyricsFile(slow);
-          await choose(json);
-          finishRead(new TextEncoder().encode("古い歌詞").buffer);
-          await reading;
-          assert.equal($("lyrics").value, "");
-          assert.equal($("editor").files[0], json);
-          assert.equal($("lyrics-file").files[0], json);
-
-          // Restored imports appear in the same visible picker and clear with it.
-          await choose(null);
-          injectFile($("editor"), json, true);
-          await settle();
-          assert.equal($("lyrics-file").files[0], json);
-          assert.equal($("clear-lyrics-file").hidden, false);
-          clearEditorFile();
-          await settle();
-          assert.equal($("lyrics-file").files.length, 0);
-          assert.equal($("clear-lyrics-file").hidden, true);
-
-          // Pasting an export uses the same import path, never the JSON text as lyrics.
-          $("auto-lyrics").checked = false;
-          await choose(new File([JSON.stringify({...payload, originalLines: ["読み込んだ元歌詞"]})],
-            "export.json"));
-          assert.equal($("lyrics").value, "読み込んだ元歌詞");
-          assert.equal($("auto-lyrics").checked, false, "import must not change recognition mode");
-          await pasteLyricsJson(JSON.stringify({...payload, lyrics: "青い空"}));
-          await settle();
-          const pastedFile = $("editor").files[0];
-          assert.equal(pastedFile.name, "soramimic-lyrics.json");
-          assert.equal($("lyrics-file").files[0], pastedFile);
-          assert.equal($("lyrics").value, "青い空");
-          assert.equal($("auto-lyrics").checked, false);
-          const pastedFields = new Map();
-          appendSongLyrics({append: (key, value) => pastedFields.set(key, value)});
-          assert.equal(pastedFields.get("lyrics"), "青い空");
-          assert.equal(pastedFields.has("lyrics_file"), false);
-          await pasteLyricsJson('{"broken":');
-          assert.match($("editor-file-error").textContent, /歌詞JSON/);
-          assert.equal($("editor").files[0], pastedFile);
-          assert.equal($("lyrics").value, "青い空");
-          await pasteLyricsJson(JSON.stringify({...payload, phrases: ["白い雲"]}));
-          await settle();
-          assert.equal($("lyrics").value, "白い雲");
-          const imported = $("editor").files[0];
-          const pendingPaste = pasteLyricsJson(JSON.stringify({...payload, lyrics: "古い歌詞"}));
-          $("lyrics").value = "新しい入力";
-          await pendingPaste;
-          assert.equal($("lyrics").value, "新しい入力");
-          assert.equal($("editor").files[0], imported);
-          simpleMode = true;
-          await pasteLyricsJson(JSON.stringify(payload));
-          assert.match($("editor-file-error").textContent, /この画面では/);
-          assert.equal($("editor").files[0], imported);
-        })().catch(error => {console.error(error); process.exit(1);});
+        (async()=>{
+          const payload={results:[[{surface:"青空"}]],unitsList:[["ア"]],
+            phrases:["青い空","白い雲"]};
+          const raw=JSON.stringify(payload,null,2);
+          for(const name of ["lyrics.json","lyrics.txt","lyrics.md"]) {
+            await choose(raw,name);
+            assert.equal($("lyrics").value,raw);
+            assert.equal($("auto-lyrics").checked,false);
+            assert.deepEqual(JSON.parse(await editorSourceForSubmit().file.text()),payload);
+            assert.equal(songLyricsForRequest(),"青い空\\n白い雲");
+            assert.equal($("lyrics-file").files[0].name,name);
+          }
+          await type(JSON.stringify({...payload,lyrics:"編集した元歌詞",
+            results:[[{surface:"白雲"}]]}));
+          assert.equal(songLyricsForRequest(),"編集した元歌詞");
+          const changed=JSON.parse(await editorSourceForSubmit().file.text());
+          assert.equal(changed.results[0][0].surface,"白雲");
+          assert.equal($("lyrics-file").files.length,0);
+          // File selection is only an input method: extensions never select the behavior.
+          await choose("[Chorus] 通常の歌詞","plain.json");
+          assert.equal(songLyricsForRequest(),"[Chorus] 通常の歌詞");
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.equal(stored.has(EDITOR_KEY),false);
+          await type(raw);
+          await type('{"broken":');
+          assert.equal($("lyrics").value,'{"broken":');
+          assert.match($("lyrics").validationMessage,/歌詞JSON/);
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.match(editorSourceForSubmit().error,/歌詞JSON/);
+          assert.equal(songLyricsForRequest(),"");
+          await type("普通の歌詞に戻す");
+          assert.equal($("lyrics").validationMessage,"");
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.equal(songLyricsForRequest(),"普通の歌詞に戻す");
+          await type(raw);
+          $("auto-lyrics").checked=true; syncLyricsInput();
+          assert.equal($("lyrics").value,raw);
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.equal(songLyricsForRequest(),"");
+          $("auto-lyrics").checked=false; syncLyricsInput();
+          assert.deepEqual(JSON.parse(await editorSourceForSubmit().file.text()),payload);
+          const fields=new Map(); appendSongLyrics({append:(key,value)=>fields.set(key,value)});
+          assert.equal(fields.get("lyrics"),"青い空\\n白い雲");
+          assert.equal(fields.has("lyrics_file"),false);
+          // Clearing the picker does not discard the text that it loaded.
+          await loadLyricsFile(null);
+          assert.equal($("lyrics").value,raw);
+          assert(editorSourceForSubmit().file);
+          // Slow file reads cannot replace typing or a more recent file.
+          let finish;
+          const pending=loadLyricsFile({size:10,
+            arrayBuffer:()=>new Promise(resolve=>{finish=resolve;})});
+          await type("新しい入力");
+          finish(new TextEncoder().encode("古い入力").buffer); await pending;
+          assert.equal($("lyrics").value,"新しい入力");
+          assert.equal(lyricsFileReading,false);
+          await choose("{}","invalid.txt");
+          assert.equal($("lyrics").value,"{}");
+          assert.match($("lyrics").validationMessage,/変換済み/);
+          // Editor writeback retains the full converted payload.
+          stored.set(EDITOR_KEY,raw); applyEditorLyrics(); await settle();
+          assert.deepEqual(JSON.parse($("lyrics").value),payload);
+          stored.set(EDITOR_KEY,JSON.stringify({lyrics:"未変換の元歌詞"})); applyEditorLyrics();
+          assert.equal($("lyrics").value,"未変換の元歌詞");
+          assert.equal(editorSourceForSubmit().file,null);
+          simpleMode=true; await type(raw);
+          assert.match($("lyrics").validationMessage,/この画面では/);
+          assert.equal(editorSourceForSubmit().file,null);
+        })().catch(error=>{console.error(error);process.exit(1);});
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_editor_transfer_populates_source_lyrics_and_recognition_mode():
+def test_editor_transfer_populates_json_and_recognition_mode():
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
@@ -3048,7 +3032,9 @@ def test_editor_transfer_populates_source_lyrics_and_recognition_mode():
             "async function readParodyFile(",
             "function parodySourceLyrics(",
             "function syncLyricsRecognition()",
-            "function originalLyricsFile()",
+            "function lyricsInput()",
+            "function readParodyText(",
+            "function parodySourceLyrics(",
             "function automaticLyricsEnabled()",
             "function songLyricsForRequest()",
             "function appendSongLyrics(",
@@ -3062,6 +3048,7 @@ def test_editor_transfer_populates_source_lyrics_and_recognition_mode():
         const $ = id => {
           if (!elements.has(id)) elements.set(id, {
             files: [], value: "", textContent: "", hidden: false, checked: false,
+            setCustomValidity(value) {this.validationMessage=value;},
             dispatchEvent() {}, setAttribute(key, value) {this[key] = value;},
           });
           return elements.get(id);
@@ -3114,10 +3101,10 @@ def test_editor_transfer_populates_source_lyrics_and_recognition_mode():
             $("sample-select").value = "previous-sample";
             stored.set(EDITOR_SEED_KEY, "old seed");
             await receiveEditorLyrics();
-            assert.equal($("lyrics").value, expected);
-            assert.equal($("auto-lyrics").checked, !expected);
-            assert.equal($("lyrics-correction-panel").hidden, !expected);
-            assert.equal($("lyrics-file-field").hidden, !expected);
+            assert.deepEqual(JSON.parse($("lyrics").value), payload);
+            assert.equal($("auto-lyrics").checked, false);
+            assert.equal($("lyrics-correction-panel").hidden, false);
+            assert.equal($("lyrics-file-field").hidden, false);
             assert.equal($("midi").value, "");
             assert.equal($("sample-select").value, "");
             assert.equal(songInputMode, "upload");
@@ -3126,7 +3113,7 @@ def test_editor_transfer_populates_source_lyrics_and_recognition_mode():
             const form = new Map();
             appendSongLyrics({append:(key,value) => form.set(key,value)});
             assert.equal(form.get("lyrics"), expected);
-            assert.equal(form.get("auto_lyrics"), expected ? "false" : "true");
+            assert.equal(form.get("auto_lyrics"), "false");
             assert.match($("bridge-status").textContent, /歌詞を読み込みました/);
           }
           assert.equal(cleared, variants.length);
@@ -3212,7 +3199,9 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             "function loadWordlistImage(name, seq)",
             "function automaticLyricsEnabled()",
             "function songLyricsForRequest()",
-            "function originalLyricsFile()",
+            "function lyricsInput()",
+            "function readParodyText(",
+            "function parodySourceLyrics(",
             "function appendSongLyrics(form)",
             "async function submitJob(previewSec, previewMode)",
             "async function readParodyFile(file)",
@@ -3242,7 +3231,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         let imageUrl;
         class Image { set src(url) { imageUrl = url; } }
         const previewSeq = 1, hiddenPreviewReason = () => "", apiKey = () => "";
-        let submitBusy = false;
+        let submitBusy = false, lyricsFileReading = false;
         const setBusy = (value) => { submitBusy = value; };
         const ownAudioFile = () => null, ownSongKind = () => "sample";
         const samplePending = null, midiChecking = null, midiSampleId = "sample";
@@ -3461,7 +3450,9 @@ def test_footer_labels_guidance_links():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_song_reseed_replaces_original_lyric_tokens():
-    reseed = _function_body(_script(), "async function reseedEditorSong()") + "\n}"
+    reseed = "\n".join(_function_body(_script(), head) + "\n}" for head in (
+        "async function reseedEditorSong()", "function parodySourceLyrics(",
+    ))
     node = """
         const assert = require('node:assert/strict');
         const EDITOR_KEY = 'editor', midiSampleId = 'sample';
@@ -3471,7 +3462,7 @@ def test_song_reseed_replaces_original_lyric_tokens():
         const buildConvertParams = () => '', songTitleOf = () => '';
         const withHostInfo = body => body;
         const markEditorSeed = () => {}, clearEditorFile = () => {};
-        const syncBuilderValues = () => {}, renderParodyStatus = () => {};
+        const syncBuilderValues = () => {}, renderParodyStatus = () => {}, saveForm = () => {};
         let state, fresh;
         const editorSessionData = () => state;
         const sessionStorage = {setItem: (key, value) => {state = JSON.parse(value);}};

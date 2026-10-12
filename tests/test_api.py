@@ -2914,8 +2914,8 @@ def test_index_html_editor_auto_import_requires_actual_edit():
     )
 
 
-def test_index_html_editor_auto_import_checks_provenance():
-    """来歴(曲×単語リスト×パラメータ)が食い違う編集は使わない。"""
+def test_index_html_editor_resume_checks_provenance_and_submit_uses_visible_input():
+    """再編集には来歴を使い、生成には画面に表示されている入力を使う。"""
     import re
 
     html = _index_html()
@@ -2938,15 +2938,11 @@ def test_index_html_editor_auto_import_checks_provenance():
         '{ state: "stale", from, sig };' in live
     )
     src = re.search(r"function editorSourceForSubmit\(\) \{.*?\n\}", html, re.S).group(0)
-    assert 'if (live.state === "ready") {' in src
-    assert 'if (live.state !== "stale") return { file: f };' in src
-    # 取り込み済みJSONがその来歴違いの編集そのものなら、それも使わない
-    assert (
-        "const sameAsFile = !!f && !!editorFileSig && editorFileSig === live.sig;" in src
-    )
-    assert "return { file: sameAsFile ? null : f, dropped: live.from };" in src
-    # 自動取り込みぶんは来歴を確かめてあるので、単語リスト不一致の確認は挟まない
-    assert "if (editorSrc.file && !editorSrc.live && parodyMismatch()" in html
+    assert "const input = lyricsInput();" in src
+    assert 'new File([input.text]' in src
+    assert '$("editor").files' not in src
+    assert "liveEditorEdit()" not in src
+    assert 'if (editorSrc.file && parodyMismatch()' in html
 
 
 # ---- 進捗表示: ステージ名とプログレスバー ----

@@ -1704,10 +1704,14 @@ async function receiveEditorLyrics() {
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(payload));
       activeCustomListId = "";
       await applyEditorWordlist();
-      $("lyrics").value = parodySourceLyrics(payload);
-      $("auto-lyrics").checked = !$("lyrics").value.trim();
+      $("lyrics").value = JSON.stringify(payload, null, 2);
+      $("auto-lyrics").checked = false;
       $("song-title").value = payload.song?.title || "";
       syncLyricsRecognition();
+      $("lyrics").setCustomValidity("");
+      $("lyrics-file").value = "";
+      $("clear-lyrics-file").hidden = true;
+      $("lyrics-file-name").hidden = true;
       injectFile($("editor"), file, false);
       await updateParodyStatus();
       syncBuilderOptions();
@@ -3295,6 +3299,9 @@ async function submitJob(previewSec, previewMode) {
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
   if (submitBusy) return;
   setBusy(true);
+  const inputError = lyricsFileReading ? "歌詞ファイルの読み込みが終わるまでお待ちください。"
+    : (songInputMode !== "upload" || !automaticLyricsEnabled()) ? lyricsInput().error : "";
+  if (inputError) { setBusy(false); showSubmitMsg(inputError); return; }
   // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
   // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
   if (previewSec === 0) $("builder-image-hidden").hidden = true;
@@ -3321,29 +3328,25 @@ async function submitJob(previewSec, previewMode) {
     return;
   }
   if (audio && !automaticLyricsEnabled()
-      && !$("lyrics").value.trim() && !originalLyricsFile()) {
+      && !$("lyrics").value.trim()) {
     setBusy(false);
     showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
     $("lyrics").focus();
     return;
   }
   showSubmitMsg("");
-  // 替え歌の出どころを決める。エディタで編集したまま「取り込んで閉じる」を
-  // 押していなくても、その編集がそのまま使われる(editorSourceForSubmit)。
-  // 来歴が今の選択と食い違う編集は使わず、自動変換に落とす。
+  // 表示中の歌詞欄から、元歌詞と編集済みの割り当てを取り出す。
   const editorSrc = editorSourceForSubmit();
+  if (editorSrc.error) { setBusy(false); showSubmitMsg(editorSrc.error); return; }
   if (simpleMode) {
     editorSrc.file = null;
-    editorSrc.live = false;
   }
   if (editorSrc.file) {
     try { await readParodyFile(editorSrc.file); }
     catch (err) { setBusy(false); showSubmitMsg(err.message); return; }
   }
-  // editor.jsonがあると単語リスト指定は無視されるため、食い違ったまま
-  // 高コストな生成が走る前に最終確認を挟む(自動取り込みぶんは来歴が
-  // 一致していることを確かめてあるので確認は要らない)
-  if (editorSrc.file && !editorSrc.live && parodyMismatch()
+  // JSONの割り当てを使うため、単語リストの選択と異なる場合は確認する。
+  if (editorSrc.file && parodyMismatch()
       && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
         + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
     setBusy(false);
@@ -3851,24 +3854,27 @@ function automaticLyricsEnabled() {
   return songInputMode !== "upload" || $("auto-lyrics").checked;
 }
 
-function songLyricsForRequest() {
-  if (songInputMode !== "upload") return $("lyrics").value;
-  return automaticLyricsEnabled() ? "" : $("lyrics").value;
+function lyricsInput() {
+  const text = $("lyrics").value;
+  if (!text.trimStart().startsWith("{")) return { text, data: null, error: "" };
+  try {
+    if (simpleMode) throw new Error("この画面では歌詞JSONを読み込めません。");
+    const data = readParodyText(text);
+    return { text, data, error: "" };
+  } catch (error) {
+    return { text, data: null, error: error.message };
+  }
 }
 
-function originalLyricsFile() {
-  const file = $("lyrics-file").files?.[0];
-  return file && !/\.json$/i.test(file.name) ? file : null;
+function songLyricsForRequest() {
+  if (songInputMode === "upload" && automaticLyricsEnabled()) return "";
+  const input = lyricsInput();
+  return input.error ? "" : input.data ? parodySourceLyrics(input.data) : input.text;
 }
 
 function appendSongLyrics(form) {
   const lyrics = songLyricsForRequest();
   form.append("lyrics", lyrics);
-  // ファイル選択はコピペの代替入力。読み込みが終わるまではファイルを送り、
-  // 歌詞欄へ展開できた後は表示・編集されている文字列だけを正本として送る。
-  if (!automaticLyricsEnabled() && !lyrics.trim() && originalLyricsFile()) {
-    form.append("lyrics_file", originalLyricsFile());
-  }
   form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");
   form.append("adjust_lyrics", !automaticLyricsEnabled()
     && !$("adjust-lyrics").disabled && $("adjust-lyrics").checked ? "true" : "false");
@@ -3884,7 +3890,7 @@ function syncLyricsRecognition() {
   $("auto-lyrics-toggle").hidden = false;
   $("lyrics-correction-panel").hidden = automatic;
   $("lyrics-file-field").hidden = automatic;
-  $("lyrics").required = !automatic && !originalLyricsFile();
+  $("lyrics").required = !automatic;
   $("adjust-lyrics-panel").hidden = !audio || automatic;
   $("adjust-lyrics").disabled = !audio || automatic;
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
@@ -3892,80 +3898,46 @@ function syncLyricsRecognition() {
 
 $("auto-lyrics").addEventListener("change", () => {
   syncLyricsRecognition();
-  clearEditorFile();
+  syncLyricsInput();
+  saveForm();
   scheduleMidiCheck();
 });
 $("adjust-lyrics").addEventListener("change", () => {
   clearEditorFile();
 });
 let lyricsFileReadSequence = 0;
+let lyricsFileReading = false;
 async function loadLyricsFile(file) {
   const sequence = ++lyricsFileReadSequence;
-  sessionStorage.removeItem(EDITOR_KEY);
-  sessionStorage.removeItem(EDITOR_SEED_KEY);
-  clearEditorFile();
-  $("editor-file-error").textContent = "";
+  lyricsFileReading = !!file;
   $("clear-lyrics-file").hidden = !file;
+  $("lyrics-file-name").hidden = !file;
   if (!file) {
     $("lyrics-file-name").textContent = "";
-    $("lyrics-file-name").hidden = true;
-    syncLyricsRecognition();
     return;
   }
-  if (/\.json$/i.test(file.name)) {
-    if (simpleMode) {
-      $("lyrics-file").value = "";
-      $("clear-lyrics-file").hidden = true;
-      $("editor-file-error").textContent = "この画面では歌詞JSONを読み込めません。";
-      return;
-    }
-    try {
-      const data = await readParodyFile(file);
-      if (sequence !== lyricsFileReadSequence) return;
-      if (!$("lyrics").value.trim()) $("lyrics").value = parodySourceLyrics(data);
-    } catch (error) {
-      if (sequence !== lyricsFileReadSequence) return;
-      $("editor-file-error").textContent = error.message;
-      return;
-    }
-    syncLyricsRecognition();
-    injectFile($("editor"), file, true);
-    saveForm();
-    return;
-  }
-  const previousLyrics = $("lyrics").value;
+  $("lyrics-file-name").textContent = "歌詞ファイルを読み込んでいます…";
   try {
-    if (!/\.(txt|md)$/i.test(file.name)) {
-      throw new Error("歌詞ファイルはUTF-8のテキスト、またはソラミミックのJSONを選んでください。");
-    }
-    if (file.size > 256 * 1024) {
-      throw new Error("歌詞ファイルは256KB以下にしてください。");
-    }
-    // 読み込み中に生成されても従来のファイル送信経路へフォールバックできる。
-    $("lyrics").value = "";
-    $("auto-lyrics").checked = false;
-    syncLyricsRecognition();
+    if (file.size > MAX_EDITOR_BYTES) throw new Error("歌詞ファイルは4MB以下にしてください。");
     const raw = await file.arrayBuffer();
     const text = new TextDecoder("utf-8", { fatal: true }).decode(raw).replace(/^\uFEFF/, "");
     if (sequence !== lyricsFileReadSequence) return;
-    if (text.includes("\0")) {
-      throw new Error("歌詞ファイルに使用できない文字があります。");
-    }
+    if (text.includes("\0")) throw new Error("歌詞ファイルに使用できない文字があります。");
     $("lyrics").value = text;
-    $("lyrics-file-name").textContent = `${file.name} の内容を歌詞欄に読み込みました。`;
-    $("lyrics-file-name").hidden = false;
+    $("auto-lyrics").checked = false;
+    syncLyricsInput();
     syncLyricsRecognition();
+    $("lyrics-file-name").textContent = `${file.name} の内容を歌詞欄に読み込みました。`;
     $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
   } catch (error) {
     if (sequence !== lyricsFileReadSequence) return;
-    $("lyrics").value = previousLyrics;
     $("lyrics-file").value = "";
     $("clear-lyrics-file").hidden = true;
     $("lyrics-file-name").textContent = error instanceof Error && error.message.startsWith("歌詞")
       ? error.message
       : "歌詞ファイルを読み込めませんでした。UTF-8で保存されているか確認してください。";
-    $("lyrics-file-name").hidden = false;
-    syncLyricsRecognition();
+  } finally {
+    if (sequence === lyricsFileReadSequence) lyricsFileReading = false;
   }
 }
 $("lyrics-file").addEventListener("change", () => {
@@ -3977,39 +3949,35 @@ function parodySourceLyrics(data) {
   return Array.isArray(lines) && lines.every((line) => typeof line === "string")
     ? lines.join("\n") : "";
 }
-async function pasteLyricsJson(text) {
-  const sequence = ++lyricsFileReadSequence;
-  const previousLyrics = $("lyrics").value;
-  try {
-    if (simpleMode) throw new Error("この画面では歌詞JSONを読み込めません。");
-    const file = new File([text], "soramimic-lyrics.json", { type: "application/json" });
-    const data = await readParodyFile(file);
-    if (sequence !== lyricsFileReadSequence || $("lyrics").value !== previousLyrics) return;
-    const original = parodySourceLyrics(data);
-    if (original.trim()) $("lyrics").value = original;
-    injectFile($("lyrics-file"), file, false);
-    await loadLyricsFile(file);
-    scheduleMidiCheck();
-  } catch (error) {
-    if (sequence !== lyricsFileReadSequence || $("lyrics").value !== previousLyrics) return;
-    $("editor-file-error").textContent = error.message;
+
+// ファイル入力や編集画面の保存データより、現在の歌詞欄を優先する。
+function syncLyricsInput(resetSession = true) {
+  if (resetSession) {
+    sessionStorage.removeItem(EDITOR_KEY);
+    sessionStorage.removeItem(EDITOR_SEED_KEY);
+  }
+  clearEditorFile(true);
+  const input = lyricsInput();
+  const active = songInputMode !== "upload" || !automaticLyricsEnabled();
+  $("editor-file-error").textContent = active ? input.error : "";
+  $("lyrics").setCustomValidity(active ? input.error : "");
+  if (active && input.data) {
+    if (resetSession) sessionStorage.setItem(EDITOR_KEY, input.text);
+    injectFile($("editor"), new File([input.text], "soramimic-lyrics.json", {
+      type: "application/json",
+    }), false);
+    updateParodyStatus();
   }
 }
-$("lyrics").addEventListener("paste", (event) => {
-  const text = event.clipboardData?.getData("text/plain") || "";
-  if (!text.trimStart().startsWith("{")) return;
-  event.preventDefault();
-  pasteLyricsJson(text);
-});
 $("lyrics").addEventListener("input", () => {
-  $("editor-file-error").textContent = "";
-  if (originalLyricsFile()) {
-    ++lyricsFileReadSequence;
-    $("lyrics-file").value = "";
-    $("lyrics-file-name").hidden = true;
-    $("clear-lyrics-file").hidden = true;
-  }
+  ++lyricsFileReadSequence;
+  lyricsFileReading = false;
+  $("lyrics-file").value = "";
+  $("lyrics-file-name").hidden = true;
+  $("clear-lyrics-file").hidden = true;
+  syncLyricsInput();
   syncLyricsRecognition();
+  saveForm();
 });
 syncLyricsRecognition();
 
@@ -5523,8 +5491,9 @@ function schedulePreview(force) {
   previewTimer = setTimeout(renderBuilder, force ? 0 : PREVIEW_DEBOUNCE_MS);
 }
 
-// 前回の編集済み替え歌が残っていると単語リストより優先されてしまうので外す
-function clearEditorFile() {
+// 歌詞欄に表示中のJSONは、他の設定を変えても入力として保持する。
+function clearEditorFile(force = false) {
+  if (!force && (songInputMode !== "upload" || !automaticLyricsEnabled()) && lyricsInput().data) return;
   if ($("editor").files[0]) {
     $("editor").value = "";
     $("editor").dispatchEvent(new Event("change", { bubbles: true }));
@@ -5844,7 +5813,7 @@ async function leFetchCue(index) {
   form.append("editor", file);
   form.append("wordlist", $("wordlist").value.trim());
   form.append("cue", Math.max(0, index | 0));
-  form.append("lyrics", $("lyrics").value);
+  form.append("lyrics", songLyricsForRequest());
   form.append("allow_noncommercial_fanwork", "true");
   if (leLayout) form.append("layout_json", JSON.stringify(leLayout));
   try {
@@ -7215,25 +7184,12 @@ function liveEditorEdit() {
   return { state: "ready", text: raw, from, sig };
 }
 
-// 生成に使う替え歌JSON(と、その出どころ)を決める。
-//   live: エディタの編集をそのまま使った(取り込み操作なし)
-//   dropped: 来歴違いの編集を捨てて自動変換に落とした(理由を表示する)
+// 生成する替え歌は、現在の歌詞欄のJSONだけから取得する。
 function editorSourceForSubmit() {
-  const selected = $("editor").files[0] || null;
-  if (selected && editorImportedFile === selected) return { file: selected };
-  const live = liveEditorEdit();
-  if (live.state === "ready") {
-    return {
-      file: new File([live.text], "editor.json", { type: "application/json" }),
-      live: true,
-    };
-  }
-  const f = $("editor").files[0] || null;
-  if (live.state !== "stale") return { file: f };
-  // 来歴違いの編集は使わない。取り込み済みのJSONがその編集そのものなら
-  //(「取り込んで閉じる」を押したあとに曲や単語リストを変えた場合)それも外す
-  const sameAsFile = !!f && !!editorFileSig && editorFileSig === live.sig;
-  return { file: sameAsFile ? null : f, dropped: live.from };
+  if (songInputMode === "upload" && automaticLyricsEnabled()) return { file: null };
+  const input = lyricsInput();
+  if (input.error || !input.data) return { file: null, error: input.error };
+  return { file: new File([input.text], "soramimic-lyrics.json", { type: "application/json" }) };
 }
 
 // ---- エディタ側の単語リストを親へ書き戻す ----
@@ -7339,19 +7295,18 @@ async function applyEditorWordlist() {
   renderParodyStatus();
 }
 
-// ---- エディタ側の元歌詞(字幕用)を親へ書き戻す ----
-// 元歌詞はエディタの中でも編集できる。正本は親の #lyrics(生成時に lyrics.txt
-// として送られ、字幕の元歌詞になる)なので、単語リストと同じように写す。
-// 将来この欄を画面から外しても、hidden の正本としてそのまま機能する。
-// 来歴(editorProvenance)は曲・単語リスト・変換パラメータだけを見ていて元歌詞を
-// 含まないので、書き戻しで編集が「別の入力から作られたもの」になることはない
-//(だから applyEditorWordlist と違い adoptEditorSeedProvenance は要らない)。
+// 編集画面で変換済みならJSON、未変換なら元歌詞を歌詞欄に反映する。
 function applyEditorLyrics() {
   const data = editorSessionData();
-  if (!data || typeof data.lyrics !== "string") return;
-  if (data.lyrics === $("lyrics").value) return;   // 変わっていなければ何もしない
-  $("lyrics").value = data.lyrics;
-  // change で拾うもの: MIDI歌詞との食い違い警告・レイアウトプレビュー・フォーム保存
+  if (!data) return;
+  const converted = Array.isArray(data.results) && data.results.length
+    && Array.isArray(data.unitsList) && data.results.length === data.unitsList.length;
+  const text = converted ? JSON.stringify(data, null, 2) : data.lyrics;
+  if (typeof text !== "string" || text === $("lyrics").value) return;
+  $("lyrics").value = text;
+  if (converted) $("auto-lyrics").checked = false;
+  syncLyricsInput(false);
+  syncLyricsRecognition();
   $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
 }
 
@@ -7575,6 +7530,8 @@ async function reseedEditorSong() {
   // 曲を変えた直後に作られる編集が「別の入力から作られたもの」として捨てられる
   //(markEditorSeed は指紋と来歴の両方を今の状態で書き直す)
   markEditorSeed(text);
+  $("lyrics").value = parodySourceLyrics(fresh);
+  saveForm();
   // 前の曲で取り込んだ替え歌JSONは、この曲のものではない(未変換に戻した今、
   // それが生成に使われてしまうので外す。カードの単語リスト変更と同じ扱い)
   clearEditorFile();
@@ -7694,6 +7651,10 @@ async function resumeEditor() {
 
 // (b) 設定から作り直す(保存済みは破棄し、セットアップ画面から始める)
 async function regenerateEditor() {
+  const input = lyricsInput();
+  if (input.data) $("lyrics").value = parodySourceLyrics(input.data);
+  syncLyricsInput();
+  saveForm();
   hideEditorResume();
   sessionStorage.removeItem(EDITOR_KEY);
   sessionStorage.removeItem(EDITOR_SEED_KEY);
@@ -7759,13 +7720,11 @@ async function importEditor() {
   await syncEditorSession();
   const raw = sessionStorage.getItem(EDITOR_KEY);
   if (!raw) { alert("編集データがありません"); return; }
-  const file = new File([raw], "editor.json", { type: "application/json" });
-  const dt = new DataTransfer();
-  dt.items.add(file);
-  // 既存のファイルアップロード経路(create_job / #11のキュープレビュー)を
-  // そのまま使えるよう、editorファイル入力に流し込んで change を発火する。
-  $("editor").files = dt.files;
-  $("editor").dispatchEvent(new Event("change", { bubbles: true }));
+  $("lyrics").value = JSON.stringify(JSON.parse(raw), null, 2);
+  $("auto-lyrics").checked = false;
+  syncLyricsInput(false);
+  syncLyricsRecognition();
+  saveForm();
   closeEditor();
 }
 
@@ -8208,9 +8167,6 @@ $("wordlist-select").addEventListener("change", applyWordlistSelection);
 let parodyRestored = false;
 let parodyWasRestored = false;  // 表示中のJSONが復元由来か(再描画用に保持)
 let editorWordlist = null;      // 表示中のJSONの生成元単語リスト {name, where} | null
-// 取り込み済みJSON(#editor)の編集内容の指紋。エディタの編集セッションと同じものか
-// を見分けて、来歴が食い違うときに「取り込み済みでも使わない」判定に使う。
-let editorFileSig = "";
 
 function escapeHtml(t) {
   const d = document.createElement("div");
@@ -8238,13 +8194,7 @@ function renderParodyStatus() {
     return;
   }
   if ($("editor-file-error").textContent) { s.textContent = ""; return; }
-  // 生成時の判定(editorSourceForSubmit)と同じ結論を表示する。取り込み済みでも
-  // 来歴違いで捨てられるなら「使用します」とは出さない(表示が嘘をつかないように)
-  const src = editorSourceForSubmit();
-  if (!src.file && src.dropped) {
-    s.innerHTML = "⚠ 編集済みの替え歌は、作成したときと入力が変わったため使われません — "
-      + "今の選択で自動変換して生成します";
-  } else if (parodyMismatch()) {
+  if (parodyMismatch()) {
     // 事実は1つ「編集済みが優先される」。名前が同じで絞り込みだけ違うことも
     // あるので、そのときは同じ名前を2回並べない
     const cur = activeCustomList()?.name || $("wordlist").value.trim();
@@ -8262,17 +8212,21 @@ function renderParodyStatus() {
 
 let editorImportedFile = null;
 const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
-async function readParodyFile(file) {
-  if (file.size > MAX_EDITOR_BYTES) throw new Error("歌詞JSONは4MB以下にしてください。");
+function readParodyText(text) {
+  if (new Blob([text]).size > MAX_EDITOR_BYTES) throw new Error("歌詞JSONは4MB以下にしてください。");
   let data;
-  try { data = JSON.parse((await file.text()).replace(/^\uFEFF/, "")); }
-  catch { throw new Error("ソラミミックで書き出した歌詞JSONを選んでください。"); }
+  try { data = JSON.parse(text.replace(/^\uFEFF/, "")); }
+  catch { throw new Error("歌詞JSONの形式を確認してください。"); }
   if (!data || !Array.isArray(data.results) || !Array.isArray(data.unitsList)
       || !data.results.length || data.results.length !== data.unitsList.length
       || !data.results.every(Array.isArray) || !data.unitsList.every(Array.isArray)) {
-    throw new Error("変換済みの歌詞JSONを選んでください。");
+    throw new Error("ソラミミックで変換済みの歌詞JSONを入力してください。");
   }
   return data;
+}
+async function readParodyFile(file) {
+  if (file.size > MAX_EDITOR_BYTES) throw new Error("歌詞JSONは4MB以下にしてください。");
+  return readParodyText(await file.text());
 }
 
 async function updateParodyStatus() {
@@ -8280,25 +8234,12 @@ async function updateParodyStatus() {
   $("download-editor").disabled = !f;
   parodyWasRestored = parodyRestored;  // await前に確定させる
   editorWordlist = null;
-  editorFileSig = "";
   editorImportedFile = f || null;
   $("editor-file-error").textContent = "";
-  if (f) {
-    injectFile($("lyrics-file"), f, false);
-    $("clear-lyrics-file").hidden = false;
-    $("lyrics-file-name").hidden = true;
-  } else if (/\.json$/i.test($("lyrics-file").files[0]?.name || "")) {
-    $("lyrics-file").value = "";
-    $("clear-lyrics-file").hidden = true;
-    $("lyrics-file-name").hidden = true;
-  }
   if (f) {
     try {
       const data = await readParodyFile(f);
       if ($("editor").files[0] !== f) return;
-      editorFileSig = editorContentSig(data);
-      $("lyrics-file-name").textContent = `${f.name} の替え歌歌詞を使います。同じ曲の音源またはMIDIを選んでください。`;
-      $("lyrics-file-name").hidden = false;
       const w = data.wordlist;
       // 自作リストは2通り。video側で選んだもの(custom:<sid>・セッションのCSV)と、
       // エディタの中で選んだもの(ORIGINAL・単語データはJSONに同梱)。後者は
@@ -8347,7 +8288,7 @@ $("download-editor").addEventListener("click", async () => {
 });
 
 // ---- 入力フォームの localStorage 保存・復元(プリセット, #31) ----
-// テキスト・選択系は formState にまとめ、ファイルは midiFile / editorFile に別保存する。
+// 歌詞欄と選択項目は formState にまとめ、持ち込みMIDIだけ midiFile に別保存する。
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
 let restoredSampleId = "";
@@ -8365,6 +8306,8 @@ function saveForm() {
   try {
     localStorage.setItem(FORM_KEY, JSON.stringify({
       lyrics: $("lyrics").value,
+      lyricsInputVersion: 1,
+      autoLyrics: $("auto-lyrics").checked,
       songTitle: $("song-title").value,
       sampleId: midiSampleId,
       // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
@@ -8503,17 +8446,6 @@ $("midi").addEventListener("change", async () => {
   } catch { /* 保存失敗は無視 */ }
 });
 
-// editor JSONはテキストのまま保存(「取り消し」でvalue=""なら消す)
-$("editor").addEventListener("change", async () => {
-  const f = $("editor").files[0];
-  try {
-    if (!f) { localStorage.removeItem(EDITOR_FILE_KEY); return; }
-    const text = await f.text();
-    if ($("editor").files[0] !== f) return;
-    localStorage.setItem(EDITOR_FILE_KEY, JSON.stringify({ name: f.name, text }));
-  } catch { /* 保存失敗は無視 */ }
-});
-
 // dataURL/テキストからFileを作り、file入力に注入する
 function injectFile(input, file, dispatch) {
   const dt = new DataTransfer();
@@ -8588,6 +8520,7 @@ async function doRestoreForm() {
     }
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
+    if (typeof state.autoLyrics === "boolean") $("auto-lyrics").checked = state.autoLyrics;
     $("song-title").value = state.songTitle || "";
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
@@ -8692,15 +8625,20 @@ async function doRestoreForm() {
     }
   } catch { /* 復元失敗は無視 */ }
 
-  // 7. editorファイル: File化して注入しchange(単語リスト復元より後に行う)
+  // 旧版で別保存していたJSONも歌詞欄へ移す。以後は歌詞欄だけを復元する。
   try {
     const ed = JSON.parse(localStorage.getItem(EDITOR_FILE_KEY) || "null");
-    if (ed && ed.text != null) {
-      parodyRestored = true;
-      injectFile($("editor"), new File([ed.text], ed.name, { type: "application/json" }), true);
-      parodyRestored = false;
+    if (state?.lyricsInputVersion !== 1 && ed?.text != null && !simpleMode) {
+      const data = readParodyText(ed.text);
+      if ($("lyrics").value.trim() && !lyricsInput().data) data.lyrics = $("lyrics").value;
+      $("lyrics").value = JSON.stringify(data, null, 2);
+      $("auto-lyrics").checked = false;
     }
   } catch { /* 復元失敗は無視 */ }
+  parodyRestored = true;
+  syncLyricsInput();
+  parodyRestored = false;
+  syncLyricsRecognition();
 }
 
 $("api-key").addEventListener("change", loadConfig);
