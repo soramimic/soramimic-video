@@ -1,5 +1,4 @@
 import json
-from contextlib import contextmanager
 
 import pytest
 
@@ -18,44 +17,50 @@ def payload():
     }
 
 
-def test_fixed_json_alignment_preserves_readings_rows_and_assignments(monkeypatch, tmp_path):
+def test_json_alignment_localizes_then_forces_known_readings(monkeypatch, tmp_path):
     import soramimic_score
-    from soramimic_score import AlignedMora, AudioAdapters, MelodyNote, media, models
+    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote
+    from soramimic_score.japanese import kana_to_moras
+    from soramimic_score.readings import dictionary_readings
 
     from soramimic_video.editor_io import import_editor
     from soramimic_video.project import Project
     from soramimic_video.score_audio import analyze_audio
 
-    def forbidden(*_args, **_kwargs):
-        pytest.fail("JSON mode must not recognize lyrics or select new readings")
+    recognized = []
+    aligned_readings = []
+
+    def recognize(_path):
+        recognized.append(True)
+        return (LyricLine("なませい", 0., 1.2),)
 
     def align(_path, lines, readings):
-        assert [line.text for line in lines] == ["生", "生"]
-        assert all(line.start_sec is None and line.end_sec is None for line in lines)
-        assert [r.kana for r in readings] == ["ナマ", "セイ"]
-        return tuple(AlignedMora(li, mi, c, (li * 2 + mi) * .3,
-                                (li * 2 + mi + 1) * .3, .9)
-                     for li, reading in enumerate(readings) for mi, c in enumerate(reading.kana))
+        aligned_readings.append("".join(r.kana for r in readings))
+        assert all(line.start_sec is not None and line.end_sec is not None for line in lines)
+        result = []
+        for li, (line, reading) in enumerate(zip(lines, readings, strict=True)):
+            moras = kana_to_moras(reading.kana)
+            duration = (line.end_sec - line.start_sec) / len(moras)
+            result.extend(AlignedMora(li, mi, c, line.start_sec + mi * duration,
+                                     line.start_sec + (mi + 1) * duration, .99)
+                          for mi, c in enumerate(moras))
+        return tuple(result)
 
     adapters = AudioAdapters(
-        lyric_recognizer=forbidden, reading_selector=forbidden,
-        supplied_reading_selector=forbidden, mora_aligner=align,
+        lyric_recognizer=recognize, reading_selector=dictionary_readings,
+        lyric_reading=lambda text: dictionary_readings(None, (LyricLine(text),))[0].kana,
+        audio_duration=lambda _: 1.2, mora_aligner=align,
         melody_transcriber=lambda _: tuple(MelodyNote(i * .3, (i + 1) * .3, 60)
                                           for i in range(4)),
     )
+    real_analyze = soramimic_score.analyze_audio
 
-    @contextmanager
-    def prepared(_path, _config, **kwargs):
+    def analyze(path, **kwargs):
         assert kwargs["accompaniment_path"].name == "no_vocals.wav"
-        yield adapters
+        return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
+                            on_progress=kwargs["on_progress"])
 
-    @contextmanager
-    def decoded(path):
-        yield path
-
-    monkeypatch.setattr(models, "prepared_adapters", prepared)
-    monkeypatch.setattr(media, "decoded_audio", decoded)
-    monkeypatch.setattr(soramimic_score, "analyze_audio", forbidden)
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze)
     monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
     monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
     words = tmp_path / "words.csv"
@@ -69,23 +74,25 @@ def test_fixed_json_alignment_preserves_readings_rows_and_assignments(monkeypatc
     stages = []
     project = analyze_audio(source, tmp_path, editor_path=editor, device="cpu",
                             progress_detail=stages.append)
-    assert [line.original_text for line in project.lines] == ["生", "", "生"]
-    assert [line.canonical_kana for line in project.lines] == ["ナマ", "", "セイ"]
-    assert [note.line for note in project.notes] == [0, 0, 2, 2]
+    assert recognized == [True]
+    assert "ナマセイ" in aligned_readings
+    assert "".join(line.canonical_kana for line in project.lines) == "ナマセイ"
     assert all(note.end_sec <= 1.2 and note.midi_note == 60 for note in project.notes)
     import_editor(project, tmp_path, editor)
-    assert project.parody.lines[0].words[0].surface == "名前"
-    assert project.parody.lines[0].words[0].locked
-    assert project.parody.lines[0].words[0].note_ids == [0, 1]
-    assert project.parody.lines[1].words == []
+    edited = [word for row in project.parody.lines for word in row.words]
+    assert [word.surface for word in edited] == ["名前", "名前"]
+    assert all(word.locked for word in edited)
+    assert edited[0].note_ids == [0, 1]
+    assert edited[1].note_ids == [2, 3]
     project.save(tmp_path)
-    restored = Project.load(tmp_path)
-    assert [line.original_text for line in restored.lines] == ["生", "", "生"]
+    assert Project.load(tmp_path) == project
     assert json.loads(editor.read_text()) == data
     analysis = json.loads((tmp_path / "analyze_audio/analysis.json").read_text())
-    assert analysis["asr_used"] is False
+    assert analysis["asr_used"] is True
     assert analysis["fixed_editor_readings"] is True
-    assert all("認識" not in stage for stage in stages)
+    receipt = json.loads((tmp_path / "analyze_audio/lyric_input.json").read_text())
+    assert receipt["lines"][1] == {"text": "", "reading": ""}
+    assert any("認識" in stage for stage in stages)
 
 
 @pytest.mark.parametrize("change", [
