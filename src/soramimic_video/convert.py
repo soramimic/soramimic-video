@@ -115,6 +115,9 @@ def _layer_unit_mapping(
     if layers is None:
         return None
 
+    if not units and not line.note_ids and line.canonical_kana == "":
+        return [], []
+
     canonical = layers.get("canonical")
     plan = layers.get("synthesis_plan")
     if not isinstance(canonical, list) or not isinstance(plan, list):

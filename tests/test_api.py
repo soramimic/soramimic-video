@@ -3054,3 +3054,51 @@ def test_custom_song_text_has_size_limits(client, field, length):
         data={"wordlist": "stations", field: "あ" * length},
     )
     assert res.status_code == 422
+
+
+def test_audio_json_overrides_recognition_adjustment_and_plain_lyrics(client):
+    payload = {"phrases": ["生"], "unitsList": [[{"pronunciation": "ナマ"}]],
+               "results": [[]], "wordlist": {"filepath": "stations.csv"}}
+    response = client.post("/api/jobs", files={
+        "audio": ("input.wav", fake_wav(), "audio/wav"),
+        "editor": ("lyrics.json", json.dumps(payload).encode(), "application/json"),
+    }, data={"lyrics": "古い歌詞", "auto_lyrics": "true", "adjust_lyrics": "true",
+             "auto_phrase_lyrics": "true", "wordlist": "pokemon"})
+    assert response.status_code == 200, response.text
+    job = client.app.state.manager.jobs[response.json()["id"]]
+    assert (job.dir / "lyrics.txt").read_text() == "生"
+    assert json.loads((job.dir / "editor.json").read_text()) == payload
+    assert job.params["auto_lyrics"] is False
+    assert job.params["adjust_lyrics"] is False
+    assert job.params["auto_phrase_lyrics"] is False
+    assert job.params["wordlist"] == "stations"
+
+
+def test_audio_json_missing_readings_is_rejected_before_job_creation(client):
+    response = client.post("/api/jobs", files={
+        "audio": ("input.wav", fake_wav(), "audio/wav"),
+        "editor": ("lyrics.json", json.dumps({"phrases": ["生"], "unitsList": [[{}]],
+                                              "results": [[]]}).encode(), "application/json"),
+    }, data={"wordlist": "stations"})
+    assert response.status_code == 422
+    assert "読み" in response.json()["detail"]
+    assert not client.app.state.manager.jobs
+
+
+def test_audio_pipeline_passes_json_to_fixed_alignment(tmp_path, monkeypatch):
+    from soramimic_video import score_audio
+
+    class ReachedAnalyzer(Exception):
+        pass
+
+    editor = tmp_path / "editor.json"
+    editor.write_text("{}")
+
+    def analyze(*args, **kwargs):
+        assert kwargs["editor_path"] == editor
+        raise ReachedAnalyzer
+
+    monkeypatch.setattr(score_audio, "analyze_audio", analyze)
+    job = api_mod.Job(id="json", dir=tmp_path, params={"input_kind": "audio"})
+    with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})

@@ -3866,6 +3866,30 @@ function lyricsInput() {
   }
 }
 
+function activeLyricsJson() {
+  return songInputMode === "upload" && automaticLyricsEnabled() ? null : lyricsInput().data;
+}
+
+function syncJsonInputControls() {
+  const data = activeLyricsJson();
+  const locked = !!data;
+  for (const id of ["builder-wordlist", "builder-wordlist-trigger", "wordlist-select"]) {
+    $(id).disabled = locked || customListBusy;
+  }
+  for (const input of $("wordlist-facets").querySelectorAll("input, select, button")) {
+    input.disabled = locked;
+  }
+  if (locked) {
+    closeCustomListMenu(false);
+    const entry = data.wordlist || {};
+    const name = entry.text || entry.name || entry.filepath?.split("/").pop()?.replace(/\.csv$/i, "")
+      || "単語リスト";
+    const label = `${name}（歌詞JSON）`;
+    $("builder-wordlist-trigger-label").textContent = label;
+    $("builder-wordlist-trigger").title = label;
+  }
+}
+
 function songLyricsForRequest() {
   if (songInputMode === "upload" && automaticLyricsEnabled()) return "";
   const input = lyricsInput();
@@ -3877,7 +3901,7 @@ function appendSongLyrics(form) {
   form.append("lyrics", lyrics);
   form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");
   form.append("adjust_lyrics", !automaticLyricsEnabled()
-    && !$("adjust-lyrics").disabled && $("adjust-lyrics").checked ? "true" : "false");
+    && !activeLyricsJson() && !$("adjust-lyrics").disabled && $("adjust-lyrics").checked ? "true" : "false");
 }
 
 function syncLyricsRecognition() {
@@ -3892,7 +3916,7 @@ function syncLyricsRecognition() {
   $("lyrics-file-field").hidden = automatic;
   $("lyrics").required = !automatic;
   $("adjust-lyrics-panel").hidden = !audio || automatic;
-  $("adjust-lyrics").disabled = !audio || automatic;
+  $("adjust-lyrics").disabled = !audio || automatic || !!activeLyricsJson();
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
 }
 
@@ -3968,6 +3992,7 @@ function syncLyricsInput(resetSession = true) {
     }), false);
     updateParodyStatus();
   }
+  syncBuilderValues();
 }
 $("lyrics").addEventListener("input", () => {
   ++lyricsFileReadSequence;
@@ -4603,8 +4628,7 @@ function setCustomListBusy(busy) {
   for (const id of ["name", "text", "file", "dropzone", "save", "cancel", "delete", "close"]) {
     $("custom-wordlist-" + id).disabled = busy;
   }
-  $("builder-wordlist").disabled = busy;
-  $("builder-wordlist-trigger").disabled = busy;
+  syncJsonInputControls();
   for (const button of $("custom-wordlist-menu").querySelectorAll("button")) {
     button.disabled = busy || button.dataset.optionDisabled === "true";
   }
@@ -5020,6 +5044,7 @@ function syncBuilderValues() {
   $("builder-wordlist-trigger-label").textContent = selectedLabel;
   $("builder-wordlist-trigger").title = selectedLabel;
   renderCustomListMenu();
+  syncJsonInputControls();
   updateWordlistUsageNotice();
 }
 
@@ -5030,7 +5055,8 @@ async function updateWordlistUsageNotice() {
   const request = {
     name: custom ? "" : currentWordlistName(),
     text: custom?.text || "",
-    where: activeCustomList() ? "" : $("where").value,
+    where: activeLyricsJson() ? editorWhereOf(activeLyricsJson())
+      : activeCustomList() ? "" : $("where").value,
     auth: apiKey(),
   };
   if (wordlistUsageRequest && Object.keys(request)
@@ -5232,6 +5258,8 @@ function hiddenPreviewReason(name) {
 // エディタの中で書いた自作リストは名前を持たないので空文字になる(プレビュー・
 // レイアウト自動切替は「未指定」として扱われ、サーバー既定に落ちる)。
 function currentWordlistName() {
+  const data = activeLyricsJson();
+  if (data) return String(data.wordlist?.filepath || "").split("/").pop().replace(/\.csv$/i, "");
   const sel = $("wordlist-select");
   if (!sel.hidden) {
     const opt = sel.selectedOptions[0];
@@ -5244,6 +5272,12 @@ function currentWordlistName() {
 
 function currentPreviewCustomList() {
   if (simpleMode) return null;
+  const data = activeLyricsJson();
+  if (data) {
+    const entry = data.wordlist;
+    return typeof entry?.csvText === "string" && entry.csvText.trim()
+      ? { name: entry.text || "自作リスト", text: entry.csvText } : null;
+  }
   const list = activeCustomList();
   if (list) return list;
   if (!showsEditorWordlist()) return null;
@@ -8082,6 +8116,7 @@ function renderWordlistFilter() {
     selectAllLabel.className = "facet-check facet-select-all";
     const selectAll = document.createElement("input");
     selectAll.type = "checkbox";
+    selectAll.disabled = !!activeLyricsJson();
     selectAll.className = "facet-select-all-input";
     selectAll.setAttribute("aria-label", label.textContent + "をすべて選択");
     selectAllLabel.append(selectAll, document.createTextNode("すべて"));
@@ -8110,6 +8145,7 @@ function renderWordlistFilter() {
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.className = "facet-value";
+      cb.disabled = !!activeLyricsJson();
       cb.value = item.v;
       cb.__where = wordlistFacetClause(f, item);
       cb.checked = hasDefault ? item.default === true : true;
@@ -8194,6 +8230,10 @@ function renderParodyStatus() {
     return;
   }
   if ($("editor-file-error").textContent) { s.textContent = ""; return; }
+  if (activeLyricsJson()) {
+    s.textContent = "歌詞JSONの単語・歌詞・読みを使用します。";
+    return;
+  }
   if (parodyMismatch()) {
     // 事実は1つ「編集済みが優先される」。名前が同じで絞り込みだけ違うことも
     // あるので、そのときは同じ名前を2回並べない
