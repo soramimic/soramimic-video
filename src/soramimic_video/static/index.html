@@ -3519,7 +3519,7 @@ function updateSongTextPreviews() {
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
   let footer = [baseCredit, credit ? `Original: ${credit}` : ""].filter(Boolean).join(" / ");
-  let finalCredit = credit;
+  let finalCredit = credit || title;
   if (midiSampleId) {
     const preset = sampleCredits[midiSampleId] || {};
     const notice = preset.displayCredit || preset.creditNotice || "";
