@@ -2967,8 +2967,8 @@ def test_lyrics_content_controls_json_and_text_without_stale_imports():
           assert.equal(changed.results[0][0].surface,"白雲");
           assert.equal($("lyrics-file").files.length,0);
           // File selection is only an input method: extensions never select the behavior.
-          await choose("通常の歌詞","plain.json");
-          assert.equal(songLyricsForRequest(),"通常の歌詞");
+          await choose("[Chorus] 通常の歌詞","plain.json");
+          assert.equal(songLyricsForRequest(),"[Chorus] 通常の歌詞");
           assert.equal(editorSourceForSubmit().file,null);
           assert.equal(stored.has(EDITOR_KEY),false);
           await type(raw);

@@ -3856,7 +3856,7 @@ function automaticLyricsEnabled() {
 
 function lyricsInput() {
   const text = $("lyrics").value;
-  if (!["{", "["].includes(text.trimStart()[0])) return { text, data: null, error: "" };
+  if (!text.trimStart().startsWith("{")) return { text, data: null, error: "" };
   try {
     if (simpleMode) throw new Error("この画面では歌詞JSONを読み込めません。");
     const data = readParodyText(text);
@@ -8288,7 +8288,7 @@ $("download-editor").addEventListener("click", async () => {
 });
 
 // ---- 入力フォームの localStorage 保存・復元(プリセット, #31) ----
-// テキスト・選択系は formState にまとめ、ファイルは midiFile / editorFile に別保存する。
+// 歌詞欄と選択項目は formState にまとめ、持ち込みMIDIだけ midiFile に別保存する。
 // APIキー(apiKey)は既存の保存を尊重してここでは触らない。
 const FORM_KEY = "formState", MIDI_KEY = "midiFile", EDITOR_FILE_KEY = "editorFile";
 let restoredSampleId = "";
