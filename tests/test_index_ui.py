@@ -1128,6 +1128,8 @@ def _song_input_node_harness() -> str:
         const activeCustomList = () => null;
         const simpleMode = false;
         const renderCustomListMenu = () => {};
+        const syncJsonInputControls = () => {};
+        const activeLyricsJson = () => null;
         const updateWordlistUsageNotice = () => {};
         const updateAdvancedSettingsAvailability = () => {};
         const selectedSampleIsAudio = () => false;
@@ -2755,7 +2757,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         _function_body(script, head) + "\n}"
         for head in (
             "function ownSongFile()",
-            "function automaticLyricsEnabled()",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
             "function songLyricsForRequest()",
             "function lyricsInput()",
             "function readParodyText(",
@@ -2895,7 +2897,8 @@ def test_lyrics_content_controls_json_and_text_without_stale_imports():
             "function readParodyText(", "async function readParodyFile(",
             "function parodySourceLyrics(", "function syncLyricsInput(",
             "async function updateParodyStatus(", "function clearEditorFile(",
-            "function automaticLyricsEnabled()", "function songLyricsForRequest()",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
+            "function songLyricsForRequest()",
             "function appendSongLyrics(", "function editorSourceForSubmit()",
             "function applyEditorLyrics()",
         )
@@ -2931,6 +2934,7 @@ def test_lyrics_content_controls_json_and_text_without_stale_imports():
         let editorWordlist=null, editorFileSig="", simpleMode=false, songInputMode="upload";
         let parodyWasRestored=false, parodyRestored=false;
         const syncLyricsRecognition=()=>{}, saveForm=()=>{}, renderParodyStatus=()=>{};
+        const syncBuilderValues=()=>{};
         const editorContentSig=data=>JSON.stringify(data.results), editorWhereOf=()=>"";
         const liveEditorEdit=()=>({state:"none"});
         const editorSessionData=()=>JSON.parse(stored.get(EDITOR_KEY)||"null");
@@ -3035,7 +3039,7 @@ def test_editor_transfer_populates_json_and_recognition_mode():
             "function lyricsInput()",
             "function readParodyText(",
             "function parodySourceLyrics(",
-            "function automaticLyricsEnabled()",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
             "function songLyricsForRequest()",
             "function appendSongLyrics(",
         )
@@ -3197,7 +3201,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             "async function updateWordlistUsageNotice()",
             "function wordlistWhereContains(where, frag)",
             "function loadWordlistImage(name, seq)",
-            "function automaticLyricsEnabled()",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
             "function songLyricsForRequest()",
             "function lyricsInput()",
             "function readParodyText(",
@@ -3589,4 +3593,66 @@ def test_legacy_song_credit_keeps_both_saved_fields():
         assert.equal(legacySongCredit({}), "");
         """
     )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selection():
+    script = _script()
+    functions = "\n".join(_function_body(script, name) + "\n}" for name in (
+        "function automaticLyricsEnabled()", "function lyricsInput()",
+        "function readParodyText(", "function activeLyricsJson()",
+        "function syncJsonInputControls()", "function syncLyricsRecognition()",
+        "function currentWordlistName()", "function currentPreviewCustomList()",
+    ))
+    node = textwrap.dedent('''
+        const assert = require("node:assert/strict");
+        const elements = new Map(), facet = {disabled:false};
+        function $(id) {
+          if(!elements.has(id)) elements.set(id, {
+            value:"", checked:false, hidden:false, selectedOptions:[],
+            querySelectorAll:()=>[facet], setAttribute(){},
+          });
+          return elements.get(id);
+        }
+        const MAX_EDITOR_BYTES=4*1024*1024, simpleMode=false, wordlistGroups=[];
+        let songInputMode="upload", customListBusy=false, menuClosed=false;
+        const ownSongFile=()=>({name:"song.wav"});
+        const closeCustomListMenu=focus=>{assert.equal(focus,false);menuClosed=true;};
+        const activeCustomList=()=>null, showsEditorWordlist=()=>false;
+        const editorSessionWordlist=()=>null;
+        $("wordlist").value="stations";
+        $("wordlist-select").hidden=true;
+    ''') + functions + textwrap.dedent('''
+        const data={phrases:["歌詞"],results:[[]],unitsList:[[]],
+          wordlist:{text:"食べ物",filepath:"wordlists/food.csv"}};
+        $("lyrics").value=JSON.stringify(data);
+        $("adjust-lyrics").checked=true;
+        syncJsonInputControls();syncLyricsRecognition();
+        assert.equal($("builder-wordlist-trigger").disabled,true);
+        assert.equal($("wordlist-select").disabled,true);
+        assert.equal($("builder-wordlist-trigger-label").textContent,"食べ物（歌詞JSON）");
+        assert.equal(facet.disabled,true);
+        assert.equal($("adjust-lyrics").disabled,true);
+        assert.equal(currentWordlistName(),"food");
+        assert.equal(currentPreviewCustomList(),null);
+        assert(menuClosed);
+        assert.equal($("wordlist").value,"stations");
+        data.wordlist={value:"ORIGINAL",text:"自作",csvText:"ねこ,ネコ"};
+        $("lyrics").value=JSON.stringify(data);
+        assert.equal(currentWordlistName(),"");
+        assert.deepEqual(currentPreviewCustomList(),{name:"自作",text:"ねこ,ネコ"});
+        $("lyrics").value="通常の歌詞";
+        syncJsonInputControls();syncLyricsRecognition();
+        assert.equal($("builder-wordlist-trigger").disabled,false);
+        assert.equal(facet.disabled,false);
+        assert.equal($("adjust-lyrics").disabled,false);
+        assert.equal(currentWordlistName(),"stations");
+        customListBusy=true;syncJsonInputControls();
+        assert.equal($("builder-wordlist-trigger").disabled,true);
+        customListBusy=false;$("lyrics").value=JSON.stringify(data);
+        $("auto-lyrics").checked=true;syncJsonInputControls();
+        assert.equal($("builder-wordlist-trigger").disabled,false);
+        assert.equal(currentWordlistName(),"stations");
+    ''')
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

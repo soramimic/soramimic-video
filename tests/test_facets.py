@@ -284,6 +284,7 @@ const $ = (id) => {
   return elements.get(id);
 };
 const selectedWordlistGroup = () => ({ entries: [entry] });
+const activeLyricsJson = () => null;
 let previews = 0;
 const clearEditorFile = () => {};
 const schedulePreview = () => { previews++; };

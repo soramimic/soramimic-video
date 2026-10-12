@@ -1303,6 +1303,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                     # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
                     # アップロード音源の自動認識時はWhisperで歌詞行を決める。
                     lyrics_path=supplied_audio_lyrics,
+                    editor_path=d / "editor.json" if (d / "editor.json").exists() else None,
                     adjust_lyrics=bool(job.params.get("adjust_lyrics", False)),
                     whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
                     device=config.get("audio_device"),
@@ -3966,6 +3967,21 @@ def create_app(
         input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
             await resolve_song_input(midi, audio, sample_id)
         )
+        editor_bytes = None
+        editor_payload: Any = None
+        editor_original = False
+        if editor is not None and editor.filename:
+            if is_simple_ui():
+                raise HTTPException(status_code=422, detail="この入力形式は現在利用できません")
+            from .editor_io import MAX_EDITOR_BYTES, validate_editor_upload
+
+            editor_bytes = await editor.read(MAX_EDITOR_BYTES + 1)
+            if len(editor_bytes) > MAX_EDITOR_BYTES:
+                raise HTTPException(status_code=413, detail="歌詞JSONは4MB以下にしてください")
+            try:
+                editor_payload = validate_editor_upload(editor_bytes)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         if lyrics_file is not None and lyrics_file.filename:
             uploaded_lyrics = await read_lyrics_upload(lyrics_file)
             if lyrics.strip() and uploaded_lyrics.strip() != lyrics.strip():
@@ -3987,6 +4003,17 @@ def create_app(
                 raise HTTPException(
                     status_code=422, detail="選択した曲の歌詞が見つかりません"
                 ) from exc
+        if editor_payload is not None and input_kind == "audio":
+            from .editor_audio import editor_audio_lines
+
+            try:
+                fixed_lines = editor_audio_lines(editor_payload)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            lyrics = "\n".join(text for text, _ in fixed_lines)
+            auto_lyrics = False
+            adjust_lyrics = False
+            auto_phrase_lyrics = False
         if input_kind == "audio" and not launch_sample_id:
             if auto_lyrics:
                 # 自動認識時は、古い画面や直接APIから残った歌詞を解析に混ぜない。
@@ -4038,19 +4065,7 @@ def create_app(
                 detail="この入力形式は現在利用できません",
             )
         client_hash = None if quota_exempt or not is_public_mode() else _client_hash(request)
-        editor_bytes = None
-        editor_payload: Any = None
-        editor_original = False
-        if editor is not None and editor.filename:
-            from .editor_io import MAX_EDITOR_BYTES, validate_editor_upload
-
-            editor_bytes = await editor.read(MAX_EDITOR_BYTES + 1)
-            if len(editor_bytes) > MAX_EDITOR_BYTES:
-                raise HTTPException(status_code=413, detail="歌詞JSONは4MB以下にしてください")
-            try:
-                editor_payload = validate_editor_upload(editor_bytes)
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if editor_payload is not None:
             if is_public_mode():
                 from .editor_io import custom_wordlist_sid, is_original_wordlist
 

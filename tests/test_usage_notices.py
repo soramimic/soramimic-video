@@ -151,6 +151,7 @@ let name = "arbitrary-list", custom = null, registeredCustom = null;
 const currentWordlistName = () => name;
 const currentPreviewCustomList = () => custom;
 const activeCustomList = () => registeredCustom;
+const activeLyricsJson = () => null;
 const apiKey = () => "", headers = () => ({});
 const setCustomWordlistText = (form, text) => form.set("wordlist_text", text);
 const requests = [];
