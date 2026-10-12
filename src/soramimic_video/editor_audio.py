@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from soramimic_score import ModelConfig, ScoreDocument
-
-    from .project import Project
+from typing import Any
 
 
 def editor_audio_lines(payload: dict[str, Any]) -> list[tuple[str, str]]:
@@ -44,75 +37,3 @@ def editor_audio_lines(payload: dict[str, Any]) -> list[tuple[str, str]]:
     if not any(reading for _, reading in result):
         raise ValueError("歌詞JSONに読みのある歌詞が必要です")
     return result
-
-
-def align_editor_audio(
-    path: Path, lines: list[tuple[str, str]], config: ModelConfig,
-    on_progress: Callable[[str], None], accompaniment_path: Path | None,
-) -> ScoreDocument:
-    """Use acoustic alignment and melody only; JSON text and readings are fixed."""
-    from soramimic_score import (
-        LyricLine,
-        ReadingSelection,
-        build_audio_observations,
-        compile_score,
-    )
-    from soramimic_score.media import decoded_audio
-    from soramimic_score.models import prepared_adapters
-    from soramimic_score.note_runs import NoteRunConfig
-
-    active = [(index, text, kana) for index, (text, kana) in enumerate(lines) if kana]
-    lyrics = tuple(LyricLine(text) for _, text, _ in active)
-    readings = tuple(ReadingSelection(kana, "editor-json", 1., detail={
-        "editor_line_index": index, "fixed": True,
-    }) for index, _, kana in active)
-    on_progress("音声を読み込んでいます")
-    with decoded_audio(path) as source:
-        if config.separate_vocals:
-            on_progress("歌声を分離しています")
-        with prepared_adapters(source, config, accompaniment_path=accompaniment_path) as adapters:
-            # Untimed lines are aligned jointly in their supplied order. No ASR
-            # or reading selector can replace, merge, or split the JSON phrases.
-            on_progress("JSONの読みを音源に合わせています")
-            moras = adapters.mora_aligner(source, lyrics, readings)
-            on_progress("音高を推定しています")
-            notes = adapters.melody_transcriber(source)
-            on_progress("楽譜データを組み立てています")
-            observations = build_audio_observations(
-                lyrics, readings, moras, notes, allow_empty_melody=True,
-            )
-            result = compile_score(observations, config=NoteRunConfig(
-                whisper_boundary_cost_per_sec2=.1,
-            ))
-            if adapters.vocal_activity is not None:
-                from soramimic_score.spoken import add_spoken_fallback
-
-                windows = {f"u{i}": (
-                    min(m.start_sec for m in moras if m.line_index == i),
-                    max(m.end_sec for m in moras if m.line_index == i),
-                ) for i in range(len(lyrics))}
-                result = add_spoken_fallback(result, windows,
-                    lambda bounds: adapters.vocal_activity(source, bounds),
-                    fill_unpitched_lines=True)
-            return result
-
-
-def restore_editor_rows(project: Project, rows: list[tuple[str, str]]) -> None:
-    """Retain empty editor rows without inventing acoustic or canonical moras."""
-    from .project import Line
-
-    active = iter(enumerate(project.lines))
-    lines = []
-    for index, (text, kana) in enumerate(rows):
-        if kana:
-            canonical_index, line = next(active)
-            line.canonical_line_index = canonical_index
-            line.id = index
-            line.original_line_index = index
-            for note_id in line.note_ids:
-                project.notes[note_id].line = index
-        else:
-            line = Line(index, text, "", [], original_text=text,
-                        original_line_index=index, canonical_kana="")
-        lines.append(line)
-    project.lines = lines
