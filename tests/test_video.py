@@ -2595,6 +2595,7 @@ def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch
     def capture_thumbnail(*args, **kwargs):
         seen["thumbnail_footer"] = args[6]
         seen["label"] = kwargs["wordlist_label"]
+        seen["title_words"] = kwargs["title_words"]
         return None
 
     def capture_sections(*args, **kwargs):
@@ -2611,9 +2612,11 @@ def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch
     video_mod.prepare_video(
         project, tmp_path, 10, song_title="サムネの曲名",
         song_credit="オトノケ - Creepy Nuts", thumbnail_wordlist_label="好きな駅",
+        title_words=[{"id": "1", "surface": "駅名"}],
     )
     assert seen == {
         "footer": f"{APP_CREDIT} / Original: オトノケ - Creepy Nuts",
         "thumbnail_footer": f"{APP_CREDIT} / Original: オトノケ - Creepy Nuts",
         "label": "好きな駅", "final_credit": "オトノケ - Creepy Nuts",
+        "title_words": [{"id": "1", "surface": "駅名"}],
     }

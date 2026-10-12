@@ -89,6 +89,7 @@ const headers = () => ({'X-API-Key': 'secret'});
 const OWN_SONG_VALUE = 'own', PREVIEW_TIMEOUT_MS = 8000;
 const ownSongFile = () => ({name: '持ち込み.wav'});
 const songTitleOf = () => '持ち込み曲';
+const selectedTitleWords = () => '';
 const setTimeout = () => 1;
 const clearTimeout = () => {};
 const calls = [], shown = [], fallbacks = [];
@@ -144,7 +145,9 @@ def test_preview_refreshes_when_custom_contents_or_label_change():
 let builderLive = true, previewShowImages = false, previewComboKey = '', previewKey = '';
 let previewTimer = null;
 const label = {value: ""};
-const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false};
+const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false, value: ""};
+const refreshTitleChoices = () => {};
+const selectedTitleWords = () => '';
 const showBuilderMsg = () => {};
 const c = {sampleId: 'sample', wordlistName: '',
   customList: {id: 'one', name: '動物', text: 'ねこ,ネコ'}};

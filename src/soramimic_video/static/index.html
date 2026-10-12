@@ -1236,6 +1236,18 @@
       <p class="hint" data-info>動画の左下と最後のクレジットに、入力した文章をそのまま表示します。著作者名や権利者から指定された表記もここに入力してください。</p>
     </div>
 
+    <div class="field" id="title-words-field">
+      <label for="title-words">タイトルに使う単語</label>
+      <div class="row">
+        <select id="title-words" class="row-grow" aria-describedby="title-words-detail">
+          <option value="">自動で選ぶ</option>
+        </select>
+        <button type="button" id="title-candidates-load" class="btn-sm">候補を探す</button>
+      </div>
+      <p class="hint" id="title-words-detail" aria-live="polite">選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。</p>
+      <p class="hint" id="title-candidates-status" role="status"></p>
+    </div>
+
     <div class="field">
       <label for="thumbnail-wordlist-label">単語リスト名</label>
       <input type="text" id="thumbnail-wordlist-label" maxlength="100" placeholder="選択した単語リスト名">
@@ -1744,6 +1756,9 @@ let wordlistPhrases = {};
 let simpleMode = false;
 let launchWordlists = [];
 let editorWordlists = null;
+let titleChoice = null;
+let titleCandidates = [], titleCandidatesContext = "", titleCandidatesAbort = null;
+let titleCandidatesSeq = 0;
 // Web UIの歌声はVOICEVOX 波音リツ(ノーマル・歌唱)に固定する。
 let fixedVoicevoxStyle = 6000;
 let fixedSynthesizer = "voicevox";
@@ -3395,6 +3410,7 @@ async function submitJob(previewSec, previewMode) {
   form.append("song_title", songTitleOf(audio || midi));
   form.append("song_credit", $("song-credit").value.trim());
   form.append("thumbnail_wordlist_label", $("thumbnail-wordlist-label").value.trim());
+  form.append("title_words", selectedTitleWords());
   form.append("allow_noncommercial_fanwork", "true");
   form.append("wordlist", $("wordlist").value);
   form.append("where", $("where").value);
@@ -5330,6 +5346,109 @@ const currentCombo = () => ({
   customList: currentPreviewCustomList(),
 });
 
+function titleChoiceContext() {
+  const c = currentCombo();
+  return JSON.stringify([c.sampleId,
+    c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "",
+    c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
+}
+
+function selectedTitleWords() {
+  return titleChoice?.context === titleChoiceContext() ? JSON.stringify(titleChoice.words) : "";
+}
+
+function renderTitleChoices() {
+  const select = $("title-words");
+  const selected = selectedTitleWords();
+  const choices = [...titleCandidates];
+  if (selected && !choices.some((c) => JSON.stringify(c.words) === selected)) choices.unshift(titleChoice);
+  select.replaceChildren(new Option("自動で選ぶ", ""));
+  for (const choice of choices) {
+    const duplicate = choices.filter((c) => c.label === choice.label).length > 1;
+    const label = duplicate ? `${choice.label}（${choice.originals.join(" / ")}）` : choice.label;
+    select.add(new Option(label, JSON.stringify(choice.words)));
+  }
+  select.value = selected;
+  $("title-words-detail").textContent = selected
+    ? `読み：${titleChoice.reading} ／ ${titleChoice.originals.join(" ＋ ")}`
+    : "選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。";
+  const c = currentCombo();
+  $("title-candidates-load").disabled = !!titleCandidatesAbort || !c.sampleId
+    || (!c.wordlistName && !c.customList);
+}
+
+function refreshTitleChoices() {
+  if (restoring) return;
+  const context = titleChoiceContext();
+  if (titleCandidatesContext && titleCandidatesContext !== context) {
+    ++titleCandidatesSeq;
+    titleCandidatesAbort?.abort();
+    titleCandidatesAbort = null;
+    titleCandidates = [];
+    titleCandidatesContext = "";
+    $("title-candidates-status").textContent = "";
+  }
+  if (titleChoice && titleChoice.context !== context) {
+    titleChoice = null;
+    saveForm();
+  }
+  renderTitleChoices();
+}
+
+$("title-candidates-load").addEventListener("click", async () => {
+  refreshTitleChoices();
+  const context = titleChoiceContext();
+  const combo = currentCombo();
+  const payload = combo.sampleId === OWN_SONG_VALUE
+    ? { title: songTitleOf(ownSongFile()) } : { sample: combo.sampleId };
+  if (combo.customList) payload.wordlist_text = combo.customList.text;
+  else Object.assign(payload, { wordlist: combo.wordlistName, where: $("where").value.trim() });
+  const seq = ++titleCandidatesSeq;
+  const ctrl = new AbortController();
+  titleCandidatesAbort?.abort();
+  titleCandidatesAbort = ctrl;
+  titleCandidatesContext = context;
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  $("title-candidates-status").textContent = "曲名に近い候補を探しています…";
+  renderTitleChoices();
+  try {
+    const res = await fetch("/api/title-candidates", {
+      method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload), signal: ctrl.signal,
+    });
+    const body = await res.json();
+    if (seq !== titleCandidatesSeq || context !== titleChoiceContext()) return;
+    if (!res.ok) throw new Error(body.detail || "候補を取得できませんでした");
+    titleCandidates = body.candidates;
+    $("title-candidates-status").textContent = titleCandidates.length
+      ? "候補からタイトルに使う組み合わせを選んでください。"
+      : "候補が見つかりませんでした。自動のまま生成できます。";
+    renderTitleChoices();
+    $("title-words").focus();
+  } catch (error) {
+    if (seq === titleCandidatesSeq && context === titleChoiceContext()) {
+      $("title-candidates-status").textContent = error.name === "AbortError"
+        ? "候補の取得に時間がかかっています。もう一度お試しください。" : error.message;
+    }
+  } finally {
+    clearTimeout(timer);
+    if (seq === titleCandidatesSeq) {
+      titleCandidatesAbort = null;
+      renderTitleChoices();
+    }
+  }
+});
+
+$("title-words").addEventListener("change", () => {
+  const value = $("title-words").value;
+  const choice = [...titleCandidates, ...(titleChoice ? [titleChoice] : [])]
+    .find((c) => JSON.stringify(c.words) === value);
+  titleChoice = choice ? { ...choice, context: titleChoiceContext() } : null;
+  renderTitleChoices();
+  saveForm();
+  schedulePreview(true);
+});
+
 // 単語リストの代表画像(サムネプレビューが取れなかったときのフォールバック)。
 // どちらも取れなければ画像なしで成立させる(枠ごと隠す)。
 // HIDDEN_PREVIEW_WORDLISTS のリストは「画像を表示する」を押すまで読み込まない。
@@ -5409,6 +5528,9 @@ function loadThumbnailPreview(combo) {
     : { sample: combo.sampleId, wordlist: combo.wordlistName };
   const displayLabel = $("thumbnail-wordlist-label").value.trim();
   if (displayLabel) params.wordlist_label = displayLabel;
+  params.where = $("where").value.trim();
+  const titleWords = selectedTitleWords();
+  if (titleWords) params.title_words = titleWords;
   params.noncommercial_fanwork = "true";
   if (reason) params.images = "0";   // 単語画像を貼らないサムネを作ってもらう
   const url = combo.customList ? "/api/thumbnail-preview"
@@ -5421,6 +5543,7 @@ function loadThumbnailPreview(combo) {
       ...(combo.sampleId === OWN_SONG_VALUE ? { title: params.title } : { sample: params.sample }),
       wordlist_name: displayLabel || combo.customList.name,
       wordlist_text: combo.customList.text,
+      ...(titleWords ? { title_words: titleWords } : {}),
     });
   }
   let pending = false;
@@ -5544,6 +5667,7 @@ function renderBuilder() {
 // よう、少し待ってから1回だけ取りに行く。同じ組み合わせなら何もしない。
 // force は「画像を表示する」用(同じ組み合わせでも作り直す)。
 function schedulePreview(force) {
+  refreshTitleChoices();
   if (!builderLive || $("lucky-card").hidden) return;
   showBuilderMsg("");
   const c = currentCombo();
@@ -5551,7 +5675,7 @@ function schedulePreview(force) {
   const ownTitle = c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "";
   const combo = JSON.stringify([c.sampleId, ownTitle, c.wordlistName,
     list?.id || "", list?.name || "", list?.text || "",
-    $("thumbnail-wordlist-label").value.trim()]);
+    $("thumbnail-wordlist-label").value.trim(), $("where").value.trim(), selectedTitleWords()]);
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -5628,6 +5752,7 @@ $("wordlist").addEventListener("change", () => {
 });
 // 持ち込み曲は曲名そのものをサムネ変換に使う。入力を確定したら作り直す。
 $("song-title").addEventListener("change", () => schedulePreview(true));
+$("where").addEventListener("change", () => schedulePreview(true));
 $("thumbnail-wordlist-label").addEventListener("change", () => schedulePreview(true));
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
@@ -8420,6 +8545,7 @@ function saveForm() {
       layoutBaseline: leBaseline,
       songCredit: $("song-credit").value,
       thumbnailWordlistLabel: $("thumbnail-wordlist-label").value,
+      titleChoice,
       model: $("model").value,
       synthesizer: $("synthesizer").value,
       voicevoxStyle: $("voicevox-style").value,
@@ -8726,6 +8852,11 @@ async function doRestoreForm() {
   syncLyricsInput();
   parodyRestored = false;
   syncLyricsRecognition();
+  if (state?.titleChoice && Array.isArray(state.titleChoice.words)
+      && typeof state.titleChoice.context === "string"
+      && typeof state.titleChoice.label === "string"
+      && typeof state.titleChoice.reading === "string"
+      && Array.isArray(state.titleChoice.originals)) titleChoice = state.titleChoice;
 }
 
 $("api-key").addEventListener("change", loadConfig);
