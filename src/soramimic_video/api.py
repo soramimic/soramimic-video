@@ -1467,6 +1467,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             None if _sample_entry_of(job.params) is not None else job.params.get("song_credit")
         ),
         "thumbnail_wordlist_label": job.params.get("thumbnail_wordlist_label", ""),
+        "title_words": job.params.get("title_words"),
         "original_credit": original_credit_of(job.params),
         "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
@@ -3584,18 +3585,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return str(entry.get("title") or sample_id), str(entry.get("title_kana") or "")
 
-    @app.post("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
-    async def custom_thumbnail_preview(request: Request) -> Response:
-        """Return a private PNG for a text list supplied in the JSON body."""
-        from .custom_thumbnail_preview import render_custom_preview
-
-        if is_simple_ui():
-            raise HTTPException(status_code=404, detail="Not Found")
-        if not _allow_expensive_get(request, preview_session_limiter):
-            raise HTTPException(
-                status_code=429,
-                detail="プレビューの作成が続いています。少し待ってからお試しください。",
-            )
+    async def _title_request_json(request: Request, fields: set[str]) -> dict[str, str]:
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
             raise HTTPException(status_code=415, detail="JSON形式で送信してください")
         # Bound the actual stream, including chunked requests, before parsing JSON.
@@ -3610,13 +3600,71 @@ def create_app(
             payload = json.loads(data)
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise HTTPException(status_code=400, detail="JSONを読み取れません") from exc
-        fields = {"sample", "title", "wordlist_name", "wordlist_text"}
         if (
             not isinstance(payload, dict)
             or payload.keys() - fields
             or any(not isinstance(value, str) for value in payload.values())
         ):
             raise HTTPException(status_code=400, detail="プレビューの入力形式が不正です")
+        return payload
+
+    @app.post("/api/title-candidates", dependencies=[Depends(_require_api_key)])
+    async def title_candidates(request: Request) -> Response:
+        from .title_choices import find_title_choices
+
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(status_code=429, detail="少し待ってから候補を探してください")
+        payload = await _title_request_json(
+            request, {"sample", "title", "wordlist", "where", "wordlist_text"},
+        )
+        sample = payload.get("sample", "").strip()
+        title = payload.get("title", "").strip()
+        where = payload.get("where", "").strip()
+        if len(sample) > 200 or len(title) > 200 or len(where) > 8000:
+            raise HTTPException(status_code=400, detail="曲名または絞り込み条件が長すぎます")
+        if sample:
+            title, kana = _sample_title(sample)
+            title = kana or title
+        if not title:
+            raise HTTPException(status_code=400, detail="曲名が必要です")
+        csv_path, csv_text = None, ""
+        if "wordlist_text" in payload:
+            if is_simple_ui():
+                raise HTTPException(status_code=404, detail="Not Found")
+            try:
+                csv_text = wordlist_csv_mod.parse(payload["wordlist_text"].encode("utf-8")).text
+            except (wordlist_csv_mod.WordlistCsvError, UnicodeError) as exc:
+                raise HTTPException(
+                    status_code=400, detail="自作リストの形式を確認してください",
+                ) from exc
+        else:
+            csv_path = _asset_preview_wordlist_path(payload.get("wordlist", ""))
+        try:
+            choices = await run_in_threadpool(
+                find_title_choices, title, csv_path, where or None, csv_text=csv_text,
+            )
+        except (TimeoutError, ValueError, OSError, UnicodeError) as exc:
+            raise HTTPException(
+                status_code=422, detail="候補を取得できませんでした。自動のまま生成できます。",
+            ) from exc
+        return JSONResponse({"candidates": choices}, headers={"Cache-Control": "private, no-store"})
+
+    @app.post("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
+    async def custom_thumbnail_preview(request: Request) -> Response:
+        """Return a private PNG for a text list supplied in the JSON body."""
+        from .custom_thumbnail_preview import render_custom_preview
+        from .title_choices import parse_title_words, selected_rows
+
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューの作成が続いています。少し待ってからお試しください。",
+            )
+        payload = await _title_request_json(
+            request, {"sample", "title", "wordlist_name", "wordlist_text", "title_words"},
+        )
         sample = payload.get("sample", "").strip()
         title = payload.get("title", "").strip()
         name = payload.get("wordlist_name", "").strip() or "自作リスト"
@@ -3641,8 +3689,15 @@ def create_app(
                 status_code=400, detail="自作リストの形式または容量を確認してください",
             ) from exc
         try:
+            selection = parse_title_words(payload.get("title_words", ""))
+            if selection is not None:
+                selected_rows(selection, custom.text)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
             content = await run_in_threadpool(
                 render_custom_preview, custom.text, title, name, title_kana,
+                **({"title_words": selection} if selection is not None else {}),
             )
         except TimeoutError as exc:
             raise HTTPException(
@@ -3672,6 +3727,7 @@ def create_app(
         images: bool = True,
         noncommercial_fanwork: bool = False,
         wordlist_label: str = "",
+        title_words: str = "",
     ) -> Response:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
@@ -3699,6 +3755,7 @@ def create_app(
         """
         from .convert import parse_convert_params
         from .thumbnail_preview import PreviewSpec, render_slot
+        from .title_choices import parse_title_words
 
         if len(wordlist_label) > 100:
             raise HTTPException(status_code=400, detail="単語リスト名は100文字以内です")
@@ -3731,14 +3788,17 @@ def create_app(
                 wordlist_label=wordlist_label,
                 title_kana=title_kana,
                 allow_noncommercial_fanwork=noncommercial_fanwork,
+                title_words=parse_title_words(title_words),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         # User-supplied titles and display names are private. Render in PrivateTmp and
         # return bytes so neither the title nor its derived PNG enters a shared
         # on-disk cache.  Catalog samples remain safe to cache across sessions.
-        if not catalog_sample or wordlist_label.strip():
+        if not catalog_sample or wordlist_label.strip() or spec.title_words is not None:
             if not _allow_expensive_get(request, preview_session_limiter):
                 raise HTTPException(
                     status_code=429,
@@ -4016,6 +4076,7 @@ def create_app(
         song_title: str = Form(""),
         song_credit: str = Form("", max_length=2000),
         thumbnail_wordlist_label: str = Form("", max_length=100),
+        title_words: str = Form("", max_length=4096),
         original_credit: str = Form(""),
         credit_notice: str = Form(""),
         allow_noncommercial_fanwork: bool = Form(False),
@@ -4030,6 +4091,12 @@ def create_app(
         # モバイル回線で大きな音源送信が切れた場合の安全な再送ID。
         submission_id: str = Form(""),
     ) -> dict[str, Any]:
+        from .title_choices import parse_title_words, selected_rows
+
+        try:
+            selected_title_words = parse_title_words(title_words)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         submission_id = submission_id.strip()
         if submission_id and not re.fullmatch(r"[0-9a-f]{32}", submission_id):
             raise HTTPException(status_code=400, detail="送信IDが不正です")
@@ -4333,6 +4400,35 @@ def create_app(
         text_only_wordlist = isinstance(editor_payload, dict) and is_text_only(editor_payload)
         if text_only_wordlist:
             layout, layout_json = "lyrics_text", ""
+        if selected_title_words is not None:
+            from .convert import resolve_convert_settings, resolve_wordlist
+
+            try:
+                title_where = where.strip() or None
+                if isinstance(editor_payload, dict) and is_original_wordlist(editor_payload):
+                    title_csv = wordlist_csv_mod.parse_editor_text(
+                        original_wordlist_text(editor_payload) or "",
+                    ).text
+                    title_where = None
+                elif isinstance(editor_payload, dict) and custom_wordlist_sid(editor_payload):
+                    assert session_csv is not None
+                    title_csv = session_csv.read_text(encoding="utf-8")
+                    title_where = None
+                elif custom is not None:
+                    title_csv = custom.csv.text
+                else:
+                    title_csv_path = resolve_wordlist(wordlist)
+                    title_csv = title_csv_path.read_text(encoding="utf-8")
+                    if isinstance(editor_payload, dict):
+                        entry = editor_payload.get("wordlist") or {}
+                        top = editor_payload.get("where")
+                        title_where = top if isinstance(top, str) else entry.get("where")
+                    title_where, _, _ = resolve_convert_settings(title_csv_path, title_where)
+                selected_rows(selected_title_words, title_csv, title_where)
+            except (ValueError, OSError) as exc:
+                raise HTTPException(
+                    status_code=422, detail="タイトルの単語を現在のリストから選び直してください",
+                ) from exc
         # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
         if layout_json:
             try:
@@ -4377,6 +4473,7 @@ def create_app(
                 song_credit.strip() if "song_credit" in await request.form() else None
             ),
             "thumbnail_wordlist_label": thumbnail_wordlist_label.strip(),
+            "title_words": selected_title_words,
             "original_credit": original_credit.strip(),
             "credit_notice": credit_notice.strip(),
             "allow_noncommercial_fanwork": allow_noncommercial_fanwork,

@@ -15,6 +15,7 @@ WORKER_MEMORY_BYTES = 2 * 1024**3
 
 def render_custom_preview(
     csv_text: str, title: str, wordlist_name: str, title_kana: str = "",
+    title_words: list[dict[str, str]] | None = None,
 ) -> bytes:
     from .thumbnail_preview import render_slot
 
@@ -26,7 +27,8 @@ def render_custom_preview(
         (directory / "wordlist.csv").write_text(csv_text, encoding="utf-8")
         (directory / "request.json").write_text(
             json.dumps(
-                {"title": title, "title_kana": title_kana, "wordlist_name": wordlist_name},
+                {"title": title, "title_kana": title_kana, "wordlist_name": wordlist_name,
+                 "title_words": title_words},
                 ensure_ascii=False,
             ),
             encoding="utf-8",
@@ -54,18 +56,26 @@ def render_worker(directory: Path) -> None:
     from .thumbnail_preview import PREVIEW_HEIGHT, PREVIEW_WIDTH
 
     request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
-    found = title_paraphrase(
-        request["title_kana"] or request["title"],
-        str(directory / "wordlist.csv"),
-        None,
-        None,
-        cache_db=False,
-    )
+    if request.get("title_words") is not None:
+        from .title_choices import selected_rows
+
+        words = [row["surface"] for row in selected_rows(
+            request["title_words"], (directory / "wordlist.csv").read_text(encoding="utf-8"),
+        )]
+    else:
+        found = title_paraphrase(
+            request["title_kana"] or request["title"],
+            str(directory / "wordlist.csv"),
+            None,
+            None,
+            cache_db=False,
+        )
+        words = [str(word.get("surface") or "") for word, _row in found]
     render_thumbnail(
         directory / "preview.png",
         request["title"],
         request["wordlist_name"],
-        words=[str(word.get("surface") or "") for word, _row in found],
+        words=words,
         width=PREVIEW_WIDTH,
         height=PREVIEW_HEIGHT,
     )

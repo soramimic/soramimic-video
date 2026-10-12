@@ -1994,6 +1994,7 @@ def prepare_video(
     allow_noncommercial_fanwork: bool = False,
     song_credit: str | None = None,
     thumbnail_wordlist_label: str = "",
+    title_words: list[dict[str, str]] | None = None,
 ) -> PreparedVideo:
     """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
     if fps <= 0:
@@ -2057,6 +2058,7 @@ def prepare_video(
         credit_text,
         title_kana=song_title_kana,
         wordlist_label=thumbnail_wordlist_label,
+        title_words=title_words,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )
@@ -2183,6 +2185,7 @@ def make_video(
     allow_noncommercial_fanwork: bool = False,
     song_credit: str | None = None,
     thumbnail_wordlist_label: str = "",
+    title_words: list[dict[str, str]] | None = None,
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
@@ -2258,6 +2261,7 @@ def make_video(
         credit_text,
         title_kana=song_title_kana,
         wordlist_label=thumbnail_wordlist_label,
+        title_words=title_words,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )

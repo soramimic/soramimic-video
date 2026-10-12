@@ -151,6 +151,14 @@ Web API は job 単位で処理し、状態、thumbnail、完成動画を返し�
 入力 size、曲長、同時実行数、利用回数等の制限が適用される場合があります。制限に達した場合は
 API response と UI で利用者に通知します。
 
+`POST /api/title-candidates` はJSONで `title` または `sample`、`wordlist` と任意の
+`where` を受け取り、バランス設定で比較したタイトル候補を `candidates` に返します。
+自作リストには `wordlist` の代わりに `wordlist_text` を指定します。
+各候補は `words`（`id` と `surface` の配列）、表示用の `label`、`reading`、`originals` を持ちます。
+選んだ `words` をJSON文字列にした `title_words` を、サムネイルプレビューと動画生成の
+リクエストに渡せます。選択は単語リストとフィルターで検証され、歌詞の変換設定より優先されます。
+`title_words` を省略すると従来どおり自動で選びます。
+
 外部から渡された file は形式と size を検証します。位置情報等の不要な metadata は、対応する
 画像形式の再保存時に除去されます。
 

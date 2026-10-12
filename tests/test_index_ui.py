@@ -496,6 +496,7 @@ def test_video_submit_confirms_unmatched_lyrics_and_remembers_only_acceptance():
         const parodyMismatch = () => false, apiKey = () => '', turnstileSiteKey = '';
         const fixedSynthesizer = 'voicevox', fixedVoicevoxStyle = 1;
         const songTitleOf = () => 'sample', buildConvertParams = () => '{}';
+        const selectedTitleWords = () => '';
         const activeCustomList = () => null, showsEditorWordlist = () => false;
         const appendSongLyrics = () => {}, appendCustomWordlist = () => {};
         const showSubmitMsg = () => {}, showProgress = () => {}, setJobStatus = () => {};
@@ -1085,6 +1086,84 @@ def _function_body(script: str, head: str) -> str:
     """head で始まる関数の中身(次の行頭 } まで)を返す。"""
     body = script[script.index(head) :]
     return body[: body.index("\n}\n")]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_title_selection_refreshes_preview_and_discards_stale_candidates():
+    script = _script()
+    block = script[script.index("function titleChoiceContext()"):
+                   script.index("// 単語リストの代表画像(サムネプレビュー")]
+    harness = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {
+          value: '', textContent: '', disabled: false, options: [], listeners: {},
+          add(option) {this.options.push(option);},
+          replaceChildren(...options) {this.options = options; this.value = '';},
+          addEventListener(event, fn) {this.listeners[event] = fn;}, focus() {},
+        });
+        return elements.get(id);
+      };
+      class Option {constructor(text, value) {this.text = text; this.value = value;}}
+      const OWN_SONG_VALUE = 'own', ownSongFile = () => ({}), headers = () => ({});
+      let title = 'サンゲンショク', restoring = false;
+      const songTitleOf = () => title;
+      let combo = {sampleId: 'own', wordlistName: 'scientist', customList: null};
+      const currentCombo = () => combo;
+      let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
+      let titleCandidatesAbort = null, titleCandidatesSeq = 0, saved, previews = 0;
+      const saveForm = () => {saved = titleChoice;};
+      const schedulePreview = () => {previews++;};
+      const setTimeout = () => 1, clearTimeout = () => {};
+      let resolveFetch, sent;
+      const fetch = async (_url, options) => {
+        sent = JSON.parse(options.body);
+        return await new Promise(resolve => {resolveFetch = resolve;});
+      };
+    ''' + block + r'''
+      (async () => {
+        const choice = {words: [{id: '1', surface: 'ハンゼン'}, {id: '2', surface: 'ホフ'}],
+          label: 'ハンゼン ＋ ホフ', reading: 'ハンゼン・ホフ',
+          originals: ['ハンゼン氏', 'ホフ氏']};
+        const load = () => $('title-candidates-load').listeners.click();
+        const select = () => $('title-words').listeners.change();
+        $('where').value = 'field=天文学';
+        const pending = load();
+        assert.equal($('title-candidates-load').disabled, true);
+        assert.deepEqual(sent, {title, wordlist: 'scientist', where: 'field=天文学'});
+        resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+        await pending;
+        assert.equal($('title-candidates-load').disabled, false);
+        $('title-words').value = JSON.stringify(choice.words); select();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal(saved.label, 'ハンゼン ＋ ホフ');
+        assert.equal(previews, 1);
+        assert.match($('title-words-detail').textContent, /ハンゼン氏 ＋ ホフ氏/);
+        // Re-rendering and restoring a saved choice retain its words.
+        titleCandidates = []; titleChoice = saved; renderTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        $('title-words').value = ''; select();
+        assert.equal(selectedTitleWords(), '');
+        // A slow response for a previous title must not replace the new context.
+        const stale = load();
+        title = '別の曲'; refreshTitleChoices();
+        resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+        await stale;
+        assert.deepEqual(titleCandidates, []);
+        assert.equal($('title-candidates-status').textContent, '');
+        titleChoice = {...choice, context: titleChoiceContext()};
+        $('where').value = ''; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        // Editing custom CSV content also invalidates the selected row identities.
+        combo.customList = {text: 'one'};
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.customList.text = 'two'; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), '');
+        assert.equal(titleChoice, null);
+      })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''
+    subprocess.run(["node", "-e", harness], check=True, capture_output=True, text=True)
 
 
 def test_submit_takes_the_midi_from_the_current_song_choice():
@@ -3436,6 +3515,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         let simpleMode = true;
         const fixedVoicevoxStyle = 6000, fixedSynthesizer = "voicevox", turnstileSiteKey = "";
         const songTitleOf = () => "sample", buildConvertParams = () => "{}";
+        const selectedTitleWords = () => '';
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
         const activeCustomList = () => selected === "custom" ? {} : null;
         const showsEditorWordlist = () => false;

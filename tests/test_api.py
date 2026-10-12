@@ -877,6 +877,7 @@ def test_index_html_builder_card_has_selects():
     advanced = _advanced_html()
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
         "synthesizer", "model-select", "voicevox-style",
+        "title-words",
     ]
     # 不要なランダム・編集ボタンはカードに置かない
     assert 'id="lucky"' not in card
@@ -1497,7 +1498,8 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     job = api_mod.Job(
         id="parallel", dir=job_dir,
         params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations",
-                "song_credit": "オトノケ - Creepy Nuts", "thumbnail_wordlist_label": "好きな駅"},
+                "song_credit": "オトノケ - Creepy Nuts", "thumbnail_wordlist_label": "好きな駅",
+                "title_words": [{"id": "1", "surface": "駅名"}]},
     )
     audio_started = threading.Event()
     visual_started = threading.Event()
@@ -1513,6 +1515,7 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     def fake_prepare(*args, **kwargs):
         assert kwargs["song_credit"] == "オトノケ - Creepy Nuts"
         assert kwargs["thumbnail_wordlist_label"] == "好きな駅"
+        assert kwargs["title_words"] == [{"id": "1", "surface": "駅名"}]
         visual_started.set()
         assert audio_started.wait(1)
         return type("Prepared", (), {"audio_delay_sec": 1.0})()
