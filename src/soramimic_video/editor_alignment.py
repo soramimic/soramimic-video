@@ -17,11 +17,11 @@ from .soramimic_engine import conversion_tokens
 
 
 def editor_analysis_lyrics(payload: dict[str, Any]) -> str | None:
-    """Supply the editor's original reading to XF/Whisper lyric alignment.
+    """Supply the editor's original reading to text-based lyric alignment.
 
     The selected parody reading is never an analysis input. Ruby annotations
-    carry the already-known original reading through the normal supplied-lyrics
-    pipeline, including localization against Whisper and forced alignment.
+    carry the already-known original reading through supplied-lyrics alignment.
+    Audio analysis consumes the JSON readings directly in editor_audio instead.
     """
     from soramimic_score import validate_reading
 
