@@ -300,8 +300,9 @@ def test_setup_seed_has_phrases_but_no_conversion(client, tmp_path):
         client, tmp_path, wordlist=str(_wordlist_csv(tmp_path)), song_title="しずむ歌"
     )
     assert payload["format"] == "soramimic-editor/1"
-    # ブラウザ側で導出できるものは返さない(これが「未変換」の目印になる)
-    for key in ("results", "tokensList", "unitsList"):
+    # 変換結果がないので、解析済みトークンがあっても未変換のまま。
+    assert payload["tokensList"]
+    for key in ("results", "unitsList"):
         assert key not in payload
     # 行ごとの読みカナ。convert_project がエンジンへ渡すのと同じ前処理済みの値
     assert payload["phrases"] == ["シズム"]

@@ -909,7 +909,8 @@ def editor_setup_seed(
     - ``noteLengthAlpha`` … soramimic側UIの初期値。既定0.25
     - ``weightsList`` … 旧soramimic互換の計算済み重み
 
-    ``results``/``tokensList``/``unitsList`` は入れない——ブラウザ側で導出される。
+    ``tokensList`` は確定済みの読みと元歌詞の単語・文節境界を保持する。
+    ``results``/``unitsList`` はブラウザ側で導出される。
 
     wordlist_entry を渡すと単語リスト設定にそのまま使う(自作リスト用。
     export_editor と同じ約束)。渡さないときは wordlist 名から組み立て、
@@ -918,6 +919,7 @@ def editor_setup_seed(
     """
     from .convert import (
         engine_phrases,
+        project_conversion_tokens,
         project_note_length_weights,
         resolve_convert_settings,
         resolve_wordlist,
@@ -929,9 +931,11 @@ def editor_setup_seed(
     csv_path = resolve_wordlist(wordlist) if wordlist else None
     eff_where, coerced, alpha = resolve_convert_settings(csv_path, where, params)
     phrases = engine_phrases(project)
+    tokens = project_conversion_tokens(project, coerced)
     payload: dict[str, Any] = {
         "format": EXPORT_FORMAT,
         "phrases": phrases,
+        "tokensList": tokens,
         "param": coerced,
     }
     if wordlist_entry is None and csv_path is not None:
@@ -945,7 +949,7 @@ def editor_setup_seed(
     # 重みの計算にはエンジンが使うのと同じユニット列が要る。単語DBは要らないので
     # トークナイズだけを走らせる(変換はブラウザ側がやる)。ホストはα=1の生重みを
     # 渡し、αの設定と指数計算はsoramimic側が担当する。
-    units = run_tokenize(phrases, coerced)
+    units = run_tokenize(phrases, coerced, tokens_list=tokens)
     raw_weights = project_note_length_weights(project, 1.0)(units)
     note_alpha = alpha if "NOTE_LENGTH_WEIGHT" in (params or {}) else 0.25
     if raw_weights is not None:
