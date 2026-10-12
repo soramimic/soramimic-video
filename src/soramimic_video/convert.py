@@ -141,6 +141,7 @@ def _layer_unit_mapping(
         if not indices:
             raise ValueError(f"行{line.id}: フレーズのモーラIDが不正です")
         matches = canonical[indices[0]:indices[-1] + 1]
+        canonical_rows = matches
         canonical_line = {
             "utterance_id": matches[0]["utterance_id"],
             "kana": "".join(row["kana"] for row in matches),
@@ -152,6 +153,7 @@ def _layer_unit_mapping(
         if len(owners) != 1 or None in owners or len(matches) != 1:
             raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
         canonical_line = matches[0]
+        canonical_rows = [canonical_line]
     else:
         canonical_index = line.canonical_line_index
         if canonical_index is None:
@@ -161,6 +163,7 @@ def _layer_unit_mapping(
         if not isinstance(canonical_index, int) or not 0 <= canonical_index < len(canonical):
             raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
         canonical_line = canonical[canonical_index]
+        canonical_rows = [canonical_line]
     utterance_id = canonical_line.get("utterance_id")
     mora_ids = canonical_line.get("mora_ids")
     canonical_kana = canonical_line.get("kana")
@@ -170,7 +173,17 @@ def _layer_unit_mapping(
             or not isinstance(canonical_kana, str)):
         raise ValueError(f"行{line.id}: 完全歌詞のID対応が不正です")
 
-    moras = split_fine_moras(canonical_kana)
+    from soramimic_score import kana_to_moras
+
+    # Canonical IDs were created by Score's mora segmentation. Keep each
+    # acoustic row's boundaries even when an edited display phrase spans rows.
+    moras: list[str] = []
+    for row in canonical_rows:
+        row_moras = kana_to_moras(row["kana"])
+        if (len(row_moras) != len(row["mora_ids"])
+                or "".join(row_moras) != row["kana"]):
+            raise ValueError(f"行{line.id}: 完全歌詞のモーラIDと読みが一致しません")
+        moras.extend(row_moras)
     if len(moras) != len(mora_ids):
         raise ValueError(f"行{line.id}: 完全歌詞のモーラIDと読みが一致しません")
     if line.canonical_mora_ids is not None:

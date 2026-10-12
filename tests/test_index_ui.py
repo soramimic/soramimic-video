@@ -632,6 +632,71 @@ def test_uploaded_xf_midi_title_defaults_to_song_file_stem():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_reselecting_song_keeps_the_active_editor_title():
+    script = _script()
+    listener = script[script.index(
+        '$("midi").addEventListener("change", () => {\n  const file = ownSongFile();'
+    ):]
+    listener = listener[:listener.index("\n});") + len("\n});")]
+    stem = _function_body(script, "function songFileStem(file)") + "\n}"
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {
+            value: "", files: [], listeners: {},
+            addEventListener(type, handler) { this.listeners[type] = handler; },
+            dispatchEvent(event) { this.listeners[event.type]?.(event); },
+          });
+          return elements.get(id);
+        };
+        const ownSongFile = () => $("midi").files[0];
+        const ownSongKind = file => file.name.endsWith(".wav") ? "audio" : "midi";
+        let active = null, restoring = false, midiSampleId = "";
+        let editorImportedFile = null;
+        const activeLyricsJson = () => active;
+        const audioInputReady = true, maxAudioUploadBytes = 1000;
+        const document = {querySelector: () => ({textContent: ""})};
+        const setRecordingStatus = () => {};
+        const rejectOwnSongFile = message => { throw new Error(message); };
+        const clearEditorFile = () => {}, clearAudioPresentation = () => {};
+        const syncLyricsRecognition = () => {}, syncBuilderOptions = () => {};
+        const syncBuilderValues = () => {}, showBuilderMsg = () => {};
+        const schedulePreview = () => {};
+        """
+    ) + stem + "\n" + listener + textwrap.dedent(
+        """
+        for (const name of ["upload.wav", "upload.xf.mid"]) {
+          $("midi").files = [{name, size: 10}];
+          active = {song: {title: "テスト曲"}};
+          $("song-title").value = "テスト曲";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "テスト曲");
+          $("song-title").value = "";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "テスト曲");
+          $("song-title").value = "手入力した曲名";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "手入力した曲名");
+          for (const payload of [null, {}, {song: {title: " "}}, {song: {title: 1}}]) {
+            active = payload;
+            $("song-title").value = "前のファイルの曲名";
+            $("midi").dispatchEvent(new Event("change"));
+            assert.equal($("song-title").value, "upload");
+          }
+          restoring = true;
+          $("song-title").value = "復元した曲名";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "復元した曲名");
+          restoring = false;
+        }
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_song_text_previews_follow_title_credits_and_wordlist():
     """3つのプレビューは入力値と本番のクレジット優先順位に即時追随する。"""
     script = _script()
