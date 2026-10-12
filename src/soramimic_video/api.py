@@ -54,7 +54,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import runproc, synth_estimate
+from . import completed_lyrics, runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
 from . import wordlist_zip as wordlist_zip_mod
 from .access_identity import canonical_email, valid_issuer, verify_access_email
@@ -755,6 +755,8 @@ class Job:
             d["video_url"] = f"/api/jobs/{self.id}/video"
             d["playback_url"] = f"/api/jobs/{self.id}/playback"
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
+            if self.video.suffix != ".wav" and completed_lyrics.result_path(self.dir):
+                d["editor_url"] = f"/api/jobs/{self.id}/lyrics"
             if self.video.suffix != ".wav":
                 d["credits_url"] = f"/api/jobs/{self.id}/credits"
             if self.thumbnail.exists():
@@ -1375,6 +1377,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
     from .convert import wordlist_exhausted
 
+    completed_lyrics.save_result(project, d, title=song_title_of(job.params))
     job.wordlist_exhausted = wordlist_exhausted(project)
     layout, job.layout_source = resolve_layout(job, config)
     from .align import parse_granularity_override
@@ -2256,7 +2259,7 @@ class JobManager:
         """Keep only downloadable results; remove uploads and work products.
 
         A completed job may retain its final video (or audio preview), thumbnail,
-        and human-readable/source-credit sidecars.  Raw uploads, lyrics, separated
+        portable editing lyrics, and source-credit sidecars. Raw uploads, separated
         stems, synthesized audio, analysis JSON, and rendered frames are removed
         before the job becomes observable as ``done``.
         """
@@ -2283,6 +2286,9 @@ class JobManager:
         if video.suffix != ".wav":
             from .video import VIDEO_DIR
 
+            lyrics_result = completed_lyrics.result_path(root)
+            if lyrics_result is not None:
+                keep.add(lyrics_result.resolve())
             for name in ("credits.json", "credits.md"):
                 sidecar = root / VIDEO_DIR / name
                 if sidecar.is_file() and not sidecar.is_symlink():
@@ -2938,9 +2944,9 @@ def create_app(
                 data_handling = (
                     '<section aria-labelledby="data-handling-title">'
                     '<h2 id="data-handling-title">データの取り扱い</h2>'
-                    '<p>元の音源・歌詞と解析用データは処理終了時に削除し、'
+                    '<p>アップロードした元の音源・歌詞ファイルと解析用データは処理終了時に削除し、'
                     '失敗した場合は自動で再試行します。'
-                    f'完成動画は{retention_label}の保存期間を過ぎたものから'
+                    f'完成動画と編集用の歌詞データ（元歌詞を含みます）は{retention_label}の保存期間を過ぎたものから'
                     '定期的に自動削除します。'
                     '入力内容をAIモデルの学習には使用しません。</p>'
                     '</section>'
@@ -2952,6 +2958,13 @@ def create_app(
             .replace("<!-- data-handling-toc -->", data_handling_toc)
             .replace("<!-- usage-scope -->", usage_scope)
             .replace("<!-- usage-scope-toc -->", usage_scope_toc)
+        )
+
+    @app.get("/app-bridge.js", include_in_schema=False)
+    def app_bridge_script() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "app-bridge.js", media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
         )
 
     @app.get("/image-credits.js", include_in_schema=False)
@@ -3163,6 +3176,7 @@ def create_app(
         audio_analysis = configured_capabilities()
         conf: dict[str, Any] = {
             "auth_required": auth_required,
+            "editor_app_url": os.environ.get("SORAMIMIC_EDITOR_APP_URL", ""),
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "voicevox": _voicevox_config(),
@@ -4391,6 +4405,17 @@ def create_app(
     def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
         return manager.job_dict(
             manager.cancel(job_id, owner_of(request)), with_log=False
+        )
+
+    @app.get("/api/jobs/{job_id}/lyrics", dependencies=[Depends(_require_api_key)])
+    def get_completed_lyrics(job_id: str, request: Request) -> FileResponse:
+        job = manager.get(job_id, owner_of(request))
+        path = completed_lyrics.result_path(job.dir)
+        if job.status != "done" or job.video is None or job.video.suffix == ".wav" or path is None:
+            raise HTTPException(status_code=404, detail="編集用の歌詞データがありません")
+        return FileResponse(
+            path, media_type="application/json", filename=completed_lyrics.FILENAME,
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get("/api/jobs/{job_id}/review", dependencies=[Depends(_require_api_key)])

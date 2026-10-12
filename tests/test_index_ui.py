@@ -1117,6 +1117,8 @@ def _song_input_node_harness() -> str:
           return elements.get(id);
         }
         let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
+        let editorImportedFile = null;
+        const originalLyricsFile = () => null;
         let recordedSongFile = null;
         let midiFromSample = false, samplePending = null, restoring = false;
         let sampleLyricsId = "", sampleLyricsBaseline = null;
@@ -1192,6 +1194,14 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         assert.equal(previews, 2);
         switchSongInputMode("upload");
         assert.equal(previews, 2, "switching to the current mode is a no-op");
+        editorImportedFile = { name: "soramimic-lyrics.json" };
+        $("editor").files = [editorImportedFile];
+        $("lyrics").value = "受け取った歌詞";
+        $("auto-lyrics").checked = false;
+        switchSongInputMode("sample");
+        assert.deepEqual($("editor").files, [editorImportedFile]);
+        assert.equal($("lyrics").value, "受け取った歌詞");
+        assert.equal($("auto-lyrics").checked, false);
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

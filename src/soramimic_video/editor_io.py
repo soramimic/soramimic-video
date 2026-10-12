@@ -371,6 +371,8 @@ def export_editor(
     weights_list: list[list[float]] | None = None,
     note_length_raw_list: list[list[float]] | None = None,
     note_length_alpha: float | None = None,
+    *,
+    filename: str = EDITOR_FILENAME,
 ) -> Path:
     """editorの「読み込み」で開けるJSONを書き出す。
 
@@ -424,7 +426,7 @@ def export_editor(
         payload["noteLengthAlpha"] = (
             0.25 if note_length_alpha is None else note_length_alpha
         )
-    path = project_dir / EDITOR_FILENAME
+    path = project_dir / filename
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return path
 
