@@ -322,6 +322,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
     node = textwrap.dedent("""
         const assert = require('node:assert/strict');
         const EDITOR_KEY = 'editor', REVIEW_JOB_KEY = 'job', REVIEW_REGENERATE_KEY = 'auto';
+        const UNMATCHED_LYRICS_KEY = 'unmatched';
         const store = new Map(), preferences = new Map(), elements = new Map();
         const $ = id => {
           if (!elements.has(id)) {
@@ -424,13 +425,18 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
 
           reset(partial); regenerateResult = remaining;
           pending = confirmLyricReview(); await tick();
-          assert(dialog.open); assert($('lyric-review-skip-label').hidden);
+          assert(dialog.open); assert.equal($('lyric-review-skip-label').hidden, false);
+          $('lyric-review-skip').checked = true;
           dialog.close('cancel'); await pending;
+          assert.equal(preferences.has(UNMATCHED_LYRICS_KEY), false);
           assert.equal(resumePayloads.length, 3); assert.equal(closed, false);
           assert.deepEqual(JSON.parse(store.get(EDITOR_KEY)), remaining);
           pending = confirmLyricReview(); await tick();
+          assert.equal($('lyric-review-skip').checked, false);
+          $('lyric-review-skip').checked = true;
           dialog.close('generate'); await pending;
           assert.deepEqual(resumePayloads[3], remaining);
+          assert.equal(preferences.get(UNMATCHED_LYRICS_KEY), '1');
 
           reset(partial); regenerateResult = partial;
           await confirmLyricReview();
@@ -443,6 +449,122 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
           assert(dialog.open); $('lyric-review-skip').checked = true;
           dialog.close('generate'); await pending;
           assert.equal(resumePayloads.length, 5, 'storage denial must not prevent regeneration');
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    """)
+    subprocess.run(["node", "-e", node], check=True)
+
+
+def test_video_submit_confirms_unmatched_lyrics_and_remembers_only_acceptance():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function submitJob(", "function lyricReviewCoverage(",
+            "function confirmReviewRegeneration(", "async function readParodyFile(",
+            "function readParodyText(",
+        )
+    )
+    node = textwrap.dedent("""
+        const assert = require('node:assert/strict');
+        const REVIEW_REGENERATE_KEY = 'regenerate', UNMATCHED_LYRICS_KEY = 'unmatched';
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+        const preferences = new Map(), elements = new Map(), requests = [];
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {value: '', hidden: false, focus() {}});
+          return elements.get(id);
+        };
+        let denyStorage = false, dialogs = 0, closeListener;
+        const localStorage = {
+          getItem(key) {if (denyStorage) throw Error('storage'); return preferences.get(key);},
+          setItem(key, value) {
+            if (denyStorage) throw Error('storage'); preferences.set(key, value);
+          },
+        };
+        const dialog = $('lyric-review-confirm');
+        dialog.addEventListener = (_event, listener) => {closeListener = listener;};
+        dialog.showModal = () => {dialog.open = true; dialogs++;};
+        dialog.close = value => {dialog.open = false; dialog.returnValue = value; closeListener();};
+        let submitBusy = false, submitAbort = null, lyricsFileReading = false;
+        const setBusy = busy => {submitBusy = busy;};
+        const songInputMode = 'sample', simpleMode = false;
+        const automaticLyricsEnabled = () => false, lyricsInput = () => ({error: ''});
+        const ownAudioFile = () => null, ownSongKind = () => 'sample';
+        const samplePending = null, midiChecking = null, midiSampleId = 'sample';
+        const ensureSelectedSampleMidi = async () => true;
+        let editorFile = null;
+        const editorSourceForSubmit = () => ({file: editorFile});
+        const parodyMismatch = () => false, apiKey = () => '', turnstileSiteKey = '';
+        const fixedSynthesizer = 'voicevox', fixedVoicevoxStyle = 1;
+        const songTitleOf = () => 'sample', buildConvertParams = () => '{}';
+        const activeCustomList = () => null, showsEditorWordlist = () => false;
+        const appendSongLyrics = () => {}, appendCustomWordlist = () => {};
+        const showSubmitMsg = () => {}, showProgress = () => {}, setJobStatus = () => {};
+        const setCancelPending = () => {}, resetTurnstile = () => {};
+        const watch = () => setBusy(false);
+        const postJobWithTurnstileRetry = async form => {
+          requests.push(form);
+          return {ok: true, status: 200, json: async () => ({id: 'new-job'})};
+        };
+        const complete = {unitsList: [[{}, {}]], results: [[{period: [0, 2]}]]};
+        const gap = {...complete, results: [[{period: [0, 1], locked: true}]]};
+        const filler = {...complete, results: [[{period: [0, 2], filler: true}]]};
+        const select = payload => {editorFile = payload
+          ? new Blob([JSON.stringify(payload)], {type: 'application/json'}) : null;};
+        const tick = () => new Promise(setImmediate);
+    """) + functions + textwrap.dedent("""
+        (async () => {
+          // No edited lyrics, complete lyrics, and voice previews need no warning.
+          for (const payload of [null, complete]) {
+            select(payload); await submitJob(0, '');
+          }
+          select(filler); await submitJob(10, 'head');
+          assert.equal(dialogs, 0); assert.equal(requests.length, 3);
+
+          // Both explicit fillers and uncovered ranges stop before uploading.
+          // An existing regeneration preference does not accept singing original lyrics.
+          preferences.set(REVIEW_REGENERATE_KEY, '1');
+          for (const payload of [filler, gap]) {
+            select(payload);
+            const pending = submitJob(0, ''); await tick();
+            assert(dialog.open); assert.equal(submitBusy, true);
+            assert.equal($('lyric-review-skip-label').hidden, false);
+            assert.match($('lyric-review-confirm-hint').textContent, /未対応の部分だけ/);
+            assert.match($('lyric-review-confirm-hint').textContent, /元の読み/);
+            assert.equal(requests.length, 3);
+            const count = dialogs;
+            await submitJob(0, ''); assert.equal(dialogs, count, 'double click opens once');
+            $('lyric-review-skip').checked = true;
+            dialog.close('cancel'); await pending;
+            assert.equal(submitBusy, false); assert.equal(requests.length, 3);
+            assert.equal(preferences.has(UNMATCHED_LYRICS_KEY), false);
+          }
+
+          select(filler);
+          let pending = submitJob(0, ''); await tick();
+          assert.equal($('lyric-review-skip').checked, false);
+          dialog.close('generate'); await pending;
+          assert.equal(requests.length, 4);
+          assert.deepEqual(JSON.parse(await requests.at(-1).get('editor').text()), filler);
+          assert.equal(preferences.has(UNMATCHED_LYRICS_KEY), false);
+
+          // Confirming with the checkbox persists across a new input/job.
+          pending = submitJob(0, ''); await tick();
+          assert(dialog.open); $('lyric-review-skip').checked = true;
+          dialog.close('generate'); await pending;
+          assert.equal(preferences.get(UNMATCHED_LYRICS_KEY), '1');
+          const count = dialogs;
+          select(gap); await submitJob(0, '');
+          assert.equal(dialogs, count); assert.equal(requests.length, 6);
+
+          // Storage failures keep confirmation usable and do not save cancellation.
+          denyStorage = true;
+          pending = submitJob(0, ''); await tick();
+          assert(dialog.open); $('lyric-review-skip').checked = true;
+          dialog.close('generate'); await pending;
+          assert.equal(requests.length, 7); assert.equal(submitBusy, false);
+          pending = submitJob(0, ''); await tick();
+          assert(dialog.open); dialog.close('cancel'); await pending;
+          assert.equal(requests.length, 7); assert.equal(submitBusy, false);
         })().catch(error => {console.error(error); process.exitCode = 1;});
     """)
     subprocess.run(["node", "-e", node], check=True)
@@ -3209,6 +3331,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             "function appendSongLyrics(form)",
             "async function submitJob(previewSec, previewMode)",
             "async function readParodyFile(file)",
+            "function lyricReviewCoverage(",
         )
     )
     node = textwrap.dedent(

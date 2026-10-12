@@ -1360,7 +1360,7 @@
       <input type="checkbox" id="lyric-review-skip">次回から表示しない
     </label>
     <div class="custom-wordlist-actions">
-      <button type="submit" value="cancel" autofocus>編集に戻る</button>
+      <button type="submit" value="cancel" id="lyric-review-cancel" autofocus>編集に戻る</button>
       <button type="submit" value="generate" id="lyric-review-proceed" class="btn-primary">再生成して動画作成</button>
     </div>
   </form>
@@ -3341,7 +3341,14 @@ async function submitJob(previewSec, previewMode) {
     editorSrc.file = null;
   }
   if (editorSrc.file) {
-    try { await readParodyFile(editorSrc.file); }
+    try {
+      const payload = await readParodyFile(editorSrc.file);
+      if (previewSec === 0 && lyricReviewCoverage(payload).unmatched
+          && !await confirmReviewRegeneration("fill-missing")) {
+        setBusy(false);
+        return;
+      }
+    }
     catch (err) { setBusy(false); showSubmitMsg(err.message); return; }
   }
   // JSONの割り当てを使うため、単語リストの選択と異なる場合は確認する。
@@ -6961,6 +6968,7 @@ $("layout-json").addEventListener("change", () => {
 const EDITOR_KEY = "soramimic-editor";
 const REVIEW_JOB_KEY = "soramimic-video-review-job";
 const REVIEW_REGENERATE_KEY = "soramimic-video-review-auto-regenerate";
+const UNMATCHED_LYRICS_KEY = "soramimic-video-unmatched-lyrics-accepted";
 let reviewJobId = null;
 let reviewOpenedJob = null;
 let reviewOpening = false;
@@ -7059,26 +7067,30 @@ function lyricReviewCoverage(payload) {
   return { unmatched, gaps };
 }
 
-function confirmReviewRegeneration(remaining = false) {
-  if (!remaining) {
-    try { if (localStorage.getItem(REVIEW_REGENERATE_KEY) === "1") return Promise.resolve(true); }
-    catch { /* Confirmation still works when browser storage is unavailable. */ }
-  }
+function confirmReviewRegeneration(mode = "regenerate") {
+  const remaining = mode === "remaining", fillMissing = mode === "fill-missing";
+  const preference = mode === "regenerate" ? REVIEW_REGENERATE_KEY : UNMATCHED_LYRICS_KEY;
+  try { if (localStorage.getItem(preference) === "1") return Promise.resolve(true); }
+  catch { /* Confirmation still works when browser storage is unavailable. */ }
   const dialog = $("lyric-review-confirm");
   $("lyric-review-confirm-title").textContent = remaining
     ? "未対応の歌詞が残っています" : "未対応の歌詞があります";
   $("lyric-review-confirm-hint").textContent = remaining
     ? "再生成しても埋まらない部分は、元の読みで生成します。"
+    : fillMissing
+    ? "作成済みの替え歌を残し、未対応の部分だけ生成します。埋まらない部分は元の読みで歌います。"
     : "固定した単語を残し、ほかの部分を再生成します。";
-  $("lyric-review-proceed").textContent = remaining ? "このまま動画を生成" : "再生成して動画作成";
-  $("lyric-review-skip-label").hidden = remaining;
+  $("lyric-review-proceed").textContent = remaining ? "このまま動画を生成"
+    : fillMissing ? "動画を生成" : "再生成して動画作成";
+  $("lyric-review-cancel").textContent = fillMissing ? "キャンセル" : "編集に戻る";
+  $("lyric-review-skip-label").hidden = false;
   $("lyric-review-skip").checked = false;
   dialog.returnValue = "cancel";
   return new Promise((resolve) => {
     dialog.addEventListener("close", () => {
       const accepted = dialog.returnValue === "generate";
-      if (accepted && !remaining && $("lyric-review-skip").checked) {
-        try { localStorage.setItem(REVIEW_REGENERATE_KEY, "1"); }
+      if (accepted && $("lyric-review-skip").checked) {
+        try { localStorage.setItem(preference, "1"); }
         catch { /* Apply this choice now even if it cannot be remembered. */ }
       }
       resolve(accepted);
@@ -7114,7 +7126,7 @@ async function confirmLyricReview() {
       if (!raw) throw new Error("編集データがありません。編集画面を開き直してください");
       const coverage = lyricReviewCoverage(JSON.parse(raw));
       if (coverage.gaps) throw new Error("読みを対応づけられない部分があります。歌詞を確認してください");
-      if (coverage.unmatched && !await confirmReviewRegeneration(true)) return;
+      if (coverage.unmatched && !await confirmReviewRegeneration("remaining")) return;
     }
     $("confirm-lyric-review").textContent = "動画を生成中…";
     const form = new FormData();
