@@ -910,9 +910,8 @@
         <label for="lyrics">歌詞</label>
         <textarea id="lyrics" rows="5" placeholder="歌詞を行ごとに入力、またはソラミミックの歌詞JSONを貼り付け"></textarea>
         <div class="field" id="lyrics-file-field" hidden>
-          <label for="lyrics-file">歌詞ファイル</label>
           <div class="row">
-            <input type="file" id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json" class="row-grow" aria-describedby="lyrics-file-hint editor-file-error">
+            <input type="file" id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json" class="row-grow" aria-label="歌詞ファイル" aria-describedby="lyrics-file-hint editor-file-error">
             <button type="button" id="clear-lyrics-file" class="btn-sm" hidden aria-label="歌詞ファイルを取り消す">✕</button>
           </div>
           <p class="hint" id="lyrics-file-hint">元歌詞のテキスト、またはソラミミックで書き出した歌詞JSONを読み込めます。</p>
