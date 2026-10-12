@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .project import Project
@@ -25,7 +25,9 @@ def result_path(directory: Path) -> Path | None:
         return None
 
 
-def save_result(project: Project, directory: Path, *, title: str = "") -> None:
+def save_result(
+    project: Project, directory: Path, *, title: str = "", text_only_label: str = "",
+) -> None:
     """Keep editable lyrics, never session URLs, uploads, or server-local paths.
 
     An oversized custom list must not prevent an otherwise valid video render.
@@ -45,7 +47,7 @@ def save_result(project: Project, directory: Path, *, title: str = "") -> None:
     try:
         if project.parody is None:
             return
-        entry = None
+        entry: dict[str, Any] | None = None
         wordlist = resolve_wordlist(project.parody.wordlist)
         if not wordlist.resolve().is_relative_to(WORDLISTS_DIR.resolve()):
             # Uploaded and editor-owned lists resolve to a local normalized CSV.
@@ -54,6 +56,8 @@ def save_result(project: Project, directory: Path, *, title: str = "") -> None:
                 "value": "ORIGINAL", "text": "自作リスト",
                 "csvText": parse_editor_text(wordlist.read_text(encoding="utf-8")).text,
             }
+            if text_only_label:
+                entry.update(text=text_only_label, textOnly=True)
         raw = json.loads((directory / "soramimic_raw.json").read_text(encoding="utf-8"))
         units = [line["units"] for line in raw["lines"]]
         weights = project_note_length_weights(project, 1.0)(units)

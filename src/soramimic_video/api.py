@@ -280,6 +280,46 @@ def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
     return name
 
 
+def editor_import_wordlists() -> list[str]:
+    """Packaged lists available for image-backed lyric imports in this instance."""
+    from .convert import WORDLISTS_DIR
+
+    names = {path.stem for path in WORDLISTS_DIR.glob("*.csv") if path.is_file()}
+    if is_public_mode() or is_simple_ui():
+        names &= launch_wordlist_names()
+    return sorted(names)
+
+
+def prepare_editor_import(payload: dict[str, Any], fallback: str = "") -> dict[str, Any]:
+    from .convert import resolve_wordlist
+    from .editor_io import custom_wordlist_sid, is_original_wordlist
+    from .editor_wordlist import is_text_only, text_only_import
+
+    if is_text_only(payload):
+        return text_only_import(payload)
+    if is_original_wordlist(payload) or custom_wordlist_sid(payload):
+        return payload
+    filepath = (payload.get("wordlist") or {}).get("filepath", "")
+    name = Path(filepath).stem if filepath else fallback.strip()
+    if not name:
+        return payload
+    if is_public_mode() or is_simple_ui():
+        if name in editor_import_wordlists():
+            payload = copy.deepcopy(payload)
+            payload["wordlist"] = {"filepath": f"{name}.csv"}
+            return payload
+    else:
+        for candidate in (filepath, name):
+            if not candidate:
+                continue
+            try:
+                resolve_wordlist(candidate)
+                return payload
+            except FileNotFoundError:
+                pass
+    return text_only_import(payload)
+
+
 async def read_midi_upload(midi: UploadFile) -> bytes:
     """アップロードされたMIDIを読む。Simple UIでは持ち込み自体を受け付けない。"""
     data = await midi.read(DEFAULT_MAX_MIDI_UPLOAD_BYTES + 1)
@@ -1400,8 +1440,14 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
     from .convert import wordlist_exhausted
 
-    completed_lyrics.save_result(project, d, title=song_title_of(job.params))
-    job.wordlist_exhausted = wordlist_exhausted(project)
+    completed_lyrics.save_result(
+        project, d, title=song_title_of(job.params),
+        text_only_label=(job.params.get("wordlist_label", "")
+                         if job.params.get("text_only_wordlist") else ""),
+    )
+    job.wordlist_exhausted = (
+        not job.params.get("text_only_wordlist") and wordlist_exhausted(project)
+    )
     layout, job.layout_source = resolve_layout(job, config)
     from .align import parse_granularity_override
 
@@ -3208,6 +3254,7 @@ def create_app(
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
+            "editor_wordlists": editor_import_wordlists(),
             # 曲情報プレビューの「<単語リスト>で歌ってみた」に使う文章向け名称。
             "wordlist_phrases": load_wordlist_phrases(),
             # 制限付き画像を含みうる単語リストでは、生成ボタンのそばに
@@ -3792,13 +3839,20 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found")
         from .align import parse_granularity_override
         from .editor_io import build_editor_preview
+        from .editor_wordlist import is_text_only
 
         raw = await editor.read()
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="editorのJSONが読めません") from exc
-        if is_public_mode():
+        if isinstance(payload, dict) and isinstance(payload.get("unitsList"), list):
+            try:
+                payload = prepare_editor_import(payload, wordlist)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        text_only = isinstance(payload, dict) and is_text_only(payload)
+        if is_public_mode() and not text_only:
             from .editor_io import custom_wordlist_sid, is_original_wordlist
 
             canonical = require_launch_wordlist(wordlist, status_code=422)
@@ -3814,8 +3868,8 @@ def create_app(
             payload["wordlist"] = {"filepath": f"{canonical}.csv"}
             wordlist = canonical
         # 編集中のレイアウトがあれば、そのフィルタ・要素でキューを組む(なければ既定)
-        layout_obj = load_layout(None)
-        if layout_json.strip():
+        layout_obj = load_layout("lyrics_text" if text_only else None)
+        if layout_json.strip() and not text_only:
             try:
                 layout_obj = parse_layout(json.loads(layout_json), "layout_json")
             except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
@@ -4088,6 +4142,12 @@ def create_app(
             )
         client_hash = None if quota_exempt or not is_public_mode() else _client_hash(request)
         if editor_payload is not None:
+            from .editor_wordlist import is_text_only
+
+            try:
+                editor_payload = prepare_editor_import(editor_payload, wordlist)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             if is_public_mode():
                 from .editor_io import custom_wordlist_sid, is_original_wordlist
 
@@ -4269,6 +4329,9 @@ def create_app(
                 "custom_description" if "description" in custom_columns else "custom_original"
             )
             layout_json = ""
+        text_only_wordlist = isinstance(editor_payload, dict) and is_text_only(editor_payload)
+        if text_only_wordlist:
+            layout, layout_json = "lyrics_text", ""
         # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
         if layout_json:
             try:
@@ -4340,6 +4403,11 @@ def create_app(
             params["credit_notice"] = credit_notice_of(params)
         params["song_label"] = new_job_song_label(params)
         params["wordlist_label"] = job_wordlist_label(params)
+        if text_only_wordlist:
+            params["text_only_wordlist"] = True
+            params["wordlist_label"] = editor_payload["wordlist"]["text"]
+            if not params["thumbnail_wordlist_label"]:
+                params["thumbnail_wordlist_label"] = params["wordlist_label"]
         # レンダリング必須のサンプル帰属表記も受付時に確定する。ワーカー開始後に
         # ローカルmanifestを読み直して空になると、完成動画から表記が欠落するため。
         if params["sample_id"]:

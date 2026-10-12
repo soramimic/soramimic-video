@@ -106,7 +106,7 @@ def test_public_import_uses_export_wordlist_and_never_a_supplied_path(review_cli
     assert calls["synthesize"][0].parody.wordlist == "stations"
 
 
-def test_public_import_rejects_unknown_export_wordlist(review_client, monkeypatch):
+def test_public_import_uses_text_for_unknown_export_wordlist(review_client, monkeypatch):
     client, midi, calls, _ = review_client
     payload = exported_lyrics(client, midi)
     payload["wordlist"]["filepath"] = "/private/path/unknown.csv"
@@ -115,8 +115,11 @@ def test_public_import_rejects_unknown_export_wordlist(review_client, monkeypatc
         "midi": ("song.mid", midi),
         "editor": ("lyrics.json", json.dumps(payload), "application/json"),
     }, data={"wordlist": "stations"})
-    assert response.status_code == 422
-    assert calls["synthesize"] == []
+    assert response.status_code == 200, response.text
+    job = wait_status(client, response.json()["id"], "done")
+    assert job["params"]["layout"] == "lyrics_text"
+    assert job["params"]["text_only_wordlist"] is True
+    assert calls["synthesize"][0].parody.lines[0].words[0].surface == "保存した替え歌"
 
 
 def test_completed_custom_lyrics_preserve_word_ids(review_client, monkeypatch):

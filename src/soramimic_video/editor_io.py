@@ -699,7 +699,9 @@ def import_editor(
     raw = align_editor_lines(aligned, payload)
     default_params = project.parody.params if project.parody else {}
     params = payload.get("param") or default_params
-    if fill_missing:
+    from .editor_wordlist import is_text_only
+
+    if fill_missing and not is_text_only(payload):
         from .editor_completion import complete_editor_gaps
 
         raw = complete_editor_gaps(aligned, raw, wordlist, where, params)

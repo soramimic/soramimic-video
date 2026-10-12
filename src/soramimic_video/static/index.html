@@ -947,6 +947,7 @@
   </div>
   <div id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"
     aria-label="単語リスト" hidden></div>
+  <p class="hint" id="builder-text-only-notice" role="status" hidden>この単語リストは画像なしで動画にします。受け取った空耳歌詞と読みをそのまま使います。</p>
   <!-- #advanced はHTML上では正本の入力群とまとまった位置に置き、ページ構築時に
        このスロットへ移す。単語リスト直下で開閉でき、下のプレビューを探し回らずに済む。 -->
   <div id="advanced-slot"></div>
@@ -1742,6 +1743,7 @@ let wordlistLayouts = {};
 let wordlistPhrases = {};
 let simpleMode = false;
 let launchWordlists = [];
+let editorWordlists = null;
 // Web UIの歌声はVOICEVOX 波音リツ(ノーマル・歌唱)に固定する。
 let fixedVoicevoxStyle = 6000;
 let fixedSynthesizer = "voicevox";
@@ -1769,6 +1771,7 @@ async function loadConfig() {
   try { await refreshCustomLists(); }
   catch (err) { showBuilderMsg(err.message); }
   launchWordlists = Array.isArray(conf.launch_wordlists) ? conf.launch_wordlists : [];
+  editorWordlists = Array.isArray(conf.editor_wordlists) ? new Set(conf.editor_wordlists) : null;
   fixedVoicevoxStyle = Number(conf.fixed_voicevox_style || 6000);
   fixedSynthesizer = String(conf.fixed_synthesizer || "voicevox");
   maxAudioUploadBytes = Number(conf.max_audio_upload_bytes || maxAudioUploadBytes);
@@ -3876,8 +3879,29 @@ function activeLyricsJson() {
   return songInputMode === "upload" && automaticLyricsEnabled() ? null : lyricsInput().data;
 }
 
+function editorUsesTextOnly(data) {
+  const entry = data?.wordlist;
+  if (!entry) return false;
+  if (entry.textOnly === true) return true;
+  if (entry.value === "ORIGINAL" || String(entry.value || "").startsWith("custom:")) return false;
+  const name = String(entry.filepath || "").split("/").pop().replace(/\.csv$/i, "");
+  return !!name && editorWordlists !== null && !editorWordlists.has(name);
+}
+
+function editorTextPreviewList(data) {
+  // A preview dictionary contains only selected text/readings. The original JSON
+  // stays intact; the API independently validates the import and prepares its CSV.
+  const cell = value => String(value ?? "").replace(/\uFEFF/g, "")
+    .replace(/[\r\n]/g, " ").replace(/,/g, "、").trim();
+  const rows = (data.results || []).flat().map(word =>
+    [word.id ?? "", word.surface, word.surface, word.kana].map(cell).join(","));
+  return { name: data.wordlist?.text || "歌詞の単語",
+    text: ["id,original,surface,pronunciation", ...new Set(rows)].join("\n") };
+}
+
 function syncJsonInputControls() {
   const data = activeLyricsJson();
+  $("builder-text-only-notice").hidden = !editorUsesTextOnly(data);
   const locked = !!data;
   for (const id of ["builder-wordlist", "builder-wordlist-trigger", "wordlist-select"]) {
     $(id).disabled = locked || customListBusy;
@@ -5265,6 +5289,7 @@ function hiddenPreviewReason(name) {
 // レイアウト自動切替は「未指定」として扱われ、サーバー既定に落ちる)。
 function currentWordlistName() {
   const data = activeLyricsJson();
+  if (editorUsesTextOnly(data)) return "";
   if (data) return String(data.wordlist?.filepath || "").split("/").pop().replace(/\.csv$/i, "");
   const sel = $("wordlist-select");
   if (!sel.hidden) {
@@ -5280,6 +5305,7 @@ function currentPreviewCustomList() {
   if (simpleMode) return null;
   const data = activeLyricsJson();
   if (data) {
+    if (editorUsesTextOnly(data)) return editorTextPreviewList(data);
     const entry = data.wordlist;
     return typeof entry?.csvText === "string" && entry.csvText.trim()
       ? { name: entry.text || "自作リスト", text: entry.csvText } : null;
@@ -8242,7 +8268,9 @@ function renderParodyStatus() {
   }
   if ($("editor-file-error").textContent) { s.textContent = ""; return; }
   if (activeLyricsJson()) {
-    s.textContent = "歌詞JSONの単語・歌詞・読みを使用し、替え歌がない部分だけ生成します。";
+    s.textContent = editorUsesTextOnly(activeLyricsJson())
+      ? "受け取った空耳歌詞と読みをそのまま使い、画像なしで動画にします。"
+      : "歌詞JSONの単語・歌詞・読みを使用し、替え歌がない部分だけ生成します。";
     return;
   }
   if (parodyMismatch()) {
@@ -8272,6 +8300,9 @@ function readParodyText(text) {
       || !data.results.length || data.results.length !== data.unitsList.length
       || !data.results.every(Array.isArray) || !data.unitsList.every(Array.isArray)) {
     throw new Error("ソラミミックで変換済みの歌詞JSONを入力してください。");
+  }
+  if (!data.results.every(line => line.every(word => word && typeof word === "object" && !Array.isArray(word)))) {
+    throw new Error("歌詞JSONの単語データが不正です。");
   }
   return data;
 }
