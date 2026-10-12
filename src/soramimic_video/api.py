@@ -1285,6 +1285,23 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             correct_lyrics = (
                 job.params.get("auto_lyrics") is False and lyrics_path.exists()
             )
+            editor_original_lyrics = None
+            if (d / "editor.json").exists():
+                from .editor_alignment import editor_analysis_lyrics
+                from .editor_io import editor_lyrics
+
+                editor_payload = json.loads((d / "editor.json").read_text(encoding="utf-8"))
+                prepared_lyrics = editor_analysis_lyrics(editor_payload)
+                if prepared_lyrics is not None:
+                    editor_original_lyrics = (
+                        lyrics_path.read_text(encoding="utf-8") if lyrics_path.exists()
+                        else editor_lyrics(editor_payload)
+                    )
+                    # Preserve the uploaded text/JSON; this derived input pins
+                    # their known reading before localization and forced alignment.
+                    lyrics_path = d / "editor-source-lyrics.txt"
+                    lyrics_path.write_text(prepared_lyrics, encoding="utf-8")
+                    correct_lyrics = True
             if job.params.get("input_kind") == "audio":
                 from .score_audio import analyze_audio
 
@@ -1292,7 +1309,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                     lyrics_path
                     if lyrics_path.exists()
                     and (
-                        job.params.get("auto_lyrics") is False
+                        correct_lyrics
                         or bool(job.params.get("sample_id"))
                     )
                     else None
@@ -1300,7 +1317,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 project = analyze_audio(
                     d / "input.wav",
                     d,
-                    # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
+                    # 手動指定・JSONの確定読み・サンプル歌詞をforced alignmentへ渡す。
                     # アップロード音源の自動認識時はWhisperで歌詞行を決める。
                     lyrics_path=supplied_audio_lyrics,
                     editor_path=d / "editor.json" if (d / "editor.json").exists() else None,
@@ -1317,6 +1334,10 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
                 if lyrics_path.exists():
                     aligner = align_correct_lyrics if correct_lyrics else align_lines
                     aligner(project, lyrics_path.read_text(encoding="utf-8").splitlines())
+            if editor_original_lyrics:
+                # Original display text may use different breaks from the edited
+                # phrases. Its spelling does not replace the pinned pronunciation.
+                align_lines(project, editor_original_lyrics.splitlines())
             project.save(d)
 
     preview_sec = float(job.params.get("preview") or 0)

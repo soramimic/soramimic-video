@@ -10,6 +10,7 @@ soramimic の編集ツールは `soramimic-editor/1` 形式のJSON
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -624,15 +625,6 @@ def import_editor(
     units_list = payload.get("unitsList")
     if not isinstance(results, list) or not isinstance(units_list, list):
         raise ValueError("editorの書き出しファイルではありません(results/unitsListが必要)")
-    if len(results) != len(project.lines):
-        raise ValueError(
-            f"行数が合いません: editor={len(results)}行, project={len(project.lines)}行"
-        )
-
-    lines = [
-        {"units": units, "words": words}
-        for units, words in zip(units_list, results, strict=True)
-    ]
     # 単語リストはJSON側の情報(filepath)が解決できるならそちらを優先し、
     # だめなら既存のparody(convert済みの場合)にフォールバックする
     wordlist = project.parody.wordlist if project.parody else None
@@ -690,27 +682,28 @@ def import_editor(
     # lyrics を持つときは、その生テキストで対応づけて埋める。「editor.json だけを
     # 持ち込んだ」ケースでも字幕が出る。ルビ記法は align_lines が解釈するので
     # 剥がさずそのまま渡す。
-    if all(line.original_text is None for line in project.lines):
+    aligned = copy.deepcopy(project)
+    if all(line.original_text is None for line in aligned.lines):
         lyrics = editor_lyrics(payload)
         if lyrics is not None:
             from .align import align_lines
 
-            align_lines(project, lyrics.splitlines())
+            align_lines(aligned, lyrics.splitlines())
 
+    from .editor_alignment import align_editor_lines
+
+    # Align original lyrics before projecting the edited words to singing slots.
+    # Commit the new grouping only after every word has been imported successfully.
+    raw = align_editor_lines(aligned, payload)
     default_params = project.parody.params if project.parody else {}
     apply_converted_lines(
-        project,
-        lines,
+        aligned,
+        raw["lines"],
         wordlist=wordlist,
         where=where,
         params=payload.get("param") or default_params,
     )
-    # 再書き出しできるよう生応答も更新する
-    save_raw(
-        {
-            "lines": lines,
-            "tokensList": payload.get("tokensList", []),
-            "phrases": payload.get("phrases", []),
-        },
-        project_dir,
-    )
+    project.lines, project.notes, project.parody = aligned.lines, aligned.notes, aligned.parody
+    project.lyric_phrasing = aligned.lyric_phrasing
+    # 再書き出しにも、現在の曲へ対応付けた単語範囲を使う。
+    save_raw(raw, project_dir)
