@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from itertools import accumulate, pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,9 +53,44 @@ def editor_audio_lines(payload: dict[str, Any]) -> list[tuple[str, str]]:
     return result
 
 
+def editor_word_boundaries(payload: dict[str, Any]) -> list[tuple[int, ...]]:
+    """Project edited source-unit spans to mora boundaries, without rereading."""
+    from soramimic_score import kana_to_moras, normalize_reading
+
+    boundaries: list[tuple[int, ...]] = []
+    for index, (units, words) in enumerate(zip(
+        payload["unitsList"], payload["results"], strict=True,
+    )):
+        if not units:
+            boundaries.append(())
+            continue
+        source = "".join(unit["pronunciation"] for unit in units)
+        reading = normalize_reading(source)
+        if len(source) != len(reading):
+            raise ValueError(f"歌詞JSONの{index + 1}行目の単語境界を読みへ対応付けられません")
+        moras = kana_to_moras(reading)
+        mora_offsets = dict(zip(accumulate(map(len, moras), initial=0),
+                                range(len(moras) + 1), strict=True))
+        unit_offsets = list(accumulate((len(unit["pronunciation"]) for unit in units), initial=0))
+        cuts = set()
+        for word in words:
+            start, end = word["period"]
+            if not 0 <= start < end <= len(units):
+                raise ValueError(f"歌詞JSONの{index + 1}行目の単語範囲が不正です")
+            for unit_index in (start, end):
+                offset = unit_offsets[unit_index]
+                if offset not in mora_offsets:
+                    raise ValueError(f"歌詞JSONの{index + 1}行目の単語境界がモーラの途中にあります")
+                if 0 < mora_offsets[offset] < len(moras):
+                    cuts.add(mora_offsets[offset])
+        boundaries.append(tuple(sorted(cuts)))
+    return boundaries
+
+
 def align_editor_audio(
     path: Path, rows: list[tuple[str, str]], config: ModelConfig,
     on_progress: Callable[[str], None], accompaniment_path: Path | None,
+    *, word_boundaries: list[tuple[int, ...]] | None = None,
 ) -> ScoreDocument:
     """Align fixed JSON readings across the whole audio without recognition."""
     from soramimic_score import (
@@ -67,9 +103,13 @@ def align_editor_audio(
     from soramimic_score.models import prepared_adapters
 
     active = [(index, text, kana) for index, (text, kana) in enumerate(rows) if kana]
+    if word_boundaries is not None and len(word_boundaries) != len(rows):
+        raise ValueError("歌詞JSONの単語境界と歌詞行数が一致しません")
     lines = tuple(LyricLine(text) for _, text, _ in active)
     readings = tuple(ReadingSelection(kana, "editor-json", 1., detail={
         "editor_line_index": index, "fixed": True,
+        **({"word_boundaries": list(word_boundaries[index])}
+           if word_boundaries is not None else {}),
     }) for index, _, kana in active)
     on_progress("音声を読み込んでいます")
     with decoded_audio(path) as source:
@@ -86,7 +126,18 @@ def align_editor_audio(
             observations = build_audio_observations(
                 lines, readings, moras, notes, allow_empty_melody=True,
             )
-            result = compile_score(observations)
+            segments: dict[str, str] | None = None
+            if word_boundaries is not None and any(word_boundaries):
+                selected = {reading.id: reading for reading in observations.readings}
+                segments = {}
+                for (index, _, _), utterance in zip(active, observations.utterances, strict=True):
+                    mora_ids = selected[utterance.selected_reading_id].mora_ids
+                    cuts = (0, *word_boundaries[index], len(mora_ids))
+                    for group, (start, end) in enumerate(pairwise(cuts)):
+                        segments.update({mid: f"{utterance.id}:word-{group}"
+                                         for mid in mora_ids[start:end]})
+            result = (compile_score(observations, segment_ids_by_mora=segments)
+                      if segments is not None else compile_score(observations))
             if adapters.vocal_activity is not None:
                 from soramimic_score.spoken import add_spoken_fallback
 

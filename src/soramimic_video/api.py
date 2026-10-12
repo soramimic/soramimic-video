@@ -4080,10 +4080,11 @@ def create_app(
                     status_code=422, detail="選択した曲の歌詞が見つかりません"
                 ) from exc
         if editor_payload is not None and input_kind == "audio":
-            from .editor_audio import editor_audio_lines
+            from .editor_audio import editor_audio_lines, editor_word_boundaries
 
             try:
                 fixed_lines = editor_audio_lines(editor_payload)
+                editor_word_boundaries(editor_payload)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             lyrics = "\n".join(text for text, _ in fixed_lines)
