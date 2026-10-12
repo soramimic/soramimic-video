@@ -1089,20 +1089,27 @@ def _function_body(script: str, head: str) -> str:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_title_selection_refreshes_preview_and_discards_stale_candidates():
+def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
     script = _script()
     block = script[script.index("function titleChoiceContext()"):
                    script.index("// 単語リストの代表画像(サムネプレビュー")]
     harness = r'''
       const assert = require('node:assert/strict');
       const elements = new Map();
+      const element = () => ({
+        value: '', textContent: '', disabled: false, options: [], children: [], listeners: {},
+        add(option) {this.options.push(option);},
+        replaceChildren(...items) {this.options = items; this.children = items; this.value = '';},
+        append(child) {this.children.push(child);},
+        setAttribute(name, value) {this[name] = value;},
+        addEventListener(event, fn) {this.listeners[event] = fn;},
+        focus() {document.activeElement = this;},
+        showModal() {this.open = true;},
+        close() {this.open = false; this.listeners.close?.();},
+      });
+      const document = {createElement: element, activeElement: null};
       const $ = id => {
-        if (!elements.has(id)) elements.set(id, {
-          value: '', textContent: '', disabled: false, options: [], listeners: {},
-          add(option) {this.options.push(option);},
-          replaceChildren(...options) {this.options = options; this.value = '';},
-          addEventListener(event, fn) {this.listeners[event] = fn;}, focus() {},
-        });
+        if (!elements.has(id)) elements.set(id, element());
         return elements.get(id);
       };
       class Option {constructor(text, value) {this.text = text; this.value = value;}}
@@ -1116,9 +1123,10 @@ def test_title_selection_refreshes_preview_and_discards_stale_candidates():
       const saveForm = () => {saved = titleChoice;};
       const schedulePreview = () => {previews++;};
       const setTimeout = () => 1, clearTimeout = () => {};
-      let resolveFetch, sent;
+      let resolveFetch, sent, signal;
       const fetch = async (_url, options) => {
         sent = JSON.parse(options.body);
+        signal = options.signal;
         return await new Promise(resolve => {resolveFetch = resolve;});
       };
     ''' + block + r'''
@@ -1128,14 +1136,25 @@ def test_title_selection_refreshes_preview_and_discards_stale_candidates():
           originals: ['ハンゼン氏', 'ホフ氏']};
         const load = () => $('title-candidates-load').listeners.click();
         const select = () => $('title-words').listeners.change();
+        const dialog = $('title-candidates-dialog');
+        const list = $('title-candidates-list');
         $('where').value = 'field=天文学';
         const pending = load();
+        assert.equal(dialog.open, true, 'search opens the dialog before the request completes');
+        assert.equal(list.children.length, 0);
+        assert.match($('title-candidates-dialog-status').textContent, /探しています/);
         assert.equal($('title-candidates-load').disabled, true);
         assert.deepEqual(sent, {title, wordlist: 'scientist', where: 'field=天文学'});
         resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
         await pending;
         assert.equal($('title-candidates-load').disabled, false);
-        $('title-words').value = JSON.stringify(choice.words); select();
+        assert.equal(dialog.open, true);
+        assert.equal(list.children.length, 2, 'candidate and automatic choice are visible');
+        assert.equal(document.activeElement, list.children[0]);
+        assert.equal(list.children[0].children[0].textContent, choice.label);
+        assert.match(list.children[0].children[1].textContent, /ハンゼン氏 ＋ ホフ氏/);
+        list.children[0].listeners.click();
+        assert.equal(dialog.open, false, 'selecting a candidate closes the dialog');
         assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
         assert.equal(saved.label, 'ハンゼン ＋ ホフ');
         assert.equal(previews, 1);
@@ -1145,16 +1164,42 @@ def test_title_selection_refreshes_preview_and_discards_stale_candidates():
         assert.equal($('title-words').value, JSON.stringify(choice.words));
         $('title-words').value = ''; select();
         assert.equal(selectedTitleWords(), '');
+        // Dismissing while loading cancels the request and never reopens the dialog.
+        const dismissed = load();
+        $('title-candidates-close').listeners.click();
+        assert.equal(signal.aborted, true);
+        assert.equal($('title-candidates-load').disabled, false);
+        resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+        await dismissed;
+        assert.equal(dialog.open, false);
+        assert.deepEqual(list.children, []);
+        assert.equal($('title-candidates-status').textContent, '');
         // A slow response for a previous title must not replace the new context.
         const stale = load();
         title = '別の曲'; refreshTitleChoices();
         resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
         await stale;
+        assert.equal(dialog.open, false);
         assert.deepEqual(titleCandidates, []);
         assert.equal($('title-candidates-status').textContent, '');
         titleChoice = {...choice, context: titleChoiceContext()};
         $('where').value = ''; refreshTitleChoices();
         assert.equal(titleChoice, null);
+        // Empty results and failures remain visible inside the open dialog.
+        const empty = load();
+        resolveFetch({ok: true, json: async () => ({candidates: []})});
+        await empty;
+        assert.equal(dialog.open, true);
+        assert.match($('title-candidates-dialog-status').textContent, /見つかりません/);
+        list.children[0].listeners.click();
+        assert.equal(dialog.open, false);
+        const failed = load();
+        resolveFetch({ok: false, json: async () => ({detail: 'しばらく待ってください'})});
+        await failed;
+        assert.equal(dialog.open, true);
+        assert.match($('title-candidates-dialog-status').textContent, /しばらく待って/);
+        $('title-candidates-close').listeners.click();
+        assert.equal(dialog.open, false);
         // Editing custom CSV content also invalidates the selected row identities.
         combo.customList = {text: 'one'};
         titleChoice = {...choice, context: titleChoiceContext()};

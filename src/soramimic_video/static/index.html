@@ -657,6 +657,14 @@
   .custom-wordlist-dialog::backdrop { background: #0f172a88; }
   .custom-wordlist-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .75rem; }
   .custom-wordlist-header h2 { margin: 0; font-size: 1.1rem; }
+  #title-candidates-dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
+  #title-candidates-dialog .custom-wordlist-header, #title-candidates-dialog-status { flex: 0 0 auto; }
+  #title-candidates-close { min-height: 44px; }
+  #title-candidates-list { display: grid; gap: .5rem; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  #title-candidates-list button { width: 100%; min-height: 48px; padding: .7rem; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  #title-candidates-list button[aria-pressed="true"] { border-color: var(--accent); background: var(--panel-2); }
+  #title-candidates-list strong, #title-candidates-list span { display: block; }
+  #title-candidates-list .hint { margin: .25rem 0 0; }
   #custom-wordlist-close { flex: 0 0 auto; min-width: 2.75rem; font-size: 1.2rem; }
   #custom-wordlist-panel { width: min(40rem, calc(100vw - 2rem)); padding: 1.2rem; }
   #custom-wordlist-panel > label { color: var(--text); margin-top: 0; margin-bottom: .35rem; }
@@ -1242,7 +1250,8 @@
         <select id="title-words" class="row-grow" aria-describedby="title-words-detail">
           <option value="">自動で選ぶ</option>
         </select>
-        <button type="button" id="title-candidates-load" class="btn-sm">候補を探す</button>
+        <button type="button" id="title-candidates-load" class="btn-sm"
+          aria-haspopup="dialog" aria-controls="title-candidates-dialog">候補を探す</button>
       </div>
       <p class="hint" id="title-words-detail" aria-live="polite">選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。</p>
       <p class="hint" id="title-candidates-status" role="status"></p>
@@ -1294,6 +1303,15 @@
   <a href="/guidelines#contact-title">画像の権利をお持ちの方へ</a>
 </nav>
 </div>
+
+<dialog id="title-candidates-dialog" class="custom-wordlist-dialog" aria-labelledby="title-candidates-heading">
+  <div class="custom-wordlist-header">
+    <h2 id="title-candidates-heading">タイトルの候補</h2>
+    <button type="button" id="title-candidates-close" class="btn-sm" autofocus>閉じる</button>
+  </div>
+  <p class="hint" id="title-candidates-dialog-status" role="status"></p>
+  <div id="title-candidates-list"></div>
+</dialog>
 
 <dialog id="custom-wordlist-panel" class="custom-wordlist-dialog" aria-labelledby="custom-wordlist-title">
   <div class="custom-wordlist-header">
@@ -5357,6 +5375,48 @@ function selectedTitleWords() {
   return titleChoice?.context === titleChoiceContext() ? JSON.stringify(titleChoice.words) : "";
 }
 
+function setTitleCandidatesStatus(message) {
+  $("title-candidates-status").textContent = message;
+  $("title-candidates-dialog-status").textContent = message;
+}
+
+function chooseTitleWords(value) {
+  const choice = [...titleCandidates, ...(titleChoice ? [titleChoice] : [])]
+    .find((c) => JSON.stringify(c.words) === value);
+  titleChoice = choice ? { ...choice, context: titleChoiceContext() } : null;
+  renderTitleChoices();
+  setTitleCandidatesStatus("");
+  $("title-candidates-dialog").close();
+  saveForm();
+  schedulePreview(true);
+}
+
+function renderTitleCandidateList() {
+  const list = $("title-candidates-list");
+  const selected = selectedTitleWords();
+  list.replaceChildren();
+  let focused = null;
+  for (const choice of [...titleCandidates, null]) {
+    const value = choice ? JSON.stringify(choice.words) : "";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(value === selected));
+    const label = document.createElement("strong");
+    label.textContent = choice?.label || "自動で選ぶ";
+    button.append(label);
+    if (choice) {
+      const detail = document.createElement("span");
+      detail.className = "hint";
+      detail.textContent = `読み：${choice.reading} ／ ${choice.originals.join(" ＋ ")}`;
+      button.append(detail);
+    }
+    button.addEventListener("click", () => chooseTitleWords(value));
+    list.append(button);
+    if (!focused || (choice && value === selected)) focused = button;
+  }
+  focused?.focus();
+}
+
 function renderTitleChoices() {
   const select = $("title-words");
   const selected = selectedTitleWords();
@@ -5386,7 +5446,8 @@ function refreshTitleChoices() {
     titleCandidatesAbort = null;
     titleCandidates = [];
     titleCandidatesContext = "";
-    $("title-candidates-status").textContent = "";
+    setTitleCandidatesStatus("");
+    $("title-candidates-dialog").close();
   }
   if (titleChoice && titleChoice.context !== context) {
     titleChoice = null;
@@ -5409,7 +5470,9 @@ $("title-candidates-load").addEventListener("click", async () => {
   titleCandidatesAbort = ctrl;
   titleCandidatesContext = context;
   const timer = setTimeout(() => ctrl.abort(), 25000);
-  $("title-candidates-status").textContent = "曲名に近い候補を探しています…";
+  setTitleCandidatesStatus("曲名に近い候補を探しています…");
+  $("title-candidates-list").replaceChildren();
+  $("title-candidates-dialog").showModal();
   renderTitleChoices();
   try {
     const res = await fetch("/api/title-candidates", {
@@ -5417,18 +5480,20 @@ $("title-candidates-load").addEventListener("click", async () => {
       body: JSON.stringify(payload), signal: ctrl.signal,
     });
     const body = await res.json();
-    if (seq !== titleCandidatesSeq || context !== titleChoiceContext()) return;
+    if (seq !== titleCandidatesSeq || context !== titleChoiceContext()
+        || !$("title-candidates-dialog").open) return;
     if (!res.ok) throw new Error(body.detail || "候補を取得できませんでした");
     titleCandidates = body.candidates;
-    $("title-candidates-status").textContent = titleCandidates.length
+    setTitleCandidatesStatus(titleCandidates.length
       ? "候補からタイトルに使う組み合わせを選んでください。"
-      : "候補が見つかりませんでした。自動のまま生成できます。";
+      : "候補が見つかりませんでした。自動のまま生成できます。");
     renderTitleChoices();
-    $("title-words").focus();
+    renderTitleCandidateList();
   } catch (error) {
-    if (seq === titleCandidatesSeq && context === titleChoiceContext()) {
-      $("title-candidates-status").textContent = error.name === "AbortError"
-        ? "候補の取得に時間がかかっています。もう一度お試しください。" : error.message;
+    if (seq === titleCandidatesSeq && context === titleChoiceContext()
+        && $("title-candidates-dialog").open) {
+      setTitleCandidatesStatus(error.name === "AbortError"
+        ? "候補の取得に時間がかかっています。もう一度お試しください。" : error.message);
     }
   } finally {
     clearTimeout(timer);
@@ -5440,13 +5505,18 @@ $("title-candidates-load").addEventListener("click", async () => {
 });
 
 $("title-words").addEventListener("change", () => {
-  const value = $("title-words").value;
-  const choice = [...titleCandidates, ...(titleChoice ? [titleChoice] : [])]
-    .find((c) => JSON.stringify(c.words) === value);
-  titleChoice = choice ? { ...choice, context: titleChoiceContext() } : null;
-  renderTitleChoices();
-  saveForm();
-  schedulePreview(true);
+  chooseTitleWords($("title-words").value);
+});
+
+$("title-candidates-close").addEventListener("click", () => $("title-candidates-dialog").close());
+$("title-candidates-dialog").addEventListener("close", () => {
+  if (!$("title-candidates-dialog").open && titleCandidatesAbort) {
+    ++titleCandidatesSeq;
+    titleCandidatesAbort.abort();
+    titleCandidatesAbort = null;
+    setTitleCandidatesStatus("");
+    renderTitleChoices();
+  }
 });
 
 // 単語リストの代表画像(サムネプレビューが取れなかったときのフォールバック)。
