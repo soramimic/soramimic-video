@@ -42,6 +42,7 @@ def analyze_audio(
     progress: Callable[[float], None] | None = None,
     adjust_lyrics: bool = False,
     progress_detail: Callable[[str], None] | None = None,
+    editor_path: Path | None = None,
 ) -> Project:
     """Run the Score pipeline and import only its supported synthesis slots."""
     from soramimic_score import ModelConfig, parse_lyric_input
@@ -51,6 +52,8 @@ def analyze_audio(
     from .audio_inference import configured_priority, configured_url
     from .lyric_layers import apply_lyric_layers
 
+    if adjust_lyrics and editor_path is not None:
+        raise ValueError("歌詞JSONの歌詞と読みは調整できません")
     if adjust_lyrics and lyrics_path is None:
         raise ValueError("歌詞の調整には入力歌詞が必要です")
     if bpm <= 0:
@@ -58,7 +61,17 @@ def analyze_audio(
     lyrics = None
     parsed = None
     input_receipt = None
-    if lyrics_path is not None:
+    editor_rows = None
+    if editor_path is not None:
+        from .editor_audio import editor_audio_lines
+        from .editor_io import validate_editor_upload
+
+        editor_rows = editor_audio_lines(validate_editor_upload(editor_path.read_bytes()))
+        lyrics = tuple(text for text, _ in editor_rows)
+        input_receipt = {"source": "editor-json", "lines": [
+            {"text": text, "reading": kana} for text, kana in editor_rows],
+        }
+    elif lyrics_path is not None:
         # Decode without universal-newline translation so the audit retains the
         # exact supplied spelling, whitespace, blank lines, and line endings.
         original_lyrics = lyrics_path.read_bytes().decode("utf-8")
@@ -107,11 +120,16 @@ def analyze_audio(
             progress(min(0.9, progress_count * 0.04 + 0.02))
         progress_count += 1
 
-    document = analyze_score(
-        audio_path, lyrics=parsed,
-        model_config=config, adjust_lyrics=adjust_lyrics,
-        on_progress=on_progress, accompaniment_path=accompaniment,
-    )
+    if editor_rows is not None:
+        from .editor_audio import align_editor_audio
+
+        document = align_editor_audio(audio_path, editor_rows, config, on_progress, accompaniment)
+    else:
+        document = analyze_score(
+            audio_path, lyrics=parsed,
+            model_config=config, adjust_lyrics=adjust_lyrics,
+            on_progress=on_progress, accompaniment_path=accompaniment,
+        )
     runproc.raise_if_cancelled()
     (out / "score.json").write_text(document.to_json(), encoding="utf-8")
     layers = copy.deepcopy(document.to_dict()["score"])
@@ -136,6 +154,10 @@ def analyze_audio(
         accompaniment_path=str(accompaniment) if accompaniment is not None else None,
     ))
     apply_lyric_layers(project, layers)
+    if editor_rows is not None:
+        from .editor_audio import restore_editor_rows
+
+        restore_editor_rows(project, editor_rows)
     quality = generation_quality_assessment(layers)
     pitch_unresolved = omitted - len(order_conflicts)
     limitations = ([f"音高が未解決の{pitch_unresolved}歌唱単位を合成から省略しました。"]
@@ -167,7 +189,8 @@ def analyze_audio(
     (out / "analysis.json").write_text(json.dumps({
         "audio_pipeline": "soramimic-score",
         "official_lyrics": lyrics is not None,
-        "asr_used": True,
+        "asr_used": editor_rows is None,
+        "fixed_editor_readings": editor_rows is not None,
         "mora_count": sum(len(line["mora_ids"]) for line in layers["canonical"]),
         "sources": {source: sum(note.source == source for note in project.notes)
                     for source in {note.source for note in project.notes}},

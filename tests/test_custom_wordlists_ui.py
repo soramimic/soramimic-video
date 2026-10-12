@@ -56,6 +56,7 @@ let selected = {id: 'one', name: '動物', text: 'ねこ,ネコ'};
 let editorSelected = true;
 let entry = {value: 'ORIGINAL', text: '編集した動物', csvText: 'いぬ,イヌ'};
 const activeCustomList = () => selected;
+const activeLyricsJson = () => null;
 const showsEditorWordlist = () => editorSelected;
 const editorSessionWordlist = () => entry;
 assert.equal(currentPreviewCustomList(), selected);
