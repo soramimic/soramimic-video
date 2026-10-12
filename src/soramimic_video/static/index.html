@@ -869,6 +869,7 @@
   </h1>
   <p class="hint" id="server-info"></p>
 </header>
+<p id="bridge-status" class="card" role="status" hidden></p>
 
 <!-- 1. ビルダーカード(この画面の主役)。曲と単語リストのプルダウンを選ぶと、その
      組み合わせで実際に作られるサムネがその場に出て(/api/thumbnail-preview)、
@@ -1509,6 +1510,7 @@
 
 <script src="/image-credits.js"></script>
 <script src="/custom-wordlists.js"></script>
+<script src="/app-bridge.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 // 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
@@ -1680,6 +1682,57 @@ function fmtDuration(sec) {
 }
 
 let resumed = false;
+let editorPeer = null;
+let bridgeReceiving = false;
+async function receiveEditorLyrics() {
+  if (bridgeReceiving || !new URL(location.href).searchParams.has("lyrics-transfer")) return;
+  bridgeReceiving = true;
+  const status = $("bridge-status");
+  status.hidden = false;
+  status.textContent = "ソラミミックから歌詞を受け取っています…";
+  try {
+    await SoramimicBridge.receive(editorPeer, async (payload) => {
+      if (simpleMode) throw new Error("この画面では歌詞JSONを読み込めません。");
+      const file = new File([JSON.stringify(payload)], "soramimic-lyrics.json", { type: "application/json" });
+      await readParodyFile(file);
+      // The original recording stays on its own device. Require an explicit song selection.
+      clearAudioInput();
+      $("midi").value = "";
+      $("sample-select").value = "";
+      $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
+      showSongInputMode("upload");
+      sessionStorage.removeItem(EDITOR_SEED_KEY);
+      sessionStorage.setItem(EDITOR_KEY, JSON.stringify(payload));
+      activeCustomListId = "";
+      await applyEditorWordlist();
+      $("lyrics").value = typeof payload.lyrics === "string" ? payload.lyrics : "";
+      $("auto-lyrics").checked = !$("lyrics").value.trim();
+      $("song-title").value = payload.song?.title || "";
+      syncLyricsRecognition();
+      injectFile($("editor"), file, false);
+      await updateParodyStatus();
+      syncBuilderOptions();
+      syncBuilderValues();
+      saveForm();
+      status.textContent = "歌詞を読み込みました。同じ曲の音源またはMIDIを選んで、動画を作成してください。";
+    });
+  } catch (error) { status.textContent = error.message; }
+}
+
+async function editHistoryLyrics(job, button, status) {
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "編集画面へ歌詞を渡しています…";
+  try {
+    await SoramimicBridge.send(editorPeer, async () => {
+      const response = await fetch(job.editor_url, { headers: headers(), cache: "no-store" });
+      if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。履歴を更新してください。");
+      return response.json();
+    });
+    status.textContent = "編集画面へ歌詞を渡しました。";
+  } catch (error) { status.textContent = error.message; }
+  finally { button.disabled = false; }
+}
 
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
 // 単語リストを選んだときの既定レイアウトに使う(applyWordlistLayout)。
@@ -1700,6 +1753,7 @@ async function loadConfig() {
   $("auth").hidden = !conf.auth_required;
   updateAdvancedSettingsAvailability();
   simpleMode = !!conf.simple_ui;
+  editorPeer = SoramimicBridge.peer("editor", conf.editor_app_url);
   $("lyrics-file").accept = simpleMode
     ? ".txt,.md,text/plain,text/markdown"
     : ".txt,.md,.json,text/plain,text/markdown,application/json";
@@ -1765,6 +1819,7 @@ async function loadConfig() {
   await initBuilder();
   updateSongTextPreviews();
   restoreJobProgress(await loadHistory());
+  receiveEditorLyrics();
 }
 
 function restoreJobProgress(jobs) {
@@ -2337,6 +2392,16 @@ function historyCard(job, index) {
     const download = historyButton("ダウンロード", "history-download");
     download.addEventListener("click", () => downloadHistoryResult(job));
     actions.appendChild(download);
+    if (job.editor_url && editorPeer) {
+      const edit = historyButton("歌詞を編集 ↗", "history-edit-lyrics");
+      const message = document.createElement("p");
+      message.className = "history-meta";
+      message.setAttribute("role", "status");
+      message.hidden = true;
+      edit.addEventListener("click", () => editHistoryLyrics(job, edit, message));
+      actions.appendChild(edit);
+      copy.appendChild(message);
+    }
     copy.appendChild(actions);
   }
   if (job.status === "awaiting_review") {
@@ -3954,12 +4019,13 @@ function switchSongInputMode(mode) {
   $("midi").value = "";
   $("midi").dispatchEvent(new Event("change", { bubbles: true }));
   clearAudioPresentation();
-  clearEditorFile();
+  if (!editorImportedFile) clearEditorFile();
   for (const id of ["lyrics", "song-title", "song-credit"]) {
+    if (id === "lyrics" && editorImportedFile) continue;
     $(id).value = "";
     $(id).dispatchEvent(new Event("change", { bubbles: true }));
   }
-  $("auto-lyrics").checked = true;
+  if (!editorImportedFile) $("auto-lyrics").checked = true;
   syncLyricsRecognition();
   $("sample-status").textContent = "";
   $("audio-sample-credit").hidden = true;
@@ -4059,7 +4125,7 @@ $("midi").addEventListener("change", () => {
   midiSampleId = "";
   if (!restoring) $("song-title").value = songFileStem(file);
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
-  clearEditorFile();
+  if (!editorImportedFile) clearEditorFile();
   if (kind === "midi") {
     clearAudioPresentation();
     document.querySelector('.stages li[data-stage="analyze"]').textContent = "MIDI解析";
@@ -4115,7 +4181,7 @@ async function applySample(opts = {}) {
   if (!sid) return false;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
-    const lyricsRes = opts.keepLyrics ? null : await fetch(`/api/sample/${sid}/lyrics`);
+    const lyricsRes = (opts.keepLyrics || editorImportedFile) ? null : await fetch(`/api/sample/${sid}/lyrics`);
     if (lyricsRes && !lyricsRes.ok) {
       throw new Error("サンプルの取得に失敗しました");
     }

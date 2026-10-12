@@ -351,3 +351,110 @@ def test_review_unavailable_without_editor_or_in_simple_ui(review_client, monkey
     assert response.status_code == 200
     job = wait_status(no_editor, response.json()["id"], "done")
     assert job["params"]["review_lyrics"] is False
+
+
+@pytest.mark.parametrize("input_kind", ["midi", "audio"])
+def test_completed_video_keeps_portable_edited_lyrics(review_client, monkeypatch, input_kind):
+    from soramimic_video.completed_lyrics import FILENAME
+
+    client, _midi, calls, editor = review_client
+    manager = client.app.state.manager
+    manager.config["scrub_private_artifacts"] = True
+    if input_kind == "audio":
+        job_id = manager.create(None, None, "", {
+            "input_kind": "audio", "review_lyrics": True, "wordlist": "stations",
+            "model": "MERROW", "song_title": "テスト曲",
+        }, audio=b"audio-fixture").id
+    else:
+        job_id = submit_review(review_client)
+    wait_status(client, job_id, "awaiting_review")
+    payload = client.get(f"/api/jobs/{job_id}/review").json()
+    payload["results"][0][0].update(surface="編集した替え歌", locked=True)
+    assert resume(client, job_id, payload).status_code == 200
+    body = wait_status(client, job_id, "done")
+    url = body["editor_url"]
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    result = response.json()
+    assert result["results"][0][0]["surface"] == "編集した替え歌"
+    assert result["results"][0][0]["locked"] is True
+    assert result["unitsList"] == payload["unitsList"]
+    assert result["noteLengthRawList"]
+    assert "host" not in result
+    assert "history" not in result
+    assert str(manager.jobs_dir) not in response.text
+    if input_kind == "audio":
+        assert result["lyrics"] == "沈む"
+        assert result["wordlist"]["filepath"] == "wordlists/stations.csv"
+    else:
+        assert result["wordlist"]["value"] == "ORIGINAL"
+        assert "清水" in result["wordlist"]["csvText"]
+    job = manager.get(job_id)
+    assert sorted(p.name for p in job.dir.iterdir()) == [FILENAME, "status.json", "video.mp4"]
+    assert len(calls["synthesize"]) == 1
+
+    # The same owner check protects both the history link and its JSON endpoint.
+    monkeypatch.setenv(api.PUBLIC_ENV, "1")
+    client.get("/api/config")
+    job.owner = client.cookies.get(api.SESSION_COOKIE)
+    manager._save(job)
+    stranger = TestClient(client.app)
+    assert stranger.get(url).status_code == 404
+    assert client.get(url).status_code == 200
+    restarted = TestClient(api.create_app(jobs_dir=manager.jobs_dir, editor_dist=editor))
+    restarted.cookies.update(client.cookies)
+    assert restarted.get(url).json() == result
+    assert FILENAME in [p.name for p in job.dir.iterdir()]
+    monkeypatch.setenv(api.JOB_TTL_HOURS_ENV, "1")
+    restored = restarted.app.state.manager
+    restored.get(job_id).finished_at = time.time() - 7200
+    assert restored.cleanup_expired() == [job_id]
+    assert restarted.get(url).status_code == 404
+    assert not job.dir.exists()
+
+
+def test_completed_lyrics_omits_large_results_and_unsafe_files(
+    review_client, monkeypatch, tmp_path,
+):
+    from soramimic_video import completed_lyrics
+
+    client, _midi, _calls, _editor = review_client
+    monkeypatch.setattr(completed_lyrics, "MAX_BYTES", 8)
+    job_id = submit_review(review_client, review=False)
+    body = wait_status(client, job_id, "done")
+    assert "editor_url" not in body
+    manager = client.app.state.manager
+    job = manager.get(job_id)
+    result = job.dir / completed_lyrics.FILENAME
+    assert not result.exists()
+    outside = tmp_path / "private.json"
+    outside.write_text("secret")
+    result.symlink_to(outside)
+    assert "editor_url" not in job.to_dict()
+    assert client.get(f"/api/jobs/{job_id}/lyrics").status_code == 404
+    manager._cleanup_completed_artifacts(job)
+    assert not result.is_symlink()
+    assert outside.read_text() == "secret"
+    result.write_text("result")
+    manager._cleanup_failed_artifacts(job)
+    assert not result.exists()
+
+
+
+def test_completed_lyrics_accepts_relative_custom_wordlist(review_client, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from soramimic_video.completed_lyrics import FILENAME, save_result
+
+    client, _midi, _calls, _editor = review_client
+    job_id = submit_review(review_client, review=False)
+    wait_status(client, job_id, "done")
+    directory = client.app.state.manager.get(job_id).dir
+    project = Project.load(directory)
+    project.parody.wordlist = str(Path(project.parody.wordlist).relative_to(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    save_result(project, directory)
+    payload = json.loads((directory / FILENAME).read_text())
+    assert payload["wordlist"]["value"] == "ORIGINAL"
+    assert "清水" in payload["wordlist"]["csvText"]

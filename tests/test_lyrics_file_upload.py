@@ -117,3 +117,29 @@ def test_public_import_rejects_unknown_export_wordlist(review_client, monkeypatc
     }, data={"wordlist": "stations"})
     assert response.status_code == 422
     assert calls["synthesize"] == []
+
+
+def test_completed_custom_lyrics_preserve_word_ids(review_client, monkeypatch):
+    client, midi, _calls, _ = review_client
+    payload = exported_lyrics(client, midi, custom=True)
+    csv = payload["wordlist"]["csvText"]
+    rows = [row.split(",") for row in csv.splitlines()]
+    index = rows[0].index("id")
+    ids = {row[index]: f"custom-{i}" for i, row in enumerate(rows[1:])}
+    for row in rows[1:]:
+        row[index] = ids[row[index]]
+    for line in payload["results"]:
+        for word in line:
+            word["id"] = ids[str(word["id"])]
+    payload["wordlist"]["csvText"] = "\n".join(",".join(row) for row in rows)
+    monkeypatch.setenv(api.PUBLIC_ENV, "1")
+    client.app.state.manager.config["scrub_private_artifacts"] = True
+    response = client.post("/api/jobs", files={
+        "midi": ("song.mid", midi),
+        "editor": ("lyrics.json", json.dumps(payload), "application/json"),
+    })
+    assert response.status_code == 200, response.text
+    job = wait_status(client, response.json()["id"], "done")
+    result = client.get(job["editor_url"]).json()
+    assert result["wordlist"]["csvText"] == payload["wordlist"]["csvText"]
+    assert result["results"][0][0]["id"] == payload["results"][0][0]["id"]
