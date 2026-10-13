@@ -1362,6 +1362,22 @@
   </div>
 </dialog>
 
+<dialog id="metadata-change-dialog" class="custom-wordlist-dialog recording-delete-dialog"
+  aria-labelledby="metadata-change-title" aria-describedby="metadata-change-hint">
+  <form method="dialog">
+    <div class="custom-wordlist-header"><h2 id="metadata-change-title"></h2></div>
+    <p id="metadata-change-hint"></p>
+    <label class="recording-delete-choice" for="metadata-change-hide-warning">
+      <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回から表示しない</span>
+    </label>
+    <div class="custom-wordlist-actions recording-delete-actions">
+      <button type="submit" id="metadata-change-acknowledge" value="acknowledge" class="btn-primary" autofocus>閉じる</button>
+      <button type="submit" id="metadata-change-keep" value="keep" hidden>入力済みの名前を保持</button>
+      <button type="submit" id="metadata-change-update" value="update" class="btn-primary" hidden>選択したリスト名に更新</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="recording-delete-dialog" class="custom-wordlist-dialog recording-delete-dialog"
   aria-labelledby="recording-delete-title" aria-describedby="recording-delete-hint">
   <form method="dialog">
@@ -1540,6 +1556,7 @@
 <script src="/image-credits.js"></script>
 <script src="/custom-wordlists.js"></script>
 <script src="/app-bridge.js"></script>
+<script src="/metadata-change.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 // 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
@@ -1736,7 +1753,10 @@ async function receiveEditorLyrics() {
       await applyEditorWordlist();
       $("lyrics").value = JSON.stringify(payload, null, 2);
       $("auto-lyrics").checked = false;
-      $("song-title").value = payload.song?.title || "";
+      $("song-title").value = payload.videoMetadata?.songTitle ?? payload.song?.title ?? "";
+      $("song-credit").value = payload.videoMetadata?.songCredit ?? "";
+      $("thumbnail-wordlist-label").value = payload.videoMetadata?.thumbnailWordlistLabel ?? "";
+      updateSongTextPreviews();
       syncLyricsRecognition();
       $("lyrics").setCustomValidity("");
       $("lyrics-file").value = "";
@@ -4222,10 +4242,7 @@ $("midi").addEventListener("change", () => {
   $("sample-select").value = "";
   midiSampleId = "";
   if (!restoring) {
-    const editorTitle = activeLyricsJson()?.song?.title;
-    const title = typeof editorTitle === "string" ? editorTitle.trim() : "";
-    $("song-title").value = title
-      ? $("song-title").value.trim() || title : songFileStem(file);
+    if (!midiFromSample) updateUploadedSongMetadata(file);
   }
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   if (!editorImportedFile) clearEditorFile();
@@ -4246,6 +4263,21 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
+async function updateUploadedSongMetadata(file) {
+  const titleInput = $("song-title"), creditInput = $("song-credit");
+  const hasMetadata = !!(titleInput.value.trim() || creditInput.value.trim());
+  // Fill an empty title; an existing title or credit always survives song selection.
+  if (!titleInput.value.trim()) {
+    const editorTitle = activeLyricsJson()?.song?.title;
+    titleInput.value = typeof editorTitle === "string" && editorTitle.trim()
+      ? editorTitle.trim() : songFileStem(file);
+    titleInput.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  if (hasMetadata) {
+    await VideoMetadata.notifyChange("song", () => ownSongFile() === file);
+  }
+}
+
 async function clearSelectedSong() {
   if (recordedSongFile && !recordingDeleteWarningHidden()
       && !await confirmRecordedSongDeletion()) return false;
@@ -7609,6 +7641,11 @@ function hostSongList() {
 function withHostInfo(payload) {
   const data = { ...(payload || {}) };
   data.host = { songs: hostSongList(), canUploadSong: true };
+  data.videoMetadata = {
+    songTitle: $("song-title").value,
+    songCredit: $("song-credit").value,
+    thumbnailWordlistLabel: $("thumbnail-wordlist-label").value,
+  };
   const list = activeCustomList();
   if (list && data.wordlist?.value === "ORIGINAL") {
     data.videoCustomListId = list.id;
@@ -8432,6 +8469,29 @@ function applyWordlistSelection() {
   $("wordlist").dispatchEvent(new Event("change", { bubbles: true }));
 }
 $("wordlist-select").addEventListener("change", applyWordlistSelection);
+
+let metadataWordlistKey = "", metadataWordlistVersion = 0;
+async function updateSelectedWordlistMetadata() {
+  const key = activeCustomListId || $("wordlist").value.trim()
+    || (showsEditorWordlist() ? "__editor__" : "");
+  const changed = key !== metadataWordlistKey;
+  metadataWordlistKey = key;
+  if (changed) metadataWordlistVersion += 1;
+  const version = metadataWordlistVersion;
+  if (!changed || !key || restoring
+      || new URL(location.href).searchParams.has("lyrics-transfer")) return;
+  const input = $("thumbnail-wordlist-label");
+  if (!input.value.trim()) return;
+  const previous = input.value;
+  const isCurrent = () => metadataWordlistVersion === version && input.value === previous;
+  const choice = await VideoMetadata.notifyChange("wordlist", isCurrent);
+  if (choice !== "update" || !isCurrent()) return;
+  // Removing the override displays the selected list's current name.
+  input.value = "";
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  updateSongTextPreviews();
+}
+$("wordlist").addEventListener("change", updateSelectedWordlistMetadata);
 
 // 替え歌JSONの有無・単語リストとの不一致に応じた状態表示を更新する。
 // localStorage復元による注入は取り込み直後と区別がつかないため、restoreForm側が

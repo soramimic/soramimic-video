@@ -1154,6 +1154,22 @@ def credit_notice_of(params: dict[str, Any]) -> str:
     return str(params.get("credit_notice") or "").strip()
 
 
+def video_metadata_of(params: dict[str, Any]) -> dict[str, str]:
+    """Display fields retained when editable lyrics return to Video."""
+    title = song_title_of(params)
+    credit = params.get("song_credit")
+    if _sample_entry_of(params) is not None or credit is None:
+        credit = " — ".join(filter(None, (
+            title, original_display_credit_of(params)
+            or credit_notice_of(params) or original_credit_of(params),
+        )))
+    return {
+        "songTitle": title,
+        "songCredit": str(credit),
+        "thumbnailWordlistLabel": str(params.get("thumbnail_wordlist_label") or ""),
+    }
+
+
 def midi_end_credit_of(params: dict[str, Any]) -> str:
     """サンプルMIDI制作者のクレジット。manifest以外からは受け付けない。"""
     # ジョブ受付時にサーバーが確定した値は、その後のmanifest更新やワーカー側の
@@ -1442,6 +1458,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
 
     completed_lyrics.save_result(
         project, d, title=song_title_of(job.params),
+        video_metadata=video_metadata_of(job.params),
         text_only_label=(job.params.get("wordlist_label", "")
                          if job.params.get("text_only_wordlist") else ""),
     )
@@ -3037,6 +3054,10 @@ def create_app(
             headers={"Cache-Control": "no-cache"},
         )
 
+    @app.get("/metadata-change.js", include_in_schema=False)
+    def metadata_change_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "metadata-change.js", media_type="application/javascript")
+
     @app.get("/image-credits.js", include_in_schema=False)
     def image_credits_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "image-credits.js", media_type="application/javascript")
@@ -4611,15 +4632,20 @@ def create_app(
         )
 
     @app.get("/api/jobs/{job_id}/lyrics", dependencies=[Depends(_require_api_key)])
-    def get_completed_lyrics(job_id: str, request: Request) -> FileResponse:
+    def get_completed_lyrics(job_id: str, request: Request) -> JSONResponse:
         job = manager.get(job_id, owner_of(request))
         path = completed_lyrics.result_path(job.dir)
         if job.status != "done" or job.video is None or job.video.suffix == ".wav" or path is None:
             raise HTTPException(status_code=404, detail="編集用の歌詞データがありません")
-        return FileResponse(
-            path, media_type="application/json", filename=completed_lyrics.FILENAME,
-            headers={"Cache-Control": "private, no-store"},
-        )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Older completed results predate display metadata; their saved job fields
+        # still supply the credit without changing the stored lyric artifact.
+        if "videoMetadata" not in payload:
+            payload["videoMetadata"] = video_metadata_of(job.params)
+        return JSONResponse(payload, headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{completed_lyrics.FILENAME}"',
+        })
 
     @app.get("/api/jobs/{job_id}/review", dependencies=[Depends(_require_api_key)])
     def get_lyric_review(job_id: str, request: Request) -> JSONResponse:

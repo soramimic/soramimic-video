@@ -367,6 +367,9 @@ def test_completed_video_keeps_portable_edited_lyrics(review_client, monkeypatch
         }, audio=b"audio-fixture").id
     else:
         job_id = submit_review(review_client)
+    manager.get(job_id).params.update(
+        song_title="テスト曲", song_credit="作詞・作曲: テスト", thumbnail_wordlist_label="表示名",
+    )
     wait_status(client, job_id, "awaiting_review")
     payload = client.get(f"/api/jobs/{job_id}/review").json()
     payload["results"][0][0].update(surface="編集した替え歌", locked=True)
@@ -381,6 +384,10 @@ def test_completed_video_keeps_portable_edited_lyrics(review_client, monkeypatch
     assert result["results"][0][0]["locked"] is True
     assert result["unitsList"] == payload["unitsList"]
     assert result["noteLengthRawList"]
+    assert result["videoMetadata"] == {
+        "songTitle": "テスト曲", "songCredit": "作詞・作曲: テスト",
+        "thumbnailWordlistLabel": "表示名",
+    }
     assert "host" not in result
     assert "history" not in result
     assert str(manager.jobs_dir) not in response.text
@@ -406,6 +413,11 @@ def test_completed_video_keeps_portable_edited_lyrics(review_client, monkeypatch
     restarted.cookies.update(client.cookies)
     assert restarted.get(url).json() == result
     assert FILENAME in [p.name for p in job.dir.iterdir()]
+    legacy = dict(result)
+    del legacy["videoMetadata"]
+    (job.dir / FILENAME).write_text(json.dumps(legacy), encoding="utf-8")
+    assert restarted.get(url).json() == result
+    assert json.loads((job.dir / FILENAME).read_text()) == legacy
     monkeypatch.setenv(api.JOB_TTL_HOURS_ENV, "1")
     restored = restarted.app.state.manager
     restored.get(job_id).finished_at = time.time() - 7200

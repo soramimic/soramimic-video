@@ -27,6 +27,7 @@ def result_path(directory: Path) -> Path | None:
 
 def save_result(
     project: Project, directory: Path, *, title: str = "", text_only_label: str = "",
+    video_metadata: dict[str, str] | None = None,
 ) -> None:
     """Keep editable lyrics, never session URLs, uploads, or server-local paths.
 
@@ -72,6 +73,14 @@ def save_result(
         payload["originalLines"] = [strip_ruby(line.original_text or line.xf_kana)
                                     for line in project.lines]
         payload["song"] = {"title": title}
+        if video_metadata is not None:
+            payload["videoMetadata"] = {
+                key: video_metadata[key][:limit]
+                for key, limit in (
+                    ("songTitle", 200), ("songCredit", 2000), ("thumbnailWordlistLabel", 100),
+                )
+                if isinstance(video_metadata.get(key), str)
+            }
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         if len(encoded) > MAX_BYTES:
             path.unlink(missing_ok=True)

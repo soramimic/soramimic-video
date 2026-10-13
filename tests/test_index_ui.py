@@ -640,6 +640,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
     ):]
     listener = listener[:listener.index("\n});") + len("\n});")]
     stem = _function_body(script, "function songFileStem(file)") + "\n}"
+    metadata = _function_body(script, "async function updateUploadedSongMetadata(file)") + "\n}"
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
@@ -655,7 +656,8 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const ownSongFile = () => $("midi").files[0];
         const ownSongKind = file => file.name.endsWith(".wav") ? "audio" : "midi";
         let active = null, restoring = false, midiSampleId = "";
-        let editorImportedFile = null;
+        let editorImportedFile = null, midiFromSample = false;
+        const VideoMetadata = {notifyChange: async () => {}};
         const activeLyricsJson = () => active;
         const audioInputReady = true, maxAudioUploadBytes = 1000;
         const document = {querySelector: () => ({textContent: ""})};
@@ -666,7 +668,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const syncBuilderValues = () => {}, showBuilderMsg = () => {};
         const schedulePreview = () => {};
         """
-    ) + stem + "\n" + listener + textwrap.dedent(
+    ) + stem + "\n" + metadata + "\n" + listener + textwrap.dedent(
         """
         for (const name of ["upload.wav", "upload.xf.mid"]) {
           $("midi").files = [{name, size: 10}];
@@ -683,6 +685,9 @@ def test_reselecting_song_keeps_the_active_editor_title():
           for (const payload of [null, {}, {song: {title: " "}}, {song: {title: 1}}]) {
             active = payload;
             $("song-title").value = "前のファイルの曲名";
+            $("midi").dispatchEvent(new Event("change"));
+            assert.equal($("song-title").value, "前のファイルの曲名");
+            $("song-title").value = "";
             $("midi").dispatchEvent(new Event("change"));
             assert.equal($("song-title").value, "upload");
           }
@@ -3403,6 +3408,7 @@ def test_editor_transfer_populates_json_and_recognition_mode():
           imported = JSON.parse(await $("editor").files[0].text());
         };
         const syncBuilderOptions = () => {}, syncBuilderValues = () => {};
+        const updateSongTextPreviews = () => {};
         const saveForm = () => {saved++;};
         """
     ) + functions + textwrap.dedent(
@@ -3419,7 +3425,9 @@ def test_editor_transfer_populates_json_and_recognition_mode():
           ];
           for (const [fields, expected] of variants) {
             elements.clear(); stored.clear(); bridgeReceiving = false;
-            payload = {...base, ...fields, song:{title:"受け渡しテスト"}};
+            payload = {...base, ...fields, song:{title:"受け渡しテスト"},
+              videoMetadata:{songTitle:"表示用の曲名", songCredit:"作詞・作曲: テスト",
+                thumbnailWordlistLabel:"表示用のリスト名"}};
             $("lyrics").value = "前回の歌詞";
             $("auto-lyrics").checked = true;
             $("midi").value = "previous.mid";
@@ -3435,6 +3443,10 @@ def test_editor_transfer_populates_json_and_recognition_mode():
             assert.equal(songInputMode, "upload");
             assert.equal(stored.has(EDITOR_SEED_KEY), false);
             assert.deepEqual(imported, payload, "keep the converted assignments and readings");
+            assert.equal($("song-title").value, payload.videoMetadata.songTitle);
+            assert.equal($("song-credit").value, payload.videoMetadata.songCredit);
+            assert.equal($("thumbnail-wordlist-label").value,
+              payload.videoMetadata.thumbnailWordlistLabel);
             const form = new Map();
             appendSongLyrics({append:(key,value) => form.set(key,value)});
             assert.equal(form.get("lyrics"), expected);

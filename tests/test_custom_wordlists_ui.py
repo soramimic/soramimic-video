@@ -375,7 +375,10 @@ const other = await repository.save({ name: '動物', text: 'いぬ' });
 let customLists = (await repository.lists());
 const activeCustomListId = first.id;
 const midiSampleId = 'sample-song';
-const elements = { midi: { files: [] }, wordlist: { value: '' }, where: { value: '' } };
+const elements = { midi: { files: [] }, wordlist: { value: '' }, where: { value: '' },
+  'song-title': {value:'曲名'}, 'song-credit': {value:'表記'},
+  'thumbnail-wordlist-label': {value:'リスト名'},
+};
 const $ = (id) => elements[id];
 const buildConvertParams = () => '{}';
 const hostSongList = () => [{ id: 'sample-song', title: '曲' }];
@@ -393,6 +396,9 @@ const originalCsv = 'text,yomi\nねこ,ネコ';
 const payload = { wordlist: { value: 'ORIGINAL', csvText: originalCsv } };
 const seed = withHostInfo(payload);
 assert.equal(seed.videoCustomListId, first.id);
+assert.deepEqual(seed.videoMetadata, {
+  songTitle:'曲名', songCredit:'表記', thumbnailWordlistLabel:'リスト名',
+});
 assert.equal(seed.videoCustomListText, first.text);
 assert.equal(seed.videoCustomListCsvText, payload.wordlist.csvText);
 assert.equal(payload.videoCustomListId, undefined);
