@@ -252,6 +252,33 @@ def test_football_defaults_to_jleague_scope_only():
     assert "scope=overseas_japanese" not in where
 
 
+def test_scientist_economics_field_is_opt_in_without_changing_awards():
+    import copy
+
+    entry = next(e for e in _conf_entries() if e["value"] == "SCIENTIST")
+    fields = next(f for f in entry["facets"] if f["column"] == "field")
+    assert all(v["default"] is (v["v"] != "経済学") for v in fields["values"])
+    csv_path = WORDLISTS / "scientist.csv"
+    header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    field_index, nobel_index = header.index("field"), header.index("nobel")
+    original_index = header.index("original")
+    selected = _select(csv_path, default_where(entry))
+    assert selected and all(row[field_index] != "経済学" for row in selected)
+    mixed = [row for row in selected if "数学" in row[field_index].split("/")
+             and "経済学" in row[field_index].split("/")]
+    assert mixed and all(row[nobel_index] == "yes" for row in mixed)
+
+    enabled = copy.deepcopy(entry)
+    next(v for f in enabled["facets"] if f["column"] == "field"
+         for v in f["values"] if v["v"] == "経済学")["default"] = True
+    with_economics = _select(csv_path, default_where(enabled))
+    added = set(with_economics) - set(selected)
+    assert {row[original_index] for row in added} == {
+        "ロバート・ホール", "マイケル・ディーン・ウッドフォード"}
+    assert all(row[nobel_index] == "yes" for row in added)
+    assert restored_where(enabled, default_where(enabled)) == default_where(enabled)
+
+
 def test_scientist_opt_in_follows_filter_changes(tmp_path):
     """受賞歴を個別選択でき、対象の選択・復元では追加対象の既定オフを保つ。"""
     entry = next(e for e in _conf_entries() if e["value"] == "SCIENTIST")
