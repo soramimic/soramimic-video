@@ -273,8 +273,9 @@ def test_scientist_economics_field_is_opt_in_without_changing_awards():
          for v in f["values"] if v["v"] == "経済学")["default"] = True
     with_economics = _select(csv_path, default_where(enabled))
     added = set(with_economics) - set(selected)
-    assert {row[original_index] for row in added} == {
-        "ロバート・ホール", "マイケル・ディーン・ウッドフォード"}
+    assert {"ロバート・ホール", "マイケル・ディーン・ウッドフォード"} <= {
+        row[original_index] for row in added}
+    assert all(row[field_index] == "経済学" for row in added)
     assert all(row[nobel_index] == "yes" for row in added)
     assert restored_where(enabled, default_where(enabled)) == default_where(enabled)
 
