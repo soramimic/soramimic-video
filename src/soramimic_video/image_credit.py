@@ -122,7 +122,8 @@ def credit_from_extmetadata(meta: dict) -> dict:
     license_name = _strip_html(str(meta.get("LicenseShortName", {}).get("value", "")))
     required = str(meta.get("AttributionRequired", {}).get("value", "true")).lower() != "false"
     if required:
-        parts = [p for p in (artist, license_name) if p]
+        attribution = _strip_html(str(meta.get("Attribution", {}).get("value", "")))
+        parts = [p for p in (attribution or artist, license_name) if p]
         credit_text = ", ".join([*parts, "via Wikimedia Commons"])
     else:
         credit_text = ""
