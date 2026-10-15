@@ -1671,7 +1671,7 @@ def test_config_has_vtuber_image_policy(client):
     assert by_url["https://hololivepro.com/terms/"]["people"]
     fsp = by_url["https://firststage-pro.com/guideline/"]
     assert "FIRST STAGE PRODUCTION" in fsp["label"]
-    assert len(fsp["people"]) == 26
+    assert len(fsp["people"]) == 27
 
 
 
@@ -3010,7 +3010,7 @@ def test_image_sources_restricts_paths_and_preserves_fsp_metadata(client):
     assert response.status_code == 200
     rows = response.json()
     fsp = [row for row in rows if row["image_terms_page"] == "https://firststage-pro.com/guideline/"]
-    assert len(fsp) == 26
+    assert len(fsp) == 27
     assert all(row["image"] and row["image_page"] and row["image_credit"] for row in fsp)
     assert all(row["image_usage"] == "noncommercial_fanwork" for row in fsp)
 
