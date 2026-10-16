@@ -26,3 +26,5 @@ thumbnail-samples/
 .tmp-imagegen/
 
 node_modules/
+
+.DS_Store
