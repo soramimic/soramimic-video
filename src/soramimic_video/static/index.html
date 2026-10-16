@@ -1744,6 +1744,7 @@ async function receiveEditorLyrics() {
       // The original recording stays on its own device. Require an explicit song selection.
       clearAudioInput();
       $("midi").value = "";
+      $("midi").dispatchEvent(new Event("change", { bubbles: true }));
       $("sample-select").value = "";
       $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
       showSongInputMode("upload");
@@ -4222,8 +4223,13 @@ songUploadEntry.addEventListener("drop", (event) => {
   }
   setOwnSongFile(files[0]);
 });
+// The input already contains the new file when change fires, so retain whether
+// a source was selected before it (including restored MIDI and recordings).
+let metadataSongSelected = false;
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
+  const replacing = metadataSongSelected;
+  metadataSongSelected = !!file;
   if (!file) return;
   setRecordingStatus("");
   const kind = ownSongKind(file);
@@ -4242,7 +4248,7 @@ $("midi").addEventListener("change", () => {
   $("sample-select").value = "";
   midiSampleId = "";
   if (!restoring) {
-    if (!midiFromSample) updateUploadedSongMetadata(file);
+    if (!midiFromSample) updateUploadedSongMetadata(file, replacing);
   }
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   if (!editorImportedFile) clearEditorFile();
@@ -4263,19 +4269,26 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
-async function updateUploadedSongMetadata(file) {
+async function updateUploadedSongMetadata(file, replacing = false) {
   const titleInput = $("song-title"), creditInput = $("song-credit");
   const hasMetadata = !!(titleInput.value.trim() || creditInput.value.trim());
-  // Fill an empty title; an existing title or credit always survives song selection.
+  // A first upload can complete a transfer from the lyric editor.
   if (!titleInput.value.trim()) {
-    const editorTitle = activeLyricsJson()?.song?.title;
+    const editorTitle = !replacing && activeLyricsJson()?.song?.title;
     titleInput.value = typeof editorTitle === "string" && editorTitle.trim()
       ? editorTitle.trim() : songFileStem(file);
     titleInput.dispatchEvent(new Event("change", { bubbles: true }));
   }
-  if (hasMetadata) {
-    await VideoMetadata.notifyChange("song", () => ownSongFile() === file);
-  }
+  if (!hasMetadata) return;
+  const previousTitle = titleInput.value, previousCredit = creditInput.value;
+  const isCurrent = () => ownSongFile() === file
+    && titleInput.value === previousTitle && creditInput.value === previousCredit;
+  const choice = await VideoMetadata.notifyChange(replacing ? "song-replacement" : "song", isCurrent);
+  if (!replacing || choice !== "update" || !isCurrent()) return;
+  titleInput.value = songFileStem(file);
+  creditInput.value = "";
+  titleInput.dispatchEvent(new Event("change", { bubbles: true }));
+  creditInput.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function clearSelectedSong() {
