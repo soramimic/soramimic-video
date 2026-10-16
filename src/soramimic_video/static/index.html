@@ -4109,7 +4109,7 @@ function advancedSettingsAvailable() {
   if (!auth.hidden && !apiKey()) return true;
   const songSelected = !!ownSongFile() || !!$("sample-select").value;
   const wordlistSelected = !!currentWordlistName() || !!activeCustomList()
-    || showsEditorWordlist();
+    || showsEditorWordlist() || !!activeLyricsJson();
   return songSelected && wordlistSelected;
 }
 
