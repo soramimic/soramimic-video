@@ -436,7 +436,7 @@ def thumbnail_data(
         "headline": f"【{headline}】" if headline else "",
         "caption": caption,
         "image_credit": credit_text,
-        # 動画本編の隅と同じ署名(歌声合成のクレジットが要るときは連結済みで渡る)
+        # 動画本編の隅と同じ署名。歌声合成の表記は最後のクレジットページに載せる。
         "app_credit": app_credit or SIGNATURE,
     }
 
@@ -829,6 +829,7 @@ def resolve_headline(
     song_kana: str = "",
     allow_noncommercial_fanwork: bool = False,
     used_images: list[dict] | None = None,
+    title_words: list[dict[str, str]] | None = None,
 ) -> tuple[list[str], list[Path], list[str]]:
     """曲名を1フレーズ変換し、(見出しの単語, 単語画像, クレジット文言)を返す。
 
@@ -844,7 +845,14 @@ def resolve_headline(
     """
     convert_input = song_kana.strip() or song
     found: list[tuple[dict[str, Any], dict[str, str] | None]] = []
-    if convert_input and wordlist:
+    if title_words is not None:
+        from .title_choices import selected_rows
+
+        csv_path = resolve_wordlist(wordlist)
+        eff_where, _, _ = resolve_convert_settings(csv_path, where, params)
+        rows = selected_rows(title_words, csv_path.read_text(encoding="utf-8"), eff_where)
+        found = list(zip(title_words, rows, strict=True))
+    elif convert_input and wordlist:
         try:
             found = title_paraphrase(convert_input, wordlist, where, params)
         except runproc.Cancelled:
@@ -909,6 +917,7 @@ def build_thumbnail(
     allow_noncommercial_fanwork: bool = False,
     used_images: list[dict] | None = None,
     wordlist_label: str = "",
+    title_words: list[dict[str, str]] | None = None,
 ) -> Path | None:
     """曲名を1フレーズ変換してサムネPNGを out_path に作る(サムネ生成の本体)。
 
@@ -939,6 +948,7 @@ def build_thumbnail(
         song_kana=song_kana,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=resolved_images,
+        title_words=title_words,
     )
 
     try:
@@ -976,6 +986,7 @@ def generate_thumbnail(
     allow_noncommercial_fanwork: bool = False,
     used_images: list[dict] | None = None,
     wordlist_label: str = "",
+    title_words: list[dict[str, str]] | None = None,
 ) -> Path | None:
     """曲名の空耳変換つきサムネPNGを project_dir/thumbnail.png に作る。
 
@@ -999,4 +1010,5 @@ def generate_thumbnail(
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=used_images,
         wordlist_label=wordlist_label,
+        title_words=title_words,
     )

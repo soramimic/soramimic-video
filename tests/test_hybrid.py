@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import io
 import wave
 from types import SimpleNamespace
@@ -107,6 +108,82 @@ def test_partial_decode_queries_full_score_and_places_remaining_audio(monkeypatc
     assert np.all(samples[:20 * 256] == 1000)
     assert np.all(samples[20 * 256:80 * 256] == 0)
     assert np.all(samples[80 * 256:] == 1000)
+
+
+def test_decoder_failure_splits_only_waveform_windows_and_keeps_the_query(monkeypatch):
+    query = {"f0": [220. + i for i in range(100)], "volume": [.2 + i / 1000 for i in range(100)],
+             "outputSamplingRate": 24000, "volumeScale": .9,
+             "phonemes": [{"phoneme": "a", "frame_length": 60, "note_id": "n1"},
+                          {"phoneme": "i", "frame_length": 40, "note_id": "n2"}]}
+    before = copy.deepcopy(query)
+    sizes = []
+
+    def post(url, *, params, json, timeout):
+        assert url.endswith("frame_synthesis") and params == {"speaker": 6000}
+        start = round(json["f0"][0] - 220.)
+        length = len(json["f0"])
+        sizes.append(length)
+        assert json["f0"] == query["f0"][start:start + length]
+        assert json["volume"] == query["volume"][start:start + length]
+        assert sum(p["frame_length"] for p in json["phonemes"]) == length
+        assert all(p["note_id"] in {"n1", "n2"} for p in json["phonemes"])
+        assert json["outputSamplingRate"] == 24000 and json["volumeScale"] == .9
+        return SimpleNamespace(status_code=500, text="decoder failure") if length > 25 else \
+            SimpleNamespace(status_code=200, content=wav(length))
+
+    monkeypatch.setattr(vv.requests, "post", post)
+    content = vv._synthesize_frame_query("http://test", 6000, query)
+    with wave.open(io.BytesIO(content)) as audio:
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), "<i2")
+    assert len(samples) == 100 * 256 and np.all(samples == 1000)
+    assert sizes[0] == 100 and min(sizes) <= 25
+    assert query == before
+
+
+def test_partial_decoder_recovery_preserves_omitted_frames(monkeypatch):
+    monkeypatch.setattr(vv, "_query_score", lambda *args: {
+        "f0": [220.] * 100, "volume": [.5] * 100,
+        "phonemes": [{"phoneme": "a", "frame_length": 100}],
+    })
+    monkeypatch.setattr(vv.requests, "post", lambda *args, json, **kwargs:
+        SimpleNamespace(status_code=500, text="decoder failure") if len(json["f0"]) > 10 else
+        SimpleNamespace(status_code=200, content=wav(len(json["f0"]))))
+    result = vv.synthesize_partial_score(
+        score((None, 2), (60, 70), (None, 28)), engine_url="http://test", style_id=6000,
+        skip_frames=[(20, 80)],
+    )
+    with wave.open(io.BytesIO(result)) as audio:
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), "<i2")
+    assert len(samples) == 100 * 256
+    assert np.all(samples[:20 * 256] == 1000)
+    assert np.all(samples[20 * 256:80 * 256] == 0)
+    assert np.all(samples[80 * 256:] == 1000)
+
+
+def test_decoder_overlap_has_exact_duration_and_no_hard_sample_jump():
+    content = vv._crossfade_frame_wavs(wav(5, 1000), wav(5, -1000), 5, 5, 2)
+    with wave.open(io.BytesIO(content)) as audio:
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), "<i2")
+    assert len(samples) == 8 * 256
+    assert np.all(samples[:3 * 256] == 1000) and np.all(samples[5 * 256:] == -1000)
+    assert np.max(np.abs(np.diff(samples.astype(np.int32)))) <= 4
+
+
+@pytest.mark.parametrize("status", [400, 422, 500])
+def test_decoder_recovery_terminates_and_keeps_non_recoverable_errors(monkeypatch, status):
+    sizes = []
+    def post(*args, json, **kwargs):
+        sizes.append(len(json["f0"]))
+        return SimpleNamespace(status_code=status, text="failed")
+    monkeypatch.setattr(vv.requests, "post", post)
+    with pytest.raises(vv.VoicevoxScoreError) as error:
+        vv._synthesize_frame_query("http://test", 6000, {
+            "f0": [220.] * 8, "volume": [.5] * 8,
+            "phonemes": [{"phoneme": "a", "frame_length": 8}],
+        })
+    assert error.value.status_code == status
+    assert len(sizes) <= 4
+    assert sizes[-1] == (1 if status == 500 else 8)
 
 
 def test_partial_decode_retries_connections_and_preserves_score_fallback(monkeypatch):

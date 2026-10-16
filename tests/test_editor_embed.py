@@ -163,6 +163,34 @@ def test_wordlist_csv_route(client, tmp_path, monkeypatch):
 # ---- 自作リスト(アップロードされたCSV)でのeditorセッション ----
 
 
+def test_editor_session_accepts_custom_wordlist(client, tmp_path):
+    payload = _custom_session(client, tmp_path)
+    entry = payload["wordlist"]
+    assert entry["value"] == "ORIGINAL"
+    assert entry["text"] == "わたしの単語"
+    assert entry["csvText"].startswith("id,original,surface,pronunciation\n")
+    assert "filepath" not in entry
+    assert "where" not in entry
+    assert payload["results"] and len(payload["unitsList"]) == len(payload["results"])
+    assert not list((tmp_path / "jobs" / "editor-sessions").glob("*/wordlist.csv"))
+
+
+def test_editor_session_custom_text_is_self_contained(client, tmp_path):
+    first = _custom_session(client, tmp_path)["wordlist"]
+    second = _custom_session(client, tmp_path)["wordlist"]
+    assert first == second
+    check = client.post(
+        "/api/wordlist-check", data={"wordlist_text": CUSTOM_TEXT}
+    ).json()
+    assert first["csvText"] == check["csv_text"]
+
+
+def test_editor_session_custom_beats_wordlist_name(client, tmp_path):
+    """自作リストとリスト名が両方来たら自作を優先する(/api/jobs と同じ)。"""
+    payload = _custom_session(client, tmp_path, wordlist="definitely-not-a-real-list")
+    assert payload["wordlist"]["value"] == "ORIGINAL"
+
+
 def test_editor_session_rejects_broken_custom_wordlist(client, tmp_path):
     midi = _xf_midi(tmp_path)
     res = client.post(
@@ -462,6 +490,24 @@ def test_setup_seed_omits_note_length_fields_when_projection_is_unavailable(
     assert "weightsList" not in payload
 
 
+def test_setup_seed_accepts_a_custom_wordlist(client, tmp_path):
+    """自作リスト(アップロード)も解析のみモードで初期選択にできる。"""
+    midi = _xf_midi(tmp_path)
+    res = client.post(
+        "/api/editor-session",
+        files=[("midi", ("song.mid", midi.read_bytes(), "audio/midi"))],
+        data={"wordlist_text": CUSTOM_TEXT, "convert": "0"},
+    )
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    entry = payload["wordlist"]
+    assert entry["value"] == "ORIGINAL"
+    assert entry["csvText"].startswith("id,original,surface,pronunciation\n")
+    assert "filepath" not in entry
+    assert "results" not in payload
+    assert not list((tmp_path / "jobs" / "editor-sessions").glob("*/wordlist.csv"))
+
+
 def test_editor_session_still_converts_by_default(client, tmp_path):
     """convert を送らなければ従来どおり変換済みJSON(後方互換)。"""
     midi = _xf_midi(tmp_path)
@@ -601,8 +647,8 @@ def test_job_pipeline_keeps_the_align_lines_originals(job_client, tmp_path, monk
 
 def test_job_rejects_editor_with_unknown_session(job_client, tmp_path):
     payload = {
-        "results": [],
-        "unitsList": [],
+        "results": [[]],
+        "unitsList": [[]],
         "wordlist": {"value": "custom:" + "b" * 16, "filepath": "session-wordlists/x.csv"},
     }
     res = job_client.post(
@@ -829,7 +875,7 @@ def test_job_accepts_editor_with_embedded_original_csv(job_client, tmp_path):
 
 def test_job_rejects_original_without_csv_text(job_client):
     res = _post_job(job_client, {
-        "results": [], "unitsList": [], "wordlist": _original_entry(csv_text=None),
+        "results": [[]], "unitsList": [[]], "wordlist": _original_entry(csv_text=None),
     })
     assert res.status_code == 422
     assert "csvText" in res.json()["detail"]
@@ -837,7 +883,7 @@ def test_job_rejects_original_without_csv_text(job_client):
 
 def test_job_rejects_broken_original_csv(job_client):
     res = _post_job(job_client, {
-        "results": [], "unitsList": [],
+        "results": [[]], "unitsList": [[]],
         "wordlist": _original_entry("静岡,シズオカ\n鈴鹿,スズカ"),
     })
     assert res.status_code == 400
@@ -847,7 +893,7 @@ def test_job_rejects_broken_original_csv(job_client):
 def test_job_rejects_oversized_original_csv(job_client, monkeypatch):
     monkeypatch.setenv("SORAMIMIC_MAX_WORDLIST_BYTES", "50")
     res = _post_job(job_client, {
-        "results": [], "unitsList": [], "wordlist": _original_entry(),
+        "results": [[]], "unitsList": [[]], "wordlist": _original_entry(),
     })
     assert res.status_code == 413
     assert "大きすぎます" in res.json()["detail"]

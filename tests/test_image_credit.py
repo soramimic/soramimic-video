@@ -41,6 +41,18 @@ def test_credit_from_extmetadata_attribution_required():
     assert info["attribution_required"] is True
 
 
+def test_credit_uses_prescribed_attribution_when_present():
+    info = credit_from_extmetadata({
+        "Artist": {"value": '<a href="https://example.com">Kizuna AI</a>'},
+        "Attribution": {"value": "© Kizuna AI, <b>SCP Foundation.</b>"},
+        "LicenseShortName": {"value": "CC BY-SA 3.0"},
+    })
+    assert info["artist"] == "Kizuna AI"
+    assert info["credit_text"] == (
+        "© Kizuna AI, SCP Foundation., CC BY-SA 3.0, via Wikimedia Commons"
+    )
+
+
 def test_credit_from_extmetadata_not_required_is_empty_text():
     meta = {
         "Artist": {"value": "山田 太郎"},

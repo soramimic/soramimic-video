@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # (トークナイズをやり直さずに済む)。None を返せば重み無し(従来動作)。
 UnitWeightsFunc = Callable[[list[list[dict[str, Any]]]], "list[list[float]] | None"]
 WordBoundariesFunc = Callable[[list[list[dict[str, Any]]]], "list[list[int]] | None"]
+WordLocksFunc = Callable[[list[list[dict[str, Any]]]], list[list[dict[str, Any]]]]
 
 _base: dict[str, Any] | None = None  # 辞書データ(monotie行列)+ トークナイザ
 _apps: dict[str, Any] = {}  # r(小数2桁キー) → Soramimic インスタンス
@@ -417,6 +418,7 @@ def run_convert(
     cache_db: bool = True,
     word_boundaries_per_line: list[list[int]] | WordBoundariesFunc | None = None,
     *, tokens_list: list[list[dict[str, Any]]] | None = None,
+    locks_per_line: WordLocksFunc | None = None,
 ) -> dict:
     """bridge/convert.mjs と同じ入出力の変換。
 
@@ -443,6 +445,9 @@ def run_convert(
 
     cache_db=False にすると単語DBの共有キャッシュを使わない(使い回しの効かない
     アップロード済み自作リスト用)。出力は変わらない。
+
+    locks_per_line は生成時のユニット列へ対応付けた既存単語を返す。
+    既存単語の間だけを生成し、重複なしでは全行の既存IDを候補から除く。
     """
     params = params or {}
     app_key = _app_key(params.get("VOWEL_RATIO"))
@@ -458,6 +463,7 @@ def run_convert(
     # 単語DBの上限(max_units)と、callable な重み計算の両方で使う。
     # tokenize_together(MeCab)は上の1回きりで、ここでは走らない。
     units_per_line = [app.text_analyzer.get_yomi_and_phrase_break(t) for t in tokens_list]
+    locks = locks_per_line(units_per_line) if locks_per_line is not None else None
     boundaries = (
         word_boundaries_per_line(units_per_line)
         if callable(word_boundaries_per_line)
@@ -473,6 +479,11 @@ def run_convert(
         _max_variation_units(units_per_line),
         cache=cache_db,
     )
+    if locks and not params.get("DUPLICATE", True):
+        # Reserve edits on later lines too, without mutating the shared DB.
+        reserved = {str(word["id"]) for row in locks for word in row if "id" in word}
+        db = {size: [word for word in row if str(word["id"]) not in reserved]
+              for size, row in db.items()}
 
     weights: list[list[float]] | None
     if callable(weights_per_line):
@@ -496,7 +507,14 @@ def run_convert(
     results = app.soramimi_maker.generate_from_tokens(
         tokens_list, db, params, update_func, weights_per_line=weights,
         word_boundaries_per_line=boundaries,
+        **({"locks_per_line": copy.deepcopy(locks)} if locks is not None else {}),
     )
+    if locks is not None:
+        # Engine annotation must not change saved spelling, readings or locks.
+        for words, saved in zip(results, locks, strict=True):
+            by_period = {tuple(word["period"]): word for word in saved}
+            words[:] = [copy.deepcopy(by_period.get(tuple(word["period"]), word))
+                        for word in words]
 
     lines = [
         {"units": units_list[i], "words": [_json_safe(w) for w in words]}

@@ -198,6 +198,14 @@ def test_reading_candidates_include_unidic_nbest_pronunciations():
     assert len(cands) == 2
 
 
+def test_alternate_split_reading_is_available_for_acoustic_review():
+    text = "二人今夜に駆け出してく"
+    assert reading_candidates(text) == ["フタリコンヤニカケダシテク"]
+    assert "フタリイマヨルニカケダシテク" in reading_candidates(
+        text, include_alternate_splits=True,
+    )
+
+
 def test_reading_candidates_include_nani_for_naniwo():
     cands = reading_candidates("何をしていたの")
     assert any(candidate.startswith("ナニ") for candidate in cands)

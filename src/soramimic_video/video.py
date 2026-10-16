@@ -188,6 +188,11 @@ def extend_for_endroll(total_sec: float, sung_end_sec: float, words: list[str]) 
 
 
 SVG_RASTER_WIDTH = 1280  # SVGをPNGに焼くときの幅(高さは元のviewBox比で決まる)
+# SVG内の日本語テキストへLinuxで利用できるCJKフォントを補った版。
+# 生成カードの配布SVGが ``Noto Sans JP`` を指定していても、サーバには通常
+# ``Noto Sans CJK JP`` というfamily名で入っているため、generic sans-serifへ
+# 落ちると日本語が豆腐になる。値を上げると既存のSVG由来PNGキャッシュも分離される。
+SVG_RASTER_CACHE_VERSION = 3
 
 
 def looks_like_svg(data: bytes) -> bool:
@@ -204,6 +209,43 @@ def looks_like_svg(data: bytes) -> bool:
     return head.startswith((b"<?xml", b"<!--", b"<!DOCTYPE")) and b"<svg" in data[:4096]
 
 
+@lru_cache(maxsize=1)
+def _svg_japanese_font_family() -> bytes | None:
+    """このホストで実際に利用できる日本語フォントのfamily名。"""
+    path = resolve_font_path(None)
+    if path is None:
+        return None
+    getname = getattr(_font(path, 16), "getname", None)
+    if not callable(getname):
+        return None
+    family, _style = getname()
+    return str(family).encode("utf-8")
+
+
+def _svg_with_japanese_font_fallback(
+    data: bytes, family: bytes | None = None
+) -> bytes:
+    """SVGのfont-family先頭へ利用可能な日本語フォントfamilyを追加する。
+
+    CairoSVGのtoy text APIはブラウザのように後続familyへ字形単位でfallback
+    しないため、存在しないHiragino等より前へ置く必要がある。
+    """
+    family = family or _svg_japanese_font_family()
+    if family is None:
+        return data
+
+    def prefix(match: re.Match[bytes]) -> bytes:
+        value = match.group(3)
+        if b"sans-serif" not in value or value.lstrip().startswith(family):
+            return match.group(0)
+        return (
+            match.group(1) + match.group(2) + family
+            + b"," + value + match.group(2)
+        )
+
+    return re.sub(rb"(font-family\s*=\s*)(['\"])(.*?)\2", prefix, data)
+
+
 def svg_to_png(data: bytes, width: int = SVG_RASTER_WIDTH) -> bytes | None:
     """SVGのバイト列をPNGに焼く(失敗したら警告してNone)。
 
@@ -218,7 +260,9 @@ def svg_to_png(data: bytes, width: int = SVG_RASTER_WIDTH) -> bytes | None:
         logger.warning("SVGを変換できません(cairosvgが使えません): %s", e)
         return None
     try:
-        return cairosvg.svg2png(bytestring=data, output_width=width)
+        return cairosvg.svg2png(
+            bytestring=_svg_with_japanese_font_fallback(data), output_width=width
+        )
     except Exception as e:  # noqa: BLE001 - 壊れたSVGでジョブを落とさない
         logger.warning("SVGをPNGに変換できませんでした: %s", e)
         return None
@@ -290,16 +334,28 @@ def image_is_visible(image_path: Path) -> bool:
     return visible.getbbox() is not None
 
 
+def _image_cache_stem(url: str) -> str:
+    """URLベースのキャッシュ名。SVGはラスタライズ仕様もキーへ含める。"""
+    path = url.split("?", 1)[0].split("#", 1)[0]
+    key = url
+    if path.lower().endswith(".svg"):
+        family = (_svg_japanese_font_family() or b"missing").decode(
+            "utf-8", errors="replace"
+        )
+        key = f"{url}#soramimic-svg-raster-v{SVG_RASTER_CACHE_VERSION}-{family}"
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+
 def _cached_raw(url: str, cache_dir: Path) -> Path | None:
     """キャッシュにあるファイル(SVGのままかもしれない)のパス。"""
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = _image_cache_stem(url)
     for p in sorted(cache_dir.glob(f"{name}.*")):
         return p
     return None
 
 
 def _image_metadata_path(url: str, cache_dir: Path) -> Path:
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = _image_cache_stem(url)
     return cache_dir / IMAGE_CACHE_METADATA_DIR / f"{name}.json"
 
 
@@ -329,7 +385,7 @@ def _store_image_revision(
     url: str, cache_dir: Path, extension: str, data: bytes
 ) -> Path | None:
     """新しい画像内容を保存し、同じURLの旧拡張子ファイルだけを取り除く。"""
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = _image_cache_stem(url)
     result = _store_image(cache_dir / f"{name}.{extension}", data)
     # SVG変換失敗時は _store_image が .svg を保存してNoneを返す。その新しいSVGを
     # revision本体として残し、同じURLの古いPNGを誤って選ばない。
@@ -346,7 +402,7 @@ def cached_image(url: str, cache_dir: Path) -> Path | None:
     """すでにキャッシュにある画像のパス(無ければ None)。ダウンロードは一切しない。
 
     ダウンロードを待てない用途(サムネのプレビュー生成など)向け。
-    キーは download_image と同じ URL のsha1先頭16桁。
+    キーは download_image と同じURLベース(SVGだけはラスタ仕様も含む)。
     キャッシュがSVGだったときだけ、その場でPNGへ焼き直して返す(通信はしない)。
     """
     from .asset_store import local_asset
@@ -789,8 +845,8 @@ def section_frame_data(
       (1枚のときは page_label が空になり、見出しに「(1/1)」が出ない)
     - original_song: 元曲名
     - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
-    - original_song_credit: 元曲名と表記を「 — 」でつないだ表示、または指定された文章
-    - song_credit: 指定時は元曲のクレジット表示文をそのまま使用する
+    - original_song_credit: 元曲名と簡潔な表記。最終ページでは表記を丸括弧で囲む
+    - song_credit: 指定時は入力文をそのまま使用し、空欄なら元曲名を使用する
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - midi_end_credit: 最終クレジットにだけ載せるMIDI制作者表記
@@ -807,8 +863,10 @@ def section_frame_data(
     # 二重表示を避ける。指定がないアップロード曲は従来どおり著作者表記を残す。
     compact_credit = display_credit or notice or author
     original_song_credit = " — ".join(part for part in (song, compact_credit) if part)
+    if section == "credits" and song and compact_credit:
+        original_song_credit = f"{song}（{compact_credit}）"
     if song_credit is not None:
-        original_song_credit = song_credit
+        original_song_credit = song_credit if song_credit.strip() else song
     data = idle_frame_data(project, app_credit)
     data.update(
         {
@@ -1159,7 +1217,7 @@ def build_image_cues(
 
     フレームは単語リスト行の画像+列情報をレイアウト定義で合成したもの。
     画像がなくてもレイアウトのtext要素が埋まる単語はテキストのみで表示する。
-    app_credit は全フレームの隅に焼き込む署名(既定は「lyrics & video by Soramimic」)。
+    app_credit は明示配置または app_credit: true のレイアウトで使う署名。
     image_lead_sec はカードだけを歌唱より先に出す秒数。字幕・音声は変更しない。
     """
     if image_lead_sec < 0:
@@ -1192,7 +1250,7 @@ def build_image_cues(
         # 音声と字幕はprojectの元時刻を使い続ける。
         start = max(0.0, wf.start - image_lead_sec)
         data, use_fallback = wf.data, wf.use_fallback
-        # 全フレーム共通の署名(レイアウトが左下に焼き込む)
+        # 明示配置または常時表示を指定したレイアウト向けの署名。
         data["app_credit"] = app_credit or app_credit_for_wordlist(project.parody.wordlist)
         runproc.raise_if_cancelled()  # 画像ダウンロード中でも中断できるように
         url = data.get("image") or ""
@@ -1696,7 +1754,7 @@ def build_ass(
     決める。subtitle要素のないレイアウトでは既定(下部2段: 上=替え歌、下=元歌詞)になる。
     表示粒度(元歌詞行/対応行/フレーズ)は subtitle要素の granularity、なければ granularity 引数
     (Web UIの一括指定)、それも無ければ source 既定に従う。
-    clear_ranges は間奏・後奏など専用画面の表示区間。歌詞の時刻に沿って
+    clear_ranges はサムネ・間奏・後奏など専用画面の表示区間。歌詞の時刻に沿って
     前後の字幕を分け、専用画面の間は消して、歌唱再開時に続きから表示する。
     表示幅を超える字幕は、語句・改行と歌唱時刻に合わせて複数画面へ分ける。
     """
@@ -1936,6 +1994,7 @@ def prepare_video(
     allow_noncommercial_fanwork: bool = False,
     song_credit: str | None = None,
     thumbnail_wordlist_label: str = "",
+    title_words: list[dict[str, str]] | None = None,
 ) -> PreparedVideo:
     """画像・字幕・concatを準備する。音声ファイルには一切依存しない。"""
     if fps <= 0:
@@ -1999,6 +2058,7 @@ def prepare_video(
         credit_text,
         title_kana=song_title_kana,
         wordlist_label=thumbnail_wordlist_label,
+        title_words=title_words,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )
@@ -2125,6 +2185,7 @@ def make_video(
     allow_noncommercial_fanwork: bool = False,
     song_credit: str | None = None,
     thumbnail_wordlist_label: str = "",
+    title_words: list[dict[str, str]] | None = None,
 ) -> Path:
     if fps <= 0:
         raise ValueError("fps は1以上で指定してください")
@@ -2200,6 +2261,7 @@ def make_video(
         credit_text,
         title_kana=song_title_kana,
         wordlist_label=thumbnail_wordlist_label,
+        title_words=title_words,
         allow_noncommercial_fanwork=allow_noncommercial_fanwork,
         used_images=thumbnail_credits,
     )

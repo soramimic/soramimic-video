@@ -42,23 +42,45 @@ def analyze_audio(
     progress: Callable[[float], None] | None = None,
     adjust_lyrics: bool = False,
     progress_detail: Callable[[str], None] | None = None,
+    editor_path: Path | None = None,
 ) -> Project:
     """Run the Score pipeline and import only its supported synthesis slots."""
-    from soramimic_score import ModelConfig
+    from soramimic_score import ModelConfig, parse_lyric_input
     from soramimic_score import analyze_audio as analyze_score
 
     from . import runproc
     from .audio_inference import configured_priority, configured_url
     from .lyric_layers import apply_lyric_layers
 
+    if adjust_lyrics and editor_path is not None:
+        raise ValueError("歌詞JSONの歌詞と読みは調整できません")
     if adjust_lyrics and lyrics_path is None:
         raise ValueError("歌詞の調整には入力歌詞が必要です")
     if bpm <= 0:
         raise ValueError("BPMは正の値が必要です")
     lyrics = None
-    if lyrics_path is not None:
-        lyrics = [line.strip() for line in lyrics_path.read_text(encoding="utf-8").splitlines()
-                  if line.strip()]
+    parsed = None
+    input_receipt = None
+    editor_rows = None
+    editor_boundaries = None
+    if editor_path is not None:
+        from .editor_audio import editor_audio_lines, editor_word_boundaries
+        from .editor_io import validate_editor_upload
+
+        payload = validate_editor_upload(editor_path.read_bytes())
+        editor_rows = editor_audio_lines(payload)
+        editor_boundaries = editor_word_boundaries(payload)
+        lyrics = tuple(text for text, _ in editor_rows)
+        input_receipt = {"source": "editor-json", "lines": [
+            {"text": text, "reading": kana} for text, kana in editor_rows],
+        }
+    elif lyrics_path is not None:
+        # Decode without universal-newline translation so the audit retains the
+        # exact supplied spelling, whitespace, blank lines, and line endings.
+        original_lyrics = lyrics_path.read_bytes().decode("utf-8")
+        parsed = parse_lyric_input(original_lyrics)
+        lyrics = parsed.lyric_lines
+        input_receipt = parsed.to_dict()
         if not lyrics:
             raise ValueError("入力歌詞が空です")
 
@@ -78,6 +100,12 @@ def analyze_audio(
     )
     out = project_dir / ANALYZE_DIR
     out.mkdir(parents=True, exist_ok=True)
+    input_path = out / "lyric_input.json"
+    if input_receipt is not None:
+        input_path.write_text(json.dumps(input_receipt, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+    else:
+        input_path.unlink(missing_ok=True)
     annotation_path = out / "lyric_annotations.json"
     annotation_path.unlink(missing_ok=True)
     accompaniment = out / "no_vocals.wav" if not skip_separation else None
@@ -95,10 +123,18 @@ def analyze_audio(
             progress(min(0.9, progress_count * 0.04 + 0.02))
         progress_count += 1
 
-    document = analyze_score(
-        audio_path, lyrics=lyrics, model_config=config, adjust_lyrics=adjust_lyrics,
-        on_progress=on_progress, accompaniment_path=accompaniment,
-    )
+    if editor_rows is not None:
+        from .editor_audio import align_editor_audio
+
+        document = align_editor_audio(audio_path, editor_rows, config,
+                                      on_progress, accompaniment,
+                                      word_boundaries=editor_boundaries)
+    else:
+        document = analyze_score(
+            audio_path, lyrics=parsed,
+            model_config=config, adjust_lyrics=adjust_lyrics,
+            on_progress=on_progress, accompaniment_path=accompaniment,
+        )
     runproc.raise_if_cancelled()
     (out / "score.json").write_text(document.to_json(), encoding="utf-8")
     layers = copy.deepcopy(document.to_dict()["score"])
@@ -154,7 +190,8 @@ def analyze_audio(
     (out / "analysis.json").write_text(json.dumps({
         "audio_pipeline": "soramimic-score",
         "official_lyrics": lyrics is not None,
-        "asr_used": True,
+        "asr_used": editor_rows is None,
+        "fixed_editor_readings": editor_rows is not None,
         "mora_count": sum(len(line["mora_ids"]) for line in layers["canonical"]),
         "sources": {source: sum(note.source == source for note in project.notes)
                     for source in {note.source for note in project.notes}},

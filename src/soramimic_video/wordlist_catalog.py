@@ -83,19 +83,25 @@ def _csv_terms_pages(csv_path: Path, usage: str) -> list[dict[str, Any]]:
     try:
         with csv_path.open(encoding="utf-8", newline="") as handle:
             for row in csv.DictReader(handle):
-                if row.get("image_usage") != usage:
-                    continue
-                url = _safe_terms_url(row.get("image_terms_page"))
-                if not url:
-                    continue
-                group = groups.setdefault(url, {"url": url, "label": _guideline_label(url)})
-                for field, value in (("people", row.get("original") or row.get("surface")),
-                                     ("organizations", row.get("org"))):
-                    value = str(value or "").strip()
-                    if value and value != "NA":
-                        values = group.setdefault(field, [])
-                        if value not in values:
-                            values.append(value)
+                urls = []
+                if row.get("image_usage") == usage:
+                    urls.append(row.get("image_terms_page"))
+                if row.get("usage_notice") == "guidelines":
+                    urls.append(row.get("usage_terms_page"))
+                for candidate in urls:
+                    url = _safe_terms_url(candidate)
+                    if not url:
+                        continue
+                    group = groups.setdefault(url, {"url": url, "label": _guideline_label(url)})
+                    for field, value in (
+                        ("people", row.get("original") or row.get("surface")),
+                        ("organizations", row.get("org")),
+                    ):
+                        value = str(value or "").strip()
+                        if value and value != "NA":
+                            values = group.setdefault(field, [])
+                            if value not in values:
+                                values.append(value)
     except (OSError, UnicodeError, csv.Error):
         return []
     for group in groups.values():
@@ -112,7 +118,7 @@ def load_wordlist_image_policies(
     wordlists_dir: Path,
     catalog_path: Path = WORDLIST_CATALOG_PATH,
 ) -> dict[str, dict[str, Any]]:
-    """Return UI image policies with all terms URLs found in each packaged CSV."""
+    """Return UI policies with image and word guideline URLs from each packaged CSV."""
     policies: dict[str, dict[str, Any]] = {}
     for name, entry in load_wordlist_catalog(catalog_path).items():
         source = entry.get("image_policy")

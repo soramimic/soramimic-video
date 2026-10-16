@@ -115,6 +115,9 @@ def _layer_unit_mapping(
     if layers is None:
         return None
 
+    if not units and not line.note_ids and line.canonical_kana == "":
+        return [], []
+
     canonical = layers.get("canonical")
     plan = layers.get("synthesis_plan")
     if not isinstance(canonical, list) or not isinstance(plan, list):
@@ -129,12 +132,28 @@ def _layer_unit_mapping(
         raise ValueError("歌詞レイヤーの音符IDが重複しています")
     # Display groups may span several acoustic lines. Resolve the utterance from
     # the actual owned synthesis slots, never from a supplied-lyric display index.
-    if line.note_ids:
+    if line.canonical_mora_ids is not None:
+        # An imported word can cross an acoustic line break. Explicit mora IDs
+        # allow that display group to span canonical rows without changing them.
+        selected_ids = set(line.canonical_mora_ids)
+        indices = [i for i, row in enumerate(canonical)
+                   if selected_ids.intersection(row["mora_ids"])]
+        if not indices:
+            raise ValueError(f"行{line.id}: フレーズのモーラIDが不正です")
+        matches = canonical[indices[0]:indices[-1] + 1]
+        canonical_rows = matches
+        canonical_line = {
+            "utterance_id": matches[0]["utterance_id"],
+            "kana": "".join(row["kana"] for row in matches),
+            "mora_ids": [mid for row in matches for mid in row["mora_ids"]],
+        }
+    elif line.note_ids:
         owners = {slot_by_note_id.get(nid, {}).get("utterance_id") for nid in line.note_ids}
         matches = [row for row in canonical if row.get("utterance_id") in owners]
         if len(owners) != 1 or None in owners or len(matches) != 1:
             raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
         canonical_line = matches[0]
+        canonical_rows = [canonical_line]
     else:
         canonical_index = line.canonical_line_index
         if canonical_index is None:
@@ -144,6 +163,7 @@ def _layer_unit_mapping(
         if not isinstance(canonical_index, int) or not 0 <= canonical_index < len(canonical):
             raise ValueError(f"行{line.id}: 完全歌詞の行IDを特定できません")
         canonical_line = canonical[canonical_index]
+        canonical_rows = [canonical_line]
     utterance_id = canonical_line.get("utterance_id")
     mora_ids = canonical_line.get("mora_ids")
     canonical_kana = canonical_line.get("kana")
@@ -153,7 +173,17 @@ def _layer_unit_mapping(
             or not isinstance(canonical_kana, str)):
         raise ValueError(f"行{line.id}: 完全歌詞のID対応が不正です")
 
-    moras = split_fine_moras(canonical_kana)
+    from soramimic_score import kana_to_moras
+
+    # Canonical IDs were created by Score's mora segmentation. Keep each
+    # acoustic row's boundaries even when an edited display phrase spans rows.
+    moras: list[str] = []
+    for row in canonical_rows:
+        row_moras = kana_to_moras(row["kana"])
+        if (len(row_moras) != len(row["mora_ids"])
+                or "".join(row_moras) != row["kana"]):
+            raise ValueError(f"行{line.id}: 完全歌詞のモーラIDと読みが一致しません")
+        moras.extend(row_moras)
     if len(moras) != len(mora_ids):
         raise ValueError(f"行{line.id}: 完全歌詞のモーラIDと読みが一致しません")
     if line.canonical_mora_ids is not None:
@@ -203,16 +233,18 @@ def _layer_unit_mapping(
         unit_mora_ids.append(owned)
         cursor = end
 
+    mora_owners = {mid: row["utterance_id"] for row in canonical for mid in row["mora_ids"]}
     note_mora_ids: list[set[str]] = []
     for note_id in line.note_ids:
         slot = slot_by_note_id.get(note_id)
-        if slot is None or slot.get("utterance_id") != utterance_id:
+        if slot is None:
             raise ValueError(f"行{line.id}: 音符{note_id}の歌詞レイヤー対応が不正です")
         slot_moras = slot.get("mora_ids")
         if (not isinstance(slot_moras, list)
                 or not slot_moras
                 or not all(isinstance(value, str) for value in slot_moras)
-                or not set(slot_moras).issubset(set(mora_ids))):
+                or not set(slot_moras).issubset(set(mora_ids))
+                or any(mora_owners[mid] != slot.get("utterance_id") for mid in slot_moras)):
             raise ValueError(f"行{line.id}: 音符{note_id}のモーラIDが不正です")
         note_mora_ids.append(set(slot_moras))
 

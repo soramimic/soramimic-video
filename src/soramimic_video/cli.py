@@ -23,6 +23,8 @@ def cmd_edit_timing(args: argparse.Namespace) -> int:
         host=args.host,
         port=args.port,
         audio=Path(args.audio) if args.audio else None,
+        full_audio=Path(args.full_audio) if args.full_audio else None,
+        full_audio_gain=args.full_audio_gain,
         reference_midi=Path(args.reference_midi) if args.reference_midi else None,
         options={
             "synthesizer": args.synthesizer,
@@ -82,7 +84,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> int:
     print(f"解析完了: {len(project.notes)}モーラ / {len(project.lines)}行 -> {path}")
     if not args.lyrics:
         print("元歌詞にWhisper認識結果を使用しました(誤認識は edit ステージで修正可能)")
-    print(f"解析結果: {Path(args.project) / ANALYZE_DIR / 'score.json'}")
+    print(f"タイミングの目視検証用SRT: {Path(args.project) / ANALYZE_DIR}/")
     return 0
 
 
@@ -232,9 +234,35 @@ def cmd_mix(args: argparse.Namespace) -> int:
     return 0
 
 
+def _activate_asset_store(value: str | None) -> int | None:
+    """CLIから指定された共有asset storeを検証し、当該プロセスで有効化する。"""
+    import os
+
+    from .asset_store import ASSET_STORE_ENV, load_manifest
+
+    store_value = value or os.environ.get(ASSET_STORE_ENV, "").strip()
+    if not store_value:
+        return None
+    store = Path(store_value).expanduser().resolve()
+    manifest_path = store / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"asset store manifestがありません: {manifest_path}")
+    manifest = load_manifest(store)
+    assets = manifest.get("assets")
+    if manifest.get("version") != 1 or not isinstance(assets, dict) or not assets:
+        raise ValueError(f"asset store manifestが有効ではありません: {manifest_path}")
+    os.environ[ASSET_STORE_ENV] = str(store)
+    return len(assets)
+
+
 def cmd_video(args: argparse.Namespace) -> int:
     from .video import make_video
 
+    try:
+        _activate_asset_store(args.asset_store)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
     project = Project.load(Path(args.project))
     out = make_video(
         project,
@@ -284,6 +312,24 @@ def cmd_prewarm_images(args: argparse.Namespace) -> int:
         f"失敗 {summary['failed']} (URL計 {summary['total']}) -> {cache_dir}"
     )
     return 0
+
+
+def cmd_audit_image_links(args: argparse.Namespace) -> int:
+    from .image_link_audit import audit_links
+
+    try:
+        report = audit_links(
+            Path(args.wordlists_dir), Path(args.report_dir), scope=args.scope,
+            max_urls=args.max_urls, workers=args.workers, timeout=args.timeout, delay=args.delay,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"画像URL検査失敗: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({
+        "total": report["total"], **report["counts"],
+        "coverage": report["coverage"], "known_findings": report["known_findings"],
+    }, ensure_ascii=False))
+    return 1 if report["known_findings"] else 0
 
 
 def cmd_sync_assets(args: argparse.Namespace) -> int:
@@ -389,23 +435,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 1
     import os
 
-    from .asset_store import ASSET_STORE_ENV, load_manifest
-
-    store_value = args.asset_store or os.environ.get(ASSET_STORE_ENV, "").strip()
     asset_store_summary = "asset storeなし"
-    if store_value:
-        store = Path(store_value).resolve()
-        manifest = store / "manifest.json"
-        if not manifest.is_file():
-            print(f"asset store manifestがありません: {manifest}", file=sys.stderr)
-            return 2
-        manifest_data = load_manifest(store)
-        assets = manifest_data.get("assets")
-        if manifest_data.get("version") != 1 or not isinstance(assets, dict) or not assets:
-            print(f"asset store manifestが有効ではありません: {manifest}", file=sys.stderr)
-            return 2
-        os.environ[ASSET_STORE_ENV] = str(store)
-        asset_store_summary = f"asset store {len(assets):,}件"
+    try:
+        asset_count = _activate_asset_store(args.asset_store)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    if asset_count is not None:
+        asset_store_summary = f"asset store {asset_count:,}件"
 
     app = create_app(
         jobs_dir=Path(args.jobs_dir),
@@ -582,6 +619,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--audio", help="重ねて聴く音源(既定: project.jsonのvocals_path/audio_path)"
     )
     p.add_argument(
+        "--full-audio",
+        help="合成歌唱と重ねて聴く原曲音源(ボーカルを含むWAV/MP3)",
+    )
+    p.add_argument(
+        "--full-audio-gain", type=float, default=0.35,
+        help="原曲＋合成モードの原曲音量(既定: 0.35)",
+    )
+    p.add_argument(
         "--reference-midi", help="背景に薄く表示する参照メロディMIDI(既定: 編集前の音符)"
     )
     # 「🎤この行」「🔄合成」で使う合成設定(synthesize/mixと同じ意味)
@@ -663,6 +708,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="単語画像の共有キャッシュ(環境変数 SORAMIMIC_VIDEO_IMAGE_CACHE でも指定可)",
     )
     p.add_argument(
+        "--asset-store",
+        help="同期済み単語画像を読む永続asset store"
+        "(環境変数 SORAMIMIC_VIDEO_ASSET_STORE でも指定可)",
+    )
+    p.add_argument(
         "--layout",
         help="フレームレイアウト。組み込み名(default/caption)またはJSONファイルパス"
         "(書き方は examples/layouts/ と layout.py 冒頭を参照)",
@@ -671,7 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--synth-credit",
         default="",
         help="歌声合成のクレジット表記(例 'VOICEVOX:四国めたん')。"
-        "最後のクレジット画面に表示する",
+        "動画最後のクレジットページに表示する",
     )
     p.add_argument(
         "--song-title",
@@ -719,6 +769,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="非営利ファン活動に限定された画像も事前取得する",
     )
     p.set_defaults(func=cmd_prewarm_images)
+
+    p = sub.add_parser("audit-image-links", help="画像URLの疎通を検査しJSONレポートを保存する")
+    p.add_argument("--wordlists-dir", default="external/soramimic-wordlists")
+    p.add_argument("--report-dir", required=True)
+    p.add_argument("--scope", choices=("all", "external-fanwork"), default="all")
+    p.add_argument(
+        "--max-urls", type=int, default=0,
+        help="1回の検査上限。未検査・古い結果から巡回する(0=全件)",
+    )
+    p.add_argument("--workers", type=int, choices=(1, 2), default=2)
+    p.add_argument("--timeout", type=float, default=15)
+    p.add_argument("--delay", type=float, default=0.5)
+    p.set_defaults(func=cmd_audit_image_links)
 
     p = sub.add_parser(
         "sync-assets",
@@ -805,7 +868,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layout", help="フレームレイアウト(組み込み名かJSONパス)")
     p.add_argument(
         "--asset-store",
-        help="組み込み単語画像を読むasset store。指定時はmanifestが無ければ起動しない",
+        help="同期済み単語画像を読むasset store。指定時はmanifestが無ければ起動しない",
     )
     p.add_argument(
         "--editor-dist",

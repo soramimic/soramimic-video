@@ -24,10 +24,27 @@ def _json_compatible(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
+def validate_layer_readings(layers: dict[str, Any]) -> None:
+    """Enforce the pronunciation boundary for imports and saved projects alike."""
+    from soramimic_score import parse_lyric_input, validate_reading
+
+    # Older projects can retain surface-only metadata without pronunciation rows.
+    if "canonical_text" in layers:
+        parse_lyric_input(layers["canonical_text"])
+    for index, line in enumerate(layers.get("canonical", ())):
+        parse_lyric_input(line["text"])
+        reading = validate_reading(line["kana"])
+        if reading.kana != line["kana"] or len(reading.moras) != len(line["mora_ids"]):
+            raise ValueError(f"歌詞行{index + 1}の読みとモーラIDの対応が不正です")
+    for slot in layers.get("synthesis_plan", ()):
+        if validate_reading(slot["kana"]).kana != slot["kana"]:
+            raise ValueError("合成ノートの読みが正規化されていません")
+
+
 def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
     """Apply a version-1 realization atomically; unresolved units need editing.
 
-    Import and playback do not require an inference model or wav_to_xf package.
+    Import and playback do not require an inference model.
     Acoustic confidence and synthesis interpolation remain distinct metadata.
     """
     if type(layers.get("schema_version")) is not int or layers["schema_version"] != 1:
@@ -36,6 +53,7 @@ def apply_lyric_layers(project: Project, layers: dict[str, Any]) -> None:
         raise ValueError("歌詞レイヤーの適用は替え歌変換より前に行ってください")
     if layers.get("unresolved_unit_ids"):
         raise ValueError("合成先が未解決の歌唱単位があります。歌詞を削らず対応を編集してください")
+    validate_layer_readings(layers)
     from .timing_editor import sec_to_tick
 
     canonical = layers["canonical"]

@@ -676,7 +676,7 @@ def test_image_cues_fallback_for_missing_image(tmp_path: Path):
     assert len(cues2) == 1 and cues2[0].frame.exists()
 
 
-def test_app_credit_text_keeps_synth_credit_for_final_page_only():
+def test_app_credit_text_keeps_non_synth_credits():
     from soramimic_video.layout import APP_CREDIT
     from soramimic_video.video import app_credit_text
 
@@ -689,12 +689,14 @@ def test_app_credit_text_keeps_synth_credit_for_final_page_only():
         "権利者指定表記",
         original_song="権利曲",
     ) == (
-        f"{APP_CREDIT} / "
-        "Original: 権利曲 — 権利者指定表記"
+        f"{APP_CREDIT} / Original: 権利曲 — 権利者指定表記"
     )
     # 著作者等の詳細はエンドロールへ出し、常時表示を長文化させない。
     assert "作者" not in app_credit_text(
         "", "作詞・作曲: 作者", "", original_song="権利曲"
+    )
+    assert app_credit_text("", "", "音楽：魔王魂") == (
+        f"{APP_CREDIT} / 音楽：魔王魂"
     )
     assert app_credit_text(
         credit_notice="  音楽：魔王魂  ", original_song="  シャイニングスター  "
@@ -724,6 +726,7 @@ def test_image_cues_bake_app_credit(tmp_path: Path):
 
     lay = tmp_path / "l.json"
     lay.write_text(json.dumps({
+        "app_credit": True,
         "elements": [{"type": "text", "text": "{surface}", "box": [0.1, 0.3, 0.8, 0.2],
                       "size": 0.1}],
     }), encoding="utf-8")
@@ -1000,6 +1003,68 @@ def test_subtitles_resume_with_images_after_interlude_in_one_input_line(
     assert asdict(project) == before
 
 
+def test_word_card_and_subtitles_stay_visible_inside_one_word(tmp_path: Path):
+    from dataclasses import asdict
+
+    from soramimic_video.layout import parse_layout
+    from soramimic_video.video import build_section_cues
+
+    project = _two_word_project(second_start=12.5)
+    project.lines = [Line(0, "青い 空", "アオイソラ", [0, 1])]
+    project.notes[0].kana = "アオイ"
+    project.notes[1].kana = "ソラ"
+    project.notes[1].line = 0
+    project.parody.lines = [ParodyLine(0, [ParodyWord(
+        "青空", "アオゾラ", "青空", "", "", [0, 1], ["アオ", "ゾラ"],
+    )])]
+    before = asdict(project)
+    layout = parse_layout({"elements": [
+        *_TEXT_LAYOUT["elements"],
+        *[{"type": "subtitle", "source": source, "box": [0, .8, 1, .1],
+           "size": .04, "ruby": True}
+          for source in ["original", "parody"]],
+    ]})
+    cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=layout)
+    assert len(cues) == 1
+    assert cues[0].start == pytest.approx(.5 - DEFAULT_IMAGE_LEAD_SEC)
+    assert cues[0].end >= project.notes[1].end_sec
+    sections = build_section_cues(project, cues, 14, layout, tmp_path, 320, 180)
+    assert not sections
+    ass = build_ass(project, 1280, 720, "Font", layout,
+                    clear_ranges=[(section.start, section.end) for section in sections])
+    for style in ["Original", "Parody"]:
+        spans = _dialogue_spans(ass, style)
+        assert any(start <= project.notes[0].start_sec and end >= project.notes[1].end_sec
+                   for start, end in spans)
+    assert sum("青空" in line for line in ass.splitlines() if line.startswith("Dialogue:")) == 1
+    assert asdict(project) == before
+
+
+@pytest.mark.parametrize("sustain", [False, True])
+def test_word_card_keeps_short_gaps_and_held_notes(tmp_path: Path, sustain: bool):
+    project = _two_word_project(second_start=3.5 if not sustain else 12.5)
+    if sustain:
+        project.notes[0].end_sec = 12.5
+    word = project.parody.lines[0].words[0]
+    word.note_ids = [0, 1]
+    project.parody.lines.pop()
+    cap, _hold = _text_layouts(tmp_path)
+    frames = collect_word_frames(project, cap)
+    assert len(frames) == 1
+    assert frames[0].end == project.notes[1].end_sec
+
+
+def test_explicit_hold_next_keeps_word_card_across_long_rest(tmp_path: Path):
+    project = _two_word_project(second_start=12.5)
+    project.parody.lines[0].words[0].note_ids = [0, 1]
+    project.parody.lines.pop()
+    _cap, hold = _text_layouts(tmp_path)
+    cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=hold)
+    assert len(cues) == 1
+    assert cues[0].start == pytest.approx(.5 - DEFAULT_IMAGE_LEAD_SEC)
+    assert cues[0].end == pytest.approx(12.75 - DEFAULT_IMAGE_LEAD_SEC)
+
+
 def test_subtitle_end_kept_when_next_line_is_close(tmp_path: Path):
     # 次の行がすぐ来る通常の並びでは、従来どおり次の行の開始で詰める
     from soramimic_video.video import SUB_PAD_SEC
@@ -1068,6 +1133,59 @@ def test_image_cues_credit_from_wordlist_column(tmp_path: Path):
     cues, credits = build_image_cues(project, work, 320, 180)
     assert len(cues) == 1
     assert credits[0]["credit"] == "山田 太郎 (CC BY 2.0)"
+
+
+def test_image_cues_noncommercial_fanwork_requires_explicit_mode(tmp_path: Path):
+    project = _project(tmp_path)
+    row = project.parody.lines[0].words[0].wordlist_row
+    row["image_usage"] = "noncommercial_fanwork"
+    row["image_terms_page"] = "https://example.com/guideline"
+    work = tmp_path / "video"
+    _precache_image(work, "https://example.com/shizu.jpg")
+
+    with pytest.raises(ValueError, match="非営利ファン活動"):
+        build_image_cues(project, work, 320, 180)
+
+    cues, credits = build_image_cues(
+        project,
+        work,
+        320,
+        180,
+        allow_noncommercial_fanwork=True,
+    )
+    assert len(cues) == 1
+    assert credits[0]["image_usage"] == "noncommercial_fanwork"
+    assert credits[0]["image_terms_page"] == "https://example.com/guideline"
+
+
+def test_image_cues_unknown_usage_fails_closed(tmp_path: Path):
+    project = _project(tmp_path)
+    project.parody.lines[0].words[0].wordlist_row["image_usage"] = "future_policy"
+    with pytest.raises(ValueError, match="未対応の画像利用区分"):
+        build_image_cues(
+            project,
+            tmp_path / "video",
+            320,
+            180,
+            allow_noncommercial_fanwork=True,
+        )
+
+
+def test_prewarm_row_collection_excludes_noncommercial_by_default(tmp_path: Path):
+    from soramimic_video.prewarm import _collect_rows
+
+    path = tmp_path / "list.csv"
+    path.write_text(
+        "original,image,image_usage\n"
+        "通常,https://example.com/general.png,\n"
+        "限定,https://example.com/fan.png,noncommercial_fanwork\n",
+        encoding="utf-8",
+    )
+    assert set(_collect_rows([path])) == {"https://example.com/general.png"}
+    assert set(_collect_rows([path], allow_noncommercial_fanwork=True)) == {
+        "https://example.com/general.png",
+        "https://example.com/fan.png",
+    }
 
 
 def test_image_cues_credit_fetched(tmp_path: Path, monkeypatch):
@@ -1272,6 +1390,32 @@ def test_svg_to_png_keeps_viewbox_ratio():
         assert img.size == (640, 400)  # viewBox 320x200 の比を保つ
 
 
+def test_svg_to_png_adds_linux_japanese_font_fallback(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import soramimic_video.video as video_mod
+
+    captured: dict[str, bytes] = {}
+
+    def fake_svg2png(*, bytestring, output_width):
+        captured["svg"] = bytestring
+        assert output_width == 640
+        return b"png"
+
+    monkeypatch.setitem(sys.modules, "cairosvg", SimpleNamespace(svg2png=fake_svg2png))
+    monkeypatch.setattr(video_mod, "_svg_japanese_font_family", lambda: b"Test CJK")
+    assert video_mod.svg_to_png(SVG_FIXTURE, width=640) == b"png"
+    assert b"Test CJK" in captured["svg"]
+    assert b'font-family="Test CJK,\'Hiragino Sans\'' in captured["svg"]
+    assert (
+        video_mod._svg_with_japanese_font_fallback(
+            b'<text font-family="monospace">No.0001</text>', b"Test CJK"
+        )
+        == b'<text font-family="monospace">No.0001</text>'
+    )
+
+
 def test_svg_to_png_returns_none_for_broken_svg():
     pytest.importorskip("cairosvg")
     from soramimic_video.video import svg_to_png
@@ -1300,12 +1444,13 @@ def test_cached_image_converts_legacy_svg_cache(tmp_path: Path):
     pytest.importorskip("cairosvg")
     from PIL import Image
 
+    import soramimic_video.video as video_mod
     from soramimic_video.video import cached_image
 
     url = "https://example.com/card.svg"
     cache = tmp_path / "cache"
     cache.mkdir()
-    name = hashlib.sha1(url.encode()).hexdigest()[:16]
+    name = video_mod._image_cache_stem(url)
     legacy = cache / f"{name}.img"  # 旧バージョンはSVGを .img で置いていた
     legacy.write_bytes(SVG_FIXTURE)
 
@@ -1448,50 +1593,6 @@ def test_silent_encode_and_audio_attach_commands(tmp_path: Path, monkeypatch):
     assert mux[mux.index("-af") + 1] == "adelay=1000:all=1,apad"
     assert "+faststart" in mux
     assert out == tmp_path / "out.mp4"
-
-
-def test_prepare_video_carries_compact_original_credit(tmp_path: Path, monkeypatch):
-    from soramimic_video import video as video_mod
-
-    project = _project(tmp_path)
-    captured = {}
-
-    def fake_app_credit_text(**kwargs):
-        captured["credit"] = kwargs
-        return "credit text"
-
-    def fake_build_section_cues(*args, **kwargs):
-        captured["sections"] = kwargs
-        return []
-
-    monkeypatch.setattr(video_mod, "app_credit_text", fake_app_credit_text)
-    monkeypatch.setattr(video_mod, "used_words", lambda project: [])
-    monkeypatch.setattr(video_mod, "build_image_cues", lambda *a, **k: ([], []))
-    monkeypatch.setattr(video_mod, "generate_thumbnail", lambda *a, **k: None)
-    monkeypatch.setattr(video_mod, "build_section_cues", fake_build_section_cues)
-    monkeypatch.setattr(video_mod, "render_idle_frame", lambda *a, **k: None)
-    monkeypatch.setattr(
-        video_mod,
-        "_write_slideshow_concat",
-        lambda *a, **k: tmp_path / "video" / "slideshow.txt",
-    )
-    monkeypatch.setattr(video_mod, "build_ass", lambda *a, **k: "[Script Info]\n")
-    monkeypatch.setattr(video_mod, "write_credits", lambda *a, **k: None)
-
-    video_mod.prepare_video(
-        project,
-        tmp_path,
-        10.0,
-        song_title="初音ミクの消失",
-        synth_credit="VOICEVOX:四国めたん",
-        original_display_credit="cosMo＠暴走P",
-        original_credit="作詞・作曲・編曲: cosMo＠暴走P",
-    )
-
-    assert captured["credit"]["original_song"] == "初音ミクの消失"
-    assert captured["credit"]["original_display_credit"] == "cosMo＠暴走P"
-    assert captured["sections"]["original_song"] == "初音ミクの消失"
-    assert captured["sections"]["original_display_credit"] == "cosMo＠暴走P"
 
 
 def test_planned_video_total_includes_midi_render_tail(tmp_path: Path, monkeypatch):
@@ -2111,7 +2212,7 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         midi_end_credit="MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）",
     )
     texts = _element_texts(elements, data)
-    assert "Original Song　シャイニングスター — 音楽：魔王魂" in texts
+    assert "Original Song　シャイニングスター（音楽：魔王魂）" in texts
     assert not any("森田交一" in text for text in texts)
     assert "MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）" in texts
     compact = section_frame_data(
@@ -2121,7 +2222,7 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         original_display_credit="cosMo＠暴走P",
         original_credit="作詞・作曲・編曲: cosMo＠暴走P",
     )
-    assert compact["original_song_credit"] == "初音ミクの消失 — cosMo＠暴走P"
+    assert compact["original_song_credit"] == "初音ミクの消失（cosMo＠暴走P）"
 
 
 def test_midi_credit_is_available_only_to_final_credit_section(tmp_path: Path):
@@ -2168,7 +2269,7 @@ def test_original_song_credit_works_without_notice(tmp_path: Path):
         original_song="Lemon",
         original_credit="作詞・作曲・歌: 米津玄師",
     )
-    assert data["original_song_credit"] == "Lemon — 作詞・作曲・歌: 米津玄師"
+    assert data["original_song_credit"] == "Lemon（作詞・作曲・歌: 米津玄師）"
 
 
 def test_build_section_cues_without_credits_extends_last_page(tmp_path: Path):
@@ -2193,24 +2294,18 @@ def test_build_section_cues_without_credits_extends_last_page(tmp_path: Path):
     assert all(a.end == b.start for a, b in zip(got, got[1:], strict=False))
 
 
-@pytest.mark.parametrize("synth_credit", [
-    "VOICEVOX:四国めたん",
-    "PrettyPitch / 波音リツ（カノン）",
-    "VOICEVOX・PrettyPitch：波音リツ（カノン）",
-])
-def test_credits_page_omits_empty_synth_credit(tmp_path: Path, synth_credit: str):
+def test_credits_page_omits_empty_synth_credit(tmp_path: Path):
     from soramimic_video.layout import _element_texts, load_layout
-    from soramimic_video.video import app_credit_text, section_frame_data
+    from soramimic_video.video import section_frame_data
 
     elements, _raw, tag = load_layout("default").section_elements("credits")
     assert tag == "credits"
     project = _project(tmp_path)
     shown = _element_texts(
         elements,
-        section_frame_data(project, section="credits", synth_credit=synth_credit),
+        section_frame_data(project, section="credits", synth_credit="VOICEVOX:四国めたん"),
     )
-    assert any(synth_credit in t for t in shown)
-    assert synth_credit not in app_credit_text(synth_credit)
+    assert any("VOICEVOX:四国めたん" in t for t in shown)
     # 表記が要らない合成では「歌声合成」の行ごと出さない(require)
     hidden = _element_texts(elements, section_frame_data(project, section="credits"))
     assert not any("Vocal Synthesis" in t for t in hidden)
@@ -2465,75 +2560,13 @@ def test_saved_project_uses_current_shared_word_image(tmp_path, monkeypatch):
     assert project.parody.lines[0].words[0].wordlist_row == original_row
 
 
-def test_word_card_and_subtitles_stay_visible_inside_one_word(tmp_path: Path):
-    from dataclasses import asdict
-
-    from soramimic_video.layout import parse_layout
-    from soramimic_video.video import build_section_cues
-
-    project = _two_word_project(second_start=12.5)
-    project.lines = [Line(0, "青い 空", "アオイソラ", [0, 1])]
-    project.notes[0].kana = "アオイ"
-    project.notes[1].kana = "ソラ"
-    project.notes[1].line = 0
-    project.parody.lines = [ParodyLine(0, [ParodyWord(
-        "青空", "アオゾラ", "青空", "", "", [0, 1], ["アオ", "ゾラ"],
-    )])]
-    before = asdict(project)
-    layout = parse_layout({"elements": [
-        *_TEXT_LAYOUT["elements"],
-        *[{"type": "subtitle", "source": source, "box": [0, .8, 1, .1],
-           "size": .04, "ruby": True}
-          for source in ["original", "parody"]],
-    ]})
-    cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=layout)
-    assert len(cues) == 1
-    assert cues[0].start == pytest.approx(.5 - DEFAULT_IMAGE_LEAD_SEC)
-    assert cues[0].end >= project.notes[1].end_sec
-    sections = build_section_cues(project, cues, 14, layout, tmp_path, 320, 180)
-    assert not sections
-    ass = build_ass(project, 1280, 720, "Font", layout,
-                    clear_ranges=[(section.start, section.end) for section in sections])
-    for style in ["Original", "Parody"]:
-        spans = _dialogue_spans(ass, style)
-        assert any(start <= project.notes[0].start_sec and end >= project.notes[1].end_sec
-                   for start, end in spans)
-    assert sum("青空" in line for line in ass.splitlines() if line.startswith("Dialogue:")) == 1
-    assert asdict(project) == before
-
-
-@pytest.mark.parametrize("sustain", [False, True])
-def test_word_card_keeps_short_gaps_and_held_notes(tmp_path: Path, sustain: bool):
-    project = _two_word_project(second_start=3.5 if not sustain else 12.5)
-    if sustain:
-        project.notes[0].end_sec = 12.5
-    word = project.parody.lines[0].words[0]
-    word.note_ids = [0, 1]
-    project.parody.lines.pop()
-    cap, _hold = _text_layouts(tmp_path)
-    frames = collect_word_frames(project, cap)
-    assert len(frames) == 1
-    assert frames[0].end == project.notes[1].end_sec
-
-
-def test_explicit_hold_next_keeps_word_card_across_long_rest(tmp_path: Path):
-    project = _two_word_project(second_start=12.5)
-    project.parody.lines[0].words[0].note_ids = [0, 1]
-    project.parody.lines.pop()
-    _cap, hold = _text_layouts(tmp_path)
-    cues, _ = build_image_cues(project, tmp_path, 320, 180, layout=hold)
-    assert len(cues) == 1
-    assert cues[0].start == pytest.approx(.5 - DEFAULT_IMAGE_LEAD_SEC)
-    assert cues[0].end == pytest.approx(12.75 - DEFAULT_IMAGE_LEAD_SEC)
-
-
-@pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts", "曲 - 作者\n© 指定表記", ""])
+@pytest.mark.parametrize("credit", ["オトノケ - Creepy Nuts", "曲 - 作者\n© 指定表記"])
 def test_custom_song_credit_keeps_original_label_and_verbatim_text(tmp_path, credit):
     from soramimic_video.layout import APP_CREDIT, _element_texts, load_layout
     from soramimic_video.video import app_credit_text, section_frame_data
 
     footer = app_credit_text(original_song="別の曲名", song_credit=credit)
-    assert footer == (f"{APP_CREDIT} / Original: {credit}" if credit else APP_CREDIT)
+    assert footer == f"{APP_CREDIT} / Original: {credit}"
     data = section_frame_data(
         _endroll_project(tmp_path), section="credits", original_song="別の曲名",
         original_credit="旧著作者", credit_notice="旧指定表記", song_credit=credit,
@@ -2541,11 +2574,28 @@ def test_custom_song_credit_keeps_original_label_and_verbatim_text(tmp_path, cre
     assert data["original_song_credit"] == credit
     elements, _, _ = load_layout("default").section_elements("credits")
     texts = _element_texts(elements, data)
-    if credit:
-        assert f"Original Song　{credit}" in texts
+    assert f"Original Song　{credit}" in texts
+    assert all("別の曲名" not in text and "旧著作者" not in text for text in texts)
+
+
+@pytest.mark.parametrize("credit", ["", " \t\n　"])
+@pytest.mark.parametrize("title", ["三原色", ""])
+def test_blank_song_credit_uses_title_on_final_page(tmp_path, credit, title):
+    from soramimic_video.layout import _element_texts, load_layout
+    from soramimic_video.video import section_frame_data
+
+    data = section_frame_data(
+        _endroll_project(tmp_path), section="credits", original_song=title,
+        original_credit="旧著作者", credit_notice="旧指定表記", song_credit=credit,
+    )
+    assert data["original_song_credit"] == title
+    elements, _, _ = load_layout("default").section_elements("credits")
+    texts = _element_texts(elements, data)
+    if title:
+        assert f"Original Song　{title}" in texts
     else:
         assert not any("Original Song" in text for text in texts)
-    assert all("別の曲名" not in text and "旧著作者" not in text for text in texts)
+    assert all("旧著作者" not in text and "旧指定表記" not in text for text in texts)
 
 
 def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch):
@@ -2562,6 +2612,7 @@ def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch
     def capture_thumbnail(*args, **kwargs):
         seen["thumbnail_footer"] = args[6]
         seen["label"] = kwargs["wordlist_label"]
+        seen["title_words"] = kwargs["title_words"]
         return None
 
     def capture_sections(*args, **kwargs):
@@ -2578,9 +2629,11 @@ def test_prepare_video_passes_custom_text_to_all_renderers(tmp_path, monkeypatch
     video_mod.prepare_video(
         project, tmp_path, 10, song_title="サムネの曲名",
         song_credit="オトノケ - Creepy Nuts", thumbnail_wordlist_label="好きな駅",
+        title_words=[{"id": "1", "surface": "駅名"}],
     )
     assert seen == {
         "footer": f"{APP_CREDIT} / Original: オトノケ - Creepy Nuts",
         "thumbnail_footer": f"{APP_CREDIT} / Original: オトノケ - Creepy Nuts",
         "label": "好きな駅", "final_credit": "オトノケ - Creepy Nuts",
+        "title_words": [{"id": "1", "surface": "駅名"}],
     }

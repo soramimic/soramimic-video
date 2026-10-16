@@ -347,15 +347,18 @@ def test_layout_image_credit_hidden_when_empty():
     assert "山田太郎 (CC BY)" in texts_with
 
 
-def test_layout_signature_shows_synth_credit():
-    # 歌声合成のクレジットが要るジョブでは、署名に併記して動画本編と揃える
+def test_layout_signature_keeps_app_credit_without_synth_credit():
+    # 歌声合成の表記は末尾に置き、冒頭サムネにはアプリの署名だけを残す。
+    from soramimic_video.video import app_credit_text
+
     layout = thumbnail_layout(has_word=True, has_image=False)
     data = thumbnail_data(
         "夜に駆ける", "駅名", word="米原",
-        app_credit=f"{SIGNATURE} / VOICEVOX:四国めたん",
+        app_credit=app_credit_text("VOICEVOX:四国めたん", original_song="夜に駆ける"),
     )
     texts = [t for t in layout.render_texts(data) if t]
-    assert f"{SIGNATURE} / VOICEVOX:四国めたん" in texts
+    assert any(SIGNATURE in text and "Original: 夜に駆ける" in text for text in texts)
+    assert not any("VOICEVOX" in text for text in texts)
     # サムネは署名を自前で配置するので、レイアウト側の自動追加は行われない
     assert layout.app_credit is None
 
@@ -434,6 +437,30 @@ def test_compose_background_dims_and_covers(tmp_path: Path):
     assert compose_background([image], 320, 180, dim=0.5).getpixel((160, 90))[0] < 140
     assert compose_background([], 320, 180) is None
     assert compose_background([tmp_path / "missing.png"], 320, 180) is None
+
+
+def test_transparent_portrait_is_contained_without_cropping(tmp_path: Path):
+    image = tmp_path / "portrait.png"
+    portrait = Image.new("RGBA", (100, 200), (0, 0, 0, 0))
+    for y, color in (
+        (range(0, 20), (255, 0, 0, 255)),
+        (range(20, 180), (0, 255, 0, 255)),
+        (range(180, 200), (0, 0, 255, 255)),
+    ):
+        for py in y:
+            for px in range(40, 60):
+                portrait.putpixel((px, py), color)
+    portrait.save(image)
+
+    bg = compose_background([image], 320, 180, dim=1.0)
+    assert bg is not None
+    # containなら頭側の赤と足側の青が両方残る。coverだと中央だけが残る。
+    top = bg.getpixel((160, 5))
+    bottom = bg.getpixel((160, 174))
+    assert top[0] > 50 and top[0] > top[1] + top[2]
+    assert bottom[2] > 50 and bottom[2] > bottom[0] + bottom[1]
+    # 透明余白に埋め込まれたRGB値ではなく、明示した黒背景へ合成する。
+    assert bg.getpixel((10, 90)) == (0, 0, 0)
 
 
 # ---- generate_thumbnail(組み立て) ----

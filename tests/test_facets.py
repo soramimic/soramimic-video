@@ -252,56 +252,142 @@ def test_football_defaults_to_jleague_scope_only():
     assert "scope=overseas_japanese" not in where
 
 
-def test_scientist_nobel_filter_selects_laureates_or_others(tmp_path):
-    """受賞者とその他を個別選択でき、「すべて」で初期状態へ戻せる。"""
+def test_scientist_economics_field_is_opt_in_without_changing_awards():
+    import copy
+
     entry = next(e for e in _conf_entries() if e["value"] == "SCIENTIST")
+    fields = next(f for f in entry["facets"] if f["column"] == "field")
+    assert all(v["default"] is (v["v"] != "経済学") for v in fields["values"])
+    csv_path = WORDLISTS / "scientist.csv"
+    header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    field_index, nobel_index = header.index("field"), header.index("nobel")
+    original_index = header.index("original")
+    selected = _select(csv_path, default_where(entry))
+    assert selected and all(row[field_index] != "経済学" for row in selected)
+    mixed = [row for row in selected if "数学" in row[field_index].split("/")
+             and "経済学" in row[field_index].split("/")]
+    assert mixed and all(row[nobel_index] == "yes" for row in mixed)
+
+    enabled = copy.deepcopy(entry)
+    next(v for f in enabled["facets"] if f["column"] == "field"
+         for v in f["values"] if v["v"] == "経済学")["default"] = True
+    with_economics = _select(csv_path, default_where(enabled))
+    added = set(with_economics) - set(selected)
+    assert {"ロバート・ホール", "マイケル・ディーン・ウッドフォード"} <= {
+        row[original_index] for row in added}
+    assert all(row[field_index] == "経済学" for row in added)
+    assert all(row[nobel_index] == "yes" for row in added)
+    assert restored_where(enabled, default_where(enabled)) == default_where(enabled)
+
+
+def test_scientist_opt_in_follows_filter_changes(tmp_path):
+    """受賞歴を個別選択でき、対象の選択・復元では追加対象の既定オフを保つ。"""
+    entry = next(e for e in _conf_entries() if e["value"] == "SCIENTIST")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    heads = (
+        "function setWhere(v)",
+        "function wordlistFacetClause(f, item)",
+        "function wordlistWhereContains(where, frag)",
+        "function compileWordlistFilter(g)",
+        "function commitWordlistFilter()",
+        "function renderWordlistFilter()",
+    )
+    functions = "\n".join(head + " {" + html.split(head + " {")[1].split("\n}")[0]
+                          + "\n}" for head in heads)
+    listeners = "\n".join(line for line in html.splitlines()
+                          if line == '$("where").addEventListener("change", renderWordlistFilter);')
     where = default_where(entry)
+    legacy = where.replace("((celebrity_doctorate=no)) and ", "")
+    assert "celebrity_doctorate" not in legacy
     script = (
         DOM_SHIM
         + 'const assert = (await import("node:assert/strict")).default;\n'
         + f'const m = await import("file://{CONVERT_CONTROLS}");\n'
         + f"const entry = {json.dumps(entry, ensure_ascii=False)};\n"
-        + f"const initialWhere = {json.dumps(where)};\n"
+        + f"const initialWhere = {json.dumps(where)}, legacyWhere = {json.dumps(legacy)};\n"
         + """
-const container = document.createElement("div");
-m.renderFacets(container, entry);
-const group = container.querySelectorAll(".facet-group")
+const elements = new Map();
+const $ = (id) => {
+  if (!elements.has(id)) elements.set(id, new El("div"));
+  return elements.get(id);
+};
+const selectedWordlistGroup = () => ({ entries: [entry] });
+const activeLyricsJson = () => null;
+let previews = 0;
+const clearEditorFile = () => {};
+const schedulePreview = () => { previews++; };
+"""
+        + functions + "\n" + listeners
+        + """
+const targetGroup = () => $("wordlist-facets").querySelectorAll(".facet-group")
+  .find((group) => group.__defaultClauses.length);
+const checkbox = (value) => targetGroup().querySelectorAll("input.facet-value")
+  .find((cb) => cb.value === value);
+const change = (cb, checked) => { cb.checked = checked; cb.dispatchEvent(new Event("change")); };
+setWhere(initialWhere);
+assert.equal(checkbox("no").checked, true);
+assert.equal(checkbox("yes").checked, false);
+const nobelGroup = () => $("wordlist-facets").querySelectorAll(".facet-group")
   .find((group) => group.querySelectorAll("input.facet-value")
     .some((cb) => cb.__where === "(nobel=yes)"));
-const values = group.querySelectorAll("input.facet-value");
-const selectAll = group.querySelector("input.facet-select-all-input");
-const change = (cb, checked) => { cb.checked = checked; cb.dispatchEvent(new Event("change")); };
-assert.deepEqual(values.map((cb) => cb.value), ["yes", "other"]);
-assert(values.every((cb) => cb.checked));
-assert.equal(selectAll.checked, true);
-assert.equal(m.compileWhere(container, entry), initialWhere);
-const selections = {};
+const nobelSelections = {};
+assert.equal(nobelGroup().querySelector("input.facet-select-all-input").checked, true);
+assert.equal(nobelGroup().querySelectorAll("input.facet-value").length, 2);
 for (const value of ["yes", "other"]) {
-  change(selectAll, false);
-  change(values.find((cb) => cb.value === value), true);
-  selections[value] = m.compileWhere(container, entry);
+  change(nobelGroup().querySelector("input.facet-select-all-input"), false);
+  change(nobelGroup().querySelectorAll("input.facet-value")
+    .find((cb) => cb.value === value), true);
+  nobelSelections[value] = $("where").value;
+  const selectAll = nobelGroup().querySelector("input.facet-select-all-input");
   assert.equal(selectAll.checked, false);
   assert.equal(selectAll.indeterminate, true);
-  m.restoreFacets(container, selections[value]);
-  assert.equal(m.compileWhere(container, entry), selections[value]);
   change(selectAll, true);
-  assert.equal(m.compileWhere(container, entry), initialWhere);
+  assert.equal($("where").value, initialWhere);
 }
-console.log(JSON.stringify(selections));
+change(checkbox("yes"), true);
+const included = $("where").value;
+change(checkbox("no"), false);
+const celebrityOnly = $("where").value;
+change(checkbox("yes"), false);
+assert.equal($("where").value, initialWhere);
+assert.equal(checkbox("no").checked, true);
+change(targetGroup().querySelector("input.facet-select-all-input"), true);
+change(targetGroup().querySelector("input.facet-select-all-input"), false);
+assert.equal($("where").value, initialWhere);
+setWhere(legacyWhere);
+const restoredLegacy = $("where").value;
+assert.equal(checkbox("no").checked, true);
+assert.equal(checkbox("yes").checked, false);
+setWhere(included); // エディタや保存済み設定からの復元
+setWhere(initialWhere);
+assert.equal(previews, 11);
+const editor = document.createElement("div");
+m.renderFacets(editor, entry);
+m.restoreFacets(editor, legacyWhere);
+const editorRestored = m.compileWhere(editor, entry);
+console.log(JSON.stringify({ included, celebrityOnly, restoredLegacy,
+  editorRestored, nobelSelections }));
 """
     )
-    selections = _run_node(script, tmp_path)
+    result = _run_node(script, tmp_path)
+    assert result["editorRestored"] == restored_where(entry, legacy) == where
     csv_path = WORDLISTS / "scientist.csv"
     header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    flag_index = header.index("celebrity_doctorate")
+    ordinary = _select(csv_path, where)
+    assert ordinary and all(row[flag_index] == "no" for row in ordinary)
     nobel_index = header.index("nobel")
-    defaults = _select(csv_path, where)
-    assert {row[nobel_index] for row in defaults} >= {"yes", "no"}
-    options = {"yes": {"yes"}, "other": {"no", "NA"}}
-    for value, selected_where in selections.items():
+    assert {row[nobel_index] for row in ordinary} == {"yes", "no", "NA"}
+    nobel_options = {"yes": {"yes"}, "other": {"no", "NA"}}
+    for value, selected_where in result["nobelSelections"].items():
         assert _select(csv_path, selected_where) == [
-            row for row in defaults if row[nobel_index] in options[value]
+            row for row in ordinary if row[nobel_index] in nobel_options[value]
         ]
         assert restored_where(entry, selected_where) == selected_where
+    assert _select(csv_path, result["restoredLegacy"]) == ordinary
+    celebrities = _select(csv_path, result["celebrityOnly"])
+    assert celebrities and all(row[flag_index] == "yes" for row in celebrities)
+    assert set(_select(csv_path, result["included"])) == set(ordinary + celebrities)
 
 
 def _flat_default_where(entry: dict[str, Any]) -> str:

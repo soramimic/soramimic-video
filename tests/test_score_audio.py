@@ -9,7 +9,10 @@ import pytest
 from soramimic_video import score_audio
 
 
-def test_score_audio_imports_supported_slots_and_records_unresolved_units(monkeypatch, tmp_path):
+@pytest.mark.parametrize("raw_lyrics", ["かき\n", " \t\nかき\r\n\n"])
+def test_score_audio_imports_supported_slots_and_records_unresolved_units(
+    monkeypatch, tmp_path, raw_lyrics,
+):
     layers = {
         "schema_version": 1, "canonical_text": "かき", "canonical": [
             {"utterance_id": "u0", "text": "かき", "kana": "カキ",
@@ -42,12 +45,18 @@ def test_score_audio_imports_supported_slots_and_records_unresolved_units(monkey
     source = tmp_path / "input.wav"
     source.write_bytes(b"fake")
     lyrics = tmp_path / "lyrics.txt"
-    lyrics.write_text("かき\n", encoding="utf-8")
+    lyrics.write_bytes(raw_lyrics.encode("utf-8"))
     values = []
     project = score_audio.analyze_audio(source, tmp_path / "project", lyrics_path=lyrics,
                                         progress=values.append)
 
-    assert observed["lyrics"] == ["かき"]
+    assert observed["lyrics"].lyric_lines == ("かき",)
+    receipt = json.loads((tmp_path / "project/analyze_audio/lyric_input.json").read_text())
+    assert receipt["original_text"] == raw_lyrics
+    assert receipt["complete"] is True
+    assert [raw_lyrics[slice(*line["source_span"])] for line in receipt["line_spans"]
+            if line["included"]] == ["かき"]
+    assert lyrics.read_bytes() == raw_lyrics.encode("utf-8")
     assert observed["accompaniment_path"] == tmp_path / "project/analyze_audio/no_vocals.wav"
     assert [note.kana for note in project.notes] == ["カ"]
     assert project.lines[0].canonical_kana == "カキ"
@@ -183,6 +192,123 @@ def test_pinned_score_recovers_lyrics_from_template_and_preserves_project_readin
     assert decision["source_surfaces"] == ["ご視聴ありがとうございました"]
 
 
+@pytest.mark.parametrize("control", ["\0", "\x85"])
+def test_score_audio_rejects_controls_before_splitting_lines_or_loading_models(tmp_path, control):
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("か\u3099" + control + "くせい", encoding="utf-8")
+    with pytest.raises(ValueError, match=f"position 3:.*U\\+{ord(control):04X}"):
+        score_audio.analyze_audio(tmp_path / "input.wav", tmp_path, lyrics_path=lyrics)
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+@pytest.mark.parametrize("source_text", ["か\u3099くせい", "カ゛クセイ", "　か\u3099くせい\t"])
+def test_pinned_score_normalizes_before_real_reading_generation(
+    monkeypatch, tmp_path, supplied, source_text,
+):
+    import soramimic_score
+    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote
+    from soramimic_score.readings import dictionary_readings
+
+    from soramimic_video.project import Project
+
+    def align(_path, lines, readings):
+        assert lines[0].text == source_text
+        assert readings[0].kana == "ガクセイ"
+        return tuple(AlignedMora(0, i, mora, i * .3, (i + 1) * .3, .9)
+                     for i, mora in enumerate("ガクセイ"))
+
+    adapters = AudioAdapters(
+        reading_selector=dictionary_readings,
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(MelodyNote(i * .3, (i + 1) * .3, 60)
+                                            for i in range(4)),
+        lyric_recognizer=lambda _: (LyricLine(source_text, 0, 1.2),),
+    )
+    real_analyze = soramimic_score.analyze_audio
+    monkeypatch.setattr(soramimic_score, "analyze_audio",
+                        lambda path, **kw: real_analyze(path, adapters, lyrics=kw["lyrics"]))
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic audio model boundary")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text(source_text, encoding="utf-8")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output, lyrics_path=lyrics if supplied else None)
+    project.save(output)
+    reloaded = Project.load(output)
+    assert reloaded.lyric_layers["canonical_text"] == source_text
+    assert reloaded.lines[0].canonical_kana == "ガクセイ"
+    assert "".join(note.kana for note in reloaded.notes) == "ガクセイ"
+    assert lyrics.read_text(encoding="utf-8") == source_text
+    raw = json.loads((output / "analyze_audio/score.json").read_text())
+    decision = next(e["detail"] for e in raw["observations"]["evidence"]
+                    if e["kind"] == "reading-selection")
+    assert decision["lyric_input_normalization"]["original_text"] == source_text
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+@pytest.mark.parametrize("kana,normalized,moras", [
+    ("ウォォォ", "ウォォォ", ("ウォ", "ォ", "ォ")),
+    ("ｶﾞゐ", "ガイ", ("ガ", "イ")),
+    ("ヷ", "ヴァ", ("ヴァ",)),
+])
+def test_pinned_score_normalizes_readings_through_audio_import(
+    monkeypatch, tmp_path, supplied, kana, normalized, moras,
+):
+    import soramimic_score
+    from soramimic_score import (
+        AlignedMora,
+        AudioAdapters,
+        LyricLine,
+        MelodyNote,
+        ReadingSelection,
+    )
+
+    from soramimic_video.project import Project
+
+    def align(_path, _lines, selected):
+        assert selected[0].kana == normalized
+        return tuple(AlignedMora(0, i, mora, i * .5, (i + 1) * .5, .9)
+                     for i, mora in enumerate(moras))
+
+    adapters = AudioAdapters(
+        lyric_recognizer=lambda _: (LyricLine(kana, 0, len(moras) * .5),),
+        reading_selector=lambda *_: (ReadingSelection(kana, "test", 1),),
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(
+            MelodyNote(i * .5, (i + 1) * .5, 60, confidence=.9) for i in range(len(moras))),
+    )
+    real_analyze = soramimic_score.analyze_audio
+
+    def analyze_with_test_models(path, **kwargs):
+        lines = kwargs["lyrics"].lyric_lines if supplied else kwargs["lyrics"]
+        assert lines == ((kana,) if supplied else None)
+        return real_analyze(path, adapters, lyrics=kwargs["lyrics"])
+
+    monkeypatch.setattr(soramimic_score, "analyze_audio", analyze_with_test_models)
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"deterministic model boundary")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text(kana, encoding="utf-8")
+    output = tmp_path / "project"
+    project = score_audio.analyze_audio(source, output, lyrics_path=lyrics if supplied else None)
+    project.save(output)
+    reloaded = Project.load(output)
+    assert reloaded.lyric_layers["canonical_text"] == kana
+    assert reloaded.lines[0].canonical_kana == normalized
+    assert "".join(note.kana for note in reloaded.notes) == normalized
+    assert [(note.start_sec, note.end_sec) for note in reloaded.notes] == [
+        (i * .5, (i + 1) * .5) for i in range(len(moras))]
+    if kana != normalized:
+        raw = json.loads((output / "analyze_audio/score.json").read_text())
+        decision = next(e["detail"] for e in raw["observations"]["evidence"]
+                        if e["kind"] == "reading-selection")
+        assert decision["reading_normalization"]["selected_before"] == kana
+
+
 @pytest.mark.parametrize("adjust", [False, True])
 @pytest.mark.parametrize("source_text,recognized,expected_text,kana,status", [
     ("未来（みらい）（ラララ）", "未来（ラララ）", "未来（ラララ）", "ミライラララ", "resolved"),
@@ -225,7 +351,7 @@ def test_pinned_score_uses_parenthetical_reading_and_keeps_chorus(
     real_analyze = soramimic_score.analyze_audio
 
     def analyze_with_test_models(path, **kwargs):
-        assert kwargs["lyrics"] == [source_text]
+        assert kwargs["lyrics"].lyric_lines == (source_text,)
         return real_analyze(path, adapters, lyrics=kwargs["lyrics"],
                             adjust_lyrics=kwargs["adjust_lyrics"])
 
