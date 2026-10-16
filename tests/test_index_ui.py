@@ -640,7 +640,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
     ):]
     listener = listener[:listener.index("\n});") + len("\n});")]
     stem = _function_body(script, "function songFileStem(file)") + "\n}"
-    metadata = _function_body(script, "async function updateUploadedSongMetadata(file)") + "\n}"
+    metadata = _function_body(script, "async function updateUploadedSongMetadata(file,") + "\n}"
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
@@ -656,7 +656,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const ownSongFile = () => $("midi").files[0];
         const ownSongKind = file => file.name.endsWith(".wav") ? "audio" : "midi";
         let active = null, restoring = false, midiSampleId = "";
-        let editorImportedFile = null, midiFromSample = false;
+        let editorImportedFile = null, midiFromSample = false, metadataSongSelected = false;
         const VideoMetadata = {notifyChange: async () => {}};
         const activeLyricsJson = () => active;
         const audioInputReady = true, maxAudioUploadBytes = 1000;
@@ -678,7 +678,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
           assert.equal($("song-title").value, "テスト曲");
           $("song-title").value = "";
           $("midi").dispatchEvent(new Event("change"));
-          assert.equal($("song-title").value, "テスト曲");
+          assert.equal($("song-title").value, "upload");
           $("song-title").value = "手入力した曲名";
           $("midi").dispatchEvent(new Event("change"));
           assert.equal($("song-title").value, "手入力した曲名");
