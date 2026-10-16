@@ -134,6 +134,7 @@ class PreviewSpec:
     # 見出しに出す曲名は title のまま
     title_kana: str = ""
     allow_noncommercial_fanwork: bool = False
+    title_words: list[dict[str, str]] | None = None
 
     @classmethod
     def create(
@@ -148,6 +149,7 @@ class PreviewSpec:
         title_kana: str = "",
         allow_noncommercial_fanwork: bool = False,
         wordlist_label: str = "",
+        title_words: list[dict[str, str]] | None = None,
     ) -> PreviewSpec:
         """where・変換パラメータの既定をジョブ本体と同じ経路で解決して組み立てる。
 
@@ -155,6 +157,10 @@ class PreviewSpec:
         """
         csv_path = resolve_wordlist(wordlist)
         eff_where, coerced, _alpha = resolve_convert_settings(csv_path, where, params)
+        if title_words is not None:
+            from .title_choices import selected_rows
+
+            selected_rows(title_words, csv_path.read_text(encoding="utf-8"), eff_where)
         return cls(
             title=title,
             wordlist=wordlist,
@@ -167,6 +173,7 @@ class PreviewSpec:
             with_images=with_images,
             title_kana=title_kana,
             allow_noncommercial_fanwork=allow_noncommercial_fanwork,
+            title_words=title_words,
         )
 
     @property
@@ -190,6 +197,7 @@ class PreviewSpec:
                 "size": [self.width, self.height],
                 "with_images": self.with_images,
                 "allow_noncommercial_fanwork": self.allow_noncommercial_fanwork,
+                "title_words": self.title_words,
                 "layout": _layout_fingerprint(),
             },
             ensure_ascii=False,
@@ -249,6 +257,7 @@ class PreviewSpec:
             song_kana=self.title_kana,
             wordlist_label=self.wordlist_text,
             allow_noncommercial_fanwork=self.allow_noncommercial_fanwork,
+            title_words=self.title_words,
         )
         if out is None:
             tmp.unlink(missing_ok=True)

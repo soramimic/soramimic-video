@@ -107,16 +107,14 @@ def restored_where(entry: dict[str, Any] | None, where: str) -> str:
     entry = entry or {}
     if not has_facets(entry):
         return where
-    return _compile_where(
-        [
-            [
-                facet_clause(f, v)
-                for v in (f.get("values") or [])
-                if _contains_fragment(where, facet_clause(f, v))
-            ]
-            for f in entry["facets"]
-        ]
-    )
+    clauses = []
+    for facet in entry["facets"]:
+        values = facet.get("values") or []
+        selected = [v for v in values if _contains_fragment(where, facet_clause(facet, v))]
+        if not selected and facet.get("defaultWhenEmpty"):
+            selected = [v for v in values if v.get("default") is True]
+        clauses.append([facet_clause(facet, v) for v in selected])
+    return _compile_where(clauses)
 
 
 def survives_editor_facets(entry: dict[str, Any] | None, where: str | None) -> bool:

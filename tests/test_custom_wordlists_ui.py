@@ -56,6 +56,7 @@ let selected = {id: 'one', name: '動物', text: 'ねこ,ネコ'};
 let editorSelected = true;
 let entry = {value: 'ORIGINAL', text: '編集した動物', csvText: 'いぬ,イヌ'};
 const activeCustomList = () => selected;
+const activeLyricsJson = () => null;
 const showsEditorWordlist = () => editorSelected;
 const editorSessionWordlist = () => entry;
 assert.equal(currentPreviewCustomList(), selected);
@@ -88,6 +89,7 @@ const headers = () => ({'X-API-Key': 'secret'});
 const OWN_SONG_VALUE = 'own', PREVIEW_TIMEOUT_MS = 8000;
 const ownSongFile = () => ({name: '持ち込み.wav'});
 const songTitleOf = () => '持ち込み曲';
+const selectedTitleWords = () => '';
 const setTimeout = () => 1;
 const clearTimeout = () => {};
 const calls = [], shown = [], fallbacks = [];
@@ -143,7 +145,9 @@ def test_preview_refreshes_when_custom_contents_or_label_change():
 let builderLive = true, previewShowImages = false, previewComboKey = '', previewKey = '';
 let previewTimer = null;
 const label = {value: ""};
-const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false};
+const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false, value: ""};
+const refreshTitleChoices = () => {};
+const selectedTitleWords = () => '';
 const showBuilderMsg = () => {};
 const c = {sampleId: 'sample', wordlistName: '',
   customList: {id: 'one', name: '動物', text: 'ねこ,ネコ'}};
@@ -308,10 +312,13 @@ def test_editor_frame_receives_current_original_csv_before_opening(storage_fails
     ])
     run_node(functions + f"const storageFails = {json.dumps(storage_fails)};\n" + r"""
 const EDITOR_KEY = 'editor-session';
+const REVIEW_JOB_KEY = 'review-job';
+const reviewJobId = null;
 const currentCsv = 'text,yomi\nねこ,ネコ\nいぬ,イヌ';
 const sessionStorage = {
   getItem: (key) => key === EDITOR_KEY
     ? JSON.stringify({ wordlist: { value: 'ORIGINAL', csvText: currentCsv } }) : null,
+  removeItem: () => {},
 };
 const localValues = new Map([['originalWordlist', 'text,yomi\nりんご,リンゴ']]);
 const events = [];
@@ -329,8 +336,8 @@ const frame = {
   },
   focus: () => events.push('focused'),
 };
-const wrapper = { hidden: true };
-const $ = (id) => ({ 'editor-frame': frame, 'editor-frame-wrap': wrapper })[id];
+const wrapper = { hidden: true, classList: { toggle() {}, remove() {} } };
+const $ = (id) => ({ 'editor-frame': frame, 'editor-frame-wrap': wrapper })[id] || {};
 const document = { body: { classList: { add: () => events.push('modal') } } };
 const showBuilderMsg = (text) => messages.push(text);
 const hideEditorResume = () => events.push('resume-hidden');
@@ -368,7 +375,10 @@ const other = await repository.save({ name: '動物', text: 'いぬ' });
 let customLists = (await repository.lists());
 const activeCustomListId = first.id;
 const midiSampleId = 'sample-song';
-const elements = { midi: { files: [] }, wordlist: { value: '' }, where: { value: '' } };
+const elements = { midi: { files: [] }, wordlist: { value: '' }, where: { value: '' },
+  'song-title': {value:'曲名'}, 'song-credit': {value:'表記'},
+  'thumbnail-wordlist-label': {value:'リスト名'},
+};
 const $ = (id) => elements[id];
 const buildConvertParams = () => '{}';
 const hostSongList = () => [{ id: 'sample-song', title: '曲' }];
@@ -386,6 +396,9 @@ const originalCsv = 'text,yomi\nねこ,ネコ';
 const payload = { wordlist: { value: 'ORIGINAL', csvText: originalCsv } };
 const seed = withHostInfo(payload);
 assert.equal(seed.videoCustomListId, first.id);
+assert.deepEqual(seed.videoMetadata, {
+  songTitle:'曲名', songCredit:'表記', thumbnailWordlistLabel:'リスト名',
+});
 assert.equal(seed.videoCustomListText, first.text);
 assert.equal(seed.videoCustomListCsvText, payload.wordlist.csvText);
 assert.equal(payload.videoCustomListId, undefined);

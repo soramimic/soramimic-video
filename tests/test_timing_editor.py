@@ -1,3 +1,5 @@
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -12,10 +14,18 @@ from soramimic_video.project import (
     SongInfo,
 )
 from soramimic_video.timing_editor import (
+    EDITOR_HTML,
+    IGNORE_RANGES_NAME,
+    _current_full_mix,
+    _current_mix,
     apply_payload,
     build_payload,
     grid_lines,
+    load_ignore_ranges,
+    mix_full_audio,
+    normalize_ignore_ranges,
     rebuild,
+    save_ignore_ranges,
     sec_to_tick,
     synthesize_line,
     tick_to_sec,
@@ -76,7 +86,9 @@ def test_grid_lines_marks_measures_and_beats() -> None:
 
 
 def test_build_payload_lists_moras_in_time_order() -> None:
-    payload = build_payload(_project())
+    payload = build_payload(
+        _project(), ignore_ranges=[{"start": 2.0, "end": 3.5}]
+    )
     assert [m["text"] for m in payload["moras"]] == ["シ", "ズ", "ヨル"]
     assert [m["line"] for m in payload["moras"]] == [0, 0, 1]
     assert [m["i"] for m in payload["moras"]] == [0, 1, 0]
@@ -84,6 +96,59 @@ def test_build_payload_lists_moras_in_time_order() -> None:
     # 参照音符は既定で編集前の音符
     assert payload["reference"][0] == [0.0, 0.5, 60]
     assert payload["line_texts"]["1"] == "夜"
+    assert payload["ignore_ranges"] == [{"start": 2.0, "end": 3.5}]
+
+
+def test_ignore_ranges_are_sorted_and_overlaps_are_merged() -> None:
+    assert normalize_ignore_ranges([
+        {"start": 4.0, "end": 5.0},
+        {"start_sec": 1.0, "end_sec": 2.5},
+        {"start": 2.0, "end": 3.0},
+    ]) == [
+        {"start": 1.0, "end": 3.0},
+        {"start": 4.0, "end": 5.0},
+    ]
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        "not-a-list",
+        [{"start": -1, "end": 2}],
+        [{"start": 2, "end": 2}],
+        [{"start": 1, "end": float("inf")}],
+    ],
+)
+def test_ignore_ranges_reject_invalid_values(ranges: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_ignore_ranges(ranges)
+
+
+def test_ignore_ranges_roundtrip_in_project_sidecar(tmp_path: Path) -> None:
+    saved = save_ignore_ranges(tmp_path, [
+        {"start": 8.125, "end": 9.5},
+        {"start": 2.0, "end": 3.0},
+    ])
+
+    assert saved == [
+        {"start": 2.0, "end": 3.0},
+        {"start": 8.125, "end": 9.5},
+    ]
+    sidecar = tmp_path / IGNORE_RANGES_NAME
+    raw = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert raw == {
+        "version": 1,
+        "time_basis": "project_seconds",
+        "ranges": [
+            {"start_sec": 2.0, "end_sec": 3.0},
+            {"start_sec": 8.125, "end_sec": 9.5},
+        ],
+    }
+    assert load_ignore_ranges(tmp_path) == saved
+
+
+def test_missing_ignore_sidecar_loads_as_empty(tmp_path: Path) -> None:
+    assert load_ignore_ranges(tmp_path) == []
 
 
 def test_apply_payload_moves_note_and_keeps_surface() -> None:
@@ -212,3 +277,87 @@ def test_rebuild_leaves_engine_url_unset_when_not_given(monkeypatch, tmp_path: P
     assert seen["kwargs"]["voicevox_style"] == 42
     assert seen["soundfont"] == "x.sf2"
     assert out.name == "song.wav"
+
+
+def test_current_mix_requires_a_non_stale_wave(tmp_path: Path) -> None:
+    project = tmp_path / "project.json"
+    mixed = tmp_path / "mix" / "song.wav"
+    mixed.parent.mkdir()
+    project.write_text("{}", encoding="utf-8")
+    mixed.write_bytes(b"RIFF" + b"\0" * 64)
+
+    assert _current_mix(tmp_path) == mixed
+
+    mixed_mtime = mixed.stat().st_mtime_ns
+    os.utime(project, ns=(mixed_mtime + 1, mixed_mtime + 1))
+    assert _current_mix(tmp_path) is None
+
+
+def test_mix_full_audio_uses_separate_output_and_limiter(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from soramimic_video import runproc
+    from soramimic_video.synthesize import vocal_path
+
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"RIFFsource")
+    vocal = vocal_path(tmp_path)
+    vocal.parent.mkdir()
+    vocal.write_bytes(b"RIFFvocal")
+    seen: dict = {}
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        Path(cmd[-1]).write_bytes(b"RIFF" + b"\0" * 64)
+        return Result()
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(runproc, "run", fake_run)
+
+    out = mix_full_audio(source, tmp_path, full_audio_gain=0.4)
+
+    assert out == tmp_path / "mix" / "full-audio-with-vocal.wav"
+    assert source.read_bytes() == b"RIFFsource"
+    filters = seen["cmd"][seen["cmd"].index("-filter_complex") + 1]
+    assert "volume=0.4" in filters
+    assert "alimiter=limit=0.95" in filters
+
+
+def test_current_full_mix_requires_all_inputs_to_be_older(tmp_path: Path) -> None:
+    from soramimic_video.synthesize import vocal_path
+
+    project = tmp_path / "project.json"
+    source = tmp_path / "source.wav"
+    vocal = vocal_path(tmp_path)
+    mixed = tmp_path / "mix" / "full-audio-with-vocal.wav"
+    vocal.parent.mkdir()
+    mixed.parent.mkdir(exist_ok=True)
+    for path in (project, source, vocal):
+        path.write_bytes(b"input")
+    mixed.write_bytes(b"RIFF" + b"\0" * 64)
+    newest = max(path.stat().st_mtime_ns for path in (project, source, vocal))
+    os.utime(mixed, ns=(newest + 1, newest + 1))
+
+    assert _current_full_mix(tmp_path, source) == mixed
+    os.utime(source, ns=(newest + 2, newest + 2))
+    assert _current_full_mix(tmp_path, source) is None
+
+
+def test_editor_checks_for_prebuilt_mix_on_load() -> None:
+    html = EDITOR_HTML.read_text(encoding="utf-8")
+    assert "load().then(()=>{resize();tick();poll()});" in html
+    assert '<option value="full" disabled>原曲＋リツ</option>' in html
+    assert "full:{src:'/full-mixed'" in html
+
+
+def test_editor_can_mark_and_save_ignore_ranges() -> None:
+    html = EDITOR_HTML.read_text(encoding="utf-8")
+    assert 'id="bistart"' in html
+    assert 'id="biend"' in html
+    assert 'id="bidel"' in html
+    assert "ignoreRanges=normalizeIgnores(d.ignore_ranges||[])" in html
+    assert "JSON.stringify({moras,ignore_ranges:ignoreRanges})" in html

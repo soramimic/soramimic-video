@@ -9,10 +9,10 @@ from difflib import SequenceMatcher
 from itertools import pairwise
 from typing import Any, Literal
 
+from soramimic_score import LyricMappingError, parse_lyric_input, validate_reading
+
 from .align import _pron_normalize
-from .kana import split_fine_moras
 from .project import Line, Project
-from .ruby import has_ruby
 
 logger = logging.getLogger(__name__)
 
@@ -38,64 +38,70 @@ class _Boundary:
         return max(0.0, self.right_start - self.left_end)
 
 
-def _surface_boundaries(text: str, kana: str) -> list[tuple[int, int]]:
+def _surface_boundaries(
+    text: str, kana: str, *, diagnostics: list[dict[str, Any]] | None = None,
+) -> list[tuple[int, int]]:
     """Map bunsetsu ends to exact reading boundaries; never interpolate a reading.
 
     Spelling and whitespace are retained by slicing the input. A changed reading
     may map at the ends of an edit, but a boundary inside that edit is ambiguous.
     Ruby markup is left intact when its surface cannot be mapped safely.
     """
-    if has_ruby(text):
-        return []
+    parsed = parse_lyric_input(text)
+    validated = validate_reading(kana)
+
+    def finish(
+        boundaries: list[tuple[int, int]], status: str, reason: str, **detail: Any,
+    ) -> list[tuple[int, int]]:
+        if diagnostics is not None:
+            diagnostics.append({"status": status, "reason": reason, **detail})
+        if status in {"unmapped", "unavailable"}:
+            logger.warning("歌詞の分割境界を確認できませんでした: %s", reason)
+        return boundaries
+
+    if any(item.kind == "ruby" for item in parsed.annotations):
+        return finish([], "no-boundaries", "ruby-protected")
     try:
         from jphrase import PhraseSplitter
 
         parts = PhraseSplitter(
             consider_non_independent_nouns_and_verbs_as_breaks=False,
-        ).split_text(text, output_type="concatenated")
-    except (ImportError, RuntimeError):
-        logger.warning("文節解析を利用できないため歌詞の自動分割を省略しました")
-        return []
+        ).split_text(parsed.text, output_type="concatenated")
+    except (ImportError, RuntimeError) as exc:
+        return finish([], "unavailable", "analyzer-unavailable", error=str(exc))
+    # Empty analyzer parts signal an incomplete parse. Whitespace-only tokens
+    # may be omitted, and the source map retains every original space.
+    if any(not part["surface_form"] for part in parts):
+        return finish([], "unmapped", "empty-part")
+    parts = [part for part in parts if not part["surface_form"].isspace()]
+    try:
+        spans = parsed.match_parts(tuple(part["surface_form"] for part in parts))
+    except LyricMappingError as exc:
+        return finish([], "unmapped", exc.reason, position=exc.position,
+                      part_index=exc.part_index)
     offsets: list[int] = []
     readings = []
-    cursor = 0
-    for part in parts:
-        surface = part["surface_form"]
-        if not surface:
-            return []
-        if surface.isspace():
-            continue
-        while cursor < len(text) and text[cursor].isspace():
-            cursor += 1
-        start = cursor
-        # MeCab may omit spaces or retain them (notably full-width spaces).
-        # Match visible characters while retaining the original input offsets.
-        for char in surface:
-            if char.isspace():
-                continue
-            while cursor < len(text) and text[cursor].isspace():
-                cursor += 1
-            if cursor == len(text) or text[cursor] != char:
-                return []
-            cursor += 1
-        # Leading whitespace belongs to the preceding phrase, except at offset 0.
+    for index, (part, (start, end)) in enumerate(zip(parts, spans, strict=True)):
         if offsets:
             offsets[-1] = start
-        offsets.append(cursor)
-        readings.append(_pron_normalize(part["pronunciation"]))
-    if not offsets or text[cursor:].strip():
-        return []
+        offsets.append(end)
+        try:
+            reading = validate_reading(part["pronunciation"]).kana
+        except ValueError as exc:
+            return finish([], "unmapped", "invalid-part-reading", part_index=index,
+                          position=start + 1, error=str(exc))
+        readings.append(_pron_normalize(reading))
     source = "".join(readings)
-    moras = split_fine_moras(kana)
-    target = _pron_normalize(kana)
-    if not source or not target:
-        return []
+    moras = list(validated.moras)
+    target = _pron_normalize(validated.kana)
+    if not source:
+        return finish([], "unmapped", "missing-reading")
     # Normalizing each prefix retains context for long-vowel normalization.
     mora_offsets = {len(_pron_normalize("".join(moras[:i]))): i
                     for i in range(len(moras) + 1)}
     matcher = SequenceMatcher(None, source, target, autojunk=False)
     if matcher.ratio() < .6:
-        return []
+        return finish([], "unmapped", "reading-mismatch")
     matches: dict[int, set[int]] = {}
     for tag, a, b, c, d in matcher.get_opcodes():
         for left, right in ((a, c), (b, d)):
@@ -125,12 +131,14 @@ def _surface_boundaries(text: str, kana: str) -> list[tuple[int, int]]:
         mora = mora_offsets.get(next(iter(targets)))
         if mora is not None and 0 < mora < len(moras):
             result.append((offset, mora))
-    return result
+    return finish(result, "mapped" if result else "no-boundaries",
+                  "exact-boundaries" if result else "no-safe-reading-boundary",
+                  consumed_characters=len(text), part_count=len(parts))
 
 
 def _line_boundaries(
     project: Project, line: Line, canonical: dict[str, Any],
-    recognized: list[dict[str, Any]],
+    recognized: list[dict[str, Any]], diagnostics: list[dict[str, Any]],
 ) -> list[_Boundary]:
     layers = project.lyric_layers
     assert layers is not None
@@ -149,7 +157,9 @@ def _line_boundaries(
             notes_by_mora[pos].append(nid)
         forbidden.update(range(min(positions) + 1, max(positions) + 1))
     candidates = []
-    for text_offset, mora in _surface_boundaries(canonical["text"], canonical["kana"]):
+    for text_offset, mora in _surface_boundaries(
+        canonical["text"], canonical["kana"], diagnostics=diagnostics,
+    ):
         if mora in forbidden or not notes_by_mora[mora - 1] or not notes_by_mora[mora]:
             continue
         # Distant notes can map back across a candidate boundary. Check the full
@@ -264,10 +274,17 @@ def prepare_lyric_phrases(
         raise ValueError("入力歌詞と変換行の対応が失われています")
     lines: list[Line] = []
     decisions = []
+    diagnostics: list[dict[str, Any]] = []
     for index, (line, canonical) in enumerate(zip(source_lines, layers["canonical"], strict=True)):
-        moras = split_fine_moras(canonical["kana"])
+        moras = list(validate_reading(canonical["kana"]).moras)
+        if len(moras) != len(canonical["mora_ids"]):
+            raise ValueError("入力歌詞の読みとモーラIDの対応が失われています")
         start, end = project.line_time_range(line)
-        candidates = _line_boundaries(project, line, canonical, overlay["recognized_lines"])
+        mapping: list[dict[str, Any]] = []
+        candidates = _line_boundaries(
+            project, line, canonical, overlay["recognized_lines"], mapping,
+        )
+        diagnostics.extend({"source_line_id": line.id, **item} for item in mapping)
         cuts = _choose_boundaries(candidates, start, end, len(moras), len(canonical["text"]),
                                   strategy)
         if not cuts:
@@ -292,6 +309,14 @@ def prepare_lyric_phrases(
                 canonical_line_index=index, canonical_mora_ids=list(ids),
             ))
         decisions.append({"source_line_id": line.id, "boundaries": [asdict(c) for c in cuts]})
+    for index, (source_line, canonical) in enumerate(
+        zip(source_lines, layers["canonical"], strict=True),
+    ):
+        phrases = [line for line in lines if line.canonical_line_index == index]
+        if ("".join(line.original_text or "" for line in phrases) != canonical["text"]
+                or "".join(line.canonical_kana or "" for line in phrases) != canonical["kana"]
+                or [nid for line in phrases for nid in line.note_ids] != source_line.note_ids):
+            raise ValueError("歌詞の自動分割で原文・読み・音符の対応が失われました")
     # Untouched lines also need distinct display IDs after earlier lines expanded.
     for line in lines:
         line.original_line_index = line.id
@@ -301,5 +326,5 @@ def prepare_lyric_phrases(
             project.notes[nid].line = line.id
     project.lyric_phrasing = {
         "strategy": strategy, "source_lines": [asdict(line) for line in source_lines],
-        "decisions": decisions,
+        "decisions": decisions, "diagnostics": diagnostics,
     }

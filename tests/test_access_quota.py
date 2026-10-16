@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from soramimic_video import access_identity
 from soramimic_video import api as api_mod
+from test_public_mode import wait_done
 
 FAKE_MIDI = b"MThd" + b"\0" * 16
 ACCESS_HEADERS = {"CF-Access-Jwt-Assertion": "header.payload.signature"}
@@ -327,6 +328,7 @@ def test_nonexempt_ip_quota_survives_cookie_change_and_restart(tmp_path, monkeyp
     result = _submit(first)
     assert result.status_code == 200
     job_id = result.json()["id"]
+    assert wait_done(first, job_id)["status"] == "done"
     saved = json.loads((jobs_dir / job_id / api_mod.STATUS_FILENAME).read_text())
     assert len(saved["client_hash"]) == 16
     assert "127.0.0.1" not in json.dumps(saved)
@@ -350,6 +352,7 @@ def test_persisted_owner_job_without_client_hash_counts_for_session_quota(
     )
     first = _submit(exempt)
     assert first.status_code == 200
+    assert wait_done(exempt, first.json()["id"])["status"] == "done"
     session = exempt.cookies[api_mod.SESSION_COOKIE]
     saved = json.loads(
         (jobs_dir / first.json()["id"] / api_mod.STATUS_FILENAME).read_text()

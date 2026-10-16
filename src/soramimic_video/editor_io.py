@@ -10,6 +10,7 @@ soramimic の編集ツールは `soramimic-editor/1` 形式のJSON
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -31,6 +32,31 @@ logger = logging.getLogger(__name__)
 RAW_FILENAME = "soramimic_raw.json"
 EDITOR_FILENAME = "editor.json"
 EXPORT_FORMAT = "soramimic-editor/1"
+
+MAX_EDITOR_BYTES = 4 * 1024 * 1024
+
+
+def validate_editor_upload(raw: bytes) -> dict[str, Any]:
+    """Validate the portable editor export before starting an expensive job."""
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("ソラミミックで書き出した歌詞JSONを選んでください") from exc
+    if not isinstance(data, dict):
+        raise ValueError("歌詞JSONはオブジェクトである必要があります")
+    results, units = data.get("results"), data.get("unitsList")
+    if (not isinstance(results, list) or not results or not isinstance(units, list)
+            or len(results) != len(units)
+            or not all(isinstance(line, list) for line in results + units)):
+        raise ValueError("変換済みの歌詞JSONを選んでください(results/unitsListが必要です)")
+    if not all(isinstance(word, dict) for line in results for word in line):
+        raise ValueError("歌詞JSONの単語データが不正です")
+    entry = data.get("wordlist")
+    if entry is not None and (not isinstance(entry, dict)
+            or not isinstance(entry.get("filepath", ""), str)):
+        raise ValueError("歌詞JSONの単語リストが不正です")
+    return data
+
 
 SETTING_JSON = REPO_ROOT / "external" / "soramimic" / "conf" / "setting.json"
 
@@ -346,6 +372,8 @@ def export_editor(
     weights_list: list[list[float]] | None = None,
     note_length_raw_list: list[list[float]] | None = None,
     note_length_alpha: float | None = None,
+    *,
+    filename: str = EDITOR_FILENAME,
 ) -> Path:
     """editorの「読み込み」で開けるJSONを書き出す。
 
@@ -399,7 +427,7 @@ def export_editor(
         payload["noteLengthAlpha"] = (
             0.25 if note_length_alpha is None else note_length_alpha
         )
-    path = project_dir / EDITOR_FILENAME
+    path = project_dir / filename
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return path
 
@@ -574,6 +602,7 @@ def import_editor(
     project_dir: Path,
     file: Path | None = None,
     sessions_dir: Path | None = None,
+    *, fill_missing: bool = False,
 ) -> None:
     """editorが書き出したJSONを取り込み、project.parodyを作り直す。
 
@@ -590,6 +619,7 @@ def import_editor(
 
     字幕の元歌詞がまだ無いプロジェクト(align_lines を通っていない)には、
     JSONの ``lyrics``(元歌詞の生テキスト)から対応づけて埋める。
+    fill_missing=True は既存の替え歌を保持し、未作成区間だけを生成する。
     """
     path = file or (project_dir / EDITOR_FILENAME)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -597,15 +627,6 @@ def import_editor(
     units_list = payload.get("unitsList")
     if not isinstance(results, list) or not isinstance(units_list, list):
         raise ValueError("editorの書き出しファイルではありません(results/unitsListが必要)")
-    if len(results) != len(project.lines):
-        raise ValueError(
-            f"行数が合いません: editor={len(results)}行, project={len(project.lines)}行"
-        )
-
-    lines = [
-        {"units": units, "words": words}
-        for units, words in zip(units_list, results, strict=True)
-    ]
     # 単語リストはJSON側の情報(filepath)が解決できるならそちらを優先し、
     # だめなら既存のparody(convert済みの場合)にフォールバックする
     wordlist = project.parody.wordlist if project.parody else None
@@ -663,27 +684,35 @@ def import_editor(
     # lyrics を持つときは、その生テキストで対応づけて埋める。「editor.json だけを
     # 持ち込んだ」ケースでも字幕が出る。ルビ記法は align_lines が解釈するので
     # 剥がさずそのまま渡す。
-    if all(line.original_text is None for line in project.lines):
+    aligned = copy.deepcopy(project)
+    if all(line.original_text is None for line in aligned.lines):
         lyrics = editor_lyrics(payload)
         if lyrics is not None:
             from .align import align_lines
 
-            align_lines(project, lyrics.splitlines())
+            align_lines(aligned, lyrics.splitlines())
 
+    from .editor_alignment import align_editor_lines
+
+    # Align original lyrics before projecting the edited words to singing slots.
+    # Commit the new grouping only after every word has been imported successfully.
+    raw = align_editor_lines(aligned, payload)
     default_params = project.parody.params if project.parody else {}
+    params = payload.get("param") or default_params
+    from .editor_wordlist import is_text_only
+
+    if fill_missing and not is_text_only(payload):
+        from .editor_completion import complete_editor_gaps
+
+        raw = complete_editor_gaps(aligned, raw, wordlist, where, params)
     apply_converted_lines(
-        project,
-        lines,
+        aligned,
+        raw["lines"],
         wordlist=wordlist,
         where=where,
-        params=payload.get("param") or default_params,
+        params=params,
     )
-    # 再書き出しできるよう生応答も更新する
-    save_raw(
-        {
-            "lines": lines,
-            "tokensList": payload.get("tokensList", []),
-            "phrases": payload.get("phrases", []),
-        },
-        project_dir,
-    )
+    project.lines, project.notes, project.parody = aligned.lines, aligned.notes, aligned.parody
+    project.lyric_phrasing = aligned.lyric_phrasing
+    # 再書き出しにも、現在の曲へ対応付けた単語範囲を使う。
+    save_raw(raw, project_dir)

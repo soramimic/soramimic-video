@@ -117,6 +117,24 @@ def test_unknown_word_uses_fallback(client, tmp_path):
     assert "death" not in unknown["data"]
 
 
+def test_image_cue_uses_canonical_asset_preview_route(client, tmp_path, monkeypatch):
+    from soramimic_video import convert
+
+    wordlists = tmp_path / "wordlists"
+    wordlists.mkdir()
+    (wordlists / "allowed.csv").write_text(
+        "id,original,surface,image\n"
+        "10,織田信長,信長,https://example.test/nobunaga.png\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(convert, "WORDLISTS_DIR", wordlists)
+    payload = _editor_payload(wordlists / "wordlists" / "allowed.csv")
+    layout_json = json.dumps({"elements": [{"type": "image", "box": [0, 0, 1, 1]}]})
+    body = _post(client, payload, cue="0", layout_json=layout_json).json()
+    assert body["image_url"].startswith("/api/asset-preview?")
+    assert "/api/wordlist-image?" not in body["image_url"]
+
+
 def test_lyrics_align_to_original_text(client, tmp_path):
     """元歌詞を渡すと、字幕の元歌詞がカナ(phrases)ではなく対応する元歌詞行になる。"""
     payload = _editor_payload(_wordlist(tmp_path))

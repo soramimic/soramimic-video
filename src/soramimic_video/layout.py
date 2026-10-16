@@ -117,7 +117,7 @@
     - page / pages: 後奏が複数枚に分かれたときのページ番号と総ページ数
     - original_song: 元曲名
     - original_display_credit: 既知プリセット用の簡潔な作者・アーティスト表記
-    - original_song_credit: 元曲名と指定クレジットを「 — 」でつないた簡潔な表示
+    - original_song_credit: 元曲名と簡潔な表記。最終ページでは表記を丸括弧で囲む
     - original_credit: 元曲の作詞・作曲・編曲等の著作者クレジット
     - credit_notice: 権利者やライセンスから指定された表記
     - midi_end_credit: MIDI制作者の表記。最終creditsページでのみ使う
@@ -161,7 +161,9 @@ NON_FRAME_LAYOUTS = frozenset({"thumbnail"})
 IDLE_SECTIONS = ("intro", "interlude", "outro", "credits")
 # 描画ロジックを変えたときに共有PNGキャッシュを確実に無効化する。
 # v2: 透明画像のアルファ合成(黒潰れの解消)と、画像なし語のfallback化
-FRAME_RENDER_CACHE_VERSION = 2
+# v3: カードの表示文から未対応の補助平面絵文字を除去
+# v4: 日本語フォントに無い小型大文字をASCII表示に変換
+FRAME_RENDER_CACHE_VERSION = 4
 # 区間ごとの既定の表示定義。レイアウトJSONに同名キーがあればそちらが優先される
 SECTION_DEFAULTS_PATH = Path(__file__).resolve().parent / "section_defaults.json"
 FONT_ENV = "SORAMIMIC_VIDEO_FONT"
@@ -187,7 +189,8 @@ _COLUMN_OVERFLOW_RATIO = 0.15
 _COLUMN_MIN_ROWS = 4
 
 # 動画本編に焼き込むアプリのクレジット(サムネの署名と同じ文言)。
-# 呼び出し側が元曲や権利者の表記を連結して data に入れる。
+# 歌声合成側のクレジット表記が要るときは呼び出し側が
+# 「lyrics & video by Soramimic / VOICEVOX:キャラ名」のように連結して data に入れる
 APP_CREDIT = "lyrics & video by Soramimic"
 # 自動追加するアプリクレジットの位置(フレーム左下)と見た目。
 # 画像クレジット(画像の右下)・既定字幕(下端0.945)と重ならない最下段に、
@@ -206,6 +209,8 @@ def app_credit_for_wordlist(wordlist: str = "") -> str:
 
 # 単語リストCSVで「値なし」を表す文字列(R由来のNA等)。値として描画せず空扱いにする。
 MISSING_VALUES = frozenset({"na", "n/a", "nan", "none", "null"})
+# Noto Sans CJKに無いが、チャンネル名の装飾に使われる小型大文字。
+DISPLAY_TRANSLITERATION = str.maketrans({"ʙ": "B", "ᴇ": "E", "ᴍ": "M", "ᴀ": "A"})
 
 
 def is_missing(value: object) -> bool:
@@ -247,6 +252,23 @@ def _display_value(column: str, value: object) -> object:
             result = f"{int(year)}年{int(month)}月"
             return f"{result}{int(day)}日" if day else result
     return value
+
+
+def _display_text(value: object) -> object:
+    """日本語カード用フォントで描けない文字を表示用に正規化する。
+
+    チャンネル名などの元データは保持したまま、Pillowで四角の代替グリフに
+    なる絵文字を落とし、装飾用小型大文字はASCIIへ変換する。
+    """
+    if not isinstance(value, str):
+        return value
+    value = value.translate(DISPLAY_TRANSLITERATION)
+    cleaned = "".join(
+        ch for ch in value
+        if not (0x1F000 <= ord(ch) <= 0x1FAFF)
+        and ord(ch) not in {0x200D, 0x20E3, 0xFE0F}
+    )
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
 @dataclass
@@ -351,7 +373,7 @@ def _element_texts(elements: list[ImageElement | TextElement], data: dict) -> li
     values = _SafeDict(
         # NA等の欠損マーカーは「NA年生まれ」と描画されてしまうので空文字に潰す
         {
-            k: ("" if is_missing(v) else _display_value(k, v))
+            k: ("" if is_missing(v) else _display_text(_display_value(k, v)))
             for k, v in data.items()
             if v is not None
         }
@@ -658,8 +680,8 @@ def _auto_app_credit_element(
 def resolve_app_credit(data: dict) -> str:
     """{app_credit} に入れる文言。dataに指定があればそれ、無ければ既定の署名。
 
-    video.py が元曲や権利者の表記を連結して data に入れてくる。
-    歌声合成の表記は最後のクレジットページに渡す。
+    歌声合成のクレジット表記が要るジョブでは video.py が
+    「lyrics & video by Soramimic / VOICEVOX:キャラ名」を data に入れてくる。
     """
     text = str(data.get("app_credit") or "").strip()
     return text or APP_CREDIT

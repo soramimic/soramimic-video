@@ -1,8 +1,9 @@
 """KanaWhisper evidence for conservative pronunciation selection.
 
-The model never replaces lyric text.  It only helps choose among bounded readings
-derived from the already selected surface text.  ReazonSpeech CTC remains the
-source of mora timing.
+The model never directly replaces lyric text. It normally chooses among bounded
+readings derived from the selected surface. A separate narrow recovery path may
+use its repetition count while rebuilding text from a Whisper-derived mora period.
+ReazonSpeech CTC remains the source of mora timing.
 """
 
 from __future__ import annotations
@@ -151,7 +152,9 @@ def _dictionary_token_variants(
         ]
         if len(left) + len(right) < _LOCAL_DICTIONARY_CONTEXT_MORAS:
             continue
-        for alternative in reading_candidates(surface):
+        for alternative in reading_candidates(
+            surface, include_alternate_splits=True,
+        ):
             alternative = normalize_audio_reading(alternative)
             if (
                 not alternative
@@ -208,9 +211,10 @@ def propose_dictionary_readings(
     for reading, surface, default, alternative, local in _dictionary_token_variants(
         surface_text, default_reading
     ):
+        full_key = "".join(_kanasim_moras(_candidate_key(reading)))
         views = tuple(
             index for index, transcript in enumerate(evidence_keys)
-            if local in transcript
+            if local in transcript or full_key in transcript
         )
         if views:
             proposals.append(
