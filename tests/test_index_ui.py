@@ -728,6 +728,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
           return elements.get(id);
         };
         const $ = element;
+        const fitSongCreditPreview = () => {};
         const ownSongFile = () => ({ name: "upload.mid" });
         let midiSampleId = "";
         const sampleTitleOf = () => "サンプル曲";
@@ -756,7 +757,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-footer").textContent,
           "lyrics & video by Soramimic / Original: オトノケ - Creepy Nuts");
         assert.equal($("song-preview-credits-original").textContent,
-          "Original Song　オトノケ - Creepy Nuts");
+          "Original　オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
 
@@ -792,17 +793,17 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         $("song-credit").value = "";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
-          "Original Song　夜に駆ける");
+          "Original　夜に駆ける");
         assert.equal($("song-preview-footer").textContent, "lyrics & video by Soramimic");
         $("song-credit").value = " \\t\\n　";
         $("song-title").value = "三原色";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
-          "Original Song　三原色");
+          "Original　三原色");
         $("song-title").value = "";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
-          "Original Song　upload");
+          "Original　upload");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
