@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 MAX_WORDS = 4
@@ -137,8 +138,9 @@ def find_title_choices(
     from .custom_thumbnail_preview import WORKER_TIMEOUT_SECONDS
     from .thumbnail_preview import render_slot
 
+    deadline = monotonic() + WORKER_TIMEOUT_SECONDS
     with (
-        render_slot(timeout=2),
+        render_slot(timeout=WORKER_TIMEOUT_SECONDS),
         tempfile.TemporaryDirectory(prefix="soramimic-title-") as temporary,
     ):
         directory = Path(temporary)
@@ -148,10 +150,15 @@ def find_title_choices(
         (directory / "request.json").write_text(json.dumps({
             "title": title, "csv_path": str(csv_path.resolve()), "where": where,
         }, ensure_ascii=False), encoding="utf-8")
+        # Queueing and conversion share one deadline, including when thumbnails
+        # are still rendering after the user changes the song or word list.
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Title search exceeded its time limit")
         try:
             subprocess.run(
                 [sys.executable, "-m", "soramimic_video.title_choices", temporary],
-                check=True, timeout=WORKER_TIMEOUT_SECONDS,
+                check=True, timeout=remaining,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 env={**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
             )

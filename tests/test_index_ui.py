@@ -1578,14 +1578,53 @@ def test_sample_body_finishing_after_source_switch_cannot_replace_current_song()
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_legacy_saved_sample_midi_is_migrated_to_id_only():
-    """旧版が保存したサンプルMIDIは、バイナリを復元せずIDだけに移行する。"""
-    restored = _function_body(_script(), "async function doRestoreForm()")
-    assert "await samplesReady;" in restored
-    assert "if (!restoredSampleId) restoredSampleId = restoredId;" in restored
-    assert "localStorage.removeItem(MIDI_KEY);" in restored
-    initialized = _function_body(_script(), "async function initBuilder()")
-    assert "trackSample(applySample({ keepLyrics: editedLyrics }))" in initialized
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+@pytest.mark.parametrize("filename,sample_id,migrated", [
+    ("katatsumuri.mid", "", False),
+    ("katatsumuri.mid", "furusato", False),
+    ("katatsumuri.mid", "katatsumuri", True),
+    ("my-song.mid", "", False),
+    ("removed.mid", "removed", False),
+    (".mid", "", False),
+])
+def test_saved_midi_restoration_requires_an_explicit_matching_sample(filename, sample_id, migrated):
+    restore = _function_body(_script(), "async function doRestoreForm()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const FORM_KEY="form", MIDI_KEY="midi", EDITOR_FILE_KEY="editor";
+        const saved = {{name: {filename!r}, dataUrl: "data:audio/midi;base64,dXBsb2Fk"}};
+        const values = new Map([[MIDI_KEY, JSON.stringify(saved)]]);
+        const localStorage = {{getItem: key => values.get(key) ?? null,
+          removeItem: key => values.delete(key)}};
+        let restoredSampleId = {sample_id!r}, parodyRestored = false;
+        const samplesReady = Promise.resolve();
+        const elements = {{"sample-select": {{options: [
+          {{value:""}}, {{value:"katatsumuri"}}, {{value:"furusato"}}]}},
+          midi: {{files: []}}, "midi-restore-hint": {{hidden: true}}}};
+        const $ = id => elements[id];
+        const injectFile = (input, file, dispatch) => {{
+          assert.equal(dispatch, true); input.files = [file];
+        }};
+        const syncLyricsInput = () => {{}}, syncLyricsRecognition = () => {{}};
+        {restore}
+        (async () => {{
+          await doRestoreForm();
+          assert.equal(values.has(MIDI_KEY), {str(not migrated).lower()});
+          if ({str(migrated).lower()}) {{
+            assert.equal($("midi").files.length, 0);
+            assert.equal(restoredSampleId, "katatsumuri");
+          }} else {{
+            assert.equal($("midi").files[0].name, saved.name);
+            assert.equal(await $("midi").files[0].text(), "upload",
+              "the saved upload must not be replaced by the bundled sample");
+            assert.equal(restoredSampleId, {sample_id!r});
+            assert.equal($("midi-restore-hint").hidden, false);
+          }}
+        }})().catch(error => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 def test_completed_video_requests_no_preload_hint():

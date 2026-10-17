@@ -8960,17 +8960,16 @@ async function doRestoreForm() {
     }
   }
 
-  // 6. 持ち込みMIDIだけをdataURLから復元する。旧版が保存した
-  // サンプルMIDIはIDだけ移行し、バイナリをブラウザに残さない。
+  // 6. 持ち込みMIDIをdataURLから復元する。旧版のサンプルMIDIは
+  // 保存済みの選択IDも一致するときだけ移行する。同名の持ち込み曲は置き換えない。
   try {
     const m = JSON.parse(localStorage.getItem(MIDI_KEY) || "null");
     if (m && m.dataUrl) {
       await samplesReady;
       const restoredId = m.name.replace(/\.[^.]+$/, "");
-      const restoredSample = [...$("sample-select").options]
-        .some((option) => option.value === restoredId);
+      const restoredSample = restoredSampleId && restoredSampleId === restoredId
+        && [...$("sample-select").options].some((option) => option.value === restoredId);
       if (restoredSample) {
-        if (!restoredSampleId) restoredSampleId = restoredId;
         localStorage.removeItem(MIDI_KEY);
       } else {
         const blob = await (await fetch(m.dataUrl)).blob();

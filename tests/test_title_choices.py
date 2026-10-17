@@ -3,13 +3,16 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from soramimic_video import api, thumbnail, title_choices
+from soramimic_video import api, thumbnail, thumbnail_preview, title_choices
 from soramimic_video.thumbnail_preview import PreviewSpec
 
 WORDS = [{"id": "1", "surface": "ハンゼン"}, {"id": "2", "surface": "ホフ"}]
@@ -230,3 +233,64 @@ def test_failed_candidate_worker_cleans_private_inputs(monkeypatch, timeout):
     with pytest.raises(TimeoutError if timeout else ValueError):
         title_choices.find_title_choices("private title", None, csv_text=CSV)
     assert directories and not directories[0].exists()
+
+
+def test_candidates_wait_for_an_active_thumbnail_without_adding_a_worker(monkeypatch):
+    started = threading.Event()
+    waiting = threading.Event()
+    render_slot = thumbnail_preview.render_slot
+
+    @contextmanager
+    def slot(timeout):
+        waiting.set()
+        with render_slot(timeout=timeout):
+            yield
+
+    def worker(cmd, **kwargs):
+        started.set()
+        assert 0 < kwargs["timeout"] < 18
+        (Path(cmd[-1]) / "choices.json").write_text(json.dumps([{"words": WORDS}]))
+
+    monkeypatch.setattr(title_choices.subprocess, "run", worker)
+    monkeypatch.setattr(thumbnail_preview, "render_slot", slot)
+    # A title request must share the existing render slot, including when its
+    # current thumbnail takes longer than the old two-second queue limit.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        thumbnail_preview._render_lock.acquire()
+        try:
+            result = executor.submit(title_choices.find_title_choices, "サンゲンショク", None,
+                                     csv_text=CSV)
+            assert waiting.wait(timeout=5)
+            assert not started.wait(timeout=2.2)
+        finally:
+            thumbnail_preview._render_lock.release()
+        assert result.result(timeout=5) == [{"words": WORDS}]
+
+
+@pytest.mark.parametrize("elapsed", [7, 21])
+def test_candidate_queue_time_counts_toward_the_worker_deadline(monkeypatch, elapsed):
+    from soramimic_video.custom_thumbnail_preview import WORKER_TIMEOUT_SECONDS
+
+    clock = iter([100., 100. + elapsed])
+    monkeypatch.setattr(title_choices, "monotonic", lambda: next(clock))
+
+    @contextmanager
+    def slot(timeout):
+        assert timeout == WORKER_TIMEOUT_SECONDS
+        yield
+
+    monkeypatch.setattr(thumbnail_preview, "render_slot", slot)
+    calls = []
+
+    def worker(cmd, **kwargs):
+        calls.append(kwargs["timeout"])
+        (Path(cmd[-1]) / "choices.json").write_text("[]")
+
+    monkeypatch.setattr(title_choices.subprocess, "run", worker)
+    if elapsed >= WORKER_TIMEOUT_SECONDS:
+        with pytest.raises(TimeoutError):
+            title_choices.find_title_choices("曲名", None, csv_text=CSV)
+        assert calls == []
+    else:
+        assert title_choices.find_title_choices("曲名", None, csv_text=CSV) == []
+        assert calls == [WORKER_TIMEOUT_SECONDS - elapsed]
