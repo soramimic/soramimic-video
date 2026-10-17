@@ -3533,6 +3533,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         _function_body(script, head) + "\n}"
         for head in (
             "async function updateWordlistUsageNotice()",
+            "function editorUsesTextOnly(",
             "function wordlistWhereContains(where, frag)",
             "function loadWordlistImage(name, seq)",
             "function automaticLyricsEnabled()", "function activeLyricsJson()",
@@ -3642,6 +3643,99 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
           }
 
         })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_text_only_lyrics_skip_usage_lookup_and_discard_pending_notices():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function updateWordlistUsageNotice()", "function editorUsesTextOnly(",
+            "function currentPreviewCustomList()", "function editorTextPreviewList(",
+            "function currentWordlistName()",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        let data = null, simpleMode = false;
+        let completed = false;
+        process.on("beforeExit", () => assert.equal(completed, true, "finish async checks"));
+        let wordlistUsageRequest = null, wordlistUsageAbort = null;
+        const editorWordlists = new Set(["vtuber"]);
+        const activeLyricsJson = () => data, editorWhereOf = () => "";
+        const activeCustomList = () => null, showsEditorWordlist = () => false;
+        const apiKey = () => "", headers = () => ({});
+        const setCustomWordlistText = (form, text) => form.set("wordlist_text", text);
+        const elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {
+            value: id === "wordlist" ? "vtuber" : "", hidden: true, children: [],
+            replaceChildren(...children) { this.children = children; },
+            appendChild(child) { this.children.push(child); },
+          });
+          return elements.get(id);
+        };
+        const document = {createElement: () => ({appendChild() {}})};
+        const pending = [];
+        const fetch = (url, options) => new Promise((resolve, reject) => {
+          pending.push({options, resolve, reject});
+        });
+        const response = () => ({ok: true, json: async () => ({required: true,
+          terms: [{url: "https://example.com/terms", label: "Guidelines"}],
+        })});
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          for (const simple of [false, true]) {
+            simpleMode = simple;
+            for (const wordlist of [
+              {filepath: "school.csv", text: "学校名"},
+              {filepath: "vtuber.csv", textOnly: true},
+            ]) {
+              data = null;
+              const normal = updateWordlistUsageNotice();
+              pending.at(-1).resolve(response());
+              await normal;
+              assert.equal($("builder-fanwork-notice").hidden, false);
+              assert.equal($("builder-usage-links").hidden, false);
+              data = {wordlist, results: [[{surface: "学校", kana: "ガッコウ"}]]};
+              const count = pending.length;
+              const textOnly = updateWordlistUsageNotice();
+              assert.equal(pending.length, count, "text-only JSON needs no usage request");
+              await textOnly;
+              assert.equal($("builder-fanwork-notice").hidden, true);
+              assert.equal($("builder-usage-status").hidden, true);
+              assert.equal($("builder-usage-links").hidden, true);
+              assert.equal($("builder-usage-terms").children.length, 0);
+            }
+          }
+          for (const failure of [false, true]) {
+            data = null;
+            const old = updateWordlistUsageNotice(), request = pending.at(-1);
+            data = {wordlist: {filepath: "school.csv"}, results: []};
+            await updateWordlistUsageNotice();
+            assert.equal(request.options.signal.aborted, true);
+            if (failure) request.reject(new Error("network failure"));
+            else request.resolve(response());
+            await old;
+            assert.equal($("builder-fanwork-notice").hidden, true,
+              "a stale response must not restore a notice");
+          }
+          data = {wordlist: {filepath: "vtuber.csv"}};
+          const supported = updateWordlistUsageNotice();
+          pending.at(-1).reject(new Error("network failure"));
+          await supported;
+          assert.equal($("builder-fanwork-notice").hidden, false);
+          assert.equal($("builder-usage-status").hidden, false,
+            "supported image lists must retain lookup failure warnings");
+          completed = true;
+        })().catch(error => { console.error(error); process.exitCode = 1; });
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

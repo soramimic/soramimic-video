@@ -5166,9 +5166,10 @@ function syncBuilderValues() {
 let wordlistUsageRequest = null;
 let wordlistUsageAbort = null;
 async function updateWordlistUsageNotice() {
-  const custom = currentPreviewCustomList();
+  const textOnly = editorUsesTextOnly(activeLyricsJson());
+  const custom = textOnly ? null : currentPreviewCustomList();
   const request = {
-    name: custom ? "" : currentWordlistName(),
+    name: textOnly || custom ? "" : currentWordlistName(),
     text: custom?.text || "",
     where: activeLyricsJson() ? editorWhereOf(activeLyricsJson())
       : activeCustomList() ? "" : $("where").value,
