@@ -381,3 +381,68 @@ def test_real_score_supplied_lyrics_import_supports_conversion_slices(monkeypatc
     assert project.lyric_layers == layers
     for line, units in zip(project.lines, run_tokenize(engine_phrases(project)), strict=True):
         assert _layer_unit_note_indices(project, line, units)
+
+
+@pytest.mark.parametrize("auto_phrase", [False, True])
+@pytest.mark.parametrize("adjust_lyrics", [False, True])
+def test_coarse_audio_recognition_preserves_input_lines_through_conversion_and_subtitles(
+    monkeypatch, tmp_path, auto_phrase, adjust_lyrics,
+):
+    import soramimic_score
+    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote, ReadingSelection
+
+    from soramimic_video import score_audio
+
+    texts = ["朝の声", "Hello moon", "朝の声", TEXT]
+    readings = ["アサノコエ", "ハロームーン", "アサノコエ", KANA]
+    by_text = dict(zip(texts, readings, strict=True))
+    moras = split_fine_moras("".join(readings))
+    duration = len(moras) * .25
+
+    def align(_path, lines, selected):
+        assert [line.text for line in lines] == ["\n".join(texts)]
+        assert [reading.kana for reading in selected] == ["".join(readings)]
+        return tuple(AlignedMora(0, i, mora, i * .25, (i + 1) * .25, 1.)
+                     for i, mora in enumerate(moras))
+
+    adapters = AudioAdapters(
+        reading_selector=lambda _path, lines: tuple(
+            ReadingSelection(by_text.get(line.text, "".join(readings)), "fixture", 1.)
+            for line in lines),
+        lyric_reading=lambda text: by_text.get(text, "".join(readings)),
+        mora_aligner=align,
+        melody_transcriber=lambda _: tuple(
+            MelodyNote(i * .25, (i + 1) * .25, 60 + i % 5) for i in range(len(moras))),
+        lyric_recognizer=lambda _: (LyricLine("".join(texts), 0., duration),),
+    )
+    real_analyze = soramimic_score.analyze_audio
+    monkeypatch.setattr(soramimic_score, "analyze_audio", lambda path, **kw:
+                        real_analyze(path, adapters, lyrics=kw["lyrics"],
+                                     adjust_lyrics=kw["adjust_lyrics"]))
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/sheetsage")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/mert")
+    audio, lyrics = tmp_path / "input.wav", tmp_path / "lyrics.txt"
+    audio.write_bytes(b"deterministic model adapter boundary")
+    lyrics.write_text("\n".join(texts), encoding="utf-8")
+    project_dir = tmp_path / "project"
+    project = score_audio.analyze_audio(audio, project_dir, lyrics_path=lyrics,
+                                        adjust_lyrics=adjust_lyrics)
+    assert [line.original_text for line in project.lines] == texts
+    project.save(project_dir)
+    project = Project.load(project_dir)
+    layers = copy.deepcopy(project.lyric_layers)
+    original_notes = [(n.kana, n.midi_note, n.start_sec, n.end_sec) for n in project.notes]
+    wordlist = tmp_path / "words.csv"
+    wordlist.write_text("id,original,surface,pronunciation\n0,青空,青空,アオゾラ", encoding="utf-8")
+    convert_project(project, str(wordlist), auto_phrase_lyrics=auto_phrase)
+    assert [line.original_text for line in project.lines[:3]] == texts[:3]
+    assert engine_phrases(project)[:3] == readings[:3]
+    assert "".join(line.original_text for line in project.lines[3:]) == TEXT
+    assert (len(project.lines) > 4) == auto_phrase
+    assert project.lyric_layers == layers
+    assert [(n.kana, n.midi_note, n.start_sec, n.end_sec) for n in project.notes] == original_notes
+    ass = build_ass(project, 1280, 720, "Font")
+    captions = [line.split(",,")[-1].split("}")[-1] for line in ass.splitlines()
+                if line.startswith("Dialogue:") and ",Original," in line]
+    assert captions[:3] == texts[:3]
+    assert "".join(captions[3:]) == TEXT
