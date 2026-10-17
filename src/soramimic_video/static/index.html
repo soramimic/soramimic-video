@@ -2968,7 +2968,7 @@ function shareHint(shareable) {
   }
   if (!shareable) return "ボタンを押すと、動画ファイルをダウンロードします。";
   if (mobilePlatform() === "ios") {
-    return "iPhone・iPadの共有メニューから「ビデオを保存」「ファイルに保存」、または共有先を選べます。";
+    return "";
   }
   if (mobilePlatform() === "android") {
     return "Androidの共有メニューから保存先または共有先を選べます。";
@@ -8543,7 +8543,7 @@ function renderParodyStatus() {
   if (activeLyricsJson()) {
     s.textContent = editorUsesTextOnly(activeLyricsJson())
       ? "受け取った空耳歌詞と読みをそのまま使い、画像なしで動画にします。"
-      : "歌詞JSONの単語・歌詞・読みを使用し、替え歌がない部分だけ生成します。";
+      : "";
     return;
   }
   if (parodyMismatch()) {
