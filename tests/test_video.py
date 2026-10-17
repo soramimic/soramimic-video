@@ -2212,7 +2212,7 @@ def test_default_credits_show_compact_original_song_credit(tmp_path: Path):
         midi_end_credit="MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）",
     )
     texts = _element_texts(elements, data)
-    assert "Original Song　シャイニングスター（音楽：魔王魂）" in texts
+    assert "Original　シャイニングスター（音楽：魔王魂）" in texts
     assert not any("森田交一" in text for text in texts)
     assert "MIDI：鶴［Aqours箱推し］（ニコニ・コモンズ nc306424）" in texts
     compact = section_frame_data(
@@ -2574,7 +2574,7 @@ def test_custom_song_credit_keeps_original_label_and_verbatim_text(tmp_path, cre
     assert data["original_song_credit"] == credit
     elements, _, _ = load_layout("default").section_elements("credits")
     texts = _element_texts(elements, data)
-    assert f"Original Song　{credit}" in texts
+    assert f"Original　{credit}" in texts
     assert all("別の曲名" not in text and "旧著作者" not in text for text in texts)
 
 
@@ -2592,9 +2592,9 @@ def test_blank_song_credit_uses_title_on_final_page(tmp_path, credit, title):
     elements, _, _ = load_layout("default").section_elements("credits")
     texts = _element_texts(elements, data)
     if title:
-        assert f"Original Song　{title}" in texts
+        assert f"Original　{title}" in texts
     else:
-        assert not any("Original Song" in text for text in texts)
+        assert not any("Original" in text for text in texts)
     assert all("旧著作者" not in text and "旧指定表記" not in text for text in texts)
 
 

@@ -275,7 +275,8 @@
     line-height: 1.2;
   }
   .song-text-credits-heading { top: 8%; height: 7%; color: #a8a8a8; font-size: clamp(.55rem, 1.8vw, .9rem); }
-  .song-text-credits-original { white-space: pre-wrap; top: 23%; height: 10%; font-size: clamp(.68rem, 2.25vw, 1.15rem); font-weight: 600; }
+  .song-text-credits-original { white-space: pre-wrap; top: 23%; height: 10%; font-size: min(1.15rem, 2.925cqw); font-weight: 600; }
+  .song-text-credits-original > span { width: 100%; overflow-wrap: anywhere; }
   .song-text-credits-app { top: 56%; height: 8%; font-size: clamp(.62rem, 2.15vw, 1.05rem); }
   .song-text-credits-synth { top: 65%; height: 7%; font-size: min(.9rem, 2.2cqw); }
   .song-text-credits-sites { top: 78%; height: 5%; color: #a8a8a8; font-size: clamp(.46rem, 1.5vw, .75rem); }
@@ -1284,7 +1285,7 @@
         <figcaption>最後のクレジット</figcaption>
         <div class="song-text-stage song-text-credits-stage" aria-labelledby="song-preview-credits-original">
           <p class="song-text-credits-heading">Credits</p>
-          <p class="song-text-credits-original" id="song-preview-credits-original"></p>
+          <p class="song-text-credits-original"><span id="song-preview-credits-original"></span></p>
           <p class="song-text-credits-app">Parody Lyrics &amp; Video　Soramimic</p>
           <p class="song-text-credits-synth" id="song-preview-credits-synth" hidden></p>
           <p class="song-text-credits-sites">soramimic.com / video.soramimic.com</p>
@@ -3525,6 +3526,20 @@ function legacySongCredit(state) {
   return [state.songTitle, ...details].filter(Boolean).join("\n");
 }
 
+// 原曲の長い表記や改行も、動画の描画と同じく文字を縮めて枠内へ収める。
+function fitSongCreditPreview() {
+  const text = $("song-preview-credits-original");
+  const box = text.parentElement;
+  box.style.fontSize = "";
+  if (!box.clientWidth || !box.clientHeight) return;
+  let px = parseFloat(getComputedStyle(box).fontSize);
+  while (px > 1 && (text.getBoundingClientRect().height > box.clientHeight
+      || text.scrollWidth > box.clientWidth)) {
+    px = Math.max(1, px - 0.5);
+    box.style.fontSize = `${px}px`;
+  }
+}
+
 // 曲情報の文字が入る3か所を、実際と同じ16:9・固定位置で即時確認する。
 // 背景には現在のビルダー画像を借りるが、文字は入力値から組み直すため、
 // 持ち込み曲の曲名を変えたときもジョブ生成を待たずに反映される。
@@ -3553,7 +3568,8 @@ function updateSongTextPreviews() {
   $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
   $("song-preview-thumb-credit").textContent = footer;
   $("song-preview-footer").textContent = footer;
-  $("song-preview-credits-original").textContent = finalCredit ? `Original Song　${finalCredit}` : "";
+  $("song-preview-credits-original").textContent = finalCredit ? `Original　${finalCredit}` : "";
+  fitSongCreditPreview();
   let synthCredit = "";
   if (fixedSynthesizer === "hybrid") {
     synthCredit = "VOICEVOX・PrettyPitch：波音リツ（カノン）";
@@ -3584,6 +3600,8 @@ $("wordlist").addEventListener("change", updateSongTextPreviews);
 new MutationObserver(updateSongTextPreviews).observe($("builder-image"), {
   attributes: true, attributeFilter: ["src"],
 });
+new ResizeObserver(fitSongCreditPreview).observe($("song-preview-credits-original").parentElement);
+document.fonts.ready.then(fitSongCreditPreview);
 
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
 let sampleDescriptions = {};
