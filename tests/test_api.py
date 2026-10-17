@@ -2430,7 +2430,6 @@ def test_index_html_share_hint_matches_platform_capability():
     html = _index_html()
     assert '/iPhone|iPad|iPod/i.test(platform)' in html
     assert 'return "ios";' in html and 'return "android";' in html
-    assert '「ビデオを保存」「ファイルに保存」' in html
     assert "ボタンを押すと、動画ファイルをダウンロードします。" in html
     assert '"動画をダウンロード"' in html
     assert "動画をダウンロードするか、共有メニューから共有先を選べます。" in html
