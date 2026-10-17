@@ -18,6 +18,7 @@ app(同梱辞書データ + fugashi/ipadic MeCab トークナイザ)の構築は
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import os
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 # (トークナイズをやり直さずに済む)。None を返せば重み無し(従来動作)。
 UnitWeightsFunc = Callable[[list[list[dict[str, Any]]]], "list[list[float]] | None"]
 WordBoundariesFunc = Callable[[list[list[dict[str, Any]]]], "list[list[int]] | None"]
+WordLocksFunc = Callable[[list[list[dict[str, Any]]]], list[list[dict[str, Any]]]]
 
 _base: dict[str, Any] | None = None  # 辞書データ(monotie行列)+ トークナイザ
 _apps: dict[str, Any] = {}  # r(小数2桁キー) → Soramimic インスタンス
@@ -351,8 +353,32 @@ def _json_safe(word: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def conversion_tokens(
+    phrases: list[str], source_texts: list[str], params: dict[str, Any] | None = None,
+) -> list[list[dict[str, Any]]]:
+    """Tokenize the lyric surface, keeping the supplied reading unchanged."""
+    from .conversion_tokens import project_reading
+
+    app = _get_app((params or {}).get("VOWEL_RATIO"))
+    analyzer = app.text_analyzer
+    result = []
+    for index, (kana, source) in enumerate(zip(phrases, source_texts, strict=True)):
+        tokens = analyzer.tokenize_together([normalize_parenthetical_ruby(source or kana)])[0]
+        projected = project_reading(tokens, kana)
+        if projected is not None:
+            units = analyzer.get_yomi_and_phrase_break(copy.deepcopy(projected))
+            if "".join(unit["pronunciation"] for unit in units) == kana:
+                result.append(projected)
+                continue
+        if source and source != kana:
+            logger.warning("行%d: 元歌詞の単語境界を確定済みの読みに対応付けられません", index)
+        result.append(analyzer.tokenize_together([kana])[0])
+    return result
+
+
 def run_tokenize(
-    phrases: list[str], params: dict[str, Any] | None = None
+    phrases: list[str], params: dict[str, Any] | None = None,
+    *, tokens_list: list[list[dict[str, Any]]] | None = None,
 ) -> list[list[dict[str, Any]]]:
     """行ごとの音節ユニット列だけを作る(単語DB不要・変換なし)。
 
@@ -366,9 +392,10 @@ def run_tokenize(
     :func:`convert.project_note_length_weights` にそのまま渡せる。
     """
     app = _get_app((params or {}).get("VOWEL_RATIO"))
-    tokens_list = app.text_analyzer.tokenize_together(
-        [normalize_parenthetical_ruby(phrase) for phrase in phrases]
-    )
+    tokens_list = (copy.deepcopy(tokens_list) if tokens_list is not None
+                   else app.text_analyzer.tokenize_together(
+                       [normalize_parenthetical_ruby(phrase) for phrase in phrases]
+                   ))
     return [
         [
             {
@@ -390,6 +417,8 @@ def run_convert(
     weights_per_line: list[list[float]] | UnitWeightsFunc | None = None,
     cache_db: bool = True,
     word_boundaries_per_line: list[list[int]] | WordBoundariesFunc | None = None,
+    *, tokens_list: list[list[dict[str, Any]]] | None = None,
+    locks_per_line: WordLocksFunc | None = None,
 ) -> dict:
     """bridge/convert.mjs と同じ入出力の変換。
 
@@ -416,20 +445,25 @@ def run_convert(
 
     cache_db=False にすると単語DBの共有キャッシュを使わない(使い回しの効かない
     アップロード済み自作リスト用)。出力は変わらない。
+
+    locks_per_line は生成時のユニット列へ対応付けた既存単語を返す。
+    既存単語の間だけを生成し、重複なしでは全行の既存IDを候補から除く。
     """
     params = params or {}
     app_key = _app_key(params.get("VOWEL_RATIO"))
     app = _get_app(params.get("VOWEL_RATIO"))
 
     # 生成画面(app.js)と同じ経路: トークナイズ → 生成
-    tokens_list = app.text_analyzer.tokenize_together(
-        [normalize_parenthetical_ruby(phrase) for phrase in phrases]
-    )
+    tokens_list = (copy.deepcopy(tokens_list) if tokens_list is not None
+                   else app.text_analyzer.tokenize_together(
+                       [normalize_parenthetical_ruby(phrase) for phrase in phrases]
+                   ))
 
     # エンジンが内部で作るのと同じユニット列(get_yomi_and_phrase_break の結果)。
     # 単語DBの上限(max_units)と、callable な重み計算の両方で使う。
     # tokenize_together(MeCab)は上の1回きりで、ここでは走らない。
     units_per_line = [app.text_analyzer.get_yomi_and_phrase_break(t) for t in tokens_list]
+    locks = locks_per_line(units_per_line) if locks_per_line is not None else None
     boundaries = (
         word_boundaries_per_line(units_per_line)
         if callable(word_boundaries_per_line)
@@ -445,6 +479,11 @@ def run_convert(
         _max_variation_units(units_per_line),
         cache=cache_db,
     )
+    if locks and not params.get("DUPLICATE", True):
+        # Reserve edits on later lines too, without mutating the shared DB.
+        reserved = {str(word["id"]) for row in locks for word in row if "id" in word}
+        db = {size: [word for word in row if str(word["id"]) not in reserved]
+              for size, row in db.items()}
 
     weights: list[list[float]] | None
     if callable(weights_per_line):
@@ -468,7 +507,14 @@ def run_convert(
     results = app.soramimi_maker.generate_from_tokens(
         tokens_list, db, params, update_func, weights_per_line=weights,
         word_boundaries_per_line=boundaries,
+        **({"locks_per_line": copy.deepcopy(locks)} if locks is not None else {}),
     )
+    if locks is not None:
+        # Engine annotation must not change saved spelling, readings or locks.
+        for words, saved in zip(results, locks, strict=True):
+            by_period = {tuple(word["period"]): word for word in saved}
+            words[:] = [copy.deepcopy(by_period.get(tuple(word["period"]), word))
+                        for word in words]
 
     lines = [
         {"units": units_list[i], "words": [_json_safe(w) for w in words]}

@@ -140,3 +140,24 @@ def test_load_wordlist_phrases_uses_only_nonempty_strings(tmp_path):
         encoding="utf-8",
     )
     assert load_wordlist_phrases(path) == {"stations": "駅名"}
+
+
+def test_cc_image_word_guidelines_are_listed_without_image_restrictions(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"people": {
+        "image_policy": {"usage": "noncommercial_fanwork"}
+    }}))
+    (tmp_path / "people.csv").write_text(
+        "original,org,image_usage,image_terms_page,usage_notice,usage_terms_page\n"
+        "キズナアイ,NA,,,guidelines,https://kizunaai.com/guideline/\n"
+        "キズナアイ,NA,noncommercial_fanwork,https://kizunaai.com/guideline/,"
+        "guidelines,https://kizunaai.com/guideline/\n"
+        "Other,NA,,,other,https://ignored.example/\n"
+        "Bad,NA,,,guidelines,javascript:alert(1)\n"
+    )
+    policy = load_wordlist_image_policies(tmp_path, catalog)["people"]
+    assert policy["terms_pages"] == [{
+        "url": "https://kizunaai.com/guideline/",
+        "label": "キズナアイ 利用ガイドライン",
+        "people": ["キズナアイ"],
+    }]

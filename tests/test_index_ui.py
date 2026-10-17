@@ -132,6 +132,445 @@ def test_builder_omits_editor_entry_button():
         assert btn in ids
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function poll(", "async function openLyricReview(",
+            "function restoreJobProgress(",
+            "async function confirmLyricReview(", "function closeEditor()",
+            "function lyricReviewCoverage(",
+            "async function saveLyricReview(",
+            "async function syncEditorSessionOnce()",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        const $ = (id) => {
+          if (!elements.has(id)) elements.set(id, {hidden: true, textContent: "", focus() {}});
+          return elements.get(id);
+        };
+        const stored = new Map();
+        const sessionStorage = {
+          getItem: (key) => stored.get(key) || null,
+          setItem: (key, value) => stored.set(key, value),
+          removeItem: (key) => stored.delete(key),
+        };
+        const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "review", EDITOR_SEED_KEY = "seed";
+        let currentJob = "job1", reviewJobId = null, reviewOpenedJob = null;
+        let reviewOpening = false, reviewSubmitting = false, pollSeq = 1, pollLastAt = 0;
+        let resumed = false;
+        let reviewSavedRaw = "", reviewSavePending = null;
+        let pollFailures = 0, cancelPendingJob = null, openCount = 0, requests = [];
+        const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], POLL_INTERVAL_MS = 2000;
+        const STAGE_LABELS = {}, document = {body: {classList: {remove() {}}}};
+        const headers = () => ({});
+        const renderStages = () => {}, renderBuilderBar = () => {}, schedulePoll = () => {};
+        const setJobStatus = () => {}, watchEditorSession = () => {};
+        const setBusy = () => {}, showProgress = () => {};
+        let message = "", watched = null, rejectResume = true;
+        const showBuilderMsg = (text) => { message = text; };
+        const showEditorFrame = () => { openCount++; $("editor-frame-wrap").hidden = false; };
+        const editorSessionData = () => JSON.parse(sessionStorage.getItem(EDITOR_KEY) || "null");
+        const watch = (id) => { watched = id; pollSeq++; };
+        const seed = {format: "soramimic-editor/1", phrases: ["シズム"], results: [["original"]]};
+        const fetch = async (url, options = {}) => {
+          requests.push(url);
+          if (url.endsWith("/review")) return {ok: true, json: async () => seed};
+          if (url.endsWith("/resume")) {
+            assert.deepEqual(JSON.parse(await options.body.get("editor").text()),
+              {...seed, results: [["edited"]]});
+            return {ok: !rejectResume, json: async () => ({detail: "再試行してください"})};
+          }
+          return {ok: true, status: 200, json: async () => ({
+            status: "awaiting_review", params: {}, stages: [],
+          })};
+        };
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 1);
+          assert.equal(reviewJobId, "job1");
+          assert.equal($("builder-review").hidden, false);
+          sessionStorage.setItem(EDITOR_KEY, JSON.stringify({...seed, results: [["edited"]]}));
+          await syncEditorSessionOnce(); // Review must not change the next song's form.
+          await closeEditor();
+          assert.equal($("editor-frame-wrap").hidden, true);
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 1); // Closing does not auto-open or auto-resume.
+          assert.equal(requests.filter((url) => url.endsWith("/resume")).length, 0);
+          reviewJobId = null; reviewOpenedJob = null; // Reload with the same tab storage.
+          restoreJobProgress([{id: "job1", status: "awaiting_review"}]);
+          await poll("job1", pollSeq);
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 1);
+          assert.equal($("editor-frame-wrap").hidden, true);
+          assert.equal($("builder-review").hidden, false);
+          assert.deepEqual(editorSessionData().results, [["edited"]]);
+          await openLyricReview("job1"); // Explicitly resume the saved edits.
+          await poll("job1", pollSeq);
+          assert.equal(openCount, 2);
+          assert.deepEqual(editorSessionData().results, [["edited"]]);
+          await confirmLyricReview();
+          assert.equal(reviewJobId, "job1");
+          assert.equal($("editor-frame-wrap").hidden, false);
+          assert.match($("lyric-review-error").textContent, /再試行してください/);
+          rejectResume = false;
+          await confirmLyricReview();
+          assert.equal(watched, "job1");
+          assert.equal(reviewJobId, null);
+          assert.equal($("editor-frame-wrap").hidden, true);
+          assert.equal($("confirm-lyric-review").disabled, false);
+          resumed = false;
+          currentJob = "job2";
+          restoreJobProgress([{id: "job2", status: "running"}]);
+          await poll("job2", pollSeq); // A newly completed conversion still opens review.
+          assert.equal(openCount, 3);
+          assert.equal(reviewJobId, "job2");
+        })().catch((error) => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True)
+
+
+def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function saveLyricReview(", "async function closeLyricReview(",
+            "function resumeHistoryReview(",
+        )
+    )
+    node = textwrap.dedent("""
+        const assert = require("node:assert/strict");
+        const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "job";
+        let reviewJobId = "one", reviewSubmitting = false;
+        let reviewSavePending = null, reviewSavedRaw = "";
+        let raw = "first", reject = true, closeCount = 0, active = 0, maxActive = 0;
+        let pause = null, release = null;
+        const writes = [], elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {disabled: false, textContent: ""});
+          return elements.get(id);
+        };
+        const headers = () => ({});
+        const sessionStorage = {getItem: key => key === EDITOR_KEY ? raw : "one"};
+        const closeEditor = () => { closeCount++; };
+        let historyLoads = 0, resumed = false, reviewOpening = false;
+        let reviewOpenedJob = 'one', watched = null, busy = false, progress = false;
+        const loadHistory = async () => { historyLoads++; };
+        const setBusy = value => { busy = value; };
+        const showProgress = () => { progress = true; };
+        const watch = id => { watched = id; };
+        const fetch = async (url, options) => {
+          active++; maxActive = Math.max(maxActive, active);
+          writes.push(await options.body.get("editor").text());
+          if (pause) await pause;
+          active--;
+          return {ok: !reject, json: async () => ({detail: "保存エラー"})};
+        };
+    """) + functions + textwrap.dedent("""
+        (async () => {
+          await closeLyricReview();
+          assert.equal(closeCount, 0);
+          assert.equal($("close-lyric-review").disabled, false);
+          assert.match($("lyric-review-error").textContent, /保存エラー/);
+          reject = false;
+          pause = new Promise(resolve => { release = resolve; });
+          const first = saveLyricReview();
+          raw = "latest";
+          const next = saveLyricReview();
+          release(); pause = null;
+          await Promise.all([first, next]);
+          assert.equal(maxActive, 1);
+          assert.deepEqual(writes, ["first", "first", "latest"]);
+          assert.equal(reviewSavedRaw, "latest");
+          await closeLyricReview();
+          assert.equal(closeCount, 1);
+          assert.equal(writes.length, 3);
+          assert.equal($("lyric-review-error").textContent, "");
+          assert.equal(historyLoads, 1);
+          reviewSubmitting = true;
+          resumeHistoryReview({id: 'other'});
+          assert.equal(watched, null);
+          reviewSubmitting = false;
+          resumeHistoryReview({id: 'other'});
+          assert.equal(watched, 'other');
+          assert.equal(reviewOpenedJob, null);
+          assert(resumed && busy && progress);
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    """)
+    subprocess.run(["node", "-e", node], check=True)
+
+
+def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confirmation():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function lyricReviewCoverage(", "function confirmReviewRegeneration(",
+            "async function confirmLyricReview(", "function onEditorModalKeydown(",
+        )
+    )
+    node = textwrap.dedent("""
+        const assert = require('node:assert/strict');
+        const EDITOR_KEY = 'editor', REVIEW_JOB_KEY = 'job', REVIEW_REGENERATE_KEY = 'auto';
+        const UNMATCHED_LYRICS_KEY = 'unmatched';
+        const store = new Map(), preferences = new Map(), elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) {
+            elements.set(id, {disabled: false, hidden: false, textContent: '', focus() {}});
+          }
+          return elements.get(id);
+        };
+        const sessionStorage = {getItem: key => store.get(key) || null};
+        let denyStorage = false;
+        const localStorage = {
+          getItem: key => {if (denyStorage) throw Error('storage'); return preferences.get(key);},
+          setItem: (key, value) => {
+            if (denyStorage) throw Error('storage'); preferences.set(key, value);
+          },
+        };
+        let reviewJobId = 'one', reviewSubmitting = false, reviewSavePending = null;
+        let dialogCount = 0, regenerateCount = 0, watched = null, closed = false;
+        const resumePayloads = [];
+        let regenerateError = null, regenerateResult = null, closeListener = null;
+        const dialog = $('lyric-review-confirm');
+        dialog.addEventListener = (event, listener) => {
+          assert.equal(event, 'close'); closeListener = listener;
+        };
+        dialog.showModal = () => {dialog.open = true; dialogCount++;};
+        dialog.close = value => {dialog.open = false; dialog.returnValue = value; closeListener();};
+        const complete = {unitsList: [[{}, {}, {}]], results: [[
+          {surface: '固定', period: [0, 1], locked: true}, {surface: '補完', period: [1, 3]},
+        ]]};
+        const partial = {...complete, results: [[complete.results[0][0]]]};
+        const remaining = {...complete, results: [[
+          complete.results[0][0], {...complete.results[0][1], filler: true},
+        ]]};
+        $('editor-frame').contentWindow = {soramimicVideoReview: {
+          async regenerateUnlocked() {
+            regenerateCount++;
+            assert.equal($('editor-frame').inert, true);
+            assert.equal($('close-lyric-review').disabled, true);
+            if (regenerateError) throw Error(regenerateError);
+            store.set(EDITOR_KEY, JSON.stringify(regenerateResult));
+          },
+        }};
+        const headers = () => ({}), showBuilderMsg = () => {}, setJobStatus = () => {};
+        const closeEditor = () => {closed = true;}, watch = id => {watched = id;};
+        const fetch = async (url, options) => {
+          assert.equal(url, '/api/jobs/one/resume');
+          resumePayloads.push(JSON.parse(await options.body.get('editor').text()));
+          return {ok: true, json: async () => ({})};
+        };
+        const reset = payload => {
+          store.set(EDITOR_KEY, JSON.stringify(payload)); store.set(REVIEW_JOB_KEY, 'one');
+          reviewJobId = 'one'; regenerateResult = complete; regenerateError = null;
+          closed = false; watched = null;
+        };
+        const tick = () => new Promise(setImmediate);
+    """) + functions + textwrap.dedent("""
+        (async () => {
+          assert.deepEqual(lyricReviewCoverage(partial), {unmatched: true, gaps: true});
+          assert.deepEqual(lyricReviewCoverage(remaining), {unmatched: true, gaps: false});
+          assert.deepEqual(lyricReviewCoverage(complete), {unmatched: false, gaps: false});
+          assert.deepEqual(lyricReviewCoverage({unitsList: [[]], results: [[]]}),
+            {unmatched: false, gaps: false});
+          reset(complete);
+          await confirmLyricReview();
+          assert.equal(dialogCount, 0); assert.equal(regenerateCount, 0);
+          assert.deepEqual(resumePayloads, [complete]);
+
+          reset(partial);
+          let pending = confirmLyricReview();
+          assert(dialog.open);
+          await confirmLyricReview(); // Repeated clicks do not open another confirmation.
+          assert.equal(dialogCount, 1);
+          $('lyric-review-skip').checked = true;
+          let prevented = false;
+          onEditorModalKeydown({key: 'Escape', preventDefault() {prevented = true;}});
+          assert.equal(prevented, false, 'Escape must reach the native confirmation dialog');
+          dialog.close('cancel');
+          await pending;
+          assert.equal(preferences.size, 0); assert.equal(regenerateCount, 0);
+          assert.equal(resumePayloads.length, 1); assert.equal(closed, false);
+          assert.equal($('editor-frame').inert, false);
+
+          pending = confirmLyricReview();
+          $('lyric-review-skip').checked = true;
+          dialog.close('generate');
+          await pending;
+          assert.equal(preferences.get(REVIEW_REGENERATE_KEY), '1');
+          assert.equal(regenerateCount, 1); assert.deepEqual(resumePayloads[1], complete);
+          assert.equal(watched, 'one'); assert.equal(closed, true);
+
+          reset(partial);
+          await confirmLyricReview();
+          assert.equal(dialogCount, 2, 'remembered consent skips only the first confirmation');
+          assert.equal(regenerateCount, 2); assert.equal(resumePayloads.length, 3);
+
+          reset(partial); regenerateError = '再生成エラー';
+          await confirmLyricReview();
+          assert.match($('lyric-review-error').textContent, /再生成エラー/);
+          assert.equal(resumePayloads.length, 3); assert.equal(closed, false);
+          assert.equal($('confirm-lyric-review').disabled, false);
+
+          reset(partial); regenerateResult = remaining;
+          pending = confirmLyricReview(); await tick();
+          assert(dialog.open); assert.equal($('lyric-review-skip-label').hidden, false);
+          $('lyric-review-skip').checked = true;
+          dialog.close('cancel'); await pending;
+          assert.equal(preferences.has(UNMATCHED_LYRICS_KEY), false);
+          assert.equal(resumePayloads.length, 3); assert.equal(closed, false);
+          assert.deepEqual(JSON.parse(store.get(EDITOR_KEY)), remaining);
+          pending = confirmLyricReview(); await tick();
+          assert.equal($('lyric-review-skip').checked, false);
+          $('lyric-review-skip').checked = true;
+          dialog.close('generate'); await pending;
+          assert.deepEqual(resumePayloads[3], remaining);
+          assert.equal(preferences.get(UNMATCHED_LYRICS_KEY), '1');
+
+          reset(partial); regenerateResult = partial;
+          await confirmLyricReview();
+          assert.equal(resumePayloads.length, 4);
+          assert.match($('lyric-review-error').textContent, /対応づけられない/);
+          assert.equal(reviewSubmitting, false); assert.equal($('editor-frame').inert, false);
+
+          preferences.clear(); denyStorage = true; reset(partial);
+          pending = confirmLyricReview();
+          assert(dialog.open); $('lyric-review-skip').checked = true;
+          dialog.close('generate'); await pending;
+          assert.equal(resumePayloads.length, 5, 'storage denial must not prevent regeneration');
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    """)
+    subprocess.run(["node", "-e", node], check=True)
+
+
+def test_video_submit_confirms_unmatched_lyrics_and_remembers_only_acceptance():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function submitJob(", "function lyricReviewCoverage(",
+            "function confirmReviewRegeneration(", "async function readParodyFile(",
+            "function readParodyText(",
+        )
+    )
+    node = textwrap.dedent("""
+        const assert = require('node:assert/strict');
+        const REVIEW_REGENERATE_KEY = 'regenerate', UNMATCHED_LYRICS_KEY = 'unmatched';
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+        const preferences = new Map(), elements = new Map(), requests = [];
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {value: '', hidden: false, focus() {}});
+          return elements.get(id);
+        };
+        let denyStorage = false, dialogs = 0, closeListener;
+        const localStorage = {
+          getItem(key) {if (denyStorage) throw Error('storage'); return preferences.get(key);},
+          setItem(key, value) {
+            if (denyStorage) throw Error('storage'); preferences.set(key, value);
+          },
+        };
+        const dialog = $('lyric-review-confirm');
+        dialog.addEventListener = (_event, listener) => {closeListener = listener;};
+        dialog.showModal = () => {dialog.open = true; dialogs++;};
+        dialog.close = value => {dialog.open = false; dialog.returnValue = value; closeListener();};
+        let submitBusy = false, submitAbort = null, lyricsFileReading = false;
+        const setBusy = busy => {submitBusy = busy;};
+        const songInputMode = 'sample', simpleMode = false;
+        const automaticLyricsEnabled = () => false, lyricsInput = () => ({error: ''});
+        const ownAudioFile = () => null, ownSongKind = () => 'sample';
+        const samplePending = null, midiChecking = null, midiSampleId = 'sample';
+        const ensureSelectedSampleMidi = async () => true;
+        let editorFile = null;
+        const editorSourceForSubmit = () => ({file: editorFile});
+        const parodyMismatch = () => false, apiKey = () => '', turnstileSiteKey = '';
+        const fixedSynthesizer = 'voicevox', fixedVoicevoxStyle = 1;
+        const songTitleOf = () => 'sample', buildConvertParams = () => '{}';
+        const selectedTitleWords = () => '';
+        const activeCustomList = () => null, showsEditorWordlist = () => false;
+        const appendSongLyrics = () => {}, appendCustomWordlist = () => {};
+        const showSubmitMsg = () => {}, showProgress = () => {}, setJobStatus = () => {};
+        const setCancelPending = () => {}, resetTurnstile = () => {};
+        const watch = () => setBusy(false);
+        const postJobWithTurnstileRetry = async form => {
+          requests.push(form);
+          return {ok: true, status: 200, json: async () => ({id: 'new-job'})};
+        };
+        const complete = {unitsList: [[{}, {}]], results: [[{period: [0, 2]}]]};
+        const gap = {...complete, results: [[{period: [0, 1], locked: true}]]};
+        const filler = {...complete, results: [[{period: [0, 2], filler: true}]]};
+        const select = payload => {editorFile = payload
+          ? new Blob([JSON.stringify(payload)], {type: 'application/json'}) : null;};
+        const tick = () => new Promise(setImmediate);
+    """) + functions + textwrap.dedent("""
+        (async () => {
+          // No edited lyrics, complete lyrics, and voice previews need no warning.
+          for (const payload of [null, complete]) {
+            select(payload); await submitJob(0, '');
+          }
+          select(filler); await submitJob(10, 'head');
+          assert.equal(dialogs, 0); assert.equal(requests.length, 3);
+
+          // Both explicit fillers and uncovered ranges stop before uploading.
+          // An existing regeneration preference does not accept singing original lyrics.
+          preferences.set(REVIEW_REGENERATE_KEY, '1');
+          for (const payload of [filler, gap]) {
+            select(payload);
+            const pending = submitJob(0, ''); await tick();
+            assert(dialog.open); assert.equal(submitBusy, true);
+            assert.equal($('lyric-review-skip-label').hidden, false);
+            assert.match($('lyric-review-confirm-hint').textContent, /未対応の部分だけ/);
+            assert.match($('lyric-review-confirm-hint').textContent, /元の読み/);
+            assert.equal(requests.length, 3);
+            const count = dialogs;
+            await submitJob(0, ''); assert.equal(dialogs, count, 'double click opens once');
+            $('lyric-review-skip').checked = true;
+            dialog.close('cancel'); await pending;
+            assert.equal(submitBusy, false); assert.equal(requests.length, 3);
+            assert.equal(preferences.has(UNMATCHED_LYRICS_KEY), false);
+          }
+
+          select(filler);
+          let pending = submitJob(0, ''); await tick();
+          assert.equal($('lyric-review-skip').checked, false);
+          dialog.close('generate'); await pending;
+          assert.equal(requests.length, 4);
+          assert.deepEqual(JSON.parse(await requests.at(-1).get('editor').text()), filler);
+          assert.equal(preferences.has(UNMATCHED_LYRICS_KEY), false);
+
+          // Confirming with the checkbox persists across a new input/job.
+          pending = submitJob(0, ''); await tick();
+          assert(dialog.open); $('lyric-review-skip').checked = true;
+          dialog.close('generate'); await pending;
+          assert.equal(preferences.get(UNMATCHED_LYRICS_KEY), '1');
+          const count = dialogs;
+          select(gap); await submitJob(0, '');
+          assert.equal(dialogs, count); assert.equal(requests.length, 6);
+
+          // Storage failures keep confirmation usable and do not save cancellation.
+          denyStorage = true;
+          pending = submitJob(0, ''); await tick();
+          assert(dialog.open); $('lyric-review-skip').checked = true;
+          dialog.close('generate'); await pending;
+          assert.equal(requests.length, 7); assert.equal(submitBusy, false);
+          pending = submitJob(0, ''); await tick();
+          assert(dialog.open); dialog.close('cancel'); await pending;
+          assert.equal(requests.length, 7); assert.equal(submitBusy, false);
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    """)
+    subprocess.run(["node", "-e", node], check=True)
+
+
 def test_public_ui_filters_wordlists_and_simple_ui_hides_advanced():
     """公開UIはカタログだけを出し、簡易UIではさらに詳細設定を隠す。"""
     script = _script()
@@ -141,7 +580,7 @@ def test_public_ui_filters_wordlists_and_simple_ui_hides_advanced():
     assert "if (launchWordlists.length)" in script
     assert "return allowed.has(name);" in script
     defaults = _function_body(script, "function applyFixedUiDefaults()")
-    assert '$("synthesizer").value = fixedSynthesizer' in defaults
+    assert '$("synthesizer").value = "voicevox"' in defaults
     assert '$("auto-octave").checked = true' in defaults
     assert '$("transpose").value = "0"' in defaults
     assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
@@ -194,6 +633,76 @@ def test_uploaded_xf_midi_title_defaults_to_song_file_stem():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_reselecting_song_keeps_the_active_editor_title():
+    script = _script()
+    listener = script[script.index(
+        '$("midi").addEventListener("change", () => {\n  const file = ownSongFile();'
+    ):]
+    listener = listener[:listener.index("\n});") + len("\n});")]
+    stem = _function_body(script, "function songFileStem(file)") + "\n}"
+    metadata = _function_body(script, "async function updateUploadedSongMetadata(file,") + "\n}"
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {
+            value: "", files: [], listeners: {},
+            addEventListener(type, handler) { this.listeners[type] = handler; },
+            dispatchEvent(event) { this.listeners[event.type]?.(event); },
+          });
+          return elements.get(id);
+        };
+        const ownSongFile = () => $("midi").files[0];
+        const ownSongKind = file => file.name.endsWith(".wav") ? "audio" : "midi";
+        let active = null, restoring = false, midiSampleId = "";
+        let editorImportedFile = null, midiFromSample = false, metadataSongSelected = false;
+        const VideoMetadata = {notifyChange: async () => {}};
+        const activeLyricsJson = () => active;
+        const audioInputReady = true, maxAudioUploadBytes = 1000;
+        const document = {querySelector: () => ({textContent: ""})};
+        const setRecordingStatus = () => {};
+        const rejectOwnSongFile = message => { throw new Error(message); };
+        const clearEditorFile = () => {}, clearAudioPresentation = () => {};
+        const syncLyricsRecognition = () => {}, syncBuilderOptions = () => {};
+        const syncBuilderValues = () => {}, showBuilderMsg = () => {};
+        const schedulePreview = () => {};
+        """
+    ) + stem + "\n" + metadata + "\n" + listener + textwrap.dedent(
+        """
+        for (const name of ["upload.wav", "upload.xf.mid"]) {
+          $("midi").files = [{name, size: 10}];
+          active = {song: {title: "テスト曲"}};
+          $("song-title").value = "テスト曲";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "テスト曲");
+          $("song-title").value = "";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "upload");
+          $("song-title").value = "手入力した曲名";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "手入力した曲名");
+          for (const payload of [null, {}, {song: {title: " "}}, {song: {title: 1}}]) {
+            active = payload;
+            $("song-title").value = "前のファイルの曲名";
+            $("midi").dispatchEvent(new Event("change"));
+            assert.equal($("song-title").value, "前のファイルの曲名");
+            $("song-title").value = "";
+            $("midi").dispatchEvent(new Event("change"));
+            assert.equal($("song-title").value, "upload");
+          }
+          restoring = true;
+          $("song-title").value = "復元した曲名";
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "復元した曲名");
+          restoring = false;
+        }
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_song_text_previews_follow_title_credits_and_wordlist():
     """3つのプレビューは入力値と本番のクレジット優先順位に即時追随する。"""
     script = _script()
@@ -221,9 +730,6 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         const $ = element;
         const ownSongFile = () => ({ name: "upload.mid" });
         let midiSampleId = "";
-        let fixedSynthesizer = "voicevox";
-        const fixedVoicevoxStyle = 6000;
-        $("voicevox-style").options = [{ value: "6000", dataset: { name: "波音リツ" } }];
         const sampleTitleOf = () => "サンプル曲";
         const sampleCredits = {};
         const activeCustomList = () => null;
@@ -232,6 +738,12 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         let wordlist = "stations";
         const wordlistPhrases = { stations: "駅名", vtuber: "VTuber名" };
         const currentWordlistName = () => wordlist;
+        let fixedSynthesizer = "voicevox";
+        let fixedVoicevoxStyle = 6000;
+        $("voicevox-style").options = [
+          { value: "6000", dataset: { name: "波音リツ" } },
+          { value: "6001", dataset: { name: "四国めたん" } },
+        ];
         $("builder-image").setAttribute("src", "blob:thumbnail");
         $("song-title").value = "夜に駆ける";
         $("song-credit").value = "オトノケ - Creepy Nuts";
@@ -248,15 +760,29 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal($("song-preview-thumb-bg").getAttribute("src"), "blob:thumbnail");
         assert.equal($("song-preview-thumb-bg").hidden, false);
 
-        fixedSynthesizer = "hybrid";
+        assert.equal($("song-preview-thumb-credit").textContent,
+          $("song-preview-footer").textContent);
+        assert.equal($("song-preview-credits-synth").textContent,
+          "Vocal Synthesis　VOICEVOX:波音リツ");
+        assert.equal($("song-preview-credits-synth").hidden, false);
+        fixedVoicevoxStyle = 6001;
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-synth").textContent,
-          "Vocal Synthesis　VOICEVOX・PrettyPitch：波音リツ（カノン）");
+          "Vocal Synthesis　VOICEVOX:四国めたん");
+        fixedVoicevoxStyle = 9999;
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent, "Vocal Synthesis　VOICEVOX");
+        fixedSynthesizer = "prettypitch";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent,
+          "Vocal Synthesis　PrettyPitch / 波音リツ（カノン）");
         assert.equal($("song-preview-credits-synth").hidden, false);
-        assert.doesNotMatch($("song-preview-footer").textContent,
-          /VOICEVOX|PrettyPitch|波音リツ/);
-        assert.doesNotMatch($("song-preview-thumb-credit").textContent,
-          /VOICEVOX|PrettyPitch|波音リツ/);
+        assert.doesNotMatch($("song-preview-thumb-credit").textContent, /VOICEVOX|PrettyPitch/);
+        assert.doesNotMatch($("song-preview-footer").textContent, /VOICEVOX|PrettyPitch/);
+        fixedSynthesizer = "neutrino";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-synth").textContent, "");
+        assert.equal($("song-preview-credits-synth").hidden, true);
 
         $("thumbnail-wordlist-label").value = "好きな駅";
         updateSongTextPreviews();
@@ -265,18 +791,18 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         assert.equal(wordlist, "stations");
         $("song-credit").value = "";
         updateSongTextPreviews();
-        assert.equal($("song-preview-credits-original").textContent, "");
+        assert.equal($("song-preview-credits-original").textContent,
+          "Original Song　夜に駆ける");
         assert.equal($("song-preview-footer").textContent, "lyrics & video by Soramimic");
-
-        midiSampleId = "sample";
-        sampleCredits.sample = { displayCredit: "登録済み作者" };
-        $("song-credit").value = "持ち込み曲の表記";
+        $("song-credit").value = " \\t\\n　";
+        $("song-title").value = "三原色";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
-          "Original Song　サンプル曲 — 登録済み作者");
-        assert.equal($("song-preview-footer").textContent,
-          "lyrics & video by Soramimic / Original: サンプル曲 — 登録済み作者");
-        midiSampleId = "";
+          "Original Song　三原色");
+        $("song-title").value = "";
+        updateSongTextPreviews();
+        assert.equal($("song-preview-credits-original").textContent,
+          "Original Song　upload");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
@@ -324,6 +850,7 @@ def test_advanced_settings_require_both_song_and_wordlist():
         const activeCustomList = () => custom;
         const showsEditorWordlist = () => editor;
         const apiKey = () => key;
+        const activeLyricsJson = () => null;
         """
     ) + functions + "\n" + wiring + textwrap.dedent(
         """
@@ -386,7 +913,7 @@ def test_simple_ui_hides_the_irrelevant_song_length_limit():
     assert "if (conf.quota_exempt === true)" in body
     assert "else if (conf.daily_quota)" in body
     assert "混雑時は順番待ちになります" in body
-    assert "updatePublicCredit();" in body
+    assert "updatePublicCredit" not in _script()
 
 
 def test_history_uses_cards_and_only_safe_display_fields():
@@ -439,7 +966,7 @@ def test_initial_audio_analysis_uses_live_indeterminate_progress():
     assert 'fill.classList.toggle("indeterminate", analysisStarting)' in progress
     assert 'fill.style.width = "32%"' in progress
     assert "audioAnalysisIsStarting(job)" in poll
-    assert "setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`)" in poll
+    assert "const text = `${job.stage_detail || label}${elapsed}`;" in poll
     html = INDEX.read_text(encoding="utf-8")
     assert ".builder-bar span.indeterminate" in html
     assert "@keyframes builder-progress-slide" in html
@@ -575,6 +1102,129 @@ def _function_body(script: str, head: str) -> str:
     """head で始まる関数の中身(次の行頭 } まで)を返す。"""
     body = script[script.index(head) :]
     return body[: body.index("\n}\n")]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
+    script = _script()
+    block = script[script.index("function titleChoiceContext()"):
+                   script.index("// 単語リストの代表画像(サムネプレビュー")]
+    harness = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const element = () => ({
+        value: '', textContent: '', disabled: false, options: [], children: [], listeners: {},
+        add(option) {this.options.push(option);},
+        replaceChildren(...items) {this.options = items; this.children = items; this.value = '';},
+        append(child) {this.children.push(child);},
+        setAttribute(name, value) {this[name] = value;},
+        addEventListener(event, fn) {this.listeners[event] = fn;},
+        focus() {document.activeElement = this;},
+        showModal() {this.open = true;},
+        close() {this.open = false; this.listeners.close?.();},
+      });
+      const document = {createElement: element, activeElement: null};
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, element());
+        return elements.get(id);
+      };
+      class Option {constructor(text, value) {this.text = text; this.value = value;}}
+      const OWN_SONG_VALUE = 'own', ownSongFile = () => ({}), headers = () => ({});
+      let title = 'サンゲンショク', restoring = false;
+      const songTitleOf = () => title;
+      let combo = {sampleId: 'own', wordlistName: 'scientist', customList: null};
+      const currentCombo = () => combo;
+      let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
+      let titleCandidatesAbort = null, titleCandidatesSeq = 0, saved, previews = 0;
+      const saveForm = () => {saved = titleChoice;};
+      const schedulePreview = () => {previews++;};
+      const setTimeout = () => 1, clearTimeout = () => {};
+      let resolveFetch, sent, signal;
+      const fetch = async (_url, options) => {
+        sent = JSON.parse(options.body);
+        signal = options.signal;
+        return await new Promise(resolve => {resolveFetch = resolve;});
+      };
+    ''' + block + r'''
+      (async () => {
+        const choice = {words: [{id: '1', surface: 'ハンゼン'}, {id: '2', surface: 'ホフ'}],
+          label: 'ハンゼン ＋ ホフ', reading: 'ハンゼン・ホフ',
+          originals: ['ハンゼン氏', 'ホフ氏']};
+        const load = () => $('title-candidates-load').listeners.click();
+        const select = () => $('title-words').listeners.change();
+        const dialog = $('title-candidates-dialog');
+        const list = $('title-candidates-list');
+        $('where').value = 'field=天文学';
+        const pending = load();
+        assert.equal(dialog.open, true, 'search opens the dialog before the request completes');
+        assert.equal(list.children.length, 0);
+        assert.match($('title-candidates-dialog-status').textContent, /探しています/);
+        assert.equal($('title-candidates-load').disabled, true);
+        assert.deepEqual(sent, {title, wordlist: 'scientist', where: 'field=天文学'});
+        resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+        await pending;
+        assert.equal($('title-candidates-load').disabled, false);
+        assert.equal(dialog.open, true);
+        assert.equal(list.children.length, 2, 'candidate and automatic choice are visible');
+        assert.equal(document.activeElement, list.children[0]);
+        assert.equal(list.children[0].children[0].textContent, choice.label);
+        assert.match(list.children[0].children[1].textContent, /ハンゼン氏 ＋ ホフ氏/);
+        list.children[0].listeners.click();
+        assert.equal(dialog.open, false, 'selecting a candidate closes the dialog');
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal(saved.label, 'ハンゼン ＋ ホフ');
+        assert.equal(previews, 1);
+        assert.match($('title-words-detail').textContent, /ハンゼン氏 ＋ ホフ氏/);
+        // Re-rendering and restoring a saved choice retain its words.
+        titleCandidates = []; titleChoice = saved; renderTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        $('title-words').value = ''; select();
+        assert.equal(selectedTitleWords(), '');
+        // Dismissing while loading cancels the request and never reopens the dialog.
+        const dismissed = load();
+        $('title-candidates-close').listeners.click();
+        assert.equal(signal.aborted, true);
+        assert.equal($('title-candidates-load').disabled, false);
+        resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+        await dismissed;
+        assert.equal(dialog.open, false);
+        assert.deepEqual(list.children, []);
+        assert.equal($('title-candidates-status').textContent, '');
+        // A slow response for a previous title must not replace the new context.
+        const stale = load();
+        title = '別の曲'; refreshTitleChoices();
+        resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+        await stale;
+        assert.equal(dialog.open, false);
+        assert.deepEqual(titleCandidates, []);
+        assert.equal($('title-candidates-status').textContent, '');
+        titleChoice = {...choice, context: titleChoiceContext()};
+        $('where').value = ''; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        // Empty results and failures remain visible inside the open dialog.
+        const empty = load();
+        resolveFetch({ok: true, json: async () => ({candidates: []})});
+        await empty;
+        assert.equal(dialog.open, true);
+        assert.match($('title-candidates-dialog-status').textContent, /見つかりません/);
+        list.children[0].listeners.click();
+        assert.equal(dialog.open, false);
+        const failed = load();
+        resolveFetch({ok: false, json: async () => ({detail: 'しばらく待ってください'})});
+        await failed;
+        assert.equal(dialog.open, true);
+        assert.match($('title-candidates-dialog-status').textContent, /しばらく待って/);
+        $('title-candidates-close').listeners.click();
+        assert.equal(dialog.open, false);
+        // Editing custom CSV content also invalidates the selected row identities.
+        combo.customList = {text: 'one'};
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.customList.text = 'two'; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), '');
+        assert.equal(titleChoice, null);
+      })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''
+    subprocess.run(["node", "-e", harness], check=True, capture_output=True, text=True)
 
 
 def test_submit_takes_the_midi_from_the_current_song_choice():
@@ -794,6 +1444,8 @@ def _song_input_node_harness() -> str:
           return elements.get(id);
         }
         let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
+        let editorImportedFile = null;
+        const originalLyricsFile = () => null;
         let recordedSongFile = null;
         let midiFromSample = false, samplePending = null, restoring = false;
         let sampleLyricsId = "", sampleLyricsBaseline = null;
@@ -803,7 +1455,9 @@ def _song_input_node_harness() -> str:
         const activeCustomList = () => null;
         const simpleMode = false;
         const renderCustomListMenu = () => {};
-        const updateNoncommercialFanworkNotice = () => {};
+        const syncJsonInputControls = () => {};
+        const activeLyricsJson = () => null;
+        const updateWordlistUsageNotice = () => {};
         const updateAdvancedSettingsAvailability = () => {};
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
@@ -869,6 +1523,14 @@ def test_song_input_switch_clears_hidden_sources_and_focuses_visible_input():
         assert.equal(previews, 2);
         switchSongInputMode("upload");
         assert.equal(previews, 2, "switching to the current mode is a no-op");
+        editorImportedFile = { name: "soramimic-lyrics.json" };
+        $("editor").files = [editorImportedFile];
+        $("lyrics").value = "受け取った歌詞";
+        $("auto-lyrics").checked = false;
+        switchSongInputMode("sample");
+        assert.deepEqual($("editor").files, [editorImportedFile]);
+        assert.equal($("lyrics").value, "受け取った歌詞");
+        assert.equal($("auto-lyrics").checked, false);
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
@@ -2046,10 +2708,10 @@ def test_editor_lyrics_are_written_back_to_the_form():
     """
     script = _script()
     body = _function_body(script, "function applyEditorLyrics()")
-    assert 'if (!data || typeof data.lyrics !== "string") return;' in body
-    # 変わっていなければ何もしない(毎周期で change を撒かない)
-    assert 'if (data.lyrics === $("lyrics").value) return;' in body
-    assert '$("lyrics").value = data.lyrics;' in body
+    assert 'JSON.stringify(data, null, 2)' in body
+    assert 'text === $("lyrics").value' in body
+    assert '$("lyrics").value = text;' in body
+    assert 'syncLyricsInput(false);' in body
     assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
     # 単語リストの書き戻しと同じ経路(ポーリングと「閉じる」)で拾う
     sync = _function_body(script, "async function syncEditorSessionOnce()")
@@ -2160,10 +2822,16 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert '$("song-record-button").addEventListener("click", startSongRecording);' in script
     assert 'id="audio-input-panel"' not in html
     assert 'id="auto-lyrics"' in html
-    assert 'id="auto-lyrics" aria-controls="lyrics-correction-panel" checked' in html
+    assert (
+        'id="auto-lyrics" aria-controls="lyrics-correction-panel lyrics-file-field" checked'
+        in html
+    )
     assert 'id="lyrics-correction-panel" hidden' in html
     assert '<textarea id="lyrics"' in html
-    assert 'id="lyrics-file" accept=".txt,.md,text/plain,text/markdown"' in html
+    assert (
+        'id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"'
+        in html
+    )
     assert "歌詞を自動認識し、音源からメロディーとタイミングを推定します" not in html
     assert "音源解析 → 空耳変換 → 歌声/映像 → 完成" not in html
     assert 'id="audio-analysis-mode"' not in html
@@ -2181,8 +2849,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     append = _function_body(script, "function appendSongLyrics(")
     assert 'const lyrics = songLyricsForRequest();' in append
     assert 'form.append("lyrics", lyrics);' in append
-    assert '!automaticLyricsEnabled() && !lyrics.trim()' in append
-    assert 'form.append("lyrics_file", $("lyrics-file").files[0]);' in append
+    assert 'form.append("lyrics_file"' not in append
     assert 'form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");' in append
     automatic = _function_body(script, "function automaticLyricsEnabled()")
     assert 'ownSongKind() !== "audio"' not in automatic
@@ -2417,8 +3084,11 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         _function_body(script, head) + "\n}"
         for head in (
             "function ownSongFile()",
-            "function automaticLyricsEnabled()",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
             "function songLyricsForRequest()",
+            "function lyricsInput()",
+            "function readParodyText(",
+            "function parodySourceLyrics(",
             "function appendSongLyrics(form)",
             "function syncLyricsRecognition()",
         )
@@ -2447,7 +3117,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal($("auto-lyrics").disabled, false);
         assert.equal($("auto-lyrics-toggle").hidden, false);
         assert.equal($("lyrics-correction-panel").hidden, true);
-        assert.equal($("lyrics-mode-hint").hidden, true);
+        assert.equal($("lyrics-file-field").hidden, true);
         assert.equal($("lyrics").required, false);
         assert.equal(automaticLyricsEnabled(), true);
         assert.equal(songLyricsForRequest(), "");
@@ -2455,6 +3125,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         $("auto-lyrics").checked = false;
         syncLyricsRecognition();
         assert.equal($("lyrics-correction-panel").hidden, false);
+        assert.equal($("lyrics-file-field").hidden, false);
         assert.equal($("lyrics").required, true);
         assert.equal(automaticLyricsEnabled(), false);
         assert.equal(songLyricsForRequest(), "manual lyrics");
@@ -2469,6 +3140,9 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
         assert.equal(values.get("adjust_lyrics"), "true");
         $("auto-lyrics").checked = true;
         syncLyricsRecognition();
+        assert.equal($("lyrics-file-field").hidden, true);
+        assert.equal($("lyrics").value, "manual lyrics",
+          "hiding manual input preserves its contents");
         appendSongLyrics(form);
         assert.equal(values.get("adjust_lyrics"), "false");
         $("auto-lyrics").checked = false;
@@ -2498,12 +3172,16 @@ def test_lyrics_file_loads_into_editable_textarea_as_paste_alternative():
           return elements.get(id);
         }
         function syncLyricsRecognition() {}
+        const sessionStorage = {removeItem() {}};
+        const EDITOR_KEY = "editor", EDITOR_SEED_KEY = "seed";
         let editorClears = 0;
         function clearEditorFile() { ++editorClears; }
         class Event {
           constructor(type, options) { this.type = type; this.bubbles = options?.bubbles; }
         }
-        let lyricsFileReadSequence = 0;
+        let lyricsFileReadSequence = 0, lyricsFileReading = false;
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+        const syncLyricsInput = () => clearEditorFile();
         """
     ) + loader + textwrap.dedent(
         """
@@ -2531,6 +3209,254 @@ def test_lyrics_file_loads_into_editable_textarea_as_paste_alternative():
           assert.equal($("lyrics").lastEvent.bubbles, true);
           assert.equal(editorClears, 1);
         })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_lyrics_content_controls_json_and_text_without_stale_imports():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function loadLyricsFile(", "function lyricsInput()",
+            "function readParodyText(", "async function readParodyFile(",
+            "function parodySourceLyrics(", "function syncLyricsInput(",
+            "async function updateParodyStatus(", "function clearEditorFile(",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
+            "function songLyricsForRequest()",
+            "function appendSongLyrics(", "function editorSourceForSubmit()",
+            "function applyEditorLyrics()",
+        )
+    )
+    input_listener = script[script.index('$("lyrics").addEventListener("input", () => {'):]
+    input_listener = input_listener[:input_listener.index("\n});") + len("\n});")]
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const {File} = require("node:buffer");
+        const elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {
+            files: [], _value: "", textContent: "", hidden: false, checked: false,
+            listeners: new Map(),
+            get value() {return this._value;},
+            set value(value) {this._value=value; if (!value) this.files=[];},
+            addEventListener(type, fn) {this.listeners.set(type, fn);},
+            setCustomValidity(message) {this.validationMessage=message;},
+            dispatchEvent(event) {
+              this.listeners.get(event.type)?.(event);
+              if (id === "editor") updateParodyStatus();
+            },
+          });
+          return elements.get(id);
+        };
+        const stored = new Map();
+        const sessionStorage = {
+          removeItem:key=>stored.delete(key), setItem:(key,value)=>stored.set(key,value),
+        };
+        const EDITOR_KEY="editor", EDITOR_SEED_KEY="seed", MAX_EDITOR_BYTES=4*1024*1024;
+        let lyricsFileReadSequence=0, lyricsFileReading=false, editorImportedFile=null;
+        let editorWordlist=null, editorFileSig="", simpleMode=false, songInputMode="upload";
+        let parodyWasRestored=false, parodyRestored=false;
+        const syncLyricsRecognition=()=>{}, saveForm=()=>{}, renderParodyStatus=()=>{};
+        const syncBuilderValues=()=>{};
+        const editorContentSig=data=>JSON.stringify(data.results), editorWhereOf=()=>"";
+        const liveEditorEdit=()=>({state:"none"});
+        const editorSessionData=()=>JSON.parse(stored.get(EDITOR_KEY)||"null");
+        function injectFile(input,file,dispatch) {
+          input.files=[file]; if(dispatch)input.dispatchEvent(new Event("change"));
+        }
+        const settle=()=>new Promise(resolve=>setImmediate(resolve));
+        async function choose(text,name) {
+          const file=new File([text],name);
+          $("lyrics-file").files=[file]; await loadLyricsFile(file); await settle();
+        }
+        async function type(text) {
+          $("lyrics").value=text; $("lyrics").dispatchEvent(new Event("input")); await settle();
+        }
+        """
+    ) + functions + "\n" + input_listener + textwrap.dedent(
+        """
+        (async()=>{
+          const payload={results:[[{surface:"青空"}]],unitsList:[["ア"]],
+            phrases:["青い空","白い雲"]};
+          const raw=JSON.stringify(payload,null,2);
+          for(const name of ["lyrics.json","lyrics.txt","lyrics.md"]) {
+            await choose(raw,name);
+            assert.equal($("lyrics").value,raw);
+            assert.equal($("auto-lyrics").checked,false);
+            assert.deepEqual(JSON.parse(await editorSourceForSubmit().file.text()),payload);
+            assert.equal(songLyricsForRequest(),"青い空\\n白い雲");
+            assert.equal($("lyrics-file").files[0].name,name);
+          }
+          await type(JSON.stringify({...payload,lyrics:"編集した元歌詞",
+            results:[[{surface:"白雲"}]]}));
+          assert.equal(songLyricsForRequest(),"編集した元歌詞");
+          const changed=JSON.parse(await editorSourceForSubmit().file.text());
+          assert.equal(changed.results[0][0].surface,"白雲");
+          assert.equal($("lyrics-file").files.length,0);
+          // File selection is only an input method: extensions never select the behavior.
+          await choose("[Chorus] 通常の歌詞","plain.json");
+          assert.equal(songLyricsForRequest(),"[Chorus] 通常の歌詞");
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.equal(stored.has(EDITOR_KEY),false);
+          await type(raw);
+          await type('{"broken":');
+          assert.equal($("lyrics").value,'{"broken":');
+          assert.match($("lyrics").validationMessage,/歌詞JSON/);
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.match(editorSourceForSubmit().error,/歌詞JSON/);
+          assert.equal(songLyricsForRequest(),"");
+          await type("普通の歌詞に戻す");
+          assert.equal($("lyrics").validationMessage,"");
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.equal(songLyricsForRequest(),"普通の歌詞に戻す");
+          await type(raw);
+          $("auto-lyrics").checked=true; syncLyricsInput();
+          assert.equal($("lyrics").value,raw);
+          assert.equal(editorSourceForSubmit().file,null);
+          assert.equal(songLyricsForRequest(),"");
+          $("auto-lyrics").checked=false; syncLyricsInput();
+          assert.deepEqual(JSON.parse(await editorSourceForSubmit().file.text()),payload);
+          const fields=new Map(); appendSongLyrics({append:(key,value)=>fields.set(key,value)});
+          assert.equal(fields.get("lyrics"),"青い空\\n白い雲");
+          assert.equal(fields.has("lyrics_file"),false);
+          // Clearing the picker does not discard the text that it loaded.
+          await loadLyricsFile(null);
+          assert.equal($("lyrics").value,raw);
+          assert(editorSourceForSubmit().file);
+          // Slow file reads cannot replace typing or a more recent file.
+          let finish;
+          const pending=loadLyricsFile({size:10,
+            arrayBuffer:()=>new Promise(resolve=>{finish=resolve;})});
+          await type("新しい入力");
+          finish(new TextEncoder().encode("古い入力").buffer); await pending;
+          assert.equal($("lyrics").value,"新しい入力");
+          assert.equal(lyricsFileReading,false);
+          await choose("{}","invalid.txt");
+          assert.equal($("lyrics").value,"{}");
+          assert.match($("lyrics").validationMessage,/変換済み/);
+          // Editor writeback retains the full converted payload.
+          stored.set(EDITOR_KEY,raw); applyEditorLyrics(); await settle();
+          assert.deepEqual(JSON.parse($("lyrics").value),payload);
+          stored.set(EDITOR_KEY,JSON.stringify({lyrics:"未変換の元歌詞"})); applyEditorLyrics();
+          assert.equal($("lyrics").value,"未変換の元歌詞");
+          assert.equal(editorSourceForSubmit().file,null);
+          simpleMode=true; await type(raw);
+          assert.match($("lyrics").validationMessage,/この画面では/);
+          assert.equal(editorSourceForSubmit().file,null);
+        })().catch(error=>{console.error(error);process.exit(1);});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_editor_transfer_populates_json_and_recognition_mode():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "async function receiveEditorLyrics()",
+            "async function readParodyFile(",
+            "function parodySourceLyrics(",
+            "function syncLyricsRecognition()",
+            "function lyricsInput()",
+            "function readParodyText(",
+            "function parodySourceLyrics(",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
+            "function songLyricsForRequest()",
+            "function appendSongLyrics(",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require("node:assert/strict");
+        const {File} = require("node:buffer");
+        const elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {
+            files: [], value: "", textContent: "", hidden: false, checked: false,
+            setCustomValidity(value) {this.validationMessage=value;},
+            dispatchEvent() {}, setAttribute(key, value) {this[key] = value;},
+          });
+          return elements.get(id);
+        };
+        const stored = new Map();
+        const sessionStorage = {
+          setItem: (key, value) => stored.set(key, value),
+          removeItem: key => stored.delete(key),
+        };
+        const location = {href: "https://dev-video.soramimic.com/?lyrics-transfer=test"};
+        const EDITOR_KEY = "editor", EDITOR_SEED_KEY = "seed";
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+        const editorPeer = new URL("https://dev.soramimic.pages.dev/editor.html");
+        let bridgeReceiving = false, simpleMode = false, activeCustomListId = "old";
+        let payload, imported, songInputMode = "sample", cleared = 0, saved = 0;
+        const SoramimicBridge = {receive: async (peer, apply) => {
+          assert.equal(peer, editorPeer); await apply(payload);
+        }};
+        const clearAudioInput = () => {cleared++;};
+        const ownSongFile = () => null;
+        const showSongInputMode = mode => {songInputMode = mode;};
+        const applyEditorWordlist = async () => {
+          assert.deepEqual(JSON.parse(stored.get(EDITOR_KEY)), payload);
+        };
+        const injectFile = (input, file) => {input.files = [file];};
+        const updateParodyStatus = async () => {
+          imported = JSON.parse(await $("editor").files[0].text());
+        };
+        const syncBuilderOptions = () => {}, syncBuilderValues = () => {};
+        const updateSongTextPreviews = () => {};
+        const saveForm = () => {saved++;};
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          const base = {results: [[{surface:"青森", period:[0,1]}]],
+            unitsList:[[{pronunciation:"ア"}]]};
+          const variants = [
+            [{phrases:["青い空", "", "白い雲"]}, "青い空\\n\\n白い雲"],
+            [{lyrics:"元の表記\\nを保つ", originalLines:["別の表記"],
+              phrases:["ベツノヒョーキ"]}, "元の表記\\nを保つ"],
+            [{originalLines:["字幕の歌詞", "次の行"], phrases:["ヨミ"]}, "字幕の歌詞\\n次の行"],
+            [{}, ""],
+          ];
+          for (const [fields, expected] of variants) {
+            elements.clear(); stored.clear(); bridgeReceiving = false;
+            payload = {...base, ...fields, song:{title:"受け渡しテスト"},
+              videoMetadata:{songTitle:"表示用の曲名", songCredit:"作詞・作曲: テスト",
+                thumbnailWordlistLabel:"表示用のリスト名"}};
+            $("lyrics").value = "前回の歌詞";
+            $("auto-lyrics").checked = true;
+            $("midi").value = "previous.mid";
+            $("sample-select").value = "previous-sample";
+            stored.set(EDITOR_SEED_KEY, "old seed");
+            await receiveEditorLyrics();
+            assert.deepEqual(JSON.parse($("lyrics").value), payload);
+            assert.equal($("auto-lyrics").checked, false);
+            assert.equal($("lyrics-correction-panel").hidden, false);
+            assert.equal($("lyrics-file-field").hidden, false);
+            assert.equal($("midi").value, "");
+            assert.equal($("sample-select").value, "");
+            assert.equal(songInputMode, "upload");
+            assert.equal(stored.has(EDITOR_SEED_KEY), false);
+            assert.deepEqual(imported, payload, "keep the converted assignments and readings");
+            assert.equal($("song-title").value, payload.videoMetadata.songTitle);
+            assert.equal($("song-credit").value, payload.videoMetadata.songCredit);
+            assert.equal($("thumbnail-wordlist-label").value,
+              payload.videoMetadata.thumbnailWordlistLabel);
+            const form = new Map();
+            appendSongLyrics({append:(key,value) => form.set(key,value)});
+            assert.equal(form.get("lyrics"), expected);
+            assert.equal(form.get("auto_lyrics"), "false");
+            assert.match($("bridge-status").textContent, /歌詞を読み込みました/);
+          }
+          assert.equal(cleared, variants.length);
+          assert.equal(saved, variants.length);
+        })().catch(error => {console.error(error); process.exit(1);});
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
@@ -2606,18 +3532,30 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
-            "function updateNoncommercialFanworkNotice()",
+            "async function updateWordlistUsageNotice()",
+            "function wordlistWhereContains(where, frag)",
             "function loadWordlistImage(name, seq)",
-            "function automaticLyricsEnabled()",
+            "function automaticLyricsEnabled()", "function activeLyricsJson()",
             "function songLyricsForRequest()",
+            "function lyricsInput()",
+            "function readParodyText(",
+            "function parodySourceLyrics(",
             "function appendSongLyrics(form)",
             "async function submitJob(previewSec, previewMode)",
+            "async function readParodyFile(file)",
+            "function lyricReviewCoverage(",
         )
     )
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
         let selected = "fanwork", songInputMode = "sample";
+        let wordlistUsageRequest = null, wordlistUsageAbort = null;
+        const currentPreviewCustomList = () => null;
+        const headers = () => ({});
+        const fetch = async (url, options) => ({ ok: true, json: async () => ({
+          required: options.body.get("wordlist") === "vtuber", terms: [],
+        }) });
         const currentWordlistName = () => selected;
         const elements = new Map();
         const $ = (id) => {
@@ -2632,11 +3570,12 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         let imageUrl;
         class Image { set src(url) { imageUrl = url; } }
         const previewSeq = 1, hiddenPreviewReason = () => "", apiKey = () => "";
-        let submitBusy = false;
+        let submitBusy = false, lyricsFileReading = false;
         const setBusy = (value) => { submitBusy = value; };
         const ownAudioFile = () => null, ownSongKind = () => "sample";
         const samplePending = null, midiChecking = null, midiSampleId = "sample";
         const ensureSelectedSampleMidi = async () => true;
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
         let editorFile = null;
         const editorSourceForSubmit = () => ({ file: editorFile, live: false });
         const parodyMismatch = () => true, confirm = () => true;
@@ -2644,6 +3583,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         let simpleMode = true;
         const fixedVoicevoxStyle = 6000, fixedSynthesizer = "voicevox", turnstileSiteKey = "";
         const songTitleOf = () => "sample", buildConvertParams = () => "{}";
+        const selectedTitleWords = () => '';
         const appendCustomWordlist = () => {}, showSubmitMsg = () => {};
         const activeCustomList = () => selected === "custom" ? {} : null;
         const showsEditorWordlist = () => false;
@@ -2661,11 +3601,11 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         """
         (async () => {
           for (const name of [
-            "vtuber", "pokemon", "youtuber", "fanwork", "ordinary", "legacy", "custom",
+            "vtuber", "scientist", "pokemon", "youtuber", "fanwork", "ordinary", "legacy", "custom",
           ]) {
             selected = name;
             $("wordlist").value = name;
-            updateNoncommercialFanworkNotice();
+            await updateWordlistUsageNotice();
             assert.equal($("builder-fanwork-notice").hidden, name !== "vtuber");
             const guidance = new URL($("builder-fanwork-guidelines").href, "https://example.com");
             assert.equal(guidance.pathname, "/guidelines");
@@ -2681,7 +3621,8 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
           // Uploaded edits can use a different list from the current selection.
           selected = "ordinary";
           simpleMode = false;
-          editorFile = new Blob(["{}"], { type: "application/json" });
+          editorFile = new Blob([JSON.stringify({results: [[]], unitsList: [[]]})],
+            { type: "application/json" });
           const before = requests.length;
           await submitJob(0, "");
           assert.equal(requests.length, before + 1);
@@ -2764,7 +3705,7 @@ def test_embedded_editor_brand_returns_through_the_host_shell():
     handler = _function_body(script, "function onEditorHostMessage(ev)")
     assert "ev.origin !== location.origin" in handler
     assert 'ev.source !== $("editor-frame").contentWindow' in handler
-    assert 'ev.data.type !== "soramimic:request-close"' in handler
+    assert 'ev.data.type === "soramimic:request-close"' in handler
     assert 'if ($("editor-frame-wrap").hidden) return;' in handler
     assert "importEditor();" in handler
     assert 'window.addEventListener("message", onEditorHostMessage);' in script
@@ -2845,6 +3786,47 @@ def test_footer_labels_guidance_links():
     html = INDEX.read_text(encoding="utf-8")
     assert '<a href="/guidelines">利用ガイドライン</a>' in html
     assert '<a href="/guidelines#contact-title">画像の権利をお持ちの方へ</a>' in html
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_song_reseed_replaces_original_lyric_tokens():
+    reseed = "\n".join(_function_body(_script(), head) + "\n}" for head in (
+        "async function reseedEditorSong()", "function parodySourceLyrics(",
+    ))
+    node = """
+        const assert = require('node:assert/strict');
+        const EDITOR_KEY = 'editor', midiSampleId = 'sample';
+        const ownSongKind = () => 'midi', ownSongFile = () => null;
+        const $ = () => ({value: ''}), headers = () => ({});
+        const appendSongLyrics = () => {}, appendCustomWordlist = () => {};
+        const buildConvertParams = () => '', songTitleOf = () => '';
+        const withHostInfo = body => body;
+        const markEditorSeed = () => {}, clearEditorFile = () => {};
+        const syncBuilderValues = () => {}, renderParodyStatus = () => {}, saveForm = () => {};
+        let state, fresh;
+        const editorSessionData = () => state;
+        const sessionStorage = {setItem: (key, value) => {state = JSON.parse(value);}};
+        const fetch = async () => ({ok: true, json: async () => fresh});
+    """ + reseed + """
+        (async () => {
+            state = {phrases: ['フルイ'], tokensList: [['old']], results: [['old']],
+                     unitsList: [['old']], originalLines: ['old'],
+                     wordlist: {value: 'STATION'}, param: {VOWEL_RATIO: .8}};
+            const tokens = [[{surface_form: '手', pronunciation: 'テ', phrase: 0},
+                             {surface_form: 'を', pronunciation: 'オ', phrase: 0},
+                             {surface_form: '打つ', pronunciation: 'ウツ', phrase: 1}]];
+            fresh = {phrases: ['テオウツ'], tokensList: tokens, lyrics: '手を打つ'};
+            await reseedEditorSong();
+            assert.deepEqual(state.tokensList, tokens);
+            assert.equal(state.wordlist.value, 'STATION');
+            assert.equal(state.param.VOWEL_RATIO, .8);
+            assert.ok(!state.results && !state.unitsList && !state.originalLines);
+            fresh = {phrases: ['ツギ']};
+            await reseedEditorSong();
+            assert.ok(!state.tokensList, 'stale tokens survived a token-less seed');
+        })().catch(error => {console.error(error); process.exit(1);});
+    """
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 def test_difficult_audio_result_links_to_song_generation_tips():
@@ -2947,4 +3929,96 @@ def test_legacy_song_credit_keeps_both_saved_fields():
         assert.equal(legacySongCredit({}), "");
         """
     )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selection():
+    script = _script()
+    functions = "\n".join(_function_body(script, name) + "\n}" for name in (
+        "function automaticLyricsEnabled()", "function lyricsInput()",
+        "function readParodyText(", "function activeLyricsJson()",
+        "function syncJsonInputControls()", "function syncLyricsRecognition()",
+        "function currentWordlistName()", "function currentPreviewCustomList()",
+        "function editorUsesTextOnly(", "function editorTextPreviewList(",
+        "function advancedSettingsAvailable()",
+    ))
+    node = textwrap.dedent('''
+        const assert = require("node:assert/strict");
+        const elements = new Map(), facet = {disabled:false};
+        function $(id) {
+          if(!elements.has(id)) elements.set(id, {
+            value:"", checked:false, hidden:false, selectedOptions:[],
+            querySelectorAll:()=>[facet], setAttribute(){},
+          });
+          return elements.get(id);
+        }
+        const MAX_EDITOR_BYTES=4*1024*1024, simpleMode=false, wordlistGroups=[];
+        const editorWordlists=new Set(["stations","food"]);
+        let songInputMode="upload", customListBusy=false, menuClosed=false;
+        let songFile={name:"song.wav"};
+        const ownSongFile=()=>songFile;
+        const apiKey=()=>"";
+        $("auth").hidden=true;
+        const closeCustomListMenu=focus=>{assert.equal(focus,false);menuClosed=true;};
+        const activeCustomList=()=>null, showsEditorWordlist=()=>false;
+        const editorSessionWordlist=()=>null;
+        $("wordlist").value="stations";
+        $("wordlist-select").hidden=true;
+    ''') + functions + textwrap.dedent('''
+        const data={phrases:["歌詞"],results:[[]],unitsList:[[]],
+          wordlist:{text:"食べ物",filepath:"wordlists/food.csv"}};
+        $("lyrics").value=JSON.stringify(data);
+        $("adjust-lyrics").checked=true;
+        syncJsonInputControls();syncLyricsRecognition();
+        assert.equal($("builder-wordlist-trigger").disabled,true);
+        assert.equal($("wordlist-select").disabled,true);
+        assert.equal($("builder-wordlist-trigger-label").textContent,"食べ物（歌詞JSON）");
+        assert.equal(facet.disabled,true);
+        assert.equal($("adjust-lyrics").disabled,true);
+        assert.equal(currentWordlistName(),"food");
+        assert.equal(currentPreviewCustomList(),null);
+        assert.equal($("builder-text-only-notice").hidden,true);
+        assert.equal(advancedSettingsAvailable(),true);
+        const before=JSON.stringify(data);
+        editorWordlists.delete("food");
+        syncJsonInputControls();
+        assert.equal($("builder-text-only-notice").hidden,false);
+        assert.equal(currentWordlistName(),"");
+        assert.equal(advancedSettingsAvailable(),true,"text-only JSON unlocks settings");
+        assert.equal(currentPreviewCustomList().name,"食べ物");
+        assert.equal(currentPreviewCustomList().text,"id,original,surface,pronunciation");
+        assert.equal(JSON.stringify(data),before,"keep the imported JSON unchanged");
+        assert(menuClosed);
+        assert.equal($("wordlist").value,"stations");
+        data.wordlist={value:"ORIGINAL",text:"自作",csvText:"ねこ,ネコ"};
+        $("lyrics").value=JSON.stringify(data);
+        assert.equal(currentWordlistName(),"");
+        assert.deepEqual(currentPreviewCustomList(),{name:"自作",text:"ねこ,ネコ"});
+        assert.equal(advancedSettingsAvailable(),true,"custom JSON unlocks settings");
+        $("wordlist").value="";
+        songFile=null;
+        assert.equal(advancedSettingsAvailable(),false,"JSON still requires a song");
+        songFile={name:"song.wav"};
+        $("lyrics").value="{invalid";
+        assert.equal(advancedSettingsAvailable(),false,"invalid JSON cannot unlock settings");
+        $("lyrics").value="通常の歌詞";
+        assert.equal(advancedSettingsAvailable(),false,"plain lyrics still need a wordlist");
+        $("wordlist").value="stations";
+        syncJsonInputControls();syncLyricsRecognition();
+        assert.equal($("builder-text-only-notice").hidden,true);
+        assert.equal($("builder-wordlist-trigger").disabled,false);
+        assert.equal(facet.disabled,false);
+        assert.equal($("adjust-lyrics").disabled,false);
+        assert.equal(currentWordlistName(),"stations");
+        customListBusy=true;syncJsonInputControls();
+        assert.equal($("builder-wordlist-trigger").disabled,true);
+        customListBusy=false;$("lyrics").value=JSON.stringify(data);
+        $("auto-lyrics").checked=true;syncJsonInputControls();
+        $("wordlist").value="";
+        assert.equal(advancedSettingsAvailable(),false,"automatic lyrics ignore inactive JSON");
+        $("wordlist").value="stations";
+        assert.equal($("builder-wordlist-trigger").disabled,false);
+        assert.equal(currentWordlistName(),"stations");
+    ''')
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

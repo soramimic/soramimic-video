@@ -1211,23 +1211,13 @@ def _synthesize_chunk(
     """1チャンクを sing_frame_audio_query → frame_synthesis して WAV バイトを返す。"""
     query = _query_score(base, engine_url, teacher, score)
     try:
-        r2 = requests.post(
-            f"{base}/frame_synthesis",
-            params={"speaker": style_id},
-            json=query,
-            timeout=_TIMEOUT,
-        )
+        return _synthesize_frame_query(base, style_id, query)
     except requests.ConnectionError:
         # 接続断(合成中のクラッシュ or 死んでいる間のリクエスト)は呼び出し側で
         # 復帰待ち・再試行するため、そのまま送出する。
         raise
     except requests.RequestException as exc:
         raise _request_error(engine_url, exc) from exc
-    if r2.status_code != 200:
-        raise VoicevoxScoreError(
-            "frame_synthesis", r2.status_code, r2.text
-        )
-    return r2.content
 
 
 def _query_score(
@@ -1339,6 +1329,68 @@ def slice_frame_query(query: dict[str, Any], start: int, end: int) -> dict[str, 
     return result
 
 
+def _crossfade_frame_wavs(
+    left: bytes, right: bytes, left_frames: int, right_frames: int, overlap_frames: int,
+) -> bytes:
+    """Join decoder windows at their original frames, blending shared context."""
+    parts = []
+    for content, frames in ((left, left_frames), (right, right_frames)):
+        chunk = ScoreChunk(start_frame=0, notes=[
+            {"key": None, "lyric": "", "frame_length": frames},
+        ])
+        parts.append(_concat_chunks([content], [chunk], frames))
+    sample_rate, width, channels, _, left_pcm = _read_wav(parts[0])
+    right_rate, right_width, right_channels, _, right_pcm = _read_wav(parts[1])
+    if (sample_rate, width, channels) != (right_rate, right_width, right_channels):
+        raise RuntimeError("チャンク間でWAVフォーマットが一致しません")
+    overlap = overlap_frames * _samples_per_frame(sample_rate)
+    frame_bytes = width * channels
+    start = len(left_pcm) - overlap * frame_bytes
+    output = bytearray(left_pcm)
+    for sample in range(overlap):
+        weight = (sample + 1) / (overlap + 1)
+        for channel in range(channels):
+            offset = (sample * channels + channel) * width
+            a = int.from_bytes(left_pcm[start + offset:start + offset + width],
+                               "little", signed=width != 1)
+            b = int.from_bytes(right_pcm[offset:offset + width], "little", signed=width != 1)
+            value = round(a * (1 - weight) + b * weight)
+            output[start + offset:start + offset + width] = value.to_bytes(
+                width, "little", signed=width != 1)
+    output.extend(right_pcm[overlap * frame_bytes:])
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(width)
+        wav.setframerate(sample_rate)
+        wav.writeframes(bytes(output))
+    return buffer.getvalue()
+
+
+def _synthesize_frame_query(
+    base: str, style_id: int, query: dict[str, Any],
+) -> bytes:
+    """Recover decoder-only 500s with smaller overlapping windows of the same query."""
+    runproc.raise_if_cancelled()
+    response = requests.post(
+        f"{base}/frame_synthesis", params={"speaker": style_id}, json=query, timeout=_TIMEOUT,
+    )
+    if response.status_code == 200:
+        return response.content
+    error = VoicevoxScoreError("frame_synthesis", response.status_code, response.text)
+    total = len(query.get("f0", []))
+    if response.status_code != 500 or total <= 1:
+        raise error
+    middle = total // 2
+    context = min(LEAD_REST_FRAMES, (total - 2) // 4)
+    left_end, right_start = middle + context, middle - context
+    logger.warning("VOICEVOXの音声合成が失敗したため、%dフレームを分けて再試行します", total)
+    left = _synthesize_frame_query(base, style_id, slice_frame_query(query, 0, left_end))
+    right = _synthesize_frame_query(base, style_id, slice_frame_query(query, right_start, total))
+    return _crossfade_frame_wavs(left, right, left_end, total - right_start,
+                                 left_end - right_start)
+
+
 def _retained_ranges(
     start: int, end: int, skip_frames: Sequence[tuple[int, int]],
 ) -> list[tuple[int, int]]:
@@ -1371,15 +1423,9 @@ def _partial_chunk(
             for start, end in ranges:
                 runproc.raise_if_cancelled()
                 left, right = start - chunk.start_frame, end - chunk.start_frame
-                response = requests.post(
-                    f"{base}/frame_synthesis", params={"speaker": style_id},
-                    json=slice_frame_query(query, left, right), timeout=_TIMEOUT,
-                )
-                if response.status_code != 200:
-                    raise VoicevoxScoreError(
-                        "frame_synthesis", response.status_code, response.text,
-                    )
-                parts.append(response.content)
+                parts.append(_synthesize_frame_query(
+                    base, style_id, slice_frame_query(query, left, right),
+                ))
                 spans.append(ScoreChunk(start_frame=left, notes=[
                     {"key": None, "lyric": "", "frame_length": right - left},
                 ]))

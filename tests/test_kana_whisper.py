@@ -34,6 +34,20 @@ def test_local_alignment_recovers_dictionary_reading_missing_from_line_nbest():
     assert decision.reason == "kana-evidence"
 
 
+def test_alternate_split_requires_matching_kana_evidence():
+    surface = "二人今夜に駆け出してく"
+    default = "フタリコンヤニカケダシテク"
+    alternative = "フタリイマヨルニカケダシテク"
+
+    assert has_dictionary_reading_alternative(surface, default)
+    assert propose_dictionary_readings(surface, default, [default]) == ()
+    proposals = propose_dictionary_readings(surface, default, [alternative])
+    assert [(proposal.reading, proposal.surface) for proposal in proposals] == [
+        (alternative, "今夜"),
+    ]
+    assert choose_reading([default, proposals[0].reading], [alternative]).selected_index == 1
+
+
 def test_local_alignment_rejects_dictionary_reading_without_exact_context():
     proposals = propose_dictionary_readings(
         "心に炎を灯して 遠い未来まで",

@@ -54,7 +54,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import runproc, synth_estimate
+from . import completed_lyrics, runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
 from . import wordlist_zip as wordlist_zip_mod
 from .access_identity import canonical_email, valid_issuer, verify_access_email
@@ -174,11 +174,6 @@ WORDLIST_IMAGES_DIRNAME = "images"
 DEFAULT_SOUNDFONTS = ("/usr/share/sounds/sf2/FluidR3_GM.sf2",)
 
 
-def _is_status_temp_filename(name: str) -> bool:
-    """Return whether *name* is an atomic status-write temporary file."""
-    return name.startswith(f"{STATUS_FILENAME}.") and name.endswith(".tmp")
-
-
 def default_font() -> str:
     return "Hiragino Sans" if platform.system() == "Darwin" else "Noto Sans CJK JP"
 
@@ -285,6 +280,46 @@ def require_launch_wordlist(wordlist: str, *, status_code: int = 404) -> str:
     return name
 
 
+def editor_import_wordlists() -> list[str]:
+    """Packaged lists available for image-backed lyric imports in this instance."""
+    from .convert import WORDLISTS_DIR
+
+    names = {path.stem for path in WORDLISTS_DIR.glob("*.csv") if path.is_file()}
+    if is_public_mode() or is_simple_ui():
+        names &= launch_wordlist_names()
+    return sorted(names)
+
+
+def prepare_editor_import(payload: dict[str, Any], fallback: str = "") -> dict[str, Any]:
+    from .convert import resolve_wordlist
+    from .editor_io import custom_wordlist_sid, is_original_wordlist
+    from .editor_wordlist import is_text_only, text_only_import
+
+    if is_text_only(payload):
+        return text_only_import(payload)
+    if is_original_wordlist(payload) or custom_wordlist_sid(payload):
+        return payload
+    filepath = (payload.get("wordlist") or {}).get("filepath", "")
+    name = Path(filepath).stem if filepath else fallback.strip()
+    if not name:
+        return payload
+    if is_public_mode() or is_simple_ui():
+        if name in editor_import_wordlists():
+            payload = copy.deepcopy(payload)
+            payload["wordlist"] = {"filepath": f"{name}.csv"}
+            return payload
+    else:
+        for candidate in (filepath, name):
+            if not candidate:
+                continue
+            try:
+                resolve_wordlist(candidate)
+                return payload
+            except FileNotFoundError:
+                pass
+    return text_only_import(payload)
+
+
 async def read_midi_upload(midi: UploadFile) -> bytes:
     """アップロードされたMIDIを読む。Simple UIでは持ち込み自体を受け付けない。"""
     data = await midi.read(DEFAULT_MAX_MIDI_UPLOAD_BYTES + 1)
@@ -326,13 +361,17 @@ async def read_lyrics_upload(upload: UploadFile) -> str:
     if len(raw) > MAX_LYRICS_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="歌詞ファイルが大きすぎます")
     try:
-        text = raw.decode("utf-8-sig")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(
             status_code=400, detail="歌詞ファイルはUTF-8で保存してください"
         ) from exc
-    if "\x00" in text:
-        raise HTTPException(status_code=400, detail="歌詞ファイルに使用できない文字があります")
+    from soramimic_score import normalize_lyric_input
+
+    try:
+        normalize_lyric_input(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return text
 
 
@@ -663,7 +702,10 @@ class Job:
     # 大きな音源の送信が端末側で切れ、同じmultipartを再送したときの重複防止ID。
     # APIレスポンスには出さず、status.jsonにだけ保存する。
     submission_id: str | None = None
-    status: str = "queued"  # queued / running / done / canceled / error
+    status: str = "queued"  # queued / running / awaiting_review / done / canceled / error
+    review_approved: bool = False
+    review_started_at: float | None = None
+    queued_at: float | None = None
     stage: str | None = None
     stages: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
@@ -671,6 +713,7 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     stage_started_at: float | None = None
+    stage_detail: str | None = None
     stage_progress: int | None = None  # 現在工程の実進捗(%)
     stage_estimated_total: float | None = None  # 現在工程の所要秒の見積り
     log: deque[str] = field(default_factory=lambda: deque(maxlen=200))
@@ -730,6 +773,8 @@ class Job:
         if self.status == "running" and self.stage_started_at:
             elapsed = round(time.time() - self.stage_started_at, 1)
             d["stage_elapsed"] = elapsed
+            if self.stage_detail and self.stage == "analyze":
+                d["stage_detail"] = self.stage_detail
             pct, eta = self._stage_progress(elapsed)
             if pct is not None:
                 d["stage_progress"] = pct
@@ -750,6 +795,8 @@ class Job:
             d["video_url"] = f"/api/jobs/{self.id}/video"
             d["playback_url"] = f"/api/jobs/{self.id}/playback"
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
+            if self.video.suffix != ".wav" and completed_lyrics.result_path(self.dir):
+                d["editor_url"] = f"/api/jobs/{self.id}/lyrics"
             if self.video.suffix != ".wav":
                 d["credits_url"] = f"/api/jobs/{self.id}/credits"
             if self.thumbnail.exists():
@@ -909,7 +956,8 @@ def editor_setup_seed(
     - ``noteLengthAlpha`` … soramimic側UIの初期値。既定0.25
     - ``weightsList`` … 旧soramimic互換の計算済み重み
 
-    ``results``/``tokensList``/``unitsList`` は入れない——ブラウザ側で導出される。
+    ``tokensList`` は確定済みの読みと元歌詞の単語・文節境界を保持する。
+    ``results``/``unitsList`` はブラウザ側で導出される。
 
     wordlist_entry を渡すと単語リスト設定にそのまま使う(自作リスト用。
     export_editor と同じ約束)。渡さないときは wordlist 名から組み立て、
@@ -918,6 +966,7 @@ def editor_setup_seed(
     """
     from .convert import (
         engine_phrases,
+        project_conversion_tokens,
         project_note_length_weights,
         resolve_convert_settings,
         resolve_wordlist,
@@ -929,9 +978,11 @@ def editor_setup_seed(
     csv_path = resolve_wordlist(wordlist) if wordlist else None
     eff_where, coerced, alpha = resolve_convert_settings(csv_path, where, params)
     phrases = engine_phrases(project)
+    tokens = project_conversion_tokens(project, coerced)
     payload: dict[str, Any] = {
         "format": EXPORT_FORMAT,
         "phrases": phrases,
+        "tokensList": tokens,
         "param": coerced,
     }
     if wordlist_entry is None and csv_path is not None:
@@ -945,7 +996,7 @@ def editor_setup_seed(
     # 重みの計算にはエンジンが使うのと同じユニット列が要る。単語DBは要らないので
     # トークナイズだけを走らせる(変換はブラウザ側がやる)。ホストはα=1の生重みを
     # 渡し、αの設定と指数計算はsoramimic側が担当する。
-    units = run_tokenize(phrases, coerced)
+    units = run_tokenize(phrases, coerced, tokens_list=tokens)
     raw_weights = project_note_length_weights(project, 1.0)(units)
     note_alpha = alpha if "NOTE_LENGTH_WEIGHT" in (params or {}) else 0.25
     if raw_weights is not None:
@@ -1101,6 +1152,22 @@ def credit_notice_of(params: dict[str, Any]) -> str:
     if entry is not None and entry.get("credit_notice"):
         return str(entry["credit_notice"]).strip()
     return str(params.get("credit_notice") or "").strip()
+
+
+def video_metadata_of(params: dict[str, Any]) -> dict[str, str]:
+    """Display fields retained when editable lyrics return to Video."""
+    title = song_title_of(params)
+    credit = params.get("song_credit")
+    if _sample_entry_of(params) is not None or credit is None:
+        credit = " — ".join(filter(None, (
+            title, original_display_credit_of(params)
+            or credit_notice_of(params) or original_credit_of(params),
+        )))
+    return {
+        "songTitle": title,
+        "songCredit": str(credit),
+        "thumbnailWordlistLabel": str(params.get("thumbnail_wordlist_label") or ""),
+    }
 
 
 def midi_end_credit_of(params: dict[str, Any]) -> str:
@@ -1264,42 +1331,70 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         if job.params.get("input_kind") == "audio"
         else 2.0
     )
-    with _stage(job, "analyze", estimated_total=analyze_estimate):
-        lyrics_path = d / "lyrics.txt"
-        correct_lyrics = (
-            job.params.get("auto_lyrics") is False and lyrics_path.exists()
-        )
-        if job.params.get("input_kind") == "audio":
-            from .score_audio import analyze_audio
+    if job.review_approved:
+        from .project import Project
 
-            supplied_audio_lyrics = (
-                lyrics_path
-                if lyrics_path.exists()
-                and (
-                    job.params.get("auto_lyrics") is False
-                    or bool(job.params.get("sample_id"))
+        project = Project.load(d)
+    else:
+        with _stage(job, "analyze", estimated_total=analyze_estimate):
+            lyrics_path = d / "lyrics.txt"
+            correct_lyrics = (
+                job.params.get("auto_lyrics") is False and lyrics_path.exists()
+            )
+            editor_original_lyrics = None
+            if (d / "editor.json").exists():
+                from .editor_alignment import editor_analysis_lyrics
+                from .editor_io import editor_lyrics
+
+                editor_payload = json.loads((d / "editor.json").read_text(encoding="utf-8"))
+                prepared_lyrics = editor_analysis_lyrics(editor_payload)
+                if prepared_lyrics is not None:
+                    editor_original_lyrics = (
+                        lyrics_path.read_text(encoding="utf-8") if lyrics_path.exists()
+                        else editor_lyrics(editor_payload)
+                    )
+                    # Preserve the uploaded text/JSON; this derived input pins
+                    # their known reading before localization and forced alignment.
+                    lyrics_path = d / "editor-source-lyrics.txt"
+                    lyrics_path.write_text(prepared_lyrics, encoding="utf-8")
+                    correct_lyrics = True
+            if job.params.get("input_kind") == "audio":
+                from .score_audio import analyze_audio
+
+                supplied_audio_lyrics = (
+                    lyrics_path
+                    if lyrics_path.exists()
+                    and (
+                        correct_lyrics
+                        or bool(job.params.get("sample_id"))
+                    )
+                    else None
                 )
-                else None
-            )
-            project = analyze_audio(
-                d / "input.wav",
-                d,
-                # 手動指定・同梱サンプルの正式歌詞だけをforced alignmentへ渡す。
-                # アップロード音源の自動認識時はWhisperで歌詞行を決める。
-                lyrics_path=supplied_audio_lyrics,
-                adjust_lyrics=bool(job.params.get("adjust_lyrics", False)),
-                whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
-                device=config.get("audio_device"),
-                progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
-            )
-        else:
-            from .xfparse import analyze_midi
+                project = analyze_audio(
+                    d / "input.wav",
+                    d,
+                    # 手動指定・JSONの確定読み・サンプル歌詞をforced alignmentへ渡す。
+                    # アップロード音源の自動認識時はWhisperで歌詞行を決める。
+                    lyrics_path=supplied_audio_lyrics,
+                    editor_path=d / "editor.json" if (d / "editor.json").exists() else None,
+                    adjust_lyrics=bool(job.params.get("adjust_lyrics", False)),
+                    whisper_model=str(config.get("whisper_model") or DEFAULT_WHISPER_MODEL),
+                    device=config.get("audio_device"),
+                    progress=lambda value: setattr(job, "stage_progress", round(value * 100)),
+                    progress_detail=lambda value: setattr(job, "stage_detail", value),
+                )
+            else:
+                from .xfparse import analyze_midi
 
-            project = analyze_midi(d / "input.mid")
-            if lyrics_path.exists():
-                aligner = align_correct_lyrics if correct_lyrics else align_lines
-                aligner(project, lyrics_path.read_text(encoding="utf-8").splitlines())
-        project.save(d)
+                project = analyze_midi(d / "input.mid")
+                if lyrics_path.exists():
+                    aligner = align_correct_lyrics if correct_lyrics else align_lines
+                    aligner(project, lyrics_path.read_text(encoding="utf-8").splitlines())
+            if editor_original_lyrics:
+                # Original display text may use different breaks from the edited
+                # phrases. Its spelling does not replace the pinned pronunciation.
+                align_lines(project, editor_original_lyrics.splitlines())
+            project.save(d)
 
     preview_sec = float(job.params.get("preview") or 0)
     if preview_sec > 0:
@@ -1331,6 +1426,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             import_editor(
                 project, d, d / "editor.json",
                 sessions_dir=config.get("editor_sessions"),
+                fill_missing=not job.review_approved,
             )
             project.save(d)
     else:
@@ -1351,9 +1447,24 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             save_raw(raw, d)
             project.save(d)
 
+    if job.params.get("review_lyrics") and not job.review_approved:
+        from .lyric_review import ReviewRequired, prepare_review
+
+        prepare_review(project, d, custom_csv=custom_wordlist_path(job),
+                       title=song_title_of(job.params))
+        raise ReviewRequired()
+
     from .convert import wordlist_exhausted
 
-    job.wordlist_exhausted = wordlist_exhausted(project)
+    completed_lyrics.save_result(
+        project, d, title=song_title_of(job.params),
+        video_metadata=video_metadata_of(job.params),
+        text_only_label=(job.params.get("wordlist_label", "")
+                         if job.params.get("text_only_wordlist") else ""),
+    )
+    job.wordlist_exhausted = (
+        not job.params.get("text_only_wordlist") and wordlist_exhausted(project)
+    )
     layout, job.layout_source = resolve_layout(job, config)
     from .align import parse_granularity_override
 
@@ -1373,6 +1484,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             None if _sample_entry_of(job.params) is not None else job.params.get("song_credit")
         ),
         "thumbnail_wordlist_label": job.params.get("thumbnail_wordlist_label", ""),
+        "title_words": job.params.get("title_words"),
         "original_credit": original_credit_of(job.params),
         "original_display_credit": original_display_credit_of(job.params),
         "credit_notice": credit_notice_of(job.params),
@@ -1504,6 +1616,7 @@ def _stage(job: Job, name: str, estimated_total: float | None = None):
     job.stage = name
     job.stage_started_at = time.time()
     job.stage_progress = None
+    job.stage_detail = None
     job.stage_estimated_total = estimated_total
     logger.info("[job %s] ステージ開始: %s", job.id, name)
     yield
@@ -1615,6 +1728,9 @@ class JobManager:
                 client_hash=data.get("client_hash"),
                 submission_id=data.get("submission_id"),
                 status=data.get("status", "error"),
+                review_approved=bool(data.get("review_approved", False)),
+                review_started_at=data.get("review_started_at"),
+                queued_at=data.get("queued_at"),
                 stages=data.get("stages", []),
                 error=data.get("error"),
                 layout_source=data.get("layout_source"),
@@ -1911,8 +2027,11 @@ class JobManager:
             )
 
     def active_count(self) -> int:
-        """待機中+実行中のジョブ数(キュー上限の判定用。ワーカーは1本で全員共用)。"""
-        return sum(1 for j in self.jobs.values() if j.status in ("queued", "running"))
+        """Count queued, running and review-pending jobs against the admission limit."""
+        return sum(
+            1 for j in self.jobs.values()
+            if j.status in ("queued", "running", "awaiting_review")
+        )
 
     @staticmethod
     def _remaining_range(job: Job, now: float) -> tuple[int, int]:
@@ -1940,7 +2059,7 @@ class JobManager:
                     for candidate in self.jobs.values()
                     if candidate.status in {"queued", "running"}
                 ),
-                key=lambda candidate: (candidate.created_at, candidate.id),
+                key=lambda candidate: (candidate.queued_at or candidate.created_at, candidate.id),
             )
         ahead: list[Job] = []
         for candidate in active:
@@ -1957,7 +2076,7 @@ class JobManager:
                 "queue_ahead": len(ahead),
                 "queue_wait_min_seconds": low,
                 "queue_wait_max_seconds": high,
-                "queued_elapsed_seconds": max(0, round(now - job.created_at)),
+                "queued_elapsed_seconds": max(0, round(now - (job.queued_at or job.created_at))),
             }
         )
         return data
@@ -1978,7 +2097,9 @@ class JobManager:
 
     def status_counts(self) -> dict[str, int]:
         """metrics向けの状態別件数。投入と同時でもdict反復を壊さない。"""
-        counts = {name: 0 for name in ("queued", "running", "done", "error", "canceled")}
+        counts = dict.fromkeys(
+            ("queued", "running", "awaiting_review", "done", "error", "canceled"), 0
+        )
         with self._lock:
             for job in self.jobs.values():
                 if job.status in counts:
@@ -2016,20 +2137,24 @@ class JobManager:
         )
 
     def cleanup_expired(self, now: float | None = None) -> list[str]:
-        """SORAMIMIC_JOB_TTL_HOURS を過ぎた完了ジョブを削除し、そのIDを返す。
+        """Remove expired results and reviews, preserving queued and running jobs.
 
-        TTLが0以下(既定)なら何もしない。実行中・待機中のジョブは対象外。
+        Public reviews expire after 24 hours when result retention is disabled.
         """
         hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
-        if hours <= 0:
+        if hours <= 0 and not self.config.get("scrub_private_artifacts"):
             return []
-        deadline = (now or time.time()) - hours * 3600
+        current_time = now or time.time()
+        deadline = current_time - hours * 3600
+        review_deadline = current_time - (hours if hours > 0 else 24) * 3600
         with self._lock:
             expired = [
                 job
                 for job in self.jobs.values()
-                if job.status in ("done", "error", "canceled")
-                and (job.finished_at or job.created_at) <= deadline
+                if (hours > 0 and job.status in ("done", "error", "canceled")
+                    and (job.finished_at or job.created_at) <= deadline)
+                or (job.status == "awaiting_review"
+                    and (job.review_started_at or job.created_at) <= review_deadline)
             ]
             for job in expired:
                 self.jobs.pop(job.id, None)
@@ -2071,6 +2196,12 @@ class JobManager:
         # 持ち主判定・自動削除ができるよう status.json には残す
         if job.owner:
             data["owner"] = job.owner
+        if job.review_approved:
+            data["review_approved"] = True
+        if job.review_started_at is not None:
+            data["review_started_at"] = job.review_started_at
+        if job.queued_at is not None:
+            data["queued_at"] = job.queued_at
         if job.client_hash:
             data["client_hash"] = job.client_hash
         if job.submission_id:
@@ -2099,11 +2230,8 @@ class JobManager:
         # 同じディレクトリの一時ファイルに書いてから置換する。ジョブ実行中も
         # APIスレッドが status.json を読むので、書きかけの中身を読ませない
         status_path = job.dir / STATUS_FILENAME
-        # A rolling restart can briefly leave two managers writing the same job.
-        # Give each atomic write its own temporary file so one writer cannot move
-        # another writer's file before its os.replace call.
         tmp_path = status_path.with_name(
-            f"{STATUS_FILENAME}.{uuid.uuid4().hex}.tmp"
+            f".{status_path.name}.{uuid.uuid4().hex}.tmp"
         )
         try:
             tmp_path.write_text(
@@ -2113,23 +2241,84 @@ class JobManager:
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    def cancel(self, job_id: str, owner: str | None = None) -> Job:
-        job = self.get(job_id, owner)
-        if job.status not in ("queued", "running"):
+    def review_data(self, job_id: str, owner: str | None = None) -> dict[str, Any]:
+        from .lyric_review import load_review
+
+        with self._lock:
+            job = self.get(job_id, owner)
+            if job.status != "awaiting_review":
+                raise HTTPException(
+                    status_code=409, detail="このジョブは歌詞の確認待ちではありません"
+                )
+            return load_review(job.dir)
+
+    def save_review(self, job_id: str, payload: Any, owner: str | None = None) -> None:
+        from .lyric_review import REVIEW_DRAFT_FILENAME, validate_review
+
+        with self._lock:
+            job = self.get(job_id, owner)
+            if job.status != "awaiting_review":
+                raise HTTPException(
+                    status_code=409, detail="このジョブは歌詞の確認待ちではありません"
+                )
+            try:
+                data = validate_review(
+                    job.dir, payload, sessions_dir=self.config["editor_sessions"], draft=True
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            path = job.dir / REVIEW_DRAFT_FILENAME
+            temporary = path.with_suffix(".tmp")
+            try:
+                temporary.write_bytes(data)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def resume_review(self, job_id: str, payload: Any, owner: str | None = None) -> Job:
+        from .lyric_review import validate_review
+
+        with self._lock:
+            job = self.get(job_id, owner)
+            # A lost response may be retried after the worker has already started.
+            if job.review_approved:
+                return job
+            if job.status != "awaiting_review":
+                raise HTTPException(
+                    status_code=409, detail="このジョブは歌詞の確認待ちではありません"
+                )
+            try:
+                data = validate_review(
+                    job.dir, payload, sessions_dir=self.config["editor_sessions"]
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            (job.dir / "editor.json").write_bytes(data)
+            job.review_approved = True
+            job.params["parody_source"] = "editor"
+            job.queued_at = time.time()
+            job.status = "queued"
+            self._save(job)
+            self._queue.put(job)
             return job
-        job.cancel_event.set()
-        if job.status == "running":
-            # 実行中のNEUTRINO/ffmpeg等をプロセスグループごと止める。
-            # ワーカーは1本なので、実行中プロセス=このジョブのもの
-            runproc.kill_current()
-        else:
-            with self._lock:
+
+    def cancel(self, job_id: str, owner: str | None = None) -> Job:
+        with self._lock:
+            job = self.get(job_id, owner)
+            if job.status not in ("queued", "running", "awaiting_review"):
+                return job
+            job.cancel_event.set()
+            if job.status == "running":
+                # 実行中のNEUTRINO/ffmpeg等をプロセスグループごと止める。
+                # ワーカーは1本なので、実行中プロセス=このジョブのもの
+                runproc.kill_current()
+            else:
                 job.status = "canceled"
                 job.finished_at = time.time()
                 self._record_finished_usage(job, failed_stage=None)
                 self._cleanup_failed_artifacts(job)
                 self._save(job)
-        return job
+            return job
 
     def _cleanup_failed_artifacts(self, job: Job) -> bool:
         """Remove uploads/intermediates after errors and cancellation, retaining status."""
@@ -2140,7 +2329,7 @@ class JobManager:
             return False
         failures = False
         for child in root.iterdir():
-            if child.name == STATUS_FILENAME or _is_status_temp_filename(child.name):
+            if child.name in (STATUS_FILENAME, f"{STATUS_FILENAME}.tmp"):
                 continue
             try:
                 if child.is_dir() and not child.is_symlink():
@@ -2157,7 +2346,7 @@ class JobManager:
         """Keep only downloadable results; remove uploads and work products.
 
         A completed job may retain its final video (or audio preview), thumbnail,
-        and human-readable/source-credit sidecars.  Raw uploads, lyrics, separated
+        portable editing lyrics, and source-credit sidecars. Raw uploads, separated
         stems, synthesized audio, analysis JSON, and rendered frames are removed
         before the job becomes observable as ``done``.
         """
@@ -2175,12 +2364,18 @@ class JobManager:
         keep = {
             video,
             (root / STATUS_FILENAME).resolve(),
+            # Another process may still be finishing an atomic status write
+            # during a rolling restart. It contains status metadata, not uploads.
+            (root / f"{STATUS_FILENAME}.tmp").resolve(),
         }
         if job.thumbnail.is_file() and not job.thumbnail.is_symlink():
             keep.add(job.thumbnail.resolve())
         if video.suffix != ".wav":
             from .video import VIDEO_DIR
 
+            lyrics_result = completed_lyrics.result_path(root)
+            if lyrics_result is not None:
+                keep.add(lyrics_result.resolve())
             for name in ("credits.json", "credits.md"):
                 sidecar = root / VIDEO_DIR / name
                 if sidecar.is_file() and not sidecar.is_symlink():
@@ -2191,10 +2386,6 @@ class JobManager:
             try:
                 if path.is_dir() and not path.is_symlink():
                     path.rmdir()
-                elif _is_status_temp_filename(path.name):
-                    # Another process may still be finishing an atomic status write
-                    # during a rolling restart. It contains metadata, not uploads.
-                    continue
                 elif path.resolve() not in keep:
                     path.unlink(missing_ok=True)
             except OSError as exc:
@@ -2231,6 +2422,8 @@ class JobManager:
                         logger.exception("[job %s] 状態の保存に失敗", job.id)
 
     def _run_one(self, job: Job) -> None:
+        from .lyric_review import ReviewRequired
+
         if job.cancel_event.is_set():
             self._cleanup_failed_artifacts(job)
             job.status = "canceled"
@@ -2239,7 +2432,10 @@ class JobManager:
         handler = _JobLogHandler(job)
         logging.getLogger("soramimic_video").addHandler(handler)
         job.status = "running"
-        job.started_at = time.time()
+        if job.review_approved and job.started_at and job.review_started_at:
+            job.started_at += time.time() - job.review_started_at
+            job.review_started_at = None
+        job.started_at = job.started_at or time.time()
         runproc.set_cancel_check(job.cancel_event.is_set)
         self._save(job)
         final_status = "error"
@@ -2255,6 +2451,8 @@ class JobManager:
             if self.config.get("scrub_private_artifacts"):
                 self._cleanup_completed_artifacts(job)
             final_status = "done"
+        except ReviewRequired:
+            final_status = "awaiting_review"
         except runproc.Cancelled:
             logger.info("[job %s] 中断されました", job.id)
             self._cleanup_failed_artifacts(job)
@@ -2279,7 +2477,12 @@ class JobManager:
             # status are ready.  Polling clients therefore cannot race result TTL
             # cleanup against the final status write.
             with self._lock:
-                job.finished_at = time.time()
+                if final_status == "awaiting_review":
+                    if job.cancel_event.is_set():
+                        final_status = "canceled"
+                    else:
+                        job.review_started_at = time.time()
+                job.finished_at = None if final_status == "awaiting_review" else time.time()
                 if final_status in ("error", "canceled"):
                     self._cleanup_failed_artifacts(job)
                 job.status = final_status
@@ -2828,9 +3031,9 @@ def create_app(
                 data_handling = (
                     '<section aria-labelledby="data-handling-title">'
                     '<h2 id="data-handling-title">データの取り扱い</h2>'
-                    '<p>元の音源・歌詞と解析用データは処理終了時に削除し、'
+                    '<p>アップロードした元の音源・歌詞ファイルと解析用データは処理終了時に削除し、'
                     '失敗した場合は自動で再試行します。'
-                    f'完成動画は{retention_label}の保存期間を過ぎたものから'
+                    f'完成動画と編集用の歌詞データ（元歌詞を含みます）は{retention_label}の保存期間を過ぎたものから'
                     '定期的に自動削除します。'
                     '入力内容をAIモデルの学習には使用しません。</p>'
                     '</section>'
@@ -2843,6 +3046,17 @@ def create_app(
             .replace("<!-- usage-scope -->", usage_scope)
             .replace("<!-- usage-scope-toc -->", usage_scope_toc)
         )
+
+    @app.get("/app-bridge.js", include_in_schema=False)
+    def app_bridge_script() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "app-bridge.js", media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    @app.get("/metadata-change.js", include_in_schema=False)
+    def metadata_change_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "metadata-change.js", media_type="application/javascript")
 
     @app.get("/image-credits.js", include_in_schema=False)
     def image_credits_script() -> FileResponse:
@@ -3053,6 +3267,7 @@ def create_app(
         audio_analysis = configured_capabilities()
         conf: dict[str, Any] = {
             "auth_required": auth_required,
+            "editor_app_url": os.environ.get("SORAMIMIC_EDITOR_APP_URL", ""),
             "models": list_models(),
             "neutrino": bool(os.environ.get("NEUTRINO_ROOT")),
             "voicevox": _voicevox_config(),
@@ -3061,6 +3276,7 @@ def create_app(
             "layouts": builtin_layout_names(),
             # 単語リストを選んだときにUIが既定で当てるレイアウト(wordlist_catalog.json)
             "wordlist_layouts": load_wordlist_layouts(),
+            "editor_wordlists": editor_import_wordlists(),
             # 曲情報プレビューの「<単語リスト>で歌ってみた」に使う文章向け名称。
             "wordlist_phrases": load_wordlist_phrases(),
             # 制限付き画像を含みうる単語リストでは、生成ボタンのそばに
@@ -3156,6 +3372,40 @@ def create_app(
                 return next((row for row in rows if row.get("image")), first)
         except (FileNotFoundError, OSError):
             return None
+
+    @app.post("/api/wordlist-usage", dependencies=[Depends(_require_api_key)])
+    async def wordlist_usage(
+        request: Request,
+        wordlist: str = Form(""),
+        where: str = Form("", max_length=4096),
+        wordlist_text: str | UploadFile = File(""),
+    ) -> dict[str, Any]:
+        """Return the notice and guideline links for the currently eligible words."""
+        from .convert import resolve_wordlist
+        from .usage_notices import summarize_csv_usage, summarize_file_usage
+
+        if not _allow_expensive_get(request, cache_hit=True):
+            raise HTTPException(status_code=429, detail="単語リストの取得が続いています")
+        text = await read_wordlist_text(wordlist_text)
+        if text.strip():
+            if is_simple_ui():
+                raise HTTPException(status_code=404, detail="Not Found")
+            if wordlist.strip():
+                raise HTTPException(status_code=400, detail="単語リストは1つだけ指定してください")
+            try:
+                parsed = await run_in_threadpool(wordlist_csv_mod.parse, text.encode("utf-8"))
+                return await run_in_threadpool(summarize_csv_usage, parsed.text, where)
+            except (wordlist_csv_mod.WordlistCsvError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not wordlist.strip():
+            return {"required": False, "terms": []}
+        name = require_launch_wordlist(wordlist)
+        try:
+            return await run_in_threadpool(summarize_file_usage, resolve_wordlist(name), where)
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail="単語リストが見つかりません") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/wordlist-columns", dependencies=[Depends(_require_api_key)])
     def wordlist_columns(request: Request, wordlist: str = "") -> dict[str, Any]:
@@ -3356,18 +3606,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="そのサンプルはありません")
         return str(entry.get("title") or sample_id), str(entry.get("title_kana") or "")
 
-    @app.post("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
-    async def custom_thumbnail_preview(request: Request) -> Response:
-        """Return a private PNG for a text list supplied in the JSON body."""
-        from .custom_thumbnail_preview import render_custom_preview
-
-        if is_simple_ui():
-            raise HTTPException(status_code=404, detail="Not Found")
-        if not _allow_expensive_get(request, preview_session_limiter):
-            raise HTTPException(
-                status_code=429,
-                detail="プレビューの作成が続いています。少し待ってからお試しください。",
-            )
+    async def _title_request_json(request: Request, fields: set[str]) -> dict[str, str]:
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
             raise HTTPException(status_code=415, detail="JSON形式で送信してください")
         # Bound the actual stream, including chunked requests, before parsing JSON.
@@ -3382,13 +3621,71 @@ def create_app(
             payload = json.loads(data)
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise HTTPException(status_code=400, detail="JSONを読み取れません") from exc
-        fields = {"sample", "title", "wordlist_name", "wordlist_text"}
         if (
             not isinstance(payload, dict)
             or payload.keys() - fields
             or any(not isinstance(value, str) for value in payload.values())
         ):
             raise HTTPException(status_code=400, detail="プレビューの入力形式が不正です")
+        return payload
+
+    @app.post("/api/title-candidates", dependencies=[Depends(_require_api_key)])
+    async def title_candidates(request: Request) -> Response:
+        from .title_choices import find_title_choices
+
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(status_code=429, detail="少し待ってから候補を探してください")
+        payload = await _title_request_json(
+            request, {"sample", "title", "wordlist", "where", "wordlist_text"},
+        )
+        sample = payload.get("sample", "").strip()
+        title = payload.get("title", "").strip()
+        where = payload.get("where", "").strip()
+        if len(sample) > 200 or len(title) > 200 or len(where) > 8000:
+            raise HTTPException(status_code=400, detail="曲名または絞り込み条件が長すぎます")
+        if sample:
+            title, kana = _sample_title(sample)
+            title = kana or title
+        if not title:
+            raise HTTPException(status_code=400, detail="曲名が必要です")
+        csv_path, csv_text = None, ""
+        if "wordlist_text" in payload:
+            if is_simple_ui():
+                raise HTTPException(status_code=404, detail="Not Found")
+            try:
+                csv_text = wordlist_csv_mod.parse(payload["wordlist_text"].encode("utf-8")).text
+            except (wordlist_csv_mod.WordlistCsvError, UnicodeError) as exc:
+                raise HTTPException(
+                    status_code=400, detail="自作リストの形式を確認してください",
+                ) from exc
+        else:
+            csv_path = _asset_preview_wordlist_path(payload.get("wordlist", ""))
+        try:
+            choices = await run_in_threadpool(
+                find_title_choices, title, csv_path, where or None, csv_text=csv_text,
+            )
+        except (TimeoutError, ValueError, OSError, UnicodeError) as exc:
+            raise HTTPException(
+                status_code=422, detail="候補を取得できませんでした。自動のまま生成できます。",
+            ) from exc
+        return JSONResponse({"candidates": choices}, headers={"Cache-Control": "private, no-store"})
+
+    @app.post("/api/thumbnail-preview", dependencies=[Depends(_require_api_key)])
+    async def custom_thumbnail_preview(request: Request) -> Response:
+        """Return a private PNG for a text list supplied in the JSON body."""
+        from .custom_thumbnail_preview import render_custom_preview
+        from .title_choices import parse_title_words, selected_rows
+
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(
+                status_code=429,
+                detail="プレビューの作成が続いています。少し待ってからお試しください。",
+            )
+        payload = await _title_request_json(
+            request, {"sample", "title", "wordlist_name", "wordlist_text", "title_words"},
+        )
         sample = payload.get("sample", "").strip()
         title = payload.get("title", "").strip()
         name = payload.get("wordlist_name", "").strip() or "自作リスト"
@@ -3413,8 +3710,15 @@ def create_app(
                 status_code=400, detail="自作リストの形式または容量を確認してください",
             ) from exc
         try:
+            selection = parse_title_words(payload.get("title_words", ""))
+            if selection is not None:
+                selected_rows(selection, custom.text)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
             content = await run_in_threadpool(
                 render_custom_preview, custom.text, title, name, title_kana,
+                **({"title_words": selection} if selection is not None else {}),
             )
         except TimeoutError as exc:
             raise HTTPException(
@@ -3444,6 +3748,7 @@ def create_app(
         images: bool = True,
         noncommercial_fanwork: bool = False,
         wordlist_label: str = "",
+        title_words: str = "",
     ) -> Response:
         """生成前に出す仮サムネ(おまかせ確認モーダルのプレビュー)。
 
@@ -3471,6 +3776,7 @@ def create_app(
         """
         from .convert import parse_convert_params
         from .thumbnail_preview import PreviewSpec, render_slot
+        from .title_choices import parse_title_words
 
         if len(wordlist_label) > 100:
             raise HTTPException(status_code=400, detail="単語リスト名は100文字以内です")
@@ -3503,14 +3809,17 @@ def create_app(
                 wordlist_label=wordlist_label,
                 title_kana=title_kana,
                 allow_noncommercial_fanwork=noncommercial_fanwork,
+                title_words=parse_title_words(title_words),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         # User-supplied titles and display names are private. Render in PrivateTmp and
         # return bytes so neither the title nor its derived PNG enters a shared
         # on-disk cache.  Catalog samples remain safe to cache across sessions.
-        if not catalog_sample or wordlist_label.strip():
+        if not catalog_sample or wordlist_label.strip() or spec.title_words is not None:
             if not _allow_expensive_get(request, preview_session_limiter):
                 raise HTTPException(
                     status_code=429,
@@ -3611,13 +3920,20 @@ def create_app(
             raise HTTPException(status_code=404, detail="Not Found")
         from .align import parse_granularity_override
         from .editor_io import build_editor_preview
+        from .editor_wordlist import is_text_only
 
         raw = await editor.read()
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="editorのJSONが読めません") from exc
-        if is_public_mode():
+        if isinstance(payload, dict) and isinstance(payload.get("unitsList"), list):
+            try:
+                payload = prepare_editor_import(payload, wordlist)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        text_only = isinstance(payload, dict) and is_text_only(payload)
+        if is_public_mode() and not text_only:
             from .editor_io import custom_wordlist_sid, is_original_wordlist
 
             canonical = require_launch_wordlist(wordlist, status_code=422)
@@ -3633,8 +3949,8 @@ def create_app(
             payload["wordlist"] = {"filepath": f"{canonical}.csv"}
             wordlist = canonical
         # 編集中のレイアウトがあれば、そのフィルタ・要素でキューを組む(なければ既定)
-        layout_obj = load_layout(None)
-        if layout_json.strip():
+        layout_obj = load_layout("lyrics_text" if text_only else None)
+        if layout_json.strip() and not text_only:
             try:
                 layout_obj = parse_layout(json.loads(layout_json), "layout_json")
             except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
@@ -3781,6 +4097,7 @@ def create_app(
         song_title: str = Form(""),
         song_credit: str = Form("", max_length=2000),
         thumbnail_wordlist_label: str = Form("", max_length=100),
+        title_words: str = Form("", max_length=4096),
         original_credit: str = Form(""),
         credit_notice: str = Form(""),
         allow_noncommercial_fanwork: bool = Form(False),
@@ -3795,6 +4112,12 @@ def create_app(
         # モバイル回線で大きな音源送信が切れた場合の安全な再送ID。
         submission_id: str = Form(""),
     ) -> dict[str, Any]:
+        from .title_choices import parse_title_words, selected_rows
+
+        try:
+            selected_title_words = parse_title_words(title_words)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         submission_id = submission_id.strip()
         if submission_id and not re.fullmatch(r"[0-9a-f]{32}", submission_id):
             raise HTTPException(status_code=400, detail="送信IDが不正です")
@@ -3808,6 +4131,21 @@ def create_app(
         input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
             await resolve_song_input(midi, audio, sample_id)
         )
+        editor_bytes = None
+        editor_payload: Any = None
+        editor_original = False
+        if editor is not None and editor.filename:
+            if is_simple_ui():
+                raise HTTPException(status_code=422, detail="この入力形式は現在利用できません")
+            from .editor_io import MAX_EDITOR_BYTES, validate_editor_upload
+
+            editor_bytes = await editor.read(MAX_EDITOR_BYTES + 1)
+            if len(editor_bytes) > MAX_EDITOR_BYTES:
+                raise HTTPException(status_code=413, detail="歌詞JSONは4MB以下にしてください")
+            try:
+                editor_payload = validate_editor_upload(editor_bytes)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         if lyrics_file is not None and lyrics_file.filename:
             uploaded_lyrics = await read_lyrics_upload(lyrics_file)
             if lyrics.strip() and uploaded_lyrics.strip() != lyrics.strip():
@@ -3829,6 +4167,18 @@ def create_app(
                 raise HTTPException(
                     status_code=422, detail="選択した曲の歌詞が見つかりません"
                 ) from exc
+        if editor_payload is not None and input_kind == "audio":
+            from .editor_audio import editor_audio_lines, editor_word_boundaries
+
+            try:
+                fixed_lines = editor_audio_lines(editor_payload)
+                editor_word_boundaries(editor_payload)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            lyrics = "\n".join(text for text, _ in fixed_lines)
+            auto_lyrics = False
+            adjust_lyrics = False
+            auto_phrase_lyrics = False
         if input_kind == "audio" and not launch_sample_id:
             if auto_lyrics:
                 # 自動認識時は、古い画面や直接APIから残った歌詞を解析に混ぜない。
@@ -3840,6 +4190,13 @@ def create_app(
                 )
         elif not auto_lyrics and not lyrics.strip():
             raise HTTPException(status_code=422, detail="正解歌詞を入力してください")
+        if input_kind == "audio":
+            from soramimic_score import normalize_lyric_input
+
+            try:
+                normalize_lyric_input(lyrics)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if adjust_lyrics and (input_kind != "audio" or auto_lyrics or not lyrics.strip()):
             raise HTTPException(
                 status_code=422,
@@ -3863,7 +4220,7 @@ def create_app(
             song_title = str(entry.get("title") or launch_sample_id)
         wordlist_text = await read_wordlist_text(wordlist_text)
         if (is_public_mode() or is_simple_ui()) and (
-            (editor is not None and bool(editor.filename))
+            (is_simple_ui() and editor is not None and bool(editor.filename))
             or (wordlist_csv is not None and bool(wordlist_csv.filename))
             or (is_simple_ui() and bool(wordlist_text.strip()))
             or any(bool(image.filename) for image in wordlist_images)
@@ -3873,34 +4230,32 @@ def create_app(
                 detail="この入力形式は現在利用できません",
             )
         client_hash = None if quota_exempt or not is_public_mode() else _client_hash(request)
-        editor_bytes = None
-        editor_payload: Any = None
-        if editor is not None and editor.filename:
-            editor_bytes = await editor.read()
+        if editor_payload is not None:
+            from .editor_wordlist import is_text_only
+
             try:
-                editor_payload = json.loads(editor_bytes)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(
-                    status_code=400, detail="editorのJSONが読めません"
-                ) from exc
+                editor_payload = prepare_editor_import(editor_payload, wordlist)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             if is_public_mode():
                 from .editor_io import custom_wordlist_sid, is_original_wordlist
 
-                canonical = require_launch_wordlist(wordlist, status_code=422)
-                if not canonical:
+                editor_original = is_original_wordlist(editor_payload)
+                if custom_wordlist_sid(editor_payload):
                     raise HTTPException(
-                        status_code=422, detail="単語リストを選んでください"
+                        status_code=422, detail="単語データを含む歌詞JSONを書き出してください",
                     )
-                if is_original_wordlist(editor_payload) or custom_wordlist_sid(
-                    editor_payload
-                ):
-                    raise HTTPException(
-                        status_code=422, detail="この入力形式は現在利用できません"
+                if not editor_original:
+                    entry = editor_payload.get("wordlist") or {}
+                    filepath = entry.get("filepath", "")
+                    canonical = require_launch_wordlist(
+                        Path(filepath).stem if filepath else wordlist, status_code=422,
                     )
-                editor_payload = copy.deepcopy(editor_payload)
-                editor_payload["wordlist"] = {"filepath": f"{canonical}.csv"}
-                editor_bytes = json.dumps(editor_payload, ensure_ascii=False).encode()
-                wordlist = canonical
+                    if not canonical:
+                        raise HTTPException(status_code=422, detail="単語リストを選んでください")
+                    editor_payload["wordlist"] = {"filepath": f"{canonical}.csv"}
+                    wordlist = canonical
+            editor_bytes = json.dumps(editor_payload, ensure_ascii=False).encode()
         # 自作の単語リスト(CSV/画像入りzip、または貼り付けテキスト+画像)。
         # ジョブを走らせる前にここで検証して弾く
         custom: wordlist_zip_mod.WordlistZip | None = None
@@ -4044,7 +4399,7 @@ def create_app(
                     wordlist = (
                         Path(resolved).stem if resolved.endswith(".csv") else resolved
                     )
-        if is_public_mode() and wordlist and custom is None:
+        if is_public_mode() and wordlist and custom is None and not editor_original:
             wordlist = require_launch_wordlist(wordlist, status_code=422)
         if is_simple_ui() and preview <= 0:
             launch_wordlists = {
@@ -4063,6 +4418,38 @@ def create_app(
                 "custom_description" if "description" in custom_columns else "custom_original"
             )
             layout_json = ""
+        text_only_wordlist = isinstance(editor_payload, dict) and is_text_only(editor_payload)
+        if text_only_wordlist:
+            layout, layout_json = "lyrics_text", ""
+        if selected_title_words is not None:
+            from .convert import resolve_convert_settings, resolve_wordlist
+
+            try:
+                title_where = where.strip() or None
+                if isinstance(editor_payload, dict) and is_original_wordlist(editor_payload):
+                    title_csv = wordlist_csv_mod.parse_editor_text(
+                        original_wordlist_text(editor_payload) or "",
+                    ).text
+                    title_where = None
+                elif isinstance(editor_payload, dict) and custom_wordlist_sid(editor_payload):
+                    assert session_csv is not None
+                    title_csv = session_csv.read_text(encoding="utf-8")
+                    title_where = None
+                elif custom is not None:
+                    title_csv = custom.csv.text
+                else:
+                    title_csv_path = resolve_wordlist(wordlist)
+                    title_csv = title_csv_path.read_text(encoding="utf-8")
+                    if isinstance(editor_payload, dict):
+                        entry = editor_payload.get("wordlist") or {}
+                        top = editor_payload.get("where")
+                        title_where = top if isinstance(top, str) else entry.get("where")
+                    title_where, _, _ = resolve_convert_settings(title_csv_path, title_where)
+                selected_rows(selected_title_words, title_csv, title_where)
+            except (ValueError, OSError) as exc:
+                raise HTTPException(
+                    status_code=422, detail="タイトルの単語を現在のリストから選び直してください",
+                ) from exc
         # 投入前に検証してエラーはフォームに返す(ジョブを走らせてから落とさない)
         if layout_json:
             try:
@@ -4082,6 +4469,7 @@ def create_app(
             "voicevox_style": voicevox_style,
             "auto_octave": auto_octave,
             "transpose": transpose,
+            "review_lyrics": False,
             "preview": max(0.0, min(preview, 60.0)),
             "preview_mode": (
                 preview_mode.strip() if preview_mode.strip() in PREVIEW_MODES else ""
@@ -4106,6 +4494,7 @@ def create_app(
                 song_credit.strip() if "song_credit" in await request.form() else None
             ),
             "thumbnail_wordlist_label": thumbnail_wordlist_label.strip(),
+            "title_words": selected_title_words,
             "original_credit": original_credit.strip(),
             "credit_notice": credit_notice.strip(),
             "allow_noncommercial_fanwork": allow_noncommercial_fanwork,
@@ -4133,6 +4522,11 @@ def create_app(
             params["credit_notice"] = credit_notice_of(params)
         params["song_label"] = new_job_song_label(params)
         params["wordlist_label"] = job_wordlist_label(params)
+        if text_only_wordlist:
+            params["text_only_wordlist"] = True
+            params["wordlist_label"] = editor_payload["wordlist"]["text"]
+            if not params["thumbnail_wordlist_label"]:
+                params["thumbnail_wordlist_label"] = params["wordlist_label"]
         # レンダリング必須のサンプル帰属表記も受付時に確定する。ワーカー開始後に
         # ローカルmanifestを読み直して空になると、完成動画から表記が欠落するため。
         if params["sample_id"]:
@@ -4236,6 +4630,63 @@ def create_app(
         return manager.job_dict(
             manager.cancel(job_id, owner_of(request)), with_log=False
         )
+
+    @app.get("/api/jobs/{job_id}/lyrics", dependencies=[Depends(_require_api_key)])
+    def get_completed_lyrics(job_id: str, request: Request) -> JSONResponse:
+        job = manager.get(job_id, owner_of(request))
+        path = completed_lyrics.result_path(job.dir)
+        if job.status != "done" or job.video is None or job.video.suffix == ".wav" or path is None:
+            raise HTTPException(status_code=404, detail="編集用の歌詞データがありません")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Older completed results predate display metadata; their saved job fields
+        # still supply the credit without changing the stored lyric artifact.
+        if "videoMetadata" not in payload:
+            payload["videoMetadata"] = video_metadata_of(job.params)
+        return JSONResponse(payload, headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{completed_lyrics.FILENAME}"',
+        })
+
+    @app.get("/api/jobs/{job_id}/review", dependencies=[Depends(_require_api_key)])
+    def get_lyric_review(job_id: str, request: Request) -> JSONResponse:
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        return JSONResponse(
+            manager.review_data(job_id, owner_of(request)),
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    async def read_review_upload(job_id: str, request: Request, editor: UploadFile) -> Any:
+        from .lyric_review import MAX_REVIEW_BYTES
+
+        if is_simple_ui():
+            raise HTTPException(status_code=404, detail="Not Found")
+        owner = owner_of(request)
+        manager.get(job_id, owner)
+        raw = await editor.read(MAX_REVIEW_BYTES + 1)
+        if len(raw) > MAX_REVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="編集データが大きすぎます")
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="編集データのJSONが読めません") from exc
+        return payload
+
+    @app.put("/api/jobs/{job_id}/review", dependencies=[Depends(_require_api_key)])
+    async def save_lyric_review(
+        job_id: str, request: Request, editor: UploadFile = File(...),
+    ) -> dict[str, bool]:
+        payload = await read_review_upload(job_id, request, editor)
+        await run_in_threadpool(manager.save_review, job_id, payload, owner_of(request))
+        return {"saved": True}
+
+    @app.post("/api/jobs/{job_id}/resume", dependencies=[Depends(_require_api_key)])
+    async def resume_lyric_review(
+        job_id: str, request: Request, editor: UploadFile = File(...),
+    ) -> dict[str, Any]:
+        payload = await read_review_upload(job_id, request, editor)
+        job = await run_in_threadpool(manager.resume_review, job_id, payload, owner_of(request))
+        return manager.job_dict(job, with_log=False)
 
     @app.get("/api/jobs/{job_id}/credits", dependencies=[Depends(_require_api_key)])
     def get_credits(job_id: str, request: Request, download: bool = False) -> FileResponse:

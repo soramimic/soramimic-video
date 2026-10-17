@@ -497,9 +497,9 @@ def _assert_no_shared_notes(project: Project) -> None:
             assert c == 1, f"音符 {nid} が {c} 単語に二重割り当て"
 
 
-def _repeated_layer_project(kana: str = "ダ" * 9) -> Project:
+def _repeated_layer_project(kana: str = "ダ" * 9, *, moras: list[str] | None = None) -> Project:
     """1モーラを3合成スロットで歌うプロジェクト。"""
-    moras = split_fine_moras(kana)
+    moras = split_fine_moras(kana) if moras is None else moras
     mora_ids = [f"m{i}" for i in range(len(moras))]
     performed = [
         {
@@ -538,6 +538,68 @@ def _repeated_layer_project(kana: str = "ダ" * 9) -> Project:
     project = Project(SongInfo("", 480, tempo_map=[[0, 500000]]))
     apply_lyric_layers(project, layers)
     return project
+
+
+def test_layered_conversion_keeps_original_boundaries_and_mora_ownership(tmp_path):
+    from soramimic_video.api import editor_setup_seed
+
+    project = _repeated_layer_project("テオウツ")
+    project.lines[0].original_text = project.lines[0].xf_surface = "手を打つ"
+    project.lyric_layers["canonical"][0]["text"] = "手を打つ"
+    project.lyric_layers["canonical_text"] = "手を打つ"
+    before = copy.deepcopy(project)
+    payload = editor_setup_seed(project, "", None, {})
+    units = run_tokenize(payload["phrases"], tokens_list=payload["tokensList"])[0]
+    assert [u["pronunciation"] for u in units] == ["テ", "オ", "ウ", "ツ"]
+    assert [u["phrase"] for u in units] == [0, 0, 1, 1]
+    assert _layer_unit_note_indices(project, project.lines[0], units) == [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11],
+    ]
+    csv_path = tmp_path / "words.csv"
+    csv_path.write_text("id,original,surface,pronunciation\n0,手,手,テ", encoding="utf-8")
+    convert_project(project, str(csv_path))
+    assert project.notes == before.notes and project.lyric_layers == before.lyric_layers
+    _assert_no_shared_notes(project)
+
+
+@pytest.mark.parametrize("kana", ["キャァカ", "アッァカ", "カンィナ", "コーァカ"])
+def test_layered_conversion_uses_scores_moras_for_adjacent_small_kana(tmp_path, kana):
+    from soramimic_score import kana_to_moras
+
+    project = _repeated_layer_project(kana, moras=list(kana_to_moras(kana)))
+    before = copy.deepcopy(project)
+    units = run_tokenize(engine_phrases(project))[0]
+    groups = _layer_unit_note_indices(project, project.lines[0], units)
+    assert set(index for group in groups for index in group) == set(project.lines[0].note_ids)
+    words = tmp_path / "words.csv"
+    words.write_text(f"id,original,surface,pronunciation\n0,空,空,{engine_phrases(project)[0]}")
+    convert_project(project, str(words))
+    assert project.notes == before.notes and project.lyric_layers == before.lyric_layers
+    _assert_no_shared_notes(project)
+
+
+def test_edited_phrase_does_not_join_moras_across_canonical_rows():
+    project = _repeated_layer_project("カア")
+    layers = project.lyric_layers
+    layers["canonical_text"] = "カァ"
+    layers["canonical"] = [
+        {"utterance_id": "u0", "text": "カ", "kana": "カ", "mora_ids": ["m0"]},
+        {"utterance_id": "u1", "text": "ァ", "kana": "ァ", "mora_ids": ["m1"]},
+    ]
+    for slot in layers["synthesis_plan"]:
+        if slot["mora_ids"] == ["m1"]:
+            slot["utterance_id"] = "u1"
+            if not slot["continuation"]:
+                slot["kana"] = "ァ"
+    apply_lyric_layers(project, layers)
+    line = copy.deepcopy(project.lines[0])
+    line.canonical_kana = "カァ"
+    line.canonical_mora_ids = ["m0", "m1"]
+    line.note_ids = list(range(6))
+    original = copy.deepcopy(project)
+    units = run_tokenize(["カア"])[0]
+    assert _layer_unit_note_indices(project, line, units) == [list(range(6))]
+    assert project == original
 
 
 @pytest.mark.parametrize(
@@ -684,10 +746,10 @@ def test_layered_analysis_only_seed_uses_same_normalized_units():
     before = copy.deepcopy(project)
     payload = editor_setup_seed(project, "", None, {})
     assert payload["phrases"] == engine_phrases(project)
-    units = run_tokenize(payload["phrases"])
+    units = run_tokenize(payload["phrases"], tokens_list=payload["tokensList"])
     assert payload["noteLengthRawList"] == project_note_length_weights(project, 1.0)(units)
     assert payload["noteLengthRawList"][0] == pytest.approx([0.3] * 5)
-    assert "results" not in payload and "tokensList" not in payload
+    assert "results" not in payload and payload["tokensList"]
     assert project == before
 
 
@@ -774,6 +836,20 @@ def test_layered_conversion_rejects_text_mismatch_instead_of_fuzzy_mapping(tmp_p
             project, converted,
             wordlist=_empty_wordlist(tmp_path), where=None, params={},
         )
+
+
+def test_layered_conversion_does_not_use_display_group_as_acoustic_identity(tmp_path: Path):
+    project = _repeated_layer_project()
+    # Supplied spelling groups and acoustic utterances have independent indices.
+    project.lines[0].original_text = "入力表記の表示グループ"
+    project.lines[0].original_line_index = 12
+    apply_converted_lines(
+        project, _converted_repeated_line(),
+        wordlist=_empty_wordlist(tmp_path), where=None, params={},
+    )
+    assert project.parody is not None
+    assert project.parody.lines[0].words[0].note_ids == list(range(9))
+    assert project.parody.lines[0].words[1].note_ids == list(range(9, 27))
 
 
 def test_layered_note_length_weights_follow_mora_owned_slots():
@@ -1324,7 +1400,7 @@ def _weights_spy(monkeypatch) -> dict:
 
     def spy(
         phrases, csv_path, where, params, weights_per_line=None, cache_db=True,
-        word_boundaries_per_line=None,
+        word_boundaries_per_line=None, *, tokens_list=None,
     ):
         seen["params"] = params
         seen["weights_per_line"] = weights_per_line
@@ -1338,12 +1414,12 @@ def _weights_spy(monkeypatch) -> dict:
             return real(
                 phrases, csv_path, where, params,
                 weights_per_line=wrapped, cache_db=cache_db,
-                word_boundaries_per_line=word_boundaries_per_line,
+                word_boundaries_per_line=word_boundaries_per_line, tokens_list=tokens_list,
             )
         return real(
             phrases, csv_path, where, params,
             weights_per_line=weights_per_line, cache_db=cache_db,
-            word_boundaries_per_line=word_boundaries_per_line,
+            word_boundaries_per_line=word_boundaries_per_line, tokens_list=tokens_list,
         )
 
     monkeypatch.setattr(convert_mod, "run_convert", spy)

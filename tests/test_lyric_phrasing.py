@@ -1,5 +1,6 @@
 import copy
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,7 +164,7 @@ def test_distant_notes_cannot_cross_phrase_boundaries(crossing, tmp_path):
         ids[4], ids[24] = ids[24], ids[4]
     original = copy.deepcopy(project)
 
-    prepare_lyric_phrases(project, enabled=True, strategy="whisper")
+    prepare_lyric_phrases(project, strategy="whisper")
 
     assert len(project.lines) == 2
     assert project.lines[0].canonical_mora_ids == [f"u0-m{i}" for i in range(28)]
@@ -227,6 +228,72 @@ def test_default_phrasing_preserves_full_width_and_mixed_whitespace(separator):
         range(len(project.notes)),
     )
     assert project.lyric_layers == layers
+
+
+@pytest.mark.parametrize("failure", ["surface-mismatch", "unconsumed-input", "empty-part",
+                                      "invalid-part-reading"])
+def test_failed_surface_analysis_is_recorded_without_losing_lyrics_or_notes(monkeypatch, failure):
+    import jphrase
+
+    parts = [{"surface_form": TEXT[:10], "pronunciation": KANA[:14]},
+             {"surface_form": TEXT[10:], "pronunciation": KANA[14:]}]
+    if failure == "surface-mismatch":
+        parts[1]["surface_form"] = TEXT[11:]
+    elif failure == "unconsumed-input":
+        parts.pop()
+    elif failure == "empty-part":
+        parts[1]["surface_form"] = ""
+    else:
+        parts[0]["pronunciation"] = "ア★サ"
+    monkeypatch.setattr(jphrase, "PhraseSplitter", lambda **_:
+                        SimpleNamespace(split_text=lambda *_args, **_kwargs: parts))
+    project = _project(whisper_at=(14, 28))
+    notes, layers = copy.deepcopy(project.notes), copy.deepcopy(project.lyric_layers)
+    prepare_lyric_phrases(project)
+    assert [line.original_text for line in project.lines] == [TEXT]
+    assert project.notes == notes and project.lyric_layers == layers
+    diagnostic, = project.lyric_phrasing["diagnostics"]
+    assert diagnostic["status"] == "unmapped"
+    assert diagnostic["reason"] == failure
+    assert project.lyric_phrasing["decisions"] == []
+
+
+@pytest.mark.parametrize("first", ["ｶﾞﾗｽ", "カ゛ラス", "か\u3099らす"])
+@pytest.mark.parametrize("gap", ["　", " \t　 "])
+def test_normalized_phrase_tokens_map_back_to_original_characters(monkeypatch, first, gap):
+    import jphrase
+
+    text = first + gap + "か\u3099くせい" + gap + "ＡＢ"
+    parts = [{"surface_form": "ガラス" if not first.startswith("か") else "がらす",
+              "pronunciation": "ガラス"},
+             {"surface_form": "がくせい", "pronunciation": "ガクセイ"},
+             {"surface_form": "AB", "pronunciation": "エービー"}]
+    monkeypatch.setattr(jphrase, "PhraseSplitter", lambda **_:
+                        SimpleNamespace(split_text=lambda *_args, **_kwargs: parts))
+    diagnostic = []
+    boundaries = _surface_boundaries(text, "ガラスガクセイエービー", diagnostics=diagnostic)
+    assert boundaries == [(len(first + gap), 3), (len(text) - 2, 7)]
+    assert diagnostic[0]["status"] == "mapped"
+    assert diagnostic[0]["consumed_characters"] == len(text)
+    assert [text[a:b] for a, b in zip([0, *[t for t, _ in boundaries]],
+                                     [*[t for t, _ in boundaries], len(text)], strict=True)] == [
+        first + gap, "か\u3099くせい" + gap, "ＡＢ",
+    ]
+
+
+def test_no_safe_boundary_has_a_different_status_from_unmatched_reading(monkeypatch):
+    import jphrase
+
+    monkeypatch.setattr(jphrase, "PhraseSplitter", lambda **_:
+                        SimpleNamespace(split_text=lambda *_args, **_kwargs: [
+                            {"surface_form": "ガラス", "pronunciation": "ガラス"}]))
+    complete, unmatched = [], []
+    assert _surface_boundaries("ガラス", "ガラス", diagnostics=complete) == []
+    assert _surface_boundaries("ガラス", "タキビ", diagnostics=unmatched) == []
+    assert complete[0]["status"] == "no-boundaries"
+    assert complete[0]["consumed_characters"] == 3
+    assert unmatched[0]["status"] == "unmapped"
+    assert unmatched[0]["reason"] == "reading-mismatch"
 
 
 def test_convert_defaults_reach_engine_and_captions_and_disable_restores_input(

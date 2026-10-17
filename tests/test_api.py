@@ -81,6 +81,8 @@ def wait_done(client: TestClient, job_id: str, **kw) -> dict:
     raise AssertionError("ジョブが終わりません")
 
 
+FAKE_EDITOR = b'{"format":"soramimic-editor/1","results":[[]],"unitsList":[[]]}'
+
 def submit(client: TestClient, **fields) -> str:
     files = {"midi": ("song.mid", FAKE_MIDI, "audio/midi")}
     if "editor" in fields:
@@ -91,7 +93,7 @@ def submit(client: TestClient, **fields) -> str:
 
 
 def test_job_flow_with_editor(client):
-    job_id = submit(client, editor=b'{"format": "soramimic-editor/1"}')
+    job_id = submit(client, editor=FAKE_EDITOR)
     body = wait_done(client, job_id)
     assert body["status"] == "done"
     assert body["params"]["parody_source"] == "editor"
@@ -269,6 +271,36 @@ def test_manual_correct_lyrics_mode_requires_lyrics(client):
     assert "正式な元歌詞" in res.json()["detail"]
 
 
+@pytest.mark.parametrize("upload", [False, True])
+@pytest.mark.parametrize("control", ["\0", "\x1b"])
+def test_audio_lyrics_reject_controls_before_creating_a_job(client, upload, control):
+    source = "か\u3099" + control + "くせい"
+    files = {"audio": ("voice.wav", fake_wav(), "audio/wav")}
+    data = {"wordlist": "stations", "auto_lyrics": "false"}
+    if upload:
+        files["lyrics_file"] = ("lyrics.txt", source.encode(), "text/plain")
+    else:
+        data["lyrics"] = source
+    res = client.post("/api/jobs", files=files, data=data)
+    assert res.status_code == 400
+    assert "position 3" in res.json()["detail"]
+    assert f"U+{ord(control):04X}" in res.json()["detail"]
+    assert client.app.state.manager.jobs == {}
+
+
+@pytest.mark.parametrize("source,position", [("ｶﾞ｜声《カ★ナ》", 7), ("\ufeff声", 1)])
+def test_audio_lyrics_reject_invalid_syntax_without_changing_source(client, source, position):
+    res = client.post(
+        "/api/jobs",
+        files={"audio": ("voice.wav", fake_wav(), "audio/wav"),
+               "lyrics_file": ("lyrics.txt", source.encode(), "text/plain")},
+        data={"wordlist": "stations", "auto_lyrics": "false"},
+    )
+    assert res.status_code == 400
+    assert f"position {position}" in res.json()["detail"]
+    assert client.app.state.manager.jobs == {}
+
+
 @pytest.mark.parametrize("kind,automatic", [("audio", True), ("midi", False)])
 @pytest.mark.parametrize("option", ["adjust_lyrics", "auto_phrase_lyrics"])
 def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automatic, option):
@@ -282,20 +314,21 @@ def test_lyric_adjustment_rejects_automatic_or_midi_input(client, kind, automati
     assert "音源と入力歌詞" in res.json()["detail"]
 
 
-def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path):
+@pytest.mark.parametrize("source", ["正式な歌詞", "\r\n 正式な歌詞\t\r\n\n"])
+def test_audio_accepts_utf8_lyrics_file_without_trusting_filename(client, tmp_path, source):
     escaped = tmp_path / "escaped.txt"
     res = client.post(
         "/api/jobs",
         files={
             "audio": ("voice.wav", fake_wav(), "audio/wav"),
-            "lyrics_file": ("../../escaped.txt", "正式な歌詞".encode(), "text/plain"),
+            "lyrics_file": ("../../escaped.txt", source.encode(), "text/plain"),
         },
         data={"wordlist": "stations", "auto_lyrics": "false"},
     )
     assert res.status_code == 200, res.text
     body = wait_done(client, res.json()["id"])
     job = client.app.state.manager.jobs[body["id"]]
-    assert (job.dir / "lyrics.txt").read_text(encoding="utf-8") == "正式な歌詞"
+    assert (job.dir / "lyrics.txt").read_bytes() == source.encode("utf-8")
     assert not escaped.exists()
 
 
@@ -604,12 +637,12 @@ def test_audio_pipeline_forwards_lyric_phrasing_to_conversion(tmp_path, monkeypa
 
 
 def test_noncommercial_fanwork_is_explicit_and_persisted(client):
-    ordinary = submit(client, editor=b'{"format": "soramimic-editor/1"}')
+    ordinary = submit(client, editor=FAKE_EDITOR)
     assert wait_done(client, ordinary)["params"]["allow_noncommercial_fanwork"] is False
 
     opted_in = submit(
         client,
-        editor=b'{"format": "soramimic-editor/1"}',
+        editor=FAKE_EDITOR,
         allow_noncommercial_fanwork="true",
     )
     assert wait_done(client, opted_in)["params"]["allow_noncommercial_fanwork"] is True
@@ -844,6 +877,7 @@ def test_index_html_builder_card_has_selects():
     advanced = _advanced_html()
     assert re.findall(r'<select id="([^"]+)"', advanced) == [
         "synthesizer", "model-select", "voicevox-style",
+        "title-words",
     ]
     # 不要なランダム・編集ボタンはカードに置かない
     assert 'id="lucky"' not in card
@@ -1363,8 +1397,8 @@ def test_cancel_running_and_queued(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_mod, "run_pipeline", slow_pipeline)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
-    running = submit(client, editor=b"{}")
-    queued = submit(client, editor=b"{}")
+    running = submit(client, editor=FAKE_EDITOR)
+    queued = submit(client, editor=FAKE_EDITOR)
     time.sleep(0.1)  # 1件目が実行中になるのを待つ
 
     # 順番待ちのジョブは即座にcanceledになり、実行されない
@@ -1393,7 +1427,7 @@ def test_failed_job_removes_uploaded_and_intermediate_files(tmp_path, monkeypatc
 
     monkeypatch.setattr(api_mod, "run_pipeline", failing_pipeline)
     client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
-    job_id = submit(client, editor=b"{}")
+    job_id = submit(client, editor=FAKE_EDITOR)
     body = wait_done(client, job_id)
     assert body["status"] == "error"
     job_dir = client.app.state.manager.jobs[job_id].dir
@@ -1464,7 +1498,8 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     job = api_mod.Job(
         id="parallel", dir=job_dir,
         params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations",
-                "song_credit": "オトノケ - Creepy Nuts", "thumbnail_wordlist_label": "好きな駅"},
+                "song_credit": "オトノケ - Creepy Nuts", "thumbnail_wordlist_label": "好きな駅",
+                "title_words": [{"id": "1", "surface": "駅名"}]},
     )
     audio_started = threading.Event()
     visual_started = threading.Event()
@@ -1480,6 +1515,7 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     def fake_prepare(*args, **kwargs):
         assert kwargs["song_credit"] == "オトノケ - Creepy Nuts"
         assert kwargs["thumbnail_wordlist_label"] == "好きな駅"
+        assert kwargs["title_words"] == [{"id": "1", "surface": "駅名"}]
         visual_started.set()
         assert audio_started.wait(1)
         return type("Prepared", (), {"audio_delay_sec": 1.0})()
@@ -1635,7 +1671,7 @@ def test_config_has_vtuber_image_policy(client):
     assert by_url["https://hololivepro.com/terms/"]["people"]
     fsp = by_url["https://firststage-pro.com/guideline/"]
     assert "FIRST STAGE PRODUCTION" in fsp["label"]
-    assert len(fsp["people"]) == 26
+    assert len(fsp["people"]) == 27
 
 
 
@@ -1727,7 +1763,8 @@ def test_editor_job_records_wordlist(client):
         resolve_wordlist("stations")
     except FileNotFoundError:
         pytest.skip("external/soramimic-wordlists のsubmoduleが無い環境")
-    editor = b'{"wordlist": {"filepath": "wordlists/stations.csv"}}'
+    editor = json.dumps({**json.loads(FAKE_EDITOR),
+                         "wordlist": {"filepath": "wordlists/stations.csv"}}).encode()
     job_id = submit(client, editor=editor, wordlist="pokemon")
     body = wait_done(client, job_id)
     assert body["params"]["wordlist"] == "stations"
@@ -1763,7 +1800,7 @@ def test_video_not_ready(client, monkeypatch):
         return slow(job, config)
 
     monkeypatch.setattr(api_mod, "run_pipeline", slow_pipeline)
-    job_id = submit(client, editor=b"{}")
+    job_id = submit(client, editor=FAKE_EDITOR)
     res = client.get(f"/api/jobs/{job_id}/video")
     assert res.status_code == 409
     wait_done(client, job_id)
@@ -1791,7 +1828,7 @@ def test_api_key_auth(tmp_path, monkeypatch):
     )
     assert res.status_code == 422  # 認証は通り、入力バリデーションで弾かれる
 
-    files["editor"] = ("editor.json", b"{}", "application/json")
+    files["editor"] = ("editor.json", FAKE_EDITOR, "application/json")
     res = client.post("/api/jobs", files=files, headers=headers)
     assert res.status_code == 200
     job_id = res.json()["id"]
@@ -1811,7 +1848,7 @@ def test_restart_recovers_history(tmp_path, monkeypatch):
     monkeypatch.setattr(api_mod, "run_pipeline", fake_pipeline)
     jobs_dir = tmp_path / "jobs"
     client = TestClient(api_mod.create_app(jobs_dir=jobs_dir))
-    job_id = submit(client, editor=b"{}")
+    job_id = submit(client, editor=FAKE_EDITOR)
     wait_done(client, job_id)
 
     # APIのstatusはメモリ上で先に"done"になり、status.jsonへの保存はその直後に
@@ -2218,7 +2255,7 @@ def test_synth_credit_of_neutrino_is_empty():
     assert api_mod.synth_credit_of({}, {}) == ""
 
 
-def test_synth_credit_of_prettypitch_names_engine_and_voice():
+def test_synth_credit_of_prettypitch_names_engine_voice_and_provider():
     assert api_mod.synth_credit_of(
         {"synthesizer": "prettypitch"}, {}
     ) == "PrettyPitch / 波音リツ（カノン）"
@@ -2393,7 +2430,6 @@ def test_index_html_share_hint_matches_platform_capability():
     html = _index_html()
     assert '/iPhone|iPad|iPod/i.test(platform)' in html
     assert 'return "ios";' in html and 'return "android";' in html
-    assert '「ビデオを保存」「ファイルに保存」' in html
     assert "ボタンを押すと、動画ファイルをダウンロードします。" in html
     assert '"動画をダウンロード"' in html
     assert "動画をダウンロードするか、共有メニューから共有先を選べます。" in html
@@ -2733,16 +2769,18 @@ def test_index_html_keeps_the_conf_default_filters():
     assert 'if (!facets.length) return (e && e.where) || "";' in body
 
 
-def test_index_html_parody_json_io_lives_in_the_editor_modal():
-    """替え歌JSONの読み書きはエディタの全画面モーダルのフッタに置く。"""
+def test_index_html_lyrics_file_input_accepts_text_and_json():
     html = _index_html()
-    modal = html.split('<div class="editor-modal" id="editor-frame-wrap"')[1]
-    modal = modal.split("</div>\n\n<script>")[0]
-    assert 'id="parody-io"' in modal
-    assert 'id="editor" accept=".json"' in modal
-    assert 'id="download-editor"' in modal
-    # 生成時の #editor 参照・自動取り込みはそのまま(IDで引いているので位置は無関係)
-    assert 'const f = $("editor").files[0];' in html
+    advanced = html.split('<details class="card" id="advanced">')[1].split("</details>")[0]
+    assert 'id="parody-io"' not in html
+    assert 'id="lyrics-file"' not in advanced
+    assert (
+        'id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"'
+        in html
+    )
+    assert html.count('id="lyrics-file"') == 1
+    assert 'id="review-lyrics"' not in html
+    assert 'form.append("review_lyrics"' not in html
 
 
 def test_index_html_transpose_is_greyed_out_under_auto_octave():
@@ -2809,17 +2847,19 @@ def test_index_html_editor_opens_as_fullscreen_modal():
         '<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" '
         'aria-modal="true"' in html
     )
-    assert html.index('id="editor-frame-wrap"') > html.index('id="public-footer"')
+    assert html.index('id="editor-frame-wrap"') > html.index('aria-label="ご利用案内"')
     # 全面に広げる(モバイルでも同じ)。iframeが残りの高さを全部使う
     assert ".editor-modal {\n    position: fixed; inset: 0; z-index: 50;" in html
     assert "flex: 1 1 auto; width: 100%; min-height: 0; border: 0;" in html
 
 
 def test_index_html_editor_modal_uses_the_embedded_back_navigation():
-    """親ヘッダーに閉じるボタンを重複させず、editor内の戻る導線を使う。"""
+    """通常はeditor内で戻り、確認モードだけ親の閉じる操作を使う。"""
     html = _index_html()
     head = html.split('<div class="editor-modal-head">')[1].split("</div>")[0]
-    assert "<button" not in head
+    assert 'id="close-lyric-review"' in head
+    assert " hidden>あとで続ける</button>" in head
+    assert '$("close-lyric-review").hidden = !reviewJobId;' in html
     assert '$("editor-frame").focus();' in html
     # ヘッダは縮まず、下のiframeだけがスクロール領域になる
     assert ".editor-modal-head {\n    flex: 0 0 auto;" in html
@@ -2876,8 +2916,8 @@ def test_index_html_editor_auto_import_requires_actual_edit():
     )
 
 
-def test_index_html_editor_auto_import_checks_provenance():
-    """来歴(曲×単語リスト×パラメータ)が食い違う編集は使わない。"""
+def test_index_html_editor_resume_checks_provenance_and_submit_uses_visible_input():
+    """再編集には来歴を使い、生成には画面に表示されている入力を使う。"""
     import re
 
     html = _index_html()
@@ -2900,15 +2940,11 @@ def test_index_html_editor_auto_import_checks_provenance():
         '{ state: "stale", from, sig };' in live
     )
     src = re.search(r"function editorSourceForSubmit\(\) \{.*?\n\}", html, re.S).group(0)
-    assert 'if (live.state === "ready") {' in src
-    assert 'if (live.state !== "stale") return { file: f };' in src
-    # 取り込み済みJSONがその来歴違いの編集そのものなら、それも使わない
-    assert (
-        "const sameAsFile = !!f && !!editorFileSig && editorFileSig === live.sig;" in src
-    )
-    assert "return { file: sameAsFile ? null : f, dropped: live.from };" in src
-    # 自動取り込みぶんは来歴を確かめてあるので、単語リスト不一致の確認は挟まない
-    assert "if (editorSrc.file && !editorSrc.live && parodyMismatch()" in html
+    assert "const input = lyricsInput();" in src
+    assert 'new File([input.text]' in src
+    assert '$("editor").files' not in src
+    assert "liveEditorEdit()" not in src
+    assert 'if (editorSrc.file && parodyMismatch()' in html
 
 
 # ---- 進捗表示: ステージ名とプログレスバー ----
@@ -2925,7 +2961,7 @@ def test_index_html_progress_uses_the_active_stage_plan():
     assert 'const parody = p.parody_source === "editor" ? "import-editor" : "convert";' in plan
     assert 'return ["analyze", parody, "synthesize", "mix", "video"];' in plan
     assert 'setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);' in html
-    assert "setJobStatus(`音源解析中…${elapsed}`, `音源解析中…${elapsed}`);" in html
+    assert "const text = `${job.stage_detail || label}${elapsed}`;" in html
     assert "setJobStatus(`${label}${tail}`, `${label}${tail}`);" in html
 
 
@@ -2973,11 +3009,26 @@ def test_image_sources_restricts_paths_and_preserves_fsp_metadata(client):
     assert response.status_code == 200
     rows = response.json()
     fsp = [row for row in rows if row["image_terms_page"] == "https://firststage-pro.com/guideline/"]
-    assert len(fsp) == 26
+    assert len(fsp) == 27
     assert all(row["image"] and row["image_page"] and row["image_credit"] for row in fsp)
     assert all(row["image_usage"] == "noncommercial_fanwork" for row in fsp)
 
 
+def test_audio_analysis_detail_is_live_and_cleared_between_stages(tmp_path):
+    job = api_mod.Job(id="analysis-detail", dir=tmp_path, params={"input_kind": "audio"})
+    job.status = "running"
+    with api_mod._stage(job, "analyze"):
+        job.stage_detail = "歌詞の時刻合わせ · 12/30行"
+        job.stage_progress = 66
+        body = job.to_dict()
+        assert body["stage_detail"] == "歌詞の時刻合わせ · 12/30行"
+        assert body["stage_progress"] == 66
+        assert "stage_eta_seconds" not in body
+    with api_mod._stage(job, "synthesize"):
+        assert job.stage_detail is None
+        assert "stage_detail" not in job.to_dict()
+    job.status = "done"
+    assert "stage_detail" not in job.to_dict()
 
 
 def test_hybrid_credit_names_both_engines_and_voice_provider():
@@ -3005,3 +3056,51 @@ def test_custom_song_text_has_size_limits(client, field, length):
         data={"wordlist": "stations", field: "あ" * length},
     )
     assert res.status_code == 422
+
+
+def test_audio_json_overrides_recognition_adjustment_and_plain_lyrics(client):
+    payload = {"phrases": ["生"], "unitsList": [[{"pronunciation": "ナマ"}]],
+               "results": [[]], "wordlist": {"filepath": "stations.csv"}}
+    response = client.post("/api/jobs", files={
+        "audio": ("input.wav", fake_wav(), "audio/wav"),
+        "editor": ("lyrics.json", json.dumps(payload).encode(), "application/json"),
+    }, data={"lyrics": "古い歌詞", "auto_lyrics": "true", "adjust_lyrics": "true",
+             "auto_phrase_lyrics": "true", "wordlist": "pokemon"})
+    assert response.status_code == 200, response.text
+    job = client.app.state.manager.jobs[response.json()["id"]]
+    assert (job.dir / "lyrics.txt").read_text() == "生"
+    assert json.loads((job.dir / "editor.json").read_text()) == payload
+    assert job.params["auto_lyrics"] is False
+    assert job.params["adjust_lyrics"] is False
+    assert job.params["auto_phrase_lyrics"] is False
+    assert job.params["wordlist"] == "stations"
+
+
+def test_audio_json_missing_readings_is_rejected_before_job_creation(client):
+    response = client.post("/api/jobs", files={
+        "audio": ("input.wav", fake_wav(), "audio/wav"),
+        "editor": ("lyrics.json", json.dumps({"phrases": ["生"], "unitsList": [[{}]],
+                                              "results": [[]]}).encode(), "application/json"),
+    }, data={"wordlist": "stations"})
+    assert response.status_code == 422
+    assert "読み" in response.json()["detail"]
+    assert not client.app.state.manager.jobs
+
+
+def test_audio_pipeline_passes_json_to_fixed_alignment(tmp_path, monkeypatch):
+    from soramimic_video import score_audio
+
+    class ReachedAnalyzer(Exception):
+        pass
+
+    editor = tmp_path / "editor.json"
+    editor.write_text("{}")
+
+    def analyze(*args, **kwargs):
+        assert kwargs["editor_path"] == editor
+        raise ReachedAnalyzer
+
+    monkeypatch.setattr(score_audio, "analyze_audio", analyze)
+    job = api_mod.Job(id="json", dir=tmp_path, params={"input_kind": "audio"})
+    with pytest.raises(ReachedAnalyzer):
+        api_mod.run_pipeline(job, {})

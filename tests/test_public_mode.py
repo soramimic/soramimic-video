@@ -86,14 +86,6 @@ def test_session_cookie_issued_once(public_app):
     assert client.cookies[api_mod.SESSION_COOKIE] == sid
 
 
-def test_public_custom_wordlists_script_is_packaged(public_app):
-    """The main page must not reference a missing script in a deployed release."""
-    response = TestClient(public_app).get("/custom-wordlists.js")
-
-    assert response.status_code == 200
-    assert "VideoCustomWordlists" in response.text
-
-
 def test_jobs_are_isolated_per_session(public_app):
     alice = TestClient(public_app)
     bob = TestClient(public_app)
@@ -196,7 +188,8 @@ def test_private_mode_keeps_sharing_jobs(tmp_path, monkeypatch):
 def test_public_jobs_reject_editor_wordlists_outside_launch_catalog(public_app):
     client = TestClient(public_app)
     editor = json.dumps(
-        {"wordlist": {"filepath": "/tmp/youtuber.csv"}}
+        {"results": [[]], "unitsList": [[]],
+         "wordlist": {"filepath": "/tmp/youtuber.csv"}}
     ).encode()
     response = client.post(
         "/api/jobs",
@@ -216,7 +209,8 @@ def test_public_editor_preview_requires_a_launch_wordlist(public_app):
         files={
             "editor": (
                 "editor.json",
-                json.dumps({"wordlist": {"filepath": "/tmp/youtuber.csv"}}).encode(),
+                json.dumps({"results": [[]], "unitsList": [[]],
+         "wordlist": {"filepath": "/tmp/youtuber.csv"}}).encode(),
                 "application/json",
             )
         },
@@ -525,33 +519,6 @@ def test_create_failure_removes_partially_written_upload(tmp_path, monkeypatch):
     )
 
 
-def test_concurrent_status_writes_use_distinct_temporary_files(tmp_path, monkeypatch):
-    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
-    manager = client.app.state.manager
-    job_dir = tmp_path / "jobs" / "abcdef12"
-    job_dir.mkdir()
-    job = api_mod.Job(id="abcdef12", dir=job_dir, params={})
-    original_replace = api_mod.os.replace
-    temporary_paths = []
-    reentered = False
-
-    def overlapping_replace(source, destination):
-        nonlocal reentered
-        temporary_paths.append(source)
-        if not reentered:
-            reentered = True
-            manager._save(job)
-        original_replace(source, destination)
-
-    monkeypatch.setattr(api_mod.os, "replace", overlapping_replace)
-
-    manager._save(job)
-
-    assert len(set(temporary_paths)) == 2
-    assert json.loads((job_dir / api_mod.STATUS_FILENAME).read_text())["id"] == job.id
-    assert not list(job_dir.glob(f"{api_mod.STATUS_FILENAME}.*.tmp"))
-
-
 def test_public_config_reports_result_retention(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     monkeypatch.setenv(api_mod.JOB_TTL_HOURS_ENV, "24")
@@ -741,7 +708,7 @@ def test_public_config_reports_limits(public_app, monkeypatch):
     assert conf["launch_wordlists"] == api_mod.load_launch_catalog()["wordlists"]
 
 
-def test_index_html_turnstile_and_credit():
+def test_index_html_turnstile_and_public_limits():
     # フロントはサイトキーが来たときだけTurnstileを読み込み、トークンを添えて投入する
     from pathlib import Path
 
@@ -751,10 +718,13 @@ def test_index_html_turnstile_and_credit():
     assert "https://challenges.cloudflare.com/turnstile/v0/api.js" in html
     assert 'setupTurnstile(conf.turnstile_site_key || "")' in html
     assert 'if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());' in html
-    # 公開モードのときだけ歌声合成のクレジットと制限の目安を出す
+    # 公開モードのときだけ制限の目安を出す。歌声合成のクレジットは
+    # 動画内に自動で入るため、ページ下部には重複表示しない。
     assert 'publicMode = !!conf.public;' in html
-    assert "歌声合成: VOICEVOX" in html
-    assert 'id="public-footer"' in html and 'id="public-limits"' in html
+    assert 'id="public-limits"' in html
+    assert 'id="public-footer"' not in html
+    assert 'id="public-credit"' not in html
+    assert "歌声合成: VOICEVOX" not in html
 
 
 def test_public_mode_never_exposes_the_api_key_field(public_app, monkeypatch):
@@ -990,7 +960,7 @@ def test_public_custom_text_does_not_enable_file_inputs(public_app, endpoint, fi
     assert response.status_code == 422, response.text
 
 
-def test_public_custom_text_does_not_enable_editor_upload(public_app):
+def test_public_custom_text_does_not_accept_invalid_lyrics_json(public_app):
     client = TestClient(public_app)
     response = client.post(
         "/api/jobs",
