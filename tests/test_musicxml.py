@@ -85,7 +85,7 @@ def test_mid_measure_time_signature_starts_new_measure(schema):
     root = ET.fromstring(xml)
     measures = root.findall("./part/measure")
     assert sum(int(n.findtext("duration")) for n in measures[0].findall("note")) == 960
-    assert measures[0].get("implicit") == "yes"
+    assert measures[0].findtext("attributes/time/beats") == "2"
     assert measures[1].findtext("attributes/time/beats") == "3"
 
 
@@ -122,3 +122,24 @@ def test_default_tempo_before_later_tempo_change(schema):
     root = ET.fromstring(xml)
     assert root.findtext(".//note/duration") == "29"
     assert [e.get("tempo") for e in root.findall(".//sound")] == ["120", "60"]
+
+
+@pytest.mark.parametrize("tick,short_meter", [(2880, (2, 4)), (2237, (317, 1920))])
+def test_short_measure_after_full_bars_declares_its_actual_length(schema, tick, short_meter):
+    project = score(480, 6000)
+    project.song.time_signatures = [[0, 4, 4], [tick, 3, 4]]
+    xml = build_musicxml(project, build_lyric_map(project))
+    validate(schema, xml)
+    root = ET.fromstring(xml)
+    measures = root.findall("./part/measure")
+    assert measures[0].findtext("attributes/time/beats") == "4"
+    assert (int(measures[1].findtext("attributes/time/beats")),
+            int(measures[1].findtext("attributes/time/beat-type"))) == short_meter
+    assert measures[2].findtext("attributes/time/beats") == "3"
+    # Every measure fills its declared meter, so importers need not insert extra time.
+    num, den = 4, 4
+    for measure in measures:
+        time = measure.find("attributes/time")
+        if time is not None:
+            num, den = int(time.findtext("beats")), int(time.findtext("beat-type"))
+        assert sum(int(n.findtext("duration")) for n in measure.findall("note")) == num * 1920 / den

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from fractions import Fraction
 
 from .kana import vowel_of
 from .project import Project
@@ -195,11 +196,18 @@ def build_musicxml(
         measure = ET.SubElement(part, "measure", number=str(m_i + 1))
         current_signature = sig_changes.get(m_start, current_signature)
         num, den = current_signature
-        if m_end - m_start < num * tpb * 4 // den:
-            measure.set("implicit", "yes")
+        short_measure = m_end - m_start < num * tpb * 4 // den
+        if short_measure:
+            # NEUTRINOは不足する拍を補うため、短い小節も実際の長さの拍子にする。
+            beats = Fraction((m_end - m_start) * den, 4 * tpb)
+            if beats.denominator == 1:
+                num = beats.numerator
+            else:
+                length = Fraction(m_end - m_start, 4 * tpb)
+                num, den = length.numerator, length.denominator
 
         attrs = None
-        if m_i == 0 or m_start in sig_changes:
+        if m_i == 0 or m_start in sig_changes or short_measure:
             attrs = ET.SubElement(measure, "attributes")
             if m_i == 0:
                 ET.SubElement(attrs, "divisions").text = str(tpb)
