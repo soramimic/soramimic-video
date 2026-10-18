@@ -1834,7 +1834,7 @@ def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_turnstile_interaction_prompt_is_delayed_and_cancelable():
-    """操作UIの準備直後に自動成功した場合は、一度も確認欄を表示しない。"""
+    """自動成功は表示せず、操作開始通知なしの確認待ちでも欄を表示する。"""
     script = _script()
     schedule = _function_body(script, "function scheduleTurnstileInteractionPrompt(") + "\n}"
     cancel = _function_body(script, "function cancelTurnstileInteractionReveal()") + "\n}"
@@ -1846,15 +1846,18 @@ def test_turnstile_interaction_prompt_is_delayed_and_cancelable():
         let turnstileEpoch = 3;
         let turnstileWaiting = true;
         let turnstileNeedsInteraction = true;
+        let turnstileFailed = false;
         let token = "";
         let timerCallback = null;
         let timerDelay = null;
         let shows = 0;
+        let waitingShows = 0;
         let clears = 0;
         const setTimeout = (fn, delay) => {{ timerCallback = fn; timerDelay = delay; return 1; }};
         const clearTimeout = () => {{ clears += 1; }};
         const turnstileToken = () => token;
         const showTurnstileChallenge = () => {{ shows += 1; }};
+        const showTurnstilePrompt = () => {{ waitingShows += 1; }};
         {cancel}
         {schedule}
 
@@ -1866,6 +1869,22 @@ def test_turnstile_interaction_prompt_is_delayed_and_cancelable():
         timerCallback();
         assert.equal(clears, 1);
         assert.equal(shows, 0);
+        assert.equal(waitingShows, 0);
+
+        token = "";
+        scheduleTurnstileInteractionPrompt(3);
+        timerCallback();
+        assert.equal(waitingShows, 1, "pending verification must show without a callback");
+
+        turnstileFailed = true;
+        scheduleTurnstileInteractionPrompt(3);
+        timerCallback();
+        assert.equal(waitingShows, 1, "a failed challenge must not reopen");
+        turnstileFailed = false;
+
+        scheduleTurnstileInteractionPrompt(2);
+        timerCallback();
+        assert.equal(waitingShows, 1, "an old widget must not reveal the new prompt");
 
         token = "";
         turnstileNeedsInteraction = true;
@@ -1875,6 +1894,63 @@ def test_turnstile_interaction_prompt_is_delayed_and_cancelable():
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_turnstile_pending_widget_reappears_during_completion_display():
+    """実際の表示・完了タイマーを通して、通知なしの初回と再試行を確認する。"""
+    script = _script()
+    turnstile = script[script.index('let turnstileSiteKey = "";') :]
+    turnstile = turnstile[: turnstile.index("// エンジン選択に応じて")]
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const classes = new Set();
+        const copy = {{textContent: ""}};
+        const wrap = {{
+          classList: {{
+            contains: name => classes.has(name),
+            add: (...names) => names.forEach(name => classes.add(name)),
+            remove: (...names) => names.forEach(name => classes.delete(name)),
+          }},
+          querySelector: () => ({{focus() {{}}, ...copy}}),
+          scrollIntoView() {{}},
+        }};
+        const $ = id => id === "turnstile-wrap" ? wrap : copy;
+        const requestAnimationFrame = fn => fn();
+        let options;
+        const window = {{turnstile: {{
+          render(_selector, config) {{ options = config; return "widget"; }},
+          execute() {{}},
+          getResponse() {{ return ""; }},
+          reset() {{}},
+        }}}};
+        {turnstile}
+        (async () => {{
+          turnstileSiteKey = "site";
+          renderTurnstileWidget();
+          assert.equal(options.appearance, "execute");
+          const first = ensureTurnstileToken(3000);
+          await new Promise(resolve => setTimeout(resolve, 900));
+          assert.equal(classes.has("turnstile-active"), true);
+          options.callback("first-token");
+          assert.equal(await first, true);
+          assert.equal(classes.has("turnstile-complete"), true);
+
+          resetTurnstile(false);
+          const retry = ensureTurnstileToken(3000);
+          assert.equal(classes.has("turnstile-complete"), false);
+          assert.equal(turnstilePromptCompletionTimer, null);
+          await new Promise(resolve => setTimeout(resolve, 900));
+          assert.equal(classes.has("turnstile-active"), true);
+          assert.equal(classes.has("turnstile-complete"), false);
+          options.callback("retry-token");
+          assert.equal(await retry, true);
+          hideTurnstilePrompt();
+        }})().catch(err => {{ console.error(err); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True, timeout=10)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -2014,6 +2090,8 @@ def test_submit_never_posts_without_a_turnstile_token():
     assert "Date.now() - t0 > 800" not in ensure
     assert "if (turnstileWidget === null || turnstileScriptFailed)" in ensure
     assert "window.turnstile.execute(turnstileWidget)" in ensure
+    assert ensure.index("hideTurnstilePrompt();") < ensure.index("setTurnstilePromptCopy(")
+    assert "if (turnstileNeedsInteraction) scheduleTurnstileInteractionPrompt();" not in ensure
     assert "timeoutMs = 120000" in ensure
     assert "for (let attempt = 0; attempt < 2; attempt += 1)" in ensure
     assert "if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();" in ensure
@@ -2084,6 +2162,7 @@ def test_turnstile_old_widget_callbacks_are_ignored_after_rebuild():
     render = _function_body(script, "function renderTurnstileWidget()")
     rebuild = _function_body(script, "function rebuildTurnstileWidget()")
     assert "const epoch = ++turnstileEpoch;" in render
+    assert 'appearance: "execute"' in render
     assert "if (epoch !== turnstileEpoch) return;" in render
     assert "turnstileEpoch += 1;" in rebuild
     assert "window.turnstile.remove(oldWidget)" in rebuild
