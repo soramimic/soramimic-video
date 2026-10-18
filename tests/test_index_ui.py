@@ -993,12 +993,13 @@ def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 @pytest.mark.parametrize("ios", [False, True])
-def test_history_thumbnail_plays_without_close_or_share_and_keeps_saving(ios):
+def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
             "function historyCard(", "function historyButton(",
+            "function appendLyricEditAction(",
             "async function startHistoryPlayback(", "function disposeHistoryPlayback()",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
             "function isIOSPlatform(",
@@ -1033,11 +1034,13 @@ def test_history_thumbnail_plays_without_close_or_share_and_keeps_saving(ios):
         const document = {createElement: tag => new Element(tag)};
         const navigator = {platform: IOS ? 'iPhone' : 'Linux', share() {}};
         class File {}
-        const qs = url => url, apiKey = () => '', resetHistorySave = () => {};
+        const qs = url => url, apiKey = () => '';
+        const resetHistorySave = () => {}, resetHistoryShare = () => {};
         const historyCreatedLabel = () => '', historyStatusLabel = () => '完成';
         const editorPeer = {}, saveCalls = [], editCalls = [];
         const saveHistoryVideo = (index, button) => saveCalls.push({index, button});
-        const editHistoryLyrics = job => editCalls.push(job);
+        const editResultLyrics = job => editCalls.push(job);
+        const shareCalls = [], shareHistoryResult = index => shareCalls.push(index);
         const offerNativeVideoSave = (link, save) => save() !== false;
         const nodesIn = node => [node, ...node.children.flatMap(nodesIn)];
         let activeHistoryPlayback = null, preparedHistorySave = null;
@@ -1062,7 +1065,10 @@ def test_history_thumbnail_plays_without_close_or_share_and_keeps_saving(ios):
             const actions = card.querySelector('.history-actions');
             assert.equal(actions.querySelector('.save-menu').tagName, 'DETAILS');
             assert.equal(actions.querySelector('.history-play'), undefined);
-            assert.equal(actions.querySelector('.history-share'), undefined);
+            const share = actions.querySelector('.history-share');
+            assert.equal(share.textContent, '共有');
+            share.dispatchEvent(new Event('click'));
+            assert.equal(shareCalls.at(-1), index);
             const edit = actions.querySelector('.history-edit-lyrics');
             assert.ok(edit.className.includes('result-action action-edit'));
             edit.dispatchEvent(new Event('click'));
@@ -4171,6 +4177,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
         for head in (
             "async function poll(", "function setBuilderState(",
             "function showWordlistExhaustionNotice(", "function historyCard(",
+            "function appendLyricEditAction(",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
             "function isIOSPlatform(",
         )
