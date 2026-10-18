@@ -1443,6 +1443,19 @@
   </form>
 </dialog>
 
+<dialog id="video-save-help" class="custom-wordlist-dialog recording-delete-dialog"
+  aria-labelledby="video-save-help-title" aria-describedby="video-save-help-hint">
+  <div class="custom-wordlist-header"><h2 id="video-save-help-title">動画の保存について</h2></div>
+  <p id="video-save-help-hint">このあとOS標準の共有画面が開きます。「ビデオを保存」で写真に、「ファイルに保存」でファイルとして保存できます。</p>
+  <label class="recording-delete-choice" for="video-save-help-skip">
+    <input type="checkbox" id="video-save-help-skip">次回から表示しない
+  </label>
+  <div class="custom-wordlist-actions recording-delete-actions">
+    <button type="button" id="video-save-help-cancel">キャンセル</button>
+    <button type="button" id="video-save-help-proceed" class="btn-primary" autofocus>保存先を選ぶ</button>
+  </div>
+</dialog>
+
 <dialog id="lyric-review-confirm" class="custom-wordlist-dialog"
   aria-labelledby="lyric-review-confirm-title" aria-describedby="lyric-review-confirm-hint">
   <form method="dialog">
@@ -2671,6 +2684,7 @@ $("history").addEventListener("toggle", () => {
 window.addEventListener("pagehide", () => {
   disposeHistoryPlayback();
   resetHistoryShare();
+  if ($("video-save-help").open) $("video-save-help").close();
 });
 
 let currentJob = null;
@@ -3010,6 +3024,41 @@ function prefersNativeVideoSave() {
   return /iPhone|iPad|iPod/i.test(navigator.userAgent || "")
     || /iPhone|iPad|iPod/i.test(platform)
     || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1);
+}
+
+let nativeVideoSaveHelpSkipped = false;
+function offerNativeVideoSave(link, onVideoSave) {
+  const preference = "soramimic-video-save-help-skipped";
+  try {
+    nativeVideoSaveHelpSkipped ||= localStorage.getItem(preference) === "1";
+  } catch (_) { /* 保存不可でも、このページ内では選択を記憶する。 */ }
+  if (nativeVideoSaveHelpSkipped) return onVideoSave() !== false;
+  const dialog = $("video-save-help");
+  const skip = $("video-save-help-skip");
+  const proceed = $("video-save-help-proceed");
+  skip.checked = false;
+  proceed.onclick = () => {
+    dialog.close();
+    // 結果の切替や画面離脱後に、古い動画の共有を開始しない。
+    if (!link.isConnected || document.visibilityState === "hidden") return;
+    if (skip.checked) {
+      nativeVideoSaveHelpSkipped = true;
+      try { localStorage.setItem(preference, "1"); } catch (_) { /* 記憶は任意。 */ }
+    }
+    // 確認タップ内で同期的に共有を呼び、OSの操作権限を保つ。
+    if (onVideoSave() === false) {
+      const download = document.createElement("a");
+      download.href = link.href;
+      download.download = "";
+      document.body.appendChild(download);
+      download.click();
+      download.remove();
+    }
+  };
+  $("video-save-help-cancel").onclick = () => dialog.close();
+  dialog.onclose = () => { if (!dialog.open) proceed.onclick = null; };
+  dialog.showModal();
+  return true;
 }
 
 function videoFileName(videoUrl) {
@@ -5323,7 +5372,8 @@ for (const type of ["change", "input"]) {
   document.addEventListener(type, (ev) => {
     const t = ev.target;
     if (t instanceof Node
-        && ($("builder-figure").contains(t) || $("builder-share").contains(t))) return;
+        && ($("builder-figure").contains(t) || $("builder-share").contains(t)
+          || $("video-save-help").contains(t))) return;
     releaseBuilderDone();
   }, true);
 }
@@ -5380,7 +5430,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
       link.appendChild(description);
       link.addEventListener("click", event => {
         // 共有ボタンへ同じタップを渡し、準備・再タップの案内をメニューの外に表示する。
-        if (entry.video && nativeVideoSave && onVideoSave() !== false) event.preventDefault();
+        if (entry.video && nativeVideoSave && offerNativeVideoSave(link, onVideoSave)) event.preventDefault();
         menu.open = false;
       });
       section.appendChild(link);

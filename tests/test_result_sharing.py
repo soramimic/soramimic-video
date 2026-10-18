@@ -122,6 +122,7 @@ def test_video_save_keeps_photos_route_only_on_ios(platform, touches, native):
                 appendChild(node) {{this.children.push(node);}}}};
         }}
         const document = {{createElement: element}};
+        const offerNativeVideoSave = (link, save) => save() !== false;
         const root = element('div');
         const linksIn = node => [
             ...(node.tag === 'a' ? [node] : []), ...node.children.flatMap(linksIn)];
@@ -142,4 +143,82 @@ def test_video_save_keeps_photos_route_only_on_ios(platform, touches, native):
         assert.equal(prevented, NATIVE ? 1 : 0,
                      'failed preparation leaves direct saving available');
     '''.replace("NATIVE", str(native).lower())
+    subprocess.run(["node", "-e", setup + code + checks], check=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+@pytest.mark.parametrize("storage_available", [True, False])
+def test_native_save_help_cancel_opt_out_and_synchronous_confirmation(storage_available):
+    code = _function_body(_script(), "function offerNativeVideoSave(") + "\n}"
+    setup = r'''
+        const assert = require('node:assert/strict');
+        let nativeVideoSaveHelpSkipped = false, saved = 0, downloads = 0, stored = null;
+        let active = false;
+        const localStorage = {
+            getItem() {if (!STORAGE) throw Error('blocked'); return stored;},
+            setItem(key, value) {if (!STORAGE) throw Error('blocked'); stored = value;},
+        };
+        const dialog = {open: false, showModal() {this.open = true;}, close() {
+            this.open = false;
+            queueMicrotask(() => this.onclose?.());
+        }};
+        const skip = {checked: false}, proceed = {}, cancel = {};
+        const nodes = {'video-save-help': dialog, 'video-save-help-skip': skip,
+                       'video-save-help-proceed': proceed, 'video-save-help-cancel': cancel};
+        const $ = id => nodes[id];
+        const document = {visibilityState: 'visible', body: {appendChild() {}},
+                          createElement() {return {click() {downloads++;}, remove() {}};}};
+        const link = {isConnected: true, href: '/video.mp4?key=secret'};
+        const save = () => {assert.equal(active, true); saved++; return true;};
+    '''.replace("STORAGE", str(storage_available).lower())
+    checks = r'''
+        (async () => {
+            assert.equal(offerNativeVideoSave(link, save), true);
+            assert.equal(dialog.open, true);
+            assert.equal(saved, 0);
+            skip.checked = true;
+            cancel.onclick();
+            await Promise.resolve();
+            assert.equal(stored, null, 'cancel must not persist the preference');
+            assert.equal(nativeVideoSaveHelpSkipped, false);
+            offerNativeVideoSave(link, save);
+            assert.equal(skip.checked, false);
+            active = true;
+            proceed.onclick();
+            active = false;
+            assert.equal(saved, 1, 'confirmation starts sharing in the same click');
+            await Promise.resolve();
+            offerNativeVideoSave(link, save);
+            assert.equal(dialog.open, true, 'unchecked help appears on the next save');
+            skip.checked = true;
+            active = true;
+            proceed.onclick();
+            active = false;
+            await Promise.resolve();
+            assert.equal(saved, 2);
+            active = true;
+            offerNativeVideoSave(link, save);
+            active = false;
+            assert.equal(saved, 3);
+            assert.equal(dialog.open, false, 'opt-out skips the dialog, even without storage');
+            assert.equal(downloads, 0);
+            if (STORAGE) {
+                nativeVideoSaveHelpSkipped = false;
+                active = true;
+                offerNativeVideoSave(link, save);
+                active = false;
+                assert.equal(saved, 4, 'stored opt-out survives page state reset');
+            }
+            nativeVideoSaveHelpSkipped = false;
+            stored = null;
+            offerNativeVideoSave(link, () => false);
+            proceed.onclick();
+            assert.equal(downloads, 1, 'unavailable sharing keeps an explicit download route');
+            await Promise.resolve();
+            offerNativeVideoSave(link, save);
+            link.isConnected = false;
+            proceed.onclick();
+            assert.equal(saved, STORAGE ? 4 : 3, 'obsolete results never open a share sheet');
+        })().catch(error => {console.error(error); process.exit(1);});
+    '''.replace("STORAGE", str(storage_available).lower())
     subprocess.run(["node", "-e", setup + code + checks], check=True)
