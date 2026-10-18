@@ -1562,7 +1562,8 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     out = api_mod.run_pipeline(job, {"parallel_video": True, "video_fps": 30})
     assert out.read_bytes() == b"mp4"
     assert (job_dir / "exports/vocal.wav").read_bytes() == fake_wav()
-    assert (job_dir / "exports/score.musicxml").is_file()
+    assert not (job_dir / "exports/score.musicxml").exists()
+    assert (job_dir / "exports/lyrics.mid").is_file()
     assert not (job_dir / "video" / "video-only.mp4").exists()
     assert [stage["name"] for stage in job.stages] == [
         "analyze", "import-editor", "synthesize", "mix", "video",

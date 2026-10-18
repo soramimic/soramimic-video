@@ -554,9 +554,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layers", required=True, help="version 1のrealization JSON")
     p.set_defaults(func=cmd_apply_lyric_layers)
 
-    p = sub.add_parser("export", help="楽譜・歌詞入りMIDI・伴奏なし歌声WAVを書き出す")
+    p = sub.add_parser("export", help="歌詞入りMIDI・XF MIDI・伴奏なし歌声WAVを書き出す")
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
-    p.add_argument("--format", required=True, choices=["musicxml", "midi", "xf", "vocal"])
+    p.add_argument("--format", required=True, choices=["midi", "xf", "vocal"])
     p.add_argument("--output", required=True, help="出力ファイルパス")
     p.set_defaults(func=cmd_export)
 

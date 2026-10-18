@@ -1,4 +1,4 @@
-"""Portable score and isolated synthesized-vocal downloads."""
+"""Lyric MIDI and isolated synthesized-vocal downloads."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from pathlib import Path
 
 from mido import Message, MetaMessage, MidiFile, MidiTrack
 
-from .musicxml import build_musicxml
 from .project import Project
 from .synthesize import build_lyric_map, vocal_path
 from .xfexport import export_xf_midi
@@ -15,7 +14,6 @@ from .xfexport import export_xf_midi
 EXPORT_DIR = "exports"
 # Fixed names also form the API allowlist. Never accept a caller-provided path.
 FORMATS = {
-    "musicxml": ("score.musicxml", "application/vnd.recordare.musicxml+xml"),
     "midi": ("lyrics.mid", "audio/midi"),
     "xf": ("lyrics.xf.mid", "audio/midi"),
     "vocal": ("vocal.wav", "audio/wav"),
@@ -74,11 +72,7 @@ def export_file(
     if kind not in FORMATS:
         raise ValueError(f"Unknown export format: {kind}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    if kind == "musicxml":
-        output.write_text(build_musicxml(
-            project, build_lyric_map(project), for_synthesis=False,
-        ), encoding="utf-8")
-    elif kind == "midi":
+    if kind == "midi":
         export_lyric_midi(project, output)
     elif kind == "xf":
         # Full provenance can contain uploaded text and local source metadata.
