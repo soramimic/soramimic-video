@@ -275,7 +275,8 @@
     line-height: 1.2;
   }
   .song-text-credits-heading { top: 8%; height: 7%; color: #a8a8a8; font-size: clamp(.55rem, 1.8vw, .9rem); }
-  .song-text-credits-original { white-space: pre-wrap; top: 23%; height: 10%; font-size: clamp(.68rem, 2.25vw, 1.15rem); font-weight: 600; }
+  .song-text-credits-original { white-space: pre-wrap; top: 23%; height: 10%; font-size: min(1.15rem, 2.925cqw); font-weight: 600; }
+  .song-text-credits-original > span { width: 100%; overflow-wrap: anywhere; }
   .song-text-credits-app { top: 56%; height: 8%; font-size: clamp(.62rem, 2.15vw, 1.05rem); }
   .song-text-credits-synth { top: 65%; height: 7%; font-size: min(.9rem, 2.2cqw); }
   .song-text-credits-sites { top: 78%; height: 5%; color: #a8a8a8; font-size: clamp(.46rem, 1.5vw, .75rem); }
@@ -1284,7 +1285,7 @@
         <figcaption>最後のクレジット</figcaption>
         <div class="song-text-stage song-text-credits-stage" aria-labelledby="song-preview-credits-original">
           <p class="song-text-credits-heading">Credits</p>
-          <p class="song-text-credits-original" id="song-preview-credits-original"></p>
+          <p class="song-text-credits-original"><span id="song-preview-credits-original"></span></p>
           <p class="song-text-credits-app">Parody Lyrics &amp; Video　Soramimic</p>
           <p class="song-text-credits-synth" id="song-preview-credits-synth" hidden></p>
           <p class="song-text-credits-sites">soramimic.com / video.soramimic.com</p>
@@ -2036,11 +2037,12 @@ function scheduleTurnstileInteractionPrompt(epoch = turnstileEpoch) {
   if (turnstileInteractionRevealTimer !== null) return;
   turnstileInteractionRevealTimer = setTimeout(() => {
     turnstileInteractionRevealTimer = null;
-    // Cloudflareが操作UIを準備しても、直後に自動成功することがある。少し待っても
-    // 操作要求が続いている場合だけ表示し、自動成功時の一瞬の点滅をなくす。
+    // 速い自動確認は表示しない。操作開始通知が届かない場合も、確認が続いていれば
+    // ウィジェットを表示する。通知だけに依存すると確認欄が隠れたままになる。
     if (epoch !== turnstileEpoch || !turnstileWaiting
-        || !turnstileNeedsInteraction || turnstileToken()) return;
-    showTurnstileChallenge();
+        || turnstileFailed || turnstileToken()) return;
+    if (turnstileNeedsInteraction) showTurnstileChallenge();
+    else showTurnstilePrompt();
   }, TURNSTILE_INTERACTION_REVEAL_MS);
 }
 
@@ -2080,7 +2082,7 @@ function showTurnstileFailure(reloadPage = false) {
     reloadPage ? "確認を読み込めませんでした" : "人間かどうかの確認をやり直してください",
     reloadPage
       ? "ページを再読み込みして、もう一度生成してください。"
-      : "もう一度「生成」を押すと新しい確認を始めます。確認欄が出たらチェックしてください。",
+      : "もう一度動画をタップすると新しい確認を始めます。確認欄が出たらチェックしてください。",
   );
   showTurnstilePrompt(true);
 }
@@ -2118,7 +2120,7 @@ function renderTurnstileWidget() {
   turnstileWidget = window.turnstile.render("#turnstile-widget", {
     sitekey: turnstileSiteKey,
     theme: "auto",
-    appearance: "interaction-only",
+    appearance: "execute",
     execution: "execute",
     "before-interactive-callback": () => {
       if (epoch !== turnstileEpoch) return;
@@ -2167,6 +2169,7 @@ function rebuildTurnstileWidget() {
   turnstileEpoch += 1;
   turnstileWidget = null;
   turnstileLastToken = "";
+  turnstileNeedsInteraction = false;
   if (oldWidget !== null && window.turnstile) {
     try { window.turnstile.remove(oldWidget); } catch { /* 既に消えていればそのまま再描画 */ }
   }
@@ -2190,8 +2193,8 @@ function setupTurnstile(siteKey) {
   const wrap = $("turnstile-wrap");
   wrap.hidden = false;
   // explicit renderにして、スクリプト読み込み完了後に自分で描画する。
-  // appearance: interaction-only で普段は何も表示せず、Cloudflareが人間の
-  // 操作を求めるときだけウィジェットを出す。
+  // executeで確認開始後の表示を許可する。速い自動確認はページ側で隠し、
+  // 操作開始通知が届かない場合も確認が続けば表示できるようにする。
   window.onTurnstileLoad = () => {
     turnstileScriptFailed = false;
     rebuildTurnstileWidget();
@@ -2234,6 +2237,8 @@ function resetTurnstile(hidePrompt = true) {
 // 配られたとき)だけなので、無効な構成では何もしない。
 async function ensureTurnstileToken(timeoutMs = 120000) {
   if (!turnstileSiteKey) return true;
+  // 前回の完了表示や予約済みタイマーを、今回の確認に持ち越さない。
+  hideTurnstilePrompt();
   setTurnstilePromptCopy(
     "ロボットではないことを確認しています",
     "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
@@ -2263,7 +2268,7 @@ async function ensureTurnstileToken(timeoutMs = 120000) {
     if (turnstileToken()) return true;
     turnstileWaiting = true;
     turnstileFailed = false;
-    if (turnstileNeedsInteraction) scheduleTurnstileInteractionPrompt();
+    scheduleTurnstileInteractionPrompt();
     // tokenをページ表示時に先取りすると、生成までに失効してサーバーで拒否され得る。
     // execution:execute と組み合わせ、生成タップの直後に新しい確認を始める。
     try { window.turnstile.execute(turnstileWidget); } catch {
@@ -2286,7 +2291,6 @@ async function ensureTurnstileToken(timeoutMs = 120000) {
       // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
       // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
       rebuildTurnstileWidget();
-      turnstileNeedsInteraction = false;
       // 1回目の失敗後も案内を画面外へ置き去りにしない。
       if ($("turnstile-wrap").classList.contains("turnstile-active")) {
         showTurnstilePrompt(true);
@@ -3525,6 +3529,20 @@ function legacySongCredit(state) {
   return [state.songTitle, ...details].filter(Boolean).join("\n");
 }
 
+// 原曲の長い表記や改行も、動画の描画と同じく文字を縮めて枠内へ収める。
+function fitSongCreditPreview() {
+  const text = $("song-preview-credits-original");
+  const box = text.parentElement;
+  box.style.fontSize = "";
+  if (!box.clientWidth || !box.clientHeight) return;
+  let px = parseFloat(getComputedStyle(box).fontSize);
+  while (px > 1 && (text.getBoundingClientRect().height > box.clientHeight
+      || text.scrollWidth > box.clientWidth)) {
+    px = Math.max(1, px - 0.5);
+    box.style.fontSize = `${px}px`;
+  }
+}
+
 // 曲情報の文字が入る3か所を、実際と同じ16:9・固定位置で即時確認する。
 // 背景には現在のビルダー画像を借りるが、文字は入力値から組み直すため、
 // 持ち込み曲の曲名を変えたときもジョブ生成を待たずに反映される。
@@ -3553,7 +3571,8 @@ function updateSongTextPreviews() {
   $("song-preview-thumb-caption").textContent = `${title} を ${wordlistLabel} で歌ってみた`;
   $("song-preview-thumb-credit").textContent = footer;
   $("song-preview-footer").textContent = footer;
-  $("song-preview-credits-original").textContent = finalCredit ? `Original Song　${finalCredit}` : "";
+  $("song-preview-credits-original").textContent = finalCredit ? `Original　${finalCredit}` : "";
+  fitSongCreditPreview();
   let synthCredit = "";
   if (fixedSynthesizer === "hybrid") {
     synthCredit = "VOICEVOX・PrettyPitch：波音リツ（カノン）";
@@ -3584,6 +3603,8 @@ $("wordlist").addEventListener("change", updateSongTextPreviews);
 new MutationObserver(updateSongTextPreviews).observe($("builder-image"), {
   attributes: true, attributeFilter: ["src"],
 });
+new ResizeObserver(fitSongCreditPreview).observe($("song-preview-credits-original").parentElement);
+document.fonts.ready.then(fitSongCreditPreview);
 
 // サンプルID → 補足表示(samples.json の description)。空なら曲名だけを出す
 let sampleDescriptions = {};
