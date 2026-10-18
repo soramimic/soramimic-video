@@ -2653,7 +2653,7 @@ async function saveHistoryVideo(index, button) {
     return;
   }
   // 準備中の同じジョブを二重取得しない。
-  if (prepared && prepared.index === index) return;
+  if (prepared && prepared.index === index && prepared.abort) return;
   resetHistorySave();
   const ctrl = new AbortController();
   const state = { index, button, abort: ctrl, file: null };
@@ -2672,7 +2672,8 @@ async function saveHistoryVideo(index, button) {
     else open(state, true);
   } catch (error) {
     if (preparedHistorySave !== state || error?.name === "AbortError") return;
-    resetHistorySave();
+    state.abort = null;
+    button.disabled = false;
     button.hidden = false;
     button.textContent = "保存を再試行";
   }

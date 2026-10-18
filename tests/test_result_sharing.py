@@ -115,6 +115,48 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_history_save_fetch_failure_can_retry_and_release_its_control():
+    code = "\n".join(_function_body(_script(), name) + "\n}" for name in (
+        "async function saveHistoryVideo(", "function resetHistorySave()",
+    ))
+    setup = r'''
+        const assert = require('node:assert/strict');
+        const navigator = {userActivation: {isActive: false}};
+        const prefersNativeVideoSave = () => true, headers = () => ({});
+        const historyJobs = [{video_url: '/video.mp4'}];
+        let preparedHistorySave = null, fetches = 0, saves = 0;
+        const button = {hidden: true, disabled: false, isConnected: true};
+        class File {constructor(parts, name) {this.name = name;}}
+        const fetch = async () => ({
+            ok: ++fetches > 1, blob: async () => ({type: 'video/mp4'}),
+        });
+        const openFileShare = () => {saves++;};
+    '''
+    checks = r'''
+        (async () => {
+            await saveHistoryVideo(0, button);
+            assert.equal(button.textContent, '保存を再試行');
+            assert.equal(button.disabled, false);
+            assert.equal(button.hidden, false);
+            assert.equal(preparedHistorySave.button, button);
+            await saveHistoryVideo(0, button);
+            assert.equal(fetches, 2);
+            assert.equal(button.textContent, '保存を続ける');
+            assert.equal(saves, 0);
+            navigator.userActivation.isActive = true;
+            await saveHistoryVideo(0, button);
+            assert.equal(fetches, 2);
+            assert.equal(saves, 1);
+            assert.equal(button.hidden, true);
+            resetHistorySave();
+            assert.equal(preparedHistorySave, null);
+            assert.equal(button.hidden, true);
+        })().catch(error => {console.error(error); process.exit(1);});
+    '''
+    subprocess.run(["node", "-e", setup + code + checks], check=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 @pytest.mark.parametrize("platform,touches,native", [
     ("iPhone", 1, True), ("MacIntel", 5, True),
     ("MacIntel", 0, False), ("Linux armv8l", 1, False),
