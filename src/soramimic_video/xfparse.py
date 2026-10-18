@@ -57,7 +57,7 @@ def parse_lyric_events(events: list[tuple[int, str]]) -> list[LyricEvent]:
         while text[:1] in ("/", "<"):
             pending_break = True
             text = text[1:]
-        if not text:
+        if not text.strip():
             continue
         if in_bracket:
             surface = ""

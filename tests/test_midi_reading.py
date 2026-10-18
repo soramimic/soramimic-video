@@ -122,6 +122,12 @@ def test_ruby_closing_event_keeps_its_following_lyric():
     assert (event.surface, event.kana) == ("沈む", "しずむ")
 
 
+def test_display_spaces_do_not_create_empty_sung_notes(midi_builder):
+    project = analyze_midi(midi_builder(["あ", " ", "い"]))
+    assert [(n.start_tick, n.kana) for n in project.notes] == [(0, "ア"), (960, "イ")]
+    assert project.lines[0].xf_kana == "アイ"
+
+
 def test_empty_inferred_reading_is_rejected_before_editor_or_generation(
     midi_builder, tmp_path, monkeypatch,
 ):
