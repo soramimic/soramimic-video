@@ -2467,6 +2467,7 @@ function historyCard(job, index) {
       copy.appendChild(message);
     }
     copy.appendChild(actions);
+    appendExportDownloads(copy, job);
   }
   if (job.status === "awaiting_review") {
     const actions = document.createElement("div");
@@ -5340,6 +5341,34 @@ for (const type of ["change", "input"]) {
   }, true);
 }
 
+function appendExportDownloads(container, job) {
+  const labels = {
+    musicxml: "MusicXML", midi: "歌詞入りMIDI", xf: "XF MIDI", vocal: "歌声WAV（伴奏なし）",
+  };
+  const available = Object.keys(labels).filter(kind => job.export_urls?.[kind]);
+  if (!available.length) return;
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "楽譜・歌声を書き出す";
+  details.appendChild(summary);
+  const links = document.createElement("p");
+  links.className = "share-row";
+  for (const kind of available) {
+    const link = document.createElement("a");
+    link.className = "btn-sm";
+    link.textContent = labels[kind];
+    link.href = qs(job.export_urls[kind]);
+    link.download = "";
+    links.appendChild(link);
+  }
+  details.appendChild(links);
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "楽譜・MIDIは元の音高と現在の替え歌の読みで書き出します。歌声WAVには選んだ歌声と音域調整が反映されます。";
+  details.appendChild(hint);
+  container.appendChild(details);
+}
+
 // 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
 function showBuilderVideo(job) {
   const video = freshBuilderVideo();
@@ -5354,6 +5383,7 @@ function showBuilderVideo(job) {
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
+  appendExportDownloads($("builder-share"), job);
   bindShare(job.video_url);
   prepareVideoShare(job.video_url, video);
   setBuilderState("done");

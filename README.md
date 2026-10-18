@@ -190,7 +190,7 @@ MIDIはXF形式に加え、標準の歌詞イベント（Lyric Meta Event、FF 0
 
 公開モードでは、アップロードされた音源・歌詞ファイルと解析中間物を処理終了時に削除し、
 失敗時は1分間隔で再試行します。完成動画・サムネイル・出典情報・編集用の歌詞データ
-（元歌詞を含みます）を設定された
+（元歌詞を含みます）・書き出し用の楽譜と歌声WAVを設定された
 保存期間中保持し、期間を過ぎたものから同じ間隔で削除します。音源解析は
 同一ホスト上のサービスで行い、入力内容をモデル学習には使用しません。
 
@@ -351,6 +351,22 @@ uv run pytest -q
 
 ソラミミックの編集画面の「ビデオで作る」で、編集中の歌詞を動画作成画面へ渡せます。
 開いた画面で同じ曲の音源またはMIDIを選んでください。
+
+完成画面と履歴の「楽譜・歌声を書き出す」から、MusicXML、歌詞入りMIDI、XF MIDI、
+歌声WAV（伴奏なし）を保存できます。楽譜とMIDIには元の音高と現在の替え歌の読みを、
+WAVには選択した歌声・音域調整を反映します。通常のMIDI歌詞はUTF-8、XF歌詞はCP932です。
+この機能の追加前に完成した動画には書き出しファイルがありません。
+
+CLIでは、解析・変換済みのプロジェクトから動画を作らず楽譜を書き出せます。
+歌声WAVの書き出しには先に `synthesize` を実行してください。
+
+```sh
+uv run soramimic-video export --project work/song --format musicxml --output score.musicxml
+uv run soramimic-video export --project work/song --format midi --output lyrics.mid
+uv run soramimic-video export --project work/song --format xf --output lyrics.xf.mid
+uv run soramimic-video export --project work/song --format vocal --output vocal.wav
+```
+
 完成動画の履歴にある「歌詞を編集」で、その歌詞をソラミミックの編集画面へ戻せます。
 編集データの保存前に作られた動画や、歌詞データが4MBを超える動画には表示されません。
 編集データは動画と同じ保存期間で削除されます。
