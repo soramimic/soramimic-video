@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import xml.etree.ElementTree as ET
 
 import pytest
 from mido import MidiFile
@@ -52,22 +51,6 @@ def test_midi_contains_current_lyrics_original_pitch_and_exact_times(tmp_path):
     ]
 
 
-def test_musicxml_retains_first_note_short_rest_ties_and_tempo_offset(tmp_path):
-    output = export_file(project(), tmp_path, "musicxml", tmp_path / "score.musicxml")
-    root = ET.fromstring(output.read_text())
-    notes = root.findall(".//note")
-    assert notes[0].findtext("pitch/step") == "C"
-    assert notes[0].findtext("duration") == "120"  # no synthesis head-rest
-    assert notes[0].findtext("lyric/text") == "ア"
-    assert notes[1].find("rest") is not None
-    assert notes[1].findtext("duration") == "20"  # no synthesis gap absorption
-    assert root.findtext('.//direction/offset') == '240'
-    assert root.find('.//direction/offset').get('sound') == 'yes'
-    assert [e.text for e in root.findall('.//lyric/text')] == ["ア", "キ", "ク"]
-    assert root.find('.//tie[@type="start"]') is not None
-    assert root.find('.//tie[@type="stop"]') is not None
-
-
 def test_xf_roundtrip_without_private_provenance(tmp_path):
     path = export_file(project(), tmp_path, "xf", tmp_path / "lyrics.xf.mid")
     restored = analyze_midi(path)
@@ -115,7 +98,7 @@ def test_cli_exports_each_format(tmp_path, kind):
 def test_unknown_lyric_keeps_note_in_score_exports(tmp_path):
     value = project()
     value.notes[1].kana = ''
-    for kind in ('musicxml', 'midi', 'xf'):
+    for kind in ('midi', 'xf'):
         assert export_file(value, tmp_path, kind, tmp_path / FORMATS[kind][0]).is_file()
     midi = MidiFile(file=io.BytesIO((tmp_path / 'lyrics.mid').read_bytes()), charset='utf8')
     assert len([e for _, e in events(midi) if e.type == 'note_on']) == 3
@@ -167,6 +150,12 @@ def test_public_downloads_survive_cleanup_restart_and_expire_with_job(tmp_path, 
     assert ranged.status_code == 206
     assert ranged.content == fake_wav()[:16]
     assert client.get(f'/api/jobs/{job_id}/exports/provenance').status_code == 404
+    # A result created before MusicXML downloads were removed must stay unavailable.
+    legacy = job.dir / 'exports/score.musicxml'
+    legacy.write_text('<score-partwise/>')
+    assert result_path(job.dir, 'musicxml') is None
+    assert 'musicxml' not in job.to_dict()['export_urls']
+    assert client.get(f'/api/jobs/{job_id}/exports/musicxml').status_code == 404
     restarted = TestClient(api.create_app(jobs_dir=tmp_path / 'jobs'))
     restarted.cookies.update(client.cookies)
     assert restarted.get(f'/api/jobs/{job_id}').json()['export_urls'] == body['export_urls']
@@ -197,14 +186,13 @@ def test_exports_require_api_key_and_completed_job(tmp_path, monkeypatch):
     assert browser.get(url, headers={'X-API-Key': 'test-key'}).status_code == 404
 
 
-def test_musicxml_preserves_overlaps_and_meter_changes(tmp_path):
-    value = project()
-    value.notes[0].end_tick = 200
-    value.song.time_signatures = [[0, 4, 4], [480, 3, 4]]
-    output = export_file(value, tmp_path, 'musicxml', tmp_path / 'score.musicxml')
-    root = ET.fromstring(output.read_text())
-    measures = root.findall('.//measure')
-    assert measures[1].findtext('attributes/time/beats') == '3'
-    assert measures[0].findtext('backup/duration') == '60'
-    # The first partial measure ends exactly at the new meter's tick.
-    assert sum(int(e.text) for e in measures[0].findall('note/duration')) - 60 == 480
+
+def test_musicxml_export_is_rejected_by_cli_and_exporter(tmp_path):
+    output = tmp_path / 'score.musicxml'
+    with pytest.raises(SystemExit) as exc:
+        main(['export', '--project', str(tmp_path), '--format', 'musicxml',
+              '--output', str(output)])
+    assert exc.value.code == 2
+    with pytest.raises(ValueError, match='Unknown export format'):
+        export_file(project(), tmp_path, 'musicxml', output)
+    assert not output.exists()

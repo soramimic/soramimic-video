@@ -4172,13 +4172,13 @@ def test_export_downloads_show_only_available_formats_and_authenticate_links():
         const root = element('div');
         appendExportDownloads(root, {});
         assert.equal(root.children.length, 0);
-        const urls = {musicxml: '/xml', midi: '/mid', xf: '/xf', vocal: '/wav'};
-        appendExportDownloads(root, {export_urls: urls});
+        const urls = {midi: '/mid', xf: '/xf', vocal: '/wav'};
+        appendExportDownloads(root, {export_urls: {...urls, musicxml: '/old-score'}});
         const links = root.children[0].children[1].children;
-        assert.equal(links.length, 4);
+        assert.equal(links.length, 3);
         assert.deepEqual(links.map(link => link.href),
                          Object.values(urls).map(url => qs(url)));
-        assert.equal(links[3].textContent, '歌声WAV（伴奏なし）');
+        assert.equal(links[2].textContent, '歌声WAV（伴奏なし）');
         assert(links.every(link => link.download === ''));
         const old = element('div');
         appendExportDownloads(old, {export_urls: {midi: '/mid'}});
