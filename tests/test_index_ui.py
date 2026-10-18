@@ -1080,6 +1080,93 @@ def test_history_thumbnail_starts_native_playback_without_a_close_action():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_ios_history_download_passes_an_authenticated_file_to_safari():
+    download = _function_body(_script(), "async function downloadHistoryResult(") + "\n}"
+    node = textwrap.dedent(
+        """
+        const assert = require('node:assert/strict');
+        let platform = 'ios', fail = false, pending = false;
+        let historyDownloadUrl = '', historyDownloadAbort = null;
+        const mobilePlatform = () => platform;
+        const qs = url => url + '?api_key=key';
+        const headers = () => ({'X-API-Key': 'key'});
+        const fetched = [], clicked = [], revoked = [], blobs = [], timers = new Set();
+        const URL = {
+          createObjectURL(blob) { blobs.push(blob); return 'blob:' + blobs.length; },
+          revokeObjectURL(url) { revoked.push(url); },
+        };
+        const setTimeout = (callback, ms) => {
+          assert.equal(ms, 60000); timers.add(callback); return callback;
+        };
+        const clearTimeout = timer => timers.delete(timer);
+        const document = {
+          body: {appendChild() {}},
+          createElement() {
+            return {click() { clicked.push([this.href, this.download]); }, remove() {}};
+          },
+        };
+        const fetch = async (url, options) => {
+          fetched.push({url, options});
+          if (pending) return new Promise((resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+          return {ok: !fail, blob: async () => new Blob(['media'])};
+        };
+        const button = () => ({
+          disabled: false, textContent: 'ダウンロード',
+          removeAttribute(name) { delete this[name]; },
+        });
+        const video = {video_url: '/video', result_kind: 'video'};
+        """
+    ) + download + textwrap.dedent(
+        """
+        (async () => {
+          const save = button();
+          const downloading = downloadHistoryResult(video, save);
+          assert.equal(save.disabled, true);
+          assert.equal(save.textContent, '取得中…');
+          await downloading;
+          assert.equal(save.disabled, false);
+          assert.equal(save.textContent, 'ダウンロード');
+          assert.equal(fetched[0].url, '/video');
+          assert.deepEqual(fetched[0].options.headers, {'X-API-Key': 'key'});
+          assert.equal(fetched[0].options.credentials, 'same-origin');
+          assert.deepEqual(clicked, [['blob:1', 'soramimic.mp4']]);
+          assert.equal(blobs[0].type, 'video/mp4');
+          assert.equal(await blobs[0].text(), 'media');
+          assert.deepEqual(revoked, [], 'Safari Show still needs the file after click');
+          fail = true;
+          await downloadHistoryResult(video, save);
+          assert.equal(save.disabled, false);
+          assert.equal(save.textContent, '再試行');
+          assert.ok(save.title);
+          assert.equal(clicked.length, 1, 'never navigate to a failed authentication response');
+          assert.deepEqual(revoked, [], 'failed retry must preserve the prior file');
+          fail = false;
+          await downloadHistoryResult({video_url: '/audio', result_kind: 'audio'}, save);
+          assert.equal(save.title, undefined);
+          assert.equal(blobs[1].type, 'audio/wav');
+          assert.deepEqual(clicked[1], ['blob:2', 'soramimic.wav']);
+          assert.deepEqual(revoked, ['blob:1']);
+          pending = true;
+          const timedOut = downloadHistoryResult(video, save);
+          [...timers][0]();
+          await timedOut;
+          assert.equal(save.disabled, false);
+          assert.equal(save.textContent, '再試行');
+          assert.equal(clicked.length, 2);
+          assert.equal(timers.size, 0);
+          platform = 'other';
+          await downloadHistoryResult(video, save);
+          assert.equal(fetched.length, 4, 'desktop continues to download without buffering');
+          assert.deepEqual(clicked[2], ['/video?api_key=key', 'soramimic.mp4']);
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_history_player_disposal_stops_detaches_and_releases_media():
     dispose = _function_body(_script(), "function disposeHistoryPlayback()") + "\n}"
     node = textwrap.dedent(

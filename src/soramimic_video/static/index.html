@@ -2469,7 +2469,7 @@ function historyCard(job, index) {
       actions.appendChild(share);
     }
     const download = historyButton("ダウンロード", "history-download");
-    download.addEventListener("click", () => downloadHistoryResult(job));
+    download.addEventListener("click", () => downloadHistoryResult(job, download));
     actions.appendChild(download);
     if (job.editor_url && editorPeer) {
       const edit = historyButton("歌詞を編集 ↗", "history-edit-lyrics");
@@ -2567,9 +2567,47 @@ async function startHistoryPlayback(index, trigger) {
   }
 }
 
-function downloadHistoryResult(job) {
+let historyDownloadUrl = "";
+let historyDownloadAbort = null;
+
+async function downloadHistoryResult(job, button) {
+  let url = qs(job.video_url);
+  if (mobilePlatform() === "ios") {
+    // Safariの「表示」で認証付きURLを再取得せずに済むよう、
+    // このページで取得した実ファイルを渡す。
+    if (historyDownloadAbort) historyDownloadAbort.abort();
+    const ctrl = new AbortController();
+    historyDownloadAbort = ctrl;
+    button.disabled = true;
+    button.textContent = "取得中…";
+    button.removeAttribute("title");
+    const timer = setTimeout(() => ctrl.abort(), 60000);
+    try {
+      const response = await fetch(job.video_url, {
+        headers: headers(), credentials: "same-origin", signal: ctrl.signal,
+      });
+      if (!response.ok) throw new Error("動画を取得できませんでした");
+      const blob = await response.blob();
+      if (ctrl.signal.aborted) throw new Error("ファイルの取得を中止しました");
+      const type = job.result_kind === "audio" ? "audio/wav" : "video/mp4";
+      url = URL.createObjectURL(new Blob([blob], { type }));
+      // click直後やpagehideでは解放しない。「表示」が後から読み込むため、
+      // 次の保存が始まるまでは保持する。文書を破棄するとブラウザが解放する。
+      if (historyDownloadUrl) URL.revokeObjectURL(historyDownloadUrl);
+      historyDownloadUrl = url;
+    } catch (_error) {
+      button.textContent = "再試行";
+      button.title = "ファイルを取得できませんでした。もう一度お試しください。";
+      return;
+    } finally {
+      clearTimeout(timer);
+      if (historyDownloadAbort === ctrl) historyDownloadAbort = null;
+      button.disabled = false;
+      if (button.textContent === "取得中…") button.textContent = "ダウンロード";
+    }
+  }
   const link = document.createElement("a");
-  link.href = qs(job.video_url);
+  link.href = url;
   link.download = job.result_kind === "audio" ? "soramimic.wav" : "soramimic.mp4";
   document.body.appendChild(link);
   link.click();
@@ -2632,6 +2670,7 @@ $("history").addEventListener("toggle", () => {
 window.addEventListener("pagehide", () => {
   disposeHistoryPlayback();
   resetHistoryShare();
+  if (historyDownloadAbort) historyDownloadAbort.abort();
 });
 
 let currentJob = null;
