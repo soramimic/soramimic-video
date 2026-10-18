@@ -903,11 +903,8 @@
   }
   .save-options section + section { border-top: 1px solid var(--border); margin-top: .3rem; }
   .save-group-title { margin: .45rem .75rem .15rem; color: var(--muted); font-size: .72rem; }
-  .save-options a { display: block; padding: .55rem .75rem; border-radius: 5px; text-decoration: none; }
+  .save-options a { display: flex; align-items: center; min-height: 44px; padding: .55rem .75rem; border-radius: 5px; text-decoration: none; }
   .save-options a:hover, .save-options a:focus-visible { background: var(--panel-2); }
-  .save-file-title { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
-  .save-file-title small { font-size: .65rem; color: var(--muted); }
-  .save-file-description { display: block; font-size: .7rem; color: var(--muted); margin-top: .15rem; }
   #share-hint:empty { display: none; }
   .generation-quality-warning {
     margin: .75rem 0 0; padding: .75rem; border: 1px solid #f59e0b;
@@ -1445,14 +1442,14 @@
 
 <dialog id="video-save-help" class="custom-wordlist-dialog recording-delete-dialog"
   aria-labelledby="video-save-help-title" aria-describedby="video-save-help-hint">
-  <div class="custom-wordlist-header"><h2 id="video-save-help-title">動画の保存について</h2></div>
-  <p id="video-save-help-hint">このあとOS標準の共有画面が開きます。「ビデオを保存」で写真に、「ファイルに保存」でファイルとして保存できます。</p>
+  <div class="custom-wordlist-header"><h2 id="video-save-help-title">動画を保存</h2></div>
+  <p id="video-save-help-hint">共有画面で「ビデオを保存」または「ファイルに保存」を選んでください。</p>
   <label class="recording-delete-choice" for="video-save-help-skip">
     <input type="checkbox" id="video-save-help-skip">次回から表示しない
   </label>
   <div class="custom-wordlist-actions recording-delete-actions">
     <button type="button" id="video-save-help-cancel">キャンセル</button>
-    <button type="button" id="video-save-help-proceed" class="btn-primary" autofocus>保存先を選ぶ</button>
+    <button type="button" id="video-save-help-proceed" class="btn-primary" autofocus>次へ</button>
   </div>
 </dialog>
 
@@ -5381,21 +5378,19 @@ for (const type of ["change", "input"]) {
 function appendSaveMenu(container, job, onVideoSave = null) {
   const nativeVideoSave = !!onVideoSave && prefersNativeVideoSave();
   const video = job.video_url && job.result_kind !== "audio" ? [{
-    label: "動画を保存", format: "MP4", url: job.video_url, video: true,
-    description: nativeVideoSave ? "写真への保存は次の画面で選べます" : "完成した動画ファイル",
+    label: "MP4", url: job.video_url, video: true,
   }] : [];
   const singing = job.video_url && job.result_kind === "audio" ? [{
-    label: "歌声プレビュー", format: "WAV", url: job.video_url,
-    description: "プレビューで生成した歌声",
+    label: "歌声プレビュー（WAV）", url: job.video_url,
   }] : [];
   const formats = {
-    vocal: ["歌声（伴奏なし）", "WAV", "動画で使った歌声だけを保存"],
-    musicxml: ["歌唱用の楽譜", "MusicXML", "この替え歌のメロディと読みかな"],
-    midi: ["歌詞入りMIDI", "MIDI", "元の音高・替え歌の読みかな"],
-    xf: ["XF MIDI", "XF", "対応機器・ソフト向けの歌詞入りMIDI"],
+    vocal: "歌声WAV（伴奏なし）",
+    musicxml: "楽譜（MusicXML）",
+    midi: "歌詞入りMIDI",
+    xf: "XF MIDI",
   };
-  for (const [kind, [label, format, description]] of Object.entries(formats)) {
-    if (job.export_urls?.[kind]) singing.push({label, format, description, url: job.export_urls[kind]});
+  for (const [kind, label] of Object.entries(formats)) {
+    if (job.export_urls?.[kind]) singing.push({label, url: job.export_urls[kind]});
   }
   if (!video.length && !singing.length) return;
   const menu = document.createElement("details");
@@ -5417,17 +5412,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
       const link = document.createElement("a");
       link.href = qs(entry.url);
       link.download = "";
-      const name = document.createElement("span");
-      name.className = "save-file-title";
-      name.textContent = entry.label;
-      const format = document.createElement("small");
-      format.textContent = entry.format;
-      name.appendChild(format);
-      const description = document.createElement("span");
-      description.className = "save-file-description";
-      description.textContent = entry.description;
-      link.appendChild(name);
-      link.appendChild(description);
+      link.textContent = entry.label;
       link.addEventListener("click", event => {
         // 共有ボタンへ同じタップを渡し、準備・再タップの案内をメニューの外に表示する。
         if (entry.video && nativeVideoSave && offerNativeVideoSave(link, onVideoSave)) event.preventDefault();
