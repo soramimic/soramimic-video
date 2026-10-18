@@ -1831,14 +1831,14 @@ async function receiveEditorLyrics() {
   } catch (error) { status.textContent = error.message; }
 }
 
-async function editHistoryLyrics(job, button, status) {
+async function editResultLyrics(job, button, status) {
   button.disabled = true;
   status.hidden = false;
   status.textContent = "編集画面へ歌詞を渡しています…";
   try {
     await SoramimicBridge.send(editorPeer, async () => {
       const response = await fetch(job.editor_url, { headers: headers(), cache: "no-store" });
-      if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。履歴を更新してください。");
+      if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。ページを更新してお試しください。");
       return response.json();
     });
     status.textContent = "編集画面へ歌詞を渡しました。";
@@ -2403,6 +2403,7 @@ async function loadHistory() {
   const jobs = await res.json();
   disposeHistoryPlayback();
   resetHistorySave();
+  resetHistoryShare();
   historyJobs = jobs;
   const body = $("history-body");
   body.replaceChildren();
@@ -2417,6 +2418,7 @@ async function loadHistory() {
 let historyJobs = [];
 let activeHistoryPlayback = null;
 let preparedHistorySave = null;
+let preparedHistoryShare = null;
 
 const HISTORY_STATUS_LABELS = {
   awaiting_review: "歌詞の確認待ち", queued: "開始待ち", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
@@ -2442,6 +2444,19 @@ function historyButton(label, className = "") {
   button.className = `btn-sm ${className}`.trim();
   button.textContent = label;
   return button;
+}
+
+function appendLyricEditAction(actions, job, statusContainer, className = "") {
+  if (!job.editor_url || !editorPeer) return;
+  const edit = historyButton("歌詞を編集 ↗", `result-action action-edit ${className}`.trim());
+  edit.setAttribute("aria-label", "歌詞を編集（新しいタブで開きます）");
+  const message = document.createElement("p");
+  message.className = "history-meta";
+  message.setAttribute("role", "status");
+  message.hidden = true;
+  edit.addEventListener("click", () => editResultLyrics(job, edit, message));
+  actions.appendChild(edit);
+  statusContainer.appendChild(message);
 }
 
 function historyCard(job, index) {
@@ -2523,17 +2538,12 @@ function historyCard(job, index) {
       saveRetry.addEventListener("click", () => saveHistoryVideo(index, saveRetry));
       actions.appendChild(saveRetry);
     }
-    if (job.editor_url && editorPeer) {
-      const edit = historyButton("歌詞を編集 ↗", "history-edit-lyrics result-action action-edit");
-      edit.setAttribute("aria-label", "歌詞を編集（新しいタブで開きます）");
-      const message = document.createElement("p");
-      message.className = "history-meta";
-      message.setAttribute("role", "status");
-      message.hidden = true;
-      edit.addEventListener("click", () => editHistoryLyrics(job, edit, message));
-      actions.appendChild(edit);
-      copy.appendChild(message);
+    if (typeof navigator.share === "function" && typeof File !== "undefined") {
+      const share = historyButton("共有", "history-share result-action action-share");
+      share.addEventListener("click", () => shareHistoryResult(index, share));
+      actions.appendChild(share);
     }
+    appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
     copy.appendChild(actions);
   }
   if (job.status === "awaiting_review") {
@@ -2579,6 +2589,7 @@ async function startHistoryPlayback(index, trigger) {
   }
   disposeHistoryPlayback();
   resetHistorySave();
+  resetHistoryShare();
   const job = historyJobs[index];
   if (!job || !job.playback_url) return;
   const card = trigger.closest(".history-item");
@@ -2616,6 +2627,60 @@ async function startHistoryPlayback(index, trigger) {
     msg.className = "history-player-msg";
     msg.textContent = "この端末では再生を開始できませんでした。ダウンロードをお試しください。";
     slot.appendChild(msg);
+  }
+}
+
+function resetHistoryShare() {
+  const prepared = preparedHistoryShare;
+  if (!prepared) return;
+  if (prepared.abort) prepared.abort.abort();
+  if (prepared.button && prepared.button.isConnected) {
+    prepared.button.disabled = false;
+    prepared.button.textContent = "共有";
+  }
+  preparedHistoryShare = null;
+}
+
+async function shareHistoryResult(index, button) {
+  const job = historyJobs[index];
+  if (!job || !job.video_url || typeof navigator.share !== "function") return;
+  const open = (state, afterPreparation = false) => {
+    button.disabled = false;
+    button.textContent = "共有";
+    openFileShare(state.file, (error) => {
+      if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+      button.textContent = afterPreparation && error?.name === "NotAllowedError"
+        ? "共有を開く" : "共有を再試行";
+    });
+  };
+  const prepared = preparedHistoryShare;
+  if (prepared && prepared.index === index && prepared.file) {
+    open(prepared);
+    return;
+  }
+  if (prepared && prepared.index === index && prepared.abort) return;
+  resetHistoryShare();
+  const ctrl = new AbortController();
+  const state = { index, button, abort: ctrl, file: null };
+  preparedHistoryShare = state;
+  button.disabled = true;
+  button.textContent = "共有を準備中…";
+  try {
+    const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
+    if (!res.ok) throw new Error("共有データを取得できませんでした");
+    const blob = await res.blob();
+    if (preparedHistoryShare !== state) return;
+    const audio = job.result_kind === "audio";
+    state.file = new File([blob], audio ? "soramimic.wav" : "soramimic.mp4",
+      { type: blob.type || (audio ? "audio/wav" : "video/mp4") });
+    button.disabled = false;
+    if (navigator.userActivation?.isActive === false) button.textContent = "共有を開く";
+    else open(state, true);
+  } catch (error) {
+    if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+    state.abort = null;
+    button.disabled = false;
+    button.textContent = "共有を再試行";
   }
 }
 
@@ -2683,11 +2748,13 @@ $("history").addEventListener("toggle", () => {
   if (!$("history").open) {
     disposeHistoryPlayback();
     resetHistorySave();
+    resetHistoryShare();
   }
 });
 window.addEventListener("pagehide", () => {
   disposeHistoryPlayback();
   resetHistorySave();
+  resetHistoryShare();
   if (resultDownloadAbort) resultDownloadAbort.abort();
   if ($("video-save-help").open) $("video-save-help").close();
 });
@@ -5541,9 +5608,9 @@ function showBuilderVideo(job) {
     return true;
   });
   const actions = $("result-actions");
-  if (actions.lastElementChild?.classList.contains("save-menu")) {
-    actions.prepend(actions.lastElementChild);
-  }
+  const saveMenu = actions.querySelector(".save-menu");
+  if (saveMenu) actions.prepend(saveMenu);
+  appendLyricEditAction(actions, job, $("builder-share"), "result-edit-lyrics");
   bindShare(job.video_url);
   videoSharePreparation = prepareVideoShare(job.video_url, video);
   setBuilderState("done");

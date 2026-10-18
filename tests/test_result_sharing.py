@@ -10,7 +10,7 @@ from test_index_ui import _function_body, _script
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
-@pytest.mark.parametrize("surface", ["builder", "history"])
+@pytest.mark.parametrize("surface", ["builder", "history", "history-share"])
 @pytest.mark.parametrize("activation", [
     "active", "expired", "unknown-rejected", "abandoned", "denied", "canceled",
 ])
@@ -20,10 +20,12 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
     code = code[:code.index("// ジョブを投入できない状態か")]
     code += _function_body(script, "function resetHistorySave()") + "\n}"
     code += _function_body(script, "async function saveHistoryVideo(") + "\n}"
+    code += _function_body(script, "function resetHistoryShare()") + "\n}"
+    code += _function_body(script, "async function shareHistoryResult(") + "\n}"
     setup = r'''
         const assert = require('node:assert/strict');
         let fetchCalls = 0, shareCalls = [], messages = [], release;
-        let preparedHistorySave = null;
+        let preparedHistorySave = null, preparedHistoryShare = null;
         let historyJobs = [{video_url: '/video.mp4'}];
         const button = {disabled: false, textContent: '共有', isConnected: true, handlers: {},
                         addEventListener(type, fn) {this.handlers[type] = fn;}};
@@ -58,6 +60,8 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
                 bindShare('/video.mp4');
                 videoSharePreparation = prepareVideoShare('/video.mp4', video);
                 pending = button.handlers.click();
+            } else if (surface === 'history-share') {
+                pending = shareHistoryResult(0, button);
             } else {
                 pending = saveHistoryVideo(0, button);
             }
@@ -66,6 +70,7 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
             assert.equal(shareCalls.length, 0);
             if (activation === 'abandoned') {
                 if (surface === 'builder') resetVideoSharePreparation();
+                else if (surface === 'history-share') resetHistoryShare();
                 else resetHistorySave();
                 release();
                 await pending;
@@ -84,11 +89,12 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
                 return;
             }
             if (activation !== 'active') {
-                const label = surface === 'builder' ? '共有を開く' : '保存を続ける';
+                const label = surface === 'history' ? '保存を続ける' : '共有を開く';
                 assert.equal(button.textContent, label);
                 navigator.userActivation = {isActive: true};
                 const before = shareCalls.length;
                 if (surface === 'builder') button.handlers.click();
+                else if (surface === 'history-share') shareHistoryResult(0, button);
                 else saveHistoryVideo(0, button);
                 assert.equal(shareCalls.length, before + 1, 'retry opens synchronously');
             }
@@ -99,8 +105,11 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
             else assert.equal(shareCalls[0].text, SHARE_TEXT);
             await new Promise(resolve => setImmediate(resolve));
             if (activation === 'denied') {
-                const state = surface === 'builder' ? preparedVideoShare : preparedHistorySave;
-                assert.equal(state.shareable, false, 'Save may fall back to a direct download');
+                const state = surface === 'builder' ? preparedVideoShare
+                    : surface === 'history' ? preparedHistorySave : preparedHistoryShare;
+                if (surface !== 'history-share') {
+                    assert.equal(state.shareable, false, 'Save may fall back to a direct download');
+                } else assert.equal(button.textContent, '共有を再試行');
                 assert.equal(!!state.file, true,
                              'explicit sharing may still retry the cached file');
                 if (surface === 'history') {
