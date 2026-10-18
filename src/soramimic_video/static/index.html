@@ -404,12 +404,21 @@
   }
   .history-media { border-radius: 11px 0 0 11px; }
   .history-thumb {
-    display: flex; width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0;
+    position: relative; display: flex; width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0;
     align-items: center; justify-content: center; overflow: hidden; border: 0; border-radius: 0;
     background: #111827; color: #cbd5e1; font-weight: 600;
   }
   button.history-thumb { cursor: pointer; }
+  button.history-thumb:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
   .history-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .history-play-icon {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    display: flex; align-items: center; justify-content: center; width: 3rem; height: 3rem;
+    border: 1px solid #ffffff99; border-radius: 50%; background: #000b; color: #fff;
+    font-size: 1.35rem; line-height: 1; pointer-events: none;
+  }
+  button.history-thumb:hover .history-play-icon { background: #000e; }
+  .history-thumb-audio .history-play-icon { position: static; transform: none; margin-right: .5rem; }
   .history-media video {
     display: block; width: 100%; height: 100%; object-fit: contain; background: #000;
   }
@@ -2437,8 +2446,7 @@ function historyCard(job, index) {
   if (complete) {
     thumb.type = "button";
     thumb.setAttribute("aria-label", `${job.song_label || "曲"}を再生`);
-    thumb.setAttribute("aria-expanded", "false");
-    thumb.addEventListener("click", () => toggleHistoryPlayback(index, thumb));
+    thumb.addEventListener("click", () => startHistoryPlayback(index, thumb));
   }
   if (job.thumbnail_url && job.result_kind !== "audio") {
     const image = document.createElement("img");
@@ -2448,6 +2456,14 @@ function historyCard(job, index) {
     thumb.appendChild(image);
   } else {
     thumb.textContent = job.result_kind === "audio" ? "音声" : historyStatusLabel(job);
+  }
+  if (complete) {
+    if (job.result_kind === "audio") thumb.classList.add("history-thumb-audio");
+    const icon = document.createElement("span");
+    icon.className = "history-play-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "▶";
+    thumb.prepend(icon);
   }
   const copy = document.createElement("div");
   copy.className = "history-copy";
@@ -2483,10 +2499,6 @@ function historyCard(job, index) {
   if (complete) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    const play = historyButton("再生", "history-play");
-    play.setAttribute("aria-expanded", "false");
-    play.addEventListener("click", () => toggleHistoryPlayback(index, play));
-    actions.appendChild(play);
     let share = null;
     appendSaveMenu(actions, job, () => {
       if (!share || (preparedHistoryShare?.index === index
@@ -2545,17 +2557,11 @@ function disposeHistoryPlayback() {
   active.media.remove();
   if (active.objectUrl) URL.revokeObjectURL(active.objectUrl);
   active.slot.replaceChildren(active.thumb);
-  active.triggers.forEach((button) => {
-    button.setAttribute("aria-expanded", "false");
-    if (button.classList.contains("history-play")) button.textContent = "再生";
-  });
   activeHistoryPlayback = null;
 }
 
-async function toggleHistoryPlayback(index, trigger) {
+async function startHistoryPlayback(index, trigger) {
   if (activeHistoryPlayback && activeHistoryPlayback.index === index) {
-    disposeHistoryPlayback();
-    resetHistoryShare();
     return;
   }
   disposeHistoryPlayback();
@@ -2573,13 +2579,8 @@ async function toggleHistoryPlayback(index, trigger) {
     media.setAttribute("playsinline", "");
     if (job.thumbnail_url) media.poster = qs(job.thumbnail_url);
   }
-  const triggers = [...card.querySelectorAll(".history-play, .history-thumb")];
-  triggers.forEach((button) => {
-    button.setAttribute("aria-expanded", "true");
-    if (button.classList.contains("history-play")) button.textContent = "閉じる";
-  });
   slot.replaceChildren(media);
-  const active = { index, media, slot, thumb, triggers, abort: null, objectUrl: "" };
+  const active = { index, media, slot, thumb, abort: null, objectUrl: "" };
   activeHistoryPlayback = active;
   try {
     if (apiKey()) {
