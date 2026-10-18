@@ -980,7 +980,7 @@ def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
     assert 'createElement("video")' not in load + card
     assert 'createElement("audio")' not in load + card
     assert "fetch(job.video_url" not in load + card
-    playback = _function_body(script, "async function toggleHistoryPlayback(")
+    playback = _function_body(script, "async function startHistoryPlayback(")
     assert 'document.createElement(job.result_kind === "audio" ? "audio" : "video")' in playback
     assert 'media.controls = true' in playback
     assert 'media.preload = "none"' in playback
@@ -989,6 +989,94 @@ def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
     sharing = _function_body(script, "async function shareHistoryResult(")
     assert "fetch(job.video_url" in sharing
     assert sharing.index("fetch(job.video_url") > sharing.index("resetHistoryShare()")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_history_thumbnail_starts_native_playback_without_a_close_action():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function historyCard(", "function historyButton(",
+            "async function startHistoryPlayback(", "function disposeHistoryPlayback()",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require('node:assert/strict');
+        class Element extends EventTarget {
+          constructor(tag) {
+            super(); this.tagName = tag.toUpperCase(); this.children = [];
+            this.attributes = {}; this.className = ''; this.textContent = '';
+            this.classList = {add: name => { this.className += ' ' + name; }};
+          }
+          setAttribute(name, value) { this.attributes[name] = value; }
+          removeAttribute(name) { delete this.attributes[name]; }
+          append(...children) { children.forEach(child => this.appendChild(child)); }
+          appendChild(child) { this.children.push(child); child.parent = this; }
+          prepend(child) { this.children.unshift(child); child.parent = this; }
+          replaceChildren(child) { this.children = []; this.appendChild(child); }
+          closest(selector) { return this.parent.closest(selector); }
+          querySelector(selector) {
+            const name = selector.slice(1);
+            return this.children.find(child => child.className.split(' ').includes(name))
+              || this.children.map(child => child.querySelector(selector)).find(Boolean);
+          }
+          load() {}
+          play() { this.paused = false; return Promise.resolve(); }
+          pause() { this.paused = true; this.dispatchEvent(new Event('pause')); }
+          remove() { this.removed = true; }
+        }
+        const document = {createElement: tag => new Element(tag)}, navigator = {};
+        const qs = url => url, apiKey = () => '', resetHistoryShare = () => {};
+        const historyCreatedLabel = () => '', historyStatusLabel = () => '完成';
+        const appendExportDownloads = () => {};
+        let activeHistoryPlayback = null;
+        const historyJobs = ['video', 'audio'].map(result_kind => ({
+          status: 'done', song_label: '曲名', result_kind, playback_url: '/playback',
+          thumbnail_url: '/thumbnail',
+        }));
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          for (const [index, job] of historyJobs.entries()) {
+            const card = historyCard(job, index);
+            card.closest = () => card;
+            const thumb = card.querySelector('.history-thumb');
+            assert.equal(thumb.tagName, 'BUTTON');
+            assert.equal(thumb.attributes['aria-label'], '曲名を再生');
+            const icon = thumb.querySelector('.history-play-icon');
+            assert.equal(icon.textContent, '▶');
+            assert.equal(icon.attributes['aria-hidden'], 'true');
+            const actions = card.querySelector('.history-actions');
+            assert.deepEqual(actions.children.map(c => c.textContent), ['ダウンロード']);
+            const previous = activeHistoryPlayback;
+            thumb.dispatchEvent(new Event('click'));
+            const active = activeHistoryPlayback;
+            assert.equal(active.media.tagName, job.result_kind.toUpperCase());
+            assert.equal(active.media.controls, true);
+            assert.equal(active.media.paused, false);
+            if (previous) assert.equal(previous.media.removed, true);
+            active.media.currentTime = 12;
+            active.media.pause();
+            assert.equal(activeHistoryPlayback, active);
+            assert.equal(active.media.currentTime, 12);
+            await startHistoryPlayback(index, thumb); // Repeated click never closes it.
+            assert.equal(activeHistoryPlayback, active);
+            await active.media.play();
+            active.media.dispatchEvent(new Event('ended'));
+            assert.equal(activeHistoryPlayback, active);
+          }
+          disposeHistoryPlayback();
+          assert.equal(activeHistoryPlayback, null);
+          const pending = historyCard({status: 'running'}, 2).querySelector('.history-thumb');
+          assert.equal(pending.tagName, 'DIV');
+          assert.equal(pending.querySelector('.history-play-icon'), undefined);
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -1004,10 +1092,6 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
           load() {{ calls.push("load"); }},
           remove() {{ calls.push("remove-element"); }},
         }};
-        const play = {{
-          textContent: "閉じる", classList: {{ contains: (name) => name === "history-play" }},
-          setAttribute(name, value) {{ calls.push(`button:${{name}}=${{value}}`); }},
-        }};
         const thumb = {{ name: "thumbnail" }};
         const slot = {{
           replaceChildren(child) {{ calls.push("restore:" + child.name); }},
@@ -1015,7 +1099,7 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
         const URL = {{ revokeObjectURL(url) {{ calls.push("revoke:" + url); }} }};
         let aborted = 0;
         let activeHistoryPlayback = {{
-          media, slot, thumb, triggers: [play], objectUrl: "blob:history",
+          media, slot, thumb, objectUrl: "blob:history",
           abort: {{ abort() {{ aborted += 1; }} }},
         }};
         {dispose}
@@ -1025,7 +1109,6 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
           ["pause", "remove:src", "remove:poster", "load", "remove-element"]);
         assert.ok(calls.indexOf("revoke:blob:history") > calls.indexOf("remove-element"));
         assert.ok(calls.indexOf("restore:thumbnail") > calls.indexOf("revoke:blob:history"));
-        assert.equal(play.textContent, "再生");
         assert.equal(activeHistoryPlayback, null);
         """
     )
@@ -1033,7 +1116,7 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
 
 
 def test_history_switch_disposes_before_making_a_fresh_media_element():
-    playback = _function_body(_script(), "async function toggleHistoryPlayback(")
+    playback = _function_body(_script(), "async function startHistoryPlayback(")
     assert playback.index("disposeHistoryPlayback();") < playback.index(
         'document.createElement(job.result_kind === "audio" ? "audio" : "video")'
     )
@@ -4071,6 +4154,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
             getAttribute() { return null; }, removeAttribute() {}, setAttribute() {},
             pause() {}, load() {}, addEventListener() {},
             append(...children) { this.children.push(...children); },
+            prepend(child) { this.children.unshift(child); },
             appendChild(child) { this.children.push(child); }};
         }
         const elements = new Map();
