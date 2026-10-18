@@ -4587,7 +4587,7 @@ function rejectMidi(detail, notMidi = false) {
   $("sample-status").textContent = "";
   const text = (notMidi
     ? "⚠ このファイルはMIDIとして読めないので使えません(取り消しました)。"
-    : "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。")
+    : "⚠ このMIDIの歌詞・読みと音符を解析できないため使えません(取り消しました)。")
     + "歌詞入りMIDI（XFまたは標準の歌詞イベント）が必要です。"
     + "音符に対応する歌詞を含むMIDIを書き出してください。"
     + (detail ? `\n(${detail})` : "");
