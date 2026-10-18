@@ -1,6 +1,6 @@
 # soramimic-video
 
-XF MIDI（カラオケ歌詞入り MIDI）または歌唱音源と元歌詞を入力に、
+歌詞入りMIDI（XF・標準の歌詞イベント）または歌唱音源と元歌詞を入力に、
 [soramimic](https://github.com/soramimic/soramimic) の単語リストで替え歌歌詞を生成し、
 歌唱音源と画像・字幕付き動画を作るツールです。
 
@@ -37,7 +37,7 @@ uv sync
 ## CLI
 
 ```sh
-# XF MIDI と元歌詞を解析
+# 歌詞入りMIDI と元歌詞を解析
 uv run soramimic-video analyze \
   --midi song.mid --lyrics lyrics.txt --project work/song
 
@@ -164,7 +164,7 @@ uv sync --extra api --extra audio
 uv run soramimic-video serve
 ```
 
-画面上部の「曲をアップロード」から、XF MIDI（`.mid` / `.midi`）
+画面上部の「曲をアップロード」から、歌詞入りMIDI（`.mid` / `.midi`）
 またはWAV、MP3、M4A/AAC、FLAC、OGG/Opus音声を選びます。PCでは同じ欄へ
 1ファイルをドラッグ＆ドロップでき、WebM音声も入力できます。同梱曲は「サンプル曲で試す」で入力方法を切り替えて選べます。
 「曲をアップロード」で戻れます。入力方法を切り替えると前の曲選択は解除されます。
@@ -181,6 +181,12 @@ uv run soramimic-video serve
 音源分離・タイミング推定・音高推定を
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
+
+MIDIはXF形式に加え、標準の歌詞イベント（Lyric Meta Event、FF 05）に対応します。
+標準MIDIの日本語歌詞はUTF-8またはCP932で保存してください。歌詞の時刻から旋律音符を
+対応付け、歌詞中の改行、`/`、`\`を行の区切りとして扱います。複数の歌詞トラックが
+ある場合は、音符との対応から1つを選びます。歌詞イベントがないMIDIや、歌詞に対応する
+音符がないMIDIは利用できません。
 
 公開モードでは、アップロードされた音源・歌詞ファイルと解析中間物を処理終了時に削除し、
 失敗時は1分間隔で再試行します。完成動画・サムネイル・出典情報・編集用の歌詞データ
@@ -269,7 +275,7 @@ Demucs、Whisper、SheetSage2は入力取得後に独立ジョブとして投入
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じ音声上限までmultipart requestを
 通せるようbody sizeとtimeoutも設定します。`audio` extraがないサーバーでも共通の
-アップロードボタンからXF MIDIを選べます。音声を選んだ場合だけ「準備中」と案内します。
+アップロードボタンから歌詞入りMIDIを選べます。音声を選んだ場合だけ「準備中」と案内します。
 
 同梱の音源解析サンプルを再生成する場合は、FluidR3 GM SoundFontとfluidsynthを
 用意して次を実行します。必要な第三者ライセンスは `THIRD_PARTY_NOTICES.md` に記載しています。

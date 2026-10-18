@@ -1,4 +1,4 @@
-"""XF MIDI の解析: 歌唱モーラ(歌詞+音符+タイミング)の抽出。
+"""歌詞入りMIDI（XF・標準lyricsイベント）の解析: 歌唱モーラ(歌詞+音符+タイミング)の抽出。
 
 XFKM チャンクの歌詞イベントは `表記[かな` / `かな]` / `かな` の断片列で、
 1イベントが1音符(1歌唱モーラ)に対応する。`/` は改行、`<` は改ページ。
@@ -218,19 +218,25 @@ class RawNote:
     end_tick: int
 
 
-def _collect_notes(midi: XFMidiFile) -> list[RawNote]:
+def _track_notes(track) -> list[RawNote]:
     notes: list[RawNote] = []
-    for track in midi.tracks:
-        active: dict[tuple[int, int], int] = {}  # (channel, note) -> start_tick
-        for tick, msg in _absolute_events(track):
-            if msg.type == "note_on" and msg.velocity > 0:
-                active[(msg.channel, msg.note)] = tick
-            elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
-                key = (msg.channel, msg.note)
-                if key in active:
-                    notes.append(RawNote(msg.channel, msg.note, active.pop(key), tick))
+    active: dict[tuple[int, int], int] = {}  # (channel, note) -> start_tick
+    for tick, msg in _absolute_events(track):
+        if msg.type == "note_on" and msg.velocity > 0:
+            active[(msg.channel, msg.note)] = tick
+        elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+            key = (msg.channel, msg.note)
+            if key in active:
+                notes.append(RawNote(msg.channel, msg.note, active.pop(key), tick))
     notes.sort(key=lambda n: n.start_tick)
     return notes
+
+
+def _collect_notes(midi: XFMidiFile) -> list[RawNote]:
+    return sorted(
+        (note for track in midi.tracks for note in _track_notes(track)),
+        key=lambda n: n.start_tick,
+    )
 
 
 def melody_continuations(project: Project) -> dict[int, list[RawNote]]:
@@ -248,7 +254,7 @@ def melody_continuations(project: Project) -> dict[int, list[RawNote]]:
     if not midi_path or channel is None or len(project.notes) < 2:
         return {}
     try:
-        midi = XFMidiFile(str(midi_path), charset="cp932")
+        midi = XFMidiFile(str(midi_path), charset="latin1")
     except (OSError, ValueError):
         logger.debug("継続旋律音符を読むためのMIDIを開けません: %s", midi_path)
         return {}
@@ -459,38 +465,98 @@ def _fill_missing_kana(lines: list[Line], notes: list[Note]) -> int:
     return filled
 
 
-def analyze_midi(midi_path: Path) -> Project:
-    """XF MIDIを解析してProject(notes/lines/song)を作る。"""
-    midi = XFMidiFile(str(midi_path), charset="cp932")
-    if midi.xfkm is None:
-        raise ValueError(f"{midi_path} にXFKM(カラオケ歌詞)チャンクがありません")
-
-    info: dict = {}
+def _decode_lyric_texts(
+    events: list[tuple[int, str]], *, xf: bool = False,
+) -> list[tuple[int, str]]:
+    """Decode losslessly loaded text; XF uses CP932, standard tracks also accept UTF-8."""
+    raw = b"".join(text.encode("latin1") for _, text in events)
+    charset = "cp932"
+    if not xf:
+        try:
+            raw.decode("utf-8")
+            charset = "utf-8"
+        except UnicodeDecodeError:
+            pass
     try:
-        info = extract_xf_karaoke_info(str(midi_path))
-    except Exception:
-        logger.warning("$Lyrcヘッダの解析に失敗(メロディチャンネルは自動判定します)")
+        return [(tick, text.encode("latin1").decode(charset)) for tick, text in events]
+    except UnicodeDecodeError as exc:
+        raise ValueError("MIDIの歌詞はUTF-8またはCP932で保存してください") from exc
 
+
+def _standard_lyric_source(
+    midi: XFMidiFile, tolerance: int,
+) -> tuple[list[LyricEvent], int, list[RawNote]]:
+    """Choose one lyric stream and its pitched channel without mixing vocal parts."""
+    all_notes = [n for n in _collect_notes(midi) if n.channel != 9]
+    best: tuple[list[LyricEvent], int, list[RawNote]] | None = None
+    best_score = (-1.0, False, False, -1.0, 0)
+    for track in midi.tracks:
+        absolute = _absolute_events(track)
+        raw = [(tick, msg.text) for tick, msg in absolute if msg.type == "lyrics"]
+        if not raw:
+            continue
+        # CR/LF and karaoke slash/backslash markers may be standalone, leading,
+        # or trailing. Keep a trailing break pending for the next lyric event.
+        fragments = [
+            (tick, "/" if re.fullmatch(r"[\r\n/\\<]+", part) else part)
+            for tick, text in _decode_lyric_texts(raw)
+            for part in re.split(r"([\r\n/\\<]+)", text)
+            if part.strip() or re.fullmatch(r"[\r\n/\\<]+", part)
+        ]
+        events = parse_lyric_events(fragments)
+        if not events:
+            continue
+        local = [n for n in _track_notes(track) if n.channel != 9]
+        sources = [(True, local), (False, all_notes)] if local else [(False, all_notes)]
+        prefix = next((msg.channel for _, msg in absolute if msg.type == "channel_prefix"), None)
+        for is_local, candidates in sources:
+            for channel in sorted({n.channel for n in candidates}):
+                notes = [n for n in candidates if n.channel == channel]
+                starts = sorted(n.start_tick for n in notes)
+                hits = 0
+                for event in events:
+                    i = bisect.bisect_left(starts, event.tick - tolerance)
+                    if i < len(starts) and starts[i] <= event.tick + tolerance:
+                        hits += 1
+                score = (hits / len(events), is_local, channel == prefix,
+                         hits / len(notes), len(events))
+                if score > best_score:
+                    best_score = score
+                    best = events, channel, notes
+    if best is None:
+        raise ValueError(
+            "MIDIに音符と対応する歌詞イベントがありません（XFまたは標準lyricsが必要です）"
+        )
+    return best
+
+
+def analyze_midi(midi_path: Path) -> Project:
+    """歌詞入りMIDIを解析してProject(notes/lines/song)を作る。"""
+    # latin1 preserves every text byte, including unrelated track metadata.
+    midi = XFMidiFile(str(midi_path), charset="latin1")
+    if midi.type == 2 or midi.ticks_per_beat <= 0:
+        raise ValueError("同期した拍単位のMIDI（フォーマット0または1）が必要です")
     tempo_map = _tempo_map(midi)
     tolerance = max(1, int(midi.ticks_per_beat * PAIRING_TOLERANCE_BEATS))
-
+    info: dict = {}
     raw_events = [
         (tick, msg.text)
-        for tick, msg in _absolute_events(midi.xfkm)
+        for tick, msg in _absolute_events(midi.xfkm or [])
         if msg.type == "lyrics"
     ]
-    lyric_events = parse_lyric_events(raw_events)
-    if not lyric_events:
-        raise ValueError("XFKMに歌詞イベントがありません")
-
-    all_notes = _collect_notes(midi)
-    melody_channel = _select_melody_channel(
-        all_notes,
-        [e.tick for e in lyric_events],
-        info.get("melody_channel"),
-        tolerance,
-    )
-    melody_notes = [n for n in all_notes if n.channel == melody_channel]
+    lyric_events = parse_lyric_events(_decode_lyric_texts(raw_events, xf=True))
+    if lyric_events:
+        try:
+            info = extract_xf_karaoke_info(str(midi_path))
+        except Exception:
+            logger.warning("$Lyrcヘッダの解析に失敗(メロディチャンネルは自動判定します)")
+        all_notes = _collect_notes(midi)
+        melody_channel = _select_melody_channel(
+            all_notes, [e.tick for e in lyric_events], info.get("melody_channel"), tolerance,
+        )
+        melody_notes = [n for n in all_notes if n.channel == melody_channel]
+    else:
+        lyric_events, melody_channel, melody_notes = _standard_lyric_source(midi, tolerance)
 
     # 歌詞イベント→音符のペアリング(開始tickの最近傍、許容差あり)
     notes: list[Note] = []
@@ -552,6 +618,9 @@ def analyze_midi(midi_path: Path) -> Project:
         )
         cur_note_ids.append(nid)
     close_line()
+
+    if not notes:
+        raise ValueError("MIDIの歌詞に対応する旋律音符が見つかりません")
 
     fixed = _fix_particle_kana(lines, notes)
     if fixed:

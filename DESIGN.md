@@ -2,20 +2,20 @@
 
 ## 目的
 
-soramimic-video は、XF MIDI または歌唱音源を解析し、替え歌の歌唱音源と画像・字幕付き動画を
+soramimic-video は、歌詞入りMIDI（XF・標準lyricsイベント）または歌唱音源を解析し、替え歌の歌唱音源と画像・字幕付き動画を
 生成します。各処理段階は同じ project directory を介して接続され、CLI と Web API から
 同じ変換処理を利用します。
 
 ## Pipeline
 
 ```text
-XF MIDI + 元歌詞 ── analyze ─┐
+歌詞入りMIDI + 元歌詞 ── analyze ─┐
 歌唱音源 + 任意の MIDI ─ analyze-audio ─┤
                                       ├─ convert ─ edit ─ synthesize ─ mix ─ video
 メロディ MIDI + 歌詞 ─ analyze-midi ────┘
 ```
 
-- `analyze`: XF の歌詞・読み・音符 timing を解析し、元歌詞と対応付けます。
+- `analyze`: MIDIの歌詞・読み・音符 timing を解析し、元歌詞と対応付けます。
 - `analyze-audio`: 歌唱音源から読み、timing、pitch を推定します。メロディ MIDI を併用できます。
 - `analyze-midi`: メロディ MIDI と歌詞から音符・モーラ対応を作ります。
 - `apply-lyric-layers`: 完全歌詞・実演・合成ノートのレイヤーJSONを取り込みます。
