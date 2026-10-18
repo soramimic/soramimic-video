@@ -19,7 +19,7 @@ soramimic-video は、歌詞入りMIDI（XF・標準lyricsイベント）また�
 - `analyze-audio`: 歌唱音源から読み、timing、pitch を推定します。メロディ MIDI を併用できます。
 - `analyze-midi`: メロディ MIDI と歌詞から音符・モーラ対応を作ります。
 - `apply-lyric-layers`: 完全歌詞・実演・合成ノートのレイヤーJSONを取り込みます。
-- `export`: 現在の読み・元の音高で歌詞入りMIDI、XF MIDIを書き出します。
+- `export`: 現在の読み・元の音高でMusicXML、歌詞入りMIDI、XF MIDIを書き出します。
   `vocal`形式では合成済みの伴奏なし歌声WAVをコピーします。
 - `export-xf`: 現在の歌詞とノートをXF MIDIと由来情報JSONへ書き出します。
 - `convert`: soramimic の単語リストを使って替え歌候補を作ります。
@@ -145,7 +145,9 @@ layout JSON が画像、文字、字幕、credit の配置を定義します。�
 画像の作者・ライセンス表記は各画像に表示します。
 
 生成物は MP4 を基本とします。Web UI は対応端末で保存・共有を提供し、利用できない場合は
-直接 download へ fallback します。完成画面と履歴では、歌詞入りMIDI・XF MIDIと伴奏なし歌声WAVも保存できます。
+直接 download へ fallback します。完成画面と履歴では、MusicXML・歌詞入りMIDI・XF MIDIと伴奏なし歌声WAVも保存できます。
+MusicXMLはNEUTRINO入力と共通の標準形式です。NEUTRINO合成では使用した譜面をそのまま保存し、
+それ以外では現在の読みと元の音高から生成します。曲頭が音符なら、その一部を短い休符にします。
 ジョブの `export_urls` が取得可能な形式を返し、`/api/jobs/{id}/exports/{kind}` で保存します。
 書き出しファイルは完成動画と同じセッション・保存期間の制限に従います。
 

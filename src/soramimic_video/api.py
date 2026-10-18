@@ -1501,11 +1501,20 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         ),
     }
 
+    def save_exports(wav: Path) -> None:
+        score = d / "neutrino" / "score.musicxml"
+        # NEUTRINO合成では、音域調整も含めて実際に渡した譜面を保存する。
+        musicxml_source = (
+            score if job.params.get("synthesizer", "neutrino") == "neutrino" and score.is_file()
+            else None
+        )
+        save_results(project, d, vocal_source=wav, musicxml_source=musicxml_source)
+
     if not config.get("parallel_video", True):
         wav = _run_synthesize(job, config, project, synthesize)
         project.save(d)
         if wav is not None:
-            save_results(project, d, vocal_source=wav)
+            save_exports(wav)
         with _stage(job, "mix", estimated_total=8.0):
             mix(project, d, soundfont=config.get("soundfont"))
         with _stage(job, "video", estimated_total=45.0):
@@ -1544,7 +1553,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             # 自動調整が決めたキー変更を保存し、伴奏も同じだけ移調する。
             project.save(d)
             if wav is not None:
-                save_results(project, d, vocal_source=wav)
+                save_exports(wav)
             with _stage(job, "mix", estimated_total=8.0):
                 audio_path = mix(project, d, soundfont=config.get("soundfont"))
         except Exception as audio_error:
