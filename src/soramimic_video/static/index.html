@@ -902,7 +902,7 @@
           <span aria-hidden="true">●</span><span id="song-record-label">録音する</span>
         </button>
       </div>
-      <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
+      <p class="hint" id="song-upload-hint">歌詞入りMIDI・音声入力を確認しています…</p>
       <p class="hint" id="song-record-status" role="status" hidden></p>
       <div class="song-upload-selection" id="song-upload-selection" hidden>
         <div class="song-upload-selection-main">
@@ -1837,8 +1837,8 @@ async function loadConfig() {
   }
   audioInputReady = conf.audio_input === true;
   $("song-upload-hint").textContent = audioInputReady
-    ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
-    : "XF MIDIに対応";
+    ? `歌詞入りMIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
+    : "歌詞入りMIDIに対応（XF・標準歌詞イベント）";
   syncRecordingUi();
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
@@ -4253,11 +4253,11 @@ $("midi").addEventListener("change", () => {
   setRecordingStatus("");
   const kind = ownSongKind(file);
   if (!kind) {
-    rejectOwnSongFile("XF MIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
+    rejectOwnSongFile("歌詞入りMIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
     return;
   }
   if (kind === "audio" && !audioInputReady) {
-    rejectOwnSongFile("このサーバーでは音声入力を準備中です。XF MIDIは利用できます。");
+    rejectOwnSongFile("このサーバーでは音声入力を準備中です。歌詞入りMIDIは利用できます。");
     return;
   }
   if (kind === "audio" && file.size > maxAudioUploadBytes) {
@@ -4479,7 +4479,7 @@ async function ensureSelectedSampleMidi(onFail) {
 }
 
 // ---- 選んだMIDIの検証(歌詞の有無・元歌詞との整合) ----
-// この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱と空耳変換の
+// この画面のパイプラインはMIDIの歌詞(XFまたは標準lyricsイベント)を歌唱と空耳変換の
 // 入力にしているので、歌詞の無いMIDIは何分も待たせた末に必ず失敗する。
 // 選ばれた直後に /api/midi-check へ送って確かめ、歌詞が無ければその場で
 // ファイル選択ごと取り消す(=生成にも編集にも進めない状態に戻す)。
@@ -4584,8 +4584,8 @@ function rejectMidi(detail, notMidi = false) {
   const text = (notMidi
     ? "⚠ このファイルはMIDIとして読めないので使えません(取り消しました)。"
     : "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。")
-    + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
-    + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
+    + "歌詞入りMIDI（XFまたは標準の歌詞イベント）が必要です。"
+    + "音符に対応する歌詞を含むMIDIを書き出してください。"
     + (detail ? `\n(${detail})` : "");
   $("midi-error").textContent = text;
   $("midi-error").hidden = false;
@@ -7767,7 +7767,7 @@ async function hostUploadSong() {
   }
   if (midiChecking) await midiChecking;    // 歌詞なしMIDIはここで取り消される
   if (!$("midi").files[0]) {
-    throw new Error("そのMIDIは使えません(歌詞入りのXF形式MIDIが必要です)");
+    throw new Error("そのMIDIは使えません(歌詞入りMIDI（XFまたは標準の歌詞イベント）が必要です)");
   }
   prefillOwnMidiLyrics($("midi").files[0]);
   // サンプルの選択を外す。残すと投入前の突き合わせ(ensureSelectedSampleMidi)が
@@ -7777,7 +7777,7 @@ async function hostUploadSong() {
   await reseedEditorSong();
 }
 
-// /api/midi-check が返したXF歌詞を、持ち込みMIDI専用モーダルの
+// /api/midi-check が返したMIDI歌詞を、持ち込みMIDI専用モーダルの
 // 元歌詞欄の下敷きにする。空ならそのまま入れ、前の曲の歌詞等があれば
 // 勝手に消さず確認する。ここで正本 #lyrics を更新すると reseedEditorSong が
 // 同じ値をエディタに返し、開いている専用モーダルの textarea に表示される。
