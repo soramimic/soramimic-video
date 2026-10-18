@@ -1617,6 +1617,8 @@ def convert_project(
         tokens_list=project_conversion_tokens(project, coerced),
     )
     apply_converted_lines(project, result["lines"], wordlist, where, coerced)
+    assert project.parody is not None
+    project.parody.note_length_alpha = alpha
     return result
 
 
