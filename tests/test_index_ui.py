@@ -4356,9 +4356,9 @@ def test_save_menu_groups_available_formats_and_closes_after_selection():
         assert.equal(links.length, 5);
         assert.deepEqual(links.map(link => link.href),
                          ['/video.mp4', '/wav', '/score', '/mid', '/xf'].map(url => qs(url)));
-        assert.equal(links[0].children[0].textContent, '動画を保存');
-        assert.equal(links[2].children[0].textContent, '歌唱用の楽譜');
-        assert.match(links[2].children[1].textContent, /この替え歌/);
+        assert.deepEqual(links.map(link => link.textContent),
+                         ['MP4', '歌声WAV（伴奏なし）', '楽譜（MusicXML）',
+                          '歌詞入りMIDI', 'XF MIDI']);
         assert(links.every(link => link.download === ''));
         menu.open = true;
         links[1].handlers.click({preventDefault() {throw Error('must download');}});
@@ -4368,7 +4368,7 @@ def test_save_menu_groups_available_formats_and_closes_after_selection():
         assert.equal(linksIn(old).length, 1);
         const audio = element('div');
         appendSaveMenu(audio, {video_url: '/audio', result_kind: 'audio'});
-        assert.equal(linksIn(audio)[0].children[0].textContent, '歌声プレビュー');
+        assert.equal(linksIn(audio)[0].textContent, '歌声プレビュー（WAV）');
         assert.equal(audio.children[0].children[1].children[0].children[0].textContent,
                      '歌唱データ');
     ''')
