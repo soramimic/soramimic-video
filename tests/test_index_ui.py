@@ -1001,6 +1001,7 @@ def test_history_thumbnail_plays_without_close_or_share_and_keeps_saving(ios):
             "function historyCard(", "function historyButton(",
             "async function startHistoryPlayback(", "function disposeHistoryPlayback()",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
+            "function isIOSPlatform(",
         )
     )
     node = textwrap.dedent(
@@ -4171,6 +4172,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
             "async function poll(", "function setBuilderState(",
             "function showWordlistExhaustionNotice(", "function historyCard(",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
+            "function isIOSPlatform(",
         )
     )
     message = next(line for line in script.splitlines()
@@ -4353,12 +4355,12 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
 
 def test_save_menu_groups_available_formats_and_closes_after_selection():
     functions = '\n'.join(_function_body(_script(), name) + '\n}' for name in (
-        'function appendSaveMenu(', 'function prefersNativeVideoSave(',
+        'function appendSaveMenu(', 'function prefersNativeVideoSave(', 'function isIOSPlatform(',
     ))
     node = textwrap.dedent('''
         const assert = require('node:assert/strict');
         function element(tag) {
-          return {tag, children: [], handlers: {}, open: false,
+          return {tag, children: [], handlers: {}, open: false, setAttribute() {},
                   addEventListener(type, fn) {this.handlers[type] = fn;},
                   appendChild(child) { this.children.push(child); }};
         }

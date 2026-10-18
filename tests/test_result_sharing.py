@@ -163,7 +163,7 @@ def test_history_save_fetch_failure_can_retry_and_release_its_control():
 ])
 def test_video_save_keeps_photos_route_only_on_ios(platform, touches, native):
     code = "\n".join(_function_body(_script(), name) + "\n}" for name in (
-        "function appendSaveMenu(", "function prefersNativeVideoSave(",
+        "function appendSaveMenu(", "function prefersNativeVideoSave(", "function isIOSPlatform(",
     ))
     setup = f"""
         const assert = require('node:assert/strict');
@@ -172,7 +172,7 @@ def test_video_save_keeps_photos_route_only_on_ios(platform, touches, native):
         class File {{}}
         const qs = url => url;
         function element(tag) {{
-            return {{tag, children: [], handlers: {{}},
+            return {{tag, children: [], handlers: {{}}, setAttribute() {{}},
                 addEventListener(type, fn) {{this.handlers[type] = fn;}},
                 appendChild(node) {{this.children.push(node);}}}};
         }}
@@ -183,7 +183,8 @@ def test_video_save_keeps_photos_route_only_on_ios(platform, touches, native):
             ...(node.tag === 'a' ? [node] : []), ...node.children.flatMap(linksIn)];
     """
     checks = r'''
-        let shared = 0, prevented = 0, available = true;
+        let shared = 0, prevented = 0, available = true, mediaDownloads = 0;
+        const downloadResultMedia = () => {mediaDownloads++;};
         appendSaveMenu(root, {video_url: '/video.mp4', export_urls: {midi: '/lyrics.mid'}},
                        () => {shared++; return available;});
         const menu = root.children[0], links = linksIn(menu);
@@ -195,8 +196,9 @@ def test_video_save_keeps_photos_route_only_on_ios(platform, touches, native):
         assert.equal(prevented, NATIVE ? 1 : 0, 'MIDI always keeps its direct download');
         available = false;
         links[0].handlers.click(event);
-        assert.equal(prevented, NATIVE ? 1 : 0,
-                     'failed preparation leaves direct saving available');
+        assert.equal(prevented, NATIVE ? 2 : 0);
+        assert.equal(mediaDownloads, NATIVE ? 1 : 0,
+                     'iOS fallback saves an authenticated file instead of navigating');
     '''.replace("NATIVE", str(native).lower())
     subprocess.run(["node", "-e", setup + code + checks], check=True)
 
@@ -266,7 +268,7 @@ def test_native_save_help_cancel_opt_out_and_synchronous_confirmation(storage_av
             }
             nativeVideoSaveHelpSkipped = false;
             stored = null;
-            offerNativeVideoSave(link, () => false);
+            offerNativeVideoSave(link, () => false, () => {downloads++;});
             proceed.onclick();
             assert.equal(downloads, 1, 'unavailable sharing keeps an explicit download route');
             await Promise.resolve();

@@ -2688,6 +2688,7 @@ $("history").addEventListener("toggle", () => {
 window.addEventListener("pagehide", () => {
   disposeHistoryPlayback();
   resetHistorySave();
+  if (resultDownloadAbort) resultDownloadAbort.abort();
   if ($("video-save-help").open) $("video-save-help").close();
 });
 
@@ -3024,16 +3025,19 @@ function openFileShare(file, onError, text = SHARE_TEXT) {
   }
 }
 
-function prefersNativeVideoSave() {
-  if (typeof navigator.share !== "function" || typeof File === "undefined") return false;
+function isIOSPlatform() {
   const platform = navigator.platform || "";
   return /iPhone|iPad|iPod/i.test(navigator.userAgent || "")
     || /iPhone|iPad|iPod/i.test(platform)
     || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1);
 }
 
+function prefersNativeVideoSave() {
+  return typeof navigator.share === "function" && typeof File !== "undefined" && isIOSPlatform();
+}
+
 let nativeVideoSaveHelpSkipped = false;
-function offerNativeVideoSave(link, onVideoSave) {
+function offerNativeVideoSave(link, onVideoSave, onDownload) {
   const preference = "soramimic-video-save-help-skipped";
   try {
     nativeVideoSaveHelpSkipped ||= localStorage.getItem(preference) === "1";
@@ -3053,18 +3057,62 @@ function offerNativeVideoSave(link, onVideoSave) {
     }
     // 確認タップ内で同期的に共有を呼び、OSの操作権限を保つ。
     if (onVideoSave() === false) {
-      const download = document.createElement("a");
-      download.href = link.href;
-      download.download = "";
-      document.body.appendChild(download);
-      download.click();
-      download.remove();
+      onDownload();
     }
   };
   $("video-save-help-cancel").onclick = () => dialog.close();
   dialog.onclose = () => { if (!dialog.open) proceed.onclick = null; };
   dialog.showModal();
   return true;
+}
+
+let resultDownloadObjectUrl = "";
+let resultDownloadAbort = null;
+
+async function downloadResultMedia(link, mediaType, status) {
+  if (link.getAttribute("aria-busy") === "true") return;
+  if (resultDownloadAbort) resultDownloadAbort.abort();
+  const ctrl = new AbortController();
+  resultDownloadAbort = ctrl;
+  link.setAttribute("aria-busy", "true");
+  status.hidden = false;
+  status.textContent = "ファイルを取得しています…";
+  const timer = setTimeout(() => ctrl.abort(), 120000);
+  try {
+    const response = await fetch(link.href, {
+      headers: headers(), credentials: "same-origin", signal: ctrl.signal,
+    });
+    if (!response.ok) throw new Error("ファイルを取得できませんでした");
+    const blob = await response.blob();
+    if (ctrl.signal.aborted || !blob.size) throw new Error("ファイルを取得できませんでした");
+    if (blob.type && ![mediaType, "application/octet-stream"].includes(blob.type.split(";")[0])) {
+      throw new Error("ファイル形式が一致しません");
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const plainName = disposition.match(/filename="([^"]+)"/i);
+    let filename = mediaType === "audio/wav" ? "soramimic.wav" : "soramimic.mp4";
+    if (encodedName) {
+      try { filename = decodeURIComponent(encodedName[1]); } catch (_) { /* 既定名を使う */ }
+    } else if (plainName) filename = plainName[1];
+    const url = URL.createObjectURL(new Blob([blob], { type: mediaType }));
+    // Safariの「表示」はclick後に読むため、今回のURLは次の保存まで保持する。
+    if (resultDownloadObjectUrl) URL.revokeObjectURL(resultDownloadObjectUrl);
+    resultDownloadObjectUrl = url;
+    const download = document.createElement("a");
+    download.href = url;
+    download.download = filename;
+    document.body.appendChild(download);
+    download.click();
+    download.remove();
+    status.hidden = true;
+  } catch (_error) {
+    status.textContent = "ファイルを取得できませんでした。保存メニューからもう一度お試しください。";
+  } finally {
+    clearTimeout(timer);
+    link.removeAttribute("aria-busy");
+    if (resultDownloadAbort === ctrl) resultDownloadAbort = null;
+  }
 }
 
 function videoFileName(videoUrl) {
@@ -5387,10 +5435,10 @@ for (const type of ["change", "input"]) {
 function appendSaveMenu(container, job, onVideoSave = null) {
   const nativeVideoSave = !!onVideoSave && prefersNativeVideoSave();
   const video = job.video_url && job.result_kind !== "audio" ? [{
-    label: "MP4", url: job.video_url, video: true,
+    label: "MP4", url: job.video_url, video: true, mediaType: "video/mp4",
   }] : [];
   const singing = job.video_url && job.result_kind === "audio" ? [{
-    label: "歌声プレビュー（WAV）", url: job.video_url,
+    label: "歌声プレビュー（WAV）", url: job.video_url, mediaType: "audio/wav",
   }] : [];
   const formats = {
     vocal: "歌声WAV（伴奏なし）",
@@ -5399,7 +5447,9 @@ function appendSaveMenu(container, job, onVideoSave = null) {
     xf: "XF MIDI",
   };
   for (const [kind, label] of Object.entries(formats)) {
-    if (job.export_urls?.[kind]) singing.push({label, url: job.export_urls[kind]});
+    if (job.export_urls?.[kind]) singing.push({
+      label, url: job.export_urls[kind], mediaType: kind === "vocal" ? "audio/wav" : "",
+    });
   }
   if (!video.length && !singing.length) return;
   const menu = document.createElement("details");
@@ -5410,6 +5460,10 @@ function appendSaveMenu(container, job, onVideoSave = null) {
   menu.appendChild(summary);
   const links = document.createElement("div");
   links.className = "save-options";
+  const status = document.createElement("p");
+  status.className = "hint";
+  status.setAttribute("role", "status");
+  status.hidden = true;
   for (const [title, entries] of [["動画", video], ["歌唱データ", singing]]) {
     if (!entries.length) continue;
     const section = document.createElement("section");
@@ -5423,8 +5477,14 @@ function appendSaveMenu(container, job, onVideoSave = null) {
       link.download = "";
       link.textContent = entry.label;
       link.addEventListener("click", event => {
+        const download = () => downloadResultMedia(link, entry.mediaType, status);
         // iPhoneの動画保存は、同じタップから保存用の共有シートを開く。
-        if (entry.video && nativeVideoSave && offerNativeVideoSave(link, onVideoSave)) event.preventDefault();
+        if (entry.video && nativeVideoSave && offerNativeVideoSave(link, onVideoSave, download)) {
+          event.preventDefault();
+        } else if (entry.mediaType && isIOSPlatform()) {
+          event.preventDefault();
+          download();
+        }
         menu.open = false;
       });
       section.appendChild(link);
@@ -5444,6 +5504,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
     links.style.left = `${offset}px`;
   });
   container.appendChild(menu);
+  container.appendChild(status);
 }
 
 document.addEventListener("click", event => {
