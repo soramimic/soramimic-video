@@ -5346,13 +5346,13 @@ for (const type of ["change", "input"]) {
 
 function appendExportDownloads(container, job) {
   const labels = {
-    musicxml: "MusicXML", midi: "歌詞入りMIDI", xf: "XF MIDI", vocal: "歌声WAV（伴奏なし）",
+    midi: "歌詞入りMIDI", xf: "XF MIDI", vocal: "歌声WAV（伴奏なし）",
   };
   const available = Object.keys(labels).filter(kind => job.export_urls?.[kind]);
   if (!available.length) return;
   const details = document.createElement("details");
   const summary = document.createElement("summary");
-  summary.textContent = "楽譜・歌声を書き出す";
+  summary.textContent = "MIDI・歌声を書き出す";
   details.appendChild(summary);
   const links = document.createElement("p");
   links.className = "share-row";
@@ -5367,7 +5367,7 @@ function appendExportDownloads(container, job) {
   details.appendChild(links);
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "楽譜・MIDIは元の音高と現在の替え歌の読みで書き出します。歌声WAVには選んだ歌声と音域調整が反映されます。";
+  hint.textContent = "MIDIは元の音高と現在の替え歌の読みで書き出します。歌声WAVには選んだ歌声と音域調整が反映されます。";
   details.appendChild(hint);
   container.appendChild(details);
 }
