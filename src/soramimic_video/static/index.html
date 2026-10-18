@@ -2524,7 +2524,7 @@ function historyCard(job, index) {
       actions.appendChild(saveRetry);
     }
     if (job.editor_url && editorPeer) {
-      const edit = historyButton("歌詞を編集", "history-edit-lyrics result-action action-edit");
+      const edit = historyButton("歌詞を編集 ↗", "history-edit-lyrics result-action action-edit");
       edit.setAttribute("aria-label", "歌詞を編集（新しいタブで開きます）");
       const message = document.createElement("p");
       message.className = "history-meta";
