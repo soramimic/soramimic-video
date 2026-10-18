@@ -2277,13 +2277,13 @@ def test_synth_credit_of_prettypitch_names_engine_voice_and_provider():
     ) == "PrettyPitch / 波音リツ（カノン）"
 
 
-def test_index_html_has_platform_appropriate_save_share_buttons():
-    # モバイルは保存・共有1ボタン、PCはダウンロードと共有を分ける。
+def test_index_html_has_separate_save_menu_and_share_button():
+    # 全端末で形式を選ぶ保存メニューと共有を分ける。
     html = _index_html()
     assert 'id="share-save"' in html
-    assert 'id="download-video"' in html
+    assert 'id="result-actions"' in html
+    assert "function appendSaveMenu(container, job, onVideoSave = null)" in html
     assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
-    assert 'const DESKTOP_SHARE_UI = mobilePlatform() === "other";' in html
     support = html[html.index("function supportsVideoFileShare()") :]
     support = support[: support.index("\n}\n")]
     # iOS系ブラウザはcanShareが無い/誤判定することがある。共有APIとFileが
@@ -2295,14 +2295,14 @@ def test_index_html_has_platform_appropriate_save_share_buttons():
     assert 'typeof URL.revokeObjectURL === "function"' in support
     assert "VIDEO_SHARE_PREPARE_TIMEOUT_MS" in html
     assert "navigator.canShare" not in html
-    assert "navigator.share({ files: [prepared.file], text: SHARE_TEXT })" in html
+    assert "navigator.share({ files: [file], text: SHARE_TEXT })" in html
     assert "#Soramimic" in html
     assert "#そらみみっく" in html
     click = html[html.index("function bindShare(videoUrl)") :]
     click = click[: click.index("\n}\n")]
-    assert "fetch(" not in click and "await " not in click
-    assert 'const downloadBtn = $("download-video");' in click
-    assert "downloadVideo(videoUrl)" in click
+    assert "fetch(" not in click
+    assert "await videoSharePreparation;" in click
+    assert "openFileShare(prepared.file" in click
     assert "AbortError" in click
 
 
@@ -2439,16 +2439,6 @@ def test_canva_horizontal_logos_are_public_transparent_pngs(client):
             assert image.mode == "RGBA"
             assert image.size == expected_size
             assert image.getpixel((0, 0))[3] == 0
-
-
-def test_index_html_share_hint_matches_platform_capability():
-    """モバイルは保存・共有、PCはダウンロードと共有の案内に切り替える。"""
-    html = _index_html()
-    assert '/iPhone|iPad|iPod/i.test(platform)' in html
-    assert 'return "ios";' in html and 'return "android";' in html
-    assert "ボタンを押すと、動画ファイルをダウンロードします。" in html
-    assert '"動画をダウンロード"' in html
-    assert "動画をダウンロードするか、共有メニューから共有先を選べます。" in html
 
 
 def test_index_html_shows_neutrino_configuration_warning():
