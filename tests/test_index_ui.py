@@ -3979,6 +3979,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
         for head in (
             "async function poll(", "function setBuilderState(",
             "function showWordlistExhaustionNotice(", "function historyCard(",
+            "function appendExportDownloads(",
         )
     )
     message = next(line for line in script.splitlines()
@@ -4156,3 +4157,31 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.equal(currentWordlistName(),"stations");
     ''')
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+def test_export_downloads_show_only_available_formats_and_authenticate_links():
+    function = _function_body(_script(), 'function appendExportDownloads(') + '\n}'
+    node = textwrap.dedent('''
+        const assert = require('node:assert/strict');
+        function element(tag) {
+          return {tag, children: [], appendChild(child) { this.children.push(child); }};
+        }
+        const document = {createElement: element};
+        const qs = url => url + '?api_key=test';
+    ''') + function + textwrap.dedent('''
+        const root = element('div');
+        appendExportDownloads(root, {});
+        assert.equal(root.children.length, 0);
+        const urls = {musicxml: '/xml', midi: '/mid', xf: '/xf', vocal: '/wav'};
+        appendExportDownloads(root, {export_urls: urls});
+        const links = root.children[0].children[1].children;
+        assert.equal(links.length, 4);
+        assert.deepEqual(links.map(link => link.href),
+                         Object.values(urls).map(url => qs(url)));
+        assert.equal(links[3].textContent, '歌声WAV（伴奏なし）');
+        assert(links.every(link => link.download === ''));
+        const old = element('div');
+        appendExportDownloads(old, {export_urls: {midi: '/mid'}});
+        assert.equal(old.children[0].children[1].children.length, 1);
+    ''')
+    subprocess.run(['node', '-e', node], check=True)
