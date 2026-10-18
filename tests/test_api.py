@@ -2278,7 +2278,7 @@ def test_synth_credit_of_prettypitch_names_engine_voice_and_provider():
 
 
 def test_index_html_has_separate_save_menu_and_share_button():
-    # 全端末で形式を選ぶ保存メニューと共有を分ける。
+    # 完成画面では形式を選ぶ保存メニューと共有を分ける。
     html = _index_html()
     assert 'id="share-save"' in html
     assert 'id="result-actions"' in html
@@ -2295,7 +2295,6 @@ def test_index_html_has_separate_save_menu_and_share_button():
     assert 'typeof URL.revokeObjectURL === "function"' in support
     assert "VIDEO_SHARE_PREPARE_TIMEOUT_MS" in html
     assert "navigator.canShare" not in html
-    assert "navigator.share({ files: [file], text: SHARE_TEXT })" in html
     assert "#Soramimic" in html
     assert "#そらみみっく" in html
     click = html[html.index("function bindShare(videoUrl)") :]

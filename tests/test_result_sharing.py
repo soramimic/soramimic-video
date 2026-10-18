@@ -12,24 +12,25 @@ from test_index_ui import _function_body, _script
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 @pytest.mark.parametrize("surface", ["builder", "history"])
 @pytest.mark.parametrize("activation", [
-    "active", "expired", "unknown-rejected", "abandoned", "denied",
+    "active", "expired", "unknown-rejected", "abandoned", "denied", "canceled",
 ])
 def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface, activation):
     script = _script()
     code = script[script.index("const SHARE_TEXT ="):]
     code = code[:code.index("// ジョブを投入できない状態か")]
-    code += _function_body(script, "function resetHistoryShare()") + "\n}"
-    code += _function_body(script, "async function shareHistoryResult(") + "\n}"
+    code += _function_body(script, "function resetHistorySave()") + "\n}"
+    code += _function_body(script, "async function saveHistoryVideo(") + "\n}"
     setup = r'''
         const assert = require('node:assert/strict');
         let fetchCalls = 0, shareCalls = [], messages = [], release;
-        let preparedHistoryShare = null;
+        let preparedHistorySave = null;
         let historyJobs = [{video_url: '/video.mp4'}];
         const button = {disabled: false, textContent: '共有', isConnected: true, handlers: {},
                         addEventListener(type, fn) {this.handlers[type] = fn;}};
         const location = {origin: 'https://video.example'};
-        const navigator = {userActivation: {isActive: true}, share(data) {
+        const navigator = {platform: 'iPhone', userActivation: {isActive: true}, share(data) {
             shareCalls.push(data);
+            if (activation === 'canceled') return Promise.reject({name: 'AbortError'});
             if (activation === 'denied' ||
                 (activation === 'unknown-rejected' && shareCalls.length === 1)) {
                 return Promise.reject({name: 'NotAllowedError'});
@@ -58,14 +59,14 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
                 videoSharePreparation = prepareVideoShare('/video.mp4', video);
                 pending = button.handlers.click();
             } else {
-                pending = shareHistoryResult(0, button);
+                pending = saveHistoryVideo(0, button);
             }
             assert.equal(fetchCalls, 1);
             assert.equal(button.disabled, true);
             assert.equal(shareCalls.length, 0);
             if (activation === 'abandoned') {
                 if (surface === 'builder') resetVideoSharePreparation();
-                else resetHistoryShare();
+                else resetHistorySave();
                 release();
                 await pending;
                 assert.equal(shareCalls.length, 0, 'leaving the result must cancel late sharing');
@@ -77,28 +78,82 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
             await new Promise(resolve => setImmediate(resolve));
             assert.equal(button.disabled, false);
             assert.equal(shareCalls.length, activation === 'expired' ? 0 : 1);
+            if (activation === 'canceled') {
+                if (surface === 'history') assert.equal(button.hidden, true);
+                assert.deepEqual(messages, []);
+                return;
+            }
             if (activation !== 'active') {
-                assert.equal(button.textContent, '共有を開く');
+                const label = surface === 'builder' ? '共有を開く' : '保存を続ける';
+                assert.equal(button.textContent, label);
                 navigator.userActivation = {isActive: true};
                 const before = shareCalls.length;
                 if (surface === 'builder') button.handlers.click();
-                else shareHistoryResult(0, button);
+                else saveHistoryVideo(0, button);
                 assert.equal(shareCalls.length, before + 1, 'retry opens synchronously');
             }
             assert.equal(fetchCalls, 1, 'a retry must reuse the already prepared file');
             assert.equal(button.disabled, false, 'pending share Promise must not lock the button');
             assert.equal(shareCalls[0].files[0].name.endsWith('.mp4'), true);
+            if (surface === 'history') assert.equal('text' in shareCalls[0], false);
+            else assert.equal(shareCalls[0].text, SHARE_TEXT);
             await new Promise(resolve => setImmediate(resolve));
             if (activation === 'denied') {
-                const state = surface === 'builder' ? preparedVideoShare : preparedHistoryShare;
+                const state = surface === 'builder' ? preparedVideoShare : preparedHistorySave;
                 assert.equal(state.shareable, false, 'Save may fall back to a direct download');
                 assert.equal(!!state.file, true,
                              'explicit sharing may still retry the cached file');
+                if (surface === 'history') {
+                    assert.equal(button.hidden, false);
+                    assert.equal(button.textContent, '保存を再試行');
+                }
             } else assert.deepEqual(messages, []);
         })().catch(error => {console.error(error); process.exit(1);});
     '''
     source = f"const surface = {json.dumps(surface)}, activation = {json.dumps(activation)};\n"
     subprocess.run(["node", "-e", source + setup + code + checks], check=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_history_save_fetch_failure_can_retry_and_release_its_control():
+    code = "\n".join(_function_body(_script(), name) + "\n}" for name in (
+        "async function saveHistoryVideo(", "function resetHistorySave()",
+    ))
+    setup = r'''
+        const assert = require('node:assert/strict');
+        const navigator = {userActivation: {isActive: false}};
+        const prefersNativeVideoSave = () => true, headers = () => ({});
+        const historyJobs = [{video_url: '/video.mp4'}];
+        let preparedHistorySave = null, fetches = 0, saves = 0;
+        const button = {hidden: true, disabled: false, isConnected: true};
+        class File {constructor(parts, name) {this.name = name;}}
+        const fetch = async () => ({
+            ok: ++fetches > 1, blob: async () => ({type: 'video/mp4'}),
+        });
+        const openFileShare = () => {saves++;};
+    '''
+    checks = r'''
+        (async () => {
+            await saveHistoryVideo(0, button);
+            assert.equal(button.textContent, '保存を再試行');
+            assert.equal(button.disabled, false);
+            assert.equal(button.hidden, false);
+            assert.equal(preparedHistorySave.button, button);
+            await saveHistoryVideo(0, button);
+            assert.equal(fetches, 2);
+            assert.equal(button.textContent, '保存を続ける');
+            assert.equal(saves, 0);
+            navigator.userActivation.isActive = true;
+            await saveHistoryVideo(0, button);
+            assert.equal(fetches, 2);
+            assert.equal(saves, 1);
+            assert.equal(button.hidden, true);
+            resetHistorySave();
+            assert.equal(preparedHistorySave, null);
+            assert.equal(button.hidden, true);
+        })().catch(error => {console.error(error); process.exit(1);});
+    '''
+    subprocess.run(["node", "-e", setup + code + checks], check=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
