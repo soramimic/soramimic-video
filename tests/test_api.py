@@ -1479,7 +1479,8 @@ def test_runproc_kill_current_stops_parallel_processes():
     assert all(proc.returncode != 0 for proc in results)
 
 
-def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["neutrino", "voicevox"])
+def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch, backend):
     import threading
 
     from soramimic_video import editor_io, xfparse
@@ -1497,7 +1498,7 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     )
     job = api_mod.Job(
         id="parallel", dir=job_dir,
-        params={"model": "MERROW", "synthesizer": "neutrino", "wordlist": "stations",
+        params={"model": "MERROW", "synthesizer": backend, "wordlist": "stations",
                 "song_credit": "オトノケ - Creepy Nuts", "thumbnail_wordlist_label": "好きな駅",
                 "title_words": [{"id": "1", "surface": "駅名"}]},
     )
@@ -1511,6 +1512,11 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
         with api_mod._stage(job, "synthesize"):
             audio_started.set()
             assert visual_started.wait(1)
+            from soramimic_video.musicxml import build_musicxml
+            # Only the actual NEUTRINO backend may export this transposed score.
+            score = job.dir / "neutrino/score.musicxml"
+            score.parent.mkdir(exist_ok=True)
+            score.write_text(build_musicxml(project, {0: "ラ"}, transpose=-12))
             path = job.dir / "generated-vocal.wav"
             path.write_bytes(fake_wav())
             return path
@@ -1562,7 +1568,11 @@ def test_run_pipeline_builds_silent_video_in_parallel(tmp_path, monkeypatch):
     out = api_mod.run_pipeline(job, {"parallel_video": True, "video_fps": 30})
     assert out.read_bytes() == b"mp4"
     assert (job_dir / "exports/vocal.wav").read_bytes() == fake_wav()
-    assert not (job_dir / "exports/score.musicxml").exists()
+    xml = (job_dir / "exports/score.musicxml").read_text()
+    if backend == "neutrino":
+        assert xml == (job_dir / "neutrino/score.musicxml").read_text()
+    else:
+        assert "<octave>4</octave>" in xml
     assert (job_dir / "exports/lyrics.mid").is_file()
     assert not (job_dir / "video" / "video-only.mp4").exists()
     assert [stage["name"] for stage in job.stages] == [

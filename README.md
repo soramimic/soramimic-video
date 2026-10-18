@@ -357,15 +357,23 @@ uv run pytest -q
 ソラミミックの編集画面の「ビデオで作る」で、編集中の歌詞を動画作成画面へ渡せます。
 開いた画面で同じ曲の音源またはMIDIを選んでください。
 
-完成画面と履歴の「MIDI・歌声を書き出す」から、歌詞入りMIDI、XF MIDI、
-歌声WAV（伴奏なし）を保存できます。MIDIには元の音高と現在の替え歌の読みを、
-WAVには選択した歌声・音域調整を反映します。通常のMIDI歌詞はUTF-8、XF歌詞はCP932です。
+完成画面と履歴の「楽譜・MIDI・歌声を書き出す」から、MusicXML、歌詞入りMIDI、XF MIDI、
+歌声WAV（伴奏なし）を保存できます。楽譜の歌詞には現在の替え歌の読みを使います。
+MIDIは元の音高、歌声WAVは選択した歌声・音域調整を反映します。
+NEUTRINOで合成したMusicXMLは、音域調整を含めて合成に使った譜面そのものです。
+それ以外のMusicXMLは元の音高で生成し、同じ形式でNEUTRINOへ渡せます。
+曲頭から歌う場合は、NEUTRINOによる自動休符追加を防ぐため、先頭音符の一部を
+約30ms（短い音符では半分まで）の休符にします。後続の音符の位置は変わりません。
+小節途中で拍子が変わる場合、その直前の短い小節は実際の長さに合う拍子で記録します。
+通常のMIDI歌詞はUTF-8、XF歌詞はCP932です。
 この機能の追加前に完成した動画には書き出しファイルがありません。
 
-CLIでは、解析・変換済みのプロジェクトから動画を作らずMIDIを書き出せます。
+CLIでは、解析・変換済みのプロジェクトから動画を作らずMusicXMLやMIDIを書き出せます。
+CLIのMusicXMLは現在のプロジェクトから元の音高で生成します。
 歌声WAVの書き出しには先に `synthesize` を実行してください。
 
 ```sh
+uv run soramimic-video export --project work/song --format musicxml --output score.musicxml
 uv run soramimic-video export --project work/song --format midi --output lyrics.mid
 uv run soramimic-video export --project work/song --format xf --output lyrics.xf.mid
 uv run soramimic-video export --project work/song --format vocal --output vocal.wav

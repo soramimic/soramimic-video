@@ -87,3 +87,11 @@ distribution: カノン (Canon).
 - LeapSinger: https://github.com/wavtechyukky/LeapSinger
 
 The voice database and pretrained models retain their own terms of use.
+
+## MusicXML test schemas
+
+The test fixtures include the [W3C MusicXML 3.1 schemas](https://github.com/w3c/musicxml/tree/v3.1/schema).
+Copyright © 2004–2017 the Contributors to the MusicXML Specification,
+published by the W3C Music Notation Community Group under the
+[W3C Community Final Specification Agreement](https://www.w3.org/community/about/agreements/final/).
+The original schema notices are retained in `tests/fixtures/musicxml31`.

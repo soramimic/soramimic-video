@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import xml.etree.ElementTree as ET
 
 import pytest
 from mido import MidiFile
@@ -150,12 +151,8 @@ def test_public_downloads_survive_cleanup_restart_and_expire_with_job(tmp_path, 
     assert ranged.status_code == 206
     assert ranged.content == fake_wav()[:16]
     assert client.get(f'/api/jobs/{job_id}/exports/provenance').status_code == 404
-    # A result created before MusicXML downloads were removed must stay unavailable.
-    legacy = job.dir / 'exports/score.musicxml'
-    legacy.write_text('<score-partwise/>')
-    assert result_path(job.dir, 'musicxml') is None
-    assert 'musicxml' not in job.to_dict()['export_urls']
-    assert client.get(f'/api/jobs/{job_id}/exports/musicxml').status_code == 404
+    xml = ET.fromstring(client.get(body['export_urls']['musicxml']).content)
+    assert [e.text for e in xml.findall('.//lyric/text')] == ['ア', 'キ', 'ク']
     restarted = TestClient(api.create_app(jobs_dir=tmp_path / 'jobs'))
     restarted.cookies.update(client.cookies)
     assert restarted.get(f'/api/jobs/{job_id}').json()['export_urls'] == body['export_urls']
@@ -187,12 +184,39 @@ def test_exports_require_api_key_and_completed_job(tmp_path, monkeypatch):
 
 
 
-def test_musicxml_export_is_rejected_by_cli_and_exporter(tmp_path):
-    output = tmp_path / 'score.musicxml'
-    with pytest.raises(SystemExit) as exc:
-        main(['export', '--project', str(tmp_path), '--format', 'musicxml',
-              '--output', str(output)])
-    assert exc.value.code == 2
+def test_musicxml_uses_common_score_and_does_not_reuse_stale_synthesis(tmp_path):
+    from soramimic_video.musicxml import build_musicxml
+    from soramimic_video.synthesize import build_lyric_map
+
+    stale = tmp_path / 'neutrino/score.musicxml'
+    stale.parent.mkdir()
+    stale.write_text('stale score')
+    value = project()
+    output = export_file(value, tmp_path, 'musicxml', tmp_path / 'score.musicxml')
+    assert output.read_text() == build_musicxml(value, build_lyric_map(value))
+
+
+def test_musicxml_can_preserve_actual_neutrino_input(tmp_path, monkeypatch):
+    from soramimic_video import synthesize as synth
+
+    value = project()
+    captured = []
+
+    def run(xml_path, *args, **kwargs):
+        captured.append(xml_path.read_bytes())
+        return tmp_path / 'neutrino/vocal.wav'
+
+    monkeypatch.setattr(synth, 'run_neutrino', run)
+    synth.synthesize(value, tmp_path, transpose=-12, auto_octave=False)
+    output = export_file(value, tmp_path, 'musicxml', tmp_path / 'score.musicxml',
+                         musicxml_source=tmp_path / 'neutrino/score.musicxml')
+    assert output.read_bytes() == captured[0]
+    root = ET.fromstring(output.read_bytes())
+    assert root.findtext('.//pitch/octave') == '3'
+
+
+def test_unknown_export_format_is_rejected(tmp_path):
+    output = tmp_path / 'out'
     with pytest.raises(ValueError, match='Unknown export format'):
-        export_file(project(), tmp_path, 'musicxml', output)
+        export_file(project(), tmp_path, 'unknown', output)
     assert not output.exists()

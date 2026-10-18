@@ -1,4 +1,4 @@
-"""Lyric MIDI and isolated synthesized-vocal downloads."""
+"""Kana scores, lyric MIDI and isolated synthesized-vocal downloads."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mido import Message, MetaMessage, MidiFile, MidiTrack
 
+from .musicxml import build_musicxml
 from .project import Project
 from .synthesize import build_lyric_map, vocal_path
 from .xfexport import export_xf_midi
@@ -14,6 +15,7 @@ from .xfexport import export_xf_midi
 EXPORT_DIR = "exports"
 # Fixed names also form the API allowlist. Never accept a caller-provided path.
 FORMATS = {
+    "musicxml": ("score.musicxml", "application/vnd.recordare.musicxml+xml"),
     "midi": ("lyrics.mid", "audio/midi"),
     "xf": ("lyrics.xf.mid", "audio/midi"),
     "vocal": ("vocal.wav", "audio/wav"),
@@ -66,13 +68,18 @@ def export_lyric_midi(project: Project, path: Path) -> Path:
 
 def export_file(
     project: Project, directory: Path, kind: str, output: Path,
-    *, vocal_source: Path | None = None,
+    *, vocal_source: Path | None = None, musicxml_source: Path | None = None,
 ) -> Path:
-    """Export original-pitch notes and current lyrics, or the synthesized vocal."""
+    """Export current kana scores, an explicit synthesis score, or the isolated vocal."""
     if kind not in FORMATS:
         raise ValueError(f"Unknown export format: {kind}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    if kind == "midi":
+    if kind == "musicxml":
+        if musicxml_source is None:
+            output.write_text(build_musicxml(project, build_lyric_map(project)), encoding="utf-8")
+        elif musicxml_source.resolve() != output.resolve():
+            shutil.copyfile(musicxml_source, output)
+    elif kind == "midi":
         export_lyric_midi(project, output)
     elif kind == "xf":
         # Full provenance can contain uploaded text and local source metadata.
@@ -87,9 +94,11 @@ def export_file(
 
 
 def save_results(
-    project: Project, directory: Path, *, vocal_source: Path | None = None,
+    project: Project, directory: Path, *,
+    vocal_source: Path | None = None, musicxml_source: Path | None = None,
 ) -> None:
     for kind, (name, _) in FORMATS.items():
         export_file(
-            project, directory, kind, directory / EXPORT_DIR / name, vocal_source=vocal_source,
+            project, directory, kind, directory / EXPORT_DIR / name,
+            vocal_source=vocal_source, musicxml_source=musicxml_source,
         )
