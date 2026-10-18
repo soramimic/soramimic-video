@@ -2467,6 +2467,8 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
 
           assert.equal(preparedVideoShare.file, objectUrlFile,
             "a rejected attempt must retain the File for another explicit share");
+          assert.equal(preparedVideoShare.shareable, false,
+            "the Save menu may download directly after a rejected share");
 
           resetVideoSharePreparation();
           assert.deepEqual(revoked, ["blob:shared-video/video.mp4"]);
@@ -4055,7 +4057,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
         for head in (
             "async function poll(", "function setBuilderState(",
             "function showWordlistExhaustionNotice(", "function historyCard(",
-            "function appendSaveMenu(",
+            "function appendSaveMenu(", "function prefersNativeVideoSave(",
         )
     )
     message = next(line for line in script.splitlines()
@@ -4235,8 +4237,10 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_save_menu_has_available_formats_authenticated_links_and_closes_after_selection():
-    function = _function_body(_script(), 'function appendSaveMenu(') + '\n}'
+def test_save_menu_groups_available_formats_and_closes_after_selection():
+    functions = '\n'.join(_function_body(_script(), name) + '\n}' for name in (
+        'function appendSaveMenu(', 'function prefersNativeVideoSave(',
+    ))
     node = textwrap.dedent('''
         const assert = require('node:assert/strict');
         function element(tag) {
@@ -4245,8 +4249,12 @@ def test_save_menu_has_available_formats_authenticated_links_and_closes_after_se
                   appendChild(child) { this.children.push(child); }};
         }
         const document = {createElement: element};
+        const navigator = {};
         const qs = url => url + '?api_key=test';
-    ''') + function + textwrap.dedent('''
+        const linksIn = node => [
+          ...(node.tag === 'a' ? [node] : []), ...node.children.flatMap(linksIn),
+        ];
+    ''') + functions + textwrap.dedent('''
         const root = element('div');
         appendSaveMenu(root, {});
         assert.equal(root.children.length, 0);
@@ -4254,24 +4262,28 @@ def test_save_menu_has_available_formats_authenticated_links_and_closes_after_se
         appendSaveMenu(root, {video_url: '/video.mp4',
                               export_urls: {...urls, unknown: '/unknown'}});
         const menu = root.children[0];
+        assert.equal(menu.open, false, 'singing data stays inside the closed Save menu');
         assert.equal(menu.children[0].textContent, '保存');
-        const links = menu.children[1].children;
+        assert.deepEqual(menu.children[1].children.map(section => section.children[0].textContent),
+                         ['動画', '歌唱データ']);
+        const links = linksIn(menu);
         assert.equal(links.length, 5);
         assert.deepEqual(links.map(link => link.href),
-                         ['/video.mp4', ...Object.values(urls)].map(url => qs(url)));
-        assert.equal(links[0].textContent, '動画（MP4）');
-        assert.equal(links[1].textContent, 'MusicXML');
-        assert.equal(links[4].textContent, '歌声WAV（伴奏なし）');
+                         ['/video.mp4', '/wav', '/score', '/mid', '/xf'].map(url => qs(url)));
+        assert.equal(links[0].children[0].textContent, '動画を保存');
+        assert.equal(links[2].children[0].textContent, '歌唱用の楽譜');
+        assert.match(links[2].children[1].textContent, /この替え歌/);
         assert(links.every(link => link.download === ''));
         menu.open = true;
-        links[1].handlers.click();
+        links[1].handlers.click({preventDefault() {throw Error('must download');}});
         assert.equal(menu.open, false);
         const old = element('div');
         appendSaveMenu(old, {video_url: '/old.mp4'});
-        assert.equal(old.children[0].children[1].children.length, 1);
+        assert.equal(linksIn(old).length, 1);
         const audio = element('div');
         appendSaveMenu(audio, {video_url: '/audio', result_kind: 'audio'});
-        assert.equal(audio.children[0].children[1].children[0].textContent,
-                     '歌声プレビュー（WAV）');
+        assert.equal(linksIn(audio)[0].children[0].textContent, '歌声プレビュー');
+        assert.equal(audio.children[0].children[1].children[0].children[0].textContent,
+                     '歌唱データ');
     ''')
     subprocess.run(['node', '-e', node], check=True)

@@ -2282,7 +2282,7 @@ def test_index_html_has_separate_save_menu_and_share_button():
     html = _index_html()
     assert 'id="share-save"' in html
     assert 'id="result-actions"' in html
-    assert "function appendSaveMenu(container, job)" in html
+    assert "function appendSaveMenu(container, job, onVideoSave = null)" in html
     assert "const FILE_SHARE_SUPPORTED = supportsVideoFileShare();" in html
     support = html[html.index("function supportsVideoFileShare()") :]
     support = support[: support.index("\n}\n")]

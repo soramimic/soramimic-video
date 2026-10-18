@@ -866,22 +866,39 @@
   }
   /* 完成後のダウンロード・共有ボタンを横並びに(狭い画面では折り返す) */
   .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-  .save-menu { position: relative; margin: 0; }
-  .save-menu > summary {
-    display: block; list-style: none; border: 1px solid var(--border);
-    border-radius: 8px; background: var(--panel); color: var(--text);
+  .result-action {
+    display: inline-flex; align-items: center; gap: .4rem; min-height: 44px;
+    padding: .35rem .25rem; border: 0; border-radius: 4px;
+    background: transparent; color: var(--accent); font-size: .88rem;
   }
+  .result-action::before {
+    content: ""; display: inline-block; width: 1.25rem; height: 1.25rem; flex: none;
+    background: currentColor;
+    -webkit-mask: var(--action-icon) center / contain no-repeat;
+    mask: var(--action-icon) center / contain no-repeat;
+  }
+  .action-save { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%203v12m-5-5%205%205%205-5M4%2015v5h16v-5%22%2F%3E%3C%2Fsvg%3E"); }
+  .action-share { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%2016V3m-4%204%204-4%204%204M7%2010H4v11h16V10h-3%22%2F%3E%3C%2Fsvg%3E"); }
+  .result-action:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+  .history-actions > .result-action { flex: 0 0 auto; }
+  .save-menu { position: relative; margin: 0; }
+  .save-menu > summary { list-style: none; }
   .save-menu > summary::-webkit-details-marker { display: none; }
-  .save-menu > summary::after { content: " ▾"; }
-  .save-menu > summary:hover { border-color: var(--accent); }
+  .save-menu > summary::after { content: " ▾"; font-size: .7rem; }
   .save-options {
-    position: absolute; top: calc(100% + .35rem); left: 0; z-index: 20;
-    width: max-content; max-width: min(19rem, 80vw); padding: .3rem;
+    position: absolute; top: calc(100% + .25rem); left: 0; z-index: 20;
+    width: 21rem; max-width: calc(100vw - 24px); max-height: min(70vh, 32rem);
+    overflow-y: auto; padding: .3rem;
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     box-shadow: 0 8px 24px #0004;
   }
-  .save-options a { display: block; padding: .65rem .8rem; border-radius: 5px; }
+  .save-options section + section { border-top: 1px solid var(--border); margin-top: .3rem; }
+  .save-group-title { margin: .45rem .75rem .15rem; color: var(--muted); font-size: .72rem; }
+  .save-options a { display: block; padding: .55rem .75rem; border-radius: 5px; text-decoration: none; }
   .save-options a:hover, .save-options a:focus-visible { background: var(--panel-2); }
+  .save-file-title { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+  .save-file-title small { font-size: .65rem; color: var(--muted); }
+  .save-file-description { display: block; font-size: .7rem; color: var(--muted); margin-top: .15rem; }
   #share-hint:empty { display: none; }
   .generation-quality-warning {
     margin: .75rem 0 0; padding: .75rem; border: 1px solid #f59e0b;
@@ -2470,9 +2487,15 @@ function historyCard(job, index) {
     play.setAttribute("aria-expanded", "false");
     play.addEventListener("click", () => toggleHistoryPlayback(index, play));
     actions.appendChild(play);
-    appendSaveMenu(actions, job);
+    let share = null;
+    appendSaveMenu(actions, job, () => {
+      if (!share || (preparedHistoryShare?.index === index
+          && preparedHistoryShare.shareable === false)) return false;
+      shareHistoryResult(index, share);
+      return true;
+    });
     if (typeof navigator.share === "function" && typeof File !== "undefined") {
-      const share = historyButton("共有", "history-share");
+      share = historyButton("共有", "history-share result-action action-share");
       share.addEventListener("click", () => shareHistoryResult(index, share));
       actions.appendChild(share);
     }
@@ -2599,10 +2622,12 @@ async function shareHistoryResult(index, button) {
   const open = (state, afterPreparation = false) => {
     button.disabled = false;
     button.textContent = "共有";
+    state.shareable = true;
     openFileShare(state.file, (error) => {
       if (preparedHistoryShare !== state || error?.name === "AbortError") return;
-      button.textContent = afterPreparation && error?.name === "NotAllowedError"
-        ? "共有を開く" : "共有できません";
+      const retry = afterPreparation && error?.name === "NotAllowedError";
+      if (!retry) state.shareable = false;
+      button.textContent = retry ? "共有を開く" : "共有できません";
     });
   };
   const prepared = preparedHistoryShare;
@@ -2952,7 +2977,7 @@ function showWordlistExhaustionNotice(exhausted) {
   notice.hidden = !exhausted;
 }
 
-// 保存は直接ダウンロード、共有は端末の共有シートを開く独立した操作にする。
+// 保存は形式を選ぶ操作。iPhoneの動画保存では写真に保存できる共有シートを使う。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #Soramimic #そらみみっく\n" + location.origin;
 
@@ -2964,7 +2989,7 @@ function supportsVideoFileShare() {
 
 const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
 const SHARE_HTML = `<div class="share-row" id="result-actions">` +
-  (FILE_SHARE_SUPPORTED ? `<button type="button" id="share-save" class="btn-sm">共有</button>` : "") +
+  (FILE_SHARE_SUPPORTED ? `<button type="button" id="share-save" class="result-action action-share" aria-label="動画を共有">共有</button>` : "") +
   `</div><p class="hint" id="share-hint" role="status"></p>`;
 
 // 呼び出しは同期のままにし、用意済みのFileならタップの操作権限内で共有を開く。
@@ -2976,6 +3001,14 @@ function openFileShare(file, onError) {
   } catch (error) {
     onError(error);
   }
+}
+
+function prefersNativeVideoSave() {
+  if (typeof navigator.share !== "function" || typeof File === "undefined") return false;
+  const platform = navigator.platform || "";
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent || "")
+    || /iPhone|iPad|iPod/i.test(platform)
+    || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1);
 }
 
 function videoFileName(videoUrl) {
@@ -3079,7 +3112,7 @@ async function prepareVideoShare(videoUrl, video) {
     video.removeAttribute("aria-busy");
     // iOSのアプリ内ブラウザにはshareはあってもcanShareが無いものがあり、
     // canShareを門番にすると「共有」表示なのに必ずdownloadへ落ちてしまう。
-    // 実Fileを用意できたらshareを直接試し、拒否されたときだけ保存へ切り替える。
+    // 実Fileを用意できたらshareを直接試し、拒否時は保存メニューからの保存を案内する。
     preparedVideoShare = { videoUrl, file, shareable: true };
     setShareButtonMode(true);
   } catch (_e) {
@@ -3115,12 +3148,14 @@ function bindShare(videoUrl) {
       return;
     }
     button.textContent = "共有";
+    prepared.shareable = true;
     openFileShare(prepared.file, (error) => {
       if (seq !== sharePreparationSeq || error?.name === "AbortError") return;
       if (afterPreparation && error?.name === "NotAllowedError") {
         button.textContent = "共有を開く";
         return;
       }
+      prepared.shareable = false;
       showBuilderMsg("共有メニューを開けませんでした。「保存」からダウンロードできます。");
     });
   });
@@ -5292,39 +5327,76 @@ for (const type of ["change", "input"]) {
   }, true);
 }
 
-function appendSaveMenu(container, job) {
+function appendSaveMenu(container, job, onVideoSave = null) {
+  const nativeVideoSave = !!onVideoSave && prefersNativeVideoSave();
+  const video = job.video_url && job.result_kind !== "audio" ? [{
+    label: "動画を保存", format: "MP4", url: job.video_url, video: true,
+    description: nativeVideoSave ? "写真への保存は次の画面で選べます" : "完成した動画ファイル",
+  }] : [];
+  const singing = job.video_url && job.result_kind === "audio" ? [{
+    label: "歌声プレビュー", format: "WAV", url: job.video_url,
+    description: "プレビューで生成した歌声",
+  }] : [];
   const formats = {
-    musicxml: "MusicXML", midi: "歌詞入りMIDI", xf: "XF MIDI", vocal: "歌声WAV（伴奏なし）",
+    vocal: ["歌声（伴奏なし）", "WAV", "動画で使った歌声だけを保存"],
+    musicxml: ["歌唱用の楽譜", "MusicXML", "この替え歌のメロディと読みかな"],
+    midi: ["歌詞入りMIDI", "MIDI", "元の音高・替え歌の読みかな"],
+    xf: ["XF MIDI", "XF", "対応機器・ソフト向けの歌詞入りMIDI"],
   };
-  const entries = [];
-  if (job.video_url) entries.push([
-    job.result_kind === "audio" ? "歌声プレビュー（WAV）" : "動画（MP4）", job.video_url,
-  ]);
-  for (const [kind, label] of Object.entries(formats)) {
-    if (job.export_urls?.[kind]) entries.push([label, job.export_urls[kind]]);
+  for (const [kind, [label, format, description]] of Object.entries(formats)) {
+    if (job.export_urls?.[kind]) singing.push({label, format, description, url: job.export_urls[kind]});
   }
-  if (!entries.length) return;
+  if (!video.length && !singing.length) return;
   const menu = document.createElement("details");
   menu.className = "save-menu";
   const summary = document.createElement("summary");
-  summary.className = "btn-sm";
+  summary.className = "result-action action-save";
   summary.textContent = "保存";
   menu.appendChild(summary);
   const links = document.createElement("div");
   links.className = "save-options";
-  for (const [label, url] of entries) {
-    const link = document.createElement("a");
-    link.textContent = label;
-    link.href = qs(url);
-    link.download = "";
-    link.addEventListener("click", () => { menu.open = false; });
-    links.appendChild(link);
+  for (const [title, entries] of [["動画", video], ["歌唱データ", singing]]) {
+    if (!entries.length) continue;
+    const section = document.createElement("section");
+    const heading = document.createElement("p");
+    heading.className = "save-group-title";
+    heading.textContent = title;
+    section.appendChild(heading);
+    for (const entry of entries) {
+      const link = document.createElement("a");
+      link.href = qs(entry.url);
+      link.download = "";
+      const name = document.createElement("span");
+      name.className = "save-file-title";
+      name.textContent = entry.label;
+      const format = document.createElement("small");
+      format.textContent = entry.format;
+      name.appendChild(format);
+      const description = document.createElement("span");
+      description.className = "save-file-description";
+      description.textContent = entry.description;
+      link.appendChild(name);
+      link.appendChild(description);
+      link.addEventListener("click", event => {
+        // 共有ボタンへ同じタップを渡し、準備・再タップの案内をメニューの外に表示する。
+        if (entry.video && nativeVideoSave && onVideoSave() !== false) event.preventDefault();
+        menu.open = false;
+      });
+      section.appendChild(link);
+    }
+    links.appendChild(section);
   }
   menu.appendChild(links);
   menu.addEventListener("toggle", () => {
-    if (menu.open) document.querySelectorAll(".save-menu[open]").forEach(other => {
+    if (!menu.open) return;
+    document.querySelectorAll(".save-menu[open]").forEach(other => {
       if (other !== menu) other.open = false;
     });
+    // 履歴の途中にある保存ボタンでも、メニューを画面内に収める。
+    links.style.left = "0px";
+    const rect = links.getBoundingClientRect();
+    const offset = Math.max(12 - rect.left, Math.min(0, innerWidth - 12 - rect.right));
+    links.style.left = `${offset}px`;
   });
   container.appendChild(menu);
 }
@@ -5356,7 +5428,12 @@ function showBuilderVideo(job) {
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
-  appendSaveMenu($("result-actions"), job);
+  appendSaveMenu($("result-actions"), job, () => {
+    const share = $("share-save");
+    if (!share || share.hidden || preparedVideoShare?.shareable === false) return false;
+    share.click();
+    return true;
+  });
   const actions = $("result-actions");
   if (actions.lastElementChild?.classList.contains("save-menu")) {
     actions.prepend(actions.lastElementChild);
