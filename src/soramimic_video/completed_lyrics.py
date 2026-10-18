@@ -36,7 +36,6 @@ def save_result(
     """
     from .convert import (
         WORDLISTS_DIR,
-        pop_note_length_weight,
         project_note_length_weights,
         resolve_wordlist,
     )
@@ -62,7 +61,7 @@ def save_result(
         raw = json.loads((directory / "soramimic_raw.json").read_text(encoding="utf-8"))
         units = [line["units"] for line in raw["lines"]]
         weights = project_note_length_weights(project, 1.0)(units)
-        alpha = pop_note_length_weight(dict(project.parody.params))
+        alpha = project.parody.note_length_alpha
         export_editor(
             project, directory, wordlist_entry=entry, note_length_raw_list=weights,
             note_length_alpha=alpha, filename=FILENAME,
