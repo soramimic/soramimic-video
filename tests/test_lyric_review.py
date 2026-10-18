@@ -398,7 +398,11 @@ def test_completed_video_keeps_portable_edited_lyrics(review_client, monkeypatch
         assert result["wordlist"]["value"] == "ORIGINAL"
         assert "清水" in result["wordlist"]["csvText"]
     job = manager.get(job_id)
-    assert sorted(p.name for p in job.dir.iterdir()) == [FILENAME, "status.json", "video.mp4"]
+    assert sorted(p.name for p in job.dir.iterdir()) == [
+        "exports", FILENAME, "status.json", "video.mp4",
+    ]
+    assert set(body["export_urls"]) == {"musicxml", "midi", "xf", "vocal"}
+    assert client.get(body["export_urls"]["vocal"]).content == b"voice"
     assert len(calls["synthesize"]) == 1
 
     # The same owner check protects both the history link and its JSON endpoint.

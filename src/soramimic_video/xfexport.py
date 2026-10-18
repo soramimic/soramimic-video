@@ -25,7 +25,7 @@ def _xf_track(name: bytes, messages: list[MetaMessage], ticks_per_beat: int) -> 
     return name + track[4:]
 
 
-def export_xf_midi(project: Project, path: Path) -> Path:
+def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> Path:
     """Write current notes/kana; never export a canonical omission as a new note."""
     lyric_map = build_lyric_map(project)
     tpb = project.song.ticks_per_beat
@@ -43,8 +43,8 @@ def export_xf_midi(project: Project, path: Path) -> Path:
     selected = []
     for note in sorted(project.notes, key=lambda x: (x.start_tick, x.id)):
         kana = lyric_map[note.id]
-        if not kana or note.start_tick < 0 or note.end_tick <= note.start_tick:
-            raise ValueError("XF export needs an explicit lyric and positive note duration")
+        if note.start_tick < 0 or note.end_tick <= note.start_tick:
+            raise ValueError("XF export needs a nonnegative start and positive note duration")
         events.extend([
             (note.start_tick, 3, Message("note_on", note=note.midi_note, velocity=96)),
             (note.end_tick, 2, Message("note_off", note=note.midi_note, velocity=0)),
@@ -52,8 +52,10 @@ def export_xf_midi(project: Project, path: Path) -> Path:
         if previous_line is not None and previous_line != note.line:
             lyrics.append(MetaMessage("lyrics", text="/", time=note.start_tick - lyric_tick))
             lyric_tick = note.start_tick
-        lyrics.append(MetaMessage("lyrics", text=kana, time=note.start_tick - lyric_tick))
-        lyric_tick, previous_line = note.start_tick, note.line
+        if kana:
+            lyrics.append(MetaMessage("lyrics", text=kana, time=note.start_tick - lyric_tick))
+            lyric_tick = note.start_tick
+        previous_line = note.line
         selected.append({
             "note_id": note.id, "line": note.line, "kana": kana,
             "midi_pitch": note.midi_note, "start_tick": note.start_tick,
@@ -70,15 +72,16 @@ def export_xf_midi(project: Project, path: Path) -> Path:
     content = stream.getvalue() + _xf_track(
         b"XFIH", [MetaMessage("cue_marker", text="$XFhd:")], tpb,
     ) + _xf_track(b"XFKM", lyrics, tpb)
-    provenance = {
+    provenance_data = {
         "schema_version": 1,
         "midi_sha256": hashlib.sha256(content).hexdigest(),
         "parody_applied": project.parody is not None,
         "selected_notes": selected,
         "lyric_layers": project.lyric_layers,
     }
-    sidecar = json.dumps(provenance, ensure_ascii=False, indent=1, allow_nan=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
-    path.with_suffix(path.suffix + ".provenance.json").write_text(sidecar, encoding="utf-8")
+    if provenance:
+        sidecar = json.dumps(provenance_data, ensure_ascii=False, indent=1, allow_nan=False)
+        path.with_suffix(path.suffix + ".provenance.json").write_text(sidecar, encoding="utf-8")
     return path

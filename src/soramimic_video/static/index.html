@@ -394,7 +394,7 @@
   #le-props input:disabled { opacity: .4; }
   .history-list { display: grid; gap: .75rem; margin-top: .75rem; }
   .history-item {
-    overflow: hidden; border: 1px solid var(--border); border-radius: 12px;
+    border: 1px solid var(--border); border-radius: 12px;
     background: var(--panel-2);
   }
   .history-main { display: grid; grid-template-columns: minmax(8rem, 36%) 1fr; min-width: 0; }
@@ -402,13 +402,23 @@
     position: relative; display: flex; min-width: 0; aspect-ratio: 16 / 9;
     align-items: center; justify-content: center; overflow: hidden; background: #111827;
   }
+  .history-media { border-radius: 11px 0 0 11px; }
   .history-thumb {
-    display: flex; width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0;
+    position: relative; display: flex; width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0;
     align-items: center; justify-content: center; overflow: hidden; border: 0; border-radius: 0;
     background: #111827; color: #cbd5e1; font-weight: 600;
   }
   button.history-thumb { cursor: pointer; }
+  button.history-thumb:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
   .history-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .history-play-icon {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    display: flex; align-items: center; justify-content: center; width: 3rem; height: 3rem;
+    border: 1px solid #ffffff99; border-radius: 50%; background: #000b; color: #fff;
+    font-size: 1.35rem; line-height: 1; pointer-events: none;
+  }
+  button.history-thumb:hover .history-play-icon { background: #000e; }
+  .history-thumb-audio .history-play-icon { position: static; transform: none; margin-right: .5rem; }
   .history-media video {
     display: block; width: 100%; height: 100%; object-fit: contain; background: #000;
   }
@@ -429,6 +439,7 @@
   }
   @media (max-width: 30rem) {
     .history-main { grid-template-columns: 1fr; }
+    .history-media { border-radius: 11px 11px 0 0; }
     .history-actions > button { flex: 1 1 auto; }
   }
   /* ---- 替え歌エディタの全画面モーダル ---- */
@@ -864,6 +875,38 @@
   }
   /* 完成後のダウンロード・共有ボタンを横並びに(狭い画面では折り返す) */
   .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+  .result-action {
+    display: inline-flex; align-items: center; gap: .4rem; min-height: 44px;
+    padding: .35rem .25rem; border: 0; border-radius: 4px;
+    background: transparent; color: var(--accent); font-size: .88rem;
+  }
+  .result-action::before {
+    content: ""; display: inline-block; width: 1.25rem; height: 1.25rem; flex: none;
+    background: currentColor;
+    -webkit-mask: var(--action-icon) center / contain no-repeat;
+    mask: var(--action-icon) center / contain no-repeat;
+  }
+  .action-save { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%203v12m-5-5%205%205%205-5M4%2015v5h16v-5%22%2F%3E%3C%2Fsvg%3E"); }
+  .action-share { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%2016V3m-4%204%204-4%204%204M7%2010H4v11h16V10h-3%22%2F%3E%3C%2Fsvg%3E"); }
+  .action-edit { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M16%203l5%205L8%2021H3v-5L16%203ZM13%206l5%205%22%2F%3E%3C%2Fsvg%3E"); }
+  .result-action:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+  .history-actions > .result-action { flex: 0 0 auto; }
+  .save-menu { position: relative; margin: 0; }
+  .save-menu > summary { list-style: none; }
+  .save-menu > summary::-webkit-details-marker { display: none; }
+  .save-menu > summary::after { content: " ▾"; font-size: .7rem; }
+  .save-options {
+    position: absolute; top: calc(100% + .25rem); left: 0; z-index: 20;
+    width: 21rem; max-width: calc(100vw - 24px); max-height: min(70vh, 32rem);
+    overflow-y: auto; padding: .3rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px #0004;
+  }
+  .save-options section + section { border-top: 1px solid var(--border); margin-top: .3rem; }
+  .save-group-title { margin: .45rem .75rem .15rem; color: var(--muted); font-size: .72rem; }
+  .save-options a { display: flex; align-items: center; min-height: 44px; padding: .55rem .75rem; border-radius: 5px; text-decoration: none; }
+  .save-options a:hover, .save-options a:focus-visible { background: var(--panel-2); }
+  #share-hint:empty { display: none; }
   .generation-quality-warning {
     margin: .75rem 0 0; padding: .75rem; border: 1px solid #f59e0b;
     border-radius: 8px; background: color-mix(in srgb, #f59e0b 10%, transparent);
@@ -1398,6 +1441,19 @@
   </form>
 </dialog>
 
+<dialog id="video-save-help" class="custom-wordlist-dialog recording-delete-dialog"
+  aria-labelledby="video-save-help-title" aria-describedby="video-save-help-hint">
+  <div class="custom-wordlist-header"><h2 id="video-save-help-title">動画を保存</h2></div>
+  <p id="video-save-help-hint">共有画面で「ビデオを保存」または「ファイルに保存」を選んでください。</p>
+  <label class="recording-delete-choice" for="video-save-help-skip">
+    <input type="checkbox" id="video-save-help-skip">次回から表示しない
+  </label>
+  <div class="custom-wordlist-actions recording-delete-actions">
+    <button type="button" id="video-save-help-cancel">キャンセル</button>
+    <button type="button" id="video-save-help-proceed" class="btn-primary" autofocus>次へ</button>
+  </div>
+</dialog>
+
 <dialog id="lyric-review-confirm" class="custom-wordlist-dialog"
   aria-labelledby="lyric-review-confirm-title" aria-describedby="lyric-review-confirm-hint">
   <form method="dialog">
@@ -1775,14 +1831,14 @@ async function receiveEditorLyrics() {
   } catch (error) { status.textContent = error.message; }
 }
 
-async function editHistoryLyrics(job, button, status) {
+async function editResultLyrics(job, button, status) {
   button.disabled = true;
   status.hidden = false;
   status.textContent = "編集画面へ歌詞を渡しています…";
   try {
     await SoramimicBridge.send(editorPeer, async () => {
       const response = await fetch(job.editor_url, { headers: headers(), cache: "no-store" });
-      if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。履歴を更新してください。");
+      if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。ページを更新してお試しください。");
       return response.json();
     });
     status.textContent = "編集画面へ歌詞を渡しました。";
@@ -2346,6 +2402,7 @@ async function loadHistory() {
   if (!res.ok) return [];
   const jobs = await res.json();
   disposeHistoryPlayback();
+  resetHistorySave();
   resetHistoryShare();
   historyJobs = jobs;
   const body = $("history-body");
@@ -2360,6 +2417,7 @@ async function loadHistory() {
 
 let historyJobs = [];
 let activeHistoryPlayback = null;
+let preparedHistorySave = null;
 let preparedHistoryShare = null;
 
 const HISTORY_STATUS_LABELS = {
@@ -2388,6 +2446,19 @@ function historyButton(label, className = "") {
   return button;
 }
 
+function appendLyricEditAction(actions, job, statusContainer, className = "") {
+  if (!job.editor_url || !editorPeer) return;
+  const edit = historyButton("歌詞を編集 ↗", `result-action action-edit ${className}`.trim());
+  edit.setAttribute("aria-label", "歌詞を編集（新しいタブで開きます）");
+  const message = document.createElement("p");
+  message.className = "history-meta";
+  message.setAttribute("role", "status");
+  message.hidden = true;
+  edit.addEventListener("click", () => editResultLyrics(job, edit, message));
+  actions.appendChild(edit);
+  statusContainer.appendChild(message);
+}
+
 function historyCard(job, index) {
   const card = document.createElement("article");
   card.className = "history-item";
@@ -2401,8 +2472,7 @@ function historyCard(job, index) {
   if (complete) {
     thumb.type = "button";
     thumb.setAttribute("aria-label", `${job.song_label || "曲"}を再生`);
-    thumb.setAttribute("aria-expanded", "false");
-    thumb.addEventListener("click", () => toggleHistoryPlayback(index, thumb));
+    thumb.addEventListener("click", () => startHistoryPlayback(index, thumb));
   }
   if (job.thumbnail_url && job.result_kind !== "audio") {
     const image = document.createElement("img");
@@ -2412,6 +2482,14 @@ function historyCard(job, index) {
     thumb.appendChild(image);
   } else {
     thumb.textContent = job.result_kind === "audio" ? "音声" : historyStatusLabel(job);
+  }
+  if (complete) {
+    if (job.result_kind === "audio") thumb.classList.add("history-thumb-audio");
+    const icon = document.createElement("span");
+    icon.className = "history-play-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "▶";
+    thumb.prepend(icon);
   }
   const copy = document.createElement("div");
   copy.className = "history-copy";
@@ -2447,28 +2525,25 @@ function historyCard(job, index) {
   if (complete) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    const play = historyButton("再生", "history-play");
-    play.setAttribute("aria-expanded", "false");
-    play.addEventListener("click", () => toggleHistoryPlayback(index, play));
-    actions.appendChild(play);
+    let saveRetry = null;
+    appendSaveMenu(actions, job, () => {
+      if (!saveRetry || (preparedHistorySave?.index === index
+          && preparedHistorySave.shareable === false)) return false;
+      saveHistoryVideo(index, saveRetry);
+      return true;
+    });
+    if (prefersNativeVideoSave() && job.result_kind !== "audio") {
+      saveRetry = historyButton("保存を続ける", "history-save-retry result-action action-save");
+      saveRetry.hidden = true;
+      saveRetry.addEventListener("click", () => saveHistoryVideo(index, saveRetry));
+      actions.appendChild(saveRetry);
+    }
     if (typeof navigator.share === "function" && typeof File !== "undefined") {
-      const share = historyButton("共有", "history-share");
+      const share = historyButton("共有", "history-share result-action action-share");
       share.addEventListener("click", () => shareHistoryResult(index, share));
       actions.appendChild(share);
     }
-    const download = historyButton("ダウンロード", "history-download");
-    download.addEventListener("click", () => downloadHistoryResult(job));
-    actions.appendChild(download);
-    if (job.editor_url && editorPeer) {
-      const edit = historyButton("歌詞を編集 ↗", "history-edit-lyrics");
-      const message = document.createElement("p");
-      message.className = "history-meta";
-      message.setAttribute("role", "status");
-      message.hidden = true;
-      edit.addEventListener("click", () => editHistoryLyrics(job, edit, message));
-      actions.appendChild(edit);
-      copy.appendChild(message);
-    }
+    appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
     copy.appendChild(actions);
   }
   if (job.status === "awaiting_review") {
@@ -2505,20 +2580,15 @@ function disposeHistoryPlayback() {
   active.media.remove();
   if (active.objectUrl) URL.revokeObjectURL(active.objectUrl);
   active.slot.replaceChildren(active.thumb);
-  active.triggers.forEach((button) => {
-    button.setAttribute("aria-expanded", "false");
-    if (button.classList.contains("history-play")) button.textContent = "再生";
-  });
   activeHistoryPlayback = null;
 }
 
-async function toggleHistoryPlayback(index, trigger) {
+async function startHistoryPlayback(index, trigger) {
   if (activeHistoryPlayback && activeHistoryPlayback.index === index) {
-    disposeHistoryPlayback();
-    resetHistoryShare();
     return;
   }
   disposeHistoryPlayback();
+  resetHistorySave();
   resetHistoryShare();
   const job = historyJobs[index];
   if (!job || !job.playback_url) return;
@@ -2533,13 +2603,8 @@ async function toggleHistoryPlayback(index, trigger) {
     media.setAttribute("playsinline", "");
     if (job.thumbnail_url) media.poster = qs(job.thumbnail_url);
   }
-  const triggers = [...card.querySelectorAll(".history-play, .history-thumb")];
-  triggers.forEach((button) => {
-    button.setAttribute("aria-expanded", "true");
-    if (button.classList.contains("history-play")) button.textContent = "閉じる";
-  });
   slot.replaceChildren(media);
-  const active = { index, media, slot, thumb, triggers, abort: null, objectUrl: "" };
+  const active = { index, media, slot, thumb, abort: null, objectUrl: "" };
   activeHistoryPlayback = active;
   try {
     if (apiKey()) {
@@ -2565,15 +2630,6 @@ async function toggleHistoryPlayback(index, trigger) {
   }
 }
 
-function downloadHistoryResult(job) {
-  const link = document.createElement("a");
-  link.href = qs(job.video_url);
-  link.download = job.result_kind === "audio" ? "soramimic.wav" : "soramimic.mp4";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
-
 function resetHistoryShare() {
   const prepared = preparedHistoryShare;
   if (!prepared) return;
@@ -2588,17 +2644,21 @@ function resetHistoryShare() {
 async function shareHistoryResult(index, button) {
   const job = historyJobs[index];
   if (!job || !job.video_url || typeof navigator.share !== "function") return;
+  const open = (state, afterPreparation = false) => {
+    button.disabled = false;
+    button.textContent = "共有";
+    openFileShare(state.file, (error) => {
+      if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+      button.textContent = afterPreparation && error?.name === "NotAllowedError"
+        ? "共有を開く" : "共有を再試行";
+    });
+  };
   const prepared = preparedHistoryShare;
   if (prepared && prepared.index === index && prepared.file) {
-    try {
-      const sharing = navigator.share({ files: [prepared.file], text: SHARE_TEXT });
-      resetHistoryShare();
-      Promise.resolve(sharing).catch(() => { /* キャンセル時にダウンロードは始めない */ });
-    } catch {
-      resetHistoryShare();
-    }
+    open(prepared);
     return;
   }
+  if (prepared && prepared.index === index && prepared.abort) return;
   resetHistoryShare();
   const ctrl = new AbortController();
   const state = { index, button, abort: ctrl, file: null };
@@ -2610,26 +2670,93 @@ async function shareHistoryResult(index, button) {
     if (!res.ok) throw new Error("共有データを取得できませんでした");
     const blob = await res.blob();
     if (preparedHistoryShare !== state) return;
-    const filename = job.result_kind === "audio" ? "soramimic.wav" : "soramimic.mp4";
-    state.file = new File([blob], filename, { type: blob.type });
+    const audio = job.result_kind === "audio";
+    state.file = new File([blob], audio ? "soramimic.wav" : "soramimic.mp4",
+      { type: blob.type || (audio ? "audio/wav" : "video/mp4") });
     button.disabled = false;
-    button.textContent = "共有を開く";
+    if (navigator.userActivation?.isActive === false) button.textContent = "共有を開く";
+    else open(state, true);
   } catch (error) {
-    if (preparedHistoryShare !== state || (error && error.name === "AbortError")) return;
-    resetHistoryShare();
-    button.textContent = "共有できません";
+    if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+    state.abort = null;
+    button.disabled = false;
+    button.textContent = "共有を再試行";
+  }
+}
+
+function resetHistorySave() {
+  const prepared = preparedHistorySave;
+  if (!prepared) return;
+  if (prepared.abort) prepared.abort.abort();
+  if (prepared.button && prepared.button.isConnected) {
+    prepared.button.disabled = false;
+    prepared.button.hidden = true;
+    prepared.button.textContent = "保存を続ける";
+  }
+  preparedHistorySave = null;
+}
+
+async function saveHistoryVideo(index, button) {
+  const job = historyJobs[index];
+  if (!job || !job.video_url || !prefersNativeVideoSave()) return;
+  const open = (state, afterPreparation = false) => {
+    button.disabled = false;
+    button.hidden = true;
+    button.textContent = "保存を続ける";
+    state.shareable = true;
+    openFileShare(state.file, (error) => {
+      if (preparedHistorySave !== state || error?.name === "AbortError") return;
+      const retry = afterPreparation && error?.name === "NotAllowedError";
+      if (!retry) state.shareable = false;
+      button.hidden = false;
+      button.textContent = retry ? "保存を続ける" : "保存を再試行";
+    }, "");
+  };
+  const prepared = preparedHistorySave;
+  if (prepared && prepared.index === index && prepared.file) {
+    open(prepared);
+    return;
+  }
+  // 準備中の同じジョブを二重取得しない。
+  if (prepared && prepared.index === index && prepared.abort) return;
+  resetHistorySave();
+  const ctrl = new AbortController();
+  const state = { index, button, abort: ctrl, file: null };
+  preparedHistorySave = state;
+  button.hidden = false;
+  button.disabled = true;
+  button.textContent = "保存を準備中…";
+  try {
+    const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
+    if (!res.ok) throw new Error("保存データを取得できませんでした");
+    const blob = await res.blob();
+    if (preparedHistorySave !== state) return;
+    state.file = new File([blob], "soramimic.mp4", { type: blob.type || "video/mp4" });
+    button.disabled = false;
+    if (navigator.userActivation?.isActive === false) button.textContent = "保存を続ける";
+    else open(state, true);
+  } catch (error) {
+    if (preparedHistorySave !== state || error?.name === "AbortError") return;
+    state.abort = null;
+    button.disabled = false;
+    button.hidden = false;
+    button.textContent = "保存を再試行";
   }
 }
 
 $("history").addEventListener("toggle", () => {
   if (!$("history").open) {
     disposeHistoryPlayback();
+    resetHistorySave();
     resetHistoryShare();
   }
 });
 window.addEventListener("pagehide", () => {
   disposeHistoryPlayback();
+  resetHistorySave();
   resetHistoryShare();
+  if (resultDownloadAbort) resultDownloadAbort.abort();
+  if ($("video-save-help").open) $("video-save-help").close();
 });
 
 let currentJob = null;
@@ -2937,85 +3064,132 @@ function showWordlistExhaustionNotice(exhausted) {
   notice.hidden = !exhausted;
 }
 
-// UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
-// 誤判定しやすい。iPadのデスクトップ表示も含めてモバイルOSかを判定したうえで、
-// Web Share APIの有無を見る。PCでは共有シートを保存導線にせず、直接ダウンロードと
-// 共有を別ボタンにする。モバイルではOS標準の保存・共有を1ボタンにまとめる。
+// 保存は形式を選ぶ操作。iPhoneの動画保存では写真に保存できる共有シートを使う。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #Soramimic #そらみみっく\n" + location.origin;
 
-function mobilePlatform() {
-  const platform = (navigator.userAgentData && navigator.userAgentData.platform)
-    || navigator.platform || "";
-  const ua = navigator.userAgent || "";
-  if (/iPhone|iPad|iPod/i.test(ua) || /iPhone|iPad|iPod/i.test(platform)
-      || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return "ios";
-  if (/Android/i.test(ua) || /Android/i.test(platform)) return "android";
-  return "other";
-}
-
 function supportsVideoFileShare() {
-  // 起動時には実動画がまだ無い。ここではAPIの有無だけを見て、完成後に
-  // 再生と共有で共用する実動画を準備する。
   return typeof navigator.share === "function" && typeof File !== "undefined"
     && typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
     && typeof URL.revokeObjectURL === "function";
 }
 
 const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
-const DESKTOP_SHARE_UI = mobilePlatform() === "other";
+const SHARE_HTML = `<div class="share-row" id="result-actions">` +
+  (FILE_SHARE_SUPPORTED ? `<button type="button" id="share-save" class="result-action action-share" aria-label="動画を共有">共有</button>` : "") +
+  `</div><p class="hint" id="share-hint" role="status"></p>`;
 
-function shareHint(shareable) {
-  if (DESKTOP_SHARE_UI) {
-    return shareable
-      ? "動画をダウンロードするか、共有メニューから共有先を選べます。"
-      : "「動画をダウンロード」を押すと、動画ファイルを保存できます。";
+// 呼び出しは同期のままにし、用意済みのFileならタップの操作権限内で共有を開く。
+// iOSでは共有Promiseが完了しないこともあるため、待ってボタンを無効にしない。
+function openFileShare(file, onError, text = SHARE_TEXT) {
+  try {
+    const data = { files: [file] };
+    if (text) data.text = text;
+    const sharing = navigator.share(data);
+    Promise.resolve(sharing).catch(onError);
+  } catch (error) {
+    onError(error);
   }
-  if (!shareable) return "ボタンを押すと、動画ファイルをダウンロードします。";
-  if (mobilePlatform() === "ios") {
-    return "";
-  }
-  if (mobilePlatform() === "android") {
-    return "Androidの共有メニューから保存先または共有先を選べます。";
-  }
-  return "端末の共有メニューから保存先または共有先を選べます。";
 }
 
-const SHARE_HTML = DESKTOP_SHARE_UI
-  ? `<p class="share-row">` +
-    `<button type="button" id="download-video" class="btn-sm">動画をダウンロード</button>` +
-    (FILE_SHARE_SUPPORTED
-      ? `<button type="button" id="share-save" class="btn-sm" disabled>共有を準備中…</button>`
-      : "") +
-    `</p>` +
-    `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "動画を再生・共有できるよう準備しています。ダウンロードはすぐにできます。"
-      : shareHint(false)}</p>`
-  : `<p class="share-row">` +
-    `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
-    `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画をダウンロード"}</button>` +
-    `</p>` +
-    `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "動画を再生・共有できるよう準備しています。" : shareHint(false)}</p>`;
+function isIOSPlatform() {
+  const platform = navigator.platform || "";
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent || "")
+    || /iPhone|iPad|iPod/i.test(platform)
+    || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1);
+}
+
+function prefersNativeVideoSave() {
+  return typeof navigator.share === "function" && typeof File !== "undefined" && isIOSPlatform();
+}
+
+let nativeVideoSaveHelpSkipped = false;
+function offerNativeVideoSave(link, onVideoSave, onDownload) {
+  const preference = "soramimic-video-save-help-skipped";
+  try {
+    nativeVideoSaveHelpSkipped ||= localStorage.getItem(preference) === "1";
+  } catch (_) { /* 保存不可でも、このページ内では選択を記憶する。 */ }
+  if (nativeVideoSaveHelpSkipped) return onVideoSave() !== false;
+  const dialog = $("video-save-help");
+  const skip = $("video-save-help-skip");
+  const proceed = $("video-save-help-proceed");
+  skip.checked = false;
+  proceed.onclick = () => {
+    dialog.close();
+    // 結果の切替や画面離脱後に、古い動画の共有を開始しない。
+    if (!link.isConnected || document.visibilityState === "hidden") return;
+    if (skip.checked) {
+      nativeVideoSaveHelpSkipped = true;
+      try { localStorage.setItem(preference, "1"); } catch (_) { /* 記憶は任意。 */ }
+    }
+    // 確認タップ内で同期的に共有を呼び、OSの操作権限を保つ。
+    if (onVideoSave() === false) {
+      onDownload();
+    }
+  };
+  $("video-save-help-cancel").onclick = () => dialog.close();
+  dialog.onclose = () => { if (!dialog.open) proceed.onclick = null; };
+  dialog.showModal();
+  return true;
+}
+
+let resultDownloadObjectUrl = "";
+let resultDownloadAbort = null;
+
+async function downloadResultMedia(link, mediaType, status) {
+  if (link.getAttribute("aria-busy") === "true") return;
+  if (resultDownloadAbort) resultDownloadAbort.abort();
+  const ctrl = new AbortController();
+  resultDownloadAbort = ctrl;
+  link.setAttribute("aria-busy", "true");
+  status.hidden = false;
+  status.textContent = "ファイルを取得しています…";
+  const timer = setTimeout(() => ctrl.abort(), 120000);
+  try {
+    const response = await fetch(link.href, {
+      headers: headers(), credentials: "same-origin", signal: ctrl.signal,
+    });
+    if (!response.ok) throw new Error("ファイルを取得できませんでした");
+    const blob = await response.blob();
+    if (ctrl.signal.aborted || !blob.size) throw new Error("ファイルを取得できませんでした");
+    if (blob.type && ![mediaType, "application/octet-stream"].includes(blob.type.split(";")[0])) {
+      throw new Error("ファイル形式が一致しません");
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const plainName = disposition.match(/filename="([^"]+)"/i);
+    let filename = mediaType === "audio/wav" ? "soramimic.wav" : "soramimic.mp4";
+    if (encodedName) {
+      try { filename = decodeURIComponent(encodedName[1]); } catch (_) { /* 既定名を使う */ }
+    } else if (plainName) filename = plainName[1];
+    const url = URL.createObjectURL(new Blob([blob], { type: mediaType }));
+    // Safariの「表示」はclick後に読むため、今回のURLは次の保存まで保持する。
+    if (resultDownloadObjectUrl) URL.revokeObjectURL(resultDownloadObjectUrl);
+    resultDownloadObjectUrl = url;
+    const download = document.createElement("a");
+    download.href = url;
+    download.download = filename;
+    document.body.appendChild(download);
+    download.click();
+    download.remove();
+    status.hidden = true;
+  } catch (_error) {
+    status.textContent = "ファイルを取得できませんでした。保存メニューからもう一度お試しください。";
+  } finally {
+    clearTimeout(timer);
+    link.removeAttribute("aria-busy");
+    if (resultDownloadAbort === ctrl) resultDownloadAbort = null;
+  }
+}
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
   return name.endsWith(".mp4") ? name : "soramimic.mp4";
 }
 
-// シェアシートが使えない環境向けのフォールバック。動画URLはそのまま開けるので、
-// blobを作らずリンクのdownload属性に任せる。
-function downloadVideo(videoUrl) {
-  const a = document.createElement("a");
-  a.href = qs(videoUrl);
-  a.download = videoFileName(videoUrl);
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
 let sharePreparationSeq = 0;
 let preparedVideoShare = null;
+let videoSharePreparation = null;
 let sharePreparationAbort = null;
 let sharePlaybackUrl = "";
 let sharePlaybackErrorBinding = null;
@@ -3053,25 +3227,19 @@ function resetVideoSharePreparation() {
   sharePreparationAbort = null;
   revokeSharePlaybackUrl();
   preparedVideoShare = null;
+  videoSharePreparation = null;
 }
 
 function setShareButtonMode(shareable) {
-  const saveBtn = $("share-save");
-  const hint = $("share-hint");
-  if (!hint) return;
-  if (DESKTOP_SHARE_UI) {
-    if (saveBtn) {
-      saveBtn.hidden = !shareable;
-      saveBtn.disabled = false;
-      saveBtn.textContent = "共有";
-    }
-    hint.textContent = shareHint(shareable);
-    return;
+  const button = $("share-save");
+  if (button) {
+    button.hidden = !shareable;
+    button.disabled = false;
+    button.textContent = "共有";
   }
-  if (!saveBtn) return;
-  saveBtn.disabled = false;
-  saveBtn.textContent = shareable ? "動画を保存・共有" : "動画をダウンロード";
-  hint.textContent = shareHint(shareable);
+  const hint = $("share-hint");
+  if (hint) hint.textContent = !shareable && FILE_SHARE_SUPPORTED
+    ? "共有を準備できませんでした。「保存」からダウンロードできます。" : "";
 }
 
 async function prepareVideoShare(videoUrl, video) {
@@ -3115,7 +3283,7 @@ async function prepareVideoShare(videoUrl, video) {
     video.removeAttribute("aria-busy");
     // iOSのアプリ内ブラウザにはshareはあってもcanShareが無いものがあり、
     // canShareを門番にすると「共有」表示なのに必ずdownloadへ落ちてしまう。
-    // 実Fileを用意できたらshareを直接試し、拒否されたときだけ保存へ切り替える。
+    // 実Fileを用意できたらshareを直接試し、拒否時は保存メニューからの保存を案内する。
     preparedVideoShare = { videoUrl, file, shareable: true };
     setShareButtonMode(true);
   } catch (_e) {
@@ -3131,48 +3299,35 @@ async function prepareVideoShare(videoUrl, video) {
 }
 
 function bindShare(videoUrl) {
-  const downloadBtn = $("download-video");
-  if (downloadBtn) {
-    downloadBtn.addEventListener("click", () => {
-      if (videoUrl) downloadVideo(videoUrl);
-    });
-  }
-  const saveBtn = $("share-save");
-  if (!saveBtn) return;
-  saveBtn.addEventListener("click", () => {
-    if (!videoUrl) return;
-    if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
+  const button = $("share-save");
+  if (!button) return;
+  button.addEventListener("click", async () => {
+    const seq = sharePreparationSeq;
+    let afterPreparation = false;
+    if ((!preparedVideoShare || preparedVideoShare.videoUrl !== videoUrl) && videoSharePreparation) {
+      button.disabled = true;
+      button.textContent = "共有を準備中…";
+      await videoSharePreparation;
+      if (seq !== sharePreparationSeq) return;
+      button.disabled = false;
+      afterPreparation = true;
+    }
     const prepared = preparedVideoShare;
-    if (!prepared || prepared.videoUrl !== videoUrl) return;
-    if (!prepared.shareable || !prepared.file) {
-      if (!DESKTOP_SHARE_UI) downloadVideo(videoUrl);
+    if (!prepared || prepared.videoUrl !== videoUrl || !prepared.file) return;
+    if (afterPreparation && navigator.userActivation?.isActive === false) {
+      button.textContent = "共有を開く";
       return;
     }
-    // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
-    // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
-    // 動画と投稿用本文を同じ共有シートへ渡す。共有API自体はこのクリック内で
-    // 即座に呼び、一時的なユーザー操作権限を失わない。
-    // iOSでは共有シートを閉じてもPromiseが完了しないことがある。Promise待ちで
-    // ボタンをdisabledにすると以後ずっと押せなくなるので、ここでは無効化しない。
-    let sharing;
-    try {
-      sharing = navigator.share({ files: [prepared.file], text: SHARE_TEXT });
-    } catch (e) {
-      if (!(e && e.name === "AbortError")) {
-        preparedVideoShare = { videoUrl, file: null, shareable: false };
-        setShareButtonMode(false);
-        showBuilderMsg("共有メニューを開けませんでした。「動画をダウンロード」をお使いください。");
+    button.textContent = "共有";
+    prepared.shareable = true;
+    openFileShare(prepared.file, (error) => {
+      if (seq !== sharePreparationSeq || error?.name === "AbortError") return;
+      if (afterPreparation && error?.name === "NotAllowedError") {
+        button.textContent = "共有を開く";
+        return;
       }
-      return;
-    }
-    Promise.resolve(sharing).catch((e) => {
-      // キャンセルや共有エラーを勝手なダウンロードに置き換えない。共有が
-      // 拒否された環境では、次の明示操作用にボタンをダウンロードへ変える。
-      if (!(e && e.name === "AbortError")) {
-        preparedVideoShare = { videoUrl, file: null, shareable: false };
-        setShareButtonMode(false);
-        showBuilderMsg("共有メニューを開けませんでした。「動画をダウンロード」をお使いください。");
-      }
+      prepared.shareable = false;
+      showBuilderMsg("共有メニューを開けませんでした。「保存」からダウンロードできます。");
     });
   });
 }
@@ -5338,10 +5493,99 @@ for (const type of ["change", "input"]) {
   document.addEventListener(type, (ev) => {
     const t = ev.target;
     if (t instanceof Node
-        && ($("builder-figure").contains(t) || $("builder-share").contains(t))) return;
+        && ($("builder-figure").contains(t) || $("builder-share").contains(t)
+          || $("video-save-help").contains(t))) return;
     releaseBuilderDone();
   }, true);
 }
+
+function appendSaveMenu(container, job, onVideoSave = null) {
+  const nativeVideoSave = !!onVideoSave && prefersNativeVideoSave();
+  const video = job.video_url && job.result_kind !== "audio" ? [{
+    label: "MP4", url: job.video_url, video: true, mediaType: "video/mp4",
+  }] : [];
+  const singing = job.video_url && job.result_kind === "audio" ? [{
+    label: "歌声プレビュー（WAV）", url: job.video_url, mediaType: "audio/wav",
+  }] : [];
+  const formats = {
+    vocal: "歌声WAV（伴奏なし）",
+    musicxml: "楽譜（MusicXML）",
+    midi: "歌詞入りMIDI",
+    xf: "XF MIDI",
+  };
+  for (const [kind, label] of Object.entries(formats)) {
+    if (job.export_urls?.[kind]) singing.push({
+      label, url: job.export_urls[kind], mediaType: kind === "vocal" ? "audio/wav" : "",
+    });
+  }
+  if (!video.length && !singing.length) return;
+  const menu = document.createElement("details");
+  menu.className = "save-menu";
+  const summary = document.createElement("summary");
+  summary.className = "result-action action-save";
+  summary.textContent = "保存";
+  menu.appendChild(summary);
+  const links = document.createElement("div");
+  links.className = "save-options";
+  const status = document.createElement("p");
+  status.className = "hint";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  for (const [title, entries] of [["動画", video], ["歌唱データ", singing]]) {
+    if (!entries.length) continue;
+    const section = document.createElement("section");
+    const heading = document.createElement("p");
+    heading.className = "save-group-title";
+    heading.textContent = title;
+    section.appendChild(heading);
+    for (const entry of entries) {
+      const link = document.createElement("a");
+      link.href = qs(entry.url);
+      link.download = "";
+      link.textContent = entry.label;
+      link.addEventListener("click", event => {
+        const download = () => downloadResultMedia(link, entry.mediaType, status);
+        // iPhoneの動画保存は、同じタップから保存用の共有シートを開く。
+        if (entry.video && nativeVideoSave && offerNativeVideoSave(link, onVideoSave, download)) {
+          event.preventDefault();
+        } else if (entry.mediaType && isIOSPlatform()) {
+          event.preventDefault();
+          download();
+        }
+        menu.open = false;
+      });
+      section.appendChild(link);
+    }
+    links.appendChild(section);
+  }
+  menu.appendChild(links);
+  menu.addEventListener("toggle", () => {
+    if (!menu.open) return;
+    document.querySelectorAll(".save-menu[open]").forEach(other => {
+      if (other !== menu) other.open = false;
+    });
+    // 履歴の途中にある保存ボタンでも、メニューを画面内に収める。
+    links.style.left = "0px";
+    const rect = links.getBoundingClientRect();
+    const offset = Math.max(12 - rect.left, Math.min(0, innerWidth - 12 - rect.right));
+    links.style.left = `${offset}px`;
+  });
+  container.appendChild(menu);
+  container.appendChild(status);
+}
+
+document.addEventListener("click", event => {
+  document.querySelectorAll(".save-menu[open]").forEach(menu => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
+});
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  document.querySelectorAll(".save-menu[open]").forEach(menu => {
+    menu.open = false;
+    menu.querySelector("summary").focus();
+  });
+});
 
 // 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
 function showBuilderVideo(job) {
@@ -5357,8 +5601,18 @@ function showBuilderVideo(job) {
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
+  appendSaveMenu($("result-actions"), job, () => {
+    const share = $("share-save");
+    if (!share || share.hidden || preparedVideoShare?.shareable === false) return false;
+    share.click();
+    return true;
+  });
+  const actions = $("result-actions");
+  const saveMenu = actions.querySelector(".save-menu");
+  if (saveMenu) actions.prepend(saveMenu);
+  appendLyricEditAction(actions, job, $("builder-share"), "result-edit-lyrics");
   bindShare(job.video_url);
-  prepareVideoShare(job.video_url, video);
+  videoSharePreparation = prepareVideoShare(job.video_url, video);
   setBuilderState("done");
 }
 

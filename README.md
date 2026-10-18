@@ -184,7 +184,7 @@ uv run soramimic-video serve
 
 公開モードでは、アップロードされた音源・歌詞ファイルと解析中間物を処理終了時に削除し、
 失敗時は1分間隔で再試行します。完成動画・サムネイル・出典情報・編集用の歌詞データ
-（元歌詞を含みます）を設定された
+（元歌詞を含みます）・書き出し用のMIDIと歌声WAVを設定された
 保存期間中保持し、期間を過ぎたものから同じ間隔で削除します。音源解析は
 同一ホスト上のサービスで行い、入力内容をモデル学習には使用しません。
 
@@ -345,7 +345,36 @@ uv run pytest -q
 
 ソラミミックの編集画面の「ビデオで作る」で、編集中の歌詞を動画作成画面へ渡せます。
 開いた画面で同じ曲の音源またはMIDIを選んでください。
-完成動画の履歴にある「歌詞を編集」で、その歌詞をソラミミックの編集画面へ戻せます。
+
+完成画面と履歴には「保存」メニューと「共有」を表示します。
+保存メニュー内を「動画」と「歌唱データ」に分け、動画（MP4）、歌声WAV（伴奏なし）、
+楽譜（MusicXML）、歌詞入りMIDI、XF MIDIを選べます。
+iPhone・iPadで動画を保存する場合は、標準の共有シートから「ビデオを保存」を選べます。
+保存前に使い方の案内を表示し、「次回から表示しない」を選ぶと同じブラウザーでは省略します。
+Android・PCの動画保存はMP4をダウンロードします。
+完成直後の動画は共有用ファイルを先に準備し、履歴では共有またはiPhone・iPadの動画保存を選んでから準備します。
+楽譜・MIDIには現在の替え歌の読みを使います。
+MIDIは元の音高、歌声WAVは選択した歌声・音域調整を反映します。
+NEUTRINOで合成したMusicXMLは、音域調整を含めて合成に使った譜面そのものです。
+それ以外のMusicXMLは元の音高で生成し、同じ形式でNEUTRINOへ渡せます。
+曲頭から歌う場合は、NEUTRINOによる自動休符追加を防ぐため、先頭音符の一部を
+約30ms（短い音符では半分まで）の休符にします。後続の音符の位置は変わりません。
+小節途中で拍子が変わる場合、その直前の短い小節は実際の長さに合う拍子で記録します。
+通常のMIDI歌詞はUTF-8、XF歌詞はCP932です。
+この機能の追加前に完成した動画には書き出しファイルがありません。
+
+CLIでは、解析・変換済みのプロジェクトから動画を作らずMusicXMLやMIDIを書き出せます。
+CLIのMusicXMLは現在のプロジェクトから元の音高で生成します。
+歌声WAVの書き出しには先に `synthesize` を実行してください。
+
+```sh
+uv run soramimic-video export --project work/song --format musicxml --output score.musicxml
+uv run soramimic-video export --project work/song --format midi --output lyrics.mid
+uv run soramimic-video export --project work/song --format xf --output lyrics.xf.mid
+uv run soramimic-video export --project work/song --format vocal --output vocal.wav
+```
+
+完成画面と履歴の「歌詞を編集 ↗」で、その歌詞をソラミミックの編集画面へ戻せます。
 編集データの保存前に作られた動画や、歌詞データが4MBを超える動画には表示されません。
 編集データは動画と同じ保存期間で削除されます。
 
