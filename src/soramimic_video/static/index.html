@@ -911,6 +911,8 @@
     margin: .75rem 0 0; padding: .75rem; border: 1px solid #f59e0b;
     border-radius: 8px; background: color-mix(in srgb, #f59e0b 10%, transparent);
   }
+.history-copy > .save-status { margin: .5rem 0 0; }
+.save-menu summary[aria-disabled="true"] { opacity: .6; cursor: wait; }
 </style>
 </head>
 <body>
@@ -2525,18 +2527,20 @@ function historyCard(job, index) {
   if (complete) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    let saveRetry = null;
-    appendSaveMenu(actions, job, () => {
-      if (!saveRetry || (preparedHistorySave?.index === index
+    const save = appendSaveMenu(actions, job, () => {
+      if (!save || (preparedHistorySave?.index === index
           && preparedHistorySave.shareable === false)) return false;
-      saveHistoryVideo(index, saveRetry);
+      saveHistoryVideo(index, save.button, save.status);
       return true;
     });
-    if (prefersNativeVideoSave() && job.result_kind !== "audio") {
-      saveRetry = historyButton("保存を続ける", "history-save-retry result-action action-save");
-      saveRetry.hidden = true;
-      saveRetry.addEventListener("click", () => saveHistoryVideo(index, saveRetry));
-      actions.appendChild(saveRetry);
+    if (save && prefersNativeVideoSave() && job.result_kind !== "audio") {
+      save.button.addEventListener("click", event => {
+        if (preparedHistorySave?.index !== index
+            || preparedHistorySave.needsTap === false
+            || preparedHistorySave.shareable === false) return;
+        event.preventDefault();
+        saveHistoryVideo(index, save.button, save.status);
+      });
     }
     if (typeof navigator.share === "function" && typeof File !== "undefined") {
       const share = historyButton("共有", "history-share result-action action-share");
@@ -2545,6 +2549,7 @@ function historyCard(job, index) {
     }
     appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
     copy.appendChild(actions);
+    if (save) copy.appendChild(save.status);
   }
   if (job.status === "awaiting_review") {
     const actions = document.createElement("div");
@@ -2690,26 +2695,44 @@ function resetHistorySave() {
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
     prepared.button.disabled = false;
-    prepared.button.hidden = true;
-    prepared.button.textContent = "保存を続ける";
+    prepared.button.textContent = "保存";
+    prepared.button.removeAttribute("aria-busy");
+    prepared.button.removeAttribute("aria-disabled");
   }
+  if (prepared.status) prepared.status.hidden = true;
   preparedHistorySave = null;
 }
 
-async function saveHistoryVideo(index, button) {
+async function saveHistoryVideo(index, button, status) {
   const job = historyJobs[index];
   if (!job || !job.video_url || !prefersNativeVideoSave()) return;
-  const open = (state, afterPreparation = false) => {
+  const ready = () => {
     button.disabled = false;
-    button.hidden = true;
-    button.textContent = "保存を続ける";
+    button.textContent = "保存";
+    button.removeAttribute("aria-busy");
+    button.removeAttribute("aria-disabled");
+  };
+  const message = text => {
+    status.textContent = text;
+    status.hidden = !text;
+  };
+  const requestTap = state => {
+    state.needsTap = true;
+    ready();
+    message("保存の準備ができました。もう一度「保存」をタップしてください。");
+  };
+  const open = (state, afterPreparation = false) => {
+    ready();
+    message("");
     state.shareable = true;
+    state.needsTap = false;
     openFileShare(state.file, (error) => {
       if (preparedHistorySave !== state || error?.name === "AbortError") return;
-      const retry = afterPreparation && error?.name === "NotAllowedError";
-      if (!retry) state.shareable = false;
-      button.hidden = false;
-      button.textContent = retry ? "保存を続ける" : "保存を再試行";
+      if (afterPreparation && error?.name === "NotAllowedError") requestTap(state);
+      else {
+        state.shareable = false;
+        message("保存画面を開けませんでした。「保存」からMP4を選び直してください。");
+      }
     }, "");
   };
   const prepared = preparedHistorySave;
@@ -2721,26 +2744,27 @@ async function saveHistoryVideo(index, button) {
   if (prepared && prepared.index === index && prepared.abort) return;
   resetHistorySave();
   const ctrl = new AbortController();
-  const state = { index, button, abort: ctrl, file: null };
+  const state = { index, button, status, abort: ctrl, file: null, needsTap: true };
   preparedHistorySave = state;
-  button.hidden = false;
   button.disabled = true;
-  button.textContent = "保存を準備中…";
+  button.textContent = "準備中…";
+  button.setAttribute("aria-busy", "true");
+  button.setAttribute("aria-disabled", "true");
+  message("動画を取得しています…");
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("保存データを取得できませんでした");
     const blob = await res.blob();
     if (preparedHistorySave !== state) return;
     state.file = new File([blob], "soramimic.mp4", { type: blob.type || "video/mp4" });
-    button.disabled = false;
-    if (navigator.userActivation?.isActive === false) button.textContent = "保存を続ける";
+    state.abort = null;
+    if (navigator.userActivation?.isActive === false) requestTap(state);
     else open(state, true);
   } catch (error) {
     if (preparedHistorySave !== state || error?.name === "AbortError") return;
     state.abort = null;
-    button.disabled = false;
-    button.hidden = false;
-    button.textContent = "保存を再試行";
+    ready();
+    message("動画を取得できませんでした。もう一度「保存」をタップしてください。");
   }
 }
 
@@ -5528,7 +5552,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
   const links = document.createElement("div");
   links.className = "save-options";
   const status = document.createElement("p");
-  status.className = "hint";
+  status.className = "hint save-status";
   status.setAttribute("role", "status");
   status.hidden = true;
   for (const [title, entries] of [["動画", video], ["歌唱データ", singing]]) {
@@ -5572,6 +5596,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
   });
   container.appendChild(menu);
   container.appendChild(status);
+  return {button: summary, status};
 }
 
 document.addEventListener("click", event => {
