@@ -79,6 +79,7 @@ dev = [
     "numpy>=1.24",
     "mecab-python3>=1.0",
     "unidic-lite>=1.0",
+    "lxml>=5",
 ]
 
 [build-system]

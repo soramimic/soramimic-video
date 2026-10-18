@@ -794,6 +794,12 @@ class Job:
         if self.status == "done" and self.video:
             d["video_url"] = f"/api/jobs/{self.id}/video"
             d["playback_url"] = f"/api/jobs/{self.id}/playback"
+            from .exports import FORMATS, result_path
+
+            d["export_urls"] = {
+                kind: f"/api/jobs/{self.id}/exports/{kind}"
+                for kind in FORMATS if result_path(self.dir, kind) is not None
+            }
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
             if self.video.suffix != ".wav" and completed_lyrics.result_path(self.dir):
                 d["editor_url"] = f"/api/jobs/{self.id}/lyrics"
@@ -1314,6 +1320,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     """analyze〜videoを順に実行して完成動画のパスを返す(ワーカースレッドから呼ぶ)。"""
     from .align import align_correct_lyrics, align_lines
     from .editor_io import import_editor, save_raw
+    from .exports import save_results
     from .mix import mix
     from .synthesize import synthesize
     from .video import (
@@ -1494,9 +1501,20 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         ),
     }
 
+    def save_exports(wav: Path) -> None:
+        score = d / "neutrino" / "score.musicxml"
+        # NEUTRINO合成では、音域調整も含めて実際に渡した譜面を保存する。
+        musicxml_source = (
+            score if job.params.get("synthesizer", "neutrino") == "neutrino" and score.is_file()
+            else None
+        )
+        save_results(project, d, vocal_source=wav, musicxml_source=musicxml_source)
+
     if not config.get("parallel_video", True):
-        _run_synthesize(job, config, project, synthesize)
+        wav = _run_synthesize(job, config, project, synthesize)
         project.save(d)
+        if wav is not None:
+            save_exports(wav)
         with _stage(job, "mix", estimated_total=8.0):
             mix(project, d, soundfont=config.get("soundfont"))
         with _stage(job, "video", estimated_total=45.0):
@@ -1531,9 +1549,11 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     future = executor.submit(build_silent_video)
     try:
         try:
-            _run_synthesize(job, config, project, synthesize)
+            wav = _run_synthesize(job, config, project, synthesize)
             # 自動調整が決めたキー変更を保存し、伴奏も同じだけ移調する。
             project.save(d)
+            if wav is not None:
+                save_exports(wav)
             with _stage(job, "mix", estimated_total=8.0):
                 audio_path = mix(project, d, soundfont=config.get("soundfont"))
         except Exception as audio_error:
@@ -2346,8 +2366,9 @@ class JobManager:
         """Keep only downloadable results; remove uploads and work products.
 
         A completed job may retain its final video (or audio preview), thumbnail,
-        portable editing lyrics, and source-credit sidecars. Raw uploads, separated
-        stems, synthesized audio, analysis JSON, and rendered frames are removed
+        portable editing lyrics, downloadable scores/vocal, and source-credit sidecars.
+        Raw uploads, separated stems, synthesis intermediates, analysis JSON, and
+        rendered frames are removed
         before the job becomes observable as ``done``.
         """
         root = job.dir.resolve()
@@ -2380,6 +2401,13 @@ class JobManager:
                 sidecar = root / VIDEO_DIR / name
                 if sidecar.is_file() and not sidecar.is_symlink():
                     keep.add(sidecar.resolve())
+
+        from .exports import FORMATS, result_path
+
+        for kind in FORMATS:
+            exported = result_path(root, kind)
+            if exported is not None:
+                keep.add(exported.resolve())
 
         failures: list[str] = []
         for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
@@ -4702,6 +4730,22 @@ def create_app(
         return FileResponse(
             path, media_type="text/markdown; charset=utf-8" if download else "application/json",
             filename="credits.md" if download else None,
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.get("/api/jobs/{job_id}/exports/{kind}", dependencies=[Depends(_require_api_key)])
+    def get_export(job_id: str, kind: str, request: Request) -> FileResponse:
+        from .exports import FORMATS, result_path
+
+        job = manager.get(job_id, owner_of(request))
+        if job.status != "done":
+            raise HTTPException(status_code=409, detail="書き出しファイルはまだできていません")
+        path = result_path(job.dir, kind)
+        if path is None:
+            raise HTTPException(status_code=404, detail="この形式の書き出しファイルはありません")
+        manager.record_output_usage(job, "download")
+        return FileResponse(
+            path, media_type=FORMATS[kind][1], filename=FORMATS[kind][0],
             headers={"Cache-Control": "private, no-store"},
         )
 

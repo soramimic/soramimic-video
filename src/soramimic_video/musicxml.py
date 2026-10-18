@@ -1,22 +1,20 @@
-"""替え歌歌詞つきMusicXMLの生成(NEUTRINO入力用)。
+"""替え歌歌詞つきMusicXMLの生成(書き出し・NEUTRINO入力共通)。
 
 構造は midi2musicxml で実績のある最小形式:
 score-partwise > part > measure > note {pitch, duration, lyric} / rest。
-divisions は ticks_per_beat をそのまま使い、曲頭(tick 0)から休符で埋めて
+divisions は原則 ticks_per_beat を使い、曲頭(tick 0)から休符で埋めて
 絶対時間を保つ(伴奏とのミックス時に位置合わせが不要になる)。曲頭から音符が始まる曲でも
 先頭には必ず休符を置く(NEUTRINOが2秒の休符を勝手に足すのを防ぐ。HEAD_REST_SEC 参照)。
 """
 
 from __future__ import annotations
 
-import logging
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from fractions import Fraction
 
 from .kana import vowel_of
 from .project import Project
-
-logger = logging.getLogger(__name__)
 
 _STEPS = [
     ("C", 0), ("C", 1), ("D", 0), ("D", 1), ("E", 0), ("F", 0),
@@ -58,14 +56,17 @@ def _measure_boundaries(time_signatures: list[list[int]], end_tick: int,
         while i + 1 < len(sigs) and sigs[i + 1][0] <= tick:
             i += 1
         _, num, den = sigs[i]
-        bounds.append(tick + num * ticks_per_beat * 4 // den)
+        next_tick = tick + num * ticks_per_beat * 4 // den
+        if i + 1 < len(sigs):
+            next_tick = min(next_tick, sigs[i + 1][0])
+        bounds.append(next_tick)
     return bounds
 
 
 def _head_rest_ticks(project: Project) -> int:
     """HEAD_REST_SEC 相当のtick数(曲頭のテンポで換算)。"""
     tpb = project.song.ticks_per_beat
-    us_per_beat = project.song.tempo_map[0][1] if project.song.tempo_map else 500_000
+    us_per_beat = {tick: tempo for tick, tempo in project.song.tempo_map}.get(0, 500_000)
     ticks_per_sec = tpb * 1_000_000 / us_per_beat
     return max(1, round(HEAD_REST_SEC * ticks_per_sec))
 
@@ -75,13 +76,10 @@ def _insert_head_rest(segments: list[_Segment], lead: int) -> None:
 
     NEUTRINOは休符始まりでないスコアの頭に2秒の休符を勝手に足すため、曲頭から音符が
     始まる曲では自前で休符を作る。借りるのは lead tick まで、かつ音符の半分まで
-    (短い音符を潰さない)。1tickしかなく分けられない音符は丸ごと休符にする。
+    (短い音符を潰さない)。呼び出し側で、分割できるだけのdivisionsを確保する。
     """
     head = segments[0]
     lead = min(lead, (head.end - head.start) // 2)
-    if lead <= 0:  # 分けられない極短音符(1tick)は休符にする
-        head.midi_note, head.lyric = None, None
-        return
     head.start += lead
     segments.insert(0, _Segment(0, lead, None))
 
@@ -89,20 +87,25 @@ def _insert_head_rest(segments: list[_Segment], lead: int) -> None:
 def build_musicxml(
     project: Project, lyric_map: dict[int, str], transpose: int = 0
 ) -> str:
-    """lyric_map: note_id -> 歌唱カナ。transpose: 半音単位の移調(-12で1オクターブ下)。"""
+    """Build a standard kana score usable by NEUTRINO; transpose is in semitones."""
     tpb = project.song.ticks_per_beat
 
     # 音符列(重なりは後勝ちでクリップ)+ 休符で埋めた区間列を作る
     sung = sorted(project.notes, key=lambda n: n.start_tick)
-    min_rest = tpb // 8  # これ未満の隙間は直前の音符に吸収(極小休符はNEUTRINOに有害)
+    # 共通スコアのフレージングとして極小休符を直前の音符に吸収する。
+    min_rest = tpb // 8
     segments: list[_Segment] = []
     cursor = 0
     for n in sung:
         start, end = n.start_tick, n.end_tick
+        if start < 0 or end <= start:
+            raise ValueError("MusicXML export needs a nonnegative start and positive note duration")
         if start < cursor:
-            if segments and segments[-1].midi_note is not None:
-                segments[-1].end = start  # 前の音符を切り詰め
-            start = max(start, cursor)
+            while segments and segments[-1].start >= start:
+                segments.pop()
+            if segments:
+                segments[-1].end = start
+            cursor = start
         if start > cursor:
             if segments and segments[-1].midi_note is not None and start - cursor < min_rest:
                 segments[-1].end = start
@@ -120,8 +123,16 @@ def build_musicxml(
 
     if not segments:
         raise ValueError("音符がありません")
+    tick_scale = 1
     if segments[0].midi_note is not None:  # 曲頭(tick 0)から音符が始まる曲
-        _insert_head_rest(segments, _head_rest_ticks(project))
+        if segments[0].end - segments[0].start == 1:
+            # 1tickの歌詞も失わずに、半tickずつ休符と音符へ分ける。
+            tick_scale = 2
+            tpb *= tick_scale
+            for seg in segments:
+                seg.start *= tick_scale
+                seg.end *= tick_scale
+        _insert_head_rest(segments, _head_rest_ticks(project) * tick_scale)
     end_tick = segments[-1].end
 
     # 「ー」で始まる歌詞は直前の音の母音を引き継ぐが、休符直後や行頭では
@@ -139,13 +150,21 @@ def build_musicxml(
             prev_lyric = seg.lyric
         prev_was_rest = False
 
-    bounds = _measure_boundaries(project.song.time_signatures, end_tick, tpb)
+    tempo_changes = {0: 500_000}
+    tempo_changes.update({t * tick_scale: tempo for t, tempo in project.song.tempo_map})
+    sig_changes = {0: (4, 4)}
+    sig_changes.update({t * tick_scale: (num, den)
+                        for t, num, den in project.song.time_signatures})
+    bounds = _measure_boundaries(
+        [[t, num, den] for t, (num, den) in sorted(sig_changes.items())], end_tick, tpb,
+    )
+    split_ticks = sorted(set(bounds) | set(tempo_changes))
 
-    # 小節境界で分割(タイ付与)
+    # 小節境界・テンポ変更点で分割(タイ付与)。directionはその位置で出力する。
     def split(seg: _Segment) -> list[_Segment]:
         parts: list[_Segment] = []
         s = seg.start
-        for b in bounds:
+        for b in split_ticks:
             if s < b < seg.end:
                 parts.append(_Segment(s, b, seg.midi_note))
                 s = b
@@ -158,12 +177,9 @@ def build_musicxml(
         parts[0].lyric = seg.lyric
         return parts
 
-    flat = [p for seg in segments for p in split(seg)]
     if bounds[-1] > end_tick:  # 最終小節の残りを休符で埋める
-        flat.append(_Segment(end_tick, bounds[-1], None))
-
-    tempo_changes = sorted(project.song.tempo_map)
-    sig_changes = {t: (num, den) for t, num, den in sorted(project.song.time_signatures)}
+        segments.append(_Segment(end_tick, bounds[-1], None))
+    flat = [p for seg in segments for p in split(seg)]
 
     root = ET.Element("score-partwise", version="3.1")
     part = ET.SubElement(root, "part", id="P1")
@@ -174,21 +190,29 @@ def build_musicxml(
     root.insert(0, part_list)
 
     seg_i = 0
-    pending_tempi = list(tempo_changes)
+    current_signature = sig_changes[0]
     for m_i in range(len(bounds) - 1):
         m_start, m_end = bounds[m_i], bounds[m_i + 1]
         measure = ET.SubElement(part, "measure", number=str(m_i + 1))
+        current_signature = sig_changes.get(m_start, current_signature)
+        num, den = current_signature
+        short_measure = m_end - m_start < num * tpb * 4 // den
+        if short_measure:
+            # NEUTRINOは不足する拍を補うため、短い小節も実際の長さの拍子にする。
+            beats = Fraction((m_end - m_start) * den, 4 * tpb)
+            if beats.denominator == 1:
+                num = beats.numerator
+            else:
+                length = Fraction(m_end - m_start, 4 * tpb)
+                num, den = length.numerator, length.denominator
 
         attrs = None
-        if m_i == 0 or m_start in sig_changes:
+        if m_i == 0 or m_start in sig_changes or short_measure:
             attrs = ET.SubElement(measure, "attributes")
             if m_i == 0:
                 ET.SubElement(attrs, "divisions").text = str(tpb)
                 key = ET.SubElement(attrs, "key")
                 ET.SubElement(key, "fifths").text = "0"
-            num, den = sig_changes.get(m_start, (4, 4)) if m_i > 0 else (
-                sig_changes.get(0, (4, 4))
-            )
             time = ET.SubElement(attrs, "time")
             ET.SubElement(time, "beats").text = str(num)
             ET.SubElement(time, "beat-type").text = str(den)
@@ -197,19 +221,16 @@ def build_musicxml(
                 ET.SubElement(clef, "sign").text = "G"
                 ET.SubElement(clef, "line").text = "2"
 
-        # この小節内に入るテンポ変更(小節頭に寄せる。中間の変更は近似)
-        while pending_tempi and pending_tempi[0][0] < m_end:
-            tick, tempo_us = pending_tempi.pop(0)
-            if tick > m_start:
-                logger.warning(
-                    "小節%dの途中(tick=%d)のテンポ変更を小節頭に寄せました", m_i + 1, tick
-                )
-            bpm = 60_000_000 / tempo_us
-            direction = ET.SubElement(measure, "direction")
-            ET.SubElement(direction, "sound", tempo=f"{bpm:.4f}")
-
         while seg_i < len(flat) and flat[seg_i].start < m_end:
             seg = flat[seg_i]
+            if seg.start in tempo_changes:
+                bpm = f"{60_000_000 / tempo_changes[seg.start]:.8f}".rstrip("0").rstrip(".")
+                direction = ET.SubElement(measure, "direction")
+                direction_type = ET.SubElement(direction, "direction-type")
+                metronome = ET.SubElement(direction_type, "metronome")
+                ET.SubElement(metronome, "beat-unit").text = "quarter"
+                ET.SubElement(metronome, "per-minute").text = bpm
+                ET.SubElement(direction, "sound", tempo=bpm)
             note_el = ET.SubElement(measure, "note")
             if seg.midi_note is None:
                 ET.SubElement(note_el, "rest")

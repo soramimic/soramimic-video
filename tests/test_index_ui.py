@@ -980,15 +980,140 @@ def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
     assert 'createElement("video")' not in load + card
     assert 'createElement("audio")' not in load + card
     assert "fetch(job.video_url" not in load + card
-    playback = _function_body(script, "async function toggleHistoryPlayback(")
+    playback = _function_body(script, "async function startHistoryPlayback(")
     assert 'document.createElement(job.result_kind === "audio" ? "audio" : "video")' in playback
     assert 'media.controls = true' in playback
     assert 'media.preload = "none"' in playback
     assert 'media.setAttribute("playsinline", "")' in playback
     assert "media.src = job.playback_url" in playback
-    sharing = _function_body(script, "async function shareHistoryResult(")
+    sharing = _function_body(script, "async function saveHistoryVideo(")
     assert "fetch(job.video_url" in sharing
-    assert sharing.index("fetch(job.video_url") > sharing.index("resetHistoryShare()")
+    assert sharing.index("fetch(job.video_url") > sharing.index("resetHistorySave()")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+@pytest.mark.parametrize("ios", [False, True])
+def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in (
+            "function historyCard(", "function historyButton(",
+            "function appendLyricEditAction(",
+            "async function startHistoryPlayback(", "function disposeHistoryPlayback()",
+            "function appendSaveMenu(", "function prefersNativeVideoSave(",
+            "function isIOSPlatform(",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require('node:assert/strict');
+        class Element extends EventTarget {
+          constructor(tag) {
+            super(); this.tagName = tag.toUpperCase(); this.children = [];
+            this.attributes = {}; this.className = ''; this.textContent = '';
+            this.classList = {add: name => { this.className += ' ' + name; }};
+          }
+          setAttribute(name, value) { this.attributes[name] = value; }
+          removeAttribute(name) { delete this.attributes[name]; }
+          append(...children) { children.forEach(child => this.appendChild(child)); }
+          appendChild(child) { this.children.push(child); child.parent = this; }
+          prepend(child) { this.children.unshift(child); child.parent = this; }
+          replaceChildren(child) { this.children = []; this.appendChild(child); }
+          closest(selector) { return this.parent.closest(selector); }
+          querySelector(selector) {
+            const name = selector.slice(1);
+            return this.children.find(child => child.className.split(' ').includes(name))
+              || this.children.map(child => child.querySelector(selector)).find(Boolean);
+          }
+          load() {}
+          play() { this.paused = false; return Promise.resolve(); }
+          pause() { this.paused = true; this.dispatchEvent(new Event('pause')); }
+          remove() { this.removed = true; }
+        }
+        const document = {createElement: tag => new Element(tag)};
+        const navigator = {platform: IOS ? 'iPhone' : 'Linux', share() {}};
+        class File {}
+        const qs = url => url, apiKey = () => '';
+        const resetHistorySave = () => {}, resetHistoryShare = () => {};
+        const historyCreatedLabel = () => '', historyStatusLabel = () => '完成';
+        const editorPeer = {}, saveCalls = [], editCalls = [];
+        const saveHistoryVideo = (index, button) => saveCalls.push({index, button});
+        const editResultLyrics = job => editCalls.push(job);
+        const shareCalls = [], shareHistoryResult = index => shareCalls.push(index);
+        const offerNativeVideoSave = (link, save) => save() !== false;
+        const nodesIn = node => [node, ...node.children.flatMap(nodesIn)];
+        let activeHistoryPlayback = null, preparedHistorySave = null;
+        const historyJobs = ['video', 'audio'].map(result_kind => ({
+          status: 'done', song_label: '曲名', result_kind, playback_url: '/playback',
+          video_url: '/download', editor_url: '/editor',
+          thumbnail_url: '/thumbnail',
+        }));
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          for (const [index, job] of historyJobs.entries()) {
+            const card = historyCard(job, index);
+            card.closest = () => card;
+            const thumb = card.querySelector('.history-thumb');
+            assert.equal(thumb.tagName, 'BUTTON');
+            assert.equal(thumb.attributes['aria-label'], '曲名を再生');
+            const icon = thumb.querySelector('.history-play-icon');
+            assert.equal(icon.textContent, '▶');
+            assert.equal(icon.attributes['aria-hidden'], 'true');
+            const actions = card.querySelector('.history-actions');
+            assert.equal(actions.querySelector('.save-menu').tagName, 'DETAILS');
+            assert.equal(actions.querySelector('.history-play'), undefined);
+            const share = actions.querySelector('.history-share');
+            assert.equal(share.textContent, '共有');
+            share.dispatchEvent(new Event('click'));
+            assert.equal(shareCalls.at(-1), index);
+            const edit = actions.querySelector('.history-edit-lyrics');
+            assert.ok(edit.className.includes('result-action action-edit'));
+            edit.dispatchEvent(new Event('click'));
+            assert.equal(editCalls.at(-1), job);
+            const retry = actions.querySelector('.history-save-retry');
+            if (IOS && job.result_kind === 'video') {
+              assert.equal(retry.hidden, true);
+              const mp4 = nodesIn(actions).find(node => node.tagName === 'A');
+              const saveEvent = new Event('click', {cancelable: true});
+              mp4.dispatchEvent(saveEvent);
+              assert.equal(saveEvent.defaultPrevented, true);
+              assert.equal(saveCalls.at(-1).button, retry);
+              assert.equal(saveCalls.at(-1).index, index);
+              retry.dispatchEvent(new Event('click'));
+              assert.equal(saveCalls.at(-1).button, retry);
+            } else assert.equal(retry, undefined);
+            const previous = activeHistoryPlayback;
+            thumb.dispatchEvent(new Event('click'));
+            const active = activeHistoryPlayback;
+            assert.equal(active.media.tagName, job.result_kind.toUpperCase());
+            assert.equal(active.media.controls, true);
+            assert.equal(active.media.paused, false);
+            if (previous) assert.equal(previous.media.removed, true);
+            active.media.currentTime = 12;
+            active.media.pause();
+            assert.equal(activeHistoryPlayback, active);
+            assert.equal(active.media.currentTime, 12);
+            await startHistoryPlayback(index, thumb); // Repeated click never closes it.
+            assert.equal(activeHistoryPlayback, active);
+            await active.media.play();
+            active.media.dispatchEvent(new Event('ended'));
+            assert.equal(activeHistoryPlayback, active);
+          }
+          disposeHistoryPlayback();
+          assert.equal(activeHistoryPlayback, null);
+          const pending = historyCard({status: 'running'}, 2).querySelector('.history-thumb');
+          assert.equal(pending.tagName, 'DIV');
+          assert.equal(pending.querySelector('.history-play-icon'), undefined);
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    subprocess.run(
+        ["node", "-e", "const IOS = " + str(ios).lower() + ";\n" + node],
+        check=True, text=True, capture_output=True,
+    )
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -1004,10 +1129,6 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
           load() {{ calls.push("load"); }},
           remove() {{ calls.push("remove-element"); }},
         }};
-        const play = {{
-          textContent: "閉じる", classList: {{ contains: (name) => name === "history-play" }},
-          setAttribute(name, value) {{ calls.push(`button:${{name}}=${{value}}`); }},
-        }};
         const thumb = {{ name: "thumbnail" }};
         const slot = {{
           replaceChildren(child) {{ calls.push("restore:" + child.name); }},
@@ -1015,7 +1136,7 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
         const URL = {{ revokeObjectURL(url) {{ calls.push("revoke:" + url); }} }};
         let aborted = 0;
         let activeHistoryPlayback = {{
-          media, slot, thumb, triggers: [play], objectUrl: "blob:history",
+          media, slot, thumb, objectUrl: "blob:history",
           abort: {{ abort() {{ aborted += 1; }} }},
         }};
         {dispose}
@@ -1025,7 +1146,6 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
           ["pause", "remove:src", "remove:poster", "load", "remove-element"]);
         assert.ok(calls.indexOf("revoke:blob:history") > calls.indexOf("remove-element"));
         assert.ok(calls.indexOf("restore:thumbnail") > calls.indexOf("revoke:blob:history"));
-        assert.equal(play.textContent, "再生");
         assert.equal(activeHistoryPlayback, null);
         """
     )
@@ -1033,7 +1153,7 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
 
 
 def test_history_switch_disposes_before_making_a_fresh_media_element():
-    playback = _function_body(_script(), "async function toggleHistoryPlayback(")
+    playback = _function_body(_script(), "async function startHistoryPlayback(")
     assert playback.index("disposeHistoryPlayback();") < playback.index(
         'document.createElement(job.result_kind === "audio" ? "audio" : "video")'
     )
@@ -2178,7 +2298,7 @@ def test_random_button_and_behavior_are_removed():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_desktop_video_has_separate_download_and_share_buttons():
+def test_desktop_video_prepares_one_tap_share_without_starting_download():
     """MacなどPCでは直接保存と共有シートを別の明示操作にする。"""
     script = _script()
     share = script[script.index("const SHARE_TEXT =") :]
@@ -2242,11 +2362,10 @@ def test_desktop_video_has_separate_download_and_share_buttons():
           assert.equal(supportsVideoFileShare(), true,
             "the desktop fixture intentionally supports Web Share");
           assert.equal(FILE_SHARE_SUPPORTED, true);
-          assert.equal(DESKTOP_SHARE_UI, true);
-          assert.match(SHARE_HTML, /id="download-video"/);
+          assert.match(SHARE_HTML, /id="result-actions"/);
           assert.match(SHARE_HTML, /id="share-save"/);
           elements = {{
-            "download-video": button(), "share-save": button(),
+            "share-save": button(),
             "share-hint": {{ textContent: "" }}
           }};
           bindShare("/video.mp4");
@@ -2255,13 +2374,12 @@ def test_desktop_video_has_separate_download_and_share_buttons():
           assert.equal(elements["share-save"].textContent, "共有");
           assert.equal(elements["share-save"].hidden, false);
 
-          elements["download-video"].handlers.click();
-          assert.equal(downloads, 1);
+          assert.equal(downloads, 0);
           assert.equal(shareCalls.length, 0, "download must not open the share sheet");
 
           elements["share-save"].handlers.click();
           await Promise.resolve();
-          assert.equal(downloads, 1, "share must not start a download");
+          assert.equal(downloads, 0, "share must not start a download");
           assert.equal(shareCalls.length, 1);
           assert.equal(shareCalls[0].files[0].name, "video.mp4");
           assert.equal(shareCalls[0].text.includes("#Soramimic"), true);
@@ -2270,9 +2388,9 @@ def test_desktop_video_has_separate_download_and_share_buttons():
           navigator.share = () => Promise.reject({{ name: "NotAllowedError" }});
           elements["share-save"].handlers.click();
           await new Promise((resolve) => setImmediate(resolve));
-          assert.equal(elements["share-save"].hidden, true,
-            "a rejected desktop share leaves the separate download available");
-          assert.equal(downloads, 1);
+          assert.equal(elements["share-save"].hidden, false,
+            "sharing remains separate from saving after a rejected attempt");
+          assert.equal(downloads, 0);
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
     )
@@ -2370,10 +2488,8 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
 
         (async () => {{
           assert.equal(FILE_SHARE_SUPPORTED, true, "iPhone keeps native file sharing");
-          assert.equal(DESKTOP_SHARE_UI, false,
-            "iPhone keeps the combined save and share button");
-          assert.doesNotMatch(SHARE_HTML, /id="download-video"/,
-            "mobile must not add a second download button");
+          assert.match(SHARE_HTML, /id="result-actions"/);
+          assert.doesNotMatch(SHARE_HTML, /動画を保存・共有/);
 
           elements = {{ "share-save": button(), "share-hint": {{ textContent: "" }} }};
           bindShare("/video.mp4");
@@ -2393,7 +2509,7 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
           assert.equal(video.controls, true,
             "controls become available only after the source is loaded");
           assert.equal(video.attributes["aria-busy"], undefined);
-          assert.equal(elements["share-save"].textContent, "動画を保存・共有");
+          assert.equal(elements["share-save"].textContent, "共有");
           assert.equal(elements["share-save"].disabled, false);
 
           // 最初のタップではfetchを挟まず、操作権限内でshareする。
@@ -2419,7 +2535,7 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
           activation = false;
           await new Promise((resolve) => setImmediate(resolve));
           assert.equal(downloads, 0, "cancel must not start a download");
-          assert.equal(elements["share-save"].textContent, "動画を保存・共有");
+          assert.equal(elements["share-save"].textContent, "共有");
 
           navigator.share = () => Promise.reject({{ name: "NotAllowedError" }});
           activation = true;
@@ -2427,11 +2543,13 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
           activation = false;
           await new Promise((resolve) => setImmediate(resolve));
           assert.equal(downloads, 0, "share failure must not auto-download");
-          assert.equal(elements["share-save"].textContent, "動画をダウンロード");
+          assert.equal(elements["share-save"].textContent, "共有");
           assert.match(messages.at(-1), /共有メニュー/);
 
-          elements["share-save"].handlers.click();
-          assert.equal(downloads, 1, "the explicit save-mode click downloads");
+          assert.equal(preparedVideoShare.file, objectUrlFile,
+            "a rejected attempt must retain the File for another explicit share");
+          assert.equal(preparedVideoShare.shareable, false,
+            "the Save menu may download directly after a rejected share");
 
           resetVideoSharePreparation();
           assert.deepEqual(revoked, ["blob:shared-video/video.mp4"]);
@@ -2464,8 +2582,9 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
             "fallback detaches a possible Blob source before loading the direct URL");
           assert.equal(fallbackVideo.controls, true);
           assert.equal(fallbackVideo.attributes["aria-busy"], undefined);
-          assert.equal(elements["share-save"].textContent, "動画をダウンロード");
-          assert.equal(downloads, 1, "preparation failure must not auto-download");
+          assert.equal(elements["share-save"].textContent, "共有");
+          assert.equal(downloads, 0, "preparation failure must not auto-download");
+          assert.equal(elements["share-save"].hidden, true);
         }})().catch((error) => {{ console.error(error); process.exit(1); }});
         """
     )
@@ -4019,6 +4138,9 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
         for head in (
             "async function poll(", "function setBuilderState(",
             "function showWordlistExhaustionNotice(", "function historyCard(",
+            "function appendLyricEditAction(",
+            "function appendSaveMenu(", "function prefersNativeVideoSave(",
+            "function isIOSPlatform(",
         )
     )
     message = next(line for line in script.splitlines()
@@ -4031,6 +4153,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
             getAttribute() { return null; }, removeAttribute() {}, setAttribute() {},
             pause() {}, load() {}, addEventListener() {},
             append(...children) { this.children.push(...children); },
+            prepend(child) { this.children.unshift(child); },
             appendChild(child) { this.children.push(child); }};
         }
         const elements = new Map();
@@ -4196,3 +4319,55 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.equal(currentWordlistName(),"stations");
     ''')
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+def test_save_menu_groups_available_formats_and_closes_after_selection():
+    functions = '\n'.join(_function_body(_script(), name) + '\n}' for name in (
+        'function appendSaveMenu(', 'function prefersNativeVideoSave(', 'function isIOSPlatform(',
+    ))
+    node = textwrap.dedent('''
+        const assert = require('node:assert/strict');
+        function element(tag) {
+          return {tag, children: [], handlers: {}, open: false, setAttribute() {},
+                  addEventListener(type, fn) {this.handlers[type] = fn;},
+                  appendChild(child) { this.children.push(child); }};
+        }
+        const document = {createElement: element};
+        const navigator = {};
+        const qs = url => url + '?api_key=test';
+        const linksIn = node => [
+          ...(node.tag === 'a' ? [node] : []), ...node.children.flatMap(linksIn),
+        ];
+    ''') + functions + textwrap.dedent('''
+        const root = element('div');
+        appendSaveMenu(root, {});
+        assert.equal(root.children.length, 0);
+        const urls = {musicxml: '/score', midi: '/mid', xf: '/xf', vocal: '/wav'};
+        appendSaveMenu(root, {video_url: '/video.mp4',
+                              export_urls: {...urls, unknown: '/unknown'}});
+        const menu = root.children[0];
+        assert.equal(menu.open, false, 'singing data stays inside the closed Save menu');
+        assert.equal(menu.children[0].textContent, '保存');
+        assert.deepEqual(menu.children[1].children.map(section => section.children[0].textContent),
+                         ['動画', '歌唱データ']);
+        const links = linksIn(menu);
+        assert.equal(links.length, 5);
+        assert.deepEqual(links.map(link => link.href),
+                         ['/video.mp4', '/wav', '/score', '/mid', '/xf'].map(url => qs(url)));
+        assert.deepEqual(links.map(link => link.textContent),
+                         ['MP4', '歌声WAV（伴奏なし）', '楽譜（MusicXML）',
+                          '歌詞入りMIDI', 'XF MIDI']);
+        assert(links.every(link => link.download === ''));
+        menu.open = true;
+        links[1].handlers.click({preventDefault() {throw Error('must download');}});
+        assert.equal(menu.open, false);
+        const old = element('div');
+        appendSaveMenu(old, {video_url: '/old.mp4'});
+        assert.equal(linksIn(old).length, 1);
+        const audio = element('div');
+        appendSaveMenu(audio, {video_url: '/audio', result_kind: 'audio'});
+        assert.equal(linksIn(audio)[0].textContent, '歌声プレビュー（WAV）');
+        assert.equal(audio.children[0].children[1].children[0].children[0].textContent,
+                     '歌唱データ');
+    ''')
+    subprocess.run(['node', '-e', node], check=True)
