@@ -1017,7 +1017,12 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
           setAttribute(name, value) { this.attributes[name] = value; }
           removeAttribute(name) { delete this.attributes[name]; }
           append(...children) { children.forEach(child => this.appendChild(child)); }
-          appendChild(child) { this.children.push(child); child.parent = this; }
+          appendChild(child) {
+            if (child.parent) {
+              child.parent.children = child.parent.children.filter(x => x !== child);
+            }
+            this.children.push(child); child.parent = this;
+          }
           prepend(child) { this.children.unshift(child); child.parent = this; }
           replaceChildren(child) { this.children = []; this.appendChild(child); }
           closest(selector) { return this.parent.closest(selector); }
@@ -1038,7 +1043,7 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
         const resetHistorySave = () => {}, resetHistoryShare = () => {};
         const historyCreatedLabel = () => '', historyStatusLabel = () => '完成';
         const editorPeer = {}, saveCalls = [], editCalls = [];
-        const saveHistoryVideo = (index, button) => saveCalls.push({index, button});
+        const saveHistoryVideo = (index, button, status) => saveCalls.push({index, button, status});
         const editResultLyrics = job => editCalls.push(job);
         const shareCalls = [], shareHistoryResult = index => shareCalls.push(index);
         const offerNativeVideoSave = (link, save) => save() !== false;
@@ -1073,18 +1078,37 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
             assert.ok(edit.className.includes('result-action action-edit'));
             edit.dispatchEvent(new Event('click'));
             assert.equal(editCalls.at(-1), job);
-            const retry = actions.querySelector('.history-save-retry');
+            assert.equal(actions.querySelector('.history-save-retry'), undefined);
             if (IOS && job.result_kind === 'video') {
-              assert.equal(retry.hidden, true);
+              const saveButton = nodesIn(actions).find(node => node.tagName === 'SUMMARY');
+              const status = card.querySelector('.save-status');
               const mp4 = nodesIn(actions).find(node => node.tagName === 'A');
               const saveEvent = new Event('click', {cancelable: true});
               mp4.dispatchEvent(saveEvent);
               assert.equal(saveEvent.defaultPrevented, true);
-              assert.equal(saveCalls.at(-1).button, retry);
+              assert.equal(saveCalls.at(-1).button, saveButton);
+              assert.equal(saveCalls.at(-1).status, status);
               assert.equal(saveCalls.at(-1).index, index);
-              retry.dispatchEvent(new Event('click'));
-              assert.equal(saveCalls.at(-1).button, retry);
-            } else assert.equal(retry, undefined);
+              preparedHistorySave = {index, file: {}, shareable: true};
+              const retry = new Event('click', {cancelable: true});
+              const before = saveCalls.length;
+              saveButton.dispatchEvent(retry);
+              assert.equal(retry.defaultPrevented, true);
+              assert.equal(saveCalls.length, before + 1);
+              assert.equal(saveCalls.at(-1).button, saveButton);
+              preparedHistorySave.needsTap = false;
+              const afterSheet = new Event('click', {cancelable: true});
+              saveButton.dispatchEvent(afterSheet);
+              assert.equal(afterSheet.defaultPrevented, false,
+                           'opening the sheet restores access to every format');
+              preparedHistorySave.needsTap = true;
+              preparedHistorySave.shareable = false;
+              const fallback = new Event('click', {cancelable: true});
+              saveButton.dispatchEvent(fallback);
+              assert.equal(fallback.defaultPrevented, false, 'fallback keeps format menu');
+              assert.equal(saveCalls.length, before + 1);
+              preparedHistorySave = null;
+            }
             const previous = activeHistoryPlayback;
             thumb.dispatchEvent(new Event('click'));
             const active = activeHistoryPlayback;
