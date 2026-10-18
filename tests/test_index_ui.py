@@ -2851,7 +2851,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'id="audio-filename"' not in html
     assert '曲ファイルを解除' not in html
     assert '$("song-upload-button").disabled' not in script
-    assert ': "XF MIDIに対応";' in script
+    assert ': "歌詞入りMIDIに対応（XF・標準歌詞イベント）";' in script
     assert 'XF MIDIに対応（このサーバーでは音声入力を準備中です）' not in script
     assert 'このサーバーでは音声入力を準備中です' in script
     assert 'accept=".mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,audio/midi"' in html

@@ -498,8 +498,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("analyze", help="XF MIDIを解析し元歌詞とアライメントする")
-    p.add_argument("--midi", required=True, help="XF MIDIファイル")
+    p = sub.add_parser("analyze", help="歌詞入りMIDIを解析し元歌詞とアライメントする")
+    p.add_argument("--midi", required=True, help="歌詞入りMIDIファイル（XF・標準lyricsイベント）")
     p.add_argument("--lyrics", help="元歌詞テキスト(1行1フレーズ)")
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
     p.set_defaults(func=cmd_analyze)
