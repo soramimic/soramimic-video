@@ -175,13 +175,14 @@ def extend_for_endroll(total_sec: float, sung_end_sec: float, words: list[str]) 
     後奏が短い(あるいは無い)曲でも「使った単語」一覧とクレジットは見せたいので、
     足りないときは動画の末尾に時間を足してエンドロール枠を作る(足した区間は
     音声が無いので、最終合成で無音をパディングする)。
-    既に OUTRO_MIN_SEC 以上の後奏がある曲・使用単語が無い曲は何も変えない。
+    使用単語が無い曲は何も変えない。既存の後奏があっても、全ページと
+    最終クレジットに必要な時間より短ければ延ばす。
     """
-    if not words or total_sec - sung_end_sec >= OUTRO_MIN_SEC:
+    if not words:
         return total_sec
     pages = min(ENDROLL_MAX_PAGES, -(-len(words) // ENDROLL_WORDS_PER_PAGE))
     needed = (pages + 1) * ENDROLL_PAGE_SEC  # +1 は最後のクレジットページぶん
-    return sung_end_sec + needed
+    return max(total_sec, sung_end_sec + needed)
 
 
 # ---- 画像 ----

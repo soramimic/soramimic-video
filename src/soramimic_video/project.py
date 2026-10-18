@@ -105,6 +105,7 @@ class Parody:
     where: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
     lines: list[ParodyLine] = field(default_factory=list)
+    note_length_alpha: float = 0.0
 
 
 @dataclass
@@ -166,6 +167,7 @@ class Project:
                 wordlist=p["wordlist"],
                 where=p.get("where"),
                 params=p.get("params", {}),
+                note_length_alpha=p.get("note_length_alpha", 0.0),
                 lines=[
                     ParodyLine(
                         line_id=pl["line_id"],

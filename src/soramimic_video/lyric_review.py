@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .convert import pop_note_length_weight, project_note_length_weights
+from .convert import project_note_length_weights
 from .editor_io import export_editor, import_editor, seed_with_lyrics
 from .project import Project
 from .ruby import strip_ruby
@@ -37,7 +37,7 @@ def prepare_review(
     raw = json.loads((directory / "soramimic_raw.json").read_text(encoding="utf-8"))
     units = [line["units"] for line in raw["lines"]]
     weights = project_note_length_weights(project, 1.0)(units)
-    alpha = pop_note_length_weight(dict(project.parody.params if project.parody else {}))
+    alpha = project.parody.note_length_alpha if project.parody else 0.0
     path = export_editor(
         project, directory, wordlist_entry=entry,
         note_length_raw_list=weights, note_length_alpha=alpha,

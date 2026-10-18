@@ -1687,6 +1687,30 @@ def test_extend_for_endroll_counts_pages_by_word_count():
 
     # 語121個は2ページ + クレジットで9.0秒必要
     assert extend_for_endroll(20.0, 20.0, [f"語{i}" for i in range(121)]) == 29.0
+
+
+@pytest.mark.parametrize("outro_seconds", [6.0, 6.5, 8.5, 9.0, 12.0])
+def test_parallel_video_totals_keep_both_word_pages_and_final_credits(
+    tmp_path: Path, monkeypatch, outro_seconds,
+):
+    from soramimic_video import video as video_mod
+
+    project = _project(tmp_path)
+    sung_end = video_mod._sung_end_sec(project)
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"audio")
+    project.song.accompaniment_path = str(audio)
+    monkeypatch.setattr(video_mod, "used_words", lambda _project: [f"語{i}" for i in range(121)])
+    monkeypatch.setattr(video_mod, "_audio_duration_sec", lambda _path: sung_end + outro_seconds)
+
+    # Two word pages and a credit page need nine seconds even when the source
+    # already has enough outro to pass the six-second section threshold.
+    minimum = sung_end + 9.0
+    planned = video_mod.planned_video_total_sec(project)
+    attached = video_mod.actual_video_total_sec(project, audio)
+    assert planned == attached == max(minimum, sung_end + outro_seconds)
+
+
 # ---- リトライ / プリフェッチ / prewarm ----
 
 
