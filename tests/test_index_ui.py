@@ -986,13 +986,14 @@ def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
     assert 'media.preload = "none"' in playback
     assert 'media.setAttribute("playsinline", "")' in playback
     assert "media.src = job.playback_url" in playback
-    sharing = _function_body(script, "async function shareHistoryResult(")
+    sharing = _function_body(script, "async function saveHistoryVideo(")
     assert "fetch(job.video_url" in sharing
-    assert sharing.index("fetch(job.video_url") > sharing.index("resetHistoryShare()")
+    assert sharing.index("fetch(job.video_url") > sharing.index("resetHistorySave()")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_history_thumbnail_starts_native_playback_without_a_close_action():
+@pytest.mark.parametrize("ios", [False, True])
+def test_history_thumbnail_plays_without_close_or_share_and_keeps_saving(ios):
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
@@ -1028,13 +1029,20 @@ def test_history_thumbnail_starts_native_playback_without_a_close_action():
           pause() { this.paused = true; this.dispatchEvent(new Event('pause')); }
           remove() { this.removed = true; }
         }
-        const document = {createElement: tag => new Element(tag)}, navigator = {};
-        const qs = url => url, apiKey = () => '', resetHistoryShare = () => {};
+        const document = {createElement: tag => new Element(tag)};
+        const navigator = {platform: IOS ? 'iPhone' : 'Linux', share() {}};
+        class File {}
+        const qs = url => url, apiKey = () => '', resetHistorySave = () => {};
         const historyCreatedLabel = () => '', historyStatusLabel = () => '完成';
-        let activeHistoryPlayback = null;
+        const editorPeer = {}, saveCalls = [], editCalls = [];
+        const saveHistoryVideo = (index, button) => saveCalls.push({index, button});
+        const editHistoryLyrics = job => editCalls.push(job);
+        const offerNativeVideoSave = (link, save) => save() !== false;
+        const nodesIn = node => [node, ...node.children.flatMap(nodesIn)];
+        let activeHistoryPlayback = null, preparedHistorySave = null;
         const historyJobs = ['video', 'audio'].map(result_kind => ({
           status: 'done', song_label: '曲名', result_kind, playback_url: '/playback',
-          video_url: '/download',
+          video_url: '/download', editor_url: '/editor',
           thumbnail_url: '/thumbnail',
         }));
         """
@@ -1053,6 +1061,23 @@ def test_history_thumbnail_starts_native_playback_without_a_close_action():
             const actions = card.querySelector('.history-actions');
             assert.equal(actions.querySelector('.save-menu').tagName, 'DETAILS');
             assert.equal(actions.querySelector('.history-play'), undefined);
+            assert.equal(actions.querySelector('.history-share'), undefined);
+            const edit = actions.querySelector('.history-edit-lyrics');
+            assert.ok(edit.className.includes('result-action action-edit'));
+            edit.dispatchEvent(new Event('click'));
+            assert.equal(editCalls.at(-1), job);
+            const retry = actions.querySelector('.history-save-retry');
+            if (IOS && job.result_kind === 'video') {
+              assert.equal(retry.hidden, true);
+              const mp4 = nodesIn(actions).find(node => node.tagName === 'A');
+              const saveEvent = new Event('click', {cancelable: true});
+              mp4.dispatchEvent(saveEvent);
+              assert.equal(saveEvent.defaultPrevented, true);
+              assert.equal(saveCalls.at(-1).button, retry);
+              assert.equal(saveCalls.at(-1).index, index);
+              retry.dispatchEvent(new Event('click'));
+              assert.equal(saveCalls.at(-1).button, retry);
+            } else assert.equal(retry, undefined);
             const previous = activeHistoryPlayback;
             thumb.dispatchEvent(new Event('click'));
             const active = activeHistoryPlayback;
@@ -1078,7 +1103,10 @@ def test_history_thumbnail_starts_native_playback_without_a_close_action():
         })().catch(error => { console.error(error); process.exitCode = 1; });
         """
     )
-    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["node", "-e", "const IOS = " + str(ios).lower() + ";\n" + node],
+        check=True, text=True, capture_output=True,
+    )
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")

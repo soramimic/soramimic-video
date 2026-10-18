@@ -2402,7 +2402,7 @@ async function loadHistory() {
   if (!res.ok) return [];
   const jobs = await res.json();
   disposeHistoryPlayback();
-  resetHistoryShare();
+  resetHistorySave();
   historyJobs = jobs;
   const body = $("history-body");
   body.replaceChildren();
@@ -2416,7 +2416,7 @@ async function loadHistory() {
 
 let historyJobs = [];
 let activeHistoryPlayback = null;
-let preparedHistoryShare = null;
+let preparedHistorySave = null;
 
 const HISTORY_STATUS_LABELS = {
   awaiting_review: "歌詞の確認待ち", queued: "開始待ち", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
@@ -2510,17 +2510,18 @@ function historyCard(job, index) {
   if (complete) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    let share = null;
+    let saveRetry = null;
     appendSaveMenu(actions, job, () => {
-      if (!share || (preparedHistoryShare?.index === index
-          && preparedHistoryShare.shareable === false)) return false;
-      shareHistoryResult(index, share);
+      if (!saveRetry || (preparedHistorySave?.index === index
+          && preparedHistorySave.shareable === false)) return false;
+      saveHistoryVideo(index, saveRetry);
       return true;
     });
-    if (typeof navigator.share === "function" && typeof File !== "undefined") {
-      share = historyButton("共有", "history-share result-action action-share");
-      share.addEventListener("click", () => shareHistoryResult(index, share));
-      actions.appendChild(share);
+    if (prefersNativeVideoSave() && job.result_kind !== "audio") {
+      saveRetry = historyButton("保存を続ける", "history-save-retry result-action action-save");
+      saveRetry.hidden = true;
+      saveRetry.addEventListener("click", () => saveHistoryVideo(index, saveRetry));
+      actions.appendChild(saveRetry);
     }
     if (job.editor_url && editorPeer) {
       const edit = historyButton("歌詞を編集", "history-edit-lyrics result-action action-edit");
@@ -2577,7 +2578,7 @@ async function startHistoryPlayback(index, trigger) {
     return;
   }
   disposeHistoryPlayback();
-  resetHistoryShare();
+  resetHistorySave();
   const job = historyJobs[index];
   if (!job || !job.playback_url) return;
   const card = trigger.closest(".history-item");
@@ -2618,71 +2619,74 @@ async function startHistoryPlayback(index, trigger) {
   }
 }
 
-function resetHistoryShare() {
-  const prepared = preparedHistoryShare;
+function resetHistorySave() {
+  const prepared = preparedHistorySave;
   if (!prepared) return;
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
     prepared.button.disabled = false;
-    prepared.button.textContent = "共有";
+    prepared.button.hidden = true;
+    prepared.button.textContent = "保存を続ける";
   }
-  preparedHistoryShare = null;
+  preparedHistorySave = null;
 }
 
-async function shareHistoryResult(index, button) {
+async function saveHistoryVideo(index, button) {
   const job = historyJobs[index];
-  if (!job || !job.video_url || typeof navigator.share !== "function") return;
+  if (!job || !job.video_url || !prefersNativeVideoSave()) return;
   const open = (state, afterPreparation = false) => {
     button.disabled = false;
-    button.textContent = "共有";
+    button.hidden = true;
+    button.textContent = "保存を続ける";
     state.shareable = true;
     openFileShare(state.file, (error) => {
-      if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+      if (preparedHistorySave !== state || error?.name === "AbortError") return;
       const retry = afterPreparation && error?.name === "NotAllowedError";
       if (!retry) state.shareable = false;
-      button.textContent = retry ? "共有を開く" : "共有できません";
-    });
+      button.hidden = false;
+      button.textContent = retry ? "保存を続ける" : "保存を再試行";
+    }, "");
   };
-  const prepared = preparedHistoryShare;
+  const prepared = preparedHistorySave;
   if (prepared && prepared.index === index && prepared.file) {
     open(prepared);
     return;
   }
   // 準備中の同じジョブを二重取得しない。
   if (prepared && prepared.index === index) return;
-  resetHistoryShare();
+  resetHistorySave();
   const ctrl = new AbortController();
   const state = { index, button, abort: ctrl, file: null };
-  preparedHistoryShare = state;
+  preparedHistorySave = state;
+  button.hidden = false;
   button.disabled = true;
-  button.textContent = "共有を準備中…";
+  button.textContent = "保存を準備中…";
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
-    if (!res.ok) throw new Error("共有データを取得できませんでした");
+    if (!res.ok) throw new Error("保存データを取得できませんでした");
     const blob = await res.blob();
-    if (preparedHistoryShare !== state) return;
-    const audio = job.result_kind === "audio";
-    state.file = new File([blob], audio ? "soramimic.wav" : "soramimic.mp4",
-      { type: blob.type || (audio ? "audio/wav" : "video/mp4") });
+    if (preparedHistorySave !== state) return;
+    state.file = new File([blob], "soramimic.mp4", { type: blob.type || "video/mp4" });
     button.disabled = false;
-    if (navigator.userActivation?.isActive === false) button.textContent = "共有を開く";
+    if (navigator.userActivation?.isActive === false) button.textContent = "保存を続ける";
     else open(state, true);
   } catch (error) {
-    if (preparedHistoryShare !== state || error?.name === "AbortError") return;
-    resetHistoryShare();
-    button.textContent = "共有できません";
+    if (preparedHistorySave !== state || error?.name === "AbortError") return;
+    resetHistorySave();
+    button.hidden = false;
+    button.textContent = "保存を再試行";
   }
 }
 
 $("history").addEventListener("toggle", () => {
   if (!$("history").open) {
     disposeHistoryPlayback();
-    resetHistoryShare();
+    resetHistorySave();
   }
 });
 window.addEventListener("pagehide", () => {
   disposeHistoryPlayback();
-  resetHistoryShare();
+  resetHistorySave();
   if ($("video-save-help").open) $("video-save-help").close();
 });
 
@@ -3008,9 +3012,11 @@ const SHARE_HTML = `<div class="share-row" id="result-actions">` +
 
 // 呼び出しは同期のままにし、用意済みのFileならタップの操作権限内で共有を開く。
 // iOSでは共有Promiseが完了しないこともあるため、待ってボタンを無効にしない。
-function openFileShare(file, onError) {
+function openFileShare(file, onError, text = SHARE_TEXT) {
   try {
-    const sharing = navigator.share({ files: [file], text: SHARE_TEXT });
+    const data = { files: [file] };
+    if (text) data.text = text;
+    const sharing = navigator.share(data);
     Promise.resolve(sharing).catch(onError);
   } catch (error) {
     onError(error);
@@ -5416,7 +5422,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
       link.download = "";
       link.textContent = entry.label;
       link.addEventListener("click", event => {
-        // 共有ボタンへ同じタップを渡し、準備・再タップの案内をメニューの外に表示する。
+        // iPhoneの動画保存は、同じタップから保存用の共有シートを開く。
         if (entry.video && nativeVideoSave && offerNativeVideoSave(link, onVideoSave)) event.preventDefault();
         menu.open = false;
       });
