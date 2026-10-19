@@ -26,7 +26,7 @@ def _xf_track(name: bytes, messages: list[MetaMessage], ticks_per_beat: int) -> 
 
 
 def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> Path:
-    """Write current notes/kana; never export a canonical omission as a new note."""
+    """Write current notes/kana in XF and standard lyrics for ordinary MIDI readers."""
     lyric_map = build_lyric_map(project)
     tpb = project.song.ticks_per_beat
     midi = MidiFile(type=1, ticks_per_beat=tpb, charset="cp932")
@@ -39,6 +39,7 @@ def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> 
         )))
     lyrics = [MetaMessage("cue_marker", text="$Lyrc:1:0:JP")]
     previous_line = None
+    previous_standard_line = None
     lyric_tick = 0
     selected = []
     for note in sorted(project.notes, key=lambda x: (x.start_tick, x.id)):
@@ -46,7 +47,7 @@ def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> 
         if note.start_tick < 0 or note.end_tick <= note.start_tick:
             raise ValueError("XF export needs a nonnegative start and positive note duration")
         events.extend([
-            (note.start_tick, 3, Message("note_on", note=note.midi_note, velocity=96)),
+            (note.start_tick, 4, Message("note_on", note=note.midi_note, velocity=96)),
             (note.end_tick, 2, Message("note_off", note=note.midi_note, velocity=0)),
         ])
         if previous_line is not None and previous_line != note.line:
@@ -55,6 +56,11 @@ def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> 
         if kana:
             lyrics.append(MetaMessage("lyrics", text=kana, time=note.start_tick - lyric_tick))
             lyric_tick = note.start_tick
+            text = kana
+            if previous_standard_line is not None and previous_standard_line != note.line:
+                text = "\n" + text
+            events.append((note.start_tick, 3, MetaMessage("lyrics", text=text)))
+            previous_standard_line = note.line
         previous_line = note.line
         selected.append({
             "note_id": note.id, "line": note.line, "kana": kana,

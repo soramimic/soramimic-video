@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 from mido import MidiFile
@@ -58,6 +62,51 @@ def test_xf_roundtrip_without_private_provenance(tmp_path):
     assert [n.kana for n in restored.notes] == ["ア", "キ", "ク"]
     assert [n.start_tick for n in restored.notes] == [0, 140, 240]
     assert not path.with_suffix('.mid.provenance.json').exists()
+
+
+def test_xf_also_restores_lyrics_without_an_xf_aware_reader(tmp_path):
+    path = export_file(project(), tmp_path, "xf", tmp_path / "lyrics.xf.mid")
+    ordinary = MidiFile(path, charset="cp932")
+    assert [(t, e.text) for t, e in events(ordinary) if e.type == "lyrics"] == [
+        (0, "ア"), (140, "\nキ"), (240, "ク"),
+    ]
+    # Saving with an ordinary SMF reader removes the XF extension chunks.
+    stripped = tmp_path / "standard.mid"
+    ordinary.save(stripped)
+    assert b"XFKM" not in stripped.read_bytes()
+    restored = analyze_midi(stripped)
+    assert [n.kana for n in restored.notes] == ["ア", "キ", "ク"]
+    assert [(n.midi_note, n.start_tick, n.end_tick) for n in restored.notes] == [
+        (60, 0, 120), (62, 140, 240), (64, 240, 2400),
+    ]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+@pytest.mark.parametrize("full_song", [False, True])
+def test_xf_is_importable_by_bundled_soramimic(tmp_path, full_song):
+    root = Path(__file__).resolve().parents[1]
+    value = analyze_midi(root / "src/soramimic_video/static/sample/furusato_full.mid") \
+        if full_song else project()
+    path = export_file(value, tmp_path, "xf", tmp_path / "lyrics.xf.mid")
+    parser = root / "external/soramimic/frontend/src/xfMidi.js"
+    source = """
+        import {readFileSync} from 'node:fs';
+        const {parseXfMidi} = await import(process.argv[1]);
+        const bytes = readFileSync(process.argv[2]);
+        console.log(JSON.stringify(parseXfMidi(
+            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", source, parser.as_uri(), str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    imported = json.loads(result.stdout)
+    restored = analyze_midi(path)
+    assert imported["noteCount"] == len(restored.notes)
+    assert [line["kana"] for line in imported["lines"]] == [
+        line.xf_kana for line in restored.lines
+    ]
+    assert imported["warnings"] == []
 
 
 def test_all_results_use_synthesized_vocal_and_fixed_allowlist(tmp_path):
