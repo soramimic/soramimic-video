@@ -54,17 +54,18 @@ function close(value, checked=false) {
 (async () => {
   values.set('soramimic-metadata-notice-hidden-song','1'); // Legacy notice suppression.
   values.set('soramimic-metadata-notice-hidden-song-replacement','update');
-  const titleChoiceKey='soramimic-metadata-notice-hidden-song-title-v2';
+  values.set('soramimic-metadata-notice-hidden-song-title-v2','update');
+  const metadataChoiceKey='soramimic-metadata-notice-hidden-song-metadata-v1';
   let p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
   assert.equal(opened,1,'legacy notices and replacement choices cannot hide the new choice');
-  assert.match($('metadata-change-update').textContent,/ファイル名を使う/);
-  assert.match($('metadata-change-hint').textContent,/クレジット表記は保持/);
+  assert.match($('metadata-change-update').textContent,/クリアする/);
   close('',true); assert.equal(await p,'keep');
-  assert.equal(values.size,2,'Escape does not save a choice');
+  assert.equal(values.size,3,'Escape does not save a choice');
   p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
   close('keep',true); assert.equal(await p,'keep');
-  assert.equal(values.get(titleChoiceKey),'keep');
+  assert.equal(values.get(metadataChoiceKey),'keep');
   assert.equal(values.get('soramimic-metadata-notice-hidden-song-replacement'),'update');
+  assert.equal(values.get('soramimic-metadata-notice-hidden-song-title-v2'),'update');
   assert.equal(await window.VideoMetadata.notifyChange('song-replacement'),'keep');
   assert.equal(opened,2);
   p=window.VideoMetadata.notifyChange('wordlist'); await tick();
@@ -82,7 +83,7 @@ function close(value, checked=false) {
   current=false; close('keep'); await first; await stale;
   assert.equal(opened,5,'a queued stale choice never opens');
   blocked=false;
-  values.delete(titleChoiceKey);
+  values.delete(metadataChoiceKey);
   p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
   close('update',true); assert.equal(await p,'update');
   assert.equal(await window.VideoMetadata.notifyChange('song-replacement'),'update');
@@ -125,7 +126,7 @@ const location={href:'https://dev-video.soramimic.com/'};
   assert.equal($('song-title').value,'','upload does not copy an implicit JSON title');
   notices=[]; $('song-title').value=''; $('song-credit').value='連携した表記';
   await updateUploadedSongMetadata(file); assert.equal($('song-credit').value,'連携した表記');
-  assert.deepEqual(notices,[],'credit alone does not require a title choice');
+  assert.deepEqual(notices,['song-replacement'],'credit alone requires a metadata choice');
   notices=[]; $('thumbnail-wordlist-label').value='表示名'; name='stations';
   await updateSelectedWordlistMetadata();
   assert.equal($('thumbnail-wordlist-label').value,'表示名');
@@ -177,7 +178,7 @@ def test_metadata_notice_script_is_served(tmp_path):
         assert json.dumps("metadata-change-dialog") in response.text
 
 
-def test_upload_choices_update_only_title_and_ignore_stale_answers():
+def test_upload_choices_clear_song_metadata_and_ignore_stale_answers():
     run_node(r'''
 const assert=require('node:assert/strict');
 const elements=new Map();
@@ -200,15 +201,25 @@ const VideoMetadata={notifyChange:async(kind,current)=>{
   assert.deepEqual(notices,['song-replacement']);
   choice='update'; await updateUploadedSongMetadata(file);
   assert.equal($('song-title').value,'','use the filename by clearing the override');
-  assert.equal($('song-credit').value,'連携したクレジット','a title choice never clears credits');
+  assert.equal($('song-credit').value,'','clear removes credits for the previous song');
   let resolve; pending=new Promise(r=>{resolve=r;});
   $('song-title').value='入力済み'; $('song-credit').value='表記';
   let update=updateUploadedSongMetadata(file);
   file={name:'newer.wav'}; resolve('update'); await update;
   assert.equal($('song-title').value,'入力済み','late choice cannot overwrite a newer source');
+  assert.equal($('song-credit').value,'表記');
   pending=new Promise(r=>{resolve=r;}); update=updateUploadedSongMetadata(file);
   $('song-title').value='新しく編集した曲名'; resolve('update'); await update;
   assert.equal($('song-title').value,'新しく編集した曲名');
+  assert.equal($('song-credit').value,'表記');
+  pending=new Promise(r=>{resolve=r;}); update=updateUploadedSongMetadata(file);
+  $('song-credit').value='新しく編集したクレジット'; resolve('update'); await update;
+  assert.equal($('song-title').value,'新しく編集した曲名');
+  assert.equal($('song-credit').value,'新しく編集したクレジット');
+  pending=null; notices=[]; $('song-title').value=''; $('song-credit').value='クレジットのみ';
+  await updateUploadedSongMetadata(file);
+  assert.deepEqual(notices,['song-replacement']);
+  assert.equal($('song-credit').value,'','credit-only metadata can be cleared');
   pending=null; notices=[]; $('song-title').value=''; $('song-credit').value='';
   await updateUploadedSongMetadata(file);
   assert.equal($('song-title').value,'','upload leaves a blank override untouched');
