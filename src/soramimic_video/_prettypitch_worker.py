@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +48,9 @@ def native_vocoder(root: Path, device: str, sr: int):
 
 
 def render_audio(args) -> None:
+    if args.device == "cpu":
+        # A CPU retry must not initialize CUDA indirectly through compiler probes.
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     sys.path.insert(0, str(Path(args.root)))
     import numpy as np
     import torch
