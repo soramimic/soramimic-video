@@ -4,7 +4,8 @@
   function notifyChange(kind, isCurrent = () => true) {
     const ask = () => {
       if (!isCurrent()) return;
-      const key = `soramimic-metadata-notice-hidden-${kind}`;
+      const preference = kind === "song-replacement" ? "song-title-v2" : kind;
+      const key = `soramimic-metadata-notice-hidden-${preference}`;
       try {
         const saved = localStorage.getItem(key);
         if (["keep", "update"].includes(saved)) return saved;
