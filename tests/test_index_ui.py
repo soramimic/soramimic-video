@@ -794,16 +794,23 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
           "Original　夜に駆ける");
-        assert.equal($("song-preview-footer").textContent, "lyrics & video by Soramimic");
+        assert.equal($("song-preview-footer").textContent,
+          "lyrics & video by Soramimic / Original: 夜に駆ける");
+        assert.equal($("song-preview-thumb-credit").textContent,
+          $("song-preview-footer").textContent);
         $("song-credit").value = " \\t\\n　";
         $("song-title").value = "三原色";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
           "Original　三原色");
+        assert.equal($("song-preview-footer").textContent,
+          "lyrics & video by Soramimic / Original: 三原色");
         $("song-title").value = "";
         updateSongTextPreviews();
         assert.equal($("song-preview-credits-original").textContent,
           "Original　upload");
+        assert.equal($("song-preview-footer").textContent,
+          "lyrics & video by Soramimic / Original: upload");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
