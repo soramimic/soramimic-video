@@ -1292,13 +1292,14 @@
     <div class="field" id="title-words-field">
       <label for="title-words">タイトルに使う単語</label>
       <div class="row">
-        <select id="title-words" class="row-grow" aria-describedby="title-words-detail">
+        <select id="title-words" class="row-grow" aria-describedby="title-words-hint title-words-detail">
           <option value="">自動で選ぶ</option>
         </select>
         <button type="button" id="title-candidates-load" class="btn-sm"
           aria-haspopup="dialog" aria-controls="title-candidates-dialog">候補を探す</button>
       </div>
-      <p class="hint" id="title-words-detail" aria-live="polite">選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。</p>
+      <p class="hint" id="title-words-hint" data-info>選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。</p>
+      <p class="hint" id="title-words-detail" aria-live="polite"></p>
       <p class="hint" id="title-candidates-status" role="status"></p>
     </div>
 
@@ -5753,7 +5754,7 @@ function renderTitleChoices() {
   select.value = selected;
   $("title-words-detail").textContent = selected
     ? `読み：${titleChoice.reading} ／ ${titleChoice.originals.join(" ＋ ")}`
-    : "選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。";
+    : "";
   const c = currentCombo();
   $("title-candidates-load").disabled = !!titleCandidatesAbort || !c.sampleId
     || (!c.wordlistName && !c.customList);
