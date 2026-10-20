@@ -4433,6 +4433,7 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
+$("midi").addEventListener("change", updateSongTextPreviews);
 async function updateUploadedSongMetadata(file) {
   const titleInput = $("song-title");
   if (!titleInput.value.trim()) return;
@@ -5899,7 +5900,7 @@ function loadThumbnailPreview(combo) {
   const ctrl = new AbortController();
   previewAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), combo.customList ? 25000 : PREVIEW_TIMEOUT_MS);
-  // 持ち込み曲にはサンプルIDがないので、入力中の曲名(初期値はファイル名)を渡す。
+  // 持ち込み曲にはサンプルIDがないので、入力中の曲名(空欄ならファイル名)を渡す。
   // サムネ生成は音声そのものではなく曲名を同じ単語リストで変換するため、WAVでも
   // 完成時と同じ経路で事前に作れる。登録済みの音声サンプルは従来どおりIDを渡す。
   const params = combo.sampleId === OWN_SONG_VALUE
