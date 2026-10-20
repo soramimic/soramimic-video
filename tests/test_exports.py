@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from mido import MidiFile
+from xfmido import XFMidiFile
 
 from soramimic_video.cli import main
 from soramimic_video.exports import FORMATS, export_file, result_path, save_results
@@ -62,6 +63,48 @@ def test_xf_roundtrip_without_private_provenance(tmp_path):
     assert [n.kana for n in restored.notes] == ["ア", "キ", "ク"]
     assert [n.start_tick for n in restored.notes] == [0, 140, 240]
     assert not path.with_suffix('.mid.provenance.json').exists()
+
+
+def test_xf_declares_its_format_version_sections_and_lyric_encoding(tmp_path):
+    path = export_file(project(), tmp_path, "xf", tmp_path / "lyrics.xf.mid")
+    midi = XFMidiFile(str(path), charset="cp932")
+    assert midi.type == 0
+    assert len(midi.tracks) == 1
+    result = events(midi)
+    assert [(t, bytes(e.data)) for t, e in result if e.type == "sequencer_specific"] == [
+        (0, bytes.fromhex("43 7b 00 58 46 30 32 00 19")),
+    ]
+    assert result[0][1].type == "sequencer_specific"
+    assert [(t, e.text) for t, e in result if e.type == "cue_marker"] == [
+        (0, "$Lyrc:1:0:JP"),
+    ]
+    assert midi.xfih[0].type == "text"
+    assert midi.xfih[0].text == "XFhd:"
+    assert midi.xfih[0].time == 0
+    assert midi.xfkm[0].type == "cue_marker"
+    assert midi.xfkm[0].text == "$Lyrc:1:0:JP"
+    assert midi.xfkm[0].time == 0
+    # Both lyric representations describe the same syllables at the same ticks.
+    tick = 0
+    karaoke = []
+    for event in midi.xfkm:
+        tick += event.time
+        if event.type == "lyrics" and event.text != "/":
+            karaoke.append((tick, event.text))
+    assert karaoke == [(t, e.text.lstrip("\n")) for t, e in result if e.type == "lyrics"]
+
+
+def test_xf_does_not_advertise_standard_lyrics_when_none_are_present(tmp_path):
+    value = project()
+    value.parody = None
+    for note in value.notes:
+        note.kana = ""
+    path = export_file(value, tmp_path, "xf", tmp_path / "empty-lyrics.mid")
+    midi = XFMidiFile(str(path), charset="cp932")
+    assert not any(e.type == "lyrics" for _, e in events(midi))
+    version = next(e for _, e in events(midi) if e.type == "sequencer_specific")
+    assert bytes(version.data) == bytes.fromhex("43 7b 00 58 46 30 32 00 11")
+    assert len([e for _, e in events(midi) if e.type == "note_on"]) == 3
 
 
 def test_xf_also_restores_lyrics_without_an_xf_aware_reader(tmp_path):
