@@ -147,3 +147,139 @@ def test_partial_runtime_ignores_application_pythonpath(tmp_path, monkeypatch):
     )
     output = prettypitch.run_partial_score("score", tmp_path / "job", duration=1)
     assert output.is_file()
+
+
+def _native_runtime(tmp_path, monkeypatch):
+    nhv = tmp_path / "NHVSing"
+    for relative in (
+        "nhv_vocoder.py", "model.py", "dsp.py", "config_v3_2.yaml",
+        "exported_models/v3_2_1/nhv_v3_2_1.pth",
+    ):
+        path = nhv / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    monkeypatch.setenv(prettypitch.NHVSING_ROOT_ENV, str(nhv))
+    return nhv
+
+
+def test_native_installation_requires_checkpoint(tmp_path, monkeypatch):
+    root, leapsinger, python = _runtime(tmp_path)
+    nhv = _native_runtime(tmp_path, monkeypatch)
+    (root / "checkpoints/nhv_v3_2_1.onnx").unlink()
+    assert prettypitch.installation_error(root, python, leapsinger) is None
+    (nhv / "exported_models/v3_2_1/nhv_v3_2_1.pth").unlink()
+    assert "NHVSing" in prettypitch.installation_error(root, python, leapsinger)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_native_worker_retries_exited_gpu_on_cpu(tmp_path, monkeypatch, partial):
+    from types import SimpleNamespace
+
+    root, leapsinger, python = _runtime(tmp_path)
+    nhv = _native_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv(prettypitch.ROOT_ENV, str(root))
+    monkeypatch.setenv(prettypitch.LEAPSINGER_ROOT_ENV, str(leapsinger))
+    monkeypatch.setenv(prettypitch.DEVICE_ENV, "cuda")
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if len(commands) == 1:
+            return SimpleNamespace(returncode=75, stdout="", stderr="GPU capacity")
+        Path(command[command.index("--output") + 1]).write_bytes(b'x' * 64)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(prettypitch.runproc, "run", run)
+    if partial:
+        output = prettypitch.run_partial_score("score", tmp_path / "job", duration=1)
+    else:
+        output = prettypitch.run_prettypitch(
+            _project(), tmp_path / "job", lyric_map={}, root=root, python=python,
+            leapsinger_root=leapsinger, speaker_id=1,
+        )
+        assert commands[0][commands[0].index("--output-format") + 1] == "wav"
+        assert commands[0][commands[0].index("--speaker-id") + 1] == "1"
+    assert output.is_file()
+    assert commands[0][1] == "-I"
+    assert commands[0][commands[0].index("--nhvsing-root") + 1] == str(nhv)
+    assert [cmd[cmd.index("--device") + 1] for cmd in commands] == ["cuda", "cpu"]
+
+
+def test_worker_does_not_retry_other_failures(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=-15)
+    monkeypatch.setattr(prettypitch.runproc, "run", run)
+    assert prettypitch._run_worker(["python", "--device", "cuda"], tmp_path).returncode == -15
+    assert len(calls) == 1
+
+
+def test_worker_checks_available_cuda_headroom():
+    from types import SimpleNamespace
+
+    from soramimic_video import _prettypitch_worker as worker
+
+    for free, expected in [(1024**3, False), (2 * 1024**3, True)]:
+        cuda = SimpleNamespace(
+            is_available=lambda: True,
+            mem_get_info=lambda dev, available=free: (available, 16 * 1024**3),
+        )
+        assert worker.cuda_has_capacity(SimpleNamespace(cuda=cuda), "cuda:0") == expected
+
+
+def test_native_vocoder_preserves_array_contract(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from soramimic_video import _prettypitch_worker as worker
+
+    received = []
+    class Native:
+        sample_rate = 44100
+        hop_size = 256
+        def __init__(self, checkpoint, config, device):
+            assert device == "cuda:0"
+        def infer(self, mel, f0, uv):
+            received.append((mel, f0, uv))
+            return np.arange(len(f0)*256, dtype=np.float32)
+    monkeypatch.setitem(sys.modules, "nhv_vocoder", SimpleNamespace(NHVVocoder=Native))
+    session = worker.native_vocoder(tmp_path, "cuda:0", 44100).session
+    mel, f0, uv = np.zeros((1, 3, 128)), np.ones((1, 1, 3)), np.zeros((1, 1, 3))
+    result = session.run(["waveform"], {"mel": mel, "f0": f0, "uv": uv})[0]
+    assert result.shape == (1, 1, 768)
+    assert [a.shape for a in received[0]] == [(3, 128), (3,), (3,)]
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_cuda_oom_exits_for_parent_retry_only_on_cuda(monkeypatch, device):
+    import sys
+    from types import SimpleNamespace
+
+    from soramimic_video import _prettypitch_worker as worker
+
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=SimpleNamespace(OutOfMemoryError=OutOfMemoryError),
+    ))
+    monkeypatch.setattr(sys, "argv", [
+        "worker", "--root", "pp", "--leapsinger-root", "ls", "--score", "score.ust",
+        "--mora-table", "ja.mora", "--output", "out.npy", "--duration", "1",
+        "--device", device,
+    ])
+    def fail(args):
+        raise OutOfMemoryError("memory exhausted")
+    monkeypatch.setattr(worker, "render_audio", fail)
+    if device == "cuda":
+        with pytest.raises(SystemExit) as error:
+            worker.main()
+        assert error.value.code == prettypitch.GPU_RETRY_EXIT_CODE
+    else:
+        with pytest.raises(OutOfMemoryError):
+            worker.main()
