@@ -53,14 +53,18 @@ function close(value, checked=false) {
 ''' + (STATIC / "metadata-change.js").read_text() + r'''
 (async () => {
   values.set('soramimic-metadata-notice-hidden-song','1'); // Legacy notice suppression.
+  values.set('soramimic-metadata-notice-hidden-song-replacement','update');
+  const titleChoiceKey='soramimic-metadata-notice-hidden-song-title-v2';
   let p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
-  assert.equal(opened,1,'legacy notice suppression does not hide the new choice');
+  assert.equal(opened,1,'legacy notices and replacement choices cannot hide the new choice');
   assert.match($('metadata-change-update').textContent,/ファイル名を使う/);
   assert.match($('metadata-change-hint').textContent,/クレジット表記は保持/);
   close('',true); assert.equal(await p,'keep');
-  assert.equal(values.size,1,'Escape does not save a choice');
+  assert.equal(values.size,2,'Escape does not save a choice');
   p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
   close('keep',true); assert.equal(await p,'keep');
+  assert.equal(values.get(titleChoiceKey),'keep');
+  assert.equal(values.get('soramimic-metadata-notice-hidden-song-replacement'),'update');
   assert.equal(await window.VideoMetadata.notifyChange('song-replacement'),'keep');
   assert.equal(opened,2);
   p=window.VideoMetadata.notifyChange('wordlist'); await tick();
@@ -78,7 +82,7 @@ function close(value, checked=false) {
   current=false; close('keep'); await first; await stale;
   assert.equal(opened,5,'a queued stale choice never opens');
   blocked=false;
-  values.delete('soramimic-metadata-notice-hidden-song-replacement');
+  values.delete(titleChoiceKey);
   p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
   close('update',true); assert.equal(await p,'update');
   assert.equal(await window.VideoMetadata.notifyChange('song-replacement'),'update');
