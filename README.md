@@ -84,6 +84,14 @@ F♯3〜F♯5に収まらない音を含むフレーズをPrettyPitchで補い�
 両エンジンの設定が必要で、PrettyPitchモデルと同じ非商用の利用条件が適用されます。
 Web UIの固定歌声には `SORAMIMIC_FIXED_SYNTHESIZER=hybrid` を指定できます。
 
+NHVSingのPyTorch版を使う場合は、[NHVSing](https://github.com/wavtechyukky/NHVSing)の
+コード、`config_v3_2.yaml`、`exported_models/v3_2_1/nhv_v3_2_1.pth`を含むcheckoutを
+`PRETTYPITCH_NHVSING_ROOT=/path/to/NHVSing`で指定します。
+`PRETTYPITCH_DEVICE=cuda`では音高・音響・波形生成のモデルをGPUで実行します。
+GPUの空き容量が2 GiB未満の場合やCUDAのメモリ不足が起きた場合は、CPUで再実行します。
+`PRETTYPITCH_DEVICE=cpu`で最初からCPUを選べます。
+NHVSingの指定がなければ、波形生成には従来のONNX CPU版を使います。
+
 モーラの位置・長さ・読みは timing editor で調整できます。
 
 ```sh
