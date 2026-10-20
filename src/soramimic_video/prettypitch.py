@@ -88,7 +88,7 @@ def installation_error(
     if resolved_root is None:
         return f"{ROOT_ENV}が設定されていません"
     nhvsing = configured_nhvsing_root()
-    required = (
+    required: tuple[Path, ...] = (
         resolved_root / "svs" / "render.py",
         resolved_root / "dict" / "ja.mora",
         resolved_root / "checkpoints" / "f0_3singer.pt",
