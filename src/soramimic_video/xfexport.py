@@ -26,19 +26,21 @@ def _xf_track(name: bytes, messages: list[MetaMessage], ticks_per_beat: int) -> 
 
 
 def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> Path:
-    """Write current notes/kana; never export a canonical omission as a new note."""
+    """Write current notes/kana in XF and standard lyrics for ordinary MIDI readers."""
     lyric_map = build_lyric_map(project)
     tpb = project.song.ticks_per_beat
-    midi = MidiFile(type=1, ticks_per_beat=tpb, charset="cp932")
-    events: list[tuple[int, int, Message | MetaMessage]] = []
+    midi = MidiFile(type=0, ticks_per_beat=tpb, charset="cp932")
+    lyric_header = MetaMessage("cue_marker", text="$Lyrc:1:0:JP")
+    events: list[tuple[int, int, Message | MetaMessage]] = [(0, -1, lyric_header)]
     for tick, tempo in project.song.tempo_map or [[0, 500_000]]:
         events.append((tick, 0, MetaMessage("set_tempo", tempo=tempo)))
     for tick, numerator, denominator in project.song.time_signatures:
         events.append((tick, 1, MetaMessage(
             "time_signature", numerator=numerator, denominator=denominator,
         )))
-    lyrics = [MetaMessage("cue_marker", text="$Lyrc:1:0:JP")]
+    lyrics = [lyric_header]
     previous_line = None
+    previous_standard_line = None
     lyric_tick = 0
     selected = []
     for note in sorted(project.notes, key=lambda x: (x.start_tick, x.id)):
@@ -46,7 +48,7 @@ def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> 
         if note.start_tick < 0 or note.end_tick <= note.start_tick:
             raise ValueError("XF export needs a nonnegative start and positive note duration")
         events.extend([
-            (note.start_tick, 3, Message("note_on", note=note.midi_note, velocity=96)),
+            (note.start_tick, 4, Message("note_on", note=note.midi_note, velocity=96)),
             (note.end_tick, 2, Message("note_off", note=note.midi_note, velocity=0)),
         ])
         if previous_line is not None and previous_line != note.line:
@@ -55,12 +57,23 @@ def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> 
         if kana:
             lyrics.append(MetaMessage("lyrics", text=kana, time=note.start_tick - lyric_tick))
             lyric_tick = note.start_tick
+            text = kana
+            if previous_standard_line is not None and previous_standard_line != note.line:
+                text = "\n" + text
+            events.append((note.start_tick, 3, MetaMessage("lyrics", text=text)))
+            previous_standard_line = note.line
         previous_line = note.line
         selected.append({
             "note_id": note.id, "line": note.line, "kana": kana,
             "midi_pitch": note.midi_note, "start_tick": note.start_tick,
             "end_tick": note.end_tick, "source": note.source,
         })
+    # XF 2.01: information (bit 0), standard lyrics (bit 3), karaoke (bit 4).
+    # The information and karaoke chunks are always present, even without lyrics.
+    status = 0x11 | (0x08 if any(e.type == "lyrics" for _, _, e in events) else 0)
+    events.append((0, -2, MetaMessage(
+        "sequencer_specific", data=b"\x43\x7b\x00XF02\x00" + bytes([status]),
+    )))
     track = MidiTrack()
     previous_tick = 0
     for tick, _, message in sorted(events, key=lambda x: (x[0], x[1])):
@@ -70,7 +83,7 @@ def export_xf_midi(project: Project, path: Path, *, provenance: bool = True) -> 
     stream = io.BytesIO()
     midi.save(file=stream)
     content = stream.getvalue() + _xf_track(
-        b"XFIH", [MetaMessage("cue_marker", text="$XFhd:")], tpb,
+        b"XFIH", [MetaMessage("text", text="XFhd:")], tpb,
     ) + _xf_track(b"XFKM", lyrics, tpb)
     provenance_data = {
         "schema_version": 1,
