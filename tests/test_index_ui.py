@@ -833,101 +833,35 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_advanced_settings_stay_open_while_replacing_song():
-    """初回の選択は必要だが、曲の解除・差し替え中も開いた設定を操作できる。"""
-    script = _script()
-    functions = "\n".join(
-        _function_body(script, head) + "\n}"
-        for head in (
-            "function advancedSettingsAvailable()",
-            "function updateAdvancedSettingsAvailability()",
-        )
-    )
-    start = script.index('$("advanced").querySelector(":scope > summary").addEventListener')
-    wiring = script[start:script.index("\nfunction switchSongInputMode", start)]
-    node = textwrap.dedent(
+def test_advanced_settings_work_before_selection_and_stay_open_during_changes():
+    """曲がなくても設定を開け、曲の解除・入力方法の切り替えで閉じない。"""
+    advanced = _markup().split('<details class="card" id="advanced">', 1)[1]
+    summary = advanced.split("</summary>", 1)[0]
+    assert "aria-disabled" not in summary
+    assert "曲と単語リストを選ぶと開けます" not in summary
+    node = _song_input_node_harness() + textwrap.dedent(
         """
-        const assert = require("node:assert/strict");
-        const summary = {
-          attrs: {}, clickHandler: null,
-          setAttribute(name, value) { this.attrs[name] = value; },
-          addEventListener(type, callback) { this.clickHandler = callback; },
-        };
-        const elements = {
-          advanced: {
-            open: false, locked: false, querySelector: () => summary,
-            addEventListener(type, callback) { this[type] = callback; },
-            classList: { toggle(name, force) { elements.advanced.locked = force; } },
-          },
-          auth: { hidden: true },
-          "sample-select": { value: "" },
-          "advanced-lock-hint": { hidden: false },
-        };
-        const $ = (id) => elements[id];
-        let file = null, wordlist = "", custom = null, editor = false, key = "";
-        const ownSongFile = () => file;
-        const currentWordlistName = () => wordlist;
-        const activeCustomList = () => custom;
-        const showsEditorWordlist = () => editor;
-        const apiKey = () => key;
-        const activeLyricsJson = () => null;
-        """
-    ) + functions + "\n" + wiring + textwrap.dedent(
-        """
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.open, false);
-        assert.equal(elements.advanced.locked, true);
-        assert.equal(summary.attrs["aria-disabled"], "true");
-        assert.equal(elements["advanced-lock-hint"].hidden, false);
-        let prevented = false;
-        summary.clickHandler({ preventDefault() { prevented = true; } });
-        assert.equal(prevented, true, "locked summary must not open");
-
-        elements["sample-select"].value = "furusato";
-        wordlist = "stations";
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.locked, false);
-        assert.equal(summary.attrs["aria-disabled"], "false");
-        assert.equal(elements["advanced-lock-hint"].hidden, true);
-        prevented = false;
-        summary.clickHandler({ preventDefault() { prevented = true; } });
-        assert.equal(prevented, false, "complete selection must open");
-
-        elements.advanced.open = true;
-        elements["sample-select"].value = "";
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.open, true, "clearing a song must keep details open");
-        assert.equal(elements.advanced.locked, false);
-        assert.equal(summary.attrs["aria-disabled"], "false");
-        assert.equal(elements["advanced-lock-hint"].hidden, true);
-        prevented = false;
-        summary.clickHandler({ preventDefault() { prevented = true; } });
-        assert.equal(prevented, false, "open details must remain manually closable");
-
-        wordlist = "";
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.open, true, "clearing a wordlist must keep details open");
-
-        elements.advanced.open = false;
-        elements.advanced.toggle();
-        assert.equal(elements.advanced.locked, true);
-        assert.equal(summary.attrs["aria-disabled"], "true");
-
-        elements["sample-select"].value = "";
-        file = { name: "my-song.mid" };
-        custom = { name: "自作リスト" };
-        updateAdvancedSettingsAvailability();
-        assert.equal(summary.attrs["aria-disabled"], "false");
-        elements.advanced.open = true;
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.open, true);
-
-        file = null;
-        custom = null;
-        elements.advanced.open = false;
-        elements.auth.hidden = false;
-        updateAdvancedSettingsAvailability();
-        assert.equal(summary.attrs["aria-disabled"], "false", "API key entry stays reachable");
+        $("advanced").open = true;
+        syncBuilderValues();
+        assert.equal($("advanced").open, true, "settings remain open before selecting anything");
+        $("song-title").value = "先に入力した曲名";
+        $("song-credit").value = "先に入力したクレジット";
+        $("midi").files = [{ name: "first.mid" }];
+        syncBuilderValues();
+        assert.equal($("advanced").open, true);
+        $("midi").value = "";
+        syncBuilderValues();
+        assert.equal($("advanced").open, true, "clearing a song must keep details open");
+        assert.equal($("song-title").value, "先に入力した曲名");
+        assert.equal($("song-credit").value, "先に入力したクレジット");
+        $("midi").files = [{ name: "replacement.mid" }];
+        syncBuilderValues();
+        assert.equal($("advanced").open, true);
+        switchSongInputMode("sample");
+        assert.equal($("advanced").open, true, "switching input modes must keep details open");
+        $("advanced").open = false;
+        syncBuilderValues();
+        assert.equal($("advanced").open, false, "manual closure is preserved");
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
@@ -1641,7 +1575,6 @@ def _song_input_node_harness() -> str:
         const syncJsonInputControls = () => {};
         const activeLyricsJson = () => null;
         const updateWordlistUsageNotice = () => {};
-        const updateAdvancedSettingsAvailability = () => {};
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
         const clearAudioInput = clearAudioPresentation;
@@ -4339,7 +4272,6 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         "function syncJsonInputControls()", "function syncLyricsRecognition()",
         "function currentWordlistName()", "function currentPreviewCustomList()",
         "function editorUsesTextOnly(", "function editorTextPreviewList(",
-        "function advancedSettingsAvailable()",
     ))
     node = textwrap.dedent('''
         const assert = require("node:assert/strict");
@@ -4354,10 +4286,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         const MAX_EDITOR_BYTES=4*1024*1024, simpleMode=false, wordlistGroups=[];
         const editorWordlists=new Set(["stations","food"]);
         let songInputMode="upload", customListBusy=false, menuClosed=false;
-        let songFile={name:"song.wav"};
-        const ownSongFile=()=>songFile;
-        const apiKey=()=>"";
-        $("auth").hidden=true;
+        const ownSongFile=()=>({name:"song.wav"});
         const closeCustomListMenu=focus=>{assert.equal(focus,false);menuClosed=true;};
         const activeCustomList=()=>null, showsEditorWordlist=()=>false;
         const editorSessionWordlist=()=>null;
@@ -4377,13 +4306,11 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.equal(currentWordlistName(),"food");
         assert.equal(currentPreviewCustomList(),null);
         assert.equal($("builder-text-only-notice").hidden,true);
-        assert.equal(advancedSettingsAvailable(),true);
         const before=JSON.stringify(data);
         editorWordlists.delete("food");
         syncJsonInputControls();
         assert.equal($("builder-text-only-notice").hidden,false);
         assert.equal(currentWordlistName(),"");
-        assert.equal(advancedSettingsAvailable(),true,"text-only JSON unlocks settings");
         assert.equal(currentPreviewCustomList().name,"食べ物");
         assert.equal(currentPreviewCustomList().text,"id,original,surface,pronunciation");
         assert.equal(JSON.stringify(data),before,"keep the imported JSON unchanged");
@@ -4393,15 +4320,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         $("lyrics").value=JSON.stringify(data);
         assert.equal(currentWordlistName(),"");
         assert.deepEqual(currentPreviewCustomList(),{name:"自作",text:"ねこ,ネコ"});
-        assert.equal(advancedSettingsAvailable(),true,"custom JSON unlocks settings");
-        $("wordlist").value="";
-        songFile=null;
-        assert.equal(advancedSettingsAvailable(),false,"JSON still requires a song");
-        songFile={name:"song.wav"};
-        $("lyrics").value="{invalid";
-        assert.equal(advancedSettingsAvailable(),false,"invalid JSON cannot unlock settings");
         $("lyrics").value="通常の歌詞";
-        assert.equal(advancedSettingsAvailable(),false,"plain lyrics still need a wordlist");
         $("wordlist").value="stations";
         syncJsonInputControls();syncLyricsRecognition();
         assert.equal($("builder-text-only-notice").hidden,true);
@@ -4413,8 +4332,6 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.equal($("builder-wordlist-trigger").disabled,true);
         customListBusy=false;$("lyrics").value=JSON.stringify(data);
         $("auto-lyrics").checked=true;syncJsonInputControls();
-        $("wordlist").value="";
-        assert.equal(advancedSettingsAvailable(),false,"automatic lyrics ignore inactive JSON");
         $("wordlist").value="stations";
         assert.equal($("builder-wordlist-trigger").disabled,false);
         assert.equal(currentWordlistName(),"stations");
