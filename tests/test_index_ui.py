@@ -641,13 +641,20 @@ def test_reselecting_song_keeps_the_active_editor_title():
     listener = listener[:listener.index("\n});") + len("\n});")]
     stem = _function_body(script, "function songFileStem(file)") + "\n}"
     metadata = _function_body(script, "async function updateUploadedSongMetadata(file,") + "\n}"
+    clear = _function_body(script, "async function clearSelectedSong()") + "\n}"
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
         const elements = new Map();
         const $ = id => {
           if (!elements.has(id)) elements.set(id, {
-            value: "", files: [], listeners: {},
+            _value: "", files: [], listeners: {},
+            get value() { return this._value; },
+            set value(value) {
+              this._value = value;
+              if (id === "midi" && value === "") this.files = [];
+            },
+            focus() {},
             addEventListener(type, handler) { this.listeners[type] = handler; },
             dispatchEvent(event) { this.listeners[event.type]?.(event); },
           });
@@ -664,11 +671,13 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const setRecordingStatus = () => {};
         const rejectOwnSongFile = message => { throw new Error(message); };
         const clearEditorFile = () => {}, clearAudioPresentation = () => {};
+        const recordedSongFile = null;
+        const clearAudioInput = () => {};
         const syncLyricsRecognition = () => {}, syncBuilderOptions = () => {};
         const syncBuilderValues = () => {}, showBuilderMsg = () => {};
         const schedulePreview = () => {};
         """
-    ) + stem + "\n" + metadata + "\n" + listener + textwrap.dedent(
+    ) + stem + "\n" + metadata + "\n" + clear + "\n" + listener + textwrap.dedent(
         """
         for (const name of ["upload.wav", "upload.xf.mid"]) {
           $("midi").files = [{name, size: 10}];
@@ -696,6 +705,15 @@ def test_reselecting_song_keeps_the_active_editor_title():
           $("midi").dispatchEvent(new Event("change"));
           assert.equal($("song-title").value, "復元した曲名");
           restoring = false;
+          $("song-credit").value = "手入力したクレジット";
+          clearSelectedSong();
+          assert.equal(ownSongFile(), undefined);
+          assert.equal($("song-title").value, "復元した曲名");
+          assert.equal($("song-credit").value, "手入力したクレジット");
+          $("midi").files = [{name: "replacement." + name.split(".").pop(), size: 10}];
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "復元した曲名");
+          assert.equal($("song-credit").value, "手入力したクレジット");
         }
         """
     )
@@ -815,8 +833,8 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_advanced_settings_require_both_song_and_wordlist():
-    """詳細設定は曲と単語リストが揃うまで開けず、選択解除時には閉じる。"""
+def test_advanced_settings_stay_open_while_replacing_song():
+    """初回の選択は必要だが、曲の解除・差し替え中も開いた設定を操作できる。"""
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
@@ -826,7 +844,7 @@ def test_advanced_settings_require_both_song_and_wordlist():
         )
     )
     start = script.index('$("advanced").querySelector(":scope > summary").addEventListener')
-    wiring = script[start:script.index("\n});", start) + len("\n});")]
+    wiring = script[start:script.index("\nfunction switchSongInputMode", start)]
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
@@ -837,7 +855,8 @@ def test_advanced_settings_require_both_song_and_wordlist():
         };
         const elements = {
           advanced: {
-            open: true, locked: false, querySelector: () => summary,
+            open: false, locked: false, querySelector: () => summary,
+            addEventListener(type, callback) { this[type] = callback; },
             classList: { toggle(name, force) { elements.advanced.locked = force; } },
           },
           auth: { hidden: true },
@@ -875,18 +894,37 @@ def test_advanced_settings_require_both_song_and_wordlist():
         assert.equal(prevented, false, "complete selection must open");
 
         elements.advanced.open = true;
+        elements["sample-select"].value = "";
+        updateAdvancedSettingsAvailability();
+        assert.equal(elements.advanced.open, true, "clearing a song must keep details open");
+        assert.equal(elements.advanced.locked, false);
+        assert.equal(summary.attrs["aria-disabled"], "false");
+        assert.equal(elements["advanced-lock-hint"].hidden, true);
+        prevented = false;
+        summary.clickHandler({ preventDefault() { prevented = true; } });
+        assert.equal(prevented, false, "open details must remain manually closable");
+
         wordlist = "";
         updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.open, false, "removing a selection must close details");
+        assert.equal(elements.advanced.open, true, "clearing a wordlist must keep details open");
+
+        elements.advanced.open = false;
+        elements.advanced.toggle();
+        assert.equal(elements.advanced.locked, true);
+        assert.equal(summary.attrs["aria-disabled"], "true");
 
         elements["sample-select"].value = "";
         file = { name: "my-song.mid" };
         custom = { name: "自作リスト" };
         updateAdvancedSettingsAvailability();
         assert.equal(summary.attrs["aria-disabled"], "false");
+        elements.advanced.open = true;
+        updateAdvancedSettingsAvailability();
+        assert.equal(elements.advanced.open, true);
 
         file = null;
         custom = null;
+        elements.advanced.open = false;
         elements.auth.hidden = false;
         updateAdvancedSettingsAvailability();
         assert.equal(summary.attrs["aria-disabled"], "false", "API key entry stays reachable");

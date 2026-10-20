@@ -4316,18 +4316,19 @@ function advancedSettingsAvailable() {
 
 function updateAdvancedSettingsAvailability() {
   const advanced = $("advanced");
-  const available = advancedSettingsAvailable();
+  // 曲の差し替えで一時的に未選択になっても、編集中の設定を閉じない。
+  const available = advanced.open || advancedSettingsAvailable();
   advanced.classList.toggle("is-locked", !available);
   advanced.querySelector(":scope > summary").setAttribute(
     "aria-disabled", String(!available),
   );
   $("advanced-lock-hint").hidden = available;
-  if (!available) advanced.open = false;
 }
 
 $("advanced").querySelector(":scope > summary").addEventListener("click", (event) => {
-  if (!advancedSettingsAvailable()) event.preventDefault();
+  if (!$("advanced").open && !advancedSettingsAvailable()) event.preventDefault();
 });
+$("advanced").addEventListener("toggle", updateAdvancedSettingsAvailability);
 
 function switchSongInputMode(mode) {
   if (mode === songInputMode) return;
