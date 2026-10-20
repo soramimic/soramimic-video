@@ -1246,8 +1246,9 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         return elements.get(id);
       };
       class Option {constructor(text, value) {this.text = text; this.value = value;}}
-      const OWN_SONG_VALUE = 'own', ownSongFile = () => ({}), headers = () => ({});
-      let title = 'サンゲンショク', restoring = false;
+      const OWN_SONG_VALUE = 'own', headers = () => ({});
+      const ownSongFile = () => combo.sampleId === OWN_SONG_VALUE ? {name: 'song.mid'} : null;
+      let title = 'サンゲンショク', restoring = false, songInputMode = 'upload';
       const songTitleOf = () => title;
       let combo = {sampleId: 'own', wordlistName: 'scientist', customList: null};
       const currentCombo = () => combo;
@@ -1292,6 +1293,17 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.equal(saved.label, 'ハンゼン ＋ ホフ');
         assert.equal(previews, 1);
         assert.match($('title-words-detail').textContent, /ハンゼン氏 ＋ ホフ氏/);
+        // Clearing only the song file must retain the chosen words, including after reload.
+        combo.sampleId = ''; refreshTitleChoices();
+        assert.equal(ownSongFile(), null);
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        assert.equal($('title-candidates-load').disabled, true, 'a new search needs a song');
+        titleCandidates = []; titleChoice = saved; refreshTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        combo.sampleId = OWN_SONG_VALUE; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal($('title-candidates-load').disabled, false);
         // Re-rendering and restoring a saved choice retain its words.
         titleCandidates = []; titleChoice = saved; renderTitleChoices();
         assert.equal($('title-words').value, JSON.stringify(choice.words));
@@ -1316,8 +1328,25 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.deepEqual(titleCandidates, []);
         assert.equal($('title-candidates-status').textContent, '');
         titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
         $('where').value = ''; refreshTitleChoices();
         assert.equal(titleChoice, null);
+        // A title edit while waiting for a replacement also invalidates the choice.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        title = 'さらに別の曲'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        // A different dictionary still invalidates the choice while no file is selected.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
+        combo.wordlistName = 'stations'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        assert.equal(selectedTitleWords(), '');
+        combo.wordlistName = 'scientist'; combo.sampleId = OWN_SONG_VALUE;
+        // Switching to sample input must not carry an uploaded song's title selection.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; songInputMode = 'sample'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        songInputMode = 'upload'; combo.sampleId = OWN_SONG_VALUE;
         // Empty results and failures remain visible inside the open dialog.
         const empty = load();
         resolveFetch({ok: true, json: async () => ({candidates: []})});
@@ -1336,6 +1365,7 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         // Editing custom CSV content also invalidates the selected row identities.
         combo.customList = {text: 'one'};
         titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
         combo.customList.text = 'two'; refreshTitleChoices();
         assert.equal(selectedTitleWords(), '');
         assert.equal(titleChoice, null);

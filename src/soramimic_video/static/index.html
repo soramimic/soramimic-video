@@ -5681,8 +5681,11 @@ const currentCombo = () => ({
 
 function titleChoiceContext() {
   const c = currentCombo();
-  return JSON.stringify([c.sampleId,
-    c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "",
+  // アップロード待ちでも、保持中の曲名と辞書に対応する選択はそのまま使う。
+  const ownTitle = c.sampleId === OWN_SONG_VALUE
+    || (!c.sampleId && songInputMode === "upload");
+  return JSON.stringify([ownTitle ? OWN_SONG_VALUE : c.sampleId,
+    ownTitle ? songTitleOf(ownSongFile()) : "",
     c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
 }
 
