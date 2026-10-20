@@ -1411,7 +1411,7 @@
     <div class="custom-wordlist-header"><h2 id="metadata-change-title"></h2></div>
     <p id="metadata-change-hint"></p>
     <label class="recording-delete-choice" for="metadata-change-hide-warning">
-      <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回から表示しない</span>
+      <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回からこの選択を使う</span>
     </label>
     <div class="custom-wordlist-actions recording-delete-actions">
       <button type="submit" id="metadata-change-keep" value="keep" autofocus>入力済みの名前を保持</button>
@@ -1611,7 +1611,7 @@
 <script src="/image-credits.js"></script>
 <script src="/custom-wordlists.js"></script>
 <script src="/app-bridge.js"></script>
-<script src="/metadata-change.js?v=song-title-v2"></script>
+<script src="/metadata-change.js?v=compact-song-metadata-v1"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 // 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
@@ -4436,14 +4436,15 @@ $("midi").addEventListener("change", () => {
 });
 $("midi").addEventListener("change", updateSongTextPreviews);
 async function updateUploadedSongMetadata(file) {
-  const titleInput = $("song-title");
-  if (!titleInput.value.trim()) return;
-  const previousTitle = titleInput.value;
-  const isCurrent = () => ownSongFile() === file && titleInput.value === previousTitle;
+  const inputs = [$("song-title"), $("song-credit")];
+  if (!inputs.some(input => input.value.trim())) return;
+  const previousValues = inputs.map(input => input.value);
+  const isCurrent = () => ownSongFile() === file
+    && inputs.every((input, index) => input.value === previousValues[index]);
   const choice = await VideoMetadata.notifyChange("song-replacement", isCurrent);
   if (choice !== "update" || !isCurrent()) return;
-  titleInput.value = "";
-  titleInput.dispatchEvent(new Event("change", { bubbles: true }));
+  for (const input of inputs) input.value = "";
+  for (const input of inputs) input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function clearSelectedSong() {
