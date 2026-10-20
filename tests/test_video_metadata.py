@@ -166,7 +166,11 @@ def test_metadata_notice_script_is_served(tmp_path):
 
     # Script delivery uses the same static route in every UI mode.
     with TestClient(create_app(jobs_dir=tmp_path / "jobs")) as client:
-        response = client.get("/metadata-change.js")
+        markup = client.get("/").text
+        match = re.search(r'<script src="(/metadata-change\.js[^\"]*)"', markup)
+        assert match
+        assert "?v=" in match.group(1)
+        response = client.get(match.group(1))
         assert response.status_code == 200
         assert "javascript" in response.headers["content-type"]
         assert "notifyChange" in response.text
