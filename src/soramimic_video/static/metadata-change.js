@@ -14,14 +14,12 @@
       const checkbox = document.getElementById("metadata-change-hide-warning");
       const replacingSong = kind === "song-replacement";
       document.getElementById("metadata-change-title").textContent = replacingSong
-        ? "曲名・クレジットを引き継ぐ？" : "単語リスト名を更新しますか？";
-      const hint = document.getElementById("metadata-change-hint");
-      hint.hidden = replacingSong;
-      hint.textContent = replacingSong
-        ? ""
+        ? "曲名・クレジット" : "単語リスト名を更新しますか？";
+      document.getElementById("metadata-change-hint").textContent = replacingSong
+        ? "入力済みの内容を残しますか？ クリアすると入力欄は空になり、どちらの表示にも新しいファイル名を使います。"
         : "単語リストを変更しました。入力済みの表示用の名前を保持するか、選択したリストの名前に更新するか選んでください。";
       document.getElementById("metadata-change-keep").textContent = replacingSong
-        ? "引き継ぐ" : "入力済みの名前を保持";
+        ? "入力を残す" : "入力済みの名前を保持";
       document.getElementById("metadata-change-update").textContent = replacingSong
         ? "クリアする" : "選択したリスト名に更新";
       document.getElementById("metadata-change-preference-label").textContent =

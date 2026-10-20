@@ -59,8 +59,6 @@ function close(value, checked=false) {
   let p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
   assert.equal(opened,1,'legacy notices and replacement choices cannot hide the new choice');
   assert.match($('metadata-change-update').textContent,/クリアする/);
-  assert.equal($('metadata-change-hint').hidden,true);
-  assert.equal($('metadata-change-hint').textContent,'');
   close('',true); assert.equal(await p,'keep');
   assert.equal(values.size,3,'Escape does not save a choice');
   p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
@@ -72,7 +70,6 @@ function close(value, checked=false) {
   assert.equal(opened,2);
   p=window.VideoMetadata.notifyChange('wordlist'); await tick();
   assert.equal(opened,3,'wordlist preference is independent');
-  assert.equal($('metadata-change-hint').hidden,false,'wordlist explanation is restored');
   close('update',true); assert.equal(await p,'update');
   assert.equal(await window.VideoMetadata.notifyChange('wordlist'),'update');
   assert.equal(opened,3);
