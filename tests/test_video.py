@@ -2604,9 +2604,15 @@ def test_custom_song_credit_keeps_original_label_and_verbatim_text(tmp_path, cre
 
 @pytest.mark.parametrize("credit", ["", " \t\n　"])
 @pytest.mark.parametrize("title", ["三原色", ""])
-def test_blank_song_credit_uses_title_on_final_page(tmp_path, credit, title):
-    from soramimic_video.layout import _element_texts, load_layout
-    from soramimic_video.video import section_frame_data
+def test_blank_song_credit_uses_title_in_footer_and_final_page(tmp_path, credit, title):
+    from soramimic_video.layout import APP_CREDIT, _element_texts, load_layout
+    from soramimic_video.video import app_credit_text, section_frame_data
+
+    footer = app_credit_text(
+        original_song=title, song_credit=credit,
+        original_credit="旧著作者", credit_notice="旧指定表記",
+    )
+    assert footer == (f"{APP_CREDIT} / Original: {title}" if title else APP_CREDIT)
 
     data = section_frame_data(
         _endroll_project(tmp_path), section="credits", original_song=title,
