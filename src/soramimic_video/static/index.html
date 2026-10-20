@@ -1275,8 +1275,8 @@
 
     <div class="field">
       <label for="song-title">曲名</label>
-      <input type="text" id="song-title" maxlength="200" placeholder="例: ふるさと">
-      <p class="hint" data-info>サムネイルに表示する曲名です。サンプル曲は登録済みの曲名が使われます。</p>
+      <input type="text" id="song-title" maxlength="200" placeholder="空欄ならファイル名を使用">
+      <p class="hint" data-info>空欄ならアップロードしたファイル名を使います。入力すると、その曲名をサムネイルに表示します。サンプル曲は登録済みの曲名が使われます。</p>
     </div>
 
     <div class="field">
@@ -1413,9 +1413,8 @@
       <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回から表示しない</span>
     </label>
     <div class="custom-wordlist-actions recording-delete-actions">
-      <button type="submit" id="metadata-change-acknowledge" value="acknowledge" class="btn-primary" autofocus>閉じる</button>
-      <button type="submit" id="metadata-change-keep" value="keep" hidden>入力済みの名前を保持</button>
-      <button type="submit" id="metadata-change-update" value="update" class="btn-primary" hidden>選択したリスト名に更新</button>
+      <button type="submit" id="metadata-change-keep" value="keep" autofocus>入力済みの名前を保持</button>
+      <button type="submit" id="metadata-change-update" value="update" class="btn-primary">選択したリスト名に更新</button>
     </div>
   </form>
 </dialog>
@@ -4393,13 +4392,8 @@ songUploadEntry.addEventListener("drop", (event) => {
   }
   setOwnSongFile(files[0]);
 });
-// The input already contains the new file when change fires, so retain whether
-// a source was selected before it (including restored MIDI and recordings).
-let metadataSongSelected = false;
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
-  const replacing = metadataSongSelected;
-  metadataSongSelected = !!file;
   if (!file) return;
   setRecordingStatus("");
   const kind = ownSongKind(file);
@@ -4418,7 +4412,7 @@ $("midi").addEventListener("change", () => {
   $("sample-select").value = "";
   midiSampleId = "";
   if (!restoring) {
-    if (!midiFromSample) updateUploadedSongMetadata(file, replacing);
+    if (!midiFromSample) updateUploadedSongMetadata(file);
   }
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   if (!editorImportedFile) clearEditorFile();
@@ -4439,26 +4433,15 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
-async function updateUploadedSongMetadata(file, replacing = false) {
-  const titleInput = $("song-title"), creditInput = $("song-credit");
-  const hasMetadata = !!(titleInput.value.trim() || creditInput.value.trim());
-  // A first upload can complete a transfer from the lyric editor.
-  if (!titleInput.value.trim()) {
-    const editorTitle = !replacing && activeLyricsJson()?.song?.title;
-    titleInput.value = typeof editorTitle === "string" && editorTitle.trim()
-      ? editorTitle.trim() : songFileStem(file);
-    titleInput.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-  if (!hasMetadata) return;
-  const previousTitle = titleInput.value, previousCredit = creditInput.value;
-  const isCurrent = () => ownSongFile() === file
-    && titleInput.value === previousTitle && creditInput.value === previousCredit;
-  const choice = await VideoMetadata.notifyChange(replacing ? "song-replacement" : "song", isCurrent);
-  if (!replacing || choice !== "update" || !isCurrent()) return;
-  titleInput.value = songFileStem(file);
-  creditInput.value = "";
+async function updateUploadedSongMetadata(file) {
+  const titleInput = $("song-title");
+  if (!titleInput.value.trim()) return;
+  const previousTitle = titleInput.value;
+  const isCurrent = () => ownSongFile() === file && titleInput.value === previousTitle;
+  const choice = await VideoMetadata.notifyChange("song-replacement", isCurrent);
+  if (choice !== "update" || !isCurrent()) return;
+  titleInput.value = "";
   titleInput.dispatchEvent(new Event("change", { bubbles: true }));
-  creditInput.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function clearSelectedSong() {
@@ -5684,9 +5667,17 @@ function titleChoiceContext() {
   // アップロード待ちでも、保持中の曲名と辞書に対応する選択はそのまま使う。
   const ownTitle = c.sampleId === OWN_SONG_VALUE
     || (!c.sampleId && songInputMode === "upload");
+  const file = ownSongFile();
+  let title = ownTitle ? songTitleOf(file) : "";
+  // ファイル名を使う曲を外した間は、選択時の曲名を保留して再選択を待つ。
+  if (ownTitle && !file && !title && titleChoice) {
+    try {
+      const previous = JSON.parse(titleChoice.context);
+      if (previous[0] === OWN_SONG_VALUE && typeof previous[1] === "string") title = previous[1];
+    } catch { /* 不正な保存値は通常の条件比較で解除する。 */ }
+  }
   return JSON.stringify([ownTitle ? OWN_SONG_VALUE : c.sampleId,
-    ownTitle ? songTitleOf(ownSongFile()) : "",
-    c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
+    title, c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
 }
 
 function selectedTitleWords() {

@@ -52,44 +52,37 @@ function close(value, checked=false) {
 }
 ''' + (STATIC / "metadata-change.js").read_text() + r'''
 (async () => {
-  let p=window.VideoMetadata.notifyChange('song'); await tick();
-  assert.equal(opened,1); assert.match($('metadata-change-hint').textContent,/保持/);
-  close('',true); await p;
-  assert.equal(values.size,0,'Escape does not save suppression');
-  p=window.VideoMetadata.notifyChange('song'); await tick();
-  close('acknowledge',true); await p;
-  await window.VideoMetadata.notifyChange('song'); assert.equal(opened,2);
+  values.set('soramimic-metadata-notice-hidden-song','1'); // Legacy notice suppression.
+  let p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
+  assert.equal(opened,1,'legacy notice suppression does not hide the new choice');
+  assert.match($('metadata-change-update').textContent,/ファイル名を使う/);
+  assert.match($('metadata-change-hint').textContent,/クレジット表記は保持/);
+  close('',true); assert.equal(await p,'keep');
+  assert.equal(values.size,1,'Escape does not save a choice');
+  p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
+  close('keep',true); assert.equal(await p,'keep');
+  assert.equal(await window.VideoMetadata.notifyChange('song-replacement'),'keep');
+  assert.equal(opened,2);
   p=window.VideoMetadata.notifyChange('wordlist'); await tick();
-  assert.equal(opened,3,'wordlist preference independent of song');
+  assert.equal(opened,3,'wordlist preference is independent');
   close('update',true); assert.equal(await p,'update');
   assert.equal(await window.VideoMetadata.notifyChange('wordlist'),'update');
   assert.equal(opened,3);
   blocked=true;
-  p=window.VideoMetadata.notifyChange('song'); await tick();
-  assert.equal(opened,4); close('acknowledge',true); await p;
-  const first=window.VideoMetadata.notifyChange('song');
+  p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
+  assert.equal(opened,4); close('keep',true); await p;
+  const first=window.VideoMetadata.notifyChange('song-replacement');
   let current=true;
   const stale=window.VideoMetadata.notifyChange('wordlist',()=>current);
-  await tick(); assert.equal(opened,5,'only one notice at a time');
-  current=false; close('acknowledge'); await first; await stale;
-  assert.equal(opened,5,'superseded selection never opens a stale notice');
+  await tick(); assert.equal(opened,5,'only one dialog at a time');
+  current=false; close('keep'); await first; await stale;
+  assert.equal(opened,5,'a queued stale choice never opens');
   blocked=false;
-  p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
-  assert.equal(opened,6,'hidden first-upload notice does not suppress replacement choices');
-  assert.equal($('metadata-change-acknowledge').hidden,true);
-  assert.equal($('metadata-change-keep').hidden,false);
-  assert.match($('metadata-change-hint').textContent,/クレジットを消去/);
-  close('',true); assert.equal(await p,'keep');
-  p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
-  close('keep',true); assert.equal(await p,'keep');
-  assert.equal(await window.VideoMetadata.notifyChange('song-replacement'),'keep');
-  assert.equal(opened,7);
   values.delete('soramimic-metadata-notice-hidden-song-replacement');
   p=window.VideoMetadata.notifyChange('song-replacement'); await tick();
   close('update',true); assert.equal(await p,'update');
   assert.equal(await window.VideoMetadata.notifyChange('song-replacement'),'update');
-  assert.equal(opened,8);
-
+  assert.equal(opened,6);
 })().catch(err=>{console.error(err);process.exit(1);});
 ''')
 
@@ -119,15 +112,16 @@ const location={href:'https://dev-video.soramimic.com/'};
   $('song-title').value='手入力'; $('song-credit').value='作詞・作曲';
   await updateUploadedSongMetadata(file);
   assert.equal($('song-title').value,'手入力'); assert.equal($('song-credit').value,'作詞・作曲');
-  assert.deepEqual(notices,['song']);
+  assert.deepEqual(notices,['song-replacement']);
   notices=[]; $('song-title').value=''; $('song-credit').value='';
-  await updateUploadedSongMetadata(file); assert.equal($('song-title').value,'new');
+  await updateUploadedSongMetadata(file); assert.equal($('song-title').value,'');
   assert.deepEqual(notices,[]);
   $('song-title').value=''; active={song:{title:'連携した曲'}};
-  await updateUploadedSongMetadata(file); assert.equal($('song-title').value,'連携した曲');
+  await updateUploadedSongMetadata(file);
+  assert.equal($('song-title').value,'','upload does not copy an implicit JSON title');
   notices=[]; $('song-title').value=''; $('song-credit').value='連携した表記';
   await updateUploadedSongMetadata(file); assert.equal($('song-credit').value,'連携した表記');
-  assert.deepEqual(notices,['song']);
+  assert.deepEqual(notices,[],'credit alone does not require a title choice');
   notices=[]; $('thumbnail-wordlist-label').value='表示名'; name='stations';
   await updateSelectedWordlistMetadata();
   assert.equal($('thumbnail-wordlist-label').value,'表示名');
@@ -175,7 +169,7 @@ def test_metadata_notice_script_is_served(tmp_path):
         assert json.dumps("metadata-change-dialog") in response.text
 
 
-def test_replacement_updates_only_after_choice_and_does_not_reuse_old_editor_title():
+def test_upload_choices_update_only_title_and_ignore_stale_answers():
     run_node(r'''
 const assert=require('node:assert/strict');
 const elements=new Map();
@@ -192,33 +186,30 @@ const VideoMetadata={notifyChange:async(kind,current)=>{
 ''' + function("songFileStem") + function("updateUploadedSongMetadata") + r'''
 (async()=>{
   $('song-title').value='連携した曲'; $('song-credit').value='連携したクレジット';
-  choice='update'; await updateUploadedSongMetadata(file,false);
-  assert.equal($('song-title').value,'連携した曲','initial upload is informational only');
-  assert.equal($('song-credit').value,'連携したクレジット');
-  assert.deepEqual(notices,['song']);
-  choice='keep'; await updateUploadedSongMetadata(file,true);
+  choice='keep'; await updateUploadedSongMetadata(file);
   assert.equal($('song-title').value,'連携した曲');
   assert.equal($('song-credit').value,'連携したクレジット');
-  assert.equal(notices.at(-1),'song-replacement');
-  choice='update'; await updateUploadedSongMetadata(file,true);
-  assert.equal($('song-title').value,'new'); assert.equal($('song-credit').value,'');
+  assert.deepEqual(notices,['song-replacement']);
+  choice='update'; await updateUploadedSongMetadata(file);
+  assert.equal($('song-title').value,'','use the filename by clearing the override');
+  assert.equal($('song-credit').value,'連携したクレジット','a title choice never clears credits');
   let resolve; pending=new Promise(r=>{resolve=r;});
   $('song-title').value='入力済み'; $('song-credit').value='表記';
-  let update=updateUploadedSongMetadata(file,true);
+  let update=updateUploadedSongMetadata(file);
   file={name:'newer.wav'}; resolve('update'); await update;
   assert.equal($('song-title').value,'入力済み','late choice cannot overwrite a newer source');
-  pending=new Promise(r=>{resolve=r;}); update=updateUploadedSongMetadata(file,true);
-  $('song-credit').value='新しく編集した表記'; resolve('update'); await update;
-  assert.equal($('song-credit').value,'新しく編集した表記');
+  pending=new Promise(r=>{resolve=r;}); update=updateUploadedSongMetadata(file);
+  $('song-title').value='新しく編集した曲名'; resolve('update'); await update;
+  assert.equal($('song-title').value,'新しく編集した曲名');
   pending=null; notices=[]; $('song-title').value=''; $('song-credit').value='';
-  await updateUploadedSongMetadata(file,true);
-  assert.equal($('song-title').value,'newer','replacement does not reuse old editor title');
+  await updateUploadedSongMetadata(file);
+  assert.equal($('song-title').value,'','upload leaves a blank override untouched');
   assert.deepEqual(notices,[],'blank fields need no confirmation');
 })().catch(err=>{console.error(err);process.exit(1);});
 ''')
 
 
-def test_source_tracking_distinguishes_first_upload_replacement_clear_and_restore():
+def test_every_explicit_upload_checks_title_choices_but_restore_and_invalid_files_do_not():
     script = (STATIC / "index.html").read_text()
     start = script.index(
         '$("midi").addEventListener("change", () => {\n  const file = ownSongFile();'
@@ -233,10 +224,10 @@ const $=id=>{
     dispatchEvent(event){this.listeners[event.type]?.(event);}});
   return elements.get(id);
 };
-let file=null, metadataSongSelected=false, restoring=false, midiFromSample=false;
+let file=null, restoring=false, midiFromSample=false;
 let editorImportedFile=null, midiSampleId='', calls=[];
 const ownSongFile=()=>file, ownSongKind=f=>f.name.endsWith('.txt')?'':'midi';
-const updateUploadedSongMetadata=(f,replacing)=>calls.push(replacing);
+const updateUploadedSongMetadata=f=>calls.push(f.name);
 const setRecordingStatus=()=>{}, clearEditorFile=()=>{}, clearAudioPresentation=()=>{};
 const syncLyricsRecognition=()=>{}, syncBuilderOptions=()=>{}, syncBuilderValues=()=>{};
 const showBuilderMsg=()=>{}, schedulePreview=()=>{};
@@ -246,11 +237,13 @@ const rejectOwnSongFile=()=>{file=null; $('midi').dispatchEvent(new Event('chang
 ''' + script[start:end] + r'''
 function select(f){file=f; $('midi').dispatchEvent(new Event('change'));}
 select({name:'first.mid'}); select({name:'replacement.mid'});
-assert.deepEqual(calls,[false,true]);
+assert.deepEqual(calls,['first.mid','replacement.mid']);
 select(null); select({name:'after-clear.mid'});
-assert.equal(calls.at(-1),false);
+assert.equal(calls.at(-1),'after-clear.mid');
+const before=calls.length;
 restoring=true; select({name:'restored.mid'}); restoring=false;
-select({name:'after-restore.mid'}); assert.equal(calls.at(-1),true);
+assert.equal(calls.length,before);
+select({name:'after-restore.mid'}); assert.equal(calls.at(-1),'after-restore.mid');
 select({name:'invalid.txt'}); select({name:'after-rejection.mid'});
-assert.equal(calls.at(-1),false);
+assert.equal(calls.at(-1),'after-rejection.mid');
 ''')

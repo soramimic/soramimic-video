@@ -617,7 +617,7 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_uploaded_xf_midi_title_defaults_to_song_file_stem():
-    """XFを表す複合拡張子は曲名の初期値へ含めない。"""
+    """XFを表す複合拡張子は曲名として使うファイル名へ含めない。"""
     function = _function_body(_script(), "function songFileStem(file)") + "\n}"
     node = textwrap.dedent(
         f"""
@@ -640,7 +640,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
     ):]
     listener = listener[:listener.index("\n});") + len("\n});")]
     stem = _function_body(script, "function songFileStem(file)") + "\n}"
-    metadata = _function_body(script, "async function updateUploadedSongMetadata(file,") + "\n}"
+    metadata = _function_body(script, "async function updateUploadedSongMetadata(file)") + "\n}"
     clear = _function_body(script, "async function clearSelectedSong()") + "\n}"
     node = textwrap.dedent(
         """
@@ -663,7 +663,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const ownSongFile = () => $("midi").files[0];
         const ownSongKind = file => file.name.endsWith(".wav") ? "audio" : "midi";
         let active = null, restoring = false, midiSampleId = "";
-        let editorImportedFile = null, midiFromSample = false, metadataSongSelected = false;
+        let editorImportedFile = null, midiFromSample = false;
         const VideoMetadata = {notifyChange: async () => {}};
         const activeLyricsJson = () => active;
         const audioInputReady = true, maxAudioUploadBytes = 1000;
@@ -687,7 +687,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
           assert.equal($("song-title").value, "テスト曲");
           $("song-title").value = "";
           $("midi").dispatchEvent(new Event("change"));
-          assert.equal($("song-title").value, "upload");
+          assert.equal($("song-title").value, "", "upload must leave the default title blank");
           $("song-title").value = "手入力した曲名";
           $("midi").dispatchEvent(new Event("change"));
           assert.equal($("song-title").value, "手入力した曲名");
@@ -698,7 +698,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
             assert.equal($("song-title").value, "前のファイルの曲名");
             $("song-title").value = "";
             $("midi").dispatchEvent(new Event("change"));
-            assert.equal($("song-title").value, "upload");
+            assert.equal($("song-title").value, "", "upload must leave the default title blank");
           }
           restoring = true;
           $("song-title").value = "復元した曲名";
@@ -1247,9 +1247,10 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
       };
       class Option {constructor(text, value) {this.text = text; this.value = value;}}
       const OWN_SONG_VALUE = 'own', headers = () => ({});
-      const ownSongFile = () => combo.sampleId === OWN_SONG_VALUE ? {name: 'song.mid'} : null;
+      let filename = 'song.mid';
+      const ownSongFile = () => combo.sampleId === OWN_SONG_VALUE ? {name: filename} : null;
       let title = 'サンゲンショク', restoring = false, songInputMode = 'upload';
-      const songTitleOf = () => title;
+      const songTitleOf = () => title || ownSongFile()?.name.replace(/\.[^.]+$/, '') || '';
       let combo = {sampleId: 'own', wordlistName: 'scientist', customList: null};
       const currentCombo = () => combo;
       let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
@@ -1362,12 +1363,25 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.match($('title-candidates-dialog-status').textContent, /しばらく待って/);
         $('title-candidates-close').listeners.click();
         assert.equal(dialog.open, false);
+        // With no explicit title, clearing/reloading/reselecting the same filename is safe.
+        title = ''; titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        titleChoice = JSON.parse(JSON.stringify(titleChoice)); refreshTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        combo.sampleId = OWN_SONG_VALUE; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        filename = 'different.mid'; refreshTitleChoices();
+        assert.equal(titleChoice, null, 'a different filename changes the implicit title');
         // Editing custom CSV content also invalidates the selected row identities.
         combo.customList = {text: 'one'};
         titleChoice = {...choice, context: titleChoiceContext()};
         combo.sampleId = ''; refreshTitleChoices();
         combo.customList.text = 'two'; refreshTitleChoices();
         assert.equal(selectedTitleWords(), '');
+        assert.equal(titleChoice, null);
+        titleChoice = {...choice, context: '{invalid'};
+        assert.doesNotThrow(refreshTitleChoices, 'corrupt saved context cannot break the UI');
         assert.equal(titleChoice, null);
       })().catch(error => {console.error(error); process.exitCode = 1;});
     '''
