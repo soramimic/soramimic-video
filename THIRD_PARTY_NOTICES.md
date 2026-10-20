@@ -85,6 +85,7 @@ distribution: カノン (Canon).
 - Voice database: https://www.canon-voice.com/voicebanks/
 - PrettyPitch: https://github.com/wavtechyukky/PrettyPitch
 - LeapSinger: https://github.com/wavtechyukky/LeapSinger
+- NHVSing vocoder: https://github.com/wavtechyukky/NHVSing
 
 The voice database and pretrained models retain their own terms of use.
 

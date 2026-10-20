@@ -23,6 +23,8 @@ PYTHON_ENV = "PRETTYPITCH_PYTHON"
 LEAPSINGER_ROOT_ENV = "PRETTYPITCH_LEAPSINGER_ROOT"
 DEVICE_ENV = "PRETTYPITCH_DEVICE"
 SPEAKER_ID_ENV = "PRETTYPITCH_SPEAKER_ID"
+NHVSING_ROOT_ENV = "PRETTYPITCH_NHVSING_ROOT"
+GPU_RETRY_EXIT_CODE = 75
 
 DEFAULT_DEVICE = "cuda"
 DEFAULT_SPEAKER_ID = 2  # 波音リツ
@@ -63,6 +65,11 @@ def configured_device(value: str | None = None) -> str:
     return str(value or os.environ.get(DEVICE_ENV, DEFAULT_DEVICE)).strip() or DEFAULT_DEVICE
 
 
+def configured_nhvsing_root() -> Path | None:
+    raw = os.environ.get(NHVSING_ROOT_ENV, "").strip()
+    return Path(raw).expanduser().resolve() if raw else None
+
+
 def configured_speaker_id(value: int | str | None = None) -> int:
     raw = value if value is not None else os.environ.get(SPEAKER_ID_ENV, DEFAULT_SPEAKER_ID)
     try:
@@ -80,13 +87,15 @@ def installation_error(
     resolved_root = configured_root(root)
     if resolved_root is None:
         return f"{ROOT_ENV}が設定されていません"
-    required = (
+    nhvsing = configured_nhvsing_root()
+    required: tuple[Path, ...] = (
         resolved_root / "svs" / "render.py",
         resolved_root / "dict" / "ja.mora",
         resolved_root / "checkpoints" / "f0_3singer.pt",
         resolved_root / "checkpoints" / "cons_dur_3singer.pt",
-        resolved_root / "checkpoints" / "nhv_v3_2_1.onnx",
     )
+    if nhvsing is None:
+        required += (resolved_root / "checkpoints" / "nhv_v3_2_1.onnx",)
     missing = next((path for path in required if not path.is_file()), None)
     if missing is not None:
         return f"PrettyPitchの必要ファイルがありません: {missing}"
@@ -106,7 +115,31 @@ def installation_error(
         if path.is_dir()
     ):
         return "LeapSingerの音響モデル(3speaker_gan2d.pth)がありません"
+    if nhvsing is not None:
+        for relative in (
+            "nhv_vocoder.py", "model.py", "dsp.py", "config_v3_2.yaml",
+            "exported_models/v3_2_1/nhv_v3_2_1.pth",
+        ):
+            if not (nhvsing / relative).is_file():
+                return f"NHVSingの必要ファイルがありません: {nhvsing / relative}"
     return None
+
+
+def _native_options() -> list[str]:
+    root = configured_nhvsing_root()
+    return ["--nhvsing-root", str(root)] if root else []
+
+
+def _run_worker(command: list[str], root: Path):
+    proc = runproc.run(command, cwd=root, capture_output=True, text=True, check=False)
+    device_index = command.index("--device") + 1
+    if proc.returncode == GPU_RETRY_EXIT_CODE and command[device_index].startswith("cuda"):
+        # The GPU child has exited, so all its allocations are released before retrying.
+        logger.warning("PrettyPitchのGPU容量が不足しているためCPUで再実行します")
+        command = list(command)
+        command[device_index] = "cpu"
+        proc = runproc.run(command, cwd=root, capture_output=True, text=True, check=False)
+    return proc
 
 
 def available() -> bool:
@@ -217,17 +250,24 @@ def run_prettypitch(
         "--leapsinger_root",
         str(resolved_leapsinger),
     ]
+    if configured_nhvsing_root():
+        command = [
+            str(resolved_python), "-I",
+            str(Path(__file__).with_name("_prettypitch_worker.py")),
+            "--root", str(resolved_root), "--leapsinger-root", str(resolved_leapsinger),
+            "--score", str(score), "--mora-table", str(mora_table),
+            "--output", str(output), "--output-format", "wav",
+            "--speaker-id", str(resolved_speaker), "--device", resolved_device,
+            *_native_options(),
+        ]
     if dry_run:
         print(" ".join(command))
         return None
     if progress_cb is not None:
         progress_cb(0.0)
-    proc = runproc.run(
-        command,
-        cwd=resolved_root,
-        capture_output=True,
-        text=True,
-        check=False,
+    proc = (
+        _run_worker(command, resolved_root) if configured_nhvsing_root()
+        else runproc.run(command, cwd=resolved_root, capture_output=True, text=True, check=False)
     )
     if proc.returncode != 0:
         raise RuntimeError(
@@ -264,9 +304,10 @@ def run_partial_score(
         "--score", str(score), "--mora-table", str(mora), "--output", str(output),
         "--device", configured_device(), "--duration", str(duration),
         "--threads", str(max(1, threads)),
+        "--speaker-id", str(configured_speaker_id()), *_native_options(),
     ]
     output.unlink(missing_ok=True)
-    proc = runproc.run(command, cwd=root, capture_output=True, text=True, check=False)
+    proc = _run_worker(command, root)
     if proc.returncode != 0:
         raise RuntimeError(
             "PrettyPitchのフレーズ合成に失敗しました\n"
