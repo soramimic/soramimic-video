@@ -617,7 +617,7 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_uploaded_xf_midi_title_defaults_to_song_file_stem():
-    """XFを表す複合拡張子は曲名の初期値へ含めない。"""
+    """XFを表す複合拡張子は曲名として使うファイル名へ含めない。"""
     function = _function_body(_script(), "function songFileStem(file)") + "\n}"
     node = textwrap.dedent(
         f"""
@@ -640,7 +640,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
     ):]
     listener = listener[:listener.index("\n});") + len("\n});")]
     stem = _function_body(script, "function songFileStem(file)") + "\n}"
-    metadata = _function_body(script, "async function updateUploadedSongMetadata(file,") + "\n}"
+    metadata = _function_body(script, "async function updateUploadedSongMetadata(file)") + "\n}"
     clear = _function_body(script, "async function clearSelectedSong()") + "\n}"
     node = textwrap.dedent(
         """
@@ -663,7 +663,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const ownSongFile = () => $("midi").files[0];
         const ownSongKind = file => file.name.endsWith(".wav") ? "audio" : "midi";
         let active = null, restoring = false, midiSampleId = "";
-        let editorImportedFile = null, midiFromSample = false, metadataSongSelected = false;
+        let editorImportedFile = null, midiFromSample = false;
         const VideoMetadata = {notifyChange: async () => {}};
         const activeLyricsJson = () => active;
         const audioInputReady = true, maxAudioUploadBytes = 1000;
@@ -687,7 +687,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
           assert.equal($("song-title").value, "テスト曲");
           $("song-title").value = "";
           $("midi").dispatchEvent(new Event("change"));
-          assert.equal($("song-title").value, "upload");
+          assert.equal($("song-title").value, "", "upload must leave the default title blank");
           $("song-title").value = "手入力した曲名";
           $("midi").dispatchEvent(new Event("change"));
           assert.equal($("song-title").value, "手入力した曲名");
@@ -698,7 +698,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
             assert.equal($("song-title").value, "前のファイルの曲名");
             $("song-title").value = "";
             $("midi").dispatchEvent(new Event("change"));
-            assert.equal($("song-title").value, "upload");
+            assert.equal($("song-title").value, "", "upload must leave the default title blank");
           }
           restoring = true;
           $("song-title").value = "復元した曲名";
@@ -1246,9 +1246,11 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         return elements.get(id);
       };
       class Option {constructor(text, value) {this.text = text; this.value = value;}}
-      const OWN_SONG_VALUE = 'own', ownSongFile = () => ({}), headers = () => ({});
-      let title = 'サンゲンショク', restoring = false;
-      const songTitleOf = () => title;
+      const OWN_SONG_VALUE = 'own', headers = () => ({});
+      let filename = 'song.mid';
+      const ownSongFile = () => combo.sampleId === OWN_SONG_VALUE ? {name: filename} : null;
+      let title = 'サンゲンショク', restoring = false, songInputMode = 'upload';
+      const songTitleOf = () => title || ownSongFile()?.name.replace(/\.[^.]+$/, '') || '';
       let combo = {sampleId: 'own', wordlistName: 'scientist', customList: null};
       const currentCombo = () => combo;
       let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
@@ -1292,6 +1294,17 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.equal(saved.label, 'ハンゼン ＋ ホフ');
         assert.equal(previews, 1);
         assert.match($('title-words-detail').textContent, /ハンゼン氏 ＋ ホフ氏/);
+        // Clearing only the song file must retain the chosen words, including after reload.
+        combo.sampleId = ''; refreshTitleChoices();
+        assert.equal(ownSongFile(), null);
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        assert.equal($('title-candidates-load').disabled, true, 'a new search needs a song');
+        titleCandidates = []; titleChoice = saved; refreshTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        combo.sampleId = OWN_SONG_VALUE; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal($('title-candidates-load').disabled, false);
         // Re-rendering and restoring a saved choice retain its words.
         titleCandidates = []; titleChoice = saved; renderTitleChoices();
         assert.equal($('title-words').value, JSON.stringify(choice.words));
@@ -1316,8 +1329,25 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.deepEqual(titleCandidates, []);
         assert.equal($('title-candidates-status').textContent, '');
         titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
         $('where').value = ''; refreshTitleChoices();
         assert.equal(titleChoice, null);
+        // A title edit while waiting for a replacement also invalidates the choice.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        title = 'さらに別の曲'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        // A different dictionary still invalidates the choice while no file is selected.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
+        combo.wordlistName = 'stations'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        assert.equal(selectedTitleWords(), '');
+        combo.wordlistName = 'scientist'; combo.sampleId = OWN_SONG_VALUE;
+        // Switching to sample input must not carry an uploaded song's title selection.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; songInputMode = 'sample'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        songInputMode = 'upload'; combo.sampleId = OWN_SONG_VALUE;
         // Empty results and failures remain visible inside the open dialog.
         const empty = load();
         resolveFetch({ok: true, json: async () => ({candidates: []})});
@@ -1333,11 +1363,25 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.match($('title-candidates-dialog-status').textContent, /しばらく待って/);
         $('title-candidates-close').listeners.click();
         assert.equal(dialog.open, false);
+        // With no explicit title, clearing/reloading/reselecting the same filename is safe.
+        title = ''; titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        titleChoice = JSON.parse(JSON.stringify(titleChoice)); refreshTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        combo.sampleId = OWN_SONG_VALUE; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        filename = 'different.mid'; refreshTitleChoices();
+        assert.equal(titleChoice, null, 'a different filename changes the implicit title');
         // Editing custom CSV content also invalidates the selected row identities.
         combo.customList = {text: 'one'};
         titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
         combo.customList.text = 'two'; refreshTitleChoices();
         assert.equal(selectedTitleWords(), '');
+        assert.equal(titleChoice, null);
+        titleChoice = {...choice, context: '{invalid'};
+        assert.doesNotThrow(refreshTitleChoices, 'corrupt saved context cannot break the UI');
         assert.equal(titleChoice, null);
       })().catch(error => {console.error(error); process.exitCode = 1;});
     '''
