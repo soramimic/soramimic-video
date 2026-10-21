@@ -210,9 +210,6 @@
   summary { cursor: pointer; }
   details.card > summary { font-weight: 700; font-size: .95rem; color: var(--text); }
   details.card[open] > summary { margin-bottom: .7rem; }
-  #advanced.is-locked { opacity: .48; }
-  #advanced > summary[aria-disabled="true"] { cursor: not-allowed; color: var(--muted); }
-  .advanced-lock-hint { margin-left: .45rem; font-size: .78rem; font-weight: 400; }
   .sub-details > summary { font-size: .85rem; color: var(--muted); }
   /* ---- 詳細設定の中のグループ分け ---- */
   /* 曲・歌詞・単語リスト・歌声・レイアウトがフラットに並ぶと、初見の人がどこから
@@ -911,6 +908,8 @@
     margin: .75rem 0 0; padding: .75rem; border: 1px solid #f59e0b;
     border-radius: 8px; background: color-mix(in srgb, #f59e0b 10%, transparent);
   }
+.history-copy > .save-status { margin: .5rem 0 0; }
+.save-menu summary[aria-disabled="true"] { opacity: .6; cursor: wait; }
 </style>
 </head>
 <body>
@@ -945,7 +944,7 @@
           <span aria-hidden="true">●</span><span id="song-record-label">録音する</span>
         </button>
       </div>
-      <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
+      <p class="hint" id="song-upload-hint">歌詞入りMIDI・音声入力を確認しています…</p>
       <p class="hint" id="song-record-status" role="status" hidden></p>
       <div class="song-upload-selection" id="song-upload-selection" hidden>
         <div class="song-upload-selection-main">
@@ -1157,9 +1156,7 @@
      曲・元歌詞・単語リスト・変換のしかたはビルダーカードとエディタに一本化。
      歌声とレイアウトの既存DOMは機能を残すため保持するが、Web UIでは非表示にする。 -->
 <details class="card" id="advanced">
-  <summary aria-disabled="true">⚙️ 詳細設定
-    <span class="advanced-lock-hint" id="advanced-lock-hint">曲と単語リストを選ぶと開けます</span>
-  </summary>
+  <summary>⚙️ 詳細設定</summary>
 
   <div class="field" id="adjust-lyrics-panel" hidden>
     <label for="adjust-lyrics">
@@ -1278,8 +1275,8 @@
 
     <div class="field">
       <label for="song-title">曲名</label>
-      <input type="text" id="song-title" maxlength="200" placeholder="例: ふるさと">
-      <p class="hint" data-info>サムネイルに表示する曲名です。サンプル曲は登録済みの曲名が使われます。</p>
+      <input type="text" id="song-title" maxlength="200" placeholder="空欄ならファイル名を使用">
+      <p class="hint" data-info>空欄ならアップロードしたファイル名を使います。入力すると、その曲名をサムネイルに表示します。サンプル曲は登録済みの曲名が使われます。</p>
     </div>
 
     <div class="field">
@@ -1414,12 +1411,11 @@
     <div class="custom-wordlist-header"><h2 id="metadata-change-title"></h2></div>
     <p id="metadata-change-hint"></p>
     <label class="recording-delete-choice" for="metadata-change-hide-warning">
-      <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回から表示しない</span>
+      <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回からこの選択を使う</span>
     </label>
     <div class="custom-wordlist-actions recording-delete-actions">
-      <button type="submit" id="metadata-change-acknowledge" value="acknowledge" class="btn-primary" autofocus>閉じる</button>
-      <button type="submit" id="metadata-change-keep" value="keep" hidden>入力済みの名前を保持</button>
-      <button type="submit" id="metadata-change-update" value="update" class="btn-primary" hidden>選択したリスト名に更新</button>
+      <button type="submit" id="metadata-change-keep" value="keep" autofocus>入力済みの名前を保持</button>
+      <button type="submit" id="metadata-change-update" value="update" class="btn-primary">選択したリスト名に更新</button>
     </div>
   </form>
 </dialog>
@@ -1615,7 +1611,7 @@
 <script src="/image-credits.js"></script>
 <script src="/custom-wordlists.js"></script>
 <script src="/app-bridge.js"></script>
-<script src="/metadata-change.js"></script>
+<script src="/metadata-change.js?v=compact-song-metadata-v1"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 // 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
@@ -1868,7 +1864,6 @@ async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
-  updateAdvancedSettingsAvailability();
   simpleMode = !!conf.simple_ui;
   editorPeer = SoramimicBridge.peer("editor", conf.editor_app_url);
   $("lyrics-file").accept = simpleMode
@@ -1894,8 +1889,8 @@ async function loadConfig() {
   }
   audioInputReady = conf.audio_input === true;
   $("song-upload-hint").textContent = audioInputReady
-    ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
-    : "XF MIDIに対応";
+    ? `歌詞入りMIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
+    : "歌詞入りMIDIに対応（XF・標準歌詞イベント）";
   syncRecordingUi();
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
@@ -2526,18 +2521,20 @@ function historyCard(job, index) {
   if (complete) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    let saveRetry = null;
-    appendSaveMenu(actions, job, () => {
-      if (!saveRetry || (preparedHistorySave?.index === index
+    const save = appendSaveMenu(actions, job, () => {
+      if (!save || (preparedHistorySave?.index === index
           && preparedHistorySave.shareable === false)) return false;
-      saveHistoryVideo(index, saveRetry);
+      saveHistoryVideo(index, save.button, save.status);
       return true;
     });
-    if (prefersNativeVideoSave() && job.result_kind !== "audio") {
-      saveRetry = historyButton("保存を続ける", "history-save-retry result-action action-save");
-      saveRetry.hidden = true;
-      saveRetry.addEventListener("click", () => saveHistoryVideo(index, saveRetry));
-      actions.appendChild(saveRetry);
+    if (save && prefersNativeVideoSave() && job.result_kind !== "audio") {
+      save.button.addEventListener("click", event => {
+        if (preparedHistorySave?.index !== index
+            || preparedHistorySave.needsTap === false
+            || preparedHistorySave.shareable === false) return;
+        event.preventDefault();
+        saveHistoryVideo(index, save.button, save.status);
+      });
     }
     if (typeof navigator.share === "function" && typeof File !== "undefined") {
       const share = historyButton("共有", "history-share result-action action-share");
@@ -2546,6 +2543,7 @@ function historyCard(job, index) {
     }
     appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
     copy.appendChild(actions);
+    if (save) copy.appendChild(save.status);
   }
   if (job.status === "awaiting_review") {
     const actions = document.createElement("div");
@@ -2691,26 +2689,44 @@ function resetHistorySave() {
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
     prepared.button.disabled = false;
-    prepared.button.hidden = true;
-    prepared.button.textContent = "保存を続ける";
+    prepared.button.textContent = "保存";
+    prepared.button.removeAttribute("aria-busy");
+    prepared.button.removeAttribute("aria-disabled");
   }
+  if (prepared.status) prepared.status.hidden = true;
   preparedHistorySave = null;
 }
 
-async function saveHistoryVideo(index, button) {
+async function saveHistoryVideo(index, button, status) {
   const job = historyJobs[index];
   if (!job || !job.video_url || !prefersNativeVideoSave()) return;
-  const open = (state, afterPreparation = false) => {
+  const ready = () => {
     button.disabled = false;
-    button.hidden = true;
-    button.textContent = "保存を続ける";
+    button.textContent = "保存";
+    button.removeAttribute("aria-busy");
+    button.removeAttribute("aria-disabled");
+  };
+  const message = text => {
+    status.textContent = text;
+    status.hidden = !text;
+  };
+  const requestTap = state => {
+    state.needsTap = true;
+    ready();
+    message("保存の準備ができました。もう一度「保存」をタップしてください。");
+  };
+  const open = (state, afterPreparation = false) => {
+    ready();
+    message("");
     state.shareable = true;
+    state.needsTap = false;
     openFileShare(state.file, (error) => {
       if (preparedHistorySave !== state || error?.name === "AbortError") return;
-      const retry = afterPreparation && error?.name === "NotAllowedError";
-      if (!retry) state.shareable = false;
-      button.hidden = false;
-      button.textContent = retry ? "保存を続ける" : "保存を再試行";
+      if (afterPreparation && error?.name === "NotAllowedError") requestTap(state);
+      else {
+        state.shareable = false;
+        message("保存画面を開けませんでした。「保存」からMP4を選び直してください。");
+      }
     }, "");
   };
   const prepared = preparedHistorySave;
@@ -2722,26 +2738,27 @@ async function saveHistoryVideo(index, button) {
   if (prepared && prepared.index === index && prepared.abort) return;
   resetHistorySave();
   const ctrl = new AbortController();
-  const state = { index, button, abort: ctrl, file: null };
+  const state = { index, button, status, abort: ctrl, file: null, needsTap: true };
   preparedHistorySave = state;
-  button.hidden = false;
   button.disabled = true;
-  button.textContent = "保存を準備中…";
+  button.textContent = "準備中…";
+  button.setAttribute("aria-busy", "true");
+  button.setAttribute("aria-disabled", "true");
+  message("動画を取得しています…");
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("保存データを取得できませんでした");
     const blob = await res.blob();
     if (preparedHistorySave !== state) return;
     state.file = new File([blob], "soramimic.mp4", { type: blob.type || "video/mp4" });
-    button.disabled = false;
-    if (navigator.userActivation?.isActive === false) button.textContent = "保存を続ける";
+    state.abort = null;
+    if (navigator.userActivation?.isActive === false) requestTap(state);
     else open(state, true);
   } catch (error) {
     if (preparedHistorySave !== state || error?.name === "AbortError") return;
     state.abort = null;
-    button.disabled = false;
-    button.hidden = false;
-    button.textContent = "保存を再試行";
+    ready();
+    message("動画を取得できませんでした。もう一度「保存」をタップしてください。");
   }
 }
 
@@ -2962,6 +2979,7 @@ async function poll(id, seq = pollSeq) {
   try {
     const res = await fetch(`/api/jobs/${id}`,
       { headers: headers(), cache: "no-store", signal: ctrl.signal });
+    if (seq !== pollSeq || id !== currentJob) return;
     if (POLL_FATAL_STATUS.includes(res.status)) {
       // 取り直しても直らない。busyのままにせず操作を返す
       stopPolling();
@@ -4281,31 +4299,6 @@ function showSongInputMode(mode) {
     ? "サンプル曲で試す" : "曲をアップロード";
 }
 
-function advancedSettingsAvailable() {
-  // 認証キーが必要な構成だけは、選択前でもキー入力のため開けるようにする。
-  const auth = $("auth");
-  if (!auth.hidden && !apiKey()) return true;
-  const songSelected = !!ownSongFile() || !!$("sample-select").value;
-  const wordlistSelected = !!currentWordlistName() || !!activeCustomList()
-    || showsEditorWordlist() || !!activeLyricsJson();
-  return songSelected && wordlistSelected;
-}
-
-function updateAdvancedSettingsAvailability() {
-  const advanced = $("advanced");
-  const available = advancedSettingsAvailable();
-  advanced.classList.toggle("is-locked", !available);
-  advanced.querySelector(":scope > summary").setAttribute(
-    "aria-disabled", String(!available),
-  );
-  $("advanced-lock-hint").hidden = available;
-  if (!available) advanced.open = false;
-}
-
-$("advanced").querySelector(":scope > summary").addEventListener("click", (event) => {
-  if (!advancedSettingsAvailable()) event.preventDefault();
-});
-
 function switchSongInputMode(mode) {
   if (mode === songInputMode) return;
   stopSongRecording(true);
@@ -4401,22 +4394,17 @@ songUploadEntry.addEventListener("drop", (event) => {
   }
   setOwnSongFile(files[0]);
 });
-// The input already contains the new file when change fires, so retain whether
-// a source was selected before it (including restored MIDI and recordings).
-let metadataSongSelected = false;
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
-  const replacing = metadataSongSelected;
-  metadataSongSelected = !!file;
   if (!file) return;
   setRecordingStatus("");
   const kind = ownSongKind(file);
   if (!kind) {
-    rejectOwnSongFile("XF MIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
+    rejectOwnSongFile("歌詞入りMIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
     return;
   }
   if (kind === "audio" && !audioInputReady) {
-    rejectOwnSongFile("このサーバーでは音声入力を準備中です。XF MIDIは利用できます。");
+    rejectOwnSongFile("このサーバーでは音声入力を準備中です。歌詞入りMIDIは利用できます。");
     return;
   }
   if (kind === "audio" && file.size > maxAudioUploadBytes) {
@@ -4426,7 +4414,7 @@ $("midi").addEventListener("change", () => {
   $("sample-select").value = "";
   midiSampleId = "";
   if (!restoring) {
-    if (!midiFromSample) updateUploadedSongMetadata(file, replacing);
+    if (!midiFromSample) updateUploadedSongMetadata(file);
   }
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   if (!editorImportedFile) clearEditorFile();
@@ -4447,26 +4435,17 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
-async function updateUploadedSongMetadata(file, replacing = false) {
-  const titleInput = $("song-title"), creditInput = $("song-credit");
-  const hasMetadata = !!(titleInput.value.trim() || creditInput.value.trim());
-  // A first upload can complete a transfer from the lyric editor.
-  if (!titleInput.value.trim()) {
-    const editorTitle = !replacing && activeLyricsJson()?.song?.title;
-    titleInput.value = typeof editorTitle === "string" && editorTitle.trim()
-      ? editorTitle.trim() : songFileStem(file);
-    titleInput.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-  if (!hasMetadata) return;
-  const previousTitle = titleInput.value, previousCredit = creditInput.value;
+$("midi").addEventListener("change", updateSongTextPreviews);
+async function updateUploadedSongMetadata(file) {
+  const inputs = [$("song-title"), $("song-credit")];
+  if (!inputs.some(input => input.value.trim())) return;
+  const previousValues = inputs.map(input => input.value);
   const isCurrent = () => ownSongFile() === file
-    && titleInput.value === previousTitle && creditInput.value === previousCredit;
-  const choice = await VideoMetadata.notifyChange(replacing ? "song-replacement" : "song", isCurrent);
-  if (!replacing || choice !== "update" || !isCurrent()) return;
-  titleInput.value = songFileStem(file);
-  creditInput.value = "";
-  titleInput.dispatchEvent(new Event("change", { bubbles: true }));
-  creditInput.dispatchEvent(new Event("change", { bubbles: true }));
+    && inputs.every((input, index) => input.value === previousValues[index]);
+  const choice = await VideoMetadata.notifyChange("song-replacement", isCurrent);
+  if (choice !== "update" || !isCurrent()) return;
+  for (const input of inputs) input.value = "";
+  for (const input of inputs) input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function clearSelectedSong() {
@@ -4638,7 +4617,7 @@ async function ensureSelectedSampleMidi(onFail) {
 }
 
 // ---- 選んだMIDIの検証(歌詞の有無・元歌詞との整合) ----
-// この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱と空耳変換の
+// この画面のパイプラインはMIDIの歌詞(XFまたは標準lyricsイベント)を歌唱と空耳変換の
 // 入力にしているので、歌詞の無いMIDIは何分も待たせた末に必ず失敗する。
 // 選ばれた直後に /api/midi-check へ送って確かめ、歌詞が無ければその場で
 // ファイル選択ごと取り消す(=生成にも編集にも進めない状態に戻す)。
@@ -4742,9 +4721,9 @@ function rejectMidi(detail, notMidi = false) {
   $("sample-status").textContent = "";
   const text = (notMidi
     ? "⚠ このファイルはMIDIとして読めないので使えません(取り消しました)。"
-    : "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。")
-    + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
-    + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
+    : "⚠ このMIDIの歌詞・読みと音符を解析できないため使えません(取り消しました)。")
+    + "歌詞入りMIDI（XFまたは標準の歌詞イベント）が必要です。"
+    + "音符に対応する歌詞を含むMIDIを書き出してください。"
     + (detail ? `\n(${detail})` : "");
   $("midi-error").textContent = text;
   $("midi-error").hidden = false;
@@ -5324,7 +5303,6 @@ function syncBuilderValues() {
   syncRecordingUi();
   const sample = $("sample-select");
   showSongInputMode(sample.value ? "sample" : file ? "upload" : songInputMode);
-  updateAdvancedSettingsAvailability();
   $("builder-sample").value = sample.value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const selectedCustom = activeCustomList();
@@ -5529,7 +5507,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
   const links = document.createElement("div");
   links.className = "save-options";
   const status = document.createElement("p");
-  status.className = "hint";
+  status.className = "hint save-status";
   status.setAttribute("role", "status");
   status.hidden = true;
   for (const [title, entries] of [["動画", video], ["歌唱データ", singing]]) {
@@ -5573,6 +5551,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
   });
   container.appendChild(menu);
   container.appendChild(status);
+  return {button: summary, status};
 }
 
 document.addEventListener("click", event => {
@@ -5689,9 +5668,20 @@ const currentCombo = () => ({
 
 function titleChoiceContext() {
   const c = currentCombo();
-  return JSON.stringify([c.sampleId,
-    c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "",
-    c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
+  // アップロード待ちでも、保持中の曲名と辞書に対応する選択はそのまま使う。
+  const ownTitle = c.sampleId === OWN_SONG_VALUE
+    || (!c.sampleId && songInputMode === "upload");
+  const file = ownSongFile();
+  let title = ownTitle ? songTitleOf(file) : "";
+  // ファイル名を使う曲を外した間は、選択時の曲名を保留して再選択を待つ。
+  if (ownTitle && !file && !title && titleChoice) {
+    try {
+      const previous = JSON.parse(titleChoice.context);
+      if (previous[0] === OWN_SONG_VALUE && typeof previous[1] === "string") title = previous[1];
+    } catch { /* 不正な保存値は通常の条件比較で解除する。 */ }
+  }
+  return JSON.stringify([ownTitle ? OWN_SONG_VALUE : c.sampleId,
+    title, c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
 }
 
 function selectedTitleWords() {
@@ -5913,7 +5903,7 @@ function loadThumbnailPreview(combo) {
   const ctrl = new AbortController();
   previewAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), combo.customList ? 25000 : PREVIEW_TIMEOUT_MS);
-  // 持ち込み曲にはサンプルIDがないので、入力中の曲名(初期値はファイル名)を渡す。
+  // 持ち込み曲にはサンプルIDがないので、入力中の曲名(空欄ならファイル名)を渡す。
   // サムネ生成は音声そのものではなく曲名を同じ単語リストで変換するため、WAVでも
   // 完成時と同じ経路で事前に作れる。登録済みの音声サンプルは従来どおりIDを渡す。
   const params = combo.sampleId === OWN_SONG_VALUE
@@ -8025,7 +8015,7 @@ async function hostUploadSong() {
   }
   if (midiChecking) await midiChecking;    // 歌詞なしMIDIはここで取り消される
   if (!$("midi").files[0]) {
-    throw new Error("そのMIDIは使えません(歌詞入りのXF形式MIDIが必要です)");
+    throw new Error("そのMIDIは使えません(歌詞入りMIDI（XFまたは標準の歌詞イベント）が必要です)");
   }
   prefillOwnMidiLyrics($("midi").files[0]);
   // サンプルの選択を外す。残すと投入前の突き合わせ(ensureSelectedSampleMidi)が
@@ -8035,7 +8025,7 @@ async function hostUploadSong() {
   await reseedEditorSong();
 }
 
-// /api/midi-check が返したXF歌詞を、持ち込みMIDI専用モーダルの
+// /api/midi-check が返したMIDI歌詞を、持ち込みMIDI専用モーダルの
 // 元歌詞欄の下敷きにする。空ならそのまま入れ、前の曲の歌詞等があれば
 // 勝手に消さず確認する。ここで正本 #lyrics を更新すると reseedEditorSong が
 // 同じ値をエディタに返し、開いている専用モーダルの textarea に表示される。
@@ -9238,17 +9228,16 @@ async function doRestoreForm() {
     }
   }
 
-  // 6. 持ち込みMIDIだけをdataURLから復元する。旧版が保存した
-  // サンプルMIDIはIDだけ移行し、バイナリをブラウザに残さない。
+  // 6. 持ち込みMIDIをdataURLから復元する。旧版のサンプルMIDIは
+  // 保存済みの選択IDも一致するときだけ移行する。同名の持ち込み曲は置き換えない。
   try {
     const m = JSON.parse(localStorage.getItem(MIDI_KEY) || "null");
     if (m && m.dataUrl) {
       await samplesReady;
       const restoredId = m.name.replace(/\.[^.]+$/, "");
-      const restoredSample = [...$("sample-select").options]
-        .some((option) => option.value === restoredId);
+      const restoredSample = restoredSampleId && restoredSampleId === restoredId
+        && [...$("sample-select").options].some((option) => option.value === restoredId);
       if (restoredSample) {
-        if (!restoredSampleId) restoredSampleId = restoredId;
         localStorage.removeItem(MIDI_KEY);
       } else {
         const blob = await (await fetch(m.dataUrl)).blob();

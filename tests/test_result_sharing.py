@@ -27,7 +27,11 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
         let fetchCalls = 0, shareCalls = [], messages = [], release;
         let preparedHistorySave = null, preparedHistoryShare = null;
         let historyJobs = [{video_url: '/video.mp4'}];
-        const button = {disabled: false, textContent: '共有', isConnected: true, handlers: {},
+        const status = {hidden: true, textContent: ''};
+        const button = {disabled: false, textContent: '共有', isConnected: true,
+                        handlers: {}, attributes: {},
+                        setAttribute(k, v) {this.attributes[k] = v;},
+                        removeAttribute(k) {delete this.attributes[k];},
                         addEventListener(type, fn) {this.handlers[type] = fn;}};
         const location = {origin: 'https://video.example'};
         const navigator = {platform: 'iPhone', userActivation: {isActive: true}, share(data) {
@@ -63,11 +67,16 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
             } else if (surface === 'history-share') {
                 pending = shareHistoryResult(0, button);
             } else {
-                pending = saveHistoryVideo(0, button);
+                pending = saveHistoryVideo(0, button, status);
             }
             assert.equal(fetchCalls, 1);
             assert.equal(button.disabled, true);
             assert.equal(shareCalls.length, 0);
+            if (surface === 'history') {
+                assert.equal(button.attributes['aria-busy'], 'true');
+                await saveHistoryVideo(0, button, status);
+                assert.equal(fetchCalls, 1, 'tapping Save during preparation never refetches');
+            }
             if (activation === 'abandoned') {
                 if (surface === 'builder') resetVideoSharePreparation();
                 else if (surface === 'history-share') resetHistoryShare();
@@ -84,18 +93,25 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
             assert.equal(button.disabled, false);
             assert.equal(shareCalls.length, activation === 'expired' ? 0 : 1);
             if (activation === 'canceled') {
-                if (surface === 'history') assert.equal(button.hidden, true);
+                if (surface === 'history') {
+                    assert.equal(button.textContent, '保存');
+                    assert.equal(status.hidden, true);
+                }
                 assert.deepEqual(messages, []);
                 return;
             }
             if (activation !== 'active') {
-                const label = surface === 'history' ? '保存を続ける' : '共有を開く';
+                const label = surface === 'history' ? '保存' : '共有を開く';
                 assert.equal(button.textContent, label);
+                if (surface === 'history' && activation !== 'denied') {
+                    assert.equal(status.hidden, false);
+                    assert.match(status.textContent, /準備ができました.*もう一度/);
+                }
                 navigator.userActivation = {isActive: true};
                 const before = shareCalls.length;
                 if (surface === 'builder') button.handlers.click();
                 else if (surface === 'history-share') shareHistoryResult(0, button);
-                else saveHistoryVideo(0, button);
+                else saveHistoryVideo(0, button, status);
                 assert.equal(shareCalls.length, before + 1, 'retry opens synchronously');
             }
             assert.equal(fetchCalls, 1, 'a retry must reuse the already prepared file');
@@ -113,8 +129,9 @@ def test_preparation_opens_share_when_possible_and_reuses_file_for_retry(surface
                 assert.equal(!!state.file, true,
                              'explicit sharing may still retry the cached file');
                 if (surface === 'history') {
-                    assert.equal(button.hidden, false);
-                    assert.equal(button.textContent, '保存を再試行');
+                    assert.equal(button.textContent, '保存');
+                    assert.equal(status.hidden, false);
+                    assert.match(status.textContent, /MP4を選び直して/);
                 }
             } else assert.deepEqual(messages, []);
         })().catch(error => {console.error(error); process.exit(1);});
@@ -134,7 +151,10 @@ def test_history_save_fetch_failure_can_retry_and_release_its_control():
         const prefersNativeVideoSave = () => true, headers = () => ({});
         const historyJobs = [{video_url: '/video.mp4'}];
         let preparedHistorySave = null, fetches = 0, saves = 0;
-        const button = {hidden: true, disabled: false, isConnected: true};
+        const status = {hidden: true, textContent: ''};
+        const button = {disabled: false, isConnected: true, attributes: {},
+            setAttribute(k, v) {this.attributes[k] = v;},
+            removeAttribute(k) {delete this.attributes[k];}};
         class File {constructor(parts, name) {this.name = name;}}
         const fetch = async () => ({
             ok: ++fetches > 1, blob: async () => ({type: 'video/mp4'}),
@@ -143,23 +163,26 @@ def test_history_save_fetch_failure_can_retry_and_release_its_control():
     '''
     checks = r'''
         (async () => {
-            await saveHistoryVideo(0, button);
-            assert.equal(button.textContent, '保存を再試行');
+            await saveHistoryVideo(0, button, status);
+            assert.equal(button.textContent, '保存');
+            assert.match(status.textContent, /取得できませんでした/);
             assert.equal(button.disabled, false);
-            assert.equal(button.hidden, false);
+            assert.equal(status.hidden, false);
             assert.equal(preparedHistorySave.button, button);
-            await saveHistoryVideo(0, button);
+            await saveHistoryVideo(0, button, status);
             assert.equal(fetches, 2);
-            assert.equal(button.textContent, '保存を続ける');
+            assert.equal(button.textContent, '保存');
+            assert.match(status.textContent, /準備ができました/);
+            assert.deepEqual(button.attributes, {});
             assert.equal(saves, 0);
             navigator.userActivation.isActive = true;
-            await saveHistoryVideo(0, button);
+            await saveHistoryVideo(0, button, status);
             assert.equal(fetches, 2);
             assert.equal(saves, 1);
-            assert.equal(button.hidden, true);
+            assert.equal(status.hidden, true);
             resetHistorySave();
             assert.equal(preparedHistorySave, null);
-            assert.equal(button.hidden, true);
+            assert.equal(status.hidden, true);
         })().catch(error => {console.error(error); process.exit(1);});
     '''
     subprocess.run(["node", "-e", setup + code + checks], check=True)

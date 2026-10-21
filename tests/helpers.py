@@ -13,6 +13,42 @@ from pathlib import Path
 from mido import Message, MetaMessage, MidiFile, MidiTrack
 
 
+def build_lyric_midi(
+    path: Path,
+    notes: list[tuple[int, int, int]],
+    lyric_events: list[tuple[int, str]],
+    charset: str = "utf-8",
+    channel: int = 0,
+    separate_lyrics: bool = False,
+    midi_type: int = 1,
+) -> Path:
+    """Build a standard MIDI with FF 05 lyrics and no XF chunks."""
+    midi = MidiFile(type=midi_type, ticks_per_beat=480, charset=charset)
+    melody = MidiTrack()
+    midi.tracks.append(melody)
+    events: list[tuple[int, Message | MetaMessage]] = [
+        (0, MetaMessage("set_tempo", tempo=500000)),
+    ]
+    for tick, duration, pitch in notes:
+        events.extend([
+            (tick, Message("note_on", channel=channel, note=pitch, velocity=96)),
+            (tick + duration, Message("note_off", channel=channel, note=pitch)),
+        ])
+    lyrics = [(tick, MetaMessage("lyrics", text=text)) for tick, text in lyric_events]
+    tracks = [(melody, events + lyrics)]
+    if separate_lyrics:
+        lyric_track = MidiTrack()
+        midi.tracks.append(lyric_track)
+        tracks = [(melody, events), (lyric_track, lyrics)]
+    for track, messages in tracks:
+        previous = 0
+        for tick, msg in sorted(messages, key=lambda item: item[0]):
+            track.append(msg.copy(time=tick - previous))
+            previous = tick
+    midi.save(path)
+    return path
+
+
 def _track_chunk_bytes(mid: MidiFile) -> bytes:
     """MidiFileの最初のトラックチャンクのバイト列を返す。"""
     buf = io.BytesIO()

@@ -2673,7 +2673,7 @@ def test_index_html_advanced_is_grouped_by_role():
     assert _advanced_html().count('class="hint opt-group-lead"') == 3
     # 「⑤ その他」はAPIキーだけになったのでグループごとやめ、キー欄は先頭へ移した
     advanced = _advanced_html()
-    assert 'id="advanced-lock-hint"' in advanced
+    assert '<summary>⚙️ 詳細設定</summary>' in advanced
     assert advanced.index('id="auth"') < advanced.index('<section class="opt-group"')
     # 区切りは見た目にも出す(小見出し + 罫線)
     html = _index_html()
