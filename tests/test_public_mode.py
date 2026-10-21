@@ -608,39 +608,6 @@ def test_turnstile_verification(tmp_path, monkeypatch):
     assert submit(client, turnstile_token="good").status_code == 200
 
 
-@pytest.mark.parametrize("sample", [False, True])
-def test_recovering_an_accepted_job_reuses_its_id_and_turnstile_token(
-    public_app, monkeypatch, sample,
-):
-    calls = []
-
-    def verify(token, ip=None):
-        calls.append(token)
-        return token == "single-use" and len(calls) == 1
-
-    monkeypatch.setenv(api_mod.TURNSTILE_SECRET_ENV, "secret")
-    monkeypatch.setattr(api_mod, "verify_turnstile", verify)
-    client = TestClient(public_app)
-    client.get("/api/config")  # Establish the owner before the response is lost.
-    send = submit_launch if sample else submit
-    fields = {"submission_id": "a" * 32, "turnstile_token": "single-use"}
-    first = send(client, **fields)
-    assert first.status_code == 200, first.text
-    job_id = first.json()["id"]
-    assert wait_done(client, job_id)["status"] == "done"
-
-    recovered = send(client, **fields)
-    assert recovered.status_code == 200, recovered.text
-    assert recovered.json()["id"] == job_id
-    assert calls == ["single-use"]
-    assert len(public_app.state.manager.jobs) == 1
-    assert client.get(f"/api/jobs/{job_id}/playback").content == FAKE_MP4
-
-    other = TestClient(public_app)
-    assert send(other, **fields).status_code == 403
-    assert other.get(f"/api/jobs/{job_id}").status_code == 404
-
-
 def test_turnstile_not_configured(tmp_path, monkeypatch):
     monkeypatch.delenv(api_mod.TURNSTILE_SECRET_ENV, raising=False)
     monkeypatch.delenv(api_mod.TURNSTILE_SITE_ENV, raising=False)

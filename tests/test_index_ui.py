@@ -1823,10 +1823,7 @@ def test_job_post_retries_one_server_rejected_turnstile_token():
         let turnstileFailed = true;
         const form = {{ values: {{}}, set(key, value) {{ this.values[key] = value; }} }};
         const headers = () => ({{}});
-        const fetch = async () => {{ calls += 1; return {{
-          status: calls === 1 ? 403 : 200, ok: calls !== 1,
-          json: async () => ({{id: "job"}}),
-        }}; }};
+        const fetch = async () => {{ calls += 1; return {{ status: calls === 1 ? 403 : 200 }}; }};
         function hideTurnstilePrompt() {{}}
         function rebuildTurnstileWidget() {{ rebuilds += 1; }}
         async function ensureTurnstileToken() {{ return true; }}
@@ -1872,7 +1869,7 @@ def test_audio_job_post_retries_one_mobile_network_failure():
             else {{
               this.upload.onprogress({{ lengthComputable: true, loaded: 50, total: 100 }});
               this.status = 200;
-              this.responseText = '{{"id":"job"}}';
+              this.responseText = "{{}}";
               this.onload();
             }}
           }}
@@ -1920,7 +1917,7 @@ def test_stalled_audio_upload_is_aborted_and_retried():
             calls += 1;
             if (calls === 2) {{
               this.status = 200;
-              this.responseText = '{{"id":"job"}}';
+              this.responseText = "{{}}";
               this.onload();
             }}
           }}
@@ -1982,7 +1979,8 @@ def test_audio_upload_retry_can_be_canceled_before_job_creation():
         {cancel}
         (async () => {{
           const pending = postJobWithTurnstileRetry(form, controller.signal);
-          await new Promise(resolve => setImmediate(resolve));
+          await Promise.resolve();
+          await Promise.resolve();
           assert.equal(calls, 2, "the retry upload must be active");
           await cancelJob();
           await assert.rejects(pending, (error) => error.name === "AbortError");
@@ -1995,132 +1993,7 @@ def test_audio_upload_retry_can_be_canceled_before_job_creation():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-@pytest.mark.parametrize("kind", ["sample_id", "midi"])
-@pytest.mark.parametrize("interruption", ["network", "server", "json", "missing_id"])
-def test_accepted_job_recovers_after_an_interrupted_response(kind, interruption):
-    script = _script()
-    functions = "\n".join(
-        _function_body(script, head) + "\n}"
-        for head in ("async function postJobWithTurnstileRetry(", "async function poll(")
-    )
-    node = textwrap.dedent(
-        f"""
-        const assert = require("node:assert/strict");
-        const form = new FormData();
-        form.set({kind!r}, "furusato");
-        form.set("submission_id", "a".repeat(32));
-        form.set("turnstile_token", "single-use-token");
-        const headers = () => ({{}}), turnstileSiteKey = "";
-        const setTimeout = (callback, delay) => {{ if (delay === 750) callback(); return 1; }};
-        const clearTimeout = () => {{}};
-        const elements = new Map();
-        const $ = id => {{
-          if (!elements.has(id)) elements.set(id, {{hidden: true, innerHTML: ""}});
-          return elements.get(id);
-        }};
-        const statuses = [];
-        const setJobStatus = text => statuses.push(text);
-        let requests = 0, creates = 0, currentJob = null, pollSeq = 1, pollFailures = 0;
-        let pollLastAt = 0, reviewJobId = null, displayed = null, finished = false;
-        const POLL_FETCH_TIMEOUT_MS = 8000, POLL_FATAL_STATUS = [401, 403, 404, 410];
-        const STAGE_LABELS = {{}}, qs = value => value;
-        const renderStages = () => {{}}, renderBuilderBar = () => {{}};
-        const showWordlistExhaustionNotice = () => {{}};
-        const showBuilderVideo = job => {{ displayed = job.id; }};
-        const finish = () => {{ finished = true; currentJob = null; }};
-        const showBuilderMsg = message => assert.fail(message);
-        const pollFailed = () => assert.fail("the recovered job must remain accessible");
-        const fetch = async (url, options) => {{
-          if (url === "/api/jobs") {{
-            requests++;
-            assert.equal(options.body, form);
-            assert.equal(options.body.get("submission_id"), "a".repeat(32));
-            assert.equal(options.body.get("turnstile_token"), "single-use-token");
-            if (requests === 1) {{
-              creates++;
-              if ({interruption!r} === "network") throw new TypeError("Load failed");
-              if ({interruption!r} === "server") return {{status: 503, ok: false}};
-              if ({interruption!r} === "json") return {{status: 200, ok: true,
-                json: async () => {{throw new SyntaxError("Truncated JSON");}}}};
-              return {{status: 200, ok: true, json: async () => ({{}})}};
-            }}
-            return {{status: 200, ok: true, json: async () => ({{id: "accepted"}})}};
-          }}
-          assert.equal(url, "/api/jobs/accepted");
-          return {{status: 200, ok: true, json: async () => ({{
-            id: "accepted", status: "done", params: {{}}, total_seconds: 11,
-            result_kind: "video", video_url: "/video",
-          }})}};
-        }};
-        {functions}
-        (async () => {{
-          const response = await postJobWithTurnstileRetry(form);
-          const body = await response.json();
-          currentJob = body.id;
-          await poll(currentJob);
-          assert.equal(creates, 1, "recovery must not create a second generation");
-          assert.equal(requests, 2);
-          assert.equal(displayed, "accepted", "show the result without reloading");
-          assert.equal(finished, true);
-          assert.ok(statuses.some(text => text.includes("受付を確認")));
-          assert.ok(statuses.at(-1).startsWith("完成!"));
-        }})().catch(error => {{console.error(error); process.exit(1);}});
-        """
-    )
-    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_job_recovery_is_bounded_preserves_rejections_and_honors_cancel():
-    post = _function_body(_script(), "async function postJobWithTurnstileRetry(") + "\n}"
-    node = textwrap.dedent(
-        """
-        const assert = require("node:assert/strict");
-        const headers = () => ({}), turnstileSiteKey = "", setJobStatus = () => {};
-        let retryWait = () => {};
-        const setTimeout = (callback, delay) => {
-          if (delay === 750) queueMicrotask(() => { retryWait(); callback(); }); return 1;
-        };
-        const clearTimeout = () => {};
-        const form = new FormData();
-        form.set("sample_id", "furusato"); form.set("submission_id", "a".repeat(32));
-        let requests = 0;
-        let fetch = async () => { requests++; throw new TypeError("Load failed"); };
-        """
-    ) + post + textwrap.dedent(
-        """
-        (async () => {
-          await assert.rejects(postJobWithTurnstileRetry(form), error => {
-            assert.equal(error.submissionUnconfirmed, true);
-            assert.match(error.message, /履歴/);
-            return true;
-          });
-          assert.equal(requests, 2, "do not retry indefinitely");
-          for (const status of [400, 401, 403, 413, 422, 429]) {
-            requests = 0;
-            fetch = async () => { requests++; return {status, ok: false}; };
-            assert.equal((await postJobWithTurnstileRetry(form)).status, status);
-            assert.equal(requests, 1, "explicit rejections must be preserved");
-          }
-          requests = 0;
-          fetch = async () => { requests++; throw new TypeError("Load failed"); };
-          const controller = new AbortController();
-          retryWait = () => controller.abort();
-          await assert.rejects(postJobWithTurnstileRetry(form, controller.signal),
-            error => error.name === "AbortError");
-          assert.equal(requests, 1, "cancel must prevent resending");
-          form.delete("submission_id");
-          requests = 0;
-          await assert.rejects(postJobWithTurnstileRetry(form), /Load failed/);
-          assert.equal(requests, 1, "do not resend without a deduplication ID");
-        })().catch(error => {console.error(error); process.exit(1);});
-        """
-    )
-    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
-def test_submission_uses_an_idempotency_key():
+def test_audio_submission_uses_an_idempotency_key():
     submit = _function_body(_script(), "async function submitJob(")
     assert 'form.append("submission_id", submissionId);' in submit
     assert "globalThis.crypto?.randomUUID" in submit

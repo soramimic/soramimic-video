@@ -3489,38 +3489,27 @@ async function postJobWithTurnstileRetry(form, signal = null) {
     }, 750);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
-  const sendOnce = async () => {
-    const res = await (hasAudio
-      ? uploadAudio()
-      : fetch("/api/jobs", {
-        method: "POST", body: form, headers: jobHeaders(), signal,
-      }));
-    // A lost or incomplete response does not mean the server rejected the job.
-    // Reuse the submission ID to recover its ID without creating another job.
-    if (res.status >= 500) throw new Error("生成の受付を確認できませんでした");
-    if (!res.ok) return res;
-    const body = await res.json();
-    if (typeof body?.id !== "string" || !body.id) {
-      throw new Error("生成の受付を確認できませんでした");
-    }
-    return {ok: true, status: res.status, json: async () => body};
-  };
   const send = async () => {
     try {
-      return await sendOnce();
+      return await (hasAudio
+        ? uploadAudio()
+        : fetch("/api/jobs", {
+          method: "POST", body: form, headers: jobHeaders(), signal,
+        }));
     } catch (firstError) {
-      if (signal?.aborted || firstError?.name === "AbortError"
-          || (!hasAudio && !form.has?.("submission_id"))) throw firstError;
-      setJobStatus(hasAudio
-        ? "通信が切れたため、音源を再送しています…" : "生成の受付を確認しています…");
+      // iOS Safariは4G/VPNで大きなmultipart送信が一度切れると "Load failed" だけを
+      // 返すか、エラーなしで停止する。音源だけは同じ送信IDのまま
+      // 一度再送し、サーバー側で重複を抑止する。
+      if (!hasAudio || signal?.aborted || firstError?.name === "AbortError") throw firstError;
+      setJobStatus("通信が切れたため、音源を再送しています…");
       await waitBeforeRetry();
       try {
-        return await sendOnce();
+        return await uploadAudio();
       } catch (retryError) {
         if (signal?.aborted || retryError?.name === "AbortError") throw retryError;
-        throw Object.assign(new Error(
-          "生成の受付を確認できませんでした。履歴を確認してください。"
-        ), {submissionUnconfirmed: true});
+        throw new Error(
+          "音源の送信中に通信が切れました。通信を確認して、もう一度動画をタップしてください。"
+        );
       }
     }
   };
@@ -3682,7 +3671,7 @@ async function submitJob(previewSec, previewMode) {
     setBuilderState("preview");
     showBuilderMsg(canceled
       ? "音源の送信を中断しました。"
-      : err.submissionUnconfirmed ? err.message : "生成を開始できませんでした: " + err.message);
+      : "生成を開始できませんでした: " + err.message);
     openJobDetails();
     setBusy(false);
   } finally {
