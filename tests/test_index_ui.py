@@ -1999,6 +1999,32 @@ def test_audio_submission_uses_an_idempotency_key():
     assert "globalThis.crypto?.randomUUID" in submit
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+@pytest.mark.parametrize("status", [401, 403, 404, 410])
+def test_stale_progress_rejection_cannot_overwrite_a_newer_result(status):
+    poll = _function_body(_script(), "async function poll(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let currentJob = "job", pollSeq = 1, pollLastAt = 0, resolve;
+        const POLL_FETCH_TIMEOUT_MS = 8000, POLL_FATAL_STATUS = [401, 403, 404, 410];
+        const headers = () => ({{}});
+        const fetch = () => new Promise(done => {{resolve = done;}});
+        const stopPolling = () => assert.fail("stale rejection must be ignored");
+        const setJobStatus = () => assert.fail("preserve the newer completion message");
+        {poll}
+        (async () => {{
+          const pending = poll("job");
+          pollSeq++; // A focus/online event starts a newer polling chain.
+          currentJob = null; // The newer chain has already displayed completion.
+          resolve({{status: {status}, ok: false}});
+          await pending;
+        }})().catch(error => {{console.error(error); process.exit(1);}});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
 def test_turnstile_interaction_scrolls_to_inline_prompt():
     """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
     markup = _markup()

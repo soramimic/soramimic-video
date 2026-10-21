@@ -2979,6 +2979,7 @@ async function poll(id, seq = pollSeq) {
   try {
     const res = await fetch(`/api/jobs/${id}`,
       { headers: headers(), cache: "no-store", signal: ctrl.signal });
+    if (seq !== pollSeq || id !== currentJob) return;
     if (POLL_FATAL_STATUS.includes(res.status)) {
       // 取り直しても直らない。busyのままにせず操作を返す
       stopPolling();
