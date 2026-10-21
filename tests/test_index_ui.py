@@ -1999,6 +1999,87 @@ def test_audio_submission_uses_an_idempotency_key():
     assert "globalThis.crypto?.randomUUID" in submit
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_submission_rechecks_song_selection_after_verification_wait():
+    submit = _function_body(_script(), "async function submitJob(") + "\n}"
+    harness = r'''
+        const assert = require("node:assert/strict");
+        const {File} = require("node:buffer");
+        const audio = new File(["original audio"], "first.wav");
+        const otherAudio = new File(["different audio"], "second.wav");
+        const midi = new File(["midi"], "first.mid");
+        let selectedAudio = null, selectedMidi = null, midiSampleId = "";
+        let submitBusy = false, submitAbort = null, releaseVerification;
+        const elements = new Map(), requests = [], messages = [];
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {value: "", hidden: false});
+          return elements.get(id);
+        };
+        const ownAudioFile = () => selectedAudio;
+        const ownSongFile = () => selectedAudio || selectedMidi;
+        const ownSongKind = () => selectedMidi ? "midi" : selectedAudio ? "audio" : "";
+        const setBusy = value => { submitBusy = value; };
+        const showSubmitMsg = message => messages.push(message);
+        const lyricsFileReading = false, songInputMode = "upload";
+        const automaticLyricsEnabled = () => true;
+        const lyricsInput = () => ({error: "", data: null});
+        const samplePending = null, midiChecking = null;
+        const ensureSelectedSampleMidi = async () => true;
+        const editorSourceForSubmit = () => ({file: null});
+        const simpleMode = true, apiKey = () => "";
+        const turnstileSiteKey = "test", turnstileScriptFailed = false;
+        const ensureTurnstileToken = () => new Promise(resolve => {releaseVerification = resolve;});
+        const turnstileToken = () => "verified";
+        const fixedSynthesizer = "hybrid", fixedVoicevoxStyle = 6000;
+        const appendSongLyrics = () => {}, buildConvertParams = () => "";
+        const selectedTitleWords = () => "";
+        const activeCustomList = () => null, showsEditorWordlist = () => false;
+        const appendCustomWordlist = () => {};
+        const songTitleOf = () => midiSampleId || ownSongFile()?.name || "";
+        const showProgress = () => {}, setJobStatus = () => {}, resetTurnstile = () => {};
+        const setCancelPending = () => {}, hideTurnstilePrompt = () => {};
+        const setBuilderState = () => {}, showBuilderMsg = () => {}, openJobDetails = () => {};
+        const watch = () => { submitBusy = false; };
+        const postJobWithTurnstileRetry = async form => {
+          requests.push(form);
+          return {ok: true, status: 200, json: async () => ({id: "job"})};
+        };
+    ''' + submit + r'''
+        (async () => {
+          const choices = {
+            audio: () => {selectedAudio = audio; selectedMidi = null; midiSampleId = "";},
+            midi: () => {selectedAudio = null; selectedMidi = midi; midiSampleId = "";},
+            sample: () => {selectedAudio = null; selectedMidi = null; midiSampleId = "first";},
+          };
+          for (const initial of Object.keys(choices)) {
+            for (const change of [false, true]) {
+              choices[initial]();
+              messages.length = 0;
+              releaseVerification = null;
+              const count = requests.length;
+              const pending = submitJob(0, "");
+              while (!releaseVerification) await new Promise(setImmediate);
+              if (change) {
+                if (initial === "audio") selectedAudio = otherAudio;
+                else choices.audio();
+              }
+              releaseVerification(true);
+              await pending;
+              assert.equal(requests.length, count + (change ? 0 : 1),
+                `${initial}: changing the song must require a new generation tap`);
+              assert.equal(submitBusy, false);
+              if (change) assert.ok(messages.some(text => text.includes("曲")));
+              else if (initial === "audio") assert.equal(requests.at(-1).get("audio"), audio);
+              else if (initial === "midi") assert.equal(requests.at(-1).get("midi"), midi);
+              else assert.equal(requests.at(-1).get("sample_id"), "first");
+            }
+          }
+        })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''
+    result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 @pytest.mark.parametrize("status", [401, 403, 404, 410])
 def test_stale_progress_rejection_cannot_overwrite_a_newer_result(status):
@@ -2307,7 +2388,7 @@ def test_submit_never_posts_without_a_turnstile_token():
     verification = 'if (!await ensureTurnstileToken()) {'
     assert verification in submit
     assert submit.index(verification) < submit.index("const form = new FormData()")
-    guard = submit[submit.index(verification) : submit.index("const form = new FormData()")]
+    guard = submit[submit.index(verification):].split("\n    }", 1)[0]
     assert "return;" in guard
     assert "showProgress();" not in guard
     assert submit.index("if (submitBusy) return;") < submit.index(
