@@ -1612,6 +1612,7 @@
 <script src="/custom-wordlists.js"></script>
 <script src="/app-bridge.js"></script>
 <script src="/metadata-change.js?v=compact-song-metadata-v1"></script>
+<script src="/audio-upload.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 // 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
@@ -1859,6 +1860,7 @@ let fixedSynthesizer = "voicevox";
 let maxAudioUploadBytes = 200 * 1024 * 1024;
 let maxSongSeconds = 7 * 60;
 let audioInputReady = false;
+let resumableAudioUploads = false;
 
 async function loadConfig() {
   const res = await fetch("/api/config", { headers: headers() });
@@ -1888,6 +1890,7 @@ async function loadConfig() {
     maxSongSeconds = configuredMaxSongSeconds;
   }
   audioInputReady = conf.audio_input === true;
+  resumableAudioUploads = conf.resumable_audio_upload === true;
   $("song-upload-hint").textContent = audioInputReady
     ? `歌詞入りMIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
     : "歌詞入りMIDIに対応（XF・標準歌詞イベント）";
@@ -3513,7 +3516,10 @@ async function postJobWithTurnstileRetry(form, signal = null) {
       }
     }
   };
-  let res = await send();
+  const sendAudio = () => SoramimicAudioUpload.send(form, {headers, signal, onStatus: setJobStatus});
+  const resumable = hasAudio && typeof SoramimicAudioUpload !== "undefined"
+    && resumableAudioUploads;
+  let res = await (resumable ? sendAudio() : send());
   if (res.status !== 403 || !turnstileSiteKey) return res;
   // resetだけでは前回実行の遅延callbackと新しい実行を区別できない。widgetを世代ごと
   // 作り直し、拒否されたtokenの実行から届くcallbackを無効化してから再確認する。
@@ -3524,7 +3530,7 @@ async function postJobWithTurnstileRetry(form, signal = null) {
   rebuildTurnstileWidget();
   if (!await ensureTurnstileToken()) return res;
   form.set("turnstile_token", turnstileToken());
-  return send();
+  return resumable ? sendAudio() : send();
 }
 
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
@@ -3671,7 +3677,7 @@ async function submitJob(previewSec, previewMode) {
     setBuilderState("preview");
     showBuilderMsg(canceled
       ? "音源の送信を中断しました。"
-      : "生成を開始できませんでした: " + err.message);
+      : err.submissionUnconfirmed ? err.message : "生成を開始できませんでした: " + err.message);
     openJobDetails();
     setBusy(false);
   } finally {
@@ -4396,6 +4402,7 @@ songUploadEntry.addEventListener("drop", (event) => {
 });
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
+  globalThis.SoramimicAudioUpload?.selectionChanged?.(file);
   if (!file) return;
   setRecordingStatus("");
   const kind = ownSongKind(file);

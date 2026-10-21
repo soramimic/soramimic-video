@@ -163,6 +163,23 @@ Web API は job 単位で処理し、状態、thumbnail、完成動画を返し�
 入力 size、曲長、同時実行数、利用回数等の制限が適用される場合があります。制限に達した場合は
 API response と UI で利用者に通知します。
 
+音源の途中再開には `POST /api/audio-uploads` で `filename`、`size`、32桁の16進数の
+`submission_id` と `turnstile_token` を送ります。人間確認はこの時点で検証します。
+応答の `id` を使い、`GET /api/audio-uploads/{id}` で `offset`、`size`、`chunk_bytes` を取得し、
+`PUT /api/audio-uploads/{id}?offset=...` へ最大512KiBのバイナリを送ります。
+同じ位置・同じ内容の再送は追記せず、受信済み位置を返します。異なる位置への送信は409です。
+送信完了後は `POST /api/jobs` に `audio_upload_id` と同じ値の `submission_id` を指定し、
+曲名・歌詞などの設定を送ります。既存の音源検査・生成制限を適用し、受付済みIDの再送には
+同じジョブIDを返します。従来のmultipartによる音源送信も受け付けます。
+
+途中データはAPIキー認証と公開モードのセッションで保護し、
+`DELETE /api/audio-uploads/{id}` で削除できます。
+`cancel_job=true` を付けると、同じ送信IDで受付済みのジョブも中断します。
+作成から1時間で期限切れとなり、定期清掃で削除します。
+送信枠はセッション・接続元ごとに2件、全体で8件までとし、
+申告容量の合計を音源1ファイルの上限の4倍までに制限します。
+Web UIは同じページ内の再試行に対応し、ページの再読み込み後には音源を保持しません。
+
 `POST /api/title-candidates` はJSONで `title` または `sample`、`wordlist` と任意の
 `where` を受け取り、バランス設定で比較したタイトル候補を `candidates` に返します。
 自作リストには `wordlist` の代わりに `wordlist_text` を指定します。
