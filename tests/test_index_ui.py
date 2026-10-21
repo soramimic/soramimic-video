@@ -4547,3 +4547,129 @@ def test_save_menu_groups_available_formats_and_closes_after_selection():
                      '歌唱データ');
     ''')
     subprocess.run(['node', '-e', node], check=True)
+
+
+def test_initial_song_and_lyrics_controls_are_disabled_before_scripts_run():
+    from lxml import html
+
+    page = html.fromstring(INDEX.read_text(encoding="utf-8"))
+    for control_id in (
+        "song-upload-button", "song-record-button", "song-upload-clear", "auto-lyrics",
+        "lyrics", "lyrics-file", "clear-lyrics-file", "builder-sample", "song-source-switch",
+        "builder-wordlist-trigger", "song-title", "song-credit", "title-words",
+    ):
+        control = page.get_element_by_id(control_id)
+        assert control.xpath("ancestor::fieldset[@data-startup-inputs and @disabled]"), control_id
+    assert page.get_element_by_id("builder-play").get("disabled") is not None
+    assert not page.get_element_by_id("api-key").xpath("ancestor::fieldset[@disabled]")
+    assert not page.get_element_by_id("startup-retry").xpath("ancestor::fieldset[@disabled]")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_initialization_waits_for_restored_inputs_and_keeps_failures_locked():
+    script = _script()
+    functions = "\n".join(
+        _function_body(script, head) + "\n}"
+        for head in ("async function initializePage()", "async function loadConfig()")
+    )
+    node = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {
+          value: '', hidden: false, disabled: false, textContent: '', options: [],
+          scrollIntoView() {},
+        });
+        return elements.get(id);
+      };
+      const fieldsets = [{disabled: true}, {disabled: true}];
+      const document = {querySelectorAll: () => fieldsets};
+      const headers = () => ({});
+      const SoramimicBridge = {peer: () => ({})};
+      let key = '', fetches = 0, fail = '', authenticated = false;
+      const apiKey = () => key;
+      let editorPeer, simpleMode, launchWordlists, editorWordlists, fixedVoicevoxStyle,
+        fixedSynthesizer, maxAudioUploadBytes, maxSongSeconds, audioInputReady,
+        resumableAudioUploads, wordlistLayouts, wordlistPhrases;
+      let initializationPending = null;
+      const deferred = () => {
+        let resolve;
+        const promise = new Promise(done => {resolve = done;});
+        return {promise, resolve};
+      };
+      let configGate = deferred(), restoreGate = deferred(), sampleGate = deferred();
+      let restoring = false, received = false, samplePending = sampleGate.promise;
+      const fetch = async () => {
+        fetches++;
+        await configGate.promise;
+        if (fail === 'network') throw new Error('offline');
+        if (fail === 'timeout') throw new DOMException('timed out', 'TimeoutError');
+        return {ok: fail !== 'http', json: async () => ({
+          auth_required: authenticated, models: [], layouts: [], public: true,
+        })};
+      };
+      const refreshCustomLists = async () => {};
+      const syncRecordingUi = () => {}, renderSampleOptions = () => {};
+      const fillChoiceOptions = () => {}, setChoice = () => {};
+      const setupNeutrino = () => {}, setupVoicevox = () => {}, setupPrettyPitch = () => {};
+      const toggleSynthOpts = () => {}, setupPublicMode = () => {}, setupTurnstile = () => {};
+      const loadWordlistSelect = async () => {}, updateParodyStatus = () => {};
+      const applyFixedUiDefaults = () => {}, leUpdateStatus = () => {};
+      const initBuilder = async () => {}, updateSongTextPreviews = () => {};
+      const loadHistory = async () => [], restoreJobProgress = () => {};
+      const showBuilderMsg = () => {};
+      const restoreForm = async () => {
+        restoring = true;
+        await restoreGate.promise;
+        $('lyrics').value = 'previous lyrics';
+        restoring = false;
+      };
+      const receiveEditorLyrics = async () => {received = true;};
+      __FUNCTIONS__
+      const tick = () => new Promise(done => setImmediate(done));
+      const locked = () => fieldsets.every(fieldset => fieldset.disabled);
+      (async () => {
+        $('song-title').disabled = true; // e.g. a sample's read-only metadata
+        const first = initializePage(), duplicate = initializePage();
+        assert.equal(fetches, 1, 'initialization cannot overlap');
+        assert.ok(locked());
+        assert.equal($('startup-status').hidden, false);
+        assert.equal($('startup-retry').hidden, true);
+        configGate.resolve(); await tick();
+        assert.equal(restoring, true);
+        assert.ok(locked(), 'restoration may not receive edits');
+        restoreGate.resolve(); await tick();
+        assert.ok(locked(), 'restored sample lyrics must also finish');
+        sampleGate.resolve(true); await Promise.all([first, duplicate]);
+        assert.equal(received, true);
+        assert.equal(locked(), false);
+        assert.equal($('startup-status').hidden, true);
+        assert.equal($('song-title').disabled, true, 'preserve input-specific restrictions');
+        $('lyrics').value = 'new lyrics';
+        await tick();
+        assert.equal($('lyrics').value, 'new lyrics');
+
+        for (const failure of ['network', 'http', 'timeout']) {
+          fail = failure;
+          await initializePage();
+          assert.ok(locked(), 'failed initialization must not expose stale inputs');
+          assert.equal($('startup-status').hidden, false);
+          assert.equal($('startup-retry').hidden, false);
+          assert.match($('startup-message').textContent, /再試行/);
+          assert.equal($('lyrics').value, 'new lyrics');
+        }
+        fail = ''; authenticated = true;
+        await initializePage();
+        assert.ok(locked());
+        assert.match($('startup-message').textContent, /APIキー/);
+        assert.equal($('api-key').disabled, false, 'authentication remains accessible');
+        key = 'provided';
+        await initializePage();
+        assert.equal(locked(), false, 'retry after authentication can finish initialization');
+        samplePending = Promise.resolve(false);
+        await initializePage();
+        assert.ok(locked(), 'failed sample restoration must not unlock the inputs');
+        assert.equal($('startup-retry').hidden, false);
+      })().catch(error => {console.error(error); process.exit(1);});
+    '''.replace("__FUNCTIONS__", functions)
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
