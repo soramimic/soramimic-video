@@ -617,7 +617,7 @@ def test_web_ui_only_exposes_fixed_position_song_text_fields():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_uploaded_xf_midi_title_defaults_to_song_file_stem():
-    """XFを表す複合拡張子は曲名の初期値へ含めない。"""
+    """XFを表す複合拡張子は曲名として使うファイル名へ含めない。"""
     function = _function_body(_script(), "function songFileStem(file)") + "\n}"
     node = textwrap.dedent(
         f"""
@@ -640,14 +640,21 @@ def test_reselecting_song_keeps_the_active_editor_title():
     ):]
     listener = listener[:listener.index("\n});") + len("\n});")]
     stem = _function_body(script, "function songFileStem(file)") + "\n}"
-    metadata = _function_body(script, "async function updateUploadedSongMetadata(file,") + "\n}"
+    metadata = _function_body(script, "async function updateUploadedSongMetadata(file)") + "\n}"
+    clear = _function_body(script, "async function clearSelectedSong()") + "\n}"
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
         const elements = new Map();
         const $ = id => {
           if (!elements.has(id)) elements.set(id, {
-            value: "", files: [], listeners: {},
+            _value: "", files: [], listeners: {},
+            get value() { return this._value; },
+            set value(value) {
+              this._value = value;
+              if (id === "midi" && value === "") this.files = [];
+            },
+            focus() {},
             addEventListener(type, handler) { this.listeners[type] = handler; },
             dispatchEvent(event) { this.listeners[event.type]?.(event); },
           });
@@ -656,7 +663,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const ownSongFile = () => $("midi").files[0];
         const ownSongKind = file => file.name.endsWith(".wav") ? "audio" : "midi";
         let active = null, restoring = false, midiSampleId = "";
-        let editorImportedFile = null, midiFromSample = false, metadataSongSelected = false;
+        let editorImportedFile = null, midiFromSample = false;
         const VideoMetadata = {notifyChange: async () => {}};
         const activeLyricsJson = () => active;
         const audioInputReady = true, maxAudioUploadBytes = 1000;
@@ -664,11 +671,13 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const setRecordingStatus = () => {};
         const rejectOwnSongFile = message => { throw new Error(message); };
         const clearEditorFile = () => {}, clearAudioPresentation = () => {};
+        const recordedSongFile = null;
+        const clearAudioInput = () => {};
         const syncLyricsRecognition = () => {}, syncBuilderOptions = () => {};
         const syncBuilderValues = () => {}, showBuilderMsg = () => {};
         const schedulePreview = () => {};
         """
-    ) + stem + "\n" + metadata + "\n" + listener + textwrap.dedent(
+    ) + stem + "\n" + metadata + "\n" + clear + "\n" + listener + textwrap.dedent(
         """
         for (const name of ["upload.wav", "upload.xf.mid"]) {
           $("midi").files = [{name, size: 10}];
@@ -678,7 +687,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
           assert.equal($("song-title").value, "テスト曲");
           $("song-title").value = "";
           $("midi").dispatchEvent(new Event("change"));
-          assert.equal($("song-title").value, "upload");
+          assert.equal($("song-title").value, "", "upload must leave the default title blank");
           $("song-title").value = "手入力した曲名";
           $("midi").dispatchEvent(new Event("change"));
           assert.equal($("song-title").value, "手入力した曲名");
@@ -689,13 +698,22 @@ def test_reselecting_song_keeps_the_active_editor_title():
             assert.equal($("song-title").value, "前のファイルの曲名");
             $("song-title").value = "";
             $("midi").dispatchEvent(new Event("change"));
-            assert.equal($("song-title").value, "upload");
+            assert.equal($("song-title").value, "", "upload must leave the default title blank");
           }
           restoring = true;
           $("song-title").value = "復元した曲名";
           $("midi").dispatchEvent(new Event("change"));
           assert.equal($("song-title").value, "復元した曲名");
           restoring = false;
+          $("song-credit").value = "手入力したクレジット";
+          clearSelectedSong();
+          assert.equal(ownSongFile(), undefined);
+          assert.equal($("song-title").value, "復元した曲名");
+          assert.equal($("song-credit").value, "手入力したクレジット");
+          $("midi").files = [{name: "replacement." + name.split(".").pop(), size: 10}];
+          $("midi").dispatchEvent(new Event("change"));
+          assert.equal($("song-title").value, "復元した曲名");
+          assert.equal($("song-credit").value, "手入力したクレジット");
         }
         """
     )
@@ -822,81 +840,35 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
-def test_advanced_settings_require_both_song_and_wordlist():
-    """詳細設定は曲と単語リストが揃うまで開けず、選択解除時には閉じる。"""
-    script = _script()
-    functions = "\n".join(
-        _function_body(script, head) + "\n}"
-        for head in (
-            "function advancedSettingsAvailable()",
-            "function updateAdvancedSettingsAvailability()",
-        )
-    )
-    start = script.index('$("advanced").querySelector(":scope > summary").addEventListener')
-    wiring = script[start:script.index("\n});", start) + len("\n});")]
-    node = textwrap.dedent(
+def test_advanced_settings_work_before_selection_and_stay_open_during_changes():
+    """曲がなくても設定を開け、曲の解除・入力方法の切り替えで閉じない。"""
+    advanced = _markup().split('<details class="card" id="advanced">', 1)[1]
+    summary = advanced.split("</summary>", 1)[0]
+    assert "aria-disabled" not in summary
+    assert "曲と単語リストを選ぶと開けます" not in summary
+    node = _song_input_node_harness() + textwrap.dedent(
         """
-        const assert = require("node:assert/strict");
-        const summary = {
-          attrs: {}, clickHandler: null,
-          setAttribute(name, value) { this.attrs[name] = value; },
-          addEventListener(type, callback) { this.clickHandler = callback; },
-        };
-        const elements = {
-          advanced: {
-            open: true, locked: false, querySelector: () => summary,
-            classList: { toggle(name, force) { elements.advanced.locked = force; } },
-          },
-          auth: { hidden: true },
-          "sample-select": { value: "" },
-          "advanced-lock-hint": { hidden: false },
-        };
-        const $ = (id) => elements[id];
-        let file = null, wordlist = "", custom = null, editor = false, key = "";
-        const ownSongFile = () => file;
-        const currentWordlistName = () => wordlist;
-        const activeCustomList = () => custom;
-        const showsEditorWordlist = () => editor;
-        const apiKey = () => key;
-        const activeLyricsJson = () => null;
-        """
-    ) + functions + "\n" + wiring + textwrap.dedent(
-        """
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.open, false);
-        assert.equal(elements.advanced.locked, true);
-        assert.equal(summary.attrs["aria-disabled"], "true");
-        assert.equal(elements["advanced-lock-hint"].hidden, false);
-        let prevented = false;
-        summary.clickHandler({ preventDefault() { prevented = true; } });
-        assert.equal(prevented, true, "locked summary must not open");
-
-        elements["sample-select"].value = "furusato";
-        wordlist = "stations";
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.locked, false);
-        assert.equal(summary.attrs["aria-disabled"], "false");
-        assert.equal(elements["advanced-lock-hint"].hidden, true);
-        prevented = false;
-        summary.clickHandler({ preventDefault() { prevented = true; } });
-        assert.equal(prevented, false, "complete selection must open");
-
-        elements.advanced.open = true;
-        wordlist = "";
-        updateAdvancedSettingsAvailability();
-        assert.equal(elements.advanced.open, false, "removing a selection must close details");
-
-        elements["sample-select"].value = "";
-        file = { name: "my-song.mid" };
-        custom = { name: "自作リスト" };
-        updateAdvancedSettingsAvailability();
-        assert.equal(summary.attrs["aria-disabled"], "false");
-
-        file = null;
-        custom = null;
-        elements.auth.hidden = false;
-        updateAdvancedSettingsAvailability();
-        assert.equal(summary.attrs["aria-disabled"], "false", "API key entry stays reachable");
+        $("advanced").open = true;
+        syncBuilderValues();
+        assert.equal($("advanced").open, true, "settings remain open before selecting anything");
+        $("song-title").value = "先に入力した曲名";
+        $("song-credit").value = "先に入力したクレジット";
+        $("midi").files = [{ name: "first.mid" }];
+        syncBuilderValues();
+        assert.equal($("advanced").open, true);
+        $("midi").value = "";
+        syncBuilderValues();
+        assert.equal($("advanced").open, true, "clearing a song must keep details open");
+        assert.equal($("song-title").value, "先に入力した曲名");
+        assert.equal($("song-credit").value, "先に入力したクレジット");
+        $("midi").files = [{ name: "replacement.mid" }];
+        syncBuilderValues();
+        assert.equal($("advanced").open, true);
+        switchSongInputMode("sample");
+        assert.equal($("advanced").open, true, "switching input modes must keep details open");
+        $("advanced").open = false;
+        syncBuilderValues();
+        assert.equal($("advanced").open, false, "manual closure is preserved");
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
@@ -1024,7 +996,12 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
           setAttribute(name, value) { this.attributes[name] = value; }
           removeAttribute(name) { delete this.attributes[name]; }
           append(...children) { children.forEach(child => this.appendChild(child)); }
-          appendChild(child) { this.children.push(child); child.parent = this; }
+          appendChild(child) {
+            if (child.parent) {
+              child.parent.children = child.parent.children.filter(x => x !== child);
+            }
+            this.children.push(child); child.parent = this;
+          }
           prepend(child) { this.children.unshift(child); child.parent = this; }
           replaceChildren(child) { this.children = []; this.appendChild(child); }
           closest(selector) { return this.parent.closest(selector); }
@@ -1045,7 +1022,7 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
         const resetHistorySave = () => {}, resetHistoryShare = () => {};
         const historyCreatedLabel = () => '', historyStatusLabel = () => '完成';
         const editorPeer = {}, saveCalls = [], editCalls = [];
-        const saveHistoryVideo = (index, button) => saveCalls.push({index, button});
+        const saveHistoryVideo = (index, button, status) => saveCalls.push({index, button, status});
         const editResultLyrics = job => editCalls.push(job);
         const shareCalls = [], shareHistoryResult = index => shareCalls.push(index);
         const offerNativeVideoSave = (link, save) => save() !== false;
@@ -1080,18 +1057,37 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
             assert.ok(edit.className.includes('result-action action-edit'));
             edit.dispatchEvent(new Event('click'));
             assert.equal(editCalls.at(-1), job);
-            const retry = actions.querySelector('.history-save-retry');
+            assert.equal(actions.querySelector('.history-save-retry'), undefined);
             if (IOS && job.result_kind === 'video') {
-              assert.equal(retry.hidden, true);
+              const saveButton = nodesIn(actions).find(node => node.tagName === 'SUMMARY');
+              const status = card.querySelector('.save-status');
               const mp4 = nodesIn(actions).find(node => node.tagName === 'A');
               const saveEvent = new Event('click', {cancelable: true});
               mp4.dispatchEvent(saveEvent);
               assert.equal(saveEvent.defaultPrevented, true);
-              assert.equal(saveCalls.at(-1).button, retry);
+              assert.equal(saveCalls.at(-1).button, saveButton);
+              assert.equal(saveCalls.at(-1).status, status);
               assert.equal(saveCalls.at(-1).index, index);
-              retry.dispatchEvent(new Event('click'));
-              assert.equal(saveCalls.at(-1).button, retry);
-            } else assert.equal(retry, undefined);
+              preparedHistorySave = {index, file: {}, shareable: true};
+              const retry = new Event('click', {cancelable: true});
+              const before = saveCalls.length;
+              saveButton.dispatchEvent(retry);
+              assert.equal(retry.defaultPrevented, true);
+              assert.equal(saveCalls.length, before + 1);
+              assert.equal(saveCalls.at(-1).button, saveButton);
+              preparedHistorySave.needsTap = false;
+              const afterSheet = new Event('click', {cancelable: true});
+              saveButton.dispatchEvent(afterSheet);
+              assert.equal(afterSheet.defaultPrevented, false,
+                           'opening the sheet restores access to every format');
+              preparedHistorySave.needsTap = true;
+              preparedHistorySave.shareable = false;
+              const fallback = new Event('click', {cancelable: true});
+              saveButton.dispatchEvent(fallback);
+              assert.equal(fallback.defaultPrevented, false, 'fallback keeps format menu');
+              assert.equal(saveCalls.length, before + 1);
+              preparedHistorySave = null;
+            }
             const previous = activeHistoryPlayback;
             thumb.dispatchEvent(new Event('click'));
             const active = activeHistoryPlayback;
@@ -1257,9 +1253,11 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         return elements.get(id);
       };
       class Option {constructor(text, value) {this.text = text; this.value = value;}}
-      const OWN_SONG_VALUE = 'own', ownSongFile = () => ({}), headers = () => ({});
-      let title = 'サンゲンショク', restoring = false;
-      const songTitleOf = () => title;
+      const OWN_SONG_VALUE = 'own', headers = () => ({});
+      let filename = 'song.mid';
+      const ownSongFile = () => combo.sampleId === OWN_SONG_VALUE ? {name: filename} : null;
+      let title = 'サンゲンショク', restoring = false, songInputMode = 'upload';
+      const songTitleOf = () => title || ownSongFile()?.name.replace(/\.[^.]+$/, '') || '';
       let combo = {sampleId: 'own', wordlistName: 'scientist', customList: null};
       const currentCombo = () => combo;
       let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
@@ -1303,6 +1301,17 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.equal(saved.label, 'ハンゼン ＋ ホフ');
         assert.equal(previews, 1);
         assert.match($('title-words-detail').textContent, /ハンゼン氏 ＋ ホフ氏/);
+        // Clearing only the song file must retain the chosen words, including after reload.
+        combo.sampleId = ''; refreshTitleChoices();
+        assert.equal(ownSongFile(), null);
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        assert.equal($('title-candidates-load').disabled, true, 'a new search needs a song');
+        titleCandidates = []; titleChoice = saved; refreshTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        combo.sampleId = OWN_SONG_VALUE; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        assert.equal($('title-candidates-load').disabled, false);
         // Re-rendering and restoring a saved choice retain its words.
         titleCandidates = []; titleChoice = saved; renderTitleChoices();
         assert.equal($('title-words').value, JSON.stringify(choice.words));
@@ -1327,8 +1336,25 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.deepEqual(titleCandidates, []);
         assert.equal($('title-candidates-status').textContent, '');
         titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
         $('where').value = ''; refreshTitleChoices();
         assert.equal(titleChoice, null);
+        // A title edit while waiting for a replacement also invalidates the choice.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        title = 'さらに別の曲'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        // A different dictionary still invalidates the choice while no file is selected.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
+        combo.wordlistName = 'stations'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        assert.equal(selectedTitleWords(), '');
+        combo.wordlistName = 'scientist'; combo.sampleId = OWN_SONG_VALUE;
+        // Switching to sample input must not carry an uploaded song's title selection.
+        titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; songInputMode = 'sample'; refreshTitleChoices();
+        assert.equal(titleChoice, null);
+        songInputMode = 'upload'; combo.sampleId = OWN_SONG_VALUE;
         // Empty results and failures remain visible inside the open dialog.
         const empty = load();
         resolveFetch({ok: true, json: async () => ({candidates: []})});
@@ -1344,11 +1370,25 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.match($('title-candidates-dialog-status').textContent, /しばらく待って/);
         $('title-candidates-close').listeners.click();
         assert.equal(dialog.open, false);
+        // With no explicit title, clearing/reloading/reselecting the same filename is safe.
+        title = ''; titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        titleChoice = JSON.parse(JSON.stringify(titleChoice)); refreshTitleChoices();
+        assert.equal($('title-words').value, JSON.stringify(choice.words));
+        combo.sampleId = OWN_SONG_VALUE; refreshTitleChoices();
+        assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+        filename = 'different.mid'; refreshTitleChoices();
+        assert.equal(titleChoice, null, 'a different filename changes the implicit title');
         // Editing custom CSV content also invalidates the selected row identities.
         combo.customList = {text: 'one'};
         titleChoice = {...choice, context: titleChoiceContext()};
+        combo.sampleId = ''; refreshTitleChoices();
         combo.customList.text = 'two'; refreshTitleChoices();
         assert.equal(selectedTitleWords(), '');
+        assert.equal(titleChoice, null);
+        titleChoice = {...choice, context: '{invalid'};
+        assert.doesNotThrow(refreshTitleChoices, 'corrupt saved context cannot break the UI');
         assert.equal(titleChoice, null);
       })().catch(error => {console.error(error); process.exitCode = 1;});
     '''
@@ -1586,7 +1626,6 @@ def _song_input_node_harness() -> str:
         const syncJsonInputControls = () => {};
         const activeLyricsJson = () => null;
         const updateWordlistUsageNotice = () => {};
-        const updateAdvancedSettingsAvailability = () => {};
         const selectedSampleIsAudio = () => false;
         const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
         const clearAudioInput = clearAudioPresentation;
@@ -1706,14 +1745,53 @@ def test_sample_body_finishing_after_source_switch_cannot_replace_current_song()
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_legacy_saved_sample_midi_is_migrated_to_id_only():
-    """旧版が保存したサンプルMIDIは、バイナリを復元せずIDだけに移行する。"""
-    restored = _function_body(_script(), "async function doRestoreForm()")
-    assert "await samplesReady;" in restored
-    assert "if (!restoredSampleId) restoredSampleId = restoredId;" in restored
-    assert "localStorage.removeItem(MIDI_KEY);" in restored
-    initialized = _function_body(_script(), "async function initBuilder()")
-    assert "trackSample(applySample({ keepLyrics: editedLyrics }))" in initialized
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+@pytest.mark.parametrize("filename,sample_id,migrated", [
+    ("katatsumuri.mid", "", False),
+    ("katatsumuri.mid", "furusato", False),
+    ("katatsumuri.mid", "katatsumuri", True),
+    ("my-song.mid", "", False),
+    ("removed.mid", "removed", False),
+    (".mid", "", False),
+])
+def test_saved_midi_restoration_requires_an_explicit_matching_sample(filename, sample_id, migrated):
+    restore = _function_body(_script(), "async function doRestoreForm()") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        const FORM_KEY="form", MIDI_KEY="midi", EDITOR_FILE_KEY="editor";
+        const saved = {{name: {filename!r}, dataUrl: "data:audio/midi;base64,dXBsb2Fk"}};
+        const values = new Map([[MIDI_KEY, JSON.stringify(saved)]]);
+        const localStorage = {{getItem: key => values.get(key) ?? null,
+          removeItem: key => values.delete(key)}};
+        let restoredSampleId = {sample_id!r}, parodyRestored = false;
+        const samplesReady = Promise.resolve();
+        const elements = {{"sample-select": {{options: [
+          {{value:""}}, {{value:"katatsumuri"}}, {{value:"furusato"}}]}},
+          midi: {{files: []}}, "midi-restore-hint": {{hidden: true}}}};
+        const $ = id => elements[id];
+        const injectFile = (input, file, dispatch) => {{
+          assert.equal(dispatch, true); input.files = [file];
+        }};
+        const syncLyricsInput = () => {{}}, syncLyricsRecognition = () => {{}};
+        {restore}
+        (async () => {{
+          await doRestoreForm();
+          assert.equal(values.has(MIDI_KEY), {str(not migrated).lower()});
+          if ({str(migrated).lower()}) {{
+            assert.equal($("midi").files.length, 0);
+            assert.equal(restoredSampleId, "katatsumuri");
+          }} else {{
+            assert.equal($("midi").files[0].name, saved.name);
+            assert.equal(await $("midi").files[0].text(), "upload",
+              "the saved upload must not be replaced by the bundled sample");
+            assert.equal(restoredSampleId, {sample_id!r});
+            assert.equal($("midi-restore-hint").hidden, false);
+          }}
+        }})().catch(error => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 def test_completed_video_requests_no_preload_hint():
@@ -1919,6 +1997,32 @@ def test_audio_submission_uses_an_idempotency_key():
     submit = _function_body(_script(), "async function submitJob(")
     assert 'form.append("submission_id", submissionId);' in submit
     assert "globalThis.crypto?.randomUUID" in submit
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+@pytest.mark.parametrize("status", [401, 403, 404, 410])
+def test_stale_progress_rejection_cannot_overwrite_a_newer_result(status):
+    poll = _function_body(_script(), "async function poll(") + "\n}"
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let currentJob = "job", pollSeq = 1, pollLastAt = 0, resolve;
+        const POLL_FETCH_TIMEOUT_MS = 8000, POLL_FATAL_STATUS = [401, 403, 404, 410];
+        const headers = () => ({{}});
+        const fetch = () => new Promise(done => {{resolve = done;}});
+        const stopPolling = () => assert.fail("stale rejection must be ignored");
+        const setJobStatus = () => assert.fail("preserve the newer completion message");
+        {poll}
+        (async () => {{
+          const pending = poll("job");
+          pollSeq++; // A focus/online event starts a newer polling chain.
+          currentJob = null; // The newer chain has already displayed completion.
+          resolve({{status: {status}, ok: false}});
+          await pending;
+        }})().catch(error => {{console.error(error); process.exit(1);}});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 def test_turnstile_interaction_scrolls_to_inline_prompt():
@@ -3017,7 +3121,7 @@ def test_wav_input_reuses_the_builder_and_mobile_player():
     assert 'id="audio-filename"' not in html
     assert '曲ファイルを解除' not in html
     assert '$("song-upload-button").disabled' not in script
-    assert ': "XF MIDIに対応";' in script
+    assert ': "歌詞入りMIDIに対応（XF・標準歌詞イベント）";' in script
     assert 'XF MIDIに対応（このサーバーでは音声入力を準備中です）' not in script
     assert 'このサーバーでは音声入力を準備中です' in script
     assert 'accept=".mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,audio/midi"' in html
@@ -4245,7 +4349,6 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         "function syncJsonInputControls()", "function syncLyricsRecognition()",
         "function currentWordlistName()", "function currentPreviewCustomList()",
         "function editorUsesTextOnly(", "function editorTextPreviewList(",
-        "function advancedSettingsAvailable()",
     ))
     node = textwrap.dedent('''
         const assert = require("node:assert/strict");
@@ -4260,10 +4363,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         const MAX_EDITOR_BYTES=4*1024*1024, simpleMode=false, wordlistGroups=[];
         const editorWordlists=new Set(["stations","food"]);
         let songInputMode="upload", customListBusy=false, menuClosed=false;
-        let songFile={name:"song.wav"};
-        const ownSongFile=()=>songFile;
-        const apiKey=()=>"";
-        $("auth").hidden=true;
+        const ownSongFile=()=>({name:"song.wav"});
         const closeCustomListMenu=focus=>{assert.equal(focus,false);menuClosed=true;};
         const activeCustomList=()=>null, showsEditorWordlist=()=>false;
         const editorSessionWordlist=()=>null;
@@ -4283,13 +4383,11 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.equal(currentWordlistName(),"food");
         assert.equal(currentPreviewCustomList(),null);
         assert.equal($("builder-text-only-notice").hidden,true);
-        assert.equal(advancedSettingsAvailable(),true);
         const before=JSON.stringify(data);
         editorWordlists.delete("food");
         syncJsonInputControls();
         assert.equal($("builder-text-only-notice").hidden,false);
         assert.equal(currentWordlistName(),"");
-        assert.equal(advancedSettingsAvailable(),true,"text-only JSON unlocks settings");
         assert.equal(currentPreviewCustomList().name,"食べ物");
         assert.equal(currentPreviewCustomList().text,"id,original,surface,pronunciation");
         assert.equal(JSON.stringify(data),before,"keep the imported JSON unchanged");
@@ -4299,15 +4397,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         $("lyrics").value=JSON.stringify(data);
         assert.equal(currentWordlistName(),"");
         assert.deepEqual(currentPreviewCustomList(),{name:"自作",text:"ねこ,ネコ"});
-        assert.equal(advancedSettingsAvailable(),true,"custom JSON unlocks settings");
-        $("wordlist").value="";
-        songFile=null;
-        assert.equal(advancedSettingsAvailable(),false,"JSON still requires a song");
-        songFile={name:"song.wav"};
-        $("lyrics").value="{invalid";
-        assert.equal(advancedSettingsAvailable(),false,"invalid JSON cannot unlock settings");
         $("lyrics").value="通常の歌詞";
-        assert.equal(advancedSettingsAvailable(),false,"plain lyrics still need a wordlist");
         $("wordlist").value="stations";
         syncJsonInputControls();syncLyricsRecognition();
         assert.equal($("builder-text-only-notice").hidden,true);
@@ -4319,8 +4409,6 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         assert.equal($("builder-wordlist-trigger").disabled,true);
         customListBusy=false;$("lyrics").value=JSON.stringify(data);
         $("auto-lyrics").checked=true;syncJsonInputControls();
-        $("wordlist").value="";
-        assert.equal(advancedSettingsAvailable(),false,"automatic lyrics ignore inactive JSON");
         $("wordlist").value="stations";
         assert.equal($("builder-wordlist-trigger").disabled,false);
         assert.equal(currentWordlistName(),"stations");

@@ -117,8 +117,11 @@ def test_xf_also_restores_lyrics_without_an_xf_aware_reader(tmp_path):
     stripped = tmp_path / "standard.mid"
     ordinary.save(stripped)
     assert b"XFKM" not in stripped.read_bytes()
-    restored = MidiFile(stripped, charset="cp932")
-    assert restored.tracks == ordinary.tracks
+    restored = analyze_midi(stripped)
+    assert [n.kana for n in restored.notes] == ["ア", "キ", "ク"]
+    assert [(n.midi_note, n.start_tick, n.end_tick) for n in restored.notes] == [
+        (60, 0, 120), (62, 140, 240), (64, 240, 2400),
+    ]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
