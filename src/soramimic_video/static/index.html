@@ -215,6 +215,9 @@
   /* 曲・歌詞・単語リスト・歌声・レイアウトがフラットに並ぶと、初見の人がどこから
      触ればいいか分からない。役割ごとに区切り、よく使う順に並べる。小見出しと
      1行の説明を付けて「上から読めば分かる」形にする。 */
+  fieldset.startup-inputs {
+    border: 0; padding: 0; margin: 0; min-width: 0;
+  }
   .opt-group + .opt-group {
     margin-top: 1.1rem; padding-top: .9rem; border-top: 1px solid var(--border);
   }
@@ -932,7 +935,12 @@
      (エディタの中で選び直した結果は正本を経由してこのプルダウンにも出る)。
      見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
+  <div id="startup-status" role="status">
+    <p class="hint" id="startup-message">準備中…</p>
+    <button type="button" id="startup-retry" class="btn-sm" hidden>再試行</button>
+  </div>
   <span id="open-editor-msg" class="error"></span>
+  <fieldset class="startup-inputs" data-startup-inputs disabled>
   <div id="song-upload-panel">
     <div class="audio-upload-entry" id="song-upload-entry">
       <div class="song-upload-actions">
@@ -999,6 +1007,7 @@
   </div>
   <div id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"
     aria-label="単語リスト" hidden></div>
+  </fieldset>
   <p class="hint" id="builder-text-only-notice" role="status" hidden>この単語リストは画像なしで動画にします。受け取った空耳歌詞と読みをそのまま使います。</p>
   <!-- #advanced はHTML上では正本の入力群とまとまった位置に置き、ページ構築時に
        このスロットへ移す。単語リスト直下で開閉でき、下のプレビューを探し回らずに済む。 -->
@@ -1027,7 +1036,7 @@
       <span class="spinner" aria-hidden="true"></span>
       <span>プレビューを作成中…</span>
     </div>
-    <button type="button" class="builder-play" id="builder-play" hidden
+    <button type="button" class="builder-play" id="builder-play" data-startup-inputs disabled hidden
       aria-label="この組み合わせで動画を生成">
       <span class="builder-play-icon" aria-hidden="true">▶</span>
       <span class="builder-play-label">タップで動画を生成</span>
@@ -1158,6 +1167,17 @@
 <details class="card" id="advanced">
   <summary>⚙️ 詳細設定</summary>
 
+  <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig が auth_required を見て
+       hidden を外す)。公開モードや認証なしの構成では最後まで hidden のまま。
+       出るときは入力しないと何も動かないので、グループより前・先頭に置く
+       (loadConfig はここへスクロールする)。 -->
+  <div class="field" id="auth" hidden>
+    <label for="api-key">APIキー</label>
+    <input type="password" id="api-key" placeholder="X-API-Key">
+  </div>
+
+  <fieldset class="startup-inputs" data-startup-inputs disabled>
+
   <div class="field" id="adjust-lyrics-panel" hidden>
     <label for="adjust-lyrics">
       <input type="checkbox" id="adjust-lyrics" aria-describedby="adjust-lyrics-hint">
@@ -1174,15 +1194,6 @@
   </div>
 
   <!-- 既存機能の非表示グループと、表示する曲情報グループをDOM上で分ける。 -->
-
-  <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig が auth_required を見て
-       hidden を外す)。公開モードや認証なしの構成では最後まで hidden のまま。
-       出るときは入力しないと何も動かないので、グループより前・先頭に置く
-       (loadConfig はここへスクロールする)。 -->
-  <div class="field" id="auth" hidden>
-    <label for="api-key">APIキー</label>
-    <input type="password" id="api-key" placeholder="X-API-Key">
-  </div>
 
   <!-- 歌声の調整・試聴機能はAPI/DOMには残すが、Web UIでは波音リツに固定する。 -->
   <section class="opt-group" hidden>
@@ -1336,6 +1347,7 @@
 
   </section>
 
+  </fieldset>
 </details>
 
 <details class="card" id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
@@ -1863,7 +1875,10 @@ let audioInputReady = false;
 let resumableAudioUploads = false;
 
 async function loadConfig() {
-  const res = await fetch("/api/config", { headers: headers() });
+  const res = await fetch("/api/config", {
+    headers: headers(), signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error("設定を取得できませんでした");
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
   simpleMode = !!conf.simple_ui;
@@ -1936,9 +1951,11 @@ async function loadConfig() {
   leUpdateStatus();     // 復元した編集の有無をフォーム側の表示に反映
   // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
   await initBuilder();
+  if (samplePending && !await samplePending) throw new Error("曲を復元できませんでした");
   updateSongTextPreviews();
   restoreJobProgress(await loadHistory());
-  receiveEditorLyrics();
+  await receiveEditorLyrics();
+  return true;
 }
 
 function restoreJobProgress(jobs) {
@@ -4407,6 +4424,7 @@ songUploadEntry.addEventListener("drop", (event) => {
     showBuilderMsg("曲ファイルは1つだけドロップしてください。");
     return;
   }
+  if (songUploadEntry.closest("fieldset")?.disabled) return;
   setOwnSongFile(files[0]);
 });
 $("midi").addEventListener("change", () => {
@@ -9285,9 +9303,35 @@ async function doRestoreForm() {
       && Array.isArray(state.titleChoice.originals)) titleChoice = state.titleChoice;
 }
 
-$("api-key").addEventListener("change", loadConfig);
+let initializationPending = null;
+async function initializePage() {
+  if (initializationPending) return initializationPending;
+  const inputs = document.querySelectorAll("[data-startup-inputs]");
+  for (const input of inputs) input.disabled = true;
+  $("startup-status").hidden = false;
+  $("startup-message").textContent = "準備中…";
+  $("startup-retry").hidden = true;
+  initializationPending = (async () => {
+    try {
+      if (!await loadConfig()) {
+        $("startup-message").textContent = "APIキーを入力してください。";
+        return;
+      }
+      for (const input of inputs) input.disabled = false;
+      $("startup-status").hidden = true;
+    } catch {
+      $("startup-message").textContent = "準備できませんでした。通信状態を確認して再試行してください。";
+      $("startup-retry").hidden = false;
+    }
+  })();
+  try { await initializationPending; }
+  finally { initializationPending = null; }
+}
+
+$("startup-retry").addEventListener("click", () => location.reload());
+$("api-key").addEventListener("change", initializePage);
 if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");
-loadConfig();
+initializePage();
 </script>
 </body>
 </html>
