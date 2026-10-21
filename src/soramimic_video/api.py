@@ -53,6 +53,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from . import completed_lyrics, runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
@@ -67,6 +68,7 @@ from .audio_input import (
     normalize_compressed_audio,
     validate_pcm_wav,
 )
+from .audio_uploads import CHUNK_BYTES, AudioUploads
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -1727,6 +1729,7 @@ class JobManager:
         self._cleaner: threading.Thread | None = None
         if (
             self.config.get("scrub_private_artifacts")
+            or self.config.get("audio_uploads")
             or _env_float(JOB_TTL_HOURS_ENV, 0.0) > 0
         ):
             self._cleaner = threading.Thread(target=self._cleanup_loop, daemon=True)
@@ -2154,6 +2157,8 @@ class JobManager:
             sum(1 for job in list(self.jobs.values()) if job.cleanup_pending)
             + len(self._pending_deletions)
             + int(self._editor_cleanup_failed)
+            + int(bool(self.config.get("audio_uploads")
+                       and self.config["audio_uploads"].cleanup_failed))
         )
 
     def cleanup_expired(self, now: float | None = None) -> list[str]:
@@ -2161,6 +2166,11 @@ class JobManager:
 
         Public reviews expire after 24 hours when result retention is disabled.
         """
+        if self.config.get("audio_uploads"):
+            self.config["audio_uploads"].cleanup(now, consumed={
+                job.submission_id: job.owner for job in list(self.jobs.values())
+                if job.submission_id
+            })
         hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
         if hours <= 0 and not self.config.get("scrub_private_artifacts"):
             return []
@@ -2599,6 +2609,8 @@ def create_app(
         # job/session ID、ファイル名はUsageMetricsのschema上保存できない。
         "usage_metrics": usage_metrics,
     }
+    audio_uploads = AudioUploads(jobs_dir.resolve() / "audio-uploads", max_audio_upload_bytes())
+    config["audio_uploads"] = audio_uploads
     manager = JobManager(jobs_dir, config)
     # 高コストGETの短期レート制限。セッション枠に加えてIP枠も必ず確認するため、
     # cookieを削除してもバックストップを回避できない。IP枠はNATを考慮して広め。
@@ -2651,6 +2663,7 @@ def create_app(
     )
     app.state.manager = manager
     app.state.usage_metrics = usage_metrics
+    app.state.audio_uploads = audio_uploads
 
     @app.middleware("http")
     async def _session_cookie(request: Request, call_next):
@@ -2675,6 +2688,15 @@ def create_app(
             and request.method == "POST"
             and request.url.path == "/api/jobs"
         )
+        if request.url.path.startswith("/api/audio-uploads"):
+            maximum = CHUNK_BYTES if request.method == "PUT" else 8192
+            try:
+                default = "0" if request.method in {"GET", "DELETE", "HEAD"} else "-1"
+                length = int(request.headers.get("content-length", default))
+            except ValueError:
+                length = maximum + 1
+            if length < 0 or length > maximum:
+                return JSONResponse({"detail": "送信部分が大きすぎます"}, status_code=413)
         if is_simple_ui() and request.method == "POST" and request.url.path in {
             "/api/jobs",
             "/api/midi-check",
@@ -2728,9 +2750,7 @@ def create_app(
                     "soramimic_usage_submission_responses_total",
                     {"status": str(response.status_code)},
                 )
-            if request.url.path == "/api/jobs" or request.url.path.startswith(
-                "/api/jobs/"
-            ):
+            if request.url.path.startswith(("/api/jobs", "/api/audio-uploads")):
                 response.headers["Cache-Control"] = "private, no-store"
                 response.headers["Vary"] = "Cookie"
             return response
@@ -2745,9 +2765,7 @@ def create_app(
                 "soramimic_usage_submission_responses_total",
                 {"status": str(response.status_code)},
             )
-        if request.url.path == "/api/jobs" or request.url.path.startswith(
-            "/api/jobs/"
-        ):
+        if request.url.path.startswith(("/api/jobs", "/api/audio-uploads")):
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Vary"] = "Cookie"
         if issued:
@@ -3086,6 +3104,10 @@ def create_app(
     def metadata_change_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "metadata-change.js", media_type="application/javascript")
 
+    @app.get("/audio-upload.js", include_in_schema=False)
+    def audio_upload_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "audio-upload.js", media_type="application/javascript")
+
     @app.get("/image-credits.js", include_in_schema=False)
     def image_credits_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "image-credits.js", media_type="application/javascript")
@@ -3323,6 +3345,7 @@ def create_app(
             "audio_input": audio_input_available(),
             "audio_analysis": audio_analysis,
             "max_audio_upload_bytes": max_audio_upload_bytes(),
+            "resumable_audio_upload": True,
         }
         # Public deployments use the launch catalog as an allowlist even when the
         # full settings UI is enabled.  The API already enforces the same list;
@@ -4086,11 +4109,72 @@ def create_app(
                     "もっと短い曲でお試しください。",
                 )
 
+    @app.post("/api/audio-uploads", dependencies=[Depends(_require_api_key)])
+    async def begin_audio_upload(
+        request: Request, filename: str = Form(..., max_length=255),
+        size: int = Form(..., gt=0), submission_id: str = Form(..., pattern="^[0-9a-f]{32}$"),
+        turnstile_token: str = Form("", max_length=4096),
+    ) -> dict[str, Any]:
+        owner = owner_of(request)
+        existing = manager.find_submission(submission_id, owner)
+        if existing is not None:
+            return {"id": submission_id, "job_id": existing.id}
+        if not audio_input_available():
+            raise HTTPException(503, "このサーバーでは音声入力を利用できません")
+        if Path(filename).suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+            raise HTTPException(400, "対応していない音声形式です")
+        try:
+            audio_uploads.info(submission_id, owner)
+        except HTTPException as exc:
+            if exc.status_code not in (404, 410):
+                raise
+            _check_turnstile(request, turnstile_token)
+            exempt = await _quota_exempt(request)
+            _check_public_limits(owner, _client_hash(request), None, quota_exempt=exempt)
+        return audio_uploads.create(submission_id, owner, _client_hash(request), filename, size)
+
+    @app.get("/api/audio-uploads/{upload_id}", dependencies=[Depends(_require_api_key)])
+    def audio_upload_info(upload_id: str, request: Request) -> dict[str, Any]:
+        return audio_uploads.info(upload_id, owner_of(request))
+
+    @app.put("/api/audio-uploads/{upload_id}", dependencies=[Depends(_require_api_key)])
+    async def append_audio_upload(upload_id: str, request: Request, offset: int) -> dict[str, Any]:
+        owner = owner_of(request)
+        audio_uploads.info(upload_id, owner)
+        data = bytearray()
+        try:
+            async for part in request.stream():
+                if len(data) + len(part) > CHUNK_BYTES:
+                    raise HTTPException(413, "送信部分が大きすぎます")
+                data.extend(part)
+        except ClientDisconnect:
+            raise HTTPException(400, "送信が中断されました。続きから再開してください") from None
+        return await run_in_threadpool(audio_uploads.append, upload_id, owner, offset, bytes(data))
+
+    @app.delete("/api/audio-uploads/{upload_id}", dependencies=[Depends(_require_api_key)])
+    def remove_audio_upload(
+        upload_id: str, request: Request, cancel_job: bool = False,
+    ) -> dict[str, bool]:
+        owner = owner_of(request)
+        # Serialize against final admission so cancellation cannot miss a job
+        # created while waiting to remove its staged input.
+        with audio_uploads.lock:
+            existing = manager.find_submission(upload_id, owner)
+            if existing is not None and cancel_job:
+                manager.cancel(existing.id, owner)
+            try:
+                audio_uploads.remove(upload_id, owner)
+            except HTTPException as exc:
+                if existing is None or exc.status_code not in (404, 410):
+                    raise
+        return {"removed": True}
+
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])
     async def create_job(
         request: Request,
         midi: UploadFile | None = File(None),
         audio: UploadFile | None = File(None),
+        audio_upload_id: str = Form(""),
         sample_id: str = Form(""),
         lyrics_file: UploadFile | None = File(None),
         editor: UploadFile | None = None,
@@ -4154,11 +4238,31 @@ def create_app(
             existing = manager.find_submission(submission_id, owner)
             if existing is not None:
                 return {"id": existing.id}
-        _check_turnstile(request, turnstile_token)
-        quota_exempt = await _quota_exempt(request)
-        input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
-            await resolve_song_input(midi, audio, sample_id)
-        )
+        staged_audio: UploadFile | None = None
+        if audio_upload_id:
+            if audio is not None or midi is not None or sample_id.strip():
+                raise HTTPException(422, "送信済み音源と別の曲は同時に指定できません")
+            if submission_id != audio_upload_id:
+                raise HTTPException(422, "送信IDが一致しません")
+            quota_exempt = await _quota_exempt(request)
+            _check_public_limits(owner, _client_hash(request), None, quota_exempt=quota_exempt)
+            path, filename = audio_uploads.completed(audio_upload_id, owner)
+            staged_audio = UploadFile(filename=filename, file=path.open("rb"))
+            audio = staged_audio
+        else:
+            _check_turnstile(request, turnstile_token)
+            quota_exempt = await _quota_exempt(request)
+        try:
+            input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
+                await resolve_song_input(midi, audio, sample_id)
+            )
+        except Exception:
+            if staged_audio is not None:
+                audio_uploads.remove(audio_upload_id, owner)
+            raise
+        finally:
+            if staged_audio is not None:
+                await staged_audio.close()
         editor_bytes = None
         editor_payload: Any = None
         editor_original = False
@@ -4559,7 +4663,7 @@ def create_app(
         # ローカルmanifestを読み直して空になると、完成動画から表記が欠落するため。
         if params["sample_id"]:
             params["sample_midi_end_credit"] = midi_end_credit_of(params)
-        with quota_submit_lock:
+        with quota_submit_lock, audio_uploads.lock:
             # 1回目の応答だけが失われ、再送が並行して到着した場合もここで直列化して
             # 同じ音源のジョブを2本作らない。
             if submission_id:
@@ -4573,6 +4677,8 @@ def create_app(
                 input_seconds=input_seconds,
                 quota_exempt=quota_exempt,
             )
+            if audio_upload_id:
+                audio_uploads.completed(audio_upload_id, owner)
             job = manager.create(
                 input_bytes if input_kind == "midi" else None,
                 editor_bytes, lyrics, params,
@@ -4582,6 +4688,8 @@ def create_app(
                 wordlist_images=custom.images if custom is not None else None,
                 audio=input_bytes if input_kind == "audio" else None,
             )
+            if audio_upload_id:
+                audio_uploads.remove(audio_upload_id, owner)
         return {"id": job.id}
 
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
