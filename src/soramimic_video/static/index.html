@@ -3613,6 +3613,15 @@ async function submitJob(previewSec, previewMode) {
       return;
     }
   }
+  // 確認や編集の待機中も曲は選び直せる。古い音源と新しい曲情報を組み合わせて送らない。
+  if (audio !== ownAudioFile()
+      || midi !== (ownSongKind() === "midi" ? ownSongFile() : null)
+      || sampleId !== midiSampleId) {
+    setBusy(false);
+    hideTurnstilePrompt();
+    showSubmitMsg("曲の選択が変わりました。もう一度動画をタップして生成してください。");
+    return;
+  }
   const form = new FormData();
   const submissionId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replace(/-/g, "")
