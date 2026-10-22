@@ -1229,6 +1229,126 @@ def _function_body(script: str, head: str) -> str:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_layout_loading_discards_obsolete_responses_and_keeps_completed_video():
+    script = _script()
+    functions = "\n".join(_function_body(script, head) + "\n}" for head in (
+        "async function leLoad()", "function leClearLayout()", "function leToJson(",
+        "function leLoadBase(key)", "function leRestoreStash()",
+    ))
+    node = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {value: '', hidden: false});
+        return elements.get(id);
+      };
+      let leLoadSequence = 0, leLayout = null, leDirty = false, leLayoutFor = '';
+      let leSelected = -1, leStash = null, leBaseKey = '', leBaseline = null;
+      const LE_FILE_PREFIX = 'file:', leFiles = new Map();
+      const saveForm = () => {}, leMsg = () => {}, leRender = () => {};
+      const leUpdateStatus = () => {}, leUndoReset = () => {}, leSetSide = () => {};
+      const layoutFileMsg = () => {};
+      const headers = () => ({});
+      let result = 'done';
+      const releaseBuilderDone = () => {result = 'preview';};
+      const requests = [];
+      const fetch = () => new Promise((resolve, reject) => requests.push({resolve, reject}));
+      const response = value => ({ok: true, json: async () => value});
+      __FUNCTIONS__
+      (async () => {
+        $('layout').value = 'old';
+        const old = leLoad();
+        $('layout').value = 'new'; leClearLayout();
+        const current = leLoad();
+        requests[1].resolve(response({elements: ['new']}));
+        assert.equal(await current, true);
+        requests[0].resolve(response({elements: ['old']}));
+        assert.equal(await old, false);
+        assert.deepEqual(leLayout, {elements: ['new']});
+        assert.equal(leLayoutFor, 'new');
+        assert.equal(result, 'done', 'loading a preset must preserve the finished video');
+
+        const failed = leLoad();
+        leFiles.set('own.json', {elements: ['own']});
+        assert.equal(leLoadBase('file:own.json'), true);
+        requests[2].reject(new Error('offline'));
+        assert.equal(await failed, false);
+        assert.deepEqual(leLayout, {elements: ['own']}, 'old errors cannot clear a new file');
+
+        // A newer load can finish while the older response body is still decoding.
+        let finishBody;
+        const decoding = leLoad();
+        requests[3].resolve({ok: true, json: () => new Promise(r => {finishBody = r;})});
+        await new Promise(r => setImmediate(r));
+        const latest = leLoad();
+        requests[4].resolve(response({elements: ['latest']}));
+        assert.equal(await latest, true);
+        finishBody({elements: ['obsolete']});
+        assert.equal(await decoding, false);
+        assert.deepEqual(leLayout, {elements: ['latest']});
+
+        const pending = leLoad();
+        leStash = {layout: {elements: ['edited']}, baseKey: 'preset:new', baseline: '{}'};
+        leRestoreStash();
+        requests[5].resolve(response({elements: ['obsolete']}));
+        assert.equal(await pending, false);
+        assert.deepEqual(leLayout, {elements: ['edited']});
+
+        result = 'done';
+        leToJson();
+        assert.equal(result, 'preview', 'an actual edit still invalidates the displayed result');
+      })().catch(error => {console.error(error); process.exit(1);});
+    '''.replace("__FUNCTIONS__", functions)
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_lyric_adjustment_round_trips_with_saved_form():
+    script = _script()
+    functions = "\n".join(_function_body(script, head) + "\n}" for head in (
+        "function saveForm()", "async function doRestoreForm()",
+    ))
+    node = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {
+          value: '', checked: false, hidden: true, options: [], dispatchEvent() {},
+        });
+        return elements.get(id);
+      };
+      const values = new Map(), FORM_KEY = 'form', MIDI_KEY = 'midi', EDITOR_FILE_KEY = 'editor';
+      const localStorage = {getItem: k => values.get(k) ?? null,
+        setItem: (k, v) => values.set(k, v)};
+      let restoring = false, restoredSampleId = '', parodyRestored = false;
+      let midiSampleId = '', sampleLyricsId = '', sampleLyricsBaseline = null;
+      let activeCustomListId = '', lastAutoLayout = '', leLayoutFor = '', leDirty = false;
+      let leBaseKey = '', leBaseline = null, titleChoice = null;
+      const HIDDEN_UI_WORDLISTS = new Set(), simpleMode = false, customLists = [];
+      const toggleSynthOpts = () => {}, updateTransposeEnabled = () => {};
+      const syncLyricsInput = () => {}, syncLyricsRecognition = () => {};
+      const legacySongCredit = () => '';
+      __FUNCTIONS__
+      (async () => {
+        for (const enabled of [true, false]) {
+          $('adjust-lyrics').checked = enabled;
+          $('lyrics').value = 'あいうえお';
+          saveForm();
+          $('adjust-lyrics').checked = !enabled;
+          $('lyrics').value = '';
+          await doRestoreForm();
+          assert.equal($('adjust-lyrics').checked, enabled);
+          assert.equal($('lyrics').value, 'あいうえお');
+        }
+        values.set(FORM_KEY, '{}');
+        await doRestoreForm();
+        assert.equal($('adjust-lyrics').checked, false, 'legacy saves retain the default');
+      })().catch(error => {console.error(error); process.exit(1);});
+    '''.replace("__FUNCTIONS__", functions)
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
     script = _script()
     block = script[script.index("function titleChoiceContext()"):

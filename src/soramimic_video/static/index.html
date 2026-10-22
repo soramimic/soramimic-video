@@ -4284,6 +4284,7 @@ $("auto-lyrics").addEventListener("change", () => {
 });
 $("adjust-lyrics").addEventListener("change", () => {
   clearEditorFile();
+  saveForm();
 });
 let lyricsFileReadSequence = 0;
 let lyricsFileReading = false;
@@ -6326,6 +6327,7 @@ $("builder-cancel").addEventListener("click", cancelJob);
 // ---- レイアウトエディタ(ドラッグで配置) ----
 
 let leLayout = null;   // 編集中のレイアウト。nullなら未使用(=レイアウト名 or サーバー既定)
+let leLoadSequence = 0;
 // ユーザーが自分で編集したか(ドラッグ・追加/削除・JSON手入力)。
 // 生成時にlayout_jsonを送るのはこれがtrueのときだけ(読み込んだだけなら名前で送る)
 let leDirty = false;
@@ -6395,6 +6397,7 @@ function leCaptureCustom() {
 // 「Aを編集 → Bを見に行く → Aに戻ったら編集が生きている」ための復元
 function leRestoreStash() {
   if (!leStash) return;
+  ++leLoadSequence;
   leLayout = JSON.parse(JSON.stringify(leStash.layout));
   leBaseKey = leStash.baseKey;
   leBaseline = leStash.baseline;
@@ -6642,7 +6645,7 @@ function leLabel(e) {
 
 // leLayout を #layout-json に書き戻す。ドラッグ等の手編集から呼ばれるので
 // 「ユーザーが編集した」印(leDirty)を立てる。leLoad は読み込み直後に降ろす
-function leToJson() {
+function leToJson(releaseResult = true) {
   $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
   leDirty = true;
   // 新しい編集が入ったので、ベース切り替え用に取っておいた退避は捨てる
@@ -6651,13 +6654,14 @@ function leToJson() {
   leUpdateStatus();
   leLayoutFor = $("layout").value.trim();
   saveForm();  // ドラッグ編集はchangeを発火しないのでここで保存する
-  releaseBuilderDone();   // 同じ理由で、完成した動画も自分でプレビューに戻す
+  if (releaseResult) releaseBuilderDone();
 }
 
 // 編集中のレイアウトを捨てる(= レイアウト名だけで生成する状態に戻す)。
 // レイアウト名を変えた瞬間に同期で呼ぶことで、leLoadのfetchが失敗しても
 // 前のレイアウト由来のJSONが残らないようにする
 function leClearLayout() {
+  ++leLoadSequence;
   leLayout = null;
   leSelected = -1;
   leDirty = false;
@@ -7372,8 +7376,12 @@ document.addEventListener("keydown", (ev) => {
 // 捨てる: 前のレイアウトのJSONを残すと、レイアウト名と中身が食い違ったまま
 // 生成に送られて別の単語リスト向けのカードになってしまう(実際に起きた事故)
 async function leLoad() {
+  const sequence = ++leLoadSequence;
   const name = $("layout").value.trim() || "default";
+  const isCurrent = () => sequence === leLoadSequence
+    && name === ($("layout").value.trim() || "default");
   const fail = (msg) => {
+    if (!isCurrent()) return false;
     leClearLayout();
     saveForm();
     leMsg(msg);
@@ -7388,11 +7396,14 @@ async function leLoad() {
     return fail(`レイアウト「${name}」を読み込めませんでした(${err.message})。`
       + "編集中のレイアウトは破棄しました。プリセットを選び直して再試行してください");
   }
+  if (!isCurrent()) return false;
   if (!res.ok) {
     return fail("組み込みレイアウトだけ読み込めます: " + name);
   }
   try {
-    leLayout = await res.json();
+    const layout = await res.json();
+    if (!isCurrent()) return false;
+    leLayout = layout;
   } catch (err) {
     return fail(`レイアウト「${name}」の内容を読めませんでした(${err.message})`);
   }
@@ -7400,7 +7411,8 @@ async function leLoad() {
   // 読み込んだ内容がこれ以降の「ベース」(●の判定基準)になる
   leBaseKey = "preset:" + $("layout").value.trim();
   leBaseline = JSON.stringify(leLayout);
-  leToJson();
+  // プリセットの取得完了だけで、完成した動画を非表示にしない。
+  leToJson(false);
   leUndoReset();     // 読み込みでレイアウトが入れ替わったので履歴はここから
   leDirty = false;   // 読み込んだだけなので「ユーザーの編集」ではない
   leLayoutFor = $("layout").value.trim();
@@ -7451,6 +7463,7 @@ $("layout-file").addEventListener("change", async () => {
 // プリセットは非同期(fetch)、ファイルはメモリからなので同期で返り値が違う点に注意
 function leLoadBase(key) {
   if (!key.startsWith(LE_FILE_PREFIX)) return leLoad();   // Promise<boolean>
+  ++leLoadSequence;
   const name = key.slice(LE_FILE_PREFIX.length);
   const src = leFiles.get(name);
   if (!src) { leMsg("読み込んだファイルが見つかりません: " + name); return false; }
@@ -9027,6 +9040,7 @@ function saveForm() {
       lyrics: $("lyrics").value,
       lyricsInputVersion: 1,
       autoLyrics: $("auto-lyrics").checked,
+      adjustLyrics: $("adjust-lyrics").checked,
       songTitle: $("song-title").value,
       sampleId: midiSampleId,
       // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
@@ -9242,6 +9256,7 @@ async function doRestoreForm() {
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
     if (typeof state.autoLyrics === "boolean") $("auto-lyrics").checked = state.autoLyrics;
+    if (typeof state.adjustLyrics === "boolean") $("adjust-lyrics").checked = state.adjustLyrics;
     $("song-title").value = state.songTitle || "";
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
