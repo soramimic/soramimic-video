@@ -4465,6 +4465,8 @@ function showSongInputMode(mode) {
 
 function switchSongInputMode(mode) {
   if (songRecordingBusy() || mode === songInputMode) return;
+  $("lyrics-file").value = "";
+  loadLyricsFile(null);
   stopSongRecording(true);
   clearRecordedSongPlayback();
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
@@ -7899,7 +7901,9 @@ async function confirmLyricReview() {
     $("confirm-lyric-review").textContent = "動画を生成中…";
     const form = new FormData();
     form.append("editor", new Blob([raw], { type: "application/json" }), "editor.json");
-    const res = await fetch(`/api/jobs/${id}/resume`, { method: "POST", headers: headers(), body: form });
+    const res = await fetch(`/api/jobs/${id}/resume`, {
+      method: "POST", headers: headers(), body: form, signal: AbortSignal.timeout(20000),
+    });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
     closeEditor();
