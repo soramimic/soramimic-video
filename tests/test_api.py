@@ -2849,7 +2849,7 @@ def test_index_html_editor_opens_as_fullscreen_modal():
     # モーダル本体は .wrap の外(bodyの直下)。position:fixed が親のスタッキング
     # 文脈に巻き込まれないようにするため、詳細設定より後ろに置く
     assert (
-        '<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" '
+        '<dialog class="editor-modal" id="editor-frame-wrap" hidden '
         'aria-modal="true"' in html
     )
     assert html.index('id="editor-frame-wrap"') > html.index('aria-label="ご利用案内"')
