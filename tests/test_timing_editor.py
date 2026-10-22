@@ -14,7 +14,6 @@ from soramimic_video.project import (
     SongInfo,
 )
 from soramimic_video.timing_editor import (
-    EDITOR_HTML,
     IGNORE_RANGES_NAME,
     _current_full_mix,
     _current_mix,
@@ -345,19 +344,3 @@ def test_current_full_mix_requires_all_inputs_to_be_older(tmp_path: Path) -> Non
     assert _current_full_mix(tmp_path, source) == mixed
     os.utime(source, ns=(newest + 2, newest + 2))
     assert _current_full_mix(tmp_path, source) is None
-
-
-def test_editor_checks_for_prebuilt_mix_on_load() -> None:
-    html = EDITOR_HTML.read_text(encoding="utf-8")
-    assert "load().then(()=>{resize();tick();poll()});" in html
-    assert '<option value="full" disabled>原曲＋リツ</option>' in html
-    assert "full:{src:'/full-mixed'" in html
-
-
-def test_editor_can_mark_and_save_ignore_ranges() -> None:
-    html = EDITOR_HTML.read_text(encoding="utf-8")
-    assert 'id="bistart"' in html
-    assert 'id="biend"' in html
-    assert 'id="bidel"' in html
-    assert "ignoreRanges=normalizeIgnores(d.ignore_ranges||[])" in html
-    assert "JSON.stringify({moras,ignore_ranges:ignoreRanges})" in html

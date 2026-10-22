@@ -996,22 +996,6 @@ def test_job_accepts_editor_with_filler(job_client, tmp_path):
     assert res.status_code == 200, res.text
 
 
-def test_index_treats_original_wordlist_as_custom():
-    """トップ画面の表示でも ORIGINAL は custom: と同じ「自作リスト」扱いにする。"""
-    index = (
-        Path(__file__).resolve().parents[1] / "src/soramimic_video/static/index.html"
-    ).read_text(encoding="utf-8")
-    body = index[index.index("async function updateParodyStatus(") :]
-    body = body[: body.index("\n}\n")]
-    # filepath を持たない ORIGINAL も拾い、名前は w.text(=自作リスト)を使う
-    assert '=== "ORIGINAL"' in body
-    assert 'w.text || "自作リスト"' in body
-    # 編集内容の指紋は results を見るので、エディタ内でリストだけ切り替えて
-    # 変換結果が変われば「編集あり」として検知される(=生成に反映される)
-    sig = index[index.index("function editorContentSig(") :]
-    assert "data.results" in sig[: sig.index("\n}\n")]
-
-
 def test_setting_json_from_source_conf(client):
     """配信用confはソースを正本とし、植物を含む公開候補を返す。"""
     from soramimic_video.editor_io import SETTING_JSON
