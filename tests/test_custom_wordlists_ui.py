@@ -74,7 +74,8 @@ assert.equal(currentPreviewCustomList(), null);
 
 
 def test_preview_posts_private_list_and_discards_stale_responses():
-    run_node(frontend_function("loadThumbnailPreview") + r"""
+    run_node(frontend_function("currentWordlistWhere")
+             + frontend_function("loadThumbnailPreview") + r"""
 const elements = new Map();
 const $ = id => {
   if (!elements.has(id)) elements.set(id, {hidden: false, value: "", removeAttribute() {}});
@@ -92,6 +93,9 @@ const songTitleOf = () => '持ち込み曲';
 const selectedTitleWords = () => '';
 const setTimeout = () => 1;
 const clearTimeout = () => {};
+let lyricsJson = null;
+const activeLyricsJson = () => lyricsJson;
+const editorWhereOf = data => data.where;
 const calls = [], shown = [], fallbacks = [];
 const fetch = (url, options) => new Promise(resolve => calls.push({url, options, resolve}));
 const showPreviewBlob = blob => shown.push(blob);
@@ -137,6 +141,14 @@ assert.equal(new URL(calls[3].url, 'https://example.test').searchParams.get('wor
 respond(calls[3], 'builtin');
 await new Promise(setImmediate);
 assert.deepEqual(shown, ['new', 'builtin']);
+lyricsJson = {where: '((status=current))'};
+$('where').value = '((type=family))';
+loadThumbnailPreview({sampleId: 'sample', wordlistName: 'stations'});
+const query = new URL(calls[4].url, 'https://example.test').searchParams;
+assert.equal(query.get('wordlist'), 'stations');
+assert.equal(query.get('where'), lyricsJson.where, 'JSON filter follows its dictionary');
+respond(calls[4], 'json'); await new Promise(setImmediate);
+assert.deepEqual(shown, ['new', 'builtin', 'json']);
 """)
 
 
@@ -148,6 +160,8 @@ const label = {value: ""};
 const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false, value: ""};
 const refreshTitleChoices = () => {};
 const selectedTitleWords = () => '';
+let where = '';
+const currentWordlistWhere = () => where;
 const showBuilderMsg = () => {};
 const c = {sampleId: 'sample', wordlistName: '',
   customList: {id: 'one', name: '動物', text: 'ねこ,ネコ'}};
@@ -181,6 +195,10 @@ assert.equal(scheduled, 6);
 label.value = '';
 schedulePreview();
 assert.equal(scheduled, 7);
+where = '((status=former))';
+schedulePreview();
+assert.equal(scheduled, 8, 'JSON filter changes invalidate the thumbnail cache');
+schedulePreview(); assert.equal(scheduled, 8);
 """)
 
 
