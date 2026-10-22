@@ -4066,6 +4066,7 @@ function syncRecordingUi() {
   button.disabled = activeSongRecording?.stopping === true;
   $("midi").disabled = !!activeSongRecording;
   $("song-upload-button").disabled = !!activeSongRecording;
+  $("song-source-switch").disabled = !!activeSongRecording;
   button.classList.toggle("is-recording", recording);
   button.setAttribute("aria-pressed", String(recording));
   $("song-record-label").textContent = recording ? "録音を停止" : "録音する";
@@ -4378,7 +4379,7 @@ function showSongInputMode(mode) {
 }
 
 function switchSongInputMode(mode) {
-  if (mode === songInputMode) return;
+  if (activeSongRecording || mode === songInputMode) return;
   stopSongRecording(true);
   clearRecordedSongPlayback();
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
