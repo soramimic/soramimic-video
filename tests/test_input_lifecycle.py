@@ -290,3 +290,54 @@ await sharePreparedVideo('/video.mp4',$('share-save'),'');
 assert.equal(calls.length,2); assert.equal(calls[0].text,SHARE_TEXT);
 assert.equal(calls[1].text,undefined); assert.equal(calls[1].files[0],file);
 """)
+
+
+def test_recording_blocks_uploads_until_recording_has_finished():
+    harness = DOM + r"""
+let activeSongRecording=null, audioInputReady=true, message='', uploads=0, songDragDepth=0;
+const recordingSupported=()=>true, ownSongFile=()=>null;
+const hasDraggedFiles=()=>true;
+const songUploadEntry=$('song-upload-entry');
+songUploadEntry.classList={add(){},remove(){}};
+songUploadEntry.closest=()=>null;
+$('song-record-button').classList={toggle(){}};
+const showBuilderMsg=text=>{message=text;};
+const setOwnSongFile=file=>{uploads++; $('midi').files=[file];};
+let pickerOpened=0;
+$('midi').click=()=>{pickerOpened++;};
+""" + _functions("function syncRecordingUi()") + _listener(
+        '$("song-upload-button").addEventListener("click",'
+    ) + _listener('songUploadEntry.addEventListener("drop",') + _listener(
+        'songUploadEntry.addEventListener("dragover",'
+    )
+    _run(harness, r"""
+const file=new File(['midi'],'new.mid');
+const dropped={type:'drop',preventDefault(){},dataTransfer:{files:[file]}};
+const dragged={type:'dragover',preventDefault(){},dataTransfer:{dropEffect:'copy'}};
+for (const state of ['recording','inactive']) {
+  // The inactive phase is still busy finalizing the captured recording.
+  activeSongRecording={recorder:{state},stopping:state==='inactive'};
+  syncRecordingUi();
+  assert.equal($('midi').disabled,true);
+  assert.equal($('song-upload-button').disabled,true);
+  $('song-upload-button').dispatchEvent(new Event('click'));
+  assert.equal(pickerOpened,0);
+  songUploadEntry.dispatchEvent(dragged);
+  assert.equal(dragged.dataTransfer.dropEffect,'none');
+  songUploadEntry.dispatchEvent(dropped);
+  assert.equal(uploads,0,'a drop must not replace an active recording');
+  assert.match(message,/録音を停止してから/);
+  assert.equal(activeSongRecording.recorder.state,state);
+}
+activeSongRecording=null;
+syncRecordingUi();
+assert.equal($('midi').disabled,false);
+assert.equal($('song-upload-button').disabled,false);
+$('song-upload-button').dispatchEvent(new Event('click'));
+assert.equal(pickerOpened,1);
+songUploadEntry.dispatchEvent(dragged);
+assert.equal(dragged.dataTransfer.dropEffect,'copy');
+songUploadEntry.dispatchEvent(dropped);
+assert.equal(uploads,1,'upload works again after recording finishes');
+assert.equal($('midi').files[0],file);
+""")
