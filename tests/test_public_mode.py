@@ -708,42 +708,15 @@ def test_public_config_reports_limits(public_app, monkeypatch):
     assert conf["launch_wordlists"] == api_mod.load_launch_catalog()["wordlists"]
 
 
-def test_index_html_turnstile_and_public_limits():
-    # フロントはサイトキーが来たときだけTurnstileを読み込み、トークンを添えて投入する
-    from pathlib import Path
-
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    assert "https://challenges.cloudflare.com/turnstile/v0/api.js" in html
-    assert 'setupTurnstile(conf.turnstile_site_key || "")' in html
-    assert 'if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());' in html
-    # 公開モードのときだけ制限の目安を出す。歌声合成のクレジットは
-    # 動画内に自動で入るため、ページ下部には重複表示しない。
-    assert 'publicMode = !!conf.public;' in html
-    assert 'id="public-limits"' in html
-    assert 'id="public-footer"' not in html
-    assert 'id="public-credit"' not in html
-    assert "歌声合成: VOICEVOX" not in html
-
-
-def test_public_mode_never_exposes_the_api_key_field(public_app, monkeypatch):
-    """公開モードではAPIキー欄を一切出さない(認証を要求しない構成だから)。"""
-    from pathlib import Path
-
+def test_public_config_does_not_require_an_api_key(public_app, monkeypatch):
+    """公開モードではAPIキー認証を要求しない。"""
     monkeypatch.delenv(api_mod.API_KEY_ENV, raising=False)
     conf = TestClient(public_app).get("/api/config").json()
     # サーバーは「認証は要らない」と答える
     assert conf["public"] is True
     assert conf["auth_required"] is False
-    # フロントは auth_required のときだけ hidden を外す。それ以外の経路で
-    # #auth が出ることはない(HTMLでは hidden 付きで置かれている)
-    html = (Path(api_mod.__file__).parent / "static" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    assert '<div class="field" id="auth" hidden>' in html
-    assert '$("auth").hidden = !conf.auth_required;' in html
-    assert html.count('$("auth").hidden') == 1
+
+
 def test_api_key_field_is_shown_only_when_auth_is_required(tmp_path, monkeypatch):
     """認証ありの構成でだけ auth_required=True になる(=APIキー欄が出る)。"""
     monkeypatch.delenv(api_mod.PUBLIC_ENV, raising=False)

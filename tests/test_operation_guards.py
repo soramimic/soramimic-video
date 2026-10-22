@@ -68,7 +68,7 @@ hang=false; await cancelJob(); assert.deepEqual(watched,['job']);
 
 def test_review_loading_disables_competing_open_controls_and_recovers_from_timeout():
     harness = DOM + r"""
-let currentJob='job', reviewOpening=false, reviewSubmitting=false, reviewClosing=false;
+let currentJob='job', reviewAction='';
 let customListBusy=false;
 let reviewOpenedJob=null, submitBusy=true, recording=false, message='';
 const songRecordingBusy=()=>recording, headers=()=>({});
@@ -82,16 +82,17 @@ const fetch=(_url,{signal})=>new Promise((_,reject)=>{
 });
 const showBuilderMsg=v=>{message=v;};
 """ + _functions(
-        "async function openLyricReview(", "function syncHistoryReviewControls()",
+        "async function openLyricReview(", "function setReviewAction(",
+        "function syncHistoryReviewControls()",
         "function historyReviewBlocked(",
     )
     _run(harness, r"""
-const pending=openLyricReview('job'); assert(reviewOpening);
+const pending=openLyricReview('job'); assert.equal(reviewAction,'opening');
 assert.equal($('builder-review').disabled,true); assert.equal(review.disabled,true);
 assert.equal($('song-record-button').disabled,true,'review loading excludes a new recording');
 assert.equal(controllers.length,1);
 controllers[0].abort(); await pending;
-assert.equal(reviewOpening,false); assert.equal($('builder-review').disabled,false);
+assert.equal(reviewAction,''); assert.equal($('builder-review').disabled,false);
 assert.equal($('song-record-button').disabled,false);
 assert.equal(review.disabled,false); assert.match(message,/再試行/);
 """)
@@ -99,7 +100,7 @@ assert.equal(review.disabled,false); assert.match(message,/再試行/);
 
 def test_history_resume_preserves_the_active_job_and_independent_controls():
     harness = DOM + r"""
-let reviewSubmitting=false, reviewClosing=false, reviewOpening=false;
+let reviewAction='';
 let customListBusy=false;
 let submitBusy=false, currentJob=null, recording=false, resumed=false, reviewOpenedJob=null;
 let builderState='preview', lyricsFileReading=false, watched=null;
@@ -112,7 +113,7 @@ $('builder-figure').hidden=false; $('builder-loading').hidden=true;
 """ + _functions(
         "function historyReviewBlocked(", "function syncHistoryReviewControls()",
         "function resumeHistoryReview(", "function setBusy(", "function updateBuilderOverlay()",
-        "async function openLyricReview(",
+        "async function openLyricReview(", "function setReviewAction(",
     )
     _run(harness, r"""
 setBusy(true); // Submission is still preparing; it must not be replaced by history.
@@ -128,13 +129,12 @@ assert.equal($('history-save').disabled,undefined);
 resumeHistoryReview({id:'current'}); assert.equal(watched,'current');
 setBusy(false); syncHistoryReviewControls(); assert.equal(other.disabled,false);
 for (const flag of ['closing','opening','submitting','recording']) {
-  reviewClosing=flag==='closing'; reviewOpening=flag==='opening';
-  reviewSubmitting=flag==='submitting'; recording=flag==='recording'; watched=null;
+  reviewAction=flag==='recording'?'':flag; recording=flag==='recording'; watched=null;
   syncHistoryReviewControls(); assert(other.disabled);
   resumeHistoryReview({id:'other'}); assert.equal(watched,null);
   await openLyricReview('other'); // Review must not cover recording/permission controls.
 }
-reviewClosing=reviewOpening=reviewSubmitting=recording=false;
+reviewAction=''; recording=false;
 resumeHistoryReview({id:'other'}); assert.equal(watched,'other');
 """)
 
@@ -142,7 +142,8 @@ resumeHistoryReview({id:'other'}); assert.equal(watched,'other');
 def test_review_close_freezes_edits_and_saves_after_an_earlier_autosave():
     harness = DOM + r"""
 const EDITOR_KEY='editor', REVIEW_JOB_KEY='job';
-let reviewJobId='one', reviewSubmitting=false, reviewClosing=false;
+let reviewJobId='one', reviewAction='';
+const syncHistoryReviewControls=()=>{};
 let reviewSavedRaw='', reviewSavePending=null, raw='first', writes=[], gates=[], closed=0;
 const headers=()=>({}), loadHistory=async()=>{}, closeEditor=()=>{closed++;};
 const sessionStorage={getItem:key=>key===EDITOR_KEY?raw:'one'};
@@ -154,13 +155,13 @@ const fetch=async(url,options)=>{
 const ok={ok:true,json:async()=>({})};
 """ + _functions(
         "async function saveLyricReview(", "async function closeLyricReview(",
-        "async function confirmLyricReview(",
+        "async function confirmLyricReview(", "function setReviewAction(",
     )
     _run(harness, r"""
 $('close-lyric-review').textContent='閉じる';
 const autosave=saveLyricReview(); await tick(); raw='latest before close';
 const closing=closeLyricReview();
-assert(reviewClosing); assert($('editor-frame').inert);
+assert.equal(reviewAction,'closing'); assert($('editor-frame').inert);
 assert.equal($('close-lyric-review').textContent,'保存中…');
 assert($('confirm-lyric-review').disabled && $('close-lyric-review').disabled);
 await closeLyricReview(); await confirmLyricReview();
@@ -169,13 +170,16 @@ gates[0].resolve(ok); await autosave; await tick();
 assert.deepEqual(writes,['first','latest before close']); assert.equal(closed,0);
 gates[1].resolve(ok); await closing;
 assert.equal(closed,1); assert.equal(reviewSavedRaw,raw);
+await saveLyricReview(); assert.equal(writes.length,2,'unchanged edits need no request');
 assert.equal($('close-lyric-review').textContent,'閉じる');
-assert.equal(reviewClosing,false); assert.equal($('editor-frame').inert,false);
+assert.equal(reviewAction,''); assert.equal($('editor-frame').inert,false);
 raw='failed save'; const failed=closeLyricReview(); await tick();
 gates[2].resolve({ok:false,json:async()=>({detail:'offline'})}); await failed;
 assert.equal(closed,1); assert.match($('lyric-review-error').textContent,/offline/);
 assert.equal($('confirm-lyric-review').disabled,false);
 assert.equal($('close-lyric-review').disabled,false); assert.equal($('editor-frame').inert,false);
+const retry=closeLyricReview(); await tick(); gates[3].resolve(ok); await retry;
+assert.equal(closed,2); assert.equal($('lyric-review-error').textContent,'');
 """)
 
 
@@ -183,10 +187,11 @@ def test_microphone_permission_wait_can_be_canceled_without_affecting_a_new_requ
     harness = DOM + r"""
 let activeSongRecording=null, recordingRequestPending=false, recordingStartSequence=0;
 let audioInputReady=true, songInputMode='upload', maxSongSeconds=0;
+let reviewAction='', customListBusy=false, submitBusy=false, currentJob=null;
 let requests=[], stopped=0, pauses=0;
-const document={querySelectorAll:()=>[{pause(){pauses++;}}]};
+const document={querySelectorAll:selector=>selector==='audio, video'?[{pause(){pauses++;}}]:[]};
 const recordingSupported=()=>true, ownSongFile=()=>null;
-const updateBuilderOverlay=()=>{}, syncHistoryReviewControls=()=>{};
+const updateBuilderOverlay=()=>{};
 const preferredRecordingMimeType=()=>'';
 $('song-record-button').classList={toggle(){}};
 const navigator={mediaDevices:{getUserMedia:()=>{
@@ -204,8 +209,18 @@ const window={MediaRecorder:class {
         "function setRecordingStatus(", "function stopSongRecording(",
         "async function startSongRecording(", "function releaseSongRecording(",
         "function finishSongRecording(",
+        "function setReviewAction(", "function syncHistoryReviewControls()",
+        "function historyReviewBlocked(",
     )
     _run(harness, r"""
+for (const action of ['opening','closing','submitting']) {
+  setReviewAction(action);
+  // A UI refresh must also preserve the exclusion at the recording entry point.
+  syncRecordingUi(); await startSongRecording();
+  assert.equal(requests.length,0,'review actions prevent microphone permission requests');
+  assert($('builder-review').disabled);
+}
+setReviewAction('');
 const old=startSongRecording();
 assert(recordingRequestPending); assert($('song-source-switch').disabled);
 assert.equal(pauses,1);
@@ -254,22 +269,4 @@ assert.equal($('lyrics').value,'current'); assert.equal($('builder-play').disabl
 await loadLyricsFile({size:1,arrayBuffer:async()=>{throw Error('bad file');}});
 assert.equal($('builder-play').disabled,false);
 submitBusy=true; await loadLyricsFile(null); assert($('builder-play').disabled);
-""")
-
-
-def test_review_response_cannot_cover_recording_started_while_it_was_loading():
-    harness = DOM + r"""
-let reviewOpening=false, reviewSubmitting=false, reviewClosing=false;
-let currentJob='current', reviewOpenedJob=null, recording=false;
-const songRecordingBusy=()=>recording, headers=()=>({});
-const response=deferred(), fetch=()=>response.promise;
-const syncHistoryReviewControls=()=>{};
-""" + _functions("async function openLyricReview(")
-    _run(harness, r"""
-const opening=openLyricReview('current');
-assert(reviewOpening); recording=true;
-response.resolve({ok:true,json:async()=>({results:[]})}); await opening;
-assert.equal(reviewOpening,false);
-assert.equal(reviewOpenedJob,null,'review must retry after recording instead of covering Stop');
-assert.equal($('editor-frame-wrap').hidden,false);
 """)

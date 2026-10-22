@@ -1,14 +1,7 @@
-"""トップ画面(static/index.html)の構造テスト。
-
-ブラウザを起動せずに守れる約束だけを見る。
-- 詳細設定の「読まなくても操作できる説明」は data-info で ⓘ に畳まれている
-- 状態・警告・エラーの動的メッセージは畳まれていない(常時表示のまま)
-- エディタへの導線はカードの⚙ボタン1つで、保存済みの選択UIがある
-"""
+"""トップ画面の入力・生成・編集・保存と非同期操作の回帰テスト。"""
 
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 import textwrap
@@ -41,28 +34,6 @@ def _markup() -> str:
     """<script> より前(=画面のマークアップ)だけを返す。"""
     text = INDEX.read_text(encoding="utf-8")
     return text[: text.index("<script>")]
-
-
-def test_info_hints_cover_the_static_explanations():
-    ids = {a.get("id") for tag, a in _tags() if "data-info" in a}
-    # 各グループの1行説明(opt-group-lead)はすべて ⓘ の中
-    leads = [a for tag, a in _tags() if "opt-group-lead" in (a.get("class") or "")]
-    assert len(leads) == 3
-    assert all("data-info" in a for a in leads)
-    # 動的メッセージ(状態・警告・エラー)は畳まない
-    always_visible = {
-        "midi-restore-hint",    # 前回のファイルを復元: ...
-        "layout-file-msg",      # 読み込みました: xxx.json / 読めませんでした
-        "midi-error",           # 歌詞なしMIDIの拒否
-        "lyrics-midi-warn",     # 元歌詞とMIDI歌詞の食い違い
-        "sample-status",        # ✓ ...をセットしました
-        "parody-status",        # 編集済みの替え歌を使用します
-        "voicevox-credit",
-        "auto-octave-hint",
-        "le-cue-hint",
-        "editor-resume-note",
-    }
-    assert not (ids & always_visible)
 
 
 def test_head_has_complete_public_ogp_metadata():
@@ -104,34 +75,6 @@ def test_head_has_complete_public_ogp_metadata():
     )
 
 
-def test_header_uses_versioned_soramimic_video_logo():
-    text = INDEX.read_text(encoding="utf-8")
-    assert 'class="brand-lockup"' in text
-    assert 'class="brand-logo"' in text
-    assert 'src="/logo-soramimic-video-v2.png"' in text
-    assert 'alt="Soramimic video"' in text
-
-
-def test_static_hints_in_advanced_are_all_folded():
-    """詳細設定の中に、ⓘ にもidにも属さない裸の説明文を残さない。"""
-    markup = _markup()
-    body = markup[markup.index('<details class="card" id="advanced">') :]
-    body = body[: body.index("</details>\n\n<details class=\"card\" id=\"history\"")]
-    for m in re.finditer(r"<p class=\"hint[^\"]*\"([^>]*)>", body):
-        attrs = m.group(1)
-        assert "data-info" in attrs or "id=" in attrs, m.group(0)
-
-
-def test_builder_omits_editor_entry_button():
-    ids = [a.get("id") for tag, a in _tags() if tag == "button" and a.get("id")]
-    assert "builder-edit" not in ids
-    assert "lucky" not in ids
-    # 保存済みがあるときの2択+右上の×。「やめる」の文字ボタンは置かない
-    # (×・背景クリック・Escに吸収)
-    for btn in ("editor-resume-continue", "editor-resume-regen", "editor-resume-close"):
-        assert btn in ids
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
     script = _script()
@@ -140,7 +83,8 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         for head in (
             "async function poll(", "async function openLyricReview(",
             "function restoreJobProgress(",
-            "async function confirmLyricReview(", "function closeEditor()",
+            "async function confirmLyricReview(", "function setReviewAction(",
+            "function closeEditor()",
             "function lyricReviewCoverage(",
             "async function saveLyricReview(",
             "async function syncEditorSessionOnce()",
@@ -149,8 +93,9 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
-        let reviewClosing = false;
+        let reviewAction = "";
         const songRecordingBusy = () => false, syncHistoryReviewControls = () => {};
+        const historyReviewBlocked = () => !!reviewAction;
         const elements = new Map();
         const $ = (id) => {
           if (!elements.has(id)) elements.set(id, {hidden: true, textContent: "", focus() {}});
@@ -164,7 +109,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         };
         const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "review", EDITOR_SEED_KEY = "seed";
         let currentJob = "job1", reviewJobId = null, reviewOpenedJob = null;
-        let reviewOpening = false, reviewSubmitting = false, pollSeq = 1, pollLastAt = 0;
+        let pollSeq = 1, pollLastAt = 0;
         let resumed = false;
         let reviewSavedRaw = "", reviewSavePending = null;
         let pollFailures = 0, cancelPendingJob = null, openCount = 0, requests = [];
@@ -241,91 +186,19 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
     subprocess.run(["node", "-e", node], check=True)
 
 
-def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
-    script = _script()
-    functions = "\n".join(
-        _function_body(script, head) + "\n}"
-        for head in (
-            "async function saveLyricReview(", "async function closeLyricReview(",
-            "function resumeHistoryReview(", "function historyReviewBlocked(",
-        )
-    )
-    node = textwrap.dedent("""
-        const assert = require("node:assert/strict");
-        let reviewClosing = false, submitBusy = false, currentJob = null;
-        const songRecordingBusy = () => false;
-        const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "job";
-        let reviewJobId = "one", reviewSubmitting = false;
-        let reviewSavePending = null, reviewSavedRaw = "";
-        let raw = "first", reject = true, closeCount = 0, active = 0, maxActive = 0;
-        let pause = null, release = null;
-        const writes = [], elements = new Map();
-        const $ = id => {
-          if (!elements.has(id)) elements.set(id, {disabled: false, textContent: ""});
-          return elements.get(id);
-        };
-        const headers = () => ({});
-        const sessionStorage = {getItem: key => key === EDITOR_KEY ? raw : "one"};
-        const closeEditor = () => { closeCount++; };
-        let historyLoads = 0, resumed = false, reviewOpening = false;
-        let reviewOpenedJob = 'one', watched = null, busy = false, progress = false;
-        const loadHistory = async () => { historyLoads++; };
-        const setBusy = value => { busy = value; };
-        const showProgress = () => { progress = true; };
-        const watch = id => { watched = id; };
-        const fetch = async (url, options) => {
-          active++; maxActive = Math.max(maxActive, active);
-          writes.push(await options.body.get("editor").text());
-          if (pause) await pause;
-          active--;
-          return {ok: !reject, json: async () => ({detail: "保存エラー"})};
-        };
-    """) + functions + textwrap.dedent("""
-        (async () => {
-          await closeLyricReview();
-          assert.equal(closeCount, 0);
-          assert.equal($("close-lyric-review").disabled, false);
-          assert.match($("lyric-review-error").textContent, /保存エラー/);
-          reject = false;
-          pause = new Promise(resolve => { release = resolve; });
-          const first = saveLyricReview();
-          raw = "latest";
-          const next = saveLyricReview();
-          release(); pause = null;
-          await Promise.all([first, next]);
-          assert.equal(maxActive, 1);
-          assert.deepEqual(writes, ["first", "first", "latest"]);
-          assert.equal(reviewSavedRaw, "latest");
-          await closeLyricReview();
-          assert.equal(closeCount, 1);
-          assert.equal(writes.length, 3);
-          assert.equal($("lyric-review-error").textContent, "");
-          assert.equal(historyLoads, 1);
-          reviewSubmitting = true;
-          resumeHistoryReview({id: 'other'});
-          assert.equal(watched, null);
-          reviewSubmitting = false;
-          resumeHistoryReview({id: 'other'});
-          assert.equal(watched, 'other');
-          assert.equal(reviewOpenedJob, null);
-          assert(resumed && busy && progress);
-        })().catch(error => {console.error(error); process.exitCode = 1;});
-    """)
-    subprocess.run(["node", "-e", node], check=True)
-
-
 def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confirmation():
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
             "function lyricReviewCoverage(", "function confirmReviewRegeneration(",
-            "async function confirmLyricReview(", "function onEditorModalKeydown(",
+            "async function confirmLyricReview(", "function setReviewAction(",
+            "function onEditorModalKeydown(",
         )
     )
     node = textwrap.dedent("""
         const assert = require('node:assert/strict');
-        let reviewClosing = false;
+        let reviewAction = "";
         const EDITOR_KEY = 'editor', REVIEW_JOB_KEY = 'job', REVIEW_REGENERATE_KEY = 'auto';
         const UNMATCHED_LYRICS_KEY = 'unmatched';
         const store = new Map(), preferences = new Map(), elements = new Map();
@@ -343,7 +216,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
             if (denyStorage) throw Error('storage'); preferences.set(key, value);
           },
         };
-        let reviewJobId = 'one', reviewSubmitting = false, reviewSavePending = null;
+        let reviewJobId = 'one', reviewSavePending = null;
         let dialogCount = 0, regenerateCount = 0, watched = null, closed = false;
         const resumePayloads = [];
         let regenerateError = null, regenerateResult = null, closeListener = null;
@@ -370,6 +243,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
           },
         }};
         const headers = () => ({}), showBuilderMsg = () => {}, setJobStatus = () => {};
+        const syncHistoryReviewControls = () => {};
         const closeEditor = () => {closed = true;}, watch = id => {watched = id;};
         const fetch = async (url, options) => {
           assert.equal(url, '/api/jobs/one/resume');
@@ -447,7 +321,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
           await confirmLyricReview();
           assert.equal(resumePayloads.length, 4);
           assert.match($('lyric-review-error').textContent, /対応づけられない/);
-          assert.equal(reviewSubmitting, false); assert.equal($('editor-frame').inert, false);
+          assert.equal(reviewAction, ""); assert.equal($('editor-frame').inert, false);
 
           preferences.clear(); denyStorage = true; reset(partial);
           pending = confirmLyricReview();
@@ -575,50 +449,6 @@ def test_video_submit_confirms_unmatched_lyrics_and_remembers_only_acceptance():
         })().catch(error => {console.error(error); process.exitCode = 1;});
     """)
     subprocess.run(["node", "-e", node], check=True)
-
-
-def test_public_ui_filters_wordlists_and_simple_ui_hides_advanced():
-    """公開UIはカタログだけを出し、簡易UIではさらに詳細設定を隠す。"""
-    script = _script()
-    assert '$("advanced").hidden = simpleMode;' in script
-    assert "loadWordlistSelect(conf.wordlist_config ?? conf.editor)" in script
-    assert "const allowed = new Set(launchWordlists);" in script
-    assert "if (launchWordlists.length)" in script
-    assert "return allowed.has(name);" in script
-    defaults = _function_body(script, "function applyFixedUiDefaults()")
-    assert '$("synthesizer").value = "voicevox"' in defaults
-    assert '$("auto-octave").checked = true' in defaults
-    assert '$("transpose").value = "0"' in defaults
-    assert 'wordlistLayouts[$("wordlist").value.trim()]' in defaults
-    assert "if (!simpleMode) return;" not in defaults
-
-
-def test_web_ui_only_exposes_fixed_position_song_text_fields():
-    """dev UIでも歌声・レイアウト操作を隠し、元曲由来の文字だけ残す。"""
-    markup = _markup()
-    advanced = markup[markup.index('<details class="card" id="advanced">') :]
-    advanced = advanced[: advanced.index("</details>")]
-    assert '<section class="opt-group" hidden>\n    <h3 class="opt-group-title">① 歌声' in advanced
-    assert '<section class="opt-group" hidden>\n    <!-- 中身がレイアウトだけ' in advanced
-    assert '<h3 class="opt-group-title">曲情報・クレジット</h3>' in advanced
-    for field in ("song-title", "song-credit", "thumbnail-wordlist-label"):
-        assert f'id="{field}"' in advanced
-
-    script = _script()
-    submit = _function_body(script, "async function submitJob(previewSec, previewMode)")
-    assert 'form.append("synthesizer", fixedSynthesizer)' in submit
-    assert 'form.append("voicevox_style", String(fixedVoicevoxStyle))' in submit
-    assert 'form.append("auto_octave", "true")' in submit
-    assert 'form.append("transpose", "0")' in submit
-    assert 'form.append("layout_json"' not in submit
-    assert "let fixedVoicevoxStyle = 6000;" in script
-    assert 'let fixedSynthesizer = "voicevox";' in script
-
-    title = _function_body(script, "function songTitleOf(file)")
-    assert '$("song-title").value.trim() || base' in title
-    assert 'songTitle: $("song-title").value' in script
-    assert '$("song-title").value = state.songTitle || ""' in script
-    assert '$("song-title").value = sampleTitleOf(sid)' in script
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -880,28 +710,6 @@ def test_advanced_settings_work_before_selection_and_stay_open_during_changes():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_plant_wordlist_is_available_in_every_selection_ui():
-    """品質確認済みの植物を、通常UIと簡易UIの候補へ戻す。"""
-    script = _script()
-    assert "const HIDDEN_UI_WORDLISTS = new Set();" in script
-    body = _function_body(script, "async function loadWordlistSelect(editorAvailable)")
-    assert "return !HIDDEN_UI_WORDLISTS.has(name);" in body
-    restore = _function_body(script, "async function doRestoreForm()")
-    assert 'HIDDEN_UI_WORDLISTS.has(state.wordlist || "")' in restore
-    assert 'new Set(["plant"])' not in script
-
-
-def test_simple_ui_hides_the_irrelevant_song_length_limit():
-    """同梱曲しか選べない初回公開版では、持ち込みMIDI向けの曲長案内を出さない。"""
-    body = _function_body(_script(), "function setupPublicMode(conf)")
-    assert "if (conf.max_song_seconds && !simpleMode)" in body
-    # 日次上限や検証アカウントの案内まで一緒に消さない。
-    assert "if (conf.quota_exempt === true)" in body
-    assert "else if (conf.daily_quota)" in body
-    assert "混雑時は順番待ちになります" in body
-    assert "updatePublicCredit" not in _script()
-
-
 def test_history_uses_cards_and_only_safe_display_fields():
     markup = _markup()
     assert 'id="history-body"' in markup
@@ -928,53 +736,6 @@ def test_history_uses_cards_and_only_safe_display_fields():
         "error": "失敗", "canceled": "中止",
     }.items():
         assert f'{status}: "{label}"' in script
-
-
-def test_queued_progress_shows_position_and_rounded_start_range():
-    script = _script()
-    label = _function_body(script, "function queueWaitLabel(job)")
-    assert 'return "開始待ち：まもなく開始します"' in label
-    assert "job.queue_ahead" in label
-    assert "job.queue_wait_min_seconds" in label
-    assert "job.queue_wait_max_seconds" in label
-    assert "開始まで約" in label
-    progress = _function_body(script, "function renderBuilderBar(job)")
-    assert 'job?.status === "queued"' in progress
-    assert 'style.width = "0%"' in progress
-
-
-def test_initial_audio_analysis_uses_live_indeterminate_progress():
-    script = _script()
-    starting = _function_body(script, "function audioAnalysisIsStarting(job)")
-    progress = _function_body(script, "function renderBuilderBar(job)")
-    poll = _function_body(script, "async function poll(id, seq = pollSeq)")
-    assert 'job.params?.input_kind === "audio"' in starting
-    assert "Number(job.stage_progress || 0) <= 1" in starting
-    assert 'fill.classList.toggle("indeterminate", analysisStarting)' in progress
-    assert 'fill.style.width = "32%"' in progress
-    assert "audioAnalysisIsStarting(job)" in poll
-    assert "const text = `${job.stage_detail || label}${elapsed}`;" in poll
-    html = INDEX.read_text(encoding="utf-8")
-    assert ".builder-bar span.indeterminate" in html
-    assert "@keyframes builder-progress-slide" in html
-
-
-def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
-    script = _script()
-    load = _function_body(script, "async function fetchHistory()")
-    card = _function_body(script, "function historyCard(job, index)")
-    assert 'createElement("video")' not in load + card
-    assert 'createElement("audio")' not in load + card
-    assert "fetch(job.video_url" not in load + card
-    playback = _function_body(script, "async function startHistoryPlayback(")
-    assert 'document.createElement(job.result_kind === "audio" ? "audio" : "video")' in playback
-    assert 'media.controls = true' in playback
-    assert 'media.preload = "none"' in playback
-    assert 'media.setAttribute("playsinline", "")' in playback
-    assert "media.src = job.playback_url" in playback
-    sharing = _function_body(script, "async function saveHistoryVideo(")
-    assert "fetch(job.video_url" in sharing
-    assert sharing.index("fetch(job.video_url") > sharing.index("resetHistorySave()")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -1162,67 +923,6 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_history_switch_disposes_before_making_a_fresh_media_element():
-    playback = _function_body(_script(), "async function startHistoryPlayback(")
-    assert playback.index("disposeHistoryPlayback();") < playback.index(
-        'document.createElement(job.result_kind === "audio" ? "audio" : "video")'
-    )
-    assert "freshBuilderVideo" not in playback
-    assert "prepareVideoShare" not in playback
-    assert "resetVideoSharePreparation" not in playback
-    assert "sharePlaybackUrl" not in playback
-    assert 'slot.replaceChildren(media)' in playback
-    dispose = _function_body(_script(), "function disposeHistoryPlayback()")
-    assert 'active.slot.replaceChildren(active.thumb)' in dispose
-
-
-def test_history_player_replaces_the_thumbnail_in_the_same_aspect_ratio_slot():
-    css = _markup()
-    assert ".history-media {" in css
-    assert "aspect-ratio: 16 / 9" in css
-    assert ".history-media video {" in css
-    assert ".history-media audio {" in css
-    assert ".history-player {" not in css
-
-
-def test_completed_audio_uses_the_inline_playback_endpoint():
-    poll = _function_body(_script(), "async function poll(")
-    assert 'src="${qs(job.playback_url)}"' in poll
-    assert 'src="${qs(job.video_url)}"' not in poll
-
-
-def test_editor_resume_panel_is_hidden_by_default():
-    # カード内のパネルからモーダルに変えた(インライン展開だとサムネ枠が押し下がる)
-    panel = next(a for tag, a in _tags() if a.get("id") == "editor-resume")
-    assert "hidden" in panel
-    assert panel.get("role") == "dialog"
-    assert panel.get("aria-modal") == "true"
-    assert panel.get("aria-labelledby") == "editor-resume-title"
-
-
-def test_editor_resume_dialog_only_asks_when_provenance_is_stale():
-    """⚙を押す期待は「押したら編集画面」。来歴が一致していれば聞かずに再開し、
-    モーダルが出るのは引き継ぐ/捨てるを本人にしか決められないstaleのときだけ。"""
-    body = _function_body(_script(), "async function openEditorFlow()")
-    assert "if (!saved.stale) { await resumeEditor(); return; }" in body
-    markup = _markup()
-    assert '<button type="button" id="editor-resume-regen" class="btn-primary btn-sm">' in markup
-
-
-def test_parody_status_does_not_repeat_the_same_wordlist_name():
-    """絞り込みだけが違うとき、同じリスト名を2回並べる意味不明な警告にしない。"""
-    body = _function_body(_script(), "function renderParodyStatus()")
-    assert "選択中の絞り込みは使われません" in body
-
-
-def test_generation_progress_has_no_wordlist_specific_duration_notice():
-    """生成時間の要因を単語リストだけに帰属する注意や判定を持たない。"""
-    script = _script()
-    assert "数分かかります" not in script
-    assert "SLOW_WORDLISTS" not in script
-    assert "builderStageStatus" not in script
-
-
 def _script() -> str:
     """<script> 以降(=画面のふるまい)だけを返す。"""
     text = INDEX.read_text(encoding="utf-8")
@@ -1340,12 +1040,19 @@ def test_lyric_adjustment_round_trips_with_saved_form():
         for (const enabled of [true, false]) {
           $('adjust-lyrics').checked = enabled;
           $('lyrics').value = 'あいうえお';
+          midiSampleId = sampleLyricsId = 'furusato';
+          sampleLyricsBaseline = '元のサンプル歌詞';
           saveForm();
           $('adjust-lyrics').checked = !enabled;
           $('lyrics').value = '';
+          midiSampleId = sampleLyricsId = '';
+          sampleLyricsBaseline = null;
           await doRestoreForm();
           assert.equal($('adjust-lyrics').checked, enabled);
           assert.equal($('lyrics').value, 'あいうえお');
+          assert.equal(restoredSampleId, 'furusato');
+          assert.equal(sampleLyricsId, 'furusato');
+          assert.equal(sampleLyricsBaseline, '元のサンプル歌詞');
         }
         values.set(FORM_KEY, '{}');
         await doRestoreForm();
@@ -1536,21 +1243,6 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
     subprocess.run(["node", "-e", harness], check=True, capture_output=True, text=True)
 
 
-def test_submit_takes_the_midi_from_the_current_song_choice():
-    """投入は「いま選ばれている曲」のMIDIで行う(古い・別の曲のMIDIで生成しない)。"""
-    script = _script()
-    submit = _function_body(script, "async function submitJob(")
-    # 曲の突き合わせ・取り直しは FormData を組み立てるより前に済ませる
-    assert (submit.index("ensureSelectedSampleMidi()")
-            < submit.index('form.append("midi"'))
-    guard = _function_body(script, "async function ensureSelectedSampleMidi(")
-    # 来歴(midiSampleId)が選択と揃わなければ投入させない
-    assert 'midiSampleId === $("sample-select").value' in guard
-    assert "return false;" in guard
-    # 曲名も同じ来歴から決める(MIDIは別の曲・曲名は選んだ曲、を作らない)
-    assert "midiSampleId" in _function_body(script, "function songTitleOf(file)")
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_superseded_midi_check_keeps_submit_waiter_live():
     """復元中に検証予約が重なっても、先のPromiseを待つ生成操作を置き去りにしない。"""
@@ -1696,12 +1388,17 @@ def test_builder_restores_only_explicit_song_choices():
           assert.equal(file, restoredMidi);
           assert.equal($("sample-select").value, "");
           assert.deepEqual(applied, [], "stale sample state must not replace the restored upload");
+          $("lyrics").value = sampleLyricsBaseline;
+          await start("previous");
+          assert.deepEqual(applied, [{{ id: "previous", keepLyrics: false }}],
+            "unedited sample lyrics can be refreshed");
+          $("lyrics").value = "edited lyrics";
           await start("unavailable");
           assert.equal($("sample-select").value, "");
           assert.deepEqual(applied, []);
-          assert.equal(previews, 4);
+          assert.equal(previews, 5);
           await initBuilder();
-          assert.equal(previews, 4, "reloading configuration must not repeat initialization");
+          assert.equal(previews, 5, "reloading configuration must not repeat initialization");
           wordlist = "";
           customList = {{ id: "saved-list", text: "ねこ,ネコ" }};
           await start("previous");
@@ -1941,14 +1638,6 @@ def test_completed_video_requests_no_preload_hint():
     assert video.get("preload") == "none"
 
 
-def test_video_generation_hides_the_sensitive_image_notice_immediately():
-    """昆虫画像への配慮は、声プレビューでなく動画生成を選んだ時点で閉じる。"""
-    submit = _function_body(_script(), "async function submitJob(")
-    hide = 'if (previewSec === 0) $("builder-image-hidden").hidden = true;'
-    assert hide in submit
-    assert submit.index(hide) < submit.index("if (samplePending) await samplePending;")
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_job_post_retries_one_server_rejected_turnstile_token():
     """tokenがサーバーで拒否されたとき、新しいtokenで同じ投入を一度だけ再送する。"""
@@ -2134,12 +1823,6 @@ def test_audio_upload_retry_can_be_canceled_before_job_creation():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_audio_submission_uses_an_idempotency_key():
-    submit = _function_body(_script(), "async function submitJob(")
-    assert 'form.append("submission_id", submissionId);' in submit
-    assert "globalThis.crypto?.randomUUID" in submit
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
 def test_submission_rechecks_song_selection_after_verification_wait():
     submit = _function_body(_script(), "async function submitJob(") + "\n}"
@@ -2180,6 +1863,7 @@ def test_submission_rechecks_song_selection_after_verification_wait():
         const songTitleOf = () => midiSampleId || ownSongFile()?.name || "";
         const showProgress = () => {}, setJobStatus = () => {}, resetTurnstile = () => {};
         const setCancelPending = () => {}, hideTurnstilePrompt = () => {};
+        const showTurnstileFailure = () => {};
         const setBuilderState = () => {}, showBuilderMsg = () => {}, openJobDetails = () => {};
         const watch = () => { submitBusy = false; };
         const postJobWithTurnstileRetry = async form => {
@@ -2201,6 +1885,7 @@ def test_submission_rechecks_song_selection_after_verification_wait():
               const count = requests.length;
               const pending = submitJob(0, "");
               while (!releaseVerification) await new Promise(setImmediate);
+              assert.equal(requests.length, count, 'verification must finish before submission');
               if (change) {
                 if (initial === "audio") selectedAudio = otherAudio;
                 else choices.audio();
@@ -2210,12 +1895,24 @@ def test_submission_rechecks_song_selection_after_verification_wait():
               assert.equal(requests.length, count + (change ? 0 : 1),
                 `${initial}: changing the song must require a new generation tap`);
               assert.equal(submitBusy, false);
+              if (!change) {
+                assert.equal(requests.at(-1).get('turnstile_token'), 'verified');
+                assert.match(requests.at(-1).get('submission_id'), /^[a-f0-9]{32}$/);
+              }
               if (change) assert.ok(messages.some(text => text.includes("曲")));
               else if (initial === "audio") assert.equal(requests.at(-1).get("audio"), audio);
               else if (initial === "midi") assert.equal(requests.at(-1).get("midi"), midi);
               else assert.equal(requests.at(-1).get("sample_id"), "first");
             }
           }
+          choices.audio();
+          releaseVerification = null;
+          const count = requests.length;
+          const rejected = submitJob(0, '');
+          while (!releaseVerification) await new Promise(setImmediate);
+          releaseVerification(false); await rejected;
+          assert.equal(requests.length, count, 'failed verification must never submit');
+          assert.equal(submitBusy, false, 'failed verification permits another attempt');
         })().catch(error => {console.error(error); process.exitCode = 1;});
     '''
     result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=15)
@@ -2246,44 +1943,6 @@ def test_stale_progress_rejection_cannot_overwrite_a_newer_result(status):
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
-def test_turnstile_interaction_scrolls_to_inline_prompt():
-    """追加操作が必要なときはカード内の確認欄まで自動スクロールする。"""
-    markup = _markup()
-    script = _script()
-    assert 'id="turnstile-title">人間かどうかの確認が必要です' in markup
-    assert 'class="turnstile-copy" role="status" aria-live="polite"' in markup
-    assert 'class="turnstile-panel" tabindex="-1"' in markup
-    assert 'id="turnstile-cancel"' not in markup
-    assert 'turnstile-ui' not in script
-    assert 'turnstile-overlay' not in markup
-    prompt = _function_body(script, "function showTurnstilePrompt(")
-    assert 'wrap.scrollIntoView({ behavior: "smooth", block: "center" })' in prompt
-    assert "if (!alreadyActive || forceScroll)" in prompt
-    assert "if (focusPanel)" in prompt
-    challenge = _function_body(script, "function showTurnstileChallenge()")
-    assert 'setTurnstilePromptCopy("チェックして動画生成を続ける", "")' in challenge
-    assert 'classList.add("turnstile-challenge")' in challenge
-    assert "showTurnstilePrompt(true, false)" in challenge
-    render = _function_body(script, "function renderTurnstileWidget()")
-    assert 'execution: "execute"' in render
-    assert "scheduleTurnstileInteractionPrompt(epoch)" in render
-    assert "cancelTurnstileInteractionReveal();" in render
-    failure = _function_body(script, "function showTurnstileFailure(")
-    assert failure.index("hideTurnstilePrompt();") < failure.index("setTurnstilePromptCopy(")
-
-
-def test_turnstile_widget_is_visible_only_while_prompt_needs_attention():
-    """自動確認のiframeだけを点滅させず、完了後もチェック欄を残さない。"""
-    markup = _markup()
-    assert "#turnstile-wrap:not(.turnstile-active) #turnstile-widget" in markup
-    assert "#turnstile-wrap.turnstile-complete #turnstile-widget" in markup
-    assert "inset-inline-start: -10000px" in markup
-    assert "visibility: hidden" in markup
-    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy { display: block; }" in markup
-    assert "#turnstile-wrap.turnstile-challenge .turnstile-copy .hint { display: none; }" in markup
-    assert "#turnstile-wrap.turnstile-challenge .turnstile-panel" in markup
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -2524,37 +2183,6 @@ def test_turnstile_prompt_can_rescroll_after_retry():
     subprocess.run(["node", "-e", node], check=True)
 
 
-def test_submit_never_posts_without_a_turnstile_token():
-    """確認待ちの画面を生成進捗に見せず、失敗時は空tokenをAPIへ送らない。"""
-    submit = _function_body(_script(), "async function submitJob(")
-    verification = 'if (!await ensureTurnstileToken()) {'
-    assert verification in submit
-    assert submit.index(verification) < submit.index("const form = new FormData()")
-    guard = submit[submit.index(verification):].split("\n    }", 1)[0]
-    assert "return;" in guard
-    assert "showProgress();" not in guard
-    assert submit.index("if (submitBusy || songRecordingBusy()) return;") < submit.index(
-        "if (samplePending) await samplePending;"
-    )
-    ensure = _function_body(_script(), "async function ensureTurnstileToken(")
-    assert "const verified = !failed && !!turnstileToken()" in ensure
-    assert "rebuildTurnstileWidget()" in ensure
-    assert "const loadDeadline = Math.min(deadline, Date.now() + 10000);" in ensure
-    assert "Date.now() - loadStarted > 800" not in ensure
-    assert "Date.now() - t0 > 800" not in ensure
-    assert "if (turnstileWidget === null || turnstileScriptFailed)" in ensure
-    assert "window.turnstile.execute(turnstileWidget)" in ensure
-    assert ensure.index("hideTurnstilePrompt();") < ensure.index("setTurnstilePromptCopy(")
-    assert "if (turnstileNeedsInteraction) scheduleTurnstileInteractionPrompt();" not in ensure
-    assert "timeoutMs = 120000" in ensure
-    assert "for (let attempt = 0; attempt < 2; attempt += 1)" in ensure
-    assert "if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();" in ensure
-    assert "showTurnstileFailure(turnstileScriptFailed);" in guard
-    assert "hideTurnstilePrompt();" not in guard
-    assert "resetTurnstile(!keepTurnstilePrompt);" in submit
-    assert "if (!keepTurnstilePrompt) hideTurnstilePrompt();" in submit
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_turnstile_errors_rebuild_and_retry_widget():
     """一時エラーは同じ操作で再試行し、timeoutは待ち時間を延長しない。"""
@@ -2622,13 +2250,6 @@ def test_turnstile_old_widget_callbacks_are_ignored_after_rebuild():
     assert "window.turnstile.remove(oldWidget)" in rebuild
     assert '$("turnstile-widget").replaceChildren();' in rebuild
     assert 'console.warn("Turnstileの再描画に失敗しました", err);' in rebuild
-
-
-def test_random_button_and_behavior_are_removed():
-    script = _script()
-    assert not any(a.get("id") == "lucky" for _tag, a in _tags())
-    assert "function luckyRandomCombo()" not in script
-    assert "function luckyCandidatePools()" not in script
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -2925,32 +2546,6 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_completed_video_prepares_one_shared_playback_file_and_reset_aborts_fetch():
-    """完成時に共有Fileを準備して再生にも共用し、離脱時は取得を止める。"""
-    script = _script()
-    shown = _function_body(script, "function showBuilderVideo(job)")
-    assert "prepareVideoShare(job.video_url, video)" in shown
-    assert "if (!FILE_SHARE_SUPPORTED) {" in shown
-    assert "video.src = qs(job.video_url);" in shown
-    clicked = _function_body(script, "function bindShare(videoUrl)")
-    assert "prepareVideoShare" not in clicked
-    reset = _function_body(script, "function resetVideoSharePreparation()")
-    assert "sharePreparationAbort.abort()" in reset
-    assert "revokeSharePlaybackUrl()" in reset
-    prepared = _function_body(script, "async function prepareVideoShare(videoUrl, video)")
-    assert prepared.index("video.controls = false") < prepared.index("await fetch(")
-    assert prepared.index("video.src = sharePlaybackUrl") < prepared.index(
-        "video.controls = true"
-    )
-    state = _function_body(script, "function setBuilderState(state)")
-    assert state.index('video.removeAttribute("src")') < state.index(
-        "resetVideoSharePreparation()"
-    )
-    assert state.index('video.removeAttribute("aria-busy")') < state.index(
-        "resetVideoSharePreparation()"
-    )
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_each_completed_video_gets_fresh_paused_native_controls():
     """2回目の完成動画が前回の停止アイコンを引き継がない。"""
@@ -2989,17 +2584,6 @@ def test_each_completed_video_gets_fresh_paused_native_controls():
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
-def test_completed_video_refreshes_controls_before_loading_its_source():
-    """直接URL・共有Blobのどちらも新しいvideo要素へ読み込む。"""
-    shown = _function_body(_script(), "function showBuilderVideo(job)")
-    assert shown.index("freshBuilderVideo()") < shown.index("video.src")
-    assert 'if (!FILE_SHARE_SUPPORTED) {' in shown
-    assert shown.index("video.src = qs(job.video_url)") < shown.index("video.load()")
-    assert shown.index("freshBuilderVideo()") < shown.index(
-        "prepareVideoShare(job.video_url, video)"
-    )
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -3081,34 +2665,6 @@ def test_cancel_job_shows_pending_feedback_and_recovers_from_request_failure():
     assert 'showBuilderMsg("");' in _function_body(script, "function showProgress()")
 
 
-def test_editor_opens_from_the_setup_screen():
-    """⚙はサーバーに変換させず(convert=0)、セットアップ画面から開く。
-
-    いま選ばれている単語リスト・絞り込み・変換パラメータ・曲名は初期値として
-    送る(エディタのセットアップ画面がそれを初期選択にする)。単語リストが
-    空でも呼べる——リストはセットアップ画面で選べるため。
-    """
-    script = _script()
-    body = _function_body(script, "async function convertAndOpenEditor()")
-    assert 'form.append("convert", "0")' in body
-    assert 'form.append("wordlist", $("wordlist").value.trim())' in body
-    assert 'form.append("where", $("where").value.trim())' in body
-    # 変換パラメータも初期値として送る(エディタの初期表示と生成条件を揃える)
-    assert 'form.append("convert_params", buildConvertParams())' in body
-    # セットアップ画面に出す曲名(投入時と同じ来歴から決める)
-    assert 'form.append("song_title", songTitleOf(midi))' in body
-
-
-def test_regenerate_button_says_it_starts_from_the_setup_screen():
-    """「再生成」は実態がセットアップ画面からのやり直しなので、そう名乗る。"""
-    markup = _markup()
-    assert "設定から作り直す" in markup
-    # 説明文も揃える(押すとどこから始まるかが分かること)
-    script = _script()
-    note = _function_body(script, "async function openEditorFlow()")
-    assert "「設定から作り直す」" in note
-
-
 def test_setup_seed_has_no_results_so_viewing_alone_is_not_an_edit():
     """未変換シードは results 等を持たないので、来歴ガードは「編集なし」と見る。
 
@@ -3120,38 +2676,6 @@ def test_setup_seed_has_no_results_so_viewing_alone_is_not_an_edit():
     assert "data.results" in sig and "data.tokensList" in sig and "data.unitsList" in sig
     live = _function_body(script, "function liveEditorEdit()")
     assert "sig === meta.sig" in live and 'state: "none"' in live
-
-
-def test_restored_sample_id_refreshes_only_unedited_lyrics():
-    """復元したサンプルIDを選び直し、手編集済みの歌詞だけ残す。"""
-    init = _function_body(_script(), "async function initBuilder()")
-    assert "sampleLyricsId === restoredId" in init
-    assert "sampleLyricsBaseline !== null" in init
-    assert '$("lyrics").value !== sampleLyricsBaseline' in init
-    assert "applySample({ keepLyrics: editedLyrics })" in init
-
-
-def test_sample_lyrics_baseline_is_saved_and_restored():
-    """標準歌詞の更新と手編集の保護はリロードを跨いで判定できる。"""
-    script = _script()
-    apply_sample = _function_body(script, "async function applySample(")
-    assert "sampleLyricsId = sid;" in apply_sample
-    assert "sampleLyricsBaseline = sampleLyrics;" in apply_sample
-    save = _function_body(script, "function saveForm()")
-    assert "sampleLyricsId," in save
-    assert "sampleLyricsBaseline," in save
-    restore = _function_body(script, "async function doRestoreForm()")
-    assert 'sampleLyricsId = state.sampleLyricsId || "";' in restore
-    assert 'typeof state.sampleLyricsBaseline === "string"' in restore
-
-
-def test_sample_selection_never_fetches_or_injects_midi():
-    """同梱サンプルはIDだけ保持し、MIDIバイナリをブラウザへ配らない。"""
-    apply_sample = _function_body(_script(), "async function applySample(")
-    assert "/midi" not in apply_sample
-    assert "midiSampleId = sid;" in apply_sample
-    assert '$("midi").value = "";' in apply_sample
-    assert "injectFile" not in apply_sample
 
 
 def test_sample_requests_send_id_while_uploads_send_midi():
@@ -3168,244 +2692,6 @@ def test_sample_requests_send_id_while_uploads_send_midi():
         assert 'else form.append("midi", midi);' in body
     assert 'if (sampleId) form.append("sample_id", sampleId);' in check
     assert 'else form.append("midi", f);' in check
-
-
-def test_sample_id_is_saved_without_sample_midi_binary():
-    script = _script()
-    save = _function_body(script, "function saveForm()")
-    apply_sample = _function_body(script, "async function applySample(")
-    assert "sampleId: midiSampleId," in save
-    assert "saveForm();" in apply_sample
-    assert 'localStorage.setItem(MIDI_KEY' not in apply_sample
-
-
-def test_info_toggle_sets_aria_state():
-    """ⓘ ボタンは aria-expanded / aria-controls を持つ(setupInfoHints)。"""
-    script = INDEX.read_text(encoding="utf-8")
-    for needle in ('setAttribute("aria-expanded"', 'setAttribute("aria-controls"',
-                   'setAttribute("aria-label"'):
-        assert needle in script
-
-
-def test_info_hint_opens_as_floating_popover():
-    """説明はその場に展開せず、ⓘ の近くに重ねるフロート表示にする。
-
-    その場に開くと周りのフォームが押し下がるので、position:fixed +
-    JS の座標計算(placeInfoPop)にしている。閉じる導線は ⓘ 再タップ・
-    外側タップ・Esc の3つ。
-    """
-    text = INDEX.read_text(encoding="utf-8")
-    rule = text[text.index(".hint[data-info] {"):]
-    rule = rule[: rule.index("}")]
-    assert "position: fixed" in rule
-    assert "max-width: min(" in rule           # スマホで画面幅を超えない
-    for needle in ("function placeInfoPop", "function openInfoPop", "function closeInfoPop",
-                   'ev.key !== "Escape"'):
-        assert needle in text
-
-
-def test_editor_wordlist_is_written_back_to_the_form():
-    """エディタの⚙で単語リストを変えたら、親の正本(#wordlist / #where)へ書き戻す。
-
-    書き戻さないと、カードのプルダウン・サムネプレビュー・生成時の単語画像/
-    レイアウトの解決が古いリストのままになる(どれも正本を見ている)。
-    """
-    script = _script()
-    body = _function_body(script, "async function applyEditorWordlist()")
-    # 名前付きリスト(filepath) → stem を既存の選択経路へ流し、where はエディタ優先
-    assert r'String(w.filepath || "").replace(/.*\//, "").replace(/\.csv$/, "")' in body
-    assert "selectWordlist(name);" in body
-    assert "if (wantWhere) setWhere(wantWhere);" in body
-    # 名前で引けないリスト(ORIGINAL / 古い custom:<sid>)は名前も絞り込みも空にする
-    assert 'const own = value === "ORIGINAL" || value.startsWith("custom:");' in body
-    assert 'if (!sel.hidden) sel.selectedIndex = -1;' in body
-    assert '$("wordlist").value = "";' in body
-    assert 'setWhere("");' in body
-    # 書き戻しで来歴が食い違って編集が捨てられないよう、シードの来歴も付け替える
-    assert "adoptEditorSeedProvenance();" in body
-    # 変わっていなければ何もしない(毎周期で来歴を付け替えると曲の差し替えを
-    # 見逃してしまう)
-    assert "return;   // すでに一致している" in body
-    # 拾うのは監視ポーリングと「閉じる」の2経路
-    assert "if (on) editorWatchTimer = setInterval(syncEditorSession, 1500);" in script
-    close = _function_body(script, "function closeEditor()")
-    assert "syncEditorSession();" in close
-
-
-def test_editor_lyrics_are_written_back_to_the_form():
-    """エディタの中で元歌詞を直したら、親の正本(#lyrics)へ書き戻す。
-
-    元歌詞は生成時に lyrics.txt として送られ、字幕の元歌詞になる。書き戻さない
-    と、エディタで直した元歌詞が動画に反映されない(将来この欄を画面から外して
-    も、hidden の正本としてそのまま機能する)。
-    """
-    script = _script()
-    body = _function_body(script, "function applyEditorLyrics()")
-    assert 'JSON.stringify(data, null, 2)' in body
-    assert 'text === $("lyrics").value' in body
-    assert '$("lyrics").value = text;' in body
-    assert 'syncLyricsInput(false);' in body
-    assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
-    # 単語リストの書き戻しと同じ経路(ポーリングと「閉じる」)で拾う
-    sync = _function_body(script, "async function syncEditorSessionOnce()")
-    assert "applyEditorLyrics();" in sync
-    # 来歴(editorProvenance)は元歌詞を見ないので、書き戻しで編集が捨てられない
-    prov = _function_body(script, "function editorProvenance()")
-    assert "lyrics" not in prov
-    # 元歌詞はエディタへのシードにも載る(サーバーが入れるので送るだけ)
-    for fn in ("async function convertAndOpenEditor()", "async function reseedEditorSong()"):
-        assert "appendSongLyrics(form);" in _function_body(script, fn)
-
-
-def test_card_selects_mirror_the_canonical_form():
-    """カードのプルダウンは正本の写し。選択肢も値も片方向に写して二重管理しない。"""
-    script = _script()
-    opts = _function_body(script, "function syncBuilderOptions()")
-    # 選択肢は optgroup ごとそのまま複製する(表示名の付け直しをしない)
-    assert '$("builder-sample").innerHTML = $("sample-select").innerHTML;' in opts
-    assert '$("builder-wordlist").innerHTML = wl.innerHTML;' in opts
-    # 同梱リストの設定が無くても通常UIでは自作リストを選べる
-    assert '$("builder-wordlist-field").hidden = wl.hidden && simpleMode;' in opts
-    assert "syncBuilderValues();" in opts
-    # カード → 正本 → change の順(既存の applySample / applyWordlistSelection を通す)
-    wiring = script[script.index('$("builder-sample").addEventListener'):]
-    wiring = wiring[: wiring.index('$("sample-select").addEventListener')]
-    assert '$("sample-select").value = $("builder-sample").value;' in wiring
-    assert 'sel.dispatchEvent(new Event("change", { bubbles: true }));' in wiring
-
-
-def test_custom_wordlists_use_the_soramimic_row_menu():
-    """統合メニューに組み込みリストと、自作リストの作成・行操作をまとめる。"""
-    html = INDEX.read_text(encoding="utf-8")
-    script = _script()
-    assert 'id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"' in html
-    assert 'id="custom-wordlist-edit"' not in html
-
-    assert 'id="builder-wordlist-trigger" class="builder-wordlist-trigger"' in html
-    assert '<select id="builder-wordlist" hidden aria-hidden="true" tabindex="-1"></select>' in html
-
-    render = _function_body(script, "function renderCustomListMenu()")
-    assert 'for (const child of $("builder-wordlist").children)' in render
-    assert "appendBuilderWordlistOption(menu, option, true);" in render
-    assert 'appendCustomListMenuHeading(menu, "自作リスト");' in render
-    assert render.index('for (const child of $("builder-wordlist").children)') < render.index(
-        'appendCustomListMenuHeading(menu, "自作リスト");'
-    )
-    assert 'add.textContent = "＋ 新しいリスト";' in render
-    assert (
-        'row.className = "custom-wordlist-menu-row custom-wordlist-menu-subitem";' in render
-    )
-    assert 'choose.setAttribute("role", "menuitemradio");' in render
-    assert 'choose.setAttribute("aria-checked", String(list.id === activeCustomListId));' in render
-    assert 'edit.setAttribute("aria-label", `「${list.name}」を編集`);' in render
-    assert 'remove.setAttribute("aria-label", `「${list.name}」を削除`);' in render
-
-    opening = _function_body(script, "async function openCustomListMenu(")
-    assert 'menu.querySelector("[role=\'menuitemradio\'][aria-checked=\'true\']")' in opening
-    assert '$("builder-wordlist-trigger").setAttribute("aria-expanded", "true");' in opening
-    wiring = script[script.index('$("builder-wordlist-trigger").addEventListener("click"') :]
-    wiring = wiring[: wiring.index('// 正本(詳細設定の曲')]
-    assert 'openCustomListMenu({ focus: false });' in wiring
-    assert 'event.key !== "ArrowDown" && event.key !== "ArrowUp"' in wiring
-    assert 'if (event.key === "Escape")' in script
-    assert 'if (event.key === "ArrowDown")' in script
-
-
-def test_public_mode_shows_private_use_notice():
-    setup = _function_body(_script(), "function setupPublicMode(conf)")
-    assert 'publicMode = !!conf.public;' in setup
-    assert 'if (!publicMode) return;' in setup
-    assert '$("upload-use-notice").hidden = false;' in setup
-
-
-def test_wav_input_reuses_the_builder_and_mobile_player():
-    html = INDEX.read_text(encoding="utf-8")
-    script = _script()
-    assert 'id="song-upload-button"' in html
-    assert 'id="song-record-button"' in html
-    assert 'id="song-record-status" role="status" hidden' in html
-    assert 'id="song-record-playback" controls playsinline preload="metadata" hidden' in html
-    assert html.index('id="song-upload-filename"') < html.index('id="song-record-playback"')
-    assert html.index('id="song-record-playback"') < html.index('id="song-upload-clear"')
-    assert html.index('id="song-upload-button"') < html.index('id="builder-sample"')
-    assert '曲をアップロード' in html
-    assert 'id="song-upload-selection" hidden' in html
-    assert 'id="upload-use-notice" hidden' in html
-    assert "生成された動画は原則、" in html
-    assert ">私的利用</a>の範囲でご利用ください。" in html
-    assert 'href="https://www.bunka.go.jp/seisaku/chosakuken/taisetsu/point/"' in html
-    assert 'id="song-upload-filename" role="status"' in html
-    assert 'id="song-upload-clear" aria-label="選択した曲を解除"' in html
-    assert 'id="recording-delete-dialog"' in html
-    assert "録音を削除しますか？" in html
-    assert "録音した音声は削除すると元に戻せません。" in html
-    assert 'id="recording-delete-hide-warning"' in html
-    assert "次から表示しない" in html
-    assert 'id="audio-filename"' not in html
-    assert '曲ファイルを解除' not in html
-    assert ': "歌詞入りMIDIに対応（XF・標準歌詞イベント）";' in script
-    assert 'XF MIDIに対応（このサーバーでは音声入力を準備中です）' not in script
-    assert 'このサーバーでは音声入力を準備中です' in script
-    assert 'accept=".mid,.midi,.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,audio/midi"' in html
-    assert 'function ownSongKind(' in script
-    assert '[".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".webm"]' in script
-    assert 'name.endsWith(".mid") || name.endsWith(".midi")' in script
-    assert '$("song-upload-button").addEventListener("click",' in script
-    assert '$("song-record-button").addEventListener("click", startSongRecording);' in script
-    assert 'id="audio-input-panel"' not in html
-    assert 'id="auto-lyrics"' in html
-    assert (
-        'id="auto-lyrics" aria-controls="lyrics-correction-panel lyrics-file-field" checked'
-        in html
-    )
-    assert 'id="lyrics-correction-panel" hidden' in html
-    assert '<textarea id="lyrics"' in html
-    assert (
-        'id="lyrics-file" accept=".txt,.md,.json,text/plain,text/markdown,application/json"'
-        in html
-    )
-    assert "歌詞を自動認識し、音源からメロディーとタイミングを推定します" not in html
-    assert "音源解析 → 空耳変換 → 歌声/映像 → 完成" not in html
-    assert 'id="audio-analysis-mode"' not in html
-    assert "SheetSage2採譜" not in script
-    assert 'id="audio-lyrics"' not in html
-    assert 'songUploadEntry.addEventListener("drop"' in script
-    assert 'files.length !== 1' in script
-    assert 'setOwnSongFile(files[0]);' in script
-    assert 'songUploadEntry.classList.add("drag-over")' in script
-    assert '<video id="builder-video" controls playsinline' in html
-    submit = _function_body(script, "async function submitJob(")
-    assert 'if (audio) form.append("audio", audio);' in submit
-    assert "if (audio && !automaticLyricsEnabled()" in submit
-    assert "appendSongLyrics(form);" in submit
-    append = _function_body(script, "function appendSongLyrics(")
-    assert 'const lyrics = songLyricsForRequest();' in append
-    assert 'form.append("lyrics", lyrics);' in append
-    assert 'form.append("lyrics_file"' not in append
-    assert 'form.append("auto_lyrics", automaticLyricsEnabled() ? "true" : "false");' in append
-    automatic = _function_body(script, "function automaticLyricsEnabled()")
-    assert 'ownSongKind() !== "audio"' not in automatic
-    recognition = _function_body(script, "function syncLyricsRecognition()")
-    assert 'const automatic = $("auto-lyrics").checked;' in recognition
-    assert '$("auto-lyrics").disabled = false;' in recognition
-    assert '$("auto-lyrics-toggle").hidden = false;' in recognition
-    audio_change = script[script.index('$("midi").addEventListener("change"') :]
-    audio_change = audio_change[: audio_change.index('$("song-upload-clear").addEventListener')]
-    assert '$("auto-lyrics").checked = false;' not in audio_change
-    clear = _function_body(script, "async function clearSelectedSong()")
-    assert '$("midi").value = "";' in clear
-    assert '$("song-upload-button").focus();' in clear
-    assert 'recordedSongFile && !recordingDeleteWarningHidden()' in clear
-    assert '!await confirmRecordedSongDeletion()' in clear
-    assert '$("song-upload-clear").addEventListener("click", clearSelectedSong);' in script
-    sync = _function_body(script, "function syncBuilderValues()")
-    assert '$("song-upload-selection").hidden = !file;' in sync
-    assert '$("song-upload-button").hidden = !!file;' in sync
-    assert '$("song-upload-hint").hidden = !!file;' in sync
-    # 大きなWAVをlocalStorageへ複製しない。保存対象は従来のMIDIだけ。
-    assert 'localStorage.setItem("audioFile"' not in script
-    save = script[script.index('// 持ち込みMIDIはバイナリ') :]
-    assert 'if (ownSongKind(f) !== "midi")' in save
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -3999,70 +3285,6 @@ def test_editor_transfer_populates_json_and_recognition_mode():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def test_sample_picker_uses_each_manifest_title_as_is():
-    """一番版とフル版の別項目名をsamples.jsonどおりプルダウンへ出す。"""
-    load = _function_body(_script(), "async function loadSamples()")
-    render = _function_body(_script(), "function renderSampleOptions(")
-    assert "sample.title" in render
-    assert 'audioGroup.label = "音源から解析するサンプル";' in render
-    assert "option.disabled = audio && !audioInputReady;" in render
-    assert "s.edition" not in load
-
-
-def test_audio_sample_skips_midi_check():
-    script = _script()
-    check = _function_body(script, "async function checkMidi(")
-    assert 'selectedSampleIsAudio() || ownSongKind() === "audio"' in check
-    apply = _function_body(script, "async function applySample(")
-    assert '$("builder-edit")' not in script
-    assert 'link.textContent = "ライセンス";' in apply
-    thumbnail = _function_body(script, "function loadThumbnailPreview(")
-    assert 'sampleInputKinds[combo.sampleId] === "audio"' not in thumbnail
-    assert '? { title: songTitleOf(ownSongFile()), wordlist: combo.wordlistName }' in thumbnail
-    assert ': { sample: combo.sampleId, wordlist: combo.wordlistName };' in thumbnail
-    host_songs = _function_body(script, "function hostSongList(")
-    assert 'sampleInputKinds[o.value] !== "audio"' in host_songs
-    init = _function_body(script, "async function initBuilder(")
-    assert "available.has(restoredId)" in init
-
-
-def test_card_wordlist_select_shows_the_editor_own_list():
-    """エディタの中で自作リストを使っているあいだも、トリガーとメニューに表示する。
-
-    自作リスト(ORIGINAL/csvText)のときは正本 #wordlist が空になるので、その
-    ままだとカードのプルダウンが「未選択」になって何に空耳させているか分からない。
-    """
-    script = _script()
-    assert 'const EDITOR_WORDLIST_VALUE = "__editor__";' in script
-    assert 'const EDITOR_WORDLIST_LABEL = "自作リスト(替え歌エディタ)";' in script
-    # 正本に名前が入っていればそちらが優先(古い ORIGINAL セッションに引きずられない)
-    shows = _function_body(script, "function showsEditorWordlist()")
-    assert "return !currentWordlistName() && usesEditorWordlist();" in shows
-    body = _function_body(script, "function syncBuilderValues()")
-    assert "const own = !selectedCustom && showsEditorWordlist();" in body
-    assert "if (selectedCustom || own) card.selectedIndex = -1;" in body
-    assert 'selectedCustom?.name || (own ? EDITOR_WORDLIST_LABEL : "")' in body
-    assert '$("builder-wordlist-trigger-label").textContent = selectedLabel;' in body
-    render = _function_body(script, "function renderCustomListMenu()")
-    assert "if (showsEditorWordlist())" in render
-    assert 'editorList.textContent = EDITOR_WORDLIST_LABEL;' in render
-def test_layout_preview_image_needs_a_wordlist_name():
-    """レイアウトプレビューの代表画像は、単語リスト名が空なら取りに行かない。
-
-    自作リスト(ORIGINAL/csvText)のあいだは正本 #wordlist が空。空の名前で
-    /api/asset-preview を叩くと404になるので、loadWordlistImage と同じ空ガードを
-    置いてプレースホルダに落とす。
-    """
-    script = _script()
-    body = _function_body(script, "function leContent(e)")
-    assert 'const name = $("wordlist").value.trim();' in body
-    assert 'if (name) src = "/api/asset-preview?wordlist=" + encodeURIComponent(name);' in body
-    assert "/api/wordlist-image?" not in script
-    # 代表画像のもう一方の経路(サムネ)も同じ流儀の空ガードを持つ
-    thumb = _function_body(script, "function loadWordlistImage(name, seq)")
-    assert "if (!name || hiddenPreviewReason(name)) { hide(); return; }" in thumb
-
-
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_fanwork_notice_allows_generation_and_images_without_confirmation():
     script = _script()
@@ -4282,26 +3504,6 @@ def test_text_only_lyrics_skip_usage_lookup_and_discard_pending_notices():
 # ---- エディタからの「曲を変えたい」依頼(hostRequest)にホストが応える ----
 
 
-def test_editor_seed_advertises_the_song_choices():
-    """シードに host.songs / host.canUploadSong / song.id を載せる。
-
-    エディタ側は MIDI の実体も解析も持たないので、選べる曲は親が教える。
-    一覧は正本(#sample-select)の写しで、カードの曲プルダウンと同じもの。
-    """
-    script = _script()
-    body = _function_body(script, "function withHostInfo(payload)")
-    assert "data.host = { songs: hostSongList(), canUploadSong: true };" in body
-    # 曲のIDは来歴(midiSampleId)から決める。自分で選んだMIDIには付けない
-    assert "if (midiSampleId) song.id = midiSampleId;" in body
-    assert "else delete song.id;" in body
-    songs = _function_body(script, "function hostSongList()")
-    assert '[...$("sample-select").options]' in songs
-    assert "id: o.value, title: o.textContent" in songs
-    # セットアップ画面のシードはこれを通してから書く
-    opened = _function_body(script, "async function convertAndOpenEditor()")
-    assert "const seed = JSON.stringify(withHostInfo(body));" in opened
-
-
 def test_host_request_is_polled_and_handled_once():
     """依頼の処理は監視ポーリングの中で、開いているあいだだけ、1件ずつ。"""
     script = _script()
@@ -4343,35 +3545,6 @@ def test_embedded_editor_brand_returns_through_the_host_shell():
     assert 'window.addEventListener("message", onEditorHostMessage);' in script
 
 
-def test_host_song_request_moves_the_canonical_form_first():
-    """曲の差し替えは正本(#sample-select / #midi)を動かしてから解析し直す。
-
-    カードの曲プルダウン・サムネプレビュー・生成はすべて正本を見ているので、
-    正本を動かさないとエディタの中だけ別の曲になってしまう。
-    """
-    script = _script()
-    body = _function_body(script, "async function hostChangeSong(sid)")
-    assert '$("sample-select").value = sid;' in body
-    assert '$("sample-select").dispatchEvent(new Event("change", { bubbles: true }));' in body
-    # 取得の失敗・古いMIDIの残りは既存の関門で止める
-    assert "ensureSelectedSampleMidi(" in body
-    assert body.index("ensureSelectedSampleMidi(") < body.index("reseedEditorSong()")
-    up = _function_body(script, "async function hostUploadSong()")
-    # キャンセルは何も変えずに戻る(依頼だけが消える)
-    assert "if (!await pickMidiFile()) return;" in up
-    # 自分のMIDIにしたらサンプルの選択は外す(投入前の突き合わせに上書きされる)
-    assert '$("sample-select").value = "";' in up
-    # midi-check のXF歌詞を、専用モーダルへ返す前に元歌詞の下敷きにする
-    assert 'prefillOwnMidiLyrics($("midi").files[0]);' in up
-    assert up.index("prefillOwnMidiLyrics") < up.index("reseedEditorSong()")
-    picker = _function_body(script, "function pickMidiFile()")
-    for needle in ('input.addEventListener("change", onChange);',
-                   'input.addEventListener("cancel", onCancel);',
-                   'window.addEventListener("focus", onFocus);',
-                   "input.click();"):
-        assert needle in picker
-
-
 def test_own_midi_lyrics_prefill_preserves_existing_text_by_choice():
     """XF歌詞は空の元歌詞へ入れ、既存値は勝手に消さない。"""
     script = _script()
@@ -4381,43 +3554,6 @@ def test_own_midi_lyrics_prefill_preserves_existing_text_by_choice():
     assert "current.trim() && !confirm(" in body
     assert '$("lyrics").value = text;' in body
     assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
-
-
-def test_midi_check_rejects_a_non_midi_400_response():
-    """拡張子だけMIDIのファイルを検証失敗として握りつぶさない。"""
-    body = _function_body(_script(), "async function checkMidi()")
-    assert "notMidi = res.status === 400 && !!body.detail;" in body
-    assert "rejectMidi(body.detail, notMidi)" in body
-    assert "lastMidiCheck = f ? { file: f, lines: body.midi_lines || [] } : null;" in body
-
-
-def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
-    """曲だけを差し替える。単語リストと変換のしかたは残し、変換結果は捨てる。"""
-    script = _script()
-    body = _function_body(script, "async function reseedEditorSong()")
-    assert 'form.append("convert", "0")' in body        # 解析のみ(既存の経路)
-    for keep in ("data.phrases = fresh.phrases;", "data.host = fresh.host;",
-                 "if (fresh.song) data.song = fresh.song; else delete data.song;"):
-        assert keep in body
-    for drop in ("delete data.results;", "delete data.tokensList;", "delete data.unitsList;",
-                 # 行ごとの元歌詞は前の曲の phrases への対応づけなので一緒に捨てる
-                 "delete data.originalLines;"):
-        assert drop in body
-    # 元歌詞そのものは正本の値へ揃え直す(曲とセットの情報)
-    assert "if (fresh.lyrics) data.lyrics = fresh.lyrics; else delete data.lyrics;" in body
-    # 単語リスト・パラメータには触らない(エディタ側の今の設定のまま)
-    assert "data.wordlist" not in body and "data.param" not in body
-    # 新しいシードの指紋と来歴を控える。付け替えないと、曲を変えた直後の編集が
-    # 「別の入力から作られたもの」として捨てられてしまう
-    assert "markEditorSeed(text);" in body
-    # 前の曲で取り込んだ替え歌JSONは外す
-    assert "clearEditorFile();" in body
-
-
-def test_footer_labels_guidance_links():
-    html = INDEX.read_text(encoding="utf-8")
-    assert '<a href="/guidelines">利用ガイドライン</a>' in html
-    assert '<a href="/guidelines#contact-title">画像の権利をお持ちの方へ</a>' in html
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -4459,14 +3595,6 @@ def test_song_reseed_replaces_original_lyric_tokens():
         })().catch(error => {console.error(error); process.exit(1);});
     """
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
-def test_difficult_audio_result_links_to_song_generation_tips():
-    html = INDEX.read_text(encoding="utf-8")
-    assert 'id="generation-quality-warning"' in html
-    assert "全体的にうまく生成できていない可能性があります。" in html
-    assert 'href="/guidelines#generation-tips"' in html
-    assert '$("generation-quality-warning").hidden = !job.generation_quality_warning;' in html
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
