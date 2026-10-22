@@ -96,13 +96,17 @@ const current=new File(['good'],'current.mid'); $('midi').files=[current];
 response=deferred(); let checking=checkMidi();
 response.resolve({ok:true,json:async()=>({has_lyrics:true,midi_lines:['あいうえお']})});
 await checking; assert.equal(lastMidiCheck.file,current);
-response=deferred(); checking=checkMidi();
-response.resolve({ok:true,json:async()=>({has_lyrics:false})});
-await checking;
-assert.equal(ownSongFile(),undefined,'unchanged invalid input is still rejected');
-assert.match(message,/取り消しました/);
-assert.equal($('song-upload-filename').textContent,'');
-assert.equal($('song-upload-button').hidden,false,'upload entry returns after rejection');
+for (const reply of [
+  {ok:true,json:async()=>({has_lyrics:false})},
+  {ok:false,status:400,json:async()=>({detail:'not MIDI'})},
+]) {
+  $('midi').files=[current]; response=deferred(); checking=checkMidi();
+  response.resolve(reply); await checking;
+  assert.equal(ownSongFile(),undefined,'unchanged invalid input is still rejected');
+  assert.match(message,/取り消しました/);
+  assert.equal($('song-upload-filename').textContent,'');
+  assert.equal($('song-upload-button').hidden,false,'upload entry returns after rejection');
+}
 assert.ok(previews>0);
 """)
 
