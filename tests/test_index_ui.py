@@ -508,6 +508,7 @@ def test_reselecting_song_keeps_the_active_editor_title():
         const rejectOwnSongFile = message => { throw new Error(message); };
         const clearEditorFile = () => {}, clearAudioPresentation = () => {};
         const recordedSongFile = null;
+        const songRecordingBusy = () => false, lyricsFileReading = false;
         const clearAudioInput = () => {};
         const syncLyricsRecognition = () => {}, syncBuilderOptions = () => {};
         const syncBuilderValues = () => {}, showBuilderMsg = () => {};
@@ -1418,7 +1419,9 @@ def _song_input_node_harness() -> str:
             "function ownSongFile()",
             "function syncLyricsRecognition()",
             "function showSongInputMode(",
+            "function syncSongInputControls()",
             "function switchSongInputMode(",
+            "async function loadLyricsFile(",
             "function syncBuilderValues()", "function songRecordingBusy()",
             "async function applySample(",
             "function trackSample(",
@@ -1450,7 +1453,9 @@ def _song_input_node_harness() -> str:
           return elements.get(id);
         }
         let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
-        let editorImportedFile = null, lyricsFileReadSequence = 0;
+        let editorImportedFile = null, lyricsFileReadSequence = 0, lyricsFileReading = false;
+        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
+        const updateBuilderOverlay = () => {}, syncLyricsInput = () => {};
         const originalLyricsFile = () => null;
         let recordedSongFile = null, activeSongRecording = null, recordingRequestPending = false;
         let midiFromSample = false, samplePending = null, restoring = false;
@@ -1469,7 +1474,7 @@ def _song_input_node_harness() -> str:
         const clearAudioInput = clearAudioPresentation;
         const stopSongRecording = () => {};
         const clearRecordedSongPlayback = () => {};
-        const syncRecordingUi = () => {};
+        const syncRecordingUi = () => { syncSongInputControls(); };
         const clearEditorFile = () => { $("editor").files = []; };
         let previews = 0, saves = 0, builderMessage = "";
         const schedulePreview = () => { previews += 1; };
@@ -2710,6 +2715,7 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
             "function clearRecordedSongPlayback()",
             "function showRecordedSongPlayback(",
             "function syncRecordingUi()", "function songRecordingBusy()",
+            "function syncSongInputControls()",
             "function setRecordingStatus(",
             "function releaseSongRecording(",
             "function finishSongRecording(",
@@ -2721,7 +2727,7 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
     node = textwrap.dedent(
         f"""
         const assert = require("node:assert/strict");
-        let recordingRequestPending = false;
+        let recordingRequestPending = false, lyricsFileReading = false;
         const document = Object.create(null); document.querySelectorAll = () => [];
         const updateBuilderOverlay = Function(), syncHistoryReviewControls = Function();
         const elements = new Map();
@@ -2855,6 +2861,7 @@ def test_recording_delete_requires_confirmation_and_can_hide_future_warnings():
         }};
         global.Event = class {{ constructor(type) {{ this.type = type; }} }};
         const RECORDING_DELETE_WARNING_KEY = "soramimic-recording-delete-warning-hidden";
+        const songRecordingBusy = () => false, lyricsFileReading = false;
         let recordedSongFile = {{ name: "recording.m4a" }};
         const clearAudioInput = () => {{ clearCalls += 1; recordedSongFile = null; }};
         const syncBuilderValues = () => {{}};
@@ -2916,6 +2923,7 @@ def test_audio_upload_keeps_auto_lyrics_checked_until_user_disables_it():
     )
     node = textwrap.dedent(
         """
+        const syncSongInputControls = () => {};
         const assert = require("node:assert/strict");
         const elements = new Map();
         function $(id) {
@@ -2984,7 +2992,7 @@ def test_lyrics_file_loads_into_editable_textarea_as_paste_alternative():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
-        const updateBuilderOverlay = Function();
+        const syncRecordingUi = Function();
         const elements = new Map();
         function $(id) {
           if (!elements.has(id)) elements.set(id, {
@@ -3057,7 +3065,7 @@ def test_lyrics_content_controls_json_and_text_without_stale_imports():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
-        const updateBuilderOverlay = Function();
+        const syncRecordingUi = Function();
         const {File} = require("node:buffer");
         const elements = new Map();
         const $ = id => {
@@ -3196,6 +3204,7 @@ def test_editor_transfer_populates_json_and_recognition_mode():
     )
     node = textwrap.dedent(
         """
+        const syncSongInputControls = () => {};
         const assert = require("node:assert/strict");
         const {File} = require("node:buffer");
         const elements = new Map();
@@ -3707,6 +3716,7 @@ def test_json_lyrics_lock_wordlist_and_adjustment_without_changing_plain_selecti
         "function editorUsesTextOnly(", "function editorTextPreviewList(",
     ))
     node = textwrap.dedent('''
+        const syncSongInputControls = () => {};
         const assert = require("node:assert/strict");
         const elements = new Map(), facet = {disabled:false};
         function $(id) {
@@ -3947,4 +3957,152 @@ def test_initialization_waits_for_restored_inputs_and_keeps_failures_locked():
         assert.equal($('startup-retry').hidden, false);
       })().catch(error => {console.error(error); process.exit(1);});
     '''.replace("__FUNCTIONS__", functions)
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_lyrics_import_blocks_source_changes_until_completion_or_cancel():
+    node = _song_input_node_harness() + textwrap.dedent(
+        """
+        (async () => {
+          for (const fails of [false, true]) {
+            songInputMode = "upload";
+            let finishRead;
+            const reading = loadLyricsFile({name: "old.txt", size: 20,
+              arrayBuffer: () => new Promise((resolve, reject) => {
+                finishRead = () => fails ? reject(Error("read failed"))
+                  : resolve(new TextEncoder().encode("前の曲の歌詞").buffer);
+              })});
+            assert(lyricsFileReading);
+            let finishSample;
+            fetch = () => new Promise(resolve => { finishSample = () => resolve({
+              ok: true, text: async () => "新しい曲の歌詞",
+            }); });
+            for (const id of ["song-source-switch", "song-upload-button", "song-upload-clear",
+              "builder-sample", "lyrics-file", "auto-lyrics"]) assert.equal($(id).disabled, true);
+            assert.equal($("lyrics").readOnly, true);
+            assert.equal($("clear-lyrics-file").hidden, false);
+            assert(!$("clear-lyrics-file").disabled, "cancel remains available");
+            switchSongInputMode("sample");
+            assert.equal(songInputMode, "upload", "even direct calls cannot switch during a read");
+            assert.equal(lyricsFileReading, true);
+            await loadLyricsFile(null); // Explicit cancellation precedes switching.
+            switchSongInputMode("sample");
+            assert.equal(lyricsFileReading, false);
+            assert.equal($("lyrics-file-name").hidden, true);
+            assert.equal($("clear-lyrics-file").hidden, true);
+            $("sample-select").value = "next-song";
+            $("sample-select").dispatchEvent(new Event("change"));
+            finishRead(); await reading;
+            assert.equal($("lyrics").value, "");
+            finishSample(); await samplePending;
+            assert.equal($("lyrics").value, "新しい曲の歌詞");
+            assert.equal(midiSampleId, "next-song");
+            assert.equal($("lyrics-file-name").textContent, "");
+          }
+          // Completion and failure both restore source selection and text editing.
+          for (const fails of [false, true]) {
+            songInputMode = "upload";
+            let complete;
+            const reading = loadLyricsFile({name: "current.txt", size: 10,
+              arrayBuffer: () => new Promise((resolve, reject) => {
+                complete = () => fails ? reject(Error("read failed"))
+                  : resolve(new TextEncoder().encode("読み込んだ歌詞").buffer);
+              })});
+            assert.equal($("song-source-switch").disabled, true);
+            complete(); await reading;
+            assert.equal($("song-source-switch").disabled, false);
+            assert.equal($("lyrics-file").disabled, false);
+            assert.equal($("lyrics").readOnly, false);
+          }
+          // Selecting the already active input method does not cancel an import.
+          songInputMode = "upload";
+          let finish;
+          const reading = loadLyricsFile({name: "current.txt", size: 10,
+            arrayBuffer: () => new Promise(resolve => { finish = resolve; })});
+          const sequence = lyricsFileReadSequence;
+          switchSongInputMode("upload");
+          assert(lyricsFileReading);
+          assert.equal(lyricsFileReadSequence, sequence);
+          finish(new Uint8Array([255]).buffer); await reading;
+        })().catch(error => { console.error(error); process.exit(1); });
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_review_resume_timeout_preserves_edits_unlocks_controls_and_allows_retry():
+    functions = "\n".join(
+        _function_body(_script(), head) + "\n}"
+        for head in (
+            "async function confirmLyricReview(", "function setReviewAction(",
+            "function lyricReviewCoverage(",
+        )
+    )
+    node = textwrap.dedent(
+        """
+        const assert = require('node:assert/strict');
+        const elements = new Map();
+        const $ = id => {
+          if (!elements.has(id)) elements.set(id, {textContent: '', focus() {}});
+          return elements.get(id);
+        };
+        let reviewAction = '', reviewJobId = 'same-job', reviewSavePending = null;
+        const syncHistoryReviewControls = () => {}, headers = () => ({});
+        const payload = {unitsList: [['ア']], results: [[{surface: '亜', period: [0, 1]}]]};
+        const raw = JSON.stringify(payload), EDITOR_KEY = 'editor', REVIEW_JOB_KEY = 'review';
+        const stored = new Map([[EDITOR_KEY, raw], [REVIEW_JOB_KEY, reviewJobId]]);
+        const sessionStorage = {getItem: key => stored.get(key)};
+        let closed = false, watched = null, requests = 0, stall = 'headers';
+        const closeEditor = () => { closed = true; }, showBuilderMsg = () => {};
+        const setJobStatus = () => {}, watch = id => { watched = id; };
+        const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+        AbortSignal.timeout = ms => { assert.equal(ms, 20000); return realTimeout(25); };
+        const waitForAbort = signal => new Promise((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), {once: true});
+        });
+        const fetch = async (url, options) => {
+          requests++;
+          assert.equal(url, '/api/jobs/same-job/resume');
+          assert.deepEqual(JSON.parse(await options.body.get('editor').text()), payload);
+          if (stall === 'headers') return waitForAbort(options.signal);
+          return {ok: true, json: () => stall === 'body'
+            ? waitForAbort(options.signal) : Promise.resolve({id: 'same-job'})};
+        };
+        // AbortSignal timers alone do not keep Node's event loop alive.
+        const keepAlive = setInterval(() => {}, 1000);
+        """
+    ) + functions + textwrap.dedent(
+        """
+        (async () => {
+          for (const phase of ['headers', 'body']) {
+            stall = phase;
+            const pending = confirmLyricReview();
+            assert.equal(reviewAction, 'submitting');
+            assert.equal($('close-lyric-review').disabled, true);
+            assert.equal($('editor-frame').inert, true);
+            await confirmLyricReview();
+            await pending;
+            assert.equal(reviewAction, '');
+            assert.equal($('close-lyric-review').disabled, false);
+            assert.equal($('confirm-lyric-review').disabled, false);
+            assert.equal($('editor-frame').inert, false);
+            assert.match($('lyric-review-error').textContent, /再開できませんでした/);
+            assert.match($('lyric-review-error').textContent, /timeout/i);
+            assert.equal(stored.get(EDITOR_KEY), raw);
+            assert.equal(reviewJobId, 'same-job');
+            assert.equal(closed, false);
+          }
+          assert.equal(requests, 2, 'duplicate taps must not resend');
+          stall = '';
+          await confirmLyricReview();
+          assert.equal(requests, 3);
+          assert.equal(closed, true);
+          assert.equal(watched, 'same-job');
+          assert.equal($('lyric-review-error').textContent, '');
+        })().catch(error => { console.error(error); process.exitCode = 1; })
+          .finally(() => clearInterval(keepAlive));
+        """
+    )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)

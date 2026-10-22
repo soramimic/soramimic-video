@@ -2660,13 +2660,15 @@ function resumeHistoryReview(job) {
 }
 
 function historyReviewBlocked(id) {
-  return !!reviewAction || songRecordingBusy()
+  return !!reviewAction || songRecordingBusy() || lyricsFileReading
     || (submitBusy && currentJob !== id);
 }
 
 function syncHistoryReviewControls() {
-  $("builder-review").disabled = !!reviewAction || songRecordingBusy();
-  if (!songRecordingBusy()) $("song-record-button").disabled = !!reviewAction || customListBusy;
+  $("builder-review").disabled = !!reviewAction || songRecordingBusy() || lyricsFileReading;
+  if (!songRecordingBusy()) {
+    $("song-record-button").disabled = !!reviewAction || customListBusy || lyricsFileReading;
+  }
   for (const button of document.querySelectorAll(".history-review")) {
     button.disabled = historyReviewBlocked(button.dataset.jobId);
   }
@@ -4123,15 +4125,20 @@ function songRecordingBusy() {
   return recordingRequestPending || !!activeSongRecording;
 }
 
+function syncSongInputControls() {
+  const busy = songRecordingBusy() || lyricsFileReading;
+  for (const id of ["midi", "song-upload-button", "song-source-switch", "song-upload-clear",
+    "builder-sample", "sample-select", "lyrics-file", "auto-lyrics"]) $(id).disabled = busy;
+  $("lyrics").readOnly = busy;
+}
+
 function syncRecordingUi() {
   const button = $("song-record-button");
   const recording = activeSongRecording?.recorder?.state === "recording";
   const busy = songRecordingBusy();
   button.hidden = !busy && (!audioInputReady || !recordingSupported() || !!ownSongFile());
   button.disabled = activeSongRecording?.stopping === true;
-  $("midi").disabled = busy;
-  $("song-upload-button").disabled = busy;
-  $("song-source-switch").disabled = busy;
+  syncSongInputControls();
   button.classList.toggle("is-recording", recording);
   button.setAttribute("aria-pressed", String(recording));
   $("song-record-label").textContent = recordingRequestPending ? "キャンセル"
@@ -4355,6 +4362,7 @@ function syncLyricsRecognition() {
   $("adjust-lyrics-panel").hidden = !audio || automatic;
   $("adjust-lyrics").disabled = !audio || automatic || !!activeLyricsJson();
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
+  syncSongInputControls();
 }
 
 $("auto-lyrics").addEventListener("change", () => {
@@ -4374,7 +4382,7 @@ let lyricsFileReading = false;
 async function loadLyricsFile(file) {
   const sequence = ++lyricsFileReadSequence;
   lyricsFileReading = !!file;
-  updateBuilderOverlay();
+  syncRecordingUi();
   $("clear-lyrics-file").hidden = !file;
   $("lyrics-file-name").hidden = !file;
   if (!file) {
@@ -4404,7 +4412,7 @@ async function loadLyricsFile(file) {
   } finally {
     if (sequence === lyricsFileReadSequence) {
       lyricsFileReading = false;
-      updateBuilderOverlay();
+      syncRecordingUi();
     }
   }
 }
@@ -4441,7 +4449,7 @@ function syncLyricsInput(resetSession = true) {
 $("lyrics").addEventListener("input", () => {
   ++lyricsFileReadSequence;
   lyricsFileReading = false;
-  updateBuilderOverlay();
+  syncRecordingUi();
   $("lyrics-file").value = "";
   $("lyrics-file-name").hidden = true;
   $("clear-lyrics-file").hidden = true;
@@ -4464,7 +4472,9 @@ function showSongInputMode(mode) {
 }
 
 function switchSongInputMode(mode) {
-  if (songRecordingBusy() || mode === songInputMode) return;
+  if (songRecordingBusy() || lyricsFileReading || mode === songInputMode) return;
+  $("lyrics-file").value = "";
+  loadLyricsFile(null);
   stopSongRecording(true);
   clearRecordedSongPlayback();
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
@@ -4495,7 +4505,7 @@ $("song-source-switch").addEventListener("click", () => {
 });
 
 $("song-upload-button").addEventListener("click", () => {
-  if (!songRecordingBusy()) $("midi").click();
+  if (!songRecordingBusy() && !lyricsFileReading) $("midi").click();
 });
 $("song-record-button").addEventListener("click", startSongRecording);
 function setOwnSongFile(file) {
@@ -4536,14 +4546,16 @@ function hasDraggedFiles(event) {
 songUploadEntry.addEventListener("dragenter", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
-  if (songRecordingBusy()) return;
+  if (songRecordingBusy() || lyricsFileReading) return;
   songDragDepth += 1;
   songUploadEntry.classList.add("drag-over");
 });
 songUploadEntry.addEventListener("dragover", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = songRecordingBusy() ? "none" : "copy";
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = songRecordingBusy() || lyricsFileReading ? "none" : "copy";
+  }
 });
 songUploadEntry.addEventListener("dragleave", () => {
   songDragDepth = Math.max(0, songDragDepth - 1);
@@ -4556,6 +4568,10 @@ songUploadEntry.addEventListener("drop", (event) => {
   songUploadEntry.classList.remove("drag-over");
   if (songRecordingBusy()) {
     showBuilderMsg("録音を停止してから曲をアップロードしてください。");
+    return;
+  }
+  if (lyricsFileReading) {
+    showBuilderMsg("歌詞ファイルの読み込みが終わるか、取り消してから曲をアップロードしてください。");
     return;
   }
   const files = [...(event.dataTransfer?.files || [])];
@@ -4626,6 +4642,7 @@ async function updateUploadedSongMetadata(file) {
 }
 
 async function clearSelectedSong() {
+  if (songRecordingBusy() || lyricsFileReading) return false;
   if (recordedSongFile && !recordingDeleteWarningHidden()
       && !await confirmRecordedSongDeletion()) return false;
   $("midi").value = "";
@@ -7899,7 +7916,9 @@ async function confirmLyricReview() {
     $("confirm-lyric-review").textContent = "動画を生成中…";
     const form = new FormData();
     form.append("editor", new Blob([raw], { type: "application/json" }), "editor.json");
-    const res = await fetch(`/api/jobs/${id}/resume`, { method: "POST", headers: headers(), body: form });
+    const res = await fetch(`/api/jobs/${id}/resume`, {
+      method: "POST", headers: headers(), body: form, signal: AbortSignal.timeout(20000),
+    });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
     closeEditor();

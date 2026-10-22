@@ -164,19 +164,23 @@ assert.equal(sampleLyricsBaseline,'current sample lyrics');
 """)
 
 
-def test_automatic_recognition_cancels_a_pending_lyrics_file():
+def test_canceling_lyrics_import_allows_automatic_recognition_without_stale_results():
     harness = DOM + r"""
 let lyricsFileReadSequence=0, lyricsFileReading=false;
 const MAX_EDITOR_BYTES=4*1024*1024;
 const syncLyricsInput=()=>{}, syncLyricsRecognition=()=>{};
-const saveForm=()=>{}, scheduleMidiCheck=()=>{}, updateBuilderOverlay=()=>{};
-""" + _functions("async function loadLyricsFile(") + _listener(
+const saveForm=()=>{}, scheduleMidiCheck=()=>{}, songRecordingBusy=()=>false;
+const syncRecordingUi=()=>syncSongInputControls();
+""" + _functions("async function loadLyricsFile(", "function syncSongInputControls()") + _listener(
         '$("auto-lyrics").addEventListener("change", () => {'
     )
     _run(harness, r"""
 $('lyrics').value='current lyrics'; const bytes=deferred();
 const loading=loadLyricsFile({name:'old.json',size:10,arrayBuffer:()=>bytes.promise});
 assert.equal(lyricsFileReading,true);
+assert.equal($('auto-lyrics').disabled,true);
+await loadLyricsFile(null);
+assert.equal($('auto-lyrics').disabled,false);
 $('auto-lyrics').checked=true; $('auto-lyrics').dispatchEvent(new Event('change'));
 assert.equal(lyricsFileReading,false);
 bytes.resolve(new TextEncoder().encode('obsolete file lyrics').buffer); await loading;
@@ -301,7 +305,7 @@ assert.equal(calls[1].text,undefined); assert.equal(calls[1].files[0],file);
 
 def test_recording_blocks_uploads_until_recording_has_finished():
     harness = DOM + r"""
-let recordingRequestPending=false;
+let recordingRequestPending=false, lyricsFileReading=false;
 const updateBuilderOverlay=()=>{}, syncHistoryReviewControls=()=>{};
 let activeSongRecording=null, audioInputReady=true, message='', uploads=0, songDragDepth=0;
 const recordingSupported=()=>true, ownSongFile=()=>null;
@@ -314,7 +318,8 @@ const showBuilderMsg=text=>{message=text;};
 const setOwnSongFile=file=>{uploads++; $('midi').files=[file];};
 let pickerOpened=0;
 $('midi').click=()=>{pickerOpened++;};
-""" + _functions("function syncRecordingUi()", "function songRecordingBusy()") + _listener(
+""" + _functions("function syncRecordingUi()", "function songRecordingBusy()",
+                 "function syncSongInputControls()") + _listener(
         '$("song-upload-button").addEventListener("click",'
     ) + _listener('songUploadEntry.addEventListener("drop",') + _listener(
         'songUploadEntry.addEventListener("dragover",'

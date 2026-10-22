@@ -68,6 +68,7 @@ hang=false; await cancelJob(); assert.deepEqual(watched,['job']);
 
 def test_review_loading_disables_competing_open_controls_and_recovers_from_timeout():
     harness = DOM + r"""
+let lyricsFileReading=false;
 let currentJob='job', reviewAction='';
 let customListBusy=false;
 let reviewOpenedJob=null, submitBusy=true, recording=false, message='';
@@ -186,7 +187,7 @@ assert.equal(closed,2); assert.equal($('lyric-review-error').textContent,'');
 def test_microphone_permission_wait_can_be_canceled_without_affecting_a_new_request():
     harness = DOM + r"""
 let activeSongRecording=null, recordingRequestPending=false, recordingStartSequence=0;
-let audioInputReady=true, songInputMode='upload', maxSongSeconds=0;
+let audioInputReady=true, songInputMode='upload', maxSongSeconds=0, lyricsFileReading=false;
 let reviewAction='', customListBusy=false, submitBusy=false, currentJob=null;
 let requests=[], stopped=0, pauses=0;
 const document={querySelectorAll:selector=>selector==='audio, video'?[{pause(){pauses++;}}]:[]};
@@ -206,6 +207,7 @@ const window={MediaRecorder:class {
 }};
 """ + _functions(
         "function songRecordingBusy()", "function syncRecordingUi()",
+        "function syncSongInputControls()",
         "function setRecordingStatus(", "function stopSongRecording(",
         "async function startSongRecording(", "function releaseSongRecording(",
         "function finishSongRecording(",
@@ -252,8 +254,10 @@ def test_lyrics_loading_disables_generation_until_completion_cancel_or_error():
 let lyricsFileReadSequence=0, lyricsFileReading=false, submitBusy=false, builderState='preview';
 const songRecordingBusy=()=>false, MAX_EDITOR_BYTES=4*1024*1024;
 const syncLyricsInput=()=>{}, syncLyricsRecognition=()=>{};
+const syncRecordingUi=()=>{updateBuilderOverlay();syncSongInputControls();};
 $('builder-figure').hidden=false; $('builder-loading').hidden=true;
-""" + _functions("async function loadLyricsFile(", "function updateBuilderOverlay()")
+""" + _functions("async function loadLyricsFile(", "function updateBuilderOverlay()",
+                 "function syncSongInputControls()")
     _run(harness, r"""
 const bytes=deferred();
 const pending=loadLyricsFile({name:'lyrics.txt',size:10,arrayBuffer:()=>bytes.promise});
