@@ -150,7 +150,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         """
         const assert = require("node:assert/strict");
         let reviewClosing = false;
-        const songRecordingBusy = () => false;
+        const songRecordingBusy = () => false, syncHistoryReviewControls = () => {};
         const elements = new Map();
         const $ = (id) => {
           if (!elements.has(id)) elements.set(id, {hidden: true, textContent: "", focus() {}});
@@ -910,7 +910,8 @@ def test_history_uses_cards_and_only_safe_display_fields():
     load = _function_body(script, "async function fetchHistory()")
     card = _function_body(script, "function historyCard(job, index)")
     assert 'document.createElement("div")' in load
-    assert 'list.className = "history-list"' in load
+    render = _function_body(script, "function renderHistoryJobs(jobs)")
+    assert 'list.className = "history-list"' in render
     assert 'mediaSlot.className = "history-media"' in card
     assert "history-player" not in card
     assert "<table" not in load

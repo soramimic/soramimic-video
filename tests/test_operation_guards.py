@@ -3,9 +3,104 @@
 from test_input_lifecycle import DOM, _functions, _run
 
 
+def test_custom_list_opens_a_busy_modal_before_reading_storage():
+    harness = DOM + r"""
+let customListBusy=false, customLists=[], editingCustomListId='', customListInitialValues;
+let customListOpener=null, recording=false, message='', syncs=0;
+const songRecordingBusy=()=>recording, gate=deferred();
+const document={activeElement:{},body:{classList:{add(){}}}};
+const setCustomListBusy=v=>{customListBusy=v;};
+let refreshCustomLists=()=>gate.promise;
+const showsEditorWordlist=()=>false;
+const showBuilderMsg=text=>{message=text;}, showCustomListMessage=()=>{};
+const syncBuilderValues=()=>{syncs++;};
+$('custom-wordlist-panel').showModal=function(){this.open=true;};
+const closeCustomList=()=>{$('custom-wordlist-panel').open=false;};
+""" + _functions("async function openCustomList(")
+    _run(harness, r"""
+recording=true; await openCustomList(); assert.equal(customListBusy,false);
+assert.equal($('custom-wordlist-panel').open,undefined);
+recording=false;
+const opening=openCustomList();
+assert.equal($('custom-wordlist-panel').open,true,'modal blocks background before storage read');
+assert(customListBusy,'pending storage read must disable list editing');
+await openCustomList(); assert.equal(syncs,0,'duplicate opens must not initialize another draft');
+gate.resolve(); await opening;
+assert.equal(customListBusy,false); assert.equal(syncs,1);
+assert.equal($('custom-wordlist-panel').open,true);
+$('custom-wordlist-panel').open=false;
+refreshCustomLists=async()=>{throw Error('storage offline');};
+await openCustomList(); assert.equal(customListBusy,false);
+assert.equal($('custom-wordlist-panel').open,false);
+assert.match(message,/storage offline/);
+""")
+
+
+def test_cancel_timeout_restores_the_control_and_can_retry_the_same_job():
+    harness = DOM + r"""
+let currentJob='job', submitAbort=null, cancelPendingJob=null, status='', message='';
+const controllers=[], watched=[], headers=()=>({});
+const AbortSignal={timeout:ms=>{
+  assert(ms>0 && ms<=20000); const c=new AbortController();controllers.push(c);return c.signal;
+}};
+let hang=true, requests=0;
+const fetch=(_url,{signal})=>{
+  requests++;
+  if(hang)return new Promise((_,reject)=>{
+    signal?.addEventListener('abort',()=>reject(signal.reason));
+  });
+  return Promise.resolve({ok:true});
+};
+const setCancelPending=v=>{$('builder-cancel').disabled=v;};
+const setJobStatus=v=>{status=v;}, showBuilderMsg=v=>{message=v;};
+const restartPolling=id=>watched.push(id);
+""" + _functions("async function cancelJob()")
+    _run(harness, r"""
+const pending=cancelJob(); assert($('builder-cancel').disabled);
+await cancelJob(); assert.equal(requests,1,'pending cancellation remains exclusive');
+assert.equal(controllers.length,1,'cancel must not wait indefinitely');
+controllers[0].abort(); await pending;
+assert.equal(cancelPendingJob,null); assert.equal($('builder-cancel').disabled,false);
+assert.match(message,/もう一度/); assert.equal(currentJob,'job');
+hang=false; await cancelJob(); assert.deepEqual(watched,['job']);
+""")
+
+
+def test_review_loading_disables_competing_open_controls_and_recovers_from_timeout():
+    harness = DOM + r"""
+let currentJob='job', reviewOpening=false, reviewSubmitting=false, reviewClosing=false;
+let customListBusy=false;
+let reviewOpenedJob=null, submitBusy=true, recording=false, message='';
+const songRecordingBusy=()=>recording, headers=()=>({});
+const review=$('history-review'); review.dataset={jobId:'job'};
+const document={querySelectorAll:()=>[review]}, controllers=[];
+const AbortSignal={timeout:ms=>{
+  assert(ms>0 && ms<=20000);const c=new AbortController();controllers.push(c);return c.signal;
+}};
+const fetch=(_url,{signal})=>new Promise((_,reject)=>{
+  signal?.addEventListener('abort',()=>reject(signal.reason));
+});
+const showBuilderMsg=v=>{message=v;};
+""" + _functions(
+        "async function openLyricReview(", "function syncHistoryReviewControls()",
+        "function historyReviewBlocked(",
+    )
+    _run(harness, r"""
+const pending=openLyricReview('job'); assert(reviewOpening);
+assert.equal($('builder-review').disabled,true); assert.equal(review.disabled,true);
+assert.equal($('song-record-button').disabled,true,'review loading excludes a new recording');
+assert.equal(controllers.length,1);
+controllers[0].abort(); await pending;
+assert.equal(reviewOpening,false); assert.equal($('builder-review').disabled,false);
+assert.equal($('song-record-button').disabled,false);
+assert.equal(review.disabled,false); assert.match(message,/再試行/);
+""")
+
+
 def test_history_resume_preserves_the_active_job_and_independent_controls():
     harness = DOM + r"""
 let reviewSubmitting=false, reviewClosing=false, reviewOpening=false;
+let customListBusy=false;
 let submitBusy=false, currentJob=null, recording=false, resumed=false, reviewOpenedJob=null;
 let builderState='preview', lyricsFileReading=false, watched=null;
 const songRecordingBusy=()=>recording;
@@ -168,6 +263,7 @@ let reviewOpening=false, reviewSubmitting=false, reviewClosing=false;
 let currentJob='current', reviewOpenedJob=null, recording=false;
 const songRecordingBusy=()=>recording, headers=()=>({});
 const response=deferred(), fetch=()=>response.promise;
+const syncHistoryReviewControls=()=>{};
 """ + _functions("async function openLyricReview(")
     _run(harness, r"""
 const opening=openLyricReview('current');

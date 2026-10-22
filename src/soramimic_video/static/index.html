@@ -2439,30 +2439,64 @@ async function fetchHistory() {
     if (!res.ok) throw new Error("履歴を取得できませんでした");
     jobs = await res.json();
   } catch {
-    disposeHistoryPlayback();
-    resetHistorySave();
-    resetHistoryShare();
-    historyJobs = [];
     const message = document.createElement("p");
     message.textContent = "履歴を取得できませんでした。もう一度お試しください。";
     message.setAttribute("role", "status");
     const retry = historyButton("再試行");
     retry.addEventListener("click", () => loadHistory().then(restoreJobProgress));
-    $("history-body").replaceChildren(message, retry);
-    return [];
+    const body = $("history-body");
+    if (activeHistoryPlayback || preparedHistorySave || preparedHistoryShare) {
+      body.querySelector(".history-load-error")?.remove();
+      const error = document.createElement("div");
+      error.className = "history-load-error";
+      error.append(message, retry);
+      body.appendChild(error);
+    } else {
+      historyJobs = [];
+      body.replaceChildren(message, retry);
+    }
+    return historyJobs;
   }
-  disposeHistoryPlayback();
-  resetHistorySave();
-  resetHistoryShare();
-  historyJobs = jobs;
+  renderHistoryJobs(jobs);
+  return jobs;
+}
+
+function renderHistoryJobs(jobs) {
   const body = $("history-body");
+  const previousList = body.querySelector?.(".history-list");
+  const retained = new Map();
+  const keep = (state, element, urlKey, reset) => {
+    const index = state?.jobId ? jobs.findIndex(job => job.id === state.jobId
+      && job[urlKey] === state.url) : -1;
+    const card = element?.closest?.(".history-item");
+    if (index < 0 || !previousList || card?.parentElement !== previousList) { reset(); return; }
+    state.index = index;
+    retained.set(index, card);
+  };
+  keep(activeHistoryPlayback, activeHistoryPlayback?.media, "playback_url", disposeHistoryPlayback);
+  keep(preparedHistorySave, preparedHistorySave?.button, "video_url", resetHistorySave);
+  keep(preparedHistoryShare, preparedHistoryShare?.button, "video_url", resetHistoryShare);
+  historyJobs = jobs;
+  if (retained.size) {
+    // Keep playing media and pending native-save controls connected to the document.
+    // Moving a media node, even into an identical card, can pause it in WebKit.
+    const cards = new Set(retained.values());
+    for (const child of [...body.children]) if (child !== previousList) child.remove();
+    for (const child of [...previousList.children]) if (!cards.has(child)) child.remove();
+    const indices = [...retained.keys()].sort((a, b) => a - b);
+    jobs.forEach((job, index) => {
+      if (retained.has(index)) return;
+      const next = indices.find(value => value > index);
+      previousList.insertBefore(historyCard(job, index), retained.get(next) || null);
+    });
+    return;
+  }
   body.replaceChildren();
-  if (!jobs.length) { body.textContent = "まだありません"; return jobs; }
+  if (!jobs.length) { body.textContent = "まだありません"; return; }
   const list = document.createElement("div");
   list.className = "history-list";
   jobs.forEach((job, index) => list.appendChild(historyCard(job, index)));
   body.appendChild(list);
-  return jobs;
 }
 
 let historyJobs = [];
@@ -2510,6 +2544,7 @@ function appendLyricEditAction(actions, job, statusContainer, className = "") {
 }
 
 function historyCard(job, index) {
+  const jobIndex = () => job.id ? historyJobs.findIndex(item => item.id === job.id) : index;
   const card = document.createElement("article");
   card.className = "history-item";
   const main = document.createElement("div");
@@ -2522,7 +2557,7 @@ function historyCard(job, index) {
   if (complete) {
     thumb.type = "button";
     thumb.setAttribute("aria-label", `${job.song_label || "曲"}を再生`);
-    thumb.addEventListener("click", () => startHistoryPlayback(index, thumb));
+    thumb.addEventListener("click", () => startHistoryPlayback(jobIndex(), thumb));
   }
   if (job.thumbnail_url && job.result_kind !== "audio") {
     const image = document.createElement("img");
@@ -2576,23 +2611,23 @@ function historyCard(job, index) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
     const save = appendSaveMenu(actions, job, () => {
-      if (!save || (preparedHistorySave?.index === index
+      if (!save || (preparedHistorySave?.index === jobIndex()
           && preparedHistorySave.shareable === false)) return false;
-      saveHistoryVideo(index, save.button, save.status);
+      saveHistoryVideo(jobIndex(), save.button, save.status);
       return true;
     });
     if (save && prefersNativeVideoSave() && job.result_kind !== "audio") {
       save.button.addEventListener("click", event => {
-        if (preparedHistorySave?.index !== index
+        if (preparedHistorySave?.index !== jobIndex()
             || preparedHistorySave.needsTap === false
             || preparedHistorySave.shareable === false) return;
         event.preventDefault();
-        saveHistoryVideo(index, save.button, save.status);
+        saveHistoryVideo(jobIndex(), save.button, save.status);
       });
     }
     if (typeof navigator.share === "function" && typeof File !== "undefined") {
       const share = historyButton("共有", "history-share result-action action-share");
-      share.addEventListener("click", () => shareHistoryResult(index, share));
+      share.addEventListener("click", () => shareHistoryResult(jobIndex(), share));
       actions.appendChild(share);
     }
     appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
@@ -2630,6 +2665,9 @@ function historyReviewBlocked(id) {
 }
 
 function syncHistoryReviewControls() {
+  $("builder-review").disabled = reviewOpening || reviewSubmitting || reviewClosing
+    || songRecordingBusy();
+  if (!songRecordingBusy()) $("song-record-button").disabled = reviewOpening || customListBusy;
   for (const button of document.querySelectorAll(".history-review")) {
     button.disabled = historyReviewBlocked(button.dataset.jobId);
   }
@@ -2670,7 +2708,8 @@ async function startHistoryPlayback(index, trigger) {
     if (job.thumbnail_url) media.poster = qs(job.thumbnail_url);
   }
   slot.replaceChildren(media);
-  const active = { index, media, slot, thumb, abort: null, objectUrl: "" };
+  const active = { index, jobId: job.id, url: job.playback_url,
+    media, slot, thumb, abort: null, objectUrl: "" };
   activeHistoryPlayback = active;
   try {
     if (apiKey()) {
@@ -2727,10 +2766,11 @@ async function shareHistoryResult(index, button) {
   if (prepared && prepared.index === index && prepared.abort) return;
   resetHistoryShare();
   const ctrl = new AbortController();
-  const state = { index, button, abort: ctrl, file: null };
+  const state = { index, jobId: job.id, url: job.video_url, button, abort: ctrl, file: null };
   preparedHistoryShare = state;
   button.disabled = true;
   button.textContent = "共有を準備中…";
+  const timer = setTimeout(() => ctrl.abort(), 120000);
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("共有データを取得できませんでした");
@@ -2743,11 +2783,11 @@ async function shareHistoryResult(index, button) {
     if (navigator.userActivation?.isActive === false) button.textContent = "共有を開く";
     else open(state, true);
   } catch (error) {
-    if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+    if (preparedHistoryShare !== state) return;
     state.abort = null;
     button.disabled = false;
     button.textContent = "共有を再試行";
-  }
+  } finally { clearTimeout(timer); }
 }
 
 function resetHistorySave() {
@@ -2805,13 +2845,15 @@ async function saveHistoryVideo(index, button, status) {
   if (prepared && prepared.index === index && prepared.abort) return;
   resetHistorySave();
   const ctrl = new AbortController();
-  const state = { index, button, status, abort: ctrl, file: null, needsTap: true };
+  const state = { index, jobId: job.id, url: job.video_url,
+    button, status, abort: ctrl, file: null, needsTap: true };
   preparedHistorySave = state;
   button.disabled = true;
   button.textContent = "準備中…";
   button.setAttribute("aria-busy", "true");
   button.setAttribute("aria-disabled", "true");
   message("動画を取得しています…");
+  const timer = setTimeout(() => ctrl.abort(), 120000);
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("保存データを取得できませんでした");
@@ -2822,11 +2864,11 @@ async function saveHistoryVideo(index, button, status) {
     if (navigator.userActivation?.isActive === false) requestTap(state);
     else open(state, true);
   } catch (error) {
-    if (preparedHistorySave !== state || error?.name === "AbortError") return;
+    if (preparedHistorySave !== state) return;
     state.abort = null;
     ready();
     message("動画を取得できませんでした。もう一度「保存」をタップしてください。");
-  }
+  } finally { clearTimeout(timer); }
 }
 
 $("history").addEventListener("toggle", () => {
@@ -4170,7 +4212,7 @@ async function startSongRecording() {
     stopSongRecording();
     return;
   }
-  if (!audioInputReady || !recordingSupported()) return;
+  if ($("song-record-button").disabled || !audioInputReady || !recordingSupported()) return;
   const request = ++recordingStartSequence;
   recordingRequestPending = true;
   for (const media of document.querySelectorAll("audio, video")) media.pause();
@@ -5005,12 +5047,21 @@ function selectCustomList(id) {
   schedulePreview(true);
 }
 async function openCustomList(id = "") {
-  if (customListBusy || $("custom-wordlist-panel").open) return;
+  if (customListBusy || $("custom-wordlist-panel").open || songRecordingBusy()) return;
   customListOpener = document.activeElement;
+  $("custom-wordlist-name").value = "";
+  $("custom-wordlist-text").value = "";
+  $("custom-wordlist-title").textContent = "自作単語リストを読み込み中…";
+  $("custom-wordlist-delete").hidden = true;
+  showCustomListMessage("読み込んでいます…");
+  $("custom-wordlist-panel").showModal();
+  document.body.classList.add("custom-wordlist-open");
   setCustomListBusy(true);
-  try { await refreshCustomLists(); }
-  catch (err) { showBuilderMsg(err.message); return; }
+  let loaded = false;
+  try { await refreshCustomLists(); loaded = true; }
+  catch (err) { showBuilderMsg(err.message); }
   finally { setCustomListBusy(false); }
+  if (!loaded) { closeCustomList(); return; }
   const list = customLists.find((item) => item.id === id);
   const legacy = !id && showsEditorWordlist() ? editorSessionWordlist() : null;
   editingCustomListId = list?.id || "";
@@ -5024,8 +5075,6 @@ async function openCustomList(id = "") {
   showCustomListMessage("");
   $("custom-wordlist-title").textContent = list ? "自作単語リストの編集" : "自作単語リストの保存";
   syncBuilderValues();
-  $("custom-wordlist-panel").showModal();
-  document.body.classList.add("custom-wordlist-open");
   $("custom-wordlist-name").focus();
 }
 function customListHasChanges() {
@@ -5052,6 +5101,7 @@ function setCustomListBusy(busy) {
   for (const button of $("custom-wordlist-menu").querySelectorAll("button")) {
     button.disabled = busy || button.dataset.optionDisabled === "true";
   }
+  syncHistoryReviewControls();
 }
 function showCustomListMessage(text, isError = false) {
   const msg = $("custom-wordlist-message");
@@ -6368,7 +6418,7 @@ async function cancelJob() {
   showBuilderMsg("");
   try {
     const res = await fetch(`/api/jobs/${id}/cancel`, {
-      method: "POST", headers: headers(),
+      method: "POST", headers: headers(), signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) throw new Error(String(res.status));
     // 応答までに数秒かかっても表示はpendingのまま保つ。応答後は次の定期
@@ -7691,9 +7741,12 @@ let reviewSavePending = null;
 async function openLyricReview(id) {
   if (!id || reviewOpening || reviewSubmitting || reviewClosing || songRecordingBusy()) return;
   reviewOpening = true;
+  syncHistoryReviewControls();
   reviewOpenedJob = id;
   try {
-    const res = await fetch(`/api/jobs/${id}/review`, { headers: headers(), cache: "no-store" });
+    const res = await fetch(`/api/jobs/${id}/review`, {
+      headers: headers(), cache: "no-store", signal: AbortSignal.timeout(20000),
+    });
     const seed = await res.json();
     if (!res.ok) throw new Error(seed.detail || res.status);
     if (currentJob !== id) return;
@@ -7718,6 +7771,7 @@ async function openLyricReview(id) {
     showBuilderMsg("編集画面を開けませんでした。「歌詞を確認する」から再試行してください: " + err.message);
   } finally {
     reviewOpening = false;
+    syncHistoryReviewControls();
   }
 }
 
