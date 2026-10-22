@@ -2416,10 +2416,35 @@ function updateTransposeEnabled() {
 $("auto-octave").addEventListener("change", updateTransposeEnabled);
 updateTransposeEnabled();
 
+let historyLoadPending = null;
 async function loadHistory() {
-  const res = await fetch("/api/jobs", { headers: headers() });
-  if (!res.ok) return [];
-  const jobs = await res.json();
+  if (historyLoadPending) return historyLoadPending;
+  historyLoadPending = fetchHistory();
+  try { return await historyLoadPending; }
+  finally { historyLoadPending = null; }
+}
+
+async function fetchHistory() {
+  let jobs;
+  try {
+    const res = await fetch("/api/jobs", {
+      headers: headers(), signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error("履歴を取得できませんでした");
+    jobs = await res.json();
+  } catch {
+    disposeHistoryPlayback();
+    resetHistorySave();
+    resetHistoryShare();
+    historyJobs = [];
+    const message = document.createElement("p");
+    message.textContent = "履歴を取得できませんでした。もう一度お試しください。";
+    message.setAttribute("role", "status");
+    const retry = historyButton("再試行");
+    retry.addEventListener("click", () => loadHistory().then(restoreJobProgress));
+    $("history-body").replaceChildren(message, retry);
+    return [];
+  }
   disposeHistoryPlayback();
   resetHistorySave();
   resetHistoryShare();
@@ -2786,7 +2811,9 @@ async function saveHistoryVideo(index, button, status) {
 }
 
 $("history").addEventListener("toggle", () => {
-  if (!$("history").open) {
+  if ($("history").open) {
+    loadHistory().then(restoreJobProgress);
+  } else {
     disposeHistoryPlayback();
     resetHistorySave();
     resetHistoryShare();
@@ -3343,35 +3370,37 @@ async function prepareVideoShare(videoUrl, video) {
 function bindShare(videoUrl) {
   const button = $("share-save");
   if (!button) return;
-  button.addEventListener("click", async () => {
-    const seq = sharePreparationSeq;
-    let afterPreparation = false;
-    if ((!preparedVideoShare || preparedVideoShare.videoUrl !== videoUrl) && videoSharePreparation) {
-      button.disabled = true;
-      button.textContent = "共有を準備中…";
-      await videoSharePreparation;
-      if (seq !== sharePreparationSeq) return;
-      button.disabled = false;
-      afterPreparation = true;
-    }
-    const prepared = preparedVideoShare;
-    if (!prepared || prepared.videoUrl !== videoUrl || !prepared.file) return;
-    if (afterPreparation && navigator.userActivation?.isActive === false) {
+  button.addEventListener("click", () => sharePreparedVideo(videoUrl, button));
+}
+
+async function sharePreparedVideo(videoUrl, button, text = SHARE_TEXT) {
+  const seq = sharePreparationSeq;
+  let afterPreparation = false;
+  if ((!preparedVideoShare || preparedVideoShare.videoUrl !== videoUrl) && videoSharePreparation) {
+    button.disabled = true;
+    button.textContent = "共有を準備中…";
+    await videoSharePreparation;
+    if (seq !== sharePreparationSeq) return;
+    button.disabled = false;
+    afterPreparation = true;
+  }
+  const prepared = preparedVideoShare;
+  if (!prepared || prepared.videoUrl !== videoUrl || !prepared.file) return;
+  if (afterPreparation && navigator.userActivation?.isActive === false) {
+    button.textContent = "共有を開く";
+    return;
+  }
+  button.textContent = "共有";
+  prepared.shareable = true;
+  openFileShare(prepared.file, (error) => {
+    if (seq !== sharePreparationSeq || error?.name === "AbortError") return;
+    if (afterPreparation && error?.name === "NotAllowedError") {
       button.textContent = "共有を開く";
       return;
     }
-    button.textContent = "共有";
-    prepared.shareable = true;
-    openFileShare(prepared.file, (error) => {
-      if (seq !== sharePreparationSeq || error?.name === "AbortError") return;
-      if (afterPreparation && error?.name === "NotAllowedError") {
-        button.textContent = "共有を開く";
-        return;
-      }
-      prepared.shareable = false;
-      showBuilderMsg("共有メニューを開けませんでした。「保存」からダウンロードできます。");
-    });
-  });
+    prepared.shareable = false;
+    showBuilderMsg("共有メニューを開けませんでした。「保存」からダウンロードできます。");
+  }, text);
 }
 
 // ジョブを投入できない状態か(投入中・実行中)。生成の導線はサムネ枠のタップ
@@ -3597,6 +3626,8 @@ async function submitJob(previewSec, previewMode) {
   }
   showSubmitMsg("");
   // 表示中の歌詞欄から、元歌詞と編集済みの割り当てを取り出す。
+  const lyrics = $("lyrics").value;
+  const automaticLyrics = automaticLyricsEnabled();
   const editorSrc = editorSourceForSubmit();
   if (editorSrc.error) { setBusy(false); showSubmitMsg(editorSrc.error); return; }
   if (simpleMode) {
@@ -3640,6 +3671,13 @@ async function submitJob(previewSec, previewMode) {
     setBusy(false);
     hideTurnstilePrompt();
     showSubmitMsg("曲の選択が変わりました。もう一度動画をタップして生成してください。");
+    return;
+  }
+  if (lyricsFileReading || lyrics !== $("lyrics").value
+      || automaticLyrics !== automaticLyricsEnabled()) {
+    setBusy(false);
+    hideTurnstilePrompt();
+    showSubmitMsg("歌詞の入力が変わりました。もう一度動画をタップして生成してください。");
     return;
   }
   const form = new FormData();
@@ -4237,6 +4275,8 @@ function syncLyricsRecognition() {
 }
 
 $("auto-lyrics").addEventListener("change", () => {
+  $("lyrics-file").value = "";
+  loadLyricsFile(null);
   syncLyricsRecognition();
   syncLyricsInput();
   saveForm();
@@ -4433,7 +4473,11 @@ songUploadEntry.addEventListener("drop", (event) => {
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
   globalThis.SoramimicAudioUpload?.selectionChanged?.(file);
-  if (!file) return;
+  if (!file) {
+    syncBuilderValues();
+    schedulePreview(true);
+    return;
+  }
   setRecordingStatus("");
   const kind = ownSongKind(file);
   if (!kind) {
@@ -4520,6 +4564,8 @@ $("midi").addEventListener("change", () => {
 async function applySample(opts = {}) {
   const request = ++sampleApplySeq;
   const sid = $("sample-select").value;
+  const lyricsSequence = lyricsFileReadSequence;
+  const previousLyrics = $("lyrics").value;
   if (!sid) return false;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
@@ -4562,10 +4608,12 @@ async function applySample(opts = {}) {
       creditHint.replaceChildren();
       creditHint.hidden = true;
     }
-    if (lyricsRes) {
+    if (lyricsRes && lyricsSequence === lyricsFileReadSequence
+        && previousLyrics === $("lyrics").value) {
       sampleLyricsId = sid;
       sampleLyricsBaseline = sampleLyrics;
       $("lyrics").value = sampleLyrics;
+      $("lyrics").dispatchEvent(new Event("input", { bubbles: true }));
       $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
     }
     // クレジット表記: プリセットがある曲は選曲時に自動で入れる(権利者指定の
@@ -4800,6 +4848,7 @@ async function checkMidi() {
   }
   const f = $("midi").files[0];
   const sampleId = midiSampleId;
+  const lyrics = songLyricsForRequest();
   if (!sampleId && !f) { clearMidiNotices(); return; }
   let body;
   let notMidi = false;
@@ -4807,7 +4856,7 @@ async function checkMidi() {
     const form = new FormData();
     if (sampleId) form.append("sample_id", sampleId);
     else form.append("midi", f);
-    form.append("lyrics", songLyricsForRequest());
+    form.append("lyrics", lyrics);
     const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
     body = await res.json();
     if (!res.ok) {
@@ -4820,7 +4869,9 @@ async function checkMidi() {
     // 検証そのものに失敗したときは黙って通す(生成側で従来どおりのエラーになる)
     return;
   }
-  if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
+  if (seq !== midiCheckSeq || f !== $("midi").files[0] || sampleId !== midiSampleId
+      || lyrics !== songLyricsForRequest() || ownSongKind() === "audio"
+      || selectedSampleIsAudio()) return;
   clearMidiNotices();
   if (notMidi || !body.has_lyrics) { rejectMidi(body.detail, notMidi); return; }
   lastMidiCheck = f ? { file: f, lines: body.midi_lines || [] } : null;
@@ -5621,7 +5672,7 @@ function showBuilderVideo(job) {
   appendSaveMenu($("result-actions"), job, () => {
     const share = $("share-save");
     if (!share || share.hidden || preparedVideoShare?.shareable === false) return false;
-    share.click();
+    sharePreparedVideo(job.video_url, share, "");
     return true;
   });
   const actions = $("result-actions");
@@ -5718,7 +5769,12 @@ function titleChoiceContext() {
     } catch { /* 不正な保存値は通常の条件比較で解除する。 */ }
   }
   return JSON.stringify([ownTitle ? OWN_SONG_VALUE : c.sampleId,
-    title, c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
+    title, c.wordlistName, currentWordlistWhere(), c.customList?.text || ""]);
+}
+
+function currentWordlistWhere() {
+  const data = activeLyricsJson();
+  return data ? editorWhereOf(data) : $("where").value.trim();
 }
 
 function selectedTitleWords() {
@@ -5813,7 +5869,7 @@ $("title-candidates-load").addEventListener("click", async () => {
   const payload = combo.sampleId === OWN_SONG_VALUE
     ? { title: songTitleOf(ownSongFile()) } : { sample: combo.sampleId };
   if (combo.customList) payload.wordlist_text = combo.customList.text;
-  else Object.assign(payload, { wordlist: combo.wordlistName, where: $("where").value.trim() });
+  else Object.assign(payload, { wordlist: combo.wordlistName, where: currentWordlistWhere() });
   const seq = ++titleCandidatesSeq;
   const ctrl = new AbortController();
   titleCandidatesAbort?.abort();
@@ -5948,7 +6004,7 @@ function loadThumbnailPreview(combo) {
     : { sample: combo.sampleId, wordlist: combo.wordlistName };
   const displayLabel = $("thumbnail-wordlist-label").value.trim();
   if (displayLabel) params.wordlist_label = displayLabel;
-  params.where = $("where").value.trim();
+  params.where = currentWordlistWhere();
   const titleWords = selectedTitleWords();
   if (titleWords) params.title_words = titleWords;
   params.noncommercial_fanwork = "true";
@@ -6095,7 +6151,7 @@ function schedulePreview(force) {
   const ownTitle = c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "";
   const combo = JSON.stringify([c.sampleId, ownTitle, c.wordlistName,
     list?.id || "", list?.name || "", list?.text || "",
-    $("thumbnail-wordlist-label").value.trim(), $("where").value.trim(), selectedTitleWords()]);
+    $("thumbnail-wordlist-label").value.trim(), currentWordlistWhere(), selectedTitleWords()]);
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -6174,6 +6230,9 @@ $("wordlist").addEventListener("change", () => {
 $("song-title").addEventListener("change", () => schedulePreview(true));
 $("where").addEventListener("change", () => schedulePreview(true));
 $("thumbnail-wordlist-label").addEventListener("change", () => schedulePreview(true));
+$("lyrics").addEventListener("input", () => schedulePreview());
+$("lyrics").addEventListener("change", () => schedulePreview());
+$("auto-lyrics").addEventListener("change", () => schedulePreview());
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
   previewShowImages = true;
@@ -9103,6 +9162,7 @@ $("midi").addEventListener("change", async () => {
       r.onerror = reject;
       r.readAsDataURL(f);
     });
+    if (f !== ownSongFile()) return;
     localStorage.setItem(MIDI_KEY, JSON.stringify({ name: f.name, dataUrl }));
   } catch { /* 保存失敗は無視 */ }
 });
