@@ -78,6 +78,29 @@ def _post(client: TestClient, payload: dict, **data):
     )
 
 
+@pytest.mark.parametrize("raw", [
+    b"\xff", b"[]", b"null", b"1", b'"text"', pytest.param(b"[" * 2000, id="too-deep"),
+])
+def test_invalid_json_returns_an_input_error(client, raw):
+    response = client.post(
+        "/api/editor-preview",
+        files={"editor": ("lyrics.json", raw, "application/json")},
+        data={"wordlist": "baseball"},
+    )
+    assert response.status_code == 400
+    assert "JSON" in response.json()["detail"]
+
+
+def test_oversized_preview_is_rejected_before_parsing(client):
+    from soramimic_video.editor_io import MAX_EDITOR_BYTES
+
+    response = client.post(
+        "/api/editor-preview",
+        files={"editor": ("lyrics.json", b" " * (MAX_EDITOR_BYTES + 1), "application/json")},
+    )
+    assert response.status_code == 413
+
+
 def test_paging_bounds(client, tmp_path):
     payload = _editor_payload(_wordlist(tmp_path))
     layout_json = json.dumps(_LAYOUT_SHOW_ALL)
