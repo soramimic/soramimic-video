@@ -6151,7 +6151,7 @@ function schedulePreview(force) {
   const ownTitle = c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "";
   const combo = JSON.stringify([c.sampleId, ownTitle, c.wordlistName,
     list?.id || "", list?.name || "", list?.text || "",
-    $("thumbnail-wordlist-label").value.trim(), $("where").value.trim(), selectedTitleWords()]);
+    $("thumbnail-wordlist-label").value.trim(), currentWordlistWhere(), selectedTitleWords()]);
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -6230,6 +6230,9 @@ $("wordlist").addEventListener("change", () => {
 $("song-title").addEventListener("change", () => schedulePreview(true));
 $("where").addEventListener("change", () => schedulePreview(true));
 $("thumbnail-wordlist-label").addEventListener("change", () => schedulePreview(true));
+$("lyrics").addEventListener("input", () => schedulePreview());
+$("lyrics").addEventListener("change", () => schedulePreview());
+$("auto-lyrics").addEventListener("change", () => schedulePreview());
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
   previewShowImages = true;

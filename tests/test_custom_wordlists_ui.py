@@ -160,6 +160,8 @@ const label = {value: ""};
 const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false, value: ""};
 const refreshTitleChoices = () => {};
 const selectedTitleWords = () => '';
+let where = '';
+const currentWordlistWhere = () => where;
 const showBuilderMsg = () => {};
 const c = {sampleId: 'sample', wordlistName: '',
   customList: {id: 'one', name: '動物', text: 'ねこ,ネコ'}};
@@ -193,6 +195,10 @@ assert.equal(scheduled, 6);
 label.value = '';
 schedulePreview();
 assert.equal(scheduled, 7);
+where = '((status=former))';
+schedulePreview();
+assert.equal(scheduled, 8, 'JSON filter changes invalidate the thumbnail cache');
+schedulePreview(); assert.equal(scheduled, 8);
 """)
 
 
