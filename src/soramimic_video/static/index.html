@@ -2660,14 +2660,13 @@ function resumeHistoryReview(job) {
 }
 
 function historyReviewBlocked(id) {
-  return reviewSubmitting || reviewClosing || reviewOpening || songRecordingBusy()
+  return !!reviewAction || songRecordingBusy()
     || (submitBusy && currentJob !== id);
 }
 
 function syncHistoryReviewControls() {
-  $("builder-review").disabled = reviewOpening || reviewSubmitting || reviewClosing
-    || songRecordingBusy();
-  if (!songRecordingBusy()) $("song-record-button").disabled = reviewOpening || customListBusy;
+  $("builder-review").disabled = !!reviewAction || songRecordingBusy();
+  if (!songRecordingBusy()) $("song-record-button").disabled = !!reviewAction || customListBusy;
   for (const button of document.querySelectorAll(".history-review")) {
     button.disabled = historyReviewBlocked(button.dataset.jobId);
   }
@@ -3488,9 +3487,6 @@ function finish() {
 
 function setBusy(busy) {
   submitBusy = busy;
-  $("preview").disabled = busy;
-  $("preview-high").disabled = busy;
-  $("preview-low").disabled = busy;
   syncHistoryReviewControls();
   // カードのプルダウンは生成中も触れる。走っているジョブは投入時の
   // 選択で確定していて影響しないし、それは説明しなくても分かる(押しても無反応の
@@ -4221,7 +4217,7 @@ async function startSongRecording() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    if (request !== recordingStartSequence || songInputMode !== "upload") {
+    if (request !== recordingStartSequence) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
@@ -7732,16 +7728,25 @@ const REVIEW_REGENERATE_KEY = "soramimic-video-review-auto-regenerate";
 const UNMATCHED_LYRICS_KEY = "soramimic-video-unmatched-lyrics-accepted";
 let reviewJobId = null;
 let reviewOpenedJob = null;
-let reviewOpening = false;
-let reviewSubmitting = false;
-let reviewClosing = false;
+// Only one review action can run at a time: "", "opening", "closing", "submitting".
+let reviewAction = "";
 let reviewSavedRaw = "";
 let reviewSavePending = null;
 
-async function openLyricReview(id) {
-  if (!id || reviewOpening || reviewSubmitting || reviewClosing || songRecordingBusy()) return;
-  reviewOpening = true;
+function setReviewAction(action) {
+  reviewAction = action;
+  const editingBlocked = action === "closing" || action === "submitting";
+  $("confirm-lyric-review").disabled = editingBlocked;
+  $("close-lyric-review").disabled = editingBlocked;
+  $("editor-frame").inert = editingBlocked;
+  $("close-lyric-review").textContent = action === "closing" ? "保存中…" : "閉じる";
+  if (action !== "submitting") $("confirm-lyric-review").textContent = "動画を生成 →";
   syncHistoryReviewControls();
+}
+
+async function openLyricReview(id) {
+  if (!id || historyReviewBlocked(id)) return;
+  setReviewAction("opening");
   reviewOpenedJob = id;
   try {
     const res = await fetch(`/api/jobs/${id}/review`, {
@@ -7750,7 +7755,6 @@ async function openLyricReview(id) {
     const seed = await res.json();
     if (!res.ok) throw new Error(seed.detail || res.status);
     if (currentJob !== id) return;
-    if (songRecordingBusy()) { reviewOpenedJob = null; return; }
     // The shared editor storage can contain another song. Reuse it only for this job.
     if (sessionStorage.getItem(REVIEW_JOB_KEY) !== id || !editorSessionData()) {
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
@@ -7770,8 +7774,7 @@ async function openLyricReview(id) {
   } catch (err) {
     showBuilderMsg("編集画面を開けませんでした。「歌詞を確認する」から再試行してください: " + err.message);
   } finally {
-    reviewOpening = false;
-    syncHistoryReviewControls();
+    setReviewAction("");
   }
 }
 
@@ -7781,7 +7784,7 @@ async function saveLyricReview() {
     return saveLyricReview();
   }
   const id = reviewJobId;
-  if (!id || reviewSubmitting || sessionStorage.getItem(REVIEW_JOB_KEY) !== id) return;
+  if (!id || reviewAction === "submitting" || sessionStorage.getItem(REVIEW_JOB_KEY) !== id) return;
   const raw = sessionStorage.getItem(EDITOR_KEY);
   if (!raw || raw === reviewSavedRaw) return;
   reviewSavePending = (async () => {
@@ -7804,25 +7807,15 @@ async function saveLyricReview() {
 }
 
 async function closeLyricReview() {
-  const button = $("close-lyric-review");
-  if (button.disabled || reviewSubmitting || reviewClosing) return;
-  const label = button.textContent;
-  reviewClosing = true;
-  button.disabled = true;
-  button.textContent = "保存中…";
-  $("confirm-lyric-review").disabled = true;
-  $("editor-frame").inert = true;
+  if (reviewAction) return;
+  setReviewAction("closing");
   try { await saveLyricReview(); }
   catch (err) {
     $("lyric-review-error").textContent = "保存できませんでした: " + err.message;
     return;
   }
   finally {
-    reviewClosing = false;
-    button.disabled = false;
-    button.textContent = label;
-    $("confirm-lyric-review").disabled = false;
-    $("editor-frame").inert = false;
+    setReviewAction("");
   }
   closeEditor();
   loadHistory().catch(() => {});
@@ -7878,12 +7871,9 @@ function confirmReviewRegeneration(mode = "regenerate") {
 }
 
 async function confirmLyricReview() {
-  if (!reviewJobId || reviewSubmitting || reviewClosing) return;
+  if (!reviewJobId || reviewAction) return;
   const id = reviewJobId;
-  reviewSubmitting = true;
-  $("confirm-lyric-review").disabled = true;
-  $("close-lyric-review").disabled = true;
-  $("editor-frame").inert = true;
+  setReviewAction("submitting");
   $("lyric-review-error").textContent = "";
   try {
     if (reviewSavePending) await reviewSavePending;
@@ -7920,11 +7910,7 @@ async function confirmLyricReview() {
   } catch (err) {
     $("lyric-review-error").textContent = "動画生成を再開できませんでした: " + err.message;
   } finally {
-    reviewSubmitting = false;
-    $("confirm-lyric-review").disabled = false;
-    $("confirm-lyric-review").textContent = "動画を生成 →";
-    $("close-lyric-review").disabled = false;
-    $("editor-frame").inert = false;
+    setReviewAction("");
     if (reviewJobId === id) $("confirm-lyric-review").focus();
   }
 }
