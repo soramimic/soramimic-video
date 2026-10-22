@@ -3916,7 +3916,7 @@ function renderSampleOptions() {
 
 async function loadSamples() {
   try {
-    const res = await fetch("/api/samples");
+    const res = await fetch("/api/samples", { signal: AbortSignal.timeout(20000) });
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
     sampleCatalog = samples;
@@ -4627,7 +4627,8 @@ async function applySample(opts = {}) {
   if (!sid) return false;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
-    const lyricsRes = (opts.keepLyrics || editorImportedFile) ? null : await fetch(`/api/sample/${sid}/lyrics`);
+    const lyricsRes = (opts.keepLyrics || editorImportedFile) ? null
+      : await fetch(`/api/sample/${sid}/lyrics`, { signal: AbortSignal.timeout(20000) });
     if (lyricsRes && !lyricsRes.ok) {
       throw new Error("サンプルの取得に失敗しました");
     }
@@ -4915,7 +4916,9 @@ async function checkMidi() {
     if (sampleId) form.append("sample_id", sampleId);
     else form.append("midi", f);
     form.append("lyrics", lyrics);
-    const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
+    const res = await fetch("/api/midi-check", {
+      method: "POST", body: form, headers: headers(), signal: AbortSignal.timeout(20000),
+    });
     body = await res.json();
     if (!res.ok) {
       // 拡張子だけMIDIのファイルも400ならその場で取り消す。
@@ -8676,7 +8679,9 @@ async function loadWordlistSelect(editorAvailable) {
   if (!editorAvailable) { bail(); return; }
   let entries;
   try {
-    const res = await fetch("/editor/conf/setting.json", { headers: headers() });
+    const res = await fetch("/editor/conf/setting.json", {
+      headers: headers(), signal: AbortSignal.timeout(20000),
+    });
     if (!res.ok) throw new Error(String(res.status));
     const conf = await res.json();
     // value=ORIGINAL(editorローカルのカスタムリスト)はサーバーで解決できないので除外。

@@ -3970,14 +3970,20 @@ def create_app(
         if is_simple_ui():
             raise HTTPException(status_code=404, detail="Not Found")
         from .align import parse_granularity_override
-        from .editor_io import build_editor_preview
+        from .editor_io import MAX_EDITOR_BYTES, build_editor_preview
         from .editor_wordlist import is_text_only
 
-        raw = await editor.read()
+        raw = await editor.read(MAX_EDITOR_BYTES + 1)
+        if len(raw) > MAX_EDITOR_BYTES:
+            raise HTTPException(status_code=413, detail="歌詞JSONの容量が大きすぎます")
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
+        except (ValueError, UnicodeError, RecursionError) as exc:
             raise HTTPException(status_code=400, detail="editorのJSONが読めません") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=400, detail="歌詞JSONはオブジェクトである必要があります",
+            )
         if isinstance(payload, dict) and isinstance(payload.get("unitsList"), list):
             try:
                 payload = prepare_editor_import(payload, wordlist)
