@@ -320,6 +320,7 @@ for (const state of ['recording','inactive']) {
   syncRecordingUi();
   assert.equal($('midi').disabled,true);
   assert.equal($('song-upload-button').disabled,true);
+  assert.equal($('song-source-switch').disabled,true);
   $('song-upload-button').dispatchEvent(new Event('click'));
   assert.equal(pickerOpened,0);
   songUploadEntry.dispatchEvent(dragged);
@@ -333,6 +334,7 @@ activeSongRecording=null;
 syncRecordingUi();
 assert.equal($('midi').disabled,false);
 assert.equal($('song-upload-button').disabled,false);
+assert.equal($('song-source-switch').disabled,false);
 $('song-upload-button').dispatchEvent(new Event('click'));
 assert.equal(pickerOpened,1);
 songUploadEntry.dispatchEvent(dragged);
@@ -340,4 +342,21 @@ assert.equal(dragged.dataTransfer.dropEffect,'copy');
 songUploadEntry.dispatchEvent(dropped);
 assert.equal(uploads,1,'upload works again after recording finishes');
 assert.equal($('midi').files[0],file);
+""")
+
+
+def test_recording_blocks_song_source_switch_without_discarding_audio():
+    _run(_song_input_node_harness(), r"""
+$('lyrics').value='入力済みの歌詞';
+for (const state of ['recording','inactive']) {
+  activeSongRecording={recorder:{state},stopping:state==='inactive'};
+  const recording=activeSongRecording;
+  switchSongInputMode('sample');
+  assert.equal(songInputMode,'upload');
+  assert.equal(activeSongRecording,recording);
+  assert.equal($('lyrics').value,'入力済みの歌詞');
+}
+activeSongRecording=null;
+switchSongInputMode('sample');
+assert.equal(songInputMode,'sample','switch is available once recording finishes');
 """)
