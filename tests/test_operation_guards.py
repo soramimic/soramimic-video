@@ -62,9 +62,11 @@ const ok={ok:true,json:async()=>({})};
         "async function confirmLyricReview(",
     )
     _run(harness, r"""
+$('close-lyric-review').textContent='閉じる';
 const autosave=saveLyricReview(); await tick(); raw='latest before close';
 const closing=closeLyricReview();
 assert(reviewClosing); assert($('editor-frame').inert);
+assert.equal($('close-lyric-review').textContent,'保存中…');
 assert($('confirm-lyric-review').disabled && $('close-lyric-review').disabled);
 await closeLyricReview(); await confirmLyricReview();
 assert.equal(writes.length,1,'duplicate close and confirm must not submit');
@@ -72,6 +74,7 @@ gates[0].resolve(ok); await autosave; await tick();
 assert.deepEqual(writes,['first','latest before close']); assert.equal(closed,0);
 gates[1].resolve(ok); await closing;
 assert.equal(closed,1); assert.equal(reviewSavedRaw,raw);
+assert.equal($('close-lyric-review').textContent,'閉じる');
 assert.equal(reviewClosing,false); assert.equal($('editor-frame').inert,false);
 raw='failed save'; const failed=closeLyricReview(); await tick();
 gates[2].resolve({ok:false,json:async()=>({detail:'offline'})}); await failed;
