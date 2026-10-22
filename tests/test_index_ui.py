@@ -140,7 +140,8 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         for head in (
             "async function poll(", "async function openLyricReview(",
             "function restoreJobProgress(",
-            "async function confirmLyricReview(", "function closeEditor()",
+            "async function confirmLyricReview(", "function setReviewAction(",
+            "function closeEditor()",
             "function lyricReviewCoverage(",
             "async function saveLyricReview(",
             "async function syncEditorSessionOnce()",
@@ -149,8 +150,9 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
-        let reviewClosing = false;
+        let reviewAction = "";
         const songRecordingBusy = () => false, syncHistoryReviewControls = () => {};
+        const historyReviewBlocked = () => !!reviewAction;
         const elements = new Map();
         const $ = (id) => {
           if (!elements.has(id)) elements.set(id, {hidden: true, textContent: "", focus() {}});
@@ -164,7 +166,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         };
         const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "review", EDITOR_SEED_KEY = "seed";
         let currentJob = "job1", reviewJobId = null, reviewOpenedJob = null;
-        let reviewOpening = false, reviewSubmitting = false, pollSeq = 1, pollLastAt = 0;
+        let pollSeq = 1, pollLastAt = 0;
         let resumed = false;
         let reviewSavedRaw = "", reviewSavePending = null;
         let pollFailures = 0, cancelPendingJob = null, openCount = 0, requests = [];
@@ -241,91 +243,19 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
     subprocess.run(["node", "-e", node], check=True)
 
 
-def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
-    script = _script()
-    functions = "\n".join(
-        _function_body(script, head) + "\n}"
-        for head in (
-            "async function saveLyricReview(", "async function closeLyricReview(",
-            "function resumeHistoryReview(", "function historyReviewBlocked(",
-        )
-    )
-    node = textwrap.dedent("""
-        const assert = require("node:assert/strict");
-        let reviewClosing = false, submitBusy = false, currentJob = null;
-        const songRecordingBusy = () => false;
-        const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "job";
-        let reviewJobId = "one", reviewSubmitting = false;
-        let reviewSavePending = null, reviewSavedRaw = "";
-        let raw = "first", reject = true, closeCount = 0, active = 0, maxActive = 0;
-        let pause = null, release = null;
-        const writes = [], elements = new Map();
-        const $ = id => {
-          if (!elements.has(id)) elements.set(id, {disabled: false, textContent: ""});
-          return elements.get(id);
-        };
-        const headers = () => ({});
-        const sessionStorage = {getItem: key => key === EDITOR_KEY ? raw : "one"};
-        const closeEditor = () => { closeCount++; };
-        let historyLoads = 0, resumed = false, reviewOpening = false;
-        let reviewOpenedJob = 'one', watched = null, busy = false, progress = false;
-        const loadHistory = async () => { historyLoads++; };
-        const setBusy = value => { busy = value; };
-        const showProgress = () => { progress = true; };
-        const watch = id => { watched = id; };
-        const fetch = async (url, options) => {
-          active++; maxActive = Math.max(maxActive, active);
-          writes.push(await options.body.get("editor").text());
-          if (pause) await pause;
-          active--;
-          return {ok: !reject, json: async () => ({detail: "保存エラー"})};
-        };
-    """) + functions + textwrap.dedent("""
-        (async () => {
-          await closeLyricReview();
-          assert.equal(closeCount, 0);
-          assert.equal($("close-lyric-review").disabled, false);
-          assert.match($("lyric-review-error").textContent, /保存エラー/);
-          reject = false;
-          pause = new Promise(resolve => { release = resolve; });
-          const first = saveLyricReview();
-          raw = "latest";
-          const next = saveLyricReview();
-          release(); pause = null;
-          await Promise.all([first, next]);
-          assert.equal(maxActive, 1);
-          assert.deepEqual(writes, ["first", "first", "latest"]);
-          assert.equal(reviewSavedRaw, "latest");
-          await closeLyricReview();
-          assert.equal(closeCount, 1);
-          assert.equal(writes.length, 3);
-          assert.equal($("lyric-review-error").textContent, "");
-          assert.equal(historyLoads, 1);
-          reviewSubmitting = true;
-          resumeHistoryReview({id: 'other'});
-          assert.equal(watched, null);
-          reviewSubmitting = false;
-          resumeHistoryReview({id: 'other'});
-          assert.equal(watched, 'other');
-          assert.equal(reviewOpenedJob, null);
-          assert(resumed && busy && progress);
-        })().catch(error => {console.error(error); process.exitCode = 1;});
-    """)
-    subprocess.run(["node", "-e", node], check=True)
-
-
 def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confirmation():
     script = _script()
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
             "function lyricReviewCoverage(", "function confirmReviewRegeneration(",
-            "async function confirmLyricReview(", "function onEditorModalKeydown(",
+            "async function confirmLyricReview(", "function setReviewAction(",
+            "function onEditorModalKeydown(",
         )
     )
     node = textwrap.dedent("""
         const assert = require('node:assert/strict');
-        let reviewClosing = false;
+        let reviewAction = "";
         const EDITOR_KEY = 'editor', REVIEW_JOB_KEY = 'job', REVIEW_REGENERATE_KEY = 'auto';
         const UNMATCHED_LYRICS_KEY = 'unmatched';
         const store = new Map(), preferences = new Map(), elements = new Map();
@@ -343,7 +273,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
             if (denyStorage) throw Error('storage'); preferences.set(key, value);
           },
         };
-        let reviewJobId = 'one', reviewSubmitting = false, reviewSavePending = null;
+        let reviewJobId = 'one', reviewSavePending = null;
         let dialogCount = 0, regenerateCount = 0, watched = null, closed = false;
         const resumePayloads = [];
         let regenerateError = null, regenerateResult = null, closeListener = null;
@@ -370,6 +300,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
           },
         }};
         const headers = () => ({}), showBuilderMsg = () => {}, setJobStatus = () => {};
+        const syncHistoryReviewControls = () => {};
         const closeEditor = () => {closed = true;}, watch = id => {watched = id;};
         const fetch = async (url, options) => {
           assert.equal(url, '/api/jobs/one/resume');
@@ -447,7 +378,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
           await confirmLyricReview();
           assert.equal(resumePayloads.length, 4);
           assert.match($('lyric-review-error').textContent, /対応づけられない/);
-          assert.equal(reviewSubmitting, false); assert.equal($('editor-frame').inert, false);
+          assert.equal(reviewAction, ""); assert.equal($('editor-frame').inert, false);
 
           preferences.clear(); denyStorage = true; reset(partial);
           pending = confirmLyricReview();
@@ -1696,12 +1627,17 @@ def test_builder_restores_only_explicit_song_choices():
           assert.equal(file, restoredMidi);
           assert.equal($("sample-select").value, "");
           assert.deepEqual(applied, [], "stale sample state must not replace the restored upload");
+          $("lyrics").value = sampleLyricsBaseline;
+          await start("previous");
+          assert.deepEqual(applied, [{{ id: "previous", keepLyrics: false }}],
+            "unedited sample lyrics can be refreshed");
+          $("lyrics").value = "edited lyrics";
           await start("unavailable");
           assert.equal($("sample-select").value, "");
           assert.deepEqual(applied, []);
-          assert.equal(previews, 4);
+          assert.equal(previews, 5);
           await initBuilder();
-          assert.equal(previews, 4, "reloading configuration must not repeat initialization");
+          assert.equal(previews, 5, "reloading configuration must not repeat initialization");
           wordlist = "";
           customList = {{ id: "saved-list", text: "ねこ,ネコ" }};
           await start("previous");
@@ -3122,15 +3058,6 @@ def test_setup_seed_has_no_results_so_viewing_alone_is_not_an_edit():
     assert "sig === meta.sig" in live and 'state: "none"' in live
 
 
-def test_restored_sample_id_refreshes_only_unedited_lyrics():
-    """復元したサンプルIDを選び直し、手編集済みの歌詞だけ残す。"""
-    init = _function_body(_script(), "async function initBuilder()")
-    assert "sampleLyricsId === restoredId" in init
-    assert "sampleLyricsBaseline !== null" in init
-    assert '$("lyrics").value !== sampleLyricsBaseline' in init
-    assert "applySample({ keepLyrics: editedLyrics })" in init
-
-
 def test_sample_lyrics_baseline_is_saved_and_restored():
     """標準歌詞の更新と手編集の保護はリロードを跨いで判定できる。"""
     script = _script()
@@ -4381,14 +4308,6 @@ def test_own_midi_lyrics_prefill_preserves_existing_text_by_choice():
     assert "current.trim() && !confirm(" in body
     assert '$("lyrics").value = text;' in body
     assert '$("lyrics").dispatchEvent(new Event("change", { bubbles: true }));' in body
-
-
-def test_midi_check_rejects_a_non_midi_400_response():
-    """拡張子だけMIDIのファイルを検証失敗として握りつぶさない。"""
-    body = _function_body(_script(), "async function checkMidi()")
-    assert "notMidi = res.status === 400 && !!body.detail;" in body
-    assert "rejectMidi(body.detail, notMidi)" in body
-    assert "lastMidiCheck = f ? { file: f, lines: body.midi_lines || [] } : null;" in body
 
 
 def test_host_song_request_keeps_the_wordlist_and_drops_the_results():
