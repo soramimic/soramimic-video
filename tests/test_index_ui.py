@@ -1748,7 +1748,7 @@ def _song_input_node_harness() -> str:
         let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
         let editorImportedFile = null, lyricsFileReadSequence = 0;
         const originalLyricsFile = () => null;
-        let recordedSongFile = null;
+        let recordedSongFile = null, activeSongRecording = null;
         let midiFromSample = false, samplePending = null, restoring = false;
         let sampleLyricsId = "", sampleLyricsBaseline = null;
         const sampleCredits = {}, sampleLicenseUrls = {}, sampleDescriptions = {};
