@@ -7742,8 +7742,10 @@ async function saveLyricReview() {
 async function closeLyricReview() {
   const button = $("close-lyric-review");
   if (button.disabled || reviewSubmitting || reviewClosing) return;
+  const label = button.textContent;
   reviewClosing = true;
   button.disabled = true;
+  button.textContent = "保存中…";
   $("confirm-lyric-review").disabled = true;
   $("editor-frame").inert = true;
   try { await saveLyricReview(); }
@@ -7754,6 +7756,7 @@ async function closeLyricReview() {
   finally {
     reviewClosing = false;
     button.disabled = false;
+    button.textContent = label;
     $("confirm-lyric-review").disabled = false;
     $("editor-frame").inert = false;
   }
