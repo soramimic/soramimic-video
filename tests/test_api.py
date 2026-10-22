@@ -985,7 +985,7 @@ def test_index_html_settings_change_returns_frame_to_preview():
     assert 'for (const type of ["change", "input"]) {' in html
     assert "document.addEventListener(type, (ev) => {" in html
     # ドラッグでのレイアウト編集は change を発火しないので自分で呼ぶ
-    assert "releaseBuilderDone();   // 同じ理由で" in html
+    assert "if (releaseResult) releaseBuilderDone();" in html
     # サムネが用意できなくても枠は残す(押せる場所が無くならないように)
     assert "指で押せる高さを自分で持つ" in html
     assert "fig.hidden = false;\n    updateBuilderOverlay();\n  };" in html
@@ -2723,7 +2723,7 @@ def test_index_html_layout_base_select_lives_in_the_editor_modal():
     assert "const stash = leCaptureCustom() || leStash;" in handler
     assert "leStash = stash;" in handler
     # 新しい編集・レイアウトの破棄では退避も捨てる
-    assert "leStash = null;" in html.split("function leToJson() {")[1].split("\n}")[0]
+    assert "leStash = null;" in html.split("function leToJson(")[1].split("\n}")[0]
     assert "leStash = null;" in html.split("function leClearLayout() {")[1].split("\n}")[0]
 
 
