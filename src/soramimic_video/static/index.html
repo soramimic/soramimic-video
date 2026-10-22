@@ -451,6 +451,10 @@
     position: fixed; inset: 0; z-index: 50;
     display: flex; flex-direction: column; background: var(--bg);
   }
+  #editor-frame-wrap {
+    width: 100%; max-width: none; height: 100%; max-height: none;
+    margin: 0; padding: 0; border: 0; color: inherit;
+  }
   .editor-modal-head {
     flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem;
     padding: .5rem .7rem; background: var(--panel); border-bottom: 1px solid var(--border);
@@ -1487,7 +1491,7 @@
      .wrap の外に置いてページ全体を覆う(詳細設定の中に展開すると編集領域が狭い)。
      戻る導線は埋め込みeditor内に表示し、Escでも閉じる。Escで閉じても編集は生きている
      (sessionStorageに残り、生成時に自動で使われる: liveEditorEdit)。 -->
-<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" aria-modal="true"
+<dialog class="editor-modal" id="editor-frame-wrap" hidden aria-modal="true"
   aria-labelledby="editor-modal-title">
   <div class="editor-modal-head">
     <h2 id="editor-modal-title">✏️ 替え歌エディタ</h2>
@@ -1502,7 +1506,7 @@
   <div class="editor-modal-foot" id="parody-export">
     <button type="button" id="download-editor" class="btn-sm" disabled>ダウンロード</button>
   </div>
-</div>
+</dialog>
 
 <!-- ⚙(openEditorFlow)を押したとき、保存済みの替え歌の来歴が今の選択と
      食い違う(stale)場合だけ出す選択。一致していれば聞かずに再開するので、
@@ -2597,6 +2601,8 @@ function historyCard(job, index) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
     const resume = historyButton("編集を再開", "history-review");
+    resume.dataset.jobId = job.id;
+    resume.disabled = historyReviewBlocked(job.id);
     resume.addEventListener("click", () => resumeHistoryReview(job));
     actions.appendChild(resume);
     copy.appendChild(actions);
@@ -2608,12 +2614,23 @@ function historyCard(job, index) {
 }
 
 function resumeHistoryReview(job) {
-  if (reviewSubmitting || reviewOpening) return;
+  if (historyReviewBlocked(job.id)) return;
   resumed = true;
   reviewOpenedJob = null;
   setBusy(true);
   showProgress();
   watch(job.id);
+}
+
+function historyReviewBlocked(id) {
+  return reviewSubmitting || reviewClosing || reviewOpening || songRecordingBusy()
+    || (submitBusy && currentJob !== id);
+}
+
+function syncHistoryReviewControls() {
+  for (const button of document.querySelectorAll(".history-review")) {
+    button.disabled = historyReviewBlocked(button.dataset.jobId);
+  }
 }
 
 function disposeHistoryPlayback() {
@@ -2879,6 +2896,7 @@ function restartPolling(id) {
 
 function watch(id) {
   currentJob = id;
+  syncHistoryReviewControls();
   cancelPendingJob = null;
   setCancelPending(false);
   $("cancel").hidden = false;
@@ -3429,6 +3447,7 @@ function setBusy(busy) {
   $("preview").disabled = busy;
   $("preview-high").disabled = busy;
   $("preview-low").disabled = busy;
+  syncHistoryReviewControls();
   // カードのプルダウンは生成中も触れる。走っているジョブは投入時の
   // 選択で確定していて影響しないし、それは説明しなくても分かる(押しても無反応の
   // 方が不親切)。サムネ枠は進捗表示が使っているので、プレビューの作り直しだけ
@@ -3587,7 +3606,7 @@ async function postJobWithTurnstileRetry(form, signal = null) {
 async function submitJob(previewSec, previewMode) {
   // サンプル取得待ちやTurnstile待ちも投入処理の一部。二重タップで同じtokenを使う
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
-  if (submitBusy) return;
+  if (submitBusy || songRecordingBusy()) return;
   setBusy(true);
   const inputError = lyricsFileReading ? "歌詞ファイルの読み込みが終わるまでお待ちください。"
     : (songInputMode !== "upload" || !automaticLyricsEnabled()) ? lyricsInput().error : "";
@@ -4058,19 +4077,28 @@ function confirmRecordedSongDeletion() {
 
 let activeSongRecording = null;
 let recordingStartSequence = 0;
+let recordingRequestPending = false;
+
+function songRecordingBusy() {
+  return recordingRequestPending || !!activeSongRecording;
+}
 
 function syncRecordingUi() {
   const button = $("song-record-button");
   const recording = activeSongRecording?.recorder?.state === "recording";
-  button.hidden = !recording && (!audioInputReady || !recordingSupported() || !!ownSongFile());
+  const busy = songRecordingBusy();
+  button.hidden = !busy && (!audioInputReady || !recordingSupported() || !!ownSongFile());
   button.disabled = activeSongRecording?.stopping === true;
-  $("midi").disabled = !!activeSongRecording;
-  $("song-upload-button").disabled = !!activeSongRecording;
-  $("song-source-switch").disabled = !!activeSongRecording;
+  $("midi").disabled = busy;
+  $("song-upload-button").disabled = busy;
+  $("song-source-switch").disabled = busy;
   button.classList.toggle("is-recording", recording);
   button.setAttribute("aria-pressed", String(recording));
-  $("song-record-label").textContent = recording ? "録音を停止" : "録音する";
-  $("song-upload-button").hidden = recording || !!ownSongFile();
+  $("song-record-label").textContent = recordingRequestPending ? "キャンセル"
+    : recording ? "録音を停止" : "録音する";
+  $("song-upload-button").hidden = busy || !!ownSongFile();
+  updateBuilderOverlay();
+  syncHistoryReviewControls();
 }
 
 function setRecordingStatus(message) {
@@ -4115,8 +4143,13 @@ function finishSongRecording(state) {
 
 function stopSongRecording(discard = false) {
   recordingStartSequence += 1;
+  recordingRequestPending = false;
   const state = activeSongRecording;
-  if (!state) return;
+  if (!state) {
+    setRecordingStatus("");
+    syncRecordingUi();
+    return;
+  }
   state.discard ||= discard;
   state.stopping = true;
   clearInterval(state.timer);
@@ -4128,23 +4161,23 @@ function stopSongRecording(discard = false) {
 }
 
 async function startSongRecording() {
-  if (activeSongRecording) {
+  if (songRecordingBusy()) {
     stopSongRecording();
     return;
   }
   if (!audioInputReady || !recordingSupported()) return;
   const request = ++recordingStartSequence;
+  recordingRequestPending = true;
   setRecordingStatus("マイクの使用を許可してください…");
-  $("song-record-button").disabled = true;
+  syncRecordingUi();
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     if (request !== recordingStartSequence || songInputMode !== "upload") {
       stream.getTracks().forEach((track) => track.stop());
-      setRecordingStatus("");
-      syncRecordingUi();
       return;
     }
+    recordingRequestPending = false;
     const mimeType = preferredRecordingMimeType();
     const recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     const state = {
@@ -4177,11 +4210,14 @@ async function startSongRecording() {
     syncRecordingUi();
   } catch (error) {
     stream?.getTracks().forEach((track) => track.stop());
+    if (request !== recordingStartSequence) return;
+    if (activeSongRecording?.stream === stream) activeSongRecording = null;
     const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
     setRecordingStatus(denied
       ? "マイクを使用できません。ブラウザの設定でマイクを許可してください。"
       : "録音を開始できませんでした。もう一度お試しください。");
-    $("song-record-button").disabled = false;
+  } finally {
+    if (request === recordingStartSequence) recordingRequestPending = false;
     syncRecordingUi();
   }
 }
@@ -4294,6 +4330,7 @@ let lyricsFileReading = false;
 async function loadLyricsFile(file) {
   const sequence = ++lyricsFileReadSequence;
   lyricsFileReading = !!file;
+  updateBuilderOverlay();
   $("clear-lyrics-file").hidden = !file;
   $("lyrics-file-name").hidden = !file;
   if (!file) {
@@ -4321,7 +4358,10 @@ async function loadLyricsFile(file) {
       ? error.message
       : "歌詞ファイルを読み込めませんでした。UTF-8で保存されているか確認してください。";
   } finally {
-    if (sequence === lyricsFileReadSequence) lyricsFileReading = false;
+    if (sequence === lyricsFileReadSequence) {
+      lyricsFileReading = false;
+      updateBuilderOverlay();
+    }
   }
 }
 $("lyrics-file").addEventListener("change", () => {
@@ -4357,6 +4397,7 @@ function syncLyricsInput(resetSession = true) {
 $("lyrics").addEventListener("input", () => {
   ++lyricsFileReadSequence;
   lyricsFileReading = false;
+  updateBuilderOverlay();
   $("lyrics-file").value = "";
   $("lyrics-file-name").hidden = true;
   $("clear-lyrics-file").hidden = true;
@@ -4379,7 +4420,7 @@ function showSongInputMode(mode) {
 }
 
 function switchSongInputMode(mode) {
-  if (activeSongRecording || mode === songInputMode) return;
+  if (songRecordingBusy() || mode === songInputMode) return;
   stopSongRecording(true);
   clearRecordedSongPlayback();
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
@@ -4410,7 +4451,7 @@ $("song-source-switch").addEventListener("click", () => {
 });
 
 $("song-upload-button").addEventListener("click", () => {
-  if (!activeSongRecording) $("midi").click();
+  if (!songRecordingBusy()) $("midi").click();
 });
 $("song-record-button").addEventListener("click", startSongRecording);
 function setOwnSongFile(file) {
@@ -4451,14 +4492,14 @@ function hasDraggedFiles(event) {
 songUploadEntry.addEventListener("dragenter", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
-  if (activeSongRecording) return;
+  if (songRecordingBusy()) return;
   songDragDepth += 1;
   songUploadEntry.classList.add("drag-over");
 });
 songUploadEntry.addEventListener("dragover", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = activeSongRecording ? "none" : "copy";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = songRecordingBusy() ? "none" : "copy";
 });
 songUploadEntry.addEventListener("dragleave", () => {
   songDragDepth = Math.max(0, songDragDepth - 1);
@@ -4469,7 +4510,7 @@ songUploadEntry.addEventListener("drop", (event) => {
   event.preventDefault();
   songDragDepth = 0;
   songUploadEntry.classList.remove("drag-over");
-  if (activeSongRecording) {
+  if (songRecordingBusy()) {
     showBuilderMsg("録音を停止してから曲をアップロードしてください。");
     return;
   }
@@ -5547,6 +5588,9 @@ function setBuilderState(state) {
 // できるときだけ。生成の導線はこれ1つしかないので、サムネの絵が用意できて
 // いない(#builder-image が無い)ときでも枠だけは出して押せるようにする。
 function updateBuilderOverlay() {
+  const blocked = submitBusy || lyricsFileReading || songRecordingBusy();
+  $("builder-play").disabled = blocked;
+  for (const id of ["preview", "preview-high", "preview-low"]) $(id).disabled = blocked;
   $("builder-play").hidden = !(builderState === "preview"
     && !$("builder-figure").hidden && $("builder-loading").hidden && !submitBusy);
 }
@@ -7631,11 +7675,12 @@ let reviewJobId = null;
 let reviewOpenedJob = null;
 let reviewOpening = false;
 let reviewSubmitting = false;
+let reviewClosing = false;
 let reviewSavedRaw = "";
 let reviewSavePending = null;
 
 async function openLyricReview(id) {
-  if (!id || reviewOpening || reviewSubmitting) return;
+  if (!id || reviewOpening || reviewSubmitting || reviewClosing || songRecordingBusy()) return;
   reviewOpening = true;
   reviewOpenedJob = id;
   try {
@@ -7696,14 +7741,22 @@ async function saveLyricReview() {
 
 async function closeLyricReview() {
   const button = $("close-lyric-review");
-  if (button.disabled || reviewSubmitting) return;
+  if (button.disabled || reviewSubmitting || reviewClosing) return;
+  reviewClosing = true;
   button.disabled = true;
+  $("confirm-lyric-review").disabled = true;
+  $("editor-frame").inert = true;
   try { await saveLyricReview(); }
   catch (err) {
     $("lyric-review-error").textContent = "保存できませんでした: " + err.message;
     return;
   }
-  finally { button.disabled = false; }
+  finally {
+    reviewClosing = false;
+    button.disabled = false;
+    $("confirm-lyric-review").disabled = false;
+    $("editor-frame").inert = false;
+  }
   closeEditor();
   loadHistory().catch(() => {});
 }
@@ -7758,7 +7811,7 @@ function confirmReviewRegeneration(mode = "regenerate") {
 }
 
 async function confirmLyricReview() {
-  if (!reviewJobId || reviewSubmitting) return;
+  if (!reviewJobId || reviewSubmitting || reviewClosing) return;
   const id = reviewJobId;
   reviewSubmitting = true;
   $("confirm-lyric-review").disabled = true;
@@ -8438,6 +8491,7 @@ async function importEditor() {
 
 function closeEditor() {
   if ($("lyric-review-confirm").open) $("lyric-review-confirm").close("cancel");
+  if ($("editor-frame-wrap").open) $("editor-frame-wrap").close();
   $("editor-frame-wrap").hidden = true;
   $("editor-frame").src = "about:blank";
   document.body.classList.remove("modal-open");
@@ -8479,6 +8533,7 @@ function showEditorFrame() {
   // Soramimicロゴは従来どおり生成画面へ進むが、埋め込み時は親へ戻る操作になる。
   $("editor-frame").src = "/editor/editor.html?embed=video";
   $("editor-frame-wrap").hidden = false;
+  if (!$("editor-frame-wrap").open) $("editor-frame-wrap").showModal();
   document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
   // 開いた直後は親側にフォーカスを置く(この時点でEscが効く)
   $("editor-frame").focus();
@@ -8494,12 +8549,19 @@ function showEditorFrame() {
 // ハンドラを付ける(付けられなければ親のEscだけになる)。
 function onEditorModalKeydown(ev) {
   if (ev.key !== "Escape" || ev.defaultPrevented || $("editor-frame-wrap").hidden) return;
+  if (ev.currentTarget && ev.currentTarget !== document
+      && ev.currentTarget.querySelector?.("dialog[open]")) return;
   if ($("lyric-review-confirm").open) return;
   ev.preventDefault();
   if (reviewJobId) closeLyricReview();
   else closeEditor();
 }
 document.addEventListener("keydown", onEditorModalKeydown);
+$("editor-frame-wrap").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (reviewJobId) closeLyricReview();
+  else closeEditor();
+});
 $("editor-frame").addEventListener("load", () => {
   try {
     const doc = $("editor-frame").contentDocument;
