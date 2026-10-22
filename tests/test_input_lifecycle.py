@@ -27,8 +27,8 @@ const deadline = require('node:timers').setTimeout(() => {
 }, 4000);
 (async () => {
 """ + scenario + """
-})().then(() => clearTimeout(deadline)).catch(error => {
-  clearTimeout(deadline); console.error(error); process.exitCode = 1;
+})().then(() => require('node:timers').clearTimeout(deadline)).catch(error => {
+  require('node:timers').clearTimeout(deadline); console.error(error); process.exitCode = 1;
 });
 """
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True, timeout=8)
@@ -165,7 +165,7 @@ def test_automatic_recognition_cancels_a_pending_lyrics_file():
 let lyricsFileReadSequence=0, lyricsFileReading=false;
 const MAX_EDITOR_BYTES=4*1024*1024;
 const syncLyricsInput=()=>{}, syncLyricsRecognition=()=>{};
-const saveForm=()=>{}, scheduleMidiCheck=()=>{};
+const saveForm=()=>{}, scheduleMidiCheck=()=>{}, updateBuilderOverlay=()=>{};
 """ + _functions("async function loadLyricsFile(") + _listener(
         '$("auto-lyrics").addEventListener("change", () => {'
     )
@@ -185,6 +185,7 @@ assert.equal($('lyrics-file-name').hidden,true);
 def test_submit_rechecks_lyrics_after_verification_before_building_the_form():
     harness = DOM + r"""
 let submitBusy=false, lyricsFileReading=false, automatic=false, submitAbort=null;
+const songRecordingBusy=()=>false;
 let samplePending=null, midiChecking=null, midiSampleId='', submitMessage='', gate;
 const songInputMode='upload', simpleMode=false, fixedSynthesizer='voicevox', fixedVoicevoxStyle=1;
 const turnstileSiteKey='site', turnstileScriptFailed=false;
@@ -233,6 +234,7 @@ def test_history_failure_times_out_without_locking_startup_and_can_retry():
     harness = DOM + r"""
 const document={createElement:element}, headers=()=>({});
 let historyLoadPending=null, historyJobs=[], loads=0, mode='http', controller, timeout;
+let activeHistoryPlayback=null, preparedHistorySave=null, preparedHistoryShare=null;
 let disposals=0, restored=[];
 const disposeHistoryPlayback=()=>{disposals++;}, resetHistorySave=()=>{}, resetHistoryShare=()=>{};
 const restoreJobProgress=jobs=>{restored=jobs;};
@@ -252,7 +254,8 @@ const fetch=async (_url,{signal})=>{
   return {ok:true,json:async()=>jobs};
 };
 """ + _functions(
-        "async function loadHistory()", "async function fetchHistory()", "function historyButton("
+        "async function loadHistory()", "async function fetchHistory()", "function historyButton(",
+        "function renderHistoryJobs(",
     )
     _run(harness, r"""
 for (const failure of ['http','network','hang','body']) {
@@ -270,7 +273,7 @@ for (const failure of ['http','network','hang','body']) {
   assert.deepEqual(historyJobs,jobs); assert.deepEqual(restored,jobs);
   assert.equal($('history-body').children[0].className,'history-list');
 }
-assert.ok(disposals>=8);
+assert.ok(disposals>=4);
 """)
 
 
@@ -294,6 +297,8 @@ assert.equal(calls[1].text,undefined); assert.equal(calls[1].files[0],file);
 
 def test_recording_blocks_uploads_until_recording_has_finished():
     harness = DOM + r"""
+let recordingRequestPending=false;
+const updateBuilderOverlay=()=>{}, syncHistoryReviewControls=()=>{};
 let activeSongRecording=null, audioInputReady=true, message='', uploads=0, songDragDepth=0;
 const recordingSupported=()=>true, ownSongFile=()=>null;
 const hasDraggedFiles=()=>true;
@@ -305,7 +310,7 @@ const showBuilderMsg=text=>{message=text;};
 const setOwnSongFile=file=>{uploads++; $('midi').files=[file];};
 let pickerOpened=0;
 $('midi').click=()=>{pickerOpened++;};
-""" + _functions("function syncRecordingUi()") + _listener(
+""" + _functions("function syncRecordingUi()", "function songRecordingBusy()") + _listener(
         '$("song-upload-button").addEventListener("click",'
     ) + _listener('songUploadEntry.addEventListener("drop",') + _listener(
         'songUploadEntry.addEventListener("dragover",'

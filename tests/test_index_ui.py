@@ -149,6 +149,8 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
+        let reviewClosing = false;
+        const songRecordingBusy = () => false, syncHistoryReviewControls = () => {};
         const elements = new Map();
         const $ = (id) => {
           if (!elements.has(id)) elements.set(id, {hidden: true, textContent: "", focus() {}});
@@ -245,11 +247,13 @@ def test_review_autosave_serializes_edits_and_keeps_failed_close_open():
         _function_body(script, head) + "\n}"
         for head in (
             "async function saveLyricReview(", "async function closeLyricReview(",
-            "function resumeHistoryReview(",
+            "function resumeHistoryReview(", "function historyReviewBlocked(",
         )
     )
     node = textwrap.dedent("""
         const assert = require("node:assert/strict");
+        let reviewClosing = false, submitBusy = false, currentJob = null;
+        const songRecordingBusy = () => false;
         const EDITOR_KEY = "editor", REVIEW_JOB_KEY = "job";
         let reviewJobId = "one", reviewSubmitting = false;
         let reviewSavePending = null, reviewSavedRaw = "";
@@ -321,6 +325,7 @@ def test_review_regenerates_unmatched_lyrics_before_resuming_and_remembers_confi
     )
     node = textwrap.dedent("""
         const assert = require('node:assert/strict');
+        let reviewClosing = false;
         const EDITOR_KEY = 'editor', REVIEW_JOB_KEY = 'job', REVIEW_REGENERATE_KEY = 'auto';
         const UNMATCHED_LYRICS_KEY = 'unmatched';
         const store = new Map(), preferences = new Map(), elements = new Map();
@@ -466,6 +471,7 @@ def test_video_submit_confirms_unmatched_lyrics_and_remembers_only_acceptance():
     )
     node = textwrap.dedent("""
         const assert = require('node:assert/strict');
+        const songRecordingBusy = () => false;
         const REVIEW_REGENERATE_KEY = 'regenerate', UNMATCHED_LYRICS_KEY = 'unmatched';
         const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
         const preferences = new Map(), elements = new Map(), requests = [];
@@ -904,12 +910,13 @@ def test_history_uses_cards_and_only_safe_display_fields():
     load = _function_body(script, "async function fetchHistory()")
     card = _function_body(script, "function historyCard(job, index)")
     assert 'document.createElement("div")' in load
-    assert 'list.className = "history-list"' in load
+    render = _function_body(script, "function renderHistoryJobs(jobs)")
+    assert 'list.className = "history-list"' in render
     assert 'mediaSlot.className = "history-media"' in card
     assert "history-player" not in card
     assert "<table" not in load
     assert "job.params" not in card
-    assert "job.id" not in card
+    assert "textContent = job.id" not in card
     for private_name in ("midi_filename", "where", "convert_params"):
         assert private_name not in card
     assert "job.song_label" in card
@@ -1715,7 +1722,7 @@ def _song_input_node_harness() -> str:
             "function syncLyricsRecognition()",
             "function showSongInputMode(",
             "function switchSongInputMode(",
-            "function syncBuilderValues()",
+            "function syncBuilderValues()", "function songRecordingBusy()",
             "async function applySample(",
             "function trackSample(",
         )
@@ -1748,7 +1755,7 @@ def _song_input_node_harness() -> str:
         let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
         let editorImportedFile = null, lyricsFileReadSequence = 0;
         const originalLyricsFile = () => null;
-        let recordedSongFile = null, activeSongRecording = null;
+        let recordedSongFile = null, activeSongRecording = null, recordingRequestPending = false;
         let midiFromSample = false, samplePending = null, restoring = false;
         let sampleLyricsId = "", sampleLyricsBaseline = null;
         const sampleCredits = {}, sampleLicenseUrls = {}, sampleDescriptions = {};
@@ -2138,6 +2145,7 @@ def test_submission_rechecks_song_selection_after_verification_wait():
     submit = _function_body(_script(), "async function submitJob(") + "\n}"
     harness = r'''
         const assert = require("node:assert/strict");
+        const songRecordingBusy = () => false;
         const {File} = require("node:buffer");
         const audio = new File(["original audio"], "first.wav");
         const otherAudio = new File(["different audio"], "second.wav");
@@ -2525,7 +2533,7 @@ def test_submit_never_posts_without_a_turnstile_token():
     guard = submit[submit.index(verification):].split("\n    }", 1)[0]
     assert "return;" in guard
     assert "showProgress();" not in guard
-    assert submit.index("if (submitBusy) return;") < submit.index(
+    assert submit.index("if (submitBusy || songRecordingBusy()) return;") < submit.index(
         "if (samplePending) await samplePending;"
     )
     ensure = _function_body(_script(), "async function ensureTurnstileToken(")
@@ -3415,7 +3423,7 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
             "function recordedFile(",
             "function clearRecordedSongPlayback()",
             "function showRecordedSongPlayback(",
-            "function syncRecordingUi()",
+            "function syncRecordingUi()", "function songRecordingBusy()",
             "function setRecordingStatus(",
             "function releaseSongRecording(",
             "function finishSongRecording(",
@@ -3427,6 +3435,9 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
     node = textwrap.dedent(
         f"""
         const assert = require("node:assert/strict");
+        let recordingRequestPending = false;
+        const document = Object.create(null); document.querySelectorAll = () => [];
+        const updateBuilderOverlay = Function(), syncHistoryReviewControls = Function();
         const elements = new Map();
         function $(id) {{
           if (!elements.has(id)) elements.set(id, {{
@@ -3687,6 +3698,7 @@ def test_lyrics_file_loads_into_editable_textarea_as_paste_alternative():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
+        const updateBuilderOverlay = Function();
         const elements = new Map();
         function $(id) {
           if (!elements.has(id)) elements.set(id, {
@@ -3759,6 +3771,7 @@ def test_lyrics_content_controls_json_and_text_without_stale_imports():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
+        const updateBuilderOverlay = Function();
         const {File} = require("node:buffer");
         const elements = new Map();
         const $ = id => {
@@ -4074,6 +4087,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
     node = textwrap.dedent(
         """
         const assert = require("node:assert/strict");
+        const songRecordingBusy = () => false;
         let selected = "fanwork", songInputMode = "sample";
         let wordlistUsageRequest = null, wordlistUsageAbort = null;
         const currentPreviewCustomList = () => null;
