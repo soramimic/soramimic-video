@@ -3435,6 +3435,7 @@ def test_browser_recording_becomes_an_m4a_song_file_and_releases_the_microphone(
         f"""
         const assert = require("node:assert/strict");
         let recordingRequestPending = false;
+        const document = Object.create(null); document.querySelectorAll = () => [];
         const updateBuilderOverlay = Function(), syncHistoryReviewControls = Function();
         const elements = new Map();
         function $(id) {{

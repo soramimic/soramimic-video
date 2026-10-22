@@ -104,6 +104,8 @@
   }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .55; cursor: not-allowed; }
+  #builder-wordlist-field[inert], #advanced[inert], #history[inert],
+  #auto-lyrics-toggle[inert], #lyrics-correction-panel[inert] { opacity: .55; }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .btn-primary:hover:not(:disabled) { background: var(--accent-dark); border-color: var(--accent-dark); }
   .btn-sm { padding: .3rem .8rem; min-height: 0; font-size: .82rem; }
@@ -4097,6 +4099,9 @@ function syncRecordingUi() {
   $("song-record-label").textContent = recordingRequestPending ? "キャンセル"
     : recording ? "録音を停止" : "録音する";
   $("song-upload-button").hidden = busy || !!ownSongFile();
+  for (const id of ["auto-lyrics-toggle", "lyrics-correction-panel", "song-upload-selection",
+    "sample-picker", "builder-wordlist-field", "custom-wordlist-menu", "advanced",
+    "builder-figure", "builder-share", "job-card", "history"]) $(id).inert = busy;
   updateBuilderOverlay();
   syncHistoryReviewControls();
 }
@@ -4168,6 +4173,7 @@ async function startSongRecording() {
   if (!audioInputReady || !recordingSupported()) return;
   const request = ++recordingStartSequence;
   recordingRequestPending = true;
+  for (const media of document.querySelectorAll("audio, video")) media.pause();
   setRecordingStatus("マイクの使用を許可してください…");
   syncRecordingUi();
   let stream;
@@ -7688,6 +7694,7 @@ async function openLyricReview(id) {
     const seed = await res.json();
     if (!res.ok) throw new Error(seed.detail || res.status);
     if (currentJob !== id) return;
+    if (songRecordingBusy()) { reviewOpenedJob = null; return; }
     // The shared editor storage can contain another song. Reuse it only for this job.
     if (sessionStorage.getItem(REVIEW_JOB_KEY) !== id || !editorSessionData()) {
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));

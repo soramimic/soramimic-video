@@ -88,7 +88,8 @@ def test_microphone_permission_wait_can_be_canceled_without_affecting_a_new_requ
     harness = DOM + r"""
 let activeSongRecording=null, recordingRequestPending=false, recordingStartSequence=0;
 let audioInputReady=true, songInputMode='upload', maxSongSeconds=0;
-let requests=[], stopped=0;
+let requests=[], stopped=0, pauses=0;
+const document={querySelectorAll:()=>[{pause(){pauses++;}}]};
 const recordingSupported=()=>true, ownSongFile=()=>null;
 const updateBuilderOverlay=()=>{}, syncHistoryReviewControls=()=>{};
 const preferredRecordingMimeType=()=>'';
@@ -112,9 +113,14 @@ const window={MediaRecorder:class {
     _run(harness, r"""
 const old=startSongRecording();
 assert(recordingRequestPending); assert($('song-source-switch').disabled);
+assert.equal(pauses,1);
+for (const id of ['advanced','builder-wordlist-field','history','lyrics-correction-panel']) {
+  assert($(id).inert,'conflicting controls stay unavailable until capture completes');
+}
 assert.equal($('song-record-button').disabled,false,'pending permission remains cancelable');
 await startSongRecording(); // A second tap cancels the permission wait.
 assert.equal(songRecordingBusy(),false); assert.equal($('midi').disabled,false);
+assert.equal($('advanced').inert,false); assert.equal($('history').inert,false);
 const next=startSongRecording(); const status=$('song-record-status').textContent;
 requests[0].resolve(stream()); await old;
 assert.equal(stopped,1); assert(recordingRequestPending);
@@ -126,6 +132,7 @@ assert.equal(activeSongRecording,null); assert.equal(stopped,2);
 assert.equal($('song-source-switch').disabled,false);
 const denied=startSongRecording(); requests[2].reject({name:'NotAllowedError'}); await denied;
 assert.equal(songRecordingBusy(),false); assert.equal($('midi').disabled,false);
+assert.equal($('advanced').inert,false); assert.equal($('history').inert,false);
 assert.match($('song-record-status').textContent,/マイクを使用できません/);
 """)
 
@@ -152,4 +159,21 @@ assert.equal($('lyrics').value,'current'); assert.equal($('builder-play').disabl
 await loadLyricsFile({size:1,arrayBuffer:async()=>{throw Error('bad file');}});
 assert.equal($('builder-play').disabled,false);
 submitBusy=true; await loadLyricsFile(null); assert($('builder-play').disabled);
+""")
+
+
+def test_review_response_cannot_cover_recording_started_while_it_was_loading():
+    harness = DOM + r"""
+let reviewOpening=false, reviewSubmitting=false, reviewClosing=false;
+let currentJob='current', reviewOpenedJob=null, recording=false;
+const songRecordingBusy=()=>recording, headers=()=>({});
+const response=deferred(), fetch=()=>response.promise;
+""" + _functions("async function openLyricReview(")
+    _run(harness, r"""
+const opening=openLyricReview('current');
+assert(reviewOpening); recording=true;
+response.resolve({ok:true,json:async()=>({results:[]})}); await opening;
+assert.equal(reviewOpening,false);
+assert.equal(reviewOpenedJob,null,'review must retry after recording instead of covering Stop');
+assert.equal($('editor-frame-wrap').hidden,false);
 """)
