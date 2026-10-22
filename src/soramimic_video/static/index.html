@@ -4064,6 +4064,8 @@ function syncRecordingUi() {
   const recording = activeSongRecording?.recorder?.state === "recording";
   button.hidden = !recording && (!audioInputReady || !recordingSupported() || !!ownSongFile());
   button.disabled = activeSongRecording?.stopping === true;
+  $("midi").disabled = !!activeSongRecording;
+  $("song-upload-button").disabled = !!activeSongRecording;
   button.classList.toggle("is-recording", recording);
   button.setAttribute("aria-pressed", String(recording));
   $("song-record-label").textContent = recording ? "録音を停止" : "録音する";
@@ -4406,7 +4408,9 @@ $("song-source-switch").addEventListener("click", () => {
   switchSongInputMode(songInputMode === "upload" ? "sample" : "upload");
 });
 
-$("song-upload-button").addEventListener("click", () => $("midi").click());
+$("song-upload-button").addEventListener("click", () => {
+  if (!activeSongRecording) $("midi").click();
+});
 $("song-record-button").addEventListener("click", startSongRecording);
 function setOwnSongFile(file) {
   const transfer = new DataTransfer();
@@ -4446,13 +4450,14 @@ function hasDraggedFiles(event) {
 songUploadEntry.addEventListener("dragenter", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
+  if (activeSongRecording) return;
   songDragDepth += 1;
   songUploadEntry.classList.add("drag-over");
 });
 songUploadEntry.addEventListener("dragover", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = activeSongRecording ? "none" : "copy";
 });
 songUploadEntry.addEventListener("dragleave", () => {
   songDragDepth = Math.max(0, songDragDepth - 1);
@@ -4463,6 +4468,10 @@ songUploadEntry.addEventListener("drop", (event) => {
   event.preventDefault();
   songDragDepth = 0;
   songUploadEntry.classList.remove("drag-over");
+  if (activeSongRecording) {
+    showBuilderMsg("録音を停止してから曲をアップロードしてください。");
+    return;
+  }
   const files = [...(event.dataTransfer?.files || [])];
   if (files.length !== 1) {
     showBuilderMsg("曲ファイルは1つだけドロップしてください。");
