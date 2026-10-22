@@ -354,7 +354,8 @@ const frame = {
   },
   focus: () => events.push('focused'),
 };
-const wrapper = { hidden: true, classList: { toggle() {}, remove() {} } };
+const wrapper = { hidden: true, showModal() {this.open=true;},
+  classList: { toggle() {}, remove() {} } };
 const $ = (id) => ({ 'editor-frame': frame, 'editor-frame-wrap': wrapper })[id] || {};
 const document = { body: { classList: { add: () => events.push('modal') } } };
 const showBuilderMsg = (text) => messages.push(text);
