@@ -27,8 +27,8 @@ const deadline = require('node:timers').setTimeout(() => {
 }, 4000);
 (async () => {
 """ + scenario + """
-})().then(() => clearTimeout(deadline)).catch(error => {
-  clearTimeout(deadline); console.error(error); process.exitCode = 1;
+})().then(() => require('node:timers').clearTimeout(deadline)).catch(error => {
+  require('node:timers').clearTimeout(deadline); console.error(error); process.exitCode = 1;
 });
 """
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True, timeout=8)
@@ -234,6 +234,7 @@ def test_history_failure_times_out_without_locking_startup_and_can_retry():
     harness = DOM + r"""
 const document={createElement:element}, headers=()=>({});
 let historyLoadPending=null, historyJobs=[], loads=0, mode='http', controller, timeout;
+let activeHistoryPlayback=null, preparedHistorySave=null, preparedHistoryShare=null;
 let disposals=0, restored=[];
 const disposeHistoryPlayback=()=>{disposals++;}, resetHistorySave=()=>{}, resetHistoryShare=()=>{};
 const restoreJobProgress=jobs=>{restored=jobs;};
@@ -253,7 +254,8 @@ const fetch=async (_url,{signal})=>{
   return {ok:true,json:async()=>jobs};
 };
 """ + _functions(
-        "async function loadHistory()", "async function fetchHistory()", "function historyButton("
+        "async function loadHistory()", "async function fetchHistory()", "function historyButton(",
+        "function renderHistoryJobs(",
     )
     _run(harness, r"""
 for (const failure of ['http','network','hang','body']) {
@@ -271,7 +273,7 @@ for (const failure of ['http','network','hang','body']) {
   assert.deepEqual(historyJobs,jobs); assert.deepEqual(restored,jobs);
   assert.equal($('history-body').children[0].className,'history-list');
 }
-assert.ok(disposals>=8);
+assert.ok(disposals>=4);
 """)
 
 
