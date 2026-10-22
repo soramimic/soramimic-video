@@ -901,7 +901,7 @@ def test_history_uses_cards_and_only_safe_display_fields():
     assert 'id="history-body"' in markup
     assert "#history table" not in markup
     script = _script()
-    load = _function_body(script, "async function loadHistory()")
+    load = _function_body(script, "async function fetchHistory()")
     card = _function_body(script, "function historyCard(job, index)")
     assert 'document.createElement("div")' in load
     assert 'list.className = "history-list"' in load
@@ -954,7 +954,7 @@ def test_initial_audio_analysis_uses_live_indeterminate_progress():
 
 def test_history_does_not_create_or_fetch_media_until_an_explicit_action():
     script = _script()
-    load = _function_body(script, "async function loadHistory()")
+    load = _function_body(script, "async function fetchHistory()")
     card = _function_body(script, "function historyCard(job, index)")
     assert 'createElement("video")' not in load + card
     assert 'createElement("audio")' not in load + card
@@ -1260,6 +1260,9 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
       const songTitleOf = () => title || ownSongFile()?.name.replace(/\.[^.]+$/, '') || '';
       let combo = {sampleId: 'own', wordlistName: 'scientist', customList: null};
       const currentCombo = () => combo;
+      let lyricsJson = null;
+      const activeLyricsJson = () => lyricsJson;
+      const editorWhereOf = data => data.where;
       let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
       let titleCandidatesAbort = null, titleCandidatesSeq = 0, saved, previews = 0;
       const saveForm = () => {saved = titleChoice;};
@@ -1387,6 +1390,17 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         combo.customList.text = 'two'; refreshTitleChoices();
         assert.equal(selectedTitleWords(), '');
         assert.equal(titleChoice, null);
+        // JSON's dictionary and filter remain paired even after another list was selected.
+        combo = {sampleId: 'own', wordlistName: 'stations', customList: null};
+        lyricsJson = {where: '((status=current))'};
+        $('where').value = '((type=family))';
+        const imported = $('title-candidates-load').listeners.click();
+        assert.equal(sent.wordlist, 'stations');
+        assert.equal(sent.where, '((status=current))');
+        resolveFetch({ok:true, json:async()=>({candidates:[]})}); await imported;
+        assert.equal(JSON.parse(titleChoiceContext())[3], '((status=current))');
+        lyricsJson = null;
+        assert.equal(JSON.parse(titleChoiceContext())[3], '((type=family))');
         titleChoice = {...choice, context: '{invalid'};
         assert.doesNotThrow(refreshTitleChoices, 'corrupt saved context cannot break the UI');
         assert.equal(titleChoice, null);
@@ -1612,7 +1626,7 @@ def _song_input_node_harness() -> str:
           return elements.get(id);
         }
         let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
-        let editorImportedFile = null;
+        let editorImportedFile = null, lyricsFileReadSequence = 0;
         const originalLyricsFile = () => null;
         let recordedSongFile = null;
         let midiFromSample = false, samplePending = null, restoring = false;

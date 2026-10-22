@@ -2297,7 +2297,7 @@ def test_index_html_has_separate_save_menu_and_share_button():
     assert "navigator.canShare" not in html
     assert "#Soramimic" in html
     assert "#そらみみっく" in html
-    click = html[html.index("function bindShare(videoUrl)") :]
+    click = html[html.index("async function sharePreparedVideo(") :]
     click = click[: click.index("\n}\n")]
     assert "fetch(" not in click
     assert "await videoSharePreparation;" in click
