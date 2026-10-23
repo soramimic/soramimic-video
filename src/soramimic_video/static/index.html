@@ -2752,13 +2752,17 @@ async function startHistoryPlayback(index, trigger) {
       media.src = job.playback_url;
     }
     media.load();
-    await media.play().catch(() => { /* controlsから再生できるので自動再生拒否は無視 */ });
+    await media.play().catch(error => {
+      // 自動再生の許可待ちはcontrolsから再生できる。取得失敗は再試行へ戻す。
+      if (error?.name !== "NotAllowedError") throw error;
+    });
     if (timedOut) throw new Error("再生の準備がタイムアウトしました");
   } catch (error) {
     if (activeHistoryPlayback !== active || (!timedOut && error && error.name === "AbortError")) return;
+    disposeHistoryPlayback();
     const msg = document.createElement("p");
     msg.className = "history-player-msg";
-    msg.textContent = "この端末では再生を開始できませんでした。ダウンロードをお試しください。";
+    msg.textContent = "再生データを読み込めませんでした。もう一度再生するか、ダウンロードをお試しください。";
     slot.appendChild(msg);
   }
   finally { clearTimeout(timer); operation?.finish(); }
