@@ -2633,7 +2633,7 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
 def test_ios_native_controls_refresh_after_resume_without_restarting_media():
     script = _script()
     start = script.index("function refreshNativePlaybackControls(")
-    end = script.index("function prefersNativeVideoSave(", start)
+    end = script.index("const SHARE_TEXT =", start)
     functions = _function_body(script, "function isIOSPlatform()") + "\n}\n"
     node = r'''
       const assert = require('node:assert/strict');
