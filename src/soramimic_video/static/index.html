@@ -1986,6 +1986,7 @@ function restoreJobProgress(jobs) {
     if (active.status === "awaiting_review") reviewOpenedJob = active.id;
     setBusy(true);
     showProgress();
+    if (active.thumbnail_url) restoreGenerationThumbnail(active);
     $("status-line").textContent = "実行中のジョブに再接続しました";
     watch(active.id);
   }
@@ -3174,6 +3175,9 @@ async function poll(id, seq = pollSeq) {
   }
   if (seq !== pollSeq) return;   // 待っている間に取り直しが走っていたら捨てる
   pollFailures = 0;
+  if (job.thumbnail_url && ["queued", "running", "awaiting_review"].includes(job.status)) {
+    restoreGenerationThumbnail(job);
+  }
   renderStages(job);
   renderBuilderBar(job);
   $("builder-review").hidden = job.status !== "awaiting_review";
@@ -3902,6 +3906,9 @@ async function submitJob(previewSec, previewMode) {
     submitJob.pendingSubmission = submission;
     let keepTurnstilePrompt = false;
     try {
+      const thumbnail = await captureGenerationThumbnail();
+      submitController.signal.throwIfAborted();
+      if (thumbnail) form.append("generation_thumbnail", thumbnail, "thumbnail.png");
       const res = await postJobWithTurnstileRetry(form, submitController.signal);
       submitController.signal.throwIfAborted();
       const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
@@ -5994,6 +6001,7 @@ function showBuilderVideo(job) {
 let previewSeq = 0;            // 取得の世代(古い結果の取り違え防止)
 let previewUrl = "";           // 表示中のプレビュー(blob URL。差し替え時にrevoke)
 let previewAbort = null;       // 進行中の取得(組み合わせが変わったら中断)
+
 let previewTimer = null;       // デバウンスのタイマー
 let previewKey = "";           // 直近に表示を頼んだ内容(同じなら作り直さない)
 let previewComboKey = "";      // 直近の組み合わせ(変わったら画像の表示指定を戻す)
@@ -6012,6 +6020,41 @@ const PREVIEW_DEBOUNCE_MS = 400;
 const PREVIEW_FALLBACK_RETRY_MS = 4000;
 const PREVIEW_FALLBACK_RETRY_MAX_MS = 15000;
 const PREVIEW_FALLBACK_RETRIES = 8;
+
+// 表示中の画像をジョブの背景として保存する。代表画像へのフォールバックも含め、
+// 同じ絵を送る。画像がまだ表示できていなければ、生成を待たせず省略する。
+function captureGenerationThumbnail() {
+  const image = $("builder-image");
+  if (image.hidden || !image.complete || !image.naturalWidth) return Promise.resolve(null);
+  return new Promise(resolve => {
+    try {
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(1, 640 / image.naturalWidth, 360 / image.naturalHeight);
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(resolve, "image/png");
+    } catch { resolve(null); }
+  });
+}
+
+// ジョブのサムネを復元したら、起動時に始めた別のプレビューで上書きしない。
+function restoreGenerationThumbnail(job) {
+  const image = $("builder-image");
+  const url = qs(job.thumbnail_url);
+  if (image.getAttribute("src") === url) return;
+  ++previewSeq;
+  if (previewAbort) previewAbort.abort();
+  previewAbort = null;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = ""; }
+  image.src = url;
+  image.alt = "生成中の動画のサムネイル";
+  image.hidden = false;
+  $("builder-loading").hidden = true;
+  $("builder-image-hidden").hidden = true;
+  $("builder-figure").hidden = false;
+  setPreviewPending(false);
+}
 
 // 画像を初期非表示にする単語リストか。隠すなら理由の文言、出してよいなら空文字。
 function hiddenPreviewReason(name) {

@@ -339,7 +339,8 @@ def test_video_submit_confirms_unmatched_lyrics_and_remembers_only_acceptance():
     functions = "\n".join(
         _function_body(script, head) + "\n}"
         for head in (
-            "async function submitJob(", "function lyricReviewCoverage(",
+            "async function submitJob(", "function captureGenerationThumbnail()",
+            "function lyricReviewCoverage(",
             "function confirmReviewRegeneration(", "async function readParodyFile(",
             "function readParodyText(",
         )
@@ -935,6 +936,76 @@ def _function_body(script: str, head: str) -> str:
     """head で始まる関数の中身(次の行頭 } まで)を返す。"""
     body = script[script.index(head) :]
     return body[: body.index("\n}\n")]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_generation_thumbnail_capture_and_reload_restore():
+    functions = "\n".join(_function_body(_script(), head) + "\n}" for head in (
+        "function captureGenerationThumbnail()", "function restoreGenerationThumbnail(job)",
+        "function restoreJobProgress(jobs)",
+    ))
+    node = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {
+          hidden: false, src: '', getAttribute(name) { return this[name]; },
+        });
+        return elements.get(id);
+      };
+      let previewSeq = 4, previewUrl = 'blob:old', aborted = 0, revoked = [];
+      let previewAbort = {abort() { aborted++; }};
+      let resumed = false, reviewOpenedJob = null, busy = false, watched = null;
+      const setBusy = value => { busy = value; };
+      const showProgress = () => {};
+      const watch = id => { watched = id; };
+      const qs = url => url + '?api_key=key';
+      const URL = {revokeObjectURL(url) { revoked.push(url); }};
+      const setPreviewPending = value => { $('pending').hidden = !value; };
+      const png = new Blob(['preview pixels'], {type: 'image/png'});
+      let canvas = null, drawn = null, fail = false;
+      const document = {createElement(tag) {
+        assert.equal(tag, 'canvas');
+        canvas = {
+          getContext() { return {drawImage(...args) {
+            if (fail) throw new Error('unavailable image');
+            drawn = args;
+          }}; },
+          toBlob(callback, format) { assert.equal(format, 'image/png'); callback(png); },
+        };
+        return canvas;
+      }};
+      __FUNCTIONS__
+      (async () => {
+        const image = $('builder-image');
+        assert.equal(await captureGenerationThumbnail(), null);
+        Object.assign(image, {complete: true, naturalWidth: 1920, naturalHeight: 1080});
+        assert.equal(await captureGenerationThumbnail(), png);
+        assert.deepEqual([canvas.width, canvas.height], [640, 360]);
+        assert.deepEqual(drawn, [image, 0, 0, 640, 360]);
+        image.hidden = true;
+        assert.equal(await captureGenerationThumbnail(), null);
+        image.hidden = false; fail = true;
+        assert.equal(await captureGenerationThumbnail(), null);
+        const job = {id: 'job1', status: 'running', thumbnail_url: '/api/jobs/job1/thumbnail'};
+        restoreJobProgress([job]);
+        assert.equal(busy, true);
+        assert.equal(watched, 'job1');
+        assert.equal(image.src, '/api/jobs/job1/thumbnail?api_key=key');
+        assert.equal(image.hidden, false);
+        assert.equal($('builder-loading').hidden, true);
+        assert.equal($('builder-figure').hidden, false);
+        assert.equal($('builder-image-hidden').hidden, true);
+        assert.equal(previewSeq, 5, 'late startup previews must be invalidated');
+        assert.equal(aborted, 1);
+        assert.deepEqual(revoked, ['blob:old']);
+        restoreGenerationThumbnail(job);
+        assert.equal(previewSeq, 5, 'polling must not reload the same image');
+        restoreGenerationThumbnail({...job, id: 'job2', thumbnail_url: '/api/jobs/job2/thumbnail'});
+        assert.equal(image.src, '/api/jobs/job2/thumbnail?api_key=key');
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    '''.replace('__FUNCTIONS__', functions)
+    subprocess.run(["node", "-e", node], check=True, capture_output=True, text=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -1835,7 +1906,9 @@ def test_audio_upload_retry_can_be_canceled_before_job_creation():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
 def test_submission_rechecks_song_selection_after_verification_wait():
-    submit = _function_body(_script(), "async function submitJob(") + "\n}"
+    submit = "\n".join(_function_body(_script(), head) + "\n}" for head in (
+        "async function submitJob(", "function captureGenerationThumbnail()",
+    ))
     harness = r'''
         const assert = require("node:assert/strict");
         const songRecordingBusy = () => false;
@@ -3316,6 +3389,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             "function parodySourceLyrics(",
             "function appendSongLyrics(form)",
             "async function submitJob(previewSec, previewMode)",
+            "function captureGenerationThumbnail()",
             "async function readParodyFile(file)",
             "function lyricReviewCoverage(",
         )
