@@ -8428,8 +8428,6 @@ async function handleHostRequest() {
   const key = hostRequestKey(req);
   // 応えたのに同じ依頼が残っている(書き戻しの行き違い)ときは消すだけにする
   if (key === hostRequestSeen) { clearHostRequest(key); return; }
-  const operation = globalThis.VideoOperations?.begin({ allow: [$("midi")] });
-  $("editor-frame").inert = true;
   hostRequestBusy = true;
   hostRequestSeen = key;
   try {
@@ -8441,8 +8439,6 @@ async function handleHostRequest() {
   } finally {
     clearHostRequest(key);
     hostRequestBusy = false;
-    $("editor-frame").inert = false;
-    operation?.end();
   }
 }
 
@@ -8546,7 +8542,7 @@ async function reseedEditorSong() {
   form.append("song_title", songTitleOf(midi));
   form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
   appendCustomWordlist(form);
-  const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers(), signal: AbortSignal.timeout(20000) });
+  const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
   const body = await res.json();
   if (!res.ok) throw new Error(body.detail || res.status);
   const fresh = withHostInfo(body);
@@ -8716,66 +8712,60 @@ async function regenerateEditor() {
 // 「この設定で変換」でブラウザ内で変換する(soramimic frontend/README の約束)。
 // 単語リストは無くてよい(エディタ側が conf の既定で始める)。
 async function convertAndOpenEditor() {
-  const operation = globalThis.VideoOperations?.begin();
+  if (ownSongKind() === "audio" || selectedSampleIsAudio()) {
+    $("open-editor-msg").textContent = "音声入力は動画生成時に自動変換されるため、先に編集できません";
+    return;
+  }
+  if (midiChecking) await midiChecking;
+  // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
+  if (!await ensureSelectedSampleMidi((m) => { $("open-editor-msg").textContent = m; })) {
+    return;
+  }
+  const midi = ownSongKind() === "midi" ? ownSongFile() : null;
+  const msg = $("open-editor-msg");
+  msg.textContent = "";
+  if (!midiSampleId && !midi) {
+    msg.textContent = "MIDIファイルを選んでください";
+    return;
+  }
+  const form = new FormData();
+  if (midiSampleId) form.append("sample_id", midiSampleId);
+  else form.append("midi", midi);
+  appendSongLyrics(form);
+  form.append("wordlist", $("wordlist").value.trim());
+  form.append("where", $("where").value.trim());
+  // 変換パラメータは生成時と同じものを使う(エディタの初期値と生成結果を揃える)
+  form.append("convert_params", buildConvertParams());
+  form.append("song_title", songTitleOf(midi));
+  form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
+  appendCustomWordlist(form);
   try {
-    if (ownSongKind() === "audio" || selectedSampleIsAudio()) {
-      $("open-editor-msg").textContent = "音声入力は動画生成時に自動変換されるため、先に編集できません";
-      return;
-    }
-    if (midiChecking) await midiChecking;
-    // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
-    if (!await ensureSelectedSampleMidi((m) => { $("open-editor-msg").textContent = m; })) {
-      return;
-    }
-    const midi = ownSongKind() === "midi" ? ownSongFile() : null;
-    const msg = $("open-editor-msg");
-    msg.textContent = "";
-    if (!midiSampleId && !midi) {
-      msg.textContent = "MIDIファイルを選んでください";
-      return;
-    }
-    const form = new FormData();
-    if (midiSampleId) form.append("sample_id", midiSampleId);
-    else form.append("midi", midi);
-    appendSongLyrics(form);
-    form.append("wordlist", $("wordlist").value.trim());
-    form.append("where", $("where").value.trim());
-    // 変換パラメータは生成時と同じものを使う(エディタの初期値と生成結果を揃える)
-    form.append("convert_params", buildConvertParams());
-    form.append("song_title", songTitleOf(midi));
-    form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
-    appendCustomWordlist(form);
-    try {
-      const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers(), signal: AbortSignal.timeout(20000) });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.detail || res.status);
-      // 曲を選び直せることをエディタへ伝える(host.songs / host.canUploadSong)
-      const seed = JSON.stringify(withHostInfo(body));
-      sessionStorage.setItem(EDITOR_KEY, seed);
-      // 未変換のシード=編集前の状態。ここからセットアップ画面で変換されると
-      // results が入って指紋が変わり、その結果が生成に使われる(liveEditorEdit)
-      markEditorSeed(seed);
-      showEditorFrame();
-    } catch (err) {
-      msg.textContent = "編集の準備に失敗しました: " + err.message;
-    }
-  } finally { operation?.end(); }
+    const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.status);
+    // 曲を選び直せることをエディタへ伝える(host.songs / host.canUploadSong)
+    const seed = JSON.stringify(withHostInfo(body));
+    sessionStorage.setItem(EDITOR_KEY, seed);
+    // 未変換のシード=編集前の状態。ここからセットアップ画面で変換されると
+    // results が入って指紋が変わり、その結果が生成に使われる(liveEditorEdit)
+    markEditorSeed(seed);
+    showEditorFrame();
+  } catch (err) {
+    msg.textContent = "編集の準備に失敗しました: " + err.message;
+  }
 }
 
 async function importEditor() {
-  const operation = globalThis.VideoOperations?.begin();
-  try {
-    if (reviewJobId) { await closeLyricReview(); return; }
-    await syncEditorSession();
-    const raw = sessionStorage.getItem(EDITOR_KEY);
-    if (!raw) { alert("編集データがありません"); return; }
-    $("lyrics").value = JSON.stringify(JSON.parse(raw), null, 2);
-    $("auto-lyrics").checked = false;
-    syncLyricsInput(false);
-    syncLyricsRecognition();
-    saveForm();
-    closeEditor();
-  } finally { operation?.end(); }
+  if (reviewJobId) { await closeLyricReview(); return; }
+  await syncEditorSession();
+  const raw = sessionStorage.getItem(EDITOR_KEY);
+  if (!raw) { alert("編集データがありません"); return; }
+  $("lyrics").value = JSON.stringify(JSON.parse(raw), null, 2);
+  $("auto-lyrics").checked = false;
+  syncLyricsInput(false);
+  syncLyricsRecognition();
+  saveForm();
+  closeEditor();
 }
 
 function closeEditor() {
