@@ -2742,42 +2742,51 @@ async function startHistoryPlayback(index, trigger) {
 function resetHistoryShare() {
   const prepared = preparedHistoryShare;
   if (!prepared) return;
+  preparedHistoryShare = null;
+  globalThis.VideoOperations?.cancelAction(prepared.button);
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
     globalThis.VideoOperations?.clearContinuation(prepared.button);
     prepared.button.disabled = false;
     prepared.button.textContent = "共有";
   }
-  preparedHistoryShare = null;
 }
 
 async function shareHistoryResult(index, button) {
   const job = historyJobs[index];
   if (!job || !job.video_url || typeof navigator.share !== "function") return;
+  const startAction = () => globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => resetHistoryShare(),
+  });
   const open = (state, afterPreparation = false) => {
     button.disabled = false;
     button.textContent = "共有";
+    action?.finish();
     globalThis.VideoOperations?.clearContinuation(button);
     openFileShare(state.file, (error) => {
       if (preparedHistoryShare !== state || error?.name === "AbortError") return;
-      if (afterPreparation && error?.name === "NotAllowedError") globalThis.VideoOperations?.allowContinuation(button);
+      if (afterPreparation && error?.name === "NotAllowedError") {
+        startAction();
+        globalThis.VideoOperations?.allowContinuation(button);
+      }
       button.textContent = afterPreparation && error?.name === "NotAllowedError"
         ? "共有を開く" : "共有を再試行";
     });
   };
+  if (preparedHistoryShare?.index !== index) resetHistoryShare();
+  const action = startAction();
   const prepared = preparedHistoryShare;
   if (prepared && prepared.index === index && prepared.file) {
     open(prepared);
     return;
   }
   if (prepared && prepared.index === index && prepared.abort) return;
-  resetHistoryShare();
   const ctrl = new AbortController();
   const state = { index, jobId: job.id, url: job.video_url, button, abort: ctrl, file: null };
   preparedHistoryShare = state;
   button.disabled = true;
   button.textContent = "共有を準備中…";
-  const timer = setTimeout(() => ctrl.abort(), 120000);
+  const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("共有データを取得できませんでした");
@@ -2795,12 +2804,17 @@ async function shareHistoryResult(index, button) {
     state.abort = null;
     button.disabled = false;
     button.textContent = "共有を再試行";
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if (!preparedHistoryShare?.file) action?.finish();
+  }
 }
 
 function resetHistorySave() {
   const prepared = preparedHistorySave;
   if (!prepared) return;
+  preparedHistorySave = null;
+  globalThis.VideoOperations?.cancelAction(prepared.button);
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
     prepared.button.disabled = false;
@@ -2810,12 +2824,15 @@ function resetHistorySave() {
     prepared.button.removeAttribute("aria-disabled");
   }
   if (prepared.status) prepared.status.hidden = true;
-  preparedHistorySave = null;
 }
 
 async function saveHistoryVideo(index, button, status) {
   const job = historyJobs[index];
   if (!job || !job.video_url || !prefersNativeVideoSave()) return;
+  if (preparedHistorySave?.index !== index) resetHistorySave();
+  const action = globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => resetHistorySave(),
+  });
   const ready = () => {
     button.disabled = false;
     button.textContent = "保存";
@@ -2828,6 +2845,7 @@ async function saveHistoryVideo(index, button, status) {
   };
   const requestTap = state => {
     state.needsTap = true;
+    globalThis.VideoOperations?.beginAction(button, { onCancel: () => resetHistorySave() });
     globalThis.VideoOperations?.allowContinuation(button);
     ready();
     message("保存の準備ができました。もう一度「保存」をタップしてください。");
@@ -2837,6 +2855,7 @@ async function saveHistoryVideo(index, button, status) {
     message("");
     state.shareable = true;
     state.needsTap = false;
+    action?.finish();
     globalThis.VideoOperations?.clearContinuation(button);
     openFileShare(state.file, (error) => {
       if (preparedHistorySave !== state || error?.name === "AbortError") return;
@@ -2854,7 +2873,6 @@ async function saveHistoryVideo(index, button, status) {
   }
   // 準備中の同じジョブを二重取得しない。
   if (prepared && prepared.index === index && prepared.abort) return;
-  resetHistorySave();
   const ctrl = new AbortController();
   const state = { index, jobId: job.id, url: job.video_url,
     button, status, abort: ctrl, file: null, needsTap: true };
@@ -2864,7 +2882,7 @@ async function saveHistoryVideo(index, button, status) {
   button.setAttribute("aria-busy", "true");
   button.setAttribute("aria-disabled", "true");
   message("動画を取得しています…");
-  const timer = setTimeout(() => ctrl.abort(), 120000);
+  const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("保存データを取得できませんでした");
@@ -2880,7 +2898,10 @@ async function saveHistoryVideo(index, button, status) {
     state.abort = null;
     ready();
     message("動画を取得できませんでした。もう一度「保存」をタップしてください。");
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if (!preparedHistorySave?.file) action?.finish();
+  }
 }
 
 $("history").addEventListener("toggle", () => {
@@ -3453,14 +3474,33 @@ function bindShare(videoUrl) {
 }
 
 async function sharePreparedVideo(videoUrl, button, text = SHARE_TEXT) {
+  const startAction = () => globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => {
+      globalThis.VideoOperations?.clearContinuation(button);
+      button.disabled = false;
+      button.textContent = "共有";
+    },
+    onFinish: () => setTimeout(() => {
+      if ($("share-save") === button) flushDeferredBuilderState();
+    }, 0),
+  });
+  const action = startAction();
   globalThis.VideoOperations?.allowContinuation(button);
   const seq = sharePreparationSeq;
   let afterPreparation = false;
   if ((!preparedVideoShare || preparedVideoShare.videoUrl !== videoUrl) && videoSharePreparation) {
     button.disabled = true;
     button.textContent = "共有を準備中…";
-    await videoSharePreparation;
-    if (seq !== sharePreparationSeq) {
+    try { await videoSharePreparation; }
+    catch (_) {
+      action?.finish();
+      globalThis.VideoOperations?.clearContinuation(button);
+      button.disabled = false;
+      button.textContent = "共有を再試行";
+      return;
+    }
+    if (action?.canceled || seq !== sharePreparationSeq) {
+      action?.finish();
       globalThis.VideoOperations?.clearContinuation(button);
       return;
     }
@@ -3469,6 +3509,7 @@ async function sharePreparedVideo(videoUrl, button, text = SHARE_TEXT) {
   }
   const prepared = preparedVideoShare;
   if (!prepared || prepared.videoUrl !== videoUrl || !prepared.file) {
+    action?.finish();
     globalThis.VideoOperations?.clearContinuation(button);
     return;
   }
@@ -3478,10 +3519,12 @@ async function sharePreparedVideo(videoUrl, button, text = SHARE_TEXT) {
   }
   button.textContent = "共有";
   prepared.shareable = true;
+  action?.finish();
   globalThis.VideoOperations?.clearContinuation(button);
   openFileShare(prepared.file, (error) => {
     if (seq !== sharePreparationSeq || error?.name === "AbortError") return;
     if (afterPreparation && error?.name === "NotAllowedError") {
+      startAction();
       globalThis.VideoOperations?.allowContinuation(button);
       button.textContent = "共有を開く";
       return;
@@ -5643,6 +5686,14 @@ function showBuilderMsg(text) {
 // preview へ戻すのは「選択を変えたとき」(loadThumbnailPreview)、
 // 「中断・失敗したとき」(poll)、「設定を触ったとき」(releaseBuilderDone)。
 let builderState = "preview";
+let deferredBuilderState = null;
+function flushDeferredBuilderState() {
+  if (globalThis.VideoOperations?.hasAction($("share-save"))) return;
+  const state = deferredBuilderState;
+  deferredBuilderState = null;
+  if (state) setBuilderState(state);
+  if (previewDeferred && !submitBusy) renderBuilder();
+}
 
 // WebKit系では同じvideo要素のsrcを生成のたびに差し替えると、pause/load済みでも
 // ネイティブコントロールだけが前の再生状態を引き継ぎ、未再生なのに停止アイコンを
@@ -5662,6 +5713,11 @@ function freshBuilderVideo() {
 }
 
 function setBuilderState(state) {
+  if (state !== "done" && globalThis.VideoOperations?.hasAction($("share-save"))) {
+    deferredBuilderState = state;
+    return;
+  }
+  deferredBuilderState = null;
   builderState = state;
   $("builder-progress").hidden = state !== "running";
   const video = $("builder-video");
@@ -6295,7 +6351,7 @@ let previewDeferred = false;
 function renderBuilder() {
   // 生成中はサムネ枠を進捗表示が使っている。ここで作り直すと state が preview に
   // 戻って進捗が消えるので、選択だけ受けて作り直しは終わるまで先送りする
-  if (submitBusy) { previewDeferred = true; return; }
+  if (submitBusy || globalThis.VideoOperations?.hasAction($("share-save"))) { previewDeferred = true; return; }
   previewDeferred = false;
   const c = currentCombo();
   // 古い編集データにCSV本文がない場合も、生成には進める。
