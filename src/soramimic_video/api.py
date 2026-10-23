@@ -77,6 +77,7 @@ from .layout import (
     parse_layout,
 )
 from .soramimic_engine import start_warmup_thread
+from .submissions import Submissions
 from .thumbnail_preview import RateLimiter, preview_cache_dir
 from .transcribe import DEFAULT_WHISPER_MODEL
 from .usage_metrics import UsageMetrics
@@ -2166,6 +2167,8 @@ class JobManager:
 
         Public reviews expire after 24 hours when result retention is disabled.
         """
+        if self.config.get("submissions"):
+            self.config["submissions"].cleanup(now)
         if self.config.get("audio_uploads"):
             self.config["audio_uploads"].cleanup(now, consumed={
                 job.submission_id: job.owner for job in list(self.jobs.values())
@@ -2611,6 +2614,8 @@ def create_app(
     }
     audio_uploads = AudioUploads(jobs_dir.resolve() / "audio-uploads", max_audio_upload_bytes())
     config["audio_uploads"] = audio_uploads
+    submissions = Submissions(jobs_dir.resolve() / "submissions")
+    config["submissions"] = submissions
     manager = JobManager(jobs_dir, config)
     # 高コストGETの短期レート制限。セッション枠に加えてIP枠も必ず確認するため、
     # cookieを削除してもバックストップを回避できない。IP枠はNATを考慮して広め。
@@ -2664,6 +2669,7 @@ def create_app(
     app.state.manager = manager
     app.state.usage_metrics = usage_metrics
     app.state.audio_uploads = audio_uploads
+    app.state.submissions = submissions
 
     @app.middleware("http")
     async def _session_cookie(request: Request, call_next):
@@ -2751,7 +2757,7 @@ def create_app(
                     "soramimic_usage_submission_responses_total",
                     {"status": str(response.status_code)},
                 )
-            if request.url.path.startswith(("/api/jobs", "/api/audio-uploads")):
+            if request.url.path.startswith(("/api/jobs", "/api/audio-uploads", "/api/submissions")):
                 response.headers["Cache-Control"] = "private, no-store"
                 response.headers["Vary"] = "Cookie"
             return response
@@ -2766,7 +2772,7 @@ def create_app(
                 "soramimic_usage_submission_responses_total",
                 {"status": str(response.status_code)},
             )
-        if request.url.path.startswith(("/api/jobs", "/api/audio-uploads")):
+        if request.url.path.startswith(("/api/jobs", "/api/audio-uploads", "/api/submissions")):
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Vary"] = "Cookie"
         if issued:
@@ -3111,6 +3117,10 @@ def create_app(
     @app.get("/metadata-change.js", include_in_schema=False)
     def metadata_change_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "metadata-change.js", media_type="application/javascript")
+
+    @app.get("/submissions.js", include_in_schema=False)
+    def submissions_script():
+        return FileResponse(STATIC_DIR / "submissions.js", media_type="application/javascript")
 
     @app.get("/audio-upload.js", include_in_schema=False)
     def audio_upload_script() -> FileResponse:
@@ -4183,6 +4193,27 @@ def create_app(
                     raise
         return {"removed": True}
 
+    @app.post("/api/submissions", dependencies=[Depends(_require_api_key)])
+    def reserve_submission(request: Request) -> dict[str, str]:
+        return {"id": submissions.create(owner_of(request), _client_hash(request))}
+
+    @app.post("/api/submissions/{submission_id}/cancel", dependencies=[Depends(_require_api_key)])
+    def cancel_submission(submission_id: str, request: Request) -> dict[str, Any]:
+        owner = owner_of(request)
+        # Revocation and final admission share the same locks. A delayed POST cannot
+        # create a job after a successful cancellation, including across restarts.
+        with quota_submit_lock, audio_uploads.lock:
+            job = manager.find_submission(submission_id, owner)
+            submissions.remove(submission_id, owner)
+            if job is not None:
+                job = manager.cancel(job.id, owner)
+            try:
+                audio_uploads.remove(submission_id, owner)
+            except HTTPException as exc:
+                if exc.status_code not in (404, 410):
+                    raise
+            return {"id": job.id if job else None, "status": job.status if job else "canceled"}
+
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])
     async def create_job(
         request: Request,
@@ -4237,6 +4268,7 @@ def create_app(
         turnstile_token: str = Form(""),
         # モバイル回線で大きな音源送信が切れた場合の安全な再送ID。
         submission_id: str = Form(""),
+        registered_submission: bool = Form(False),
     ) -> dict[str, Any]:
         from .title_choices import parse_title_words, selected_rows
 
@@ -4252,6 +4284,8 @@ def create_app(
             existing = manager.find_submission(submission_id, owner)
             if existing is not None:
                 return {"id": existing.id}
+        if registered_submission:
+            submissions.require(submission_id, owner)
         staged_audio: UploadFile | None = None
         if audio_upload_id:
             if audio is not None or midi is not None or sample_id.strip():
@@ -4684,6 +4718,8 @@ def create_app(
                 existing = manager.find_submission(submission_id, owner)
                 if existing is not None:
                     return {"id": existing.id}
+            if registered_submission:
+                submissions.require(submission_id, owner)
             _check_public_limits(
                 owner,
                 client_hash,
@@ -4704,6 +4740,8 @@ def create_app(
             )
             if audio_upload_id:
                 audio_uploads.remove(audio_upload_id, owner)
+            if registered_submission:
+                submissions.remove(submission_id, owner)
         return {"id": job.id}
 
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
