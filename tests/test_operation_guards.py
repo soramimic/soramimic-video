@@ -190,6 +190,10 @@ const EDITOR_KEY='editor', REVIEW_JOB_KEY='job';
 let reviewJobId='one', reviewAction='';
 const syncHistoryReviewControls=()=>{};
 let reviewSavedRaw='', reviewSavePending=null, raw='first', writes=[], gates=[], closed=0;
+const active=new Set();
+globalThis.VideoOperations={begin:()=>{
+  const owner={}; active.add(owner); return {end:()=>active.delete(owner)};
+}};
 const headers=()=>({}), loadHistory=async()=>{}, closeEditor=()=>{closed++;};
 const sessionStorage={getItem:key=>key===EDITOR_KEY?raw:'one'};
 const fetch=async(url,options)=>{
@@ -201,11 +205,15 @@ const ok={ok:true,json:async()=>({})};
 """ + _functions(
         "async function saveLyricReview(", "async function closeLyricReview(",
         "async function confirmLyricReview(", "function setReviewAction(",
+        "async function importEditor(", "async function syncEditorSessionOnce(",
     )
     _run(harness, r"""
 $('close-lyric-review').textContent='閉じる';
-const autosave=saveLyricReview(); await tick(); raw='latest before close';
-const closing=closeLyricReview();
+const autosave=syncEditorSessionOnce(); await tick();
+assert.equal(active.size,0,'periodic review autosave must not block new operations');
+raw='latest before close';
+const closing=importEditor();
+assert(active.size>0,'the iframe return action stays protected by review close');
 assert.equal(reviewAction,'closing'); assert($('editor-frame').inert);
 assert.equal($('close-lyric-review').textContent,'保存中…');
 assert($('confirm-lyric-review').disabled && $('close-lyric-review').disabled);
@@ -218,11 +226,13 @@ assert.equal(closed,1); assert.equal(reviewSavedRaw,raw);
 await saveLyricReview(); assert.equal(writes.length,2,'unchanged edits need no request');
 assert.equal($('close-lyric-review').textContent,'閉じる');
 assert.equal(reviewAction,''); assert.equal($('editor-frame').inert,false);
+assert.equal(active.size,0,'completed close releases its own restriction');
 raw='failed save'; const failed=closeLyricReview(); await tick();
 gates[2].resolve({ok:false,json:async()=>({detail:'offline'})}); await failed;
 assert.equal(closed,1); assert.match($('lyric-review-error').textContent,/offline/);
 assert.equal($('confirm-lyric-review').disabled,false);
 assert.equal($('close-lyric-review').disabled,false); assert.equal($('editor-frame').inert,false);
+assert.equal(active.size,0,'failed save restores new operations for a retry');
 const retry=closeLyricReview(); await tick(); gates[3].resolve(ok); await retry;
 assert.equal(closed,2); assert.equal($('lyric-review-error').textContent,'');
 """)
