@@ -5,6 +5,7 @@
   const marked = new Map();
   const continuing = new WeakSet();
   const inputs = new Map();
+  const actions = new Map();
   const selector = "button, input, select, textarea, a[download], [role=button], [data-operation-input]";
   const continuations = new Set([
     "cancel", "builder-cancel", "title-candidates-close",
@@ -54,7 +55,13 @@
       const label = event.target.closest("label");
       element = label?.control || document.getElementById(label?.getAttribute("for"));
     }
-    if (event.type === "submit") element = event.target;
+    if (event.type === "submit") {
+      element = event.target;
+      // A dialog's allowed completion button must also be allowed to submit it.
+      const submitter = event.submitter;
+      if (element.getAttribute("method")?.toLowerCase() === "dialog"
+          && submitter?.form === element && allowed(submitter)) return;
+    }
     if (!element || !blocked(element)) return;
     if (["input", "change"].includes(event.type)) {
       if (!event.isTrusted) { remember(element); return; }
@@ -81,18 +88,63 @@
     document.addEventListener(type, intercept, true);
   }
   // Programmatic input/change events apply the operation's own result.
-  const observer = new MutationObserver(() => { if (leases.size) sync(); });
+  const observer = new MutationObserver(() => {
+    for (const [control, action] of actions) if (!control.isConnected) action.cancel();
+    if (leases.size) sync();
+  });
   observer.observe(document.documentElement, { childList: true, subtree: true,
     attributes: true, attributeFilter: ["aria-pressed"] });
+  window.addEventListener("pagehide", () => { for (const action of actions.values()) action.cancel(); });
   globalThis.VideoOperations = {
     isBusy() { return leases.size > 0; },
+    hasAction(control) { return actions.has(control); },
+    beginAction(control, { onCancel = () => {}, onFinish = () => {}, cancelLabel = "処理をキャンセル", allow = [] } = {}) {
+      if (actions.has(control)) return actions.get(control);
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "btn-sm operation-cancel";
+      cancel.textContent = "キャンセル";
+      cancel.setAttribute("aria-label", cancelLabel);
+      const anchor = control.matches("summary") ? control.parentElement : control;
+      anchor.after(cancel);
+      const lease = this.begin({ allow: [control, cancel, ...allow] });
+      const action = {
+        canceled: false,
+        setCancelable(enabled) { cancel.disabled = !enabled; },
+        finish() {
+          if (actions.get(control) !== action) return;
+          actions.delete(control);
+          cancel.remove();
+          lease.end();
+          onFinish();
+        },
+        cancel() {
+          if (cancel.disabled || action.canceled || actions.get(control) !== action) return;
+          action.canceled = true;
+          cancel.disabled = true;
+          try {
+            const pending = onCancel();
+            if (pending && typeof pending.then === "function") {
+              Promise.resolve(pending).then(() => action.finish(), () => action.finish());
+            } else action.finish();
+          } catch (error) { action.finish(); throw error; }
+        },
+      };
+      actions.set(control, action);
+      cancel.addEventListener("click", () => action.cancel());
+      return action;
+    },
+    cancelAction(control) { actions.get(control)?.cancel(); },
     allowContinuation(element) { if (element) { continuing.add(element); sync(); } },
     clearContinuation(element) { if (element) { continuing.delete(element); sync(); } },
     begin({ allow = [] } = {}) {
       const lease = { allow };
       leases.add(lease);
       sync();
-      return { end() { leases.delete(lease); sync(); if (!leases.size) inputs.clear(); } };
+      return {
+        isAlone() { return leases.size === 1 && leases.has(lease); },
+        end() { leases.delete(lease); sync(); if (!leases.size) inputs.clear(); },
+      };
     },
   };
 })();
