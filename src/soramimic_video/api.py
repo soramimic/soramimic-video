@@ -2728,6 +2728,7 @@ def create_app(
         if not is_public_mode() or request.url.path in {
             "/healthz",
             "/custom-wordlists.js",
+            "/operation-guard.js",
             "/ogp-soramimic-v1.png",
             "/ogp-soramimic-v2.png",
             "/ogp-soramimic-v3.png",
@@ -3091,6 +3092,13 @@ def create_app(
             .replace("<!-- data-handling-toc -->", data_handling_toc)
             .replace("<!-- usage-scope -->", usage_scope)
             .replace("<!-- usage-scope-toc -->", usage_scope_toc)
+        )
+
+    @app.get("/operation-guard.js", include_in_schema=False)
+    def operation_guard_script() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "operation-guard.js", media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
         )
 
     @app.get("/app-bridge.js", include_in_schema=False)

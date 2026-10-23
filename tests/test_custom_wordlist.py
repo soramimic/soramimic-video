@@ -305,14 +305,15 @@ def test_wordlist_check_import_returns_normalized_shift_jis_csv(client):
 
 
 @pytest.mark.parametrize("public", [False, True])
-def test_custom_wordlist_script_is_served_without_cookie(client, monkeypatch, public):
+@pytest.mark.parametrize("script", ["custom-wordlists.js", "operation-guard.js"])
+def test_custom_wordlist_script_is_served_without_cookie(client, monkeypatch, public, script):
     if public:
         monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
-    response = client.get("/custom-wordlists.js")
+    response = client.get(f"/{script}")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/javascript")
     assert response.headers["cache-control"] == "no-cache"
-    assert response.text == (api_mod.STATIC_DIR / "custom-wordlists.js").read_text(
+    assert response.text == (api_mod.STATIC_DIR / script).read_text(
         encoding="utf-8"
     )
     assert "set-cookie" not in response.headers
