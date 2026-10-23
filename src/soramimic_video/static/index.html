@@ -3313,8 +3313,12 @@ async function downloadResultMedia(link, mediaType, status) {
     download.href = url;
     download.download = filename;
     document.body.appendChild(download);
-    download.click();
-    download.remove();
+    globalThis.VideoOperations?.allowContinuation(download);
+    try { download.click(); }
+    finally {
+      globalThis.VideoOperations?.clearContinuation(download);
+      download.remove();
+    }
     status.hidden = true;
   } catch (_error) {
     status.textContent = "ファイルを取得できませんでした。保存メニューからもう一度お試しください。";
@@ -7798,8 +7802,12 @@ function setReviewAction(action) {
   syncHistoryReviewControls();
 }
 
+function reviewPresentationBlocked() {
+  return globalThis.VideoOperations?.isBusy() || !!document.querySelector("dialog[open]");
+}
+
 async function openLyricReview(id) {
-  if (!id || historyReviewBlocked(id)) return;
+  if (!id || historyReviewBlocked(id) || reviewPresentationBlocked()) return;
   setReviewAction("opening");
   reviewOpenedJob = id;
   try {
@@ -7809,6 +7817,12 @@ async function openLyricReview(id) {
     const seed = await res.json();
     if (!res.ok) throw new Error(seed.detail || res.status);
     if (currentJob !== id) return;
+    // A foreground operation or dialog may have opened while the seed was loading.
+    // Leave the review pending so polling can present it after that work finishes.
+    if (reviewPresentationBlocked()) {
+      reviewOpenedJob = null;
+      return;
+    }
     // The shared editor storage can contain another song. Reuse it only for this job.
     if (sessionStorage.getItem(REVIEW_JOB_KEY) !== id || !editorSessionData()) {
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
