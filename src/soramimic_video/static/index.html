@@ -1636,6 +1636,7 @@
 <script src="/app-bridge.js"></script>
 <script src="/metadata-change.js?v=compact-song-metadata-v1"></script>
 <script src="/audio-upload.js"></script>
+<script src="/submissions.js"></script>
 <script src="/operation-guard.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -2999,11 +3000,11 @@ function restartPolling(id) {
   poll(id, pollSeq);
 }
 
-function watch(id) {
+function watch(id, { canceling = false } = {}) {
   currentJob = id;
   syncHistoryReviewControls();
-  cancelPendingJob = null;
-  setCancelPending(false);
+  cancelPendingJob = canceling ? id : null;
+  setCancelPending(canceling);
   $("cancel").hidden = false;
   restartPolling(id);
 }
@@ -3626,6 +3627,12 @@ function showSubmitMsg(text) {
 // Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
 // Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
 async function postJobWithTurnstileRetry(form, signal = null) {
+  if (typeof SoramimicSubmissions === "undefined") {
+    throw new Error("受付情報を読み込めませんでした。ページを再読み込みしてください。");
+  }
+  await SoramimicSubmissions.prepare(form, {headers, signal});
+  signal?.throwIfAborted();
+  SoramimicSubmissions.sent(form);
   const hasAudio = !!(form.has && form.has("audio"));
   const jobHeaders = () => ({
     ...headers(),
@@ -3893,6 +3900,8 @@ async function submitJob(previewSec, previewMode) {
     operation?.finish(); operation = null; preparationFinished();
     const submitController = new AbortController();
     submitAbort = submitController;
+    const submission = {form, unconfirmed: false, reconciling: false};
+    submitJob.pendingSubmission = submission;
     let keepTurnstilePrompt = false;
     try {
       const res = await postJobWithTurnstileRetry(form, submitController.signal);
@@ -3906,15 +3915,32 @@ async function submitJob(previewSec, previewMode) {
       let body = {};
       try { body = await res.json(); } catch { /* edge/proxyのHTMLエラーでも状態を失わない */ }
       if (!res.ok) {
-        throw new Error(body.detail || res.status);
+        throw Object.assign(new Error(body.detail || res.status), {
+          submissionRejected: res.status >= 400 && res.status < 500,
+        });
       }
       submitController.signal.throwIfAborted();
+      if (typeof SoramimicSubmissions !== "undefined") SoramimicSubmissions.finish(form);
       watch(body.id);
     } catch (err) {
       // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
       // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
       if (!keepTurnstilePrompt) hideTurnstilePrompt();
       const canceled = submitController.signal.aborted && err?.name === "AbortError";
+      if (typeof SoramimicSubmissions !== "undefined") {
+        if (canceled) {
+          await reconcileSubmissionCancellation(submission);
+          return;
+        }
+        if (!err.submissionRejected && SoramimicSubmissions.wasSent(form)) {
+          submission.unconfirmed = true;
+          setJobStatus("生成の受付を確認できません");
+          showBuilderMsg("生成の受付を確認できません。「中断」で受付済みの処理を確認して中断できます。");
+          openJobDetails();
+          return;
+        }
+        if (!audio && err.submissionRejected) SoramimicSubmissions.cancel(form, headers).catch(() => {});
+      }
       $("status-line").innerHTML = canceled
         ? "音源の送信を中断しました"
         : `<span class="error">${err.message}</span>`;
@@ -3927,7 +3953,8 @@ async function submitJob(previewSec, previewMode) {
     } finally {
       if (submitAbort === submitController) submitAbort = null;
       acknowledgement?.end();
-      setCancelPending(false);
+      if (!submission.trackingCancellation) setCancelPending(false);
+      if (!submission.unconfirmed && submitJob.pendingSubmission === submission) submitJob.pendingSubmission = null;
       // Turnstileのトークンは1回きり。次の投入用に取り直す
       resetTurnstile(!keepTurnstilePrompt);
     }
@@ -6589,14 +6616,46 @@ function setCancelPending(pending) {
   }
 }
 
+async function reconcileSubmissionCancellation(submission) {
+  if (submission.reconciling) return;
+  submission.reconciling = true;
+  setCancelPending(true);
+  setJobStatus("中断を確認しています…");
+  showBuilderMsg("");
+  try {
+    const result = await SoramimicSubmissions.cancel(submission.form, headers);
+    submission.unconfirmed = false;
+    if (submitJob.pendingSubmission === submission) submitJob.pendingSubmission = null;
+    if (result.id) {
+      submission.trackingCancellation = true;
+      watch(result.id, {canceling: true});
+    } else {
+      setJobStatus("中断しました");
+      setBuilderState("preview");
+      setBusy(false);
+      setCancelPending(false);
+      loadHistory();
+    }
+  } catch (_) {
+    submission.unconfirmed = true;
+    setCancelPending(false);
+    setJobStatus("中断の完了を確認できません");
+    showBuilderMsg("中断の完了を確認できません。通信状態を確認して、もう一度「中断」を押してください。");
+  } finally {
+    submission.reconciling = false;
+  }
+}
+
 async function cancelJob() {
   if (typeof submitJob !== "undefined" && submitJob.preparationController) {
     submitJob.preparationController.abort();
     setJobStatus("生成の準備を中断しています…");
     return;
   }
+  const submission = typeof submitJob !== "undefined" ? submitJob.pendingSubmission : null;
+  const retry = submission?.unconfirmed && !submission.reconciling;
   const id = currentJob;
-  if ((!id && !submitAbort) || (id && cancelPendingJob === id)) return;
+  if ((!id && !submitAbort && !retry) || (id && cancelPendingJob === id)) return;
   if (!cancelJob.operation) {
     const operation = globalThis.VideoOperations?.begin();
     cancelJob.operation = operation;
@@ -6607,6 +6666,7 @@ async function cancelJob() {
       showBuilderMsg("中断の完了をまだ確認できません。通信状態を確認して、もう一度中断してください。");
     }, 30000);
   }
+  if (retry) { await reconcileSubmissionCancellation(submission); return; }
   if (!id && submitAbort && !submitAbort.signal.aborted) {
     setCancelPending(true);
     setJobStatus("中断しています…");
