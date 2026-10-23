@@ -215,7 +215,7 @@ const appendCustomWordlist=()=>{}, showProgress=()=>{}, setJobStatus=()=>{};
 const setCancelPending=()=>{}, resetTurnstile=()=>{}, watch=()=>setBusy(false);
 const postJobWithTurnstileRetry=async form=>{requests.push(form);
   return {ok:true,json:async()=>({id:'job'})};};
-""" + _functions("async function submitJob(")
+""" + _functions("async function submitJob(", "function captureGenerationThumbnail()")
     _run(harness, r"""
 for (const change of ['json','plain','auto','reading','unchanged']) {
   automatic=false; lyricsFileReading=false; $('lyrics').value='{"lyrics":"original"}';
