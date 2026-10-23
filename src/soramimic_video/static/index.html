@@ -3294,6 +3294,33 @@ function isIOSPlatform() {
     || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1);
 }
 
+// 復帰後は再生位置と再生状態を保ったまま、iOSの標準コントロールを更新する。
+function refreshNativePlaybackControls(media) {
+  if (!isIOSPlatform() || document.visibilityState === "hidden"
+      || !media?.isConnected || !media.controls
+      || !media.matches("#builder-video, .history-media video, .history-media audio")) return;
+  // 全画面・PiP中はその表示を維持し、インラインへ戻ったときに更新する。
+  if (media.webkitDisplayingFullscreen || document.fullscreenElement
+      || document.pictureInPictureElement === media
+      || ["fullscreen", "picture-in-picture"].includes(media.webkitPresentationMode)) return;
+  media.controls = false;
+  media.controls = true;
+}
+
+function refreshVisiblePlaybackControls() {
+  for (const media of document.querySelectorAll(
+    "#builder-video, .history-media video, .history-media audio",
+  )) refreshNativePlaybackControls(media);
+}
+
+document.addEventListener("visibilitychange", refreshVisiblePlaybackControls);
+window.addEventListener("pageshow", refreshVisiblePlaybackControls);
+window.addEventListener("focus", refreshVisiblePlaybackControls);
+// 復帰通知より遅れて再生やPiPからの復帰が完了する場合も、最終状態へ合わせる。
+for (const type of ["playing", "webkitpresentationmodechanged", "webkitendfullscreen", "leavepictureinpicture"]) {
+  document.addEventListener(type, event => refreshNativePlaybackControls(event.target), true);
+}
+
 function prefersNativeVideoSave() {
   return typeof navigator.share === "function" && typeof File !== "undefined" && isIOSPlatform();
 }
