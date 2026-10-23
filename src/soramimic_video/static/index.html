@@ -589,6 +589,7 @@
   }
   .turnstile-title { margin: 0; font-weight: 700; }
   .turnstile-copy .hint { margin: .2rem 0 .5rem; }
+  .turnstile-copy .hint:empty { display: none; }
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー ---- */
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
@@ -1088,7 +1089,7 @@
     <div class="turnstile-panel" tabindex="-1" aria-labelledby="turnstile-title">
       <div class="turnstile-copy" role="status" aria-live="polite">
         <p class="turnstile-title" id="turnstile-title">人間かどうかの確認が必要です</p>
-        <p class="hint">確認欄が表示されたらチェックしてください。完了すると、そのまま合成を始めます。</p>
+        <p class="hint"></p>
       </div>
       <div id="turnstile-widget"></div>
     </div>
@@ -2336,7 +2337,7 @@ async function ensureTurnstileToken(timeoutMs = 120000, signal) {
     hideTurnstilePrompt();
     setTurnstilePromptCopy(
       "ロボットではないことを確認しています",
-      "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
+      "",
     );
     const deadline = Date.now() + timeoutMs;
     // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
