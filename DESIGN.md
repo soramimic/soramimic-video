@@ -163,6 +163,14 @@ Web API は job 単位で処理し、状態、thumbnail、完成動画を返し�
 入力 size、曲長、同時実行数、利用回数等の制限が適用される場合があります。制限に達した場合は
 API response と UI で利用者に通知します。
 
+ブラウザからの取り消し可能な送信は、先に `POST /api/submissions` で受付IDを確保し、
+`POST /api/jobs` にその `submission_id` と `registered_submission=true` を指定します。
+受付IDは同じ所有者だけが使用でき、有効期間は1時間、未使用枠はセッション・接続元ごとに
+8件、全体128件です。`POST /api/submissions/{id}/cancel` は未受付なら受付を取り消し、
+受付済みならそのジョブを中断します。応答は `id`（未受付ならnull）と `status` を返します。
+ジョブが実行中なら状態取得で終了を確認し、完成済みなら完成結果を表示します。
+取り消し済み・期限切れのIDでの遅延送信は受け付けません。従来の未登録送信も利用できます。
+
 音源の途中再開には `POST /api/audio-uploads` で `filename`、`size`、32桁の16進数の
 `submission_id` と `turnstile_token` を送ります。人間確認はこの時点で検証します。
 応答の `id` を使い、`GET /api/audio-uploads/{id}` で `offset`、`size`、`chunk_bytes` を取得し、

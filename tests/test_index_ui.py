@@ -1664,6 +1664,7 @@ def test_job_post_retries_one_server_rejected_turnstile_token():
         function rebuildTurnstileWidget() {{ rebuilds += 1; }}
         async function ensureTurnstileToken() {{ return true; }}
         function turnstileToken() {{ return "fresh-token"; }}
+        const SoramimicSubmissions = {{prepare: async () => {{}}, sent() {{}}}};
         {post}
         (async () => {{
           const response = await postJobWithTurnstileRetry(form);
@@ -1711,6 +1712,7 @@ def test_audio_job_post_retries_one_mobile_network_failure():
           }}
         }}
         const fetch = async () => assert.fail("audio uploads must use XMLHttpRequest");
+        const SoramimicSubmissions = {{prepare: async () => {{}}, sent() {{}}}};
         {post}
         (async () => {{
           const response = await postJobWithTurnstileRetry(form);
@@ -1759,9 +1761,11 @@ def test_stalled_audio_upload_is_aborted_and_retried():
           }}
         }}
         const fetch = async () => assert.fail("audio uploads must use XMLHttpRequest");
+        const SoramimicSubmissions = {{prepare: async () => {{}}, sent() {{}}}};
         {post}
         (async () => {{
           const pending = postJobWithTurnstileRetry(form);
+          await Promise.resolve();
           assert.equal(calls, 1);
           watchdogs.shift()();
           const response = await pending;
@@ -1811,12 +1815,12 @@ def test_audio_upload_retry_can_be_canceled_before_job_creation():
           }}
         }}
         const fetch = async () => assert.fail("cancel must not call the job API before creation");
+        const SoramimicSubmissions = {{prepare: async () => {{}}, sent() {{}}}};
         {post}
         {cancel}
         (async () => {{
           const pending = postJobWithTurnstileRetry(form, controller.signal);
-          await Promise.resolve();
-          await Promise.resolve();
+          for (let i = 0; i < 8 && calls < 2; i++) await Promise.resolve();
           assert.equal(calls, 2, "the retry upload must be active");
           await cancelJob();
           await assert.rejects(pending, (error) => error.name === "AbortError");
