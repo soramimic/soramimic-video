@@ -55,6 +55,8 @@
   * { box-sizing: border-box; }
   /* [hidden] はJSの表示制御の要。display指定を持つレイアウト用クラスに負けないよう固定する */
   [hidden] { display: none !important; }
+  #cancel[data-operation-blocked], #builder-cancel[data-operation-blocked],
+  .operation-cancel[data-operation-blocked] { display: none !important; }
   body {
     margin: 0; background: var(--bg); color: var(--text); line-height: 1.6;
     font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans",
@@ -1021,12 +1023,8 @@
        このスロットへ移す。単語リスト直下で開閉でき、下のプレビューを探し回らずに済む。 -->
   <div id="advanced-slot"></div>
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
-    <p class="hint">本アプリは、動画に使用する画像の権利者や、登場する人物・団体とは関係ありません。動画の内容に応じて、各権利者の<a id="builder-fanwork-guidelines" href="/guidelines"
+    <p class="hint">本アプリは、動画に使用する画像の権利者や、登場する人物・団体とは関係ありません。動画の内容に応じて、各権利者の<a id="builder-fanwork-guidelines" href="/guidelines#image-guidelines-title"
       target="_blank" rel="noopener noreferrer">利用ガイドライン</a>を守ってください。</p>
-    <details class="hint" id="builder-usage-links" hidden>
-      <summary>対象の利用ガイドライン</summary>
-      <ul id="builder-usage-terms"></ul>
-    </details>
     <p class="hint" id="builder-usage-status" role="status" hidden></p>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
@@ -2331,7 +2329,7 @@ function resetTurnstile(hidePrompt = true) {
 // 配られたとき)だけなので、無効な構成では何もしない。
 async function ensureTurnstileToken(timeoutMs = 120000, signal) {
   if (!turnstileSiteKey) return true;
-  const operation = globalThis.VideoOperations?.begin();
+  const operation = globalThis.VideoOperations?.begin({ cancelable: false });
   try {
     // 前回の完了表示や予約済みタイマーを、今回の確認に持ち越さない。
     hideTurnstilePrompt();
@@ -5729,13 +5727,11 @@ async function updateWordlistUsageNotice() {
   wordlistUsageAbort?.abort();
   wordlistUsageAbort = new AbortController();
   const notice = $("builder-fanwork-notice");
-  const terms = $("builder-usage-terms"), status = $("builder-usage-status");
+  const status = $("builder-usage-status");
   notice.hidden = true;
-  terms.replaceChildren();
-  $("builder-usage-links").hidden = true;
   status.hidden = true;
   $("builder-fanwork-guidelines").href = "/guidelines?"
-    + new URLSearchParams({ wordlist: request.name });
+    + new URLSearchParams({ wordlist: request.name }) + "#image-guidelines-title";
   if (!request.name && !request.text) return;
   const form = new FormData();
   form.set("wordlist", request.name);
@@ -5749,19 +5745,7 @@ async function updateWordlistUsageNotice() {
     const body = await res.json();
     if (wordlistUsageRequest !== request) return;
     notice.hidden = !body.required;
-    for (const term of body.terms || []) {
-      let url;
-      try { url = new URL(term.url); } catch { continue; }
-      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) continue;
-      const item = document.createElement("li"), link = document.createElement("a");
-      link.href = url.href;
-      link.textContent = term.label || url.hostname;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      item.appendChild(link);
-      terms.appendChild(item);
-    }
-    $("builder-usage-links").hidden = !terms.children.length;
+
   } catch (err) {
     if (wordlistUsageRequest !== request || err.name === "AbortError") return;
     notice.hidden = false;

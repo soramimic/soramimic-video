@@ -3385,6 +3385,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
             const guidance = new URL($("builder-fanwork-guidelines").href, "https://example.com");
             assert.equal(guidance.pathname, "/guidelines");
             assert.equal(guidance.searchParams.get("wordlist"), name);
+            assert.equal(guidance.hash, "#image-guidelines-title");
             loadWordlistImage(name, previewSeq);
             const query = new URL(imageUrl, "https://example.com").searchParams;
             assert.equal(query.get("noncommercial_fanwork"), "true");
@@ -3477,7 +3478,6 @@ def test_text_only_lyrics_skip_usage_lookup_and_discard_pending_notices():
               pending.at(-1).resolve(response());
               await normal;
               assert.equal($("builder-fanwork-notice").hidden, false);
-              assert.equal($("builder-usage-links").hidden, false);
               data = {wordlist, results: [[{surface: "学校", kana: "ガッコウ"}]]};
               const count = pending.length;
               const textOnly = updateWordlistUsageNotice();
@@ -3485,8 +3485,6 @@ def test_text_only_lyrics_skip_usage_lookup_and_discard_pending_notices():
               await textOnly;
               assert.equal($("builder-fanwork-notice").hidden, true);
               assert.equal($("builder-usage-status").hidden, true);
-              assert.equal($("builder-usage-links").hidden, true);
-              assert.equal($("builder-usage-terms").children.length, 0);
             }
           }
           for (const failure of [false, true]) {

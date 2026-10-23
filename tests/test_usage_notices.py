@@ -175,11 +175,10 @@ const complete = (index, required, terms = []) => requests[index].resolve({
   ]);
   await first;
   assert.equal($("builder-fanwork-notice").hidden, false);
-  const links = $("builder-usage-terms").children;
-  assert.equal(links.length, 1);
-  assert.equal(links[0].children[0].textContent, "<利用条件>");
-  assert.equal(links[0].children[0].rel, "noopener noreferrer");
-  assert.equal($("builder-usage-links").hidden, false);
+  const link = new URL($("builder-fanwork-guidelines").href, "https://example.com");
+  assert.equal(link.pathname, "/guidelines");
+  assert.equal(link.searchParams.get("wordlist"), name);
+  assert.equal(link.hash, "#image-guidelines-title");
   await updateWordlistUsageNotice();
   assert.equal(requests.length, 1, "unchanged polling must reuse the result");
 
@@ -192,7 +191,6 @@ const complete = (index, required, terms = []) => requests[index].resolve({
   complete(1, true);
   await oldRequest;
   assert.equal($("builder-fanwork-notice").hidden, true);
-  assert.equal($("builder-usage-links").hidden, true);
 
   custom = registeredCustom = { text: "id,surface,usage_notice\\n1,注意語,guidelines" };
   const own = updateWordlistUsageNotice();
