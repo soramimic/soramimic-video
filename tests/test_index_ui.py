@@ -3361,6 +3361,7 @@ def test_editor_transfer_populates_json_and_recognition_mode():
         _function_body(script, head) + "\n}"
         for head in (
             "async function receiveEditorLyrics()",
+            "async function updateUploadedSongMetadata(",
             "async function readParodyFile(",
             "function parodySourceLyrics(",
             "function syncLyricsRecognition()",
@@ -3401,7 +3402,11 @@ def test_editor_transfer_populates_json_and_recognition_mode():
           assert.equal(peer, editorPeer); await apply(payload);
         }};
         const clearAudioInput = () => {cleared++;};
-        const ownSongFile = () => null;
+        let selectedFile = null, metadataChoices = [];
+        const ownSongFile = () => selectedFile;
+        const VideoMetadata = {notifyChange: async (kind, isCurrent) => {
+          assert(isCurrent()); metadataChoices.push(kind); return "keep";
+        }};
         const showSongInputMode = mode => {songInputMode = mode;};
         const applyEditorWordlist = async () => {
           assert.deepEqual(JSON.parse(stored.get(EDITOR_KEY)), payload);
@@ -3425,12 +3430,17 @@ def test_editor_transfer_populates_json_and_recognition_mode():
               phrases:["ベツノヒョーキ"]}, "元の表記\\nを保つ"],
             [{originalLines:["字幕の歌詞", "次の行"], phrases:["ヨミ"]}, "字幕の歌詞\\n次の行"],
             [{}, ""],
+            [{videoMetadata:null}, ""],
+            [{videoMetadata:{}}, ""],
+            [{videoMetadata:{songTitle:"", songCredit:""}}, ""],
+            [{videoMetadata:{songCredit:"指定したクレジット"}}, ""],
           ];
           for (const [fields, expected] of variants) {
             elements.clear(); stored.clear(); bridgeReceiving = false;
-            payload = {...base, ...fields, song:{title:"受け渡しテスト"},
+            payload = {...base, song:{title:"自動で付いた曲名"},
               videoMetadata:{songTitle:"表示用の曲名", songCredit:"作詞・作曲: テスト",
-                thumbnailWordlistLabel:"表示用のリスト名"}};
+                thumbnailWordlistLabel:"表示用のリスト名"}, ...fields};
+            if (payload.videoMetadata === null) delete payload.videoMetadata;
             $("lyrics").value = "前回の歌詞";
             $("auto-lyrics").checked = true;
             $("midi").value = "previous.mid";
@@ -3446,10 +3456,17 @@ def test_editor_transfer_populates_json_and_recognition_mode():
             assert.equal(songInputMode, "upload");
             assert.equal(stored.has(EDITOR_SEED_KEY), false);
             assert.deepEqual(imported, payload, "keep the converted assignments and readings");
-            assert.equal($("song-title").value, payload.videoMetadata.songTitle);
-            assert.equal($("song-credit").value, payload.videoMetadata.songCredit);
+            assert.equal($("song-title").value, payload.videoMetadata?.songTitle ?? "",
+              "an implicit song title never fills the user-entered title field");
+            assert.equal($("song-credit").value, payload.videoMetadata?.songCredit ?? "");
             assert.equal($("thumbnail-wordlist-label").value,
-              payload.videoMetadata.thumbnailWordlistLabel);
+              payload.videoMetadata?.thumbnailWordlistLabel ?? "");
+            metadataChoices = []; selectedFile = {name:"uploaded.xf.mid"};
+            await updateUploadedSongMetadata(selectedFile);
+            const hasMetadata = $("song-title").value.trim() || $("song-credit").value.trim();
+            assert.deepEqual(metadataChoices, hasMetadata ? ["song-replacement"] : [],
+              "uploading after transfer asks only about explicitly entered metadata");
+            assert.deepEqual(JSON.parse($("lyrics").value), payload);
             const form = new Map();
             appendSongLyrics({append:(key,value) => form.set(key,value)});
             assert.equal(form.get("lyrics"), expected);
