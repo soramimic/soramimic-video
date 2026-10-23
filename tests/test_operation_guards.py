@@ -274,3 +274,40 @@ await loadLyricsFile({size:1,arrayBuffer:async()=>{throw Error('bad file');}});
 assert.equal($('builder-play').disabled,false);
 submitBusy=true; await loadLyricsFile(null); assert($('builder-play').disabled);
 """)
+
+
+def test_common_operation_guard_events():
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["node", "--test", "tests/operation-guard.mjs"], cwd=root,
+        capture_output=True, text=True, timeout=20, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_short_reads_release_their_own_guard_on_success_failure_and_cancel():
+    harness = DOM + r"""
+let lyricsFileReadSequence=0, lyricsFileReading=false;
+const MAX_EDITOR_BYTES=4*1024*1024;
+const syncLyricsInput=()=>{}, syncLyricsRecognition=()=>{}, syncRecordingUi=()=>{};
+const active=new Set();
+globalThis.VideoOperations={begin:()=>{
+  const token={end(){active.delete(token);}}; active.add(token); return token;
+}};
+""" + _functions("async function loadLyricsFile(")
+    _run(harness, r"""
+const old=deferred(), current=deferred();
+const first=loadLyricsFile({size:1,arrayBuffer:()=>old.promise});
+assert.equal(active.size,1);
+await loadLyricsFile(null); assert.equal(active.size,0,'cancel releases immediately');
+const second=loadLyricsFile({size:1,arrayBuffer:()=>current.promise});
+old.resolve(new TextEncoder().encode('old').buffer); await first;
+assert.equal(active.size,1,'stale read cannot release the current read');
+current.resolve(new TextEncoder().encode('current').buffer); await second;
+assert.equal(active.size,0);
+await loadLyricsFile({size:1,arrayBuffer:async()=>{throw Error('bad file');}});
+assert.equal(active.size,0,'error releases the guard');
+""")
