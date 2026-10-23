@@ -24,6 +24,7 @@ import csv
 import hashlib
 import hmac
 import importlib.util
+import io
 import ipaddress
 import json
 import logging
@@ -136,6 +137,8 @@ SIMPLE_MAX_REQUEST_BYTES_ENV = "SORAMIMIC_SIMPLE_MAX_REQUEST_BYTES"
 DEFAULT_MAX_AUDIO_UPLOAD_BYTES = 200 * 1024 * 1024
 DEFAULT_MAX_MIDI_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_LYRICS_UPLOAD_BYTES = 256 * 1024
+MAX_GENERATION_THUMBNAIL_BYTES = 2 * 1024 * 1024
+GENERATION_THUMBNAIL_FILENAME = "generation-thumbnail.png"
 DEFAULT_SIMPLE_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_LIMIT = 5
 DEFAULT_DAILY_QUOTA = 5
@@ -329,6 +332,26 @@ async def read_midi_upload(midi: UploadFile) -> bytes:
     if len(data) > DEFAULT_MAX_MIDI_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="MIDIファイルが大きすぎます")
     return data
+
+
+async def read_generation_thumbnail(upload: UploadFile) -> bytes:
+    """Validate and strip metadata from the browser's generation background."""
+    from PIL import Image
+
+    data = await upload.read(MAX_GENERATION_THUMBNAIL_BYTES + 1)
+    if len(data) > MAX_GENERATION_THUMBNAIL_BYTES:
+        raise HTTPException(status_code=413, detail="サムネ画像が大きすぎます")
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != "PNG" or image.width > 1280 or image.height > 720:
+                raise ValueError("invalid thumbnail")
+            output = io.BytesIO()
+            clean = image.convert("RGBA")
+            clean.info.clear()
+            clean.save(output, format="PNG")
+            return output.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise HTTPException(status_code=422, detail="サムネ画像が読めません") from exc
 
 
 def max_audio_upload_bytes() -> int:
@@ -741,6 +764,10 @@ class Job:
 
         return self.dir / THUMBNAIL_FILENAME
 
+    @property
+    def generation_thumbnail(self) -> Path:
+        return self.dir / GENERATION_THUMBNAIL_FILENAME
+
     def _stage_progress(self, elapsed: float) -> tuple[int | None, float | None]:
         """現在工程の進捗率(%)と残り秒の目安を返す。
 
@@ -808,12 +835,15 @@ class Job:
                 d["editor_url"] = f"/api/jobs/{self.id}/lyrics"
             if self.video.suffix != ".wav":
                 d["credits_url"] = f"/api/jobs/{self.id}/credits"
-            if self.thumbnail.exists():
-                d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
             if self.generation_quality_warning:
                 d["generation_quality_warning"] = True
             if self.wordlist_exhausted:
                 d["wordlist_exhausted"] = True
+        if self.thumbnail.exists() or (
+            self.status in {"queued", "running", "awaiting_review"}
+            and self.generation_thumbnail.exists()
+        ):
+            d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
         if with_log and not is_public_mode():
             d["log"] = list(self.log)
         return d
@@ -1966,6 +1996,7 @@ class JobManager:
         wordlist_csv: str = "",
         wordlist_images: dict[str, bytes] | None = None,
         audio: bytes | None = None,
+        generation_thumbnail: bytes | None = None,
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
@@ -1992,6 +2023,8 @@ class JobManager:
                 )
             if editor:
                 (job_dir / "editor.json").write_bytes(editor)
+            if generation_thumbnail is not None:
+                (job_dir / GENERATION_THUMBNAIL_FILENAME).write_bytes(generation_thumbnail)
             if lyrics.strip():
                 (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
             if layout_json.strip():
@@ -4222,6 +4255,7 @@ def create_app(
         audio_upload_id: str = Form(""),
         sample_id: str = Form(""),
         lyrics_file: UploadFile | None = File(None),
+        generation_thumbnail: UploadFile | None = File(None),
         editor: UploadFile | None = None,
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
         wordlist_csv: UploadFile | None = None,
@@ -4711,6 +4745,10 @@ def create_app(
         # ローカルmanifestを読み直して空になると、完成動画から表記が欠落するため。
         if params["sample_id"]:
             params["sample_midi_end_credit"] = midi_end_credit_of(params)
+        thumbnail_bytes = (
+            await read_generation_thumbnail(generation_thumbnail)
+            if generation_thumbnail is not None else None
+        )
         with quota_submit_lock, audio_uploads.lock:
             # 1回目の応答だけが失われ、再送が並行して到着した場合もここで直列化して
             # 同じ音源のジョブを2本作らない。
@@ -4737,6 +4775,7 @@ def create_app(
                 wordlist_csv=custom.csv.text if custom is not None else "",
                 wordlist_images=custom.images if custom is not None else None,
                 audio=input_bytes if input_kind == "audio" else None,
+                generation_thumbnail=thumbnail_bytes,
             )
             if audio_upload_id:
                 audio_uploads.remove(audio_upload_id, owner)
@@ -4943,13 +4982,17 @@ def create_app(
 
     @app.get("/api/jobs/{job_id}/thumbnail", dependencies=[Depends(_require_api_key)])
     def get_thumbnail(job_id: str, request: Request) -> FileResponse:
-        """サムネ画像(video ステージが作る thumbnail.png)。未生成なら404。"""
+        """Return the rendered thumbnail, or the saved background during generation."""
         job = manager.get(job_id, owner_of(request))
-        if not job.thumbnail.exists():
+        path = job.thumbnail
+        if not path.exists() and job.status in {"queued", "running", "awaiting_review"}:
+            path = job.generation_thumbnail
+        if not path.exists():
             raise HTTPException(status_code=404, detail="サムネ画像がありません")
-        manager.record_output_usage(job, "thumbnail")
+        if job.status == "done":
+            manager.record_output_usage(job, "thumbnail")
         return FileResponse(
-            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job),
+            path, media_type="image/png", filename=_thumbnail_filename(job),
             headers={"Cache-Control": "private, no-store"},
         )
 

@@ -65,7 +65,8 @@ const fetch=async(url, options)=>{
   return response(outcome==='before'?{id:null,status:'canceled'}
     :{id:'1234abcd',status:outcome==='done'?'done':'canceled'});
 };
-''' + _functions('async function submitJob(', 'async function postJobWithTurnstileRetry(',
+''' + _functions('async function submitJob(', 'function captureGenerationThumbnail()',
+                'async function postJobWithTurnstileRetry(',
                 'async function cancelJob()', 'async function reconcileSubmissionCancellation(',
                 'function setCancelPending(', 'function watch(')
     harness += '\nconst outcome=' + repr(outcome) + ';const audioInput='
