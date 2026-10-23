@@ -13,6 +13,8 @@
   ]);
   const editableText = element => element.matches("textarea, input:not([type]), input[type=text], input[type=number], input[type=password], input[type=search], input[type=url]");
   function allowed(element) {
+    if (element.matches("#cancel, #builder-cancel, .operation-cancel")
+        && [...leases].some(lease => !lease.cancelable)) return false;
     return continuations.has(element.id) || continuing.has(element)
       || [...leases].some(lease => lease.allow.includes(element)) || element.matches(".info-btn")
       || !!element.closest("#video-save-help")
@@ -137,8 +139,8 @@
     cancelAction(control) { actions.get(control)?.cancel(); },
     allowContinuation(element) { if (element) { continuing.add(element); sync(); } },
     clearContinuation(element) { if (element) { continuing.delete(element); sync(); } },
-    begin({ allow = [] } = {}) {
-      const lease = { allow };
+    begin({ allow = [], cancelable = true } = {}) {
+      const lease = { allow, cancelable };
       leases.add(lease);
       sync();
       return {

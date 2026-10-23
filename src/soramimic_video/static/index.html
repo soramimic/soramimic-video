@@ -55,6 +55,8 @@
   * { box-sizing: border-box; }
   /* [hidden] はJSの表示制御の要。display指定を持つレイアウト用クラスに負けないよう固定する */
   [hidden] { display: none !important; }
+  #cancel[data-operation-blocked], #builder-cancel[data-operation-blocked],
+  .operation-cancel[data-operation-blocked] { display: none !important; }
   body {
     margin: 0; background: var(--bg); color: var(--text); line-height: 1.6;
     font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans",
@@ -2331,7 +2333,7 @@ function resetTurnstile(hidePrompt = true) {
 // 配られたとき)だけなので、無効な構成では何もしない。
 async function ensureTurnstileToken(timeoutMs = 120000, signal) {
   if (!turnstileSiteKey) return true;
-  const operation = globalThis.VideoOperations?.begin();
+  const operation = globalThis.VideoOperations?.begin({ cancelable: false });
   try {
     // 前回の完了表示や予約済みタイマーを、今回の確認に持ち越さない。
     hideTurnstilePrompt();
