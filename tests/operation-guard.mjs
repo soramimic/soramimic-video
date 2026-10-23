@@ -452,3 +452,50 @@ test('history preparation timeout restores replay without unlocking unrelated wo
   assert(h.ops.isBusy(), 'only the failed player releases its restriction');
   unrelated.end(); assert(!h.ops.isBusy());
 });
+
+test('verification suppresses cancellation without canceling existing work and restores it on every exit', async () => {
+  for (const outcome of ['success', 'timeout', 'abort', 'exception']) {
+    const h = setup(), {context, document, ops} = h;
+    const submitMessage = document.createElement('p'); submitMessage.id = 'submit-msg';
+    const builderCancel = document.createElement('button'); builderCancel.id = 'builder-cancel';
+    document.body.append(submitMessage, builderCancel);
+    let canceled = false;
+    const preparation = ops.beginAction(submitMessage, {onCancel: () => {canceled = true;}});
+    const unrelated = ops.begin();
+    let token = '', now = 0, wake;
+    const controller = new AbortController();
+    Object.assign(context, {
+      turnstileSiteKey: 'site', turnstileWidget: {}, turnstileScriptFailed: false,
+      turnstileWaiting: false, turnstileFailed: false, turnstilePromptCompletionTimer: null,
+      Date: {now: () => now}, setTimeout: fn => {wake = fn;},
+      window: {turnstile: {execute() {}}},
+      turnstileToken: () => token, $: () => ({classList: {contains: () => false}}),
+      hideTurnstilePrompt() {}, setTurnstilePromptCopy() {}, scheduleTurnstileInteractionPrompt() {},
+      completeTurnstilePrompt() {}, showTurnstileFailure() {}, showTurnstilePrompt() {},
+      rebuildTurnstileWidget() {if (outcome === 'exception') throw Error('widget failed');},
+    });
+    vm.runInContext(pageFunction('ensureTurnstileToken'), context);
+    const pending = context.ensureTurnstileToken(100, controller.signal);
+    for (const selector of ['#cancel', '#builder-cancel', '.operation-cancel']) {
+      assert(document.querySelector(selector).hasAttribute('data-operation-blocked'));
+      if (selector !== '.operation-cancel') assert(h.send(selector), 'cancellation cannot start during verification');
+    }
+    assert(!canceled);
+    assert(h.send('#generate'), 'new actions remain blocked');
+    assert(!h.send('video'), 'existing playback remains available');
+    if (outcome === 'success') token = 'verified';
+    else if (outcome === 'abort') controller.abort();
+    else {now = 101; context.turnstileFailed = outcome === 'exception';}
+    wake();
+    if (outcome === 'exception') await assert.rejects(pending, /widget failed/);
+    else assert.equal(await pending, outcome === 'success');
+    assert(ops.isBusy(), 'verification cannot release another operation');
+    for (const selector of ['#cancel', '#builder-cancel', '.operation-cancel']) {
+      assert(!document.querySelector(selector).hasAttribute('data-operation-blocked'));
+    }
+    h.send('.operation-cancel');
+    assert(canceled, 'preparation cancellation becomes usable again');
+    preparation.finish(); unrelated.end();
+    assert(!ops.isBusy());
+  }
+});
