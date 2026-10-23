@@ -72,6 +72,7 @@ let lyricsFileReading=false;
 let currentJob='job', reviewAction='';
 let customListBusy=false;
 let reviewOpenedJob=null, submitBusy=true, recording=false, message='';
+const reviewPresentationBlocked=()=>false;
 const songRecordingBusy=()=>recording, headers=()=>({});
 const review=$('history-review'); review.dataset={jobId:'job'};
 const document={querySelectorAll:()=>[review]}, controllers=[];
@@ -137,6 +138,49 @@ for (const flag of ['closing','opening','submitting','recording']) {
 }
 reviewAction=''; recording=false;
 resumeHistoryReview({id:'other'}); assert.equal(watched,'other');
+""")
+
+
+def test_review_waits_for_foreground_work_even_if_it_starts_while_loading():
+    harness = DOM + r"""
+let busy=false, dialogOpen=false, currentJob='job', reviewAction='';
+let reviewOpenedJob=null, reviewJobId=null, reviewSavedRaw='', opens=0, requests=0;
+const VideoOperations={isBusy:()=>busy}; globalThis.VideoOperations=VideoOperations;
+const document={querySelector:()=>dialogOpen?{}:null};
+const historyReviewBlocked=()=>!!reviewAction, setReviewAction=v=>{reviewAction=v;};
+const headers=()=>({}), showBuilderMsg=()=>{};
+const stored=new Map(), EDITOR_KEY='editor', REVIEW_JOB_KEY='review', EDITOR_SEED_KEY='seed';
+const sessionStorage={getItem:k=>stored.get(k),setItem:(k,v)=>stored.set(k,v),
+  removeItem:k=>stored.delete(k)};
+const editorSessionData=()=>JSON.parse(stored.get(EDITOR_KEY)||'null');
+const showEditorFrame=()=>{opens++;};
+const gates=[];
+const fetch=async()=>{
+  requests++;const gate=deferred();gates.push(gate);
+  return {ok:true,json:()=>gate.promise};
+};
+const seed={results:[],host:{},originalLines:['test'],lyrics:'test'};
+""" + _functions("function reviewPresentationBlocked()", "async function openLyricReview(")
+    _run(harness, r"""
+for(const reason of ['operation','dialog']) {
+  busy=reason==='operation';dialogOpen=reason==='dialog';
+  await openLyricReview('job');
+  assert.equal(requests,0);assert.equal(reviewOpenedJob,null);
+}
+busy=false;dialogOpen=false;
+for(const reason of ['operation','dialog']) {
+  const pending=openLyricReview('job');
+  await tick();
+  busy=reason==='operation';dialogOpen=reason==='dialog';
+  gates.at(-1).resolve(seed);await pending;
+  assert.equal(opens,0,'completion must not cover foreground work');
+  assert.equal(stored.size,0,'deferred presentation must not replace editor storage');
+  assert.equal(reviewOpenedJob,null,'polling must be able to try again');
+  assert.equal(reviewAction,'');
+  busy=false;dialogOpen=false;
+}
+const resumed=openLyricReview('job');await tick();gates.at(-1).resolve(seed);await resumed;
+assert.equal(opens,1);assert.equal(reviewJobId,'job');assert.equal(reviewOpenedJob,'job');
 """)
 
 

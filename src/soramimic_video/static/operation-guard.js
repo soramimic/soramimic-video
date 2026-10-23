@@ -85,6 +85,7 @@
   observer.observe(document.documentElement, { childList: true, subtree: true,
     attributes: true, attributeFilter: ["aria-pressed"] });
   globalThis.VideoOperations = {
+    isBusy() { return leases.size > 0; },
     allowContinuation(element) { if (element) { continuing.add(element); sync(); } },
     clearContinuation(element) { if (element) { continuing.delete(element); sync(); } },
     begin({ allow = [] } = {}) {
