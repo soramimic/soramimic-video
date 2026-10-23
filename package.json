@@ -2,9 +2,10 @@
   "name": "soramimic-video-tests",
   "private": true,
   "scripts": {
-    "test": "node --test tests/custom-wordlists-storage.mjs"
+    "test": "node --test tests/custom-wordlists-storage.mjs tests/operation-guard.mjs"
   },
   "devDependencies": {
-    "fake-indexeddb": "6.2.5"
+    "fake-indexeddb": "6.2.5",
+    "linkedom": "0.18.12"
   }
 }
