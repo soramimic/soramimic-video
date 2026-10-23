@@ -14,7 +14,7 @@ function setup() {
     <video controls></video><button id="continue">Open save sheet</button>
     <label for="file">Choose file</label><input type="file" id="file">
     </body></html>`);
-  const context = { document, Element, MutationObserver };
+  const context = { document, Element, MutationObserver, window: document.defaultView };
   vm.createContext(context);
   vm.runInContext(readFileSync(new URL('../src/soramimic_video/static/operation-guard.js', import.meta.url), 'utf8'), context);
   const events = [];
@@ -138,4 +138,141 @@ test('an already requested media download completes while a later input operatio
   assert(send('#generate'), 'finishing the download must not unlock the input operation');
   operation.end();
   assert(!send('#generate'));
+});
+
+test('an owned action keeps its continuation and cancel usable without releasing other work', () => {
+  const { document, ops, send } = setup();
+  const control = document.querySelector('#continue');
+  let canceled = 0, finished = 0;
+  const action = ops.beginAction(control, { onCancel: () => canceled++, onFinish: () => finished++ });
+  assert.equal(ops.beginAction(control), action, 'second tap continues the same action');
+  assert(send('#generate'));
+  assert(!send('#continue'));
+  const other = ops.begin();
+  document.querySelector('.operation-cancel').click();
+  assert(action.canceled);
+  assert.equal(canceled, 1);
+  assert.equal(finished, 1);
+  action.finish();
+  assert.equal(finished, 1);
+  assert(ops.isBusy(), 'cancelling this action must not unlock unrelated work');
+  other.end();
+  const next = ops.beginAction(control);
+  action.finish();
+  assert(ops.hasAction(control), 'stale completion must not end a new request');
+  next.finish();
+  assert(!ops.isBusy());
+  assert(!document.querySelector('.operation-cancel'));
+});
+
+test('dialog confirmation submits through its allowed button without enabling unrelated form submissions', () => {
+  const { document, ops, send } = setup();
+  const form = document.createElement('form');
+  form.id = 'confirm'; form.setAttribute('method', 'dialog');
+  const button = document.createElement('button'); button.id = 'metadata-change-update';
+  form.append(button); document.body.append(form);
+  Object.defineProperty(button, 'form', { value: form });
+  const token = ops.begin();
+  assert(!send('#metadata-change-update'));
+  assert(!send('#confirm', 'submit', { submitter: button }));
+  assert(send('#confirm', 'submit'), 'a submit without an allowed completion remains blocked');
+  form.setAttribute('method', 'post');
+  assert(send('#confirm', 'submit', { submitter: button }), 'the exception only completes native dialogs');
+  token.end();
+});
+
+const pageSource = readFileSync(new URL('../src/soramimic_video/static/index.html', import.meta.url), 'utf8');
+function pageFunction(name) {
+  return pageSource.match(new RegExp(`^(?:async )?function ${name}\\([^\\n]*\\) \\{.*?^\\}`, 'ms'))[0];
+}
+function sharingSetup() {
+  const h = setup(), { document, context } = h;
+  const button = document.querySelector('#continue'); button.id = 'share-save';
+  const hint = document.createElement('p'); hint.id = 'share-hint'; document.body.append(hint);
+  const video = document.querySelector('video'); video.load = () => {}; video.pause = () => {};
+  let respond, reject, shared = 0;
+  Object.assign(context, {
+    Blob, File, AbortController, setTimeout, clearTimeout,
+    location: { origin: 'https://example.test' },
+    navigator: { share: () => { shared++; return new Promise(() => {}); }, userActivation: { isActive: false } },
+    URL: { createObjectURL: () => 'blob:prepared', revokeObjectURL() {} },
+    $: id => document.getElementById(id), headers: () => ({}), qs: value => value,
+    showBuilderMsg() {}, flushDeferredBuilderState() {}, video, button,
+    fetch: (_url, { signal } = {}) => new Promise((resolve, fail) => {
+      respond = resolve; reject = fail;
+      signal?.addEventListener('abort', () => fail(new Error('aborted')));
+    }),
+  });
+  vm.runInContext(pageSource.slice(pageSource.indexOf('const SHARE_TEXT ='), pageSource.indexOf('let submitBusy =')), context);
+  return { ...h, button, resolve: () => respond({ ok: true, blob: async () => new Blob(['video'], { type: 'video/mp4' }) }),
+    reject: () => reject(new Error('offline')), shared: () => shared };
+}
+
+test('requested sharing blocks new edits through preparation and its second tap, then releases before the native sheet resolves', async () => {
+  const h = sharingSetup(), { context, ops, send, button } = h;
+  vm.runInContext("videoSharePreparation = prepareVideoShare('/video.mp4', video)", context);
+  const request = context.sharePreparedVideo('/video.mp4', button);
+  assert(ops.isBusy()); assert(send('#title', 'beforeinput'));
+  h.resolve(); await request;
+  assert(ops.isBusy(), 'waiting for the required second tap is still the same action');
+  assert.equal(button.textContent, '共有を開く');
+  await context.sharePreparedVideo('/video.mp4', button);
+  assert.equal(h.shared(), 1);
+  assert(!ops.isBusy(), 'an unresolved iOS share Promise must not retain the global lock');
+});
+
+test('failed or canceled preparation releases sharing and late completion cannot open its sheet', async () => {
+  for (const cancel of [false, true]) {
+    const h = sharingSetup(), { context, document, ops, button } = h;
+    vm.runInContext("videoSharePreparation = prepareVideoShare('/video.mp4', video)", context);
+    const request = context.sharePreparedVideo('/video.mp4', button);
+    if (cancel) { document.querySelector('.operation-cancel').click(); h.resolve(); }
+    else h.reject();
+    await request;
+    assert(!ops.isBusy()); assert.equal(h.shared(), 0);
+    assert(!ops.hasAction(button));
+  }
+});
+
+for (const name of ['shareHistoryResult', 'saveHistoryVideo']) {
+  test(`${name} uses the same preparation, second-tap and cancellation lifetime`, async () => {
+    const h = sharingSetup(), { context, ops, document, button } = h;
+    Object.assign(context, { historyJobs: [{ id: 'job', video_url: '/video.mp4' }],
+      preparedHistorySave: null, preparedHistoryShare: null });
+    vm.runInContext(pageFunction('resetHistoryShare') + pageFunction('resetHistorySave') + pageFunction(name), context);
+    context.navigator.platform = 'iPhone';
+    const status = document.createElement('p'); document.body.append(status);
+    const request = context[name](0, button, status);
+    assert(ops.isBusy());
+    h.resolve(); await request;
+    assert(ops.isBusy(), 'the ready continuation stays available while new starts are blocked');
+    await context[name](0, button, status);
+    assert.equal(h.shared(), 1);
+    assert(!ops.isBusy());
+  });
+}
+
+test('preparation timeout releases the global restriction without opening the native sheet', async () => {
+  const h = sharingSetup(), { context, ops, button } = h;
+  let timeout;
+  context.setTimeout = (handler, ms) => { if (ms > 0) { assert(ms <= 30000); timeout = handler; } return 1; };
+  context.clearTimeout = () => {};
+  vm.runInContext("videoSharePreparation = prepareVideoShare('/video.mp4', video)", context);
+  const request = context.sharePreparedVideo('/video.mp4', button);
+  assert(ops.isBusy());
+  timeout(); await request;
+  assert(!ops.isBusy()); assert.equal(h.shared(), 0);
+});
+
+test('cancel remains outside a closed save menu and owner removal releases the action', async () => {
+  const { document, ops } = setup();
+  const menu = document.createElement('details');
+  const summary = document.createElement('summary'); menu.append(summary); document.body.append(menu);
+  let canceled = 0;
+  ops.beginAction(summary, { onCancel: () => canceled++ });
+  assert.equal(document.querySelector('.operation-cancel').parentElement, menu.parentElement,
+    'a closed details element must not hide cancellation');
+  menu.remove();
+  await new Promise(resolve => setImmediate(resolve));
+  assert(!ops.isBusy()); assert.equal(canceled, 1);
 });
