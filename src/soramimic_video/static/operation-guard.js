@@ -98,18 +98,19 @@
   globalThis.VideoOperations = {
     isBusy() { return leases.size > 0; },
     hasAction(control) { return actions.has(control); },
-    beginAction(control, { onCancel = () => {}, onFinish = () => {} } = {}) {
+    beginAction(control, { onCancel = () => {}, onFinish = () => {}, cancelLabel = "処理をキャンセル", allow = [] } = {}) {
       if (actions.has(control)) return actions.get(control);
       const cancel = document.createElement("button");
       cancel.type = "button";
       cancel.className = "btn-sm operation-cancel";
       cancel.textContent = "キャンセル";
-      cancel.setAttribute("aria-label", "保存・共有の準備をキャンセル");
+      cancel.setAttribute("aria-label", cancelLabel);
       const anchor = control.matches("summary") ? control.parentElement : control;
       anchor.after(cancel);
-      const lease = this.begin({ allow: [control, cancel] });
+      const lease = this.begin({ allow: [control, cancel, ...allow] });
       const action = {
         canceled: false,
+        setCancelable(enabled) { cancel.disabled = !enabled; },
         finish() {
           if (actions.get(control) !== action) return;
           actions.delete(control);
@@ -118,9 +119,15 @@
           onFinish();
         },
         cancel() {
-          if (action.canceled || actions.get(control) !== action) return;
+          if (cancel.disabled || action.canceled || actions.get(control) !== action) return;
           action.canceled = true;
-          try { onCancel(); } finally { action.finish(); }
+          cancel.disabled = true;
+          try {
+            const pending = onCancel();
+            if (pending && typeof pending.then === "function") {
+              Promise.resolve(pending).then(() => action.finish(), () => action.finish());
+            } else action.finish();
+          } catch (error) { action.finish(); throw error; }
         },
       };
       actions.set(control, action);
@@ -134,7 +141,10 @@
       const lease = { allow };
       leases.add(lease);
       sync();
-      return { end() { leases.delete(lease); sync(); if (!leases.size) inputs.clear(); } };
+      return {
+        isAlone() { return leases.size === 1 && leases.has(lease); },
+        end() { leases.delete(lease); sync(); if (!leases.size) inputs.clear(); },
+      };
     },
   };
 })();

@@ -276,3 +276,115 @@ test('cancel remains outside a closed save menu and owner removal releases the a
   await new Promise(resolve => setImmediate(resolve));
   assert(!ops.isBusy()); assert.equal(canceled, 1);
 });
+
+test('cancellation retains ownership until asynchronous cleanup is settled', async () => {
+  const { document, ops } = setup();
+  let settle;
+  const cleanup = new Promise(resolve => { settle = resolve; });
+  const action = ops.beginAction(document.querySelector('#continue'), { onCancel: () => cleanup });
+  document.querySelector('.operation-cancel').click();
+  assert(action.canceled); assert(ops.isBusy());
+  assert(document.querySelector('.operation-cancel').disabled);
+  settle(); await cleanup; await new Promise(resolve => setImmediate(resolve));
+  assert(!ops.isBusy());
+});
+
+test('a committed import cannot be canceled halfway through application', () => {
+  const { document, ops } = setup();
+  const action = ops.beginAction(document.querySelector('#continue'));
+  action.setCancelable(false); action.cancel();
+  assert(!action.canceled); assert(ops.isBusy());
+  action.finish(); assert(!ops.isBusy());
+});
+
+test('review presentation can exclude its own foreground scope but not another operation', () => {
+  const { ops, context } = setup();
+  vm.runInContext(pageFunction('reviewPresentationBlocked'), context);
+  const owner = ops.begin();
+  assert(!context.reviewPresentationBlocked(owner));
+  assert(context.reviewPresentationBlocked());
+  const other = ops.begin();
+  assert(context.reviewPresentationBlocked(owner));
+  other.end(); owner.end();
+});
+
+function bridgeSetup(receiving = false) {
+  const h = setup(), { context } = h;
+  const nonce = '00000000-0000-4000-8000-000000000001';
+  const sent = [], listeners = new Map(), timers = new Set();
+  const peer = { closed: false, postMessage: (data, origin) => sent.push({ data, origin }) };
+  const location = { origin: 'https://video.test', href: 'https://video.test/' + (receiving ? '?lyrics-transfer=' + nonce : '') };
+  const window = {
+    opener: peer, open: () => peer,
+    addEventListener: (type, fn) => listeners.set(type, fn),
+    removeEventListener: (type, fn) => { if (listeners.get(type) === fn) listeners.delete(type); },
+  };
+  Object.assign(context, { window, location, Blob, URL, DOMException,
+    crypto: { randomUUID: () => nonce }, history: { replaceState() {} },
+    setTimeout: fn => { timers.add(fn); return fn; }, clearTimeout: fn => timers.delete(fn),
+    setInterval: fn => { timers.add(fn); return fn; }, clearInterval: fn => timers.delete(fn),
+  });
+  vm.runInContext(readFileSync(new URL('../src/soramimic_video/static/app-bridge.js', import.meta.url), 'utf8'), context);
+  const message = (action, payload) => listeners.get('message')?.({
+    source: peer, origin: 'https://editor.test',
+    data: { type: 'soramimic:lyrics-transfer/1', nonce, action, payload },
+  });
+  return { ...h, bridge: window.SoramimicBridge, peer, sent, message, timers,
+    payload: { results: [[{}]], unitsList: [[{}]], lyrics: 'test' } };
+}
+
+test('canceling an outbound transfer cleans listeners and ignores data which arrives late', async () => {
+  const h = bridgeSetup(), ctrl = new AbortController();
+  let finish;
+  const request = h.bridge.send('https://editor.test/editor.html', () => new Promise(resolve => { finish = resolve; }), { signal: ctrl.signal });
+  const ready = h.message('ready');
+  ctrl.abort();
+  await assert.rejects(request, { name: 'AbortError' });
+  finish(h.payload); await ready;
+  assert(!h.sent.some(message => message.data.action === 'data'), 'late data must not be sent');
+  assert.equal(h.sent.at(-1).data.action, 'error', 'the receiver must be told to stop waiting');
+  assert.equal(h.timers.size, 0);
+});
+
+test('canceling an inbound transfer prevents late application', async () => {
+  const h = bridgeSetup(true), ctrl = new AbortController();
+  let applications = 0;
+  const request = h.bridge.receive('https://editor.test/editor.html', () => { applications++; }, { signal: ctrl.signal });
+  ctrl.abort(); await assert.rejects(request, { name: 'AbortError' });
+  await h.message('data', h.payload);
+  assert.equal(applications, 0); assert.equal(h.timers.size, 0);
+  assert.equal(h.sent.at(-1).data.action, 'error', 'the sender must be told to stop waiting');
+});
+
+test('an inbound transfer finishes its committed application before releasing the request', async () => {
+  const h = bridgeSetup(true), ctrl = new AbortController();
+  let finish, applying = false, settled = false;
+  const request = h.bridge.receive('https://editor.test/editor.html', () => new Promise(resolve => { finish = resolve; }),
+    { signal: ctrl.signal, onApplying: () => { applying = true; } });
+  request.then(() => { settled = true; });
+  const arrival = h.message('data', h.payload);
+  assert(applying); ctrl.abort(); await Promise.resolve();
+  assert(!settled, 'a cancellation must not expose partially applied input');
+  finish(); await arrival; await request;
+  assert.equal(h.sent.at(-1).data.action, 'accepted');
+  assert.equal(h.timers.size, 0);
+});
+
+
+test('sender cleanup survives failure to notify a disconnected peer', async () => {
+  const h = bridgeSetup();
+  h.peer.postMessage = () => { throw new Error('peer gone'); };
+  const request = h.bridge.send('https://editor.test/editor.html', async () => { throw new Error('read failed'); });
+  const failure = assert.rejects(request, /read failed/);
+  await h.message('ready'); await failure;
+  assert.equal(h.timers.size, 0);
+});
+
+test('receiver cleanup survives failure to notify a disconnected peer', async () => {
+  const h = bridgeSetup(true);
+  const request = h.bridge.receive('https://editor.test/editor.html', async () => { throw new Error('apply failed'); });
+  h.peer.postMessage = () => { throw new Error('peer gone'); };
+  const failure = assert.rejects(request, /apply failed/);
+  await h.message('data', h.payload); await failure;
+  assert.equal(h.timers.size, 0);
+});

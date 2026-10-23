@@ -316,6 +316,7 @@ songUploadEntry.closest=()=>null;
 $('song-record-button').classList={toggle(){}};
 const showBuilderMsg=text=>{message=text;};
 const setOwnSongFile=file=>{uploads++; $('midi').files=[file];};
+const waitForSelectedMidiCheck=()=>{};
 let pickerOpened=0;
 $('midi').click=()=>{pickerOpened++;};
 """ + _functions("function syncRecordingUi()", "function songRecordingBusy()",

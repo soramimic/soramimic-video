@@ -160,7 +160,7 @@ const fetch=async()=>{
   return {ok:true,json:()=>gate.promise};
 };
 const seed={results:[],host:{},originalLines:['test'],lyrics:'test'};
-""" + _functions("function reviewPresentationBlocked()", "async function openLyricReview(")
+""" + _functions("function reviewPresentationBlocked(", "async function openLyricReview(")
     _run(harness, r"""
 for(const reason of ['operation','dialog']) {
   busy=reason==='operation';dialogOpen=reason==='dialog';
@@ -270,6 +270,8 @@ setReviewAction('');
 const old=startSongRecording();
 assert(recordingRequestPending); assert($('song-source-switch').disabled);
 assert.equal(pauses,1);
+assert(!$('builder-figure').inert && !$('job-card').inert,
+  'recording must not hide a running job cancellation');
 for (const id of ['advanced','builder-wordlist-field','history','lyrics-correction-panel']) {
   assert($(id).inert,'conflicting controls stay unavailable until capture completes');
 }
@@ -354,4 +356,52 @@ current.resolve(new TextEncoder().encode('current').buffer); await second;
 assert.equal(active.size,0);
 await loadLyricsFile({size:1,arrayBuffer:async()=>{throw Error('bad file');}});
 assert.equal(active.size,0,'error releases the guard');
+""")
+
+
+def test_explicit_midi_selection_waits_without_gating_automatic_rechecks():
+    from test_input_lifecycle import _listener
+
+    harness = DOM + r"""
+let midiChecking=null, restoring=false, kind='midi';
+const ownSongKind=()=>kind, active=new Set(), checks=[];
+const scheduleMidiCheck=()=>{const gate=deferred();checks.push(gate);midiChecking=gate.promise;};
+globalThis.VideoOperations={begin:()=>{
+  const token={end(){active.delete(token);}};active.add(token);return token;
+}};
+""" + _functions("function waitForSelectedMidiCheck()") + _listener(
+        '$("midi").addEventListener("change", (event) => {'
+    )
+    _run(harness, r"""
+$('midi').dispatchEvent({type:'change',isTrusted:false});
+assert.equal(active.size,0,'background rechecks must not acquire the foreground guard');
+$('midi').dispatchEvent({type:'change',isTrusted:true});
+assert.equal(active.size,1);
+checks[1].resolve();await tick();assert.equal(active.size,0);
+restoring=true;$('midi').dispatchEvent({type:'change',isTrusted:true});assert.equal(active.size,0);
+restoring=false;kind='audio';$('midi').dispatchEvent({type:'change',isTrusted:true});assert.equal(active.size,0);
+""")
+
+
+def test_cancellation_holds_new_starts_until_terminal_confirmation_or_failure():
+    harness = DOM + r"""
+let currentJob='job',submitAbort=null,cancelPendingJob=null;
+const active=new Set(),timers=[],calls=[],gate=deferred();let message='';
+globalThis.VideoOperations={begin:()=>{
+  const token={end(){active.delete(token);}};active.add(token);return token;
+}};
+const setTimeout=fn=>{timers.push(fn);return fn;},clearTimeout=()=>{};
+const headers=()=>({}),fetch=()=>{calls.push(1);return gate.promise;};
+const setJobStatus=()=>{},showBuilderMsg=text=>{message=text;},restartPolling=()=>{};
+""" + _functions("async function cancelJob()", "function setCancelPending(")
+    _run(harness, r"""
+const request=cancelJob();assert.equal(active.size,1);
+await cancelJob();assert.equal(calls.length,1,'duplicate cancellation cannot replace its owner');
+gate.resolve({ok:true});await request;
+assert.equal(active.size,1,'server acceptance is not yet terminal cancellation');
+setCancelPending(false);assert.equal(active.size,0);
+cancelPendingJob=null;await cancelJob();assert.equal(active.size,1);
+timers[0]();assert.equal(active.size,1,'old timeout must not release a new cancellation');
+timers.at(-1)();assert.equal(active.size,0);assert.equal(cancelPendingJob,null);
+assert.match(message,/まだ確認できません/);assert.equal($('builder-cancel').disabled,false);
 """)
