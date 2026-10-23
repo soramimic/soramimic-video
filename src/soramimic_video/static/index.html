@@ -103,6 +103,8 @@
     background: var(--panel); color: var(--text);
   }
   button:hover:not(:disabled) { border-color: var(--accent); }
+  [data-operation-blocked] { cursor: wait; }
+  :is(button, input, select, textarea, a)[data-operation-blocked] { opacity: .55; }
   button:disabled { opacity: .55; cursor: not-allowed; }
   #builder-wordlist-field[inert], #advanced[inert], #history[inert],
   #auto-lyrics-toggle[inert], #lyrics-correction-panel[inert] { opacity: .55; }
@@ -948,7 +950,7 @@
   <span id="open-editor-msg" class="error"></span>
   <fieldset class="startup-inputs" data-startup-inputs disabled>
   <div id="song-upload-panel">
-    <div class="audio-upload-entry" id="song-upload-entry">
+    <div class="audio-upload-entry" id="song-upload-entry" data-operation-input>
       <div class="song-upload-actions">
         <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
           <span aria-hidden="true">＋</span>曲をアップロード
@@ -1384,7 +1386,7 @@
   </div>
   <label for="custom-wordlist-name">リスト名</label>
   <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：歴代レスラー" autocomplete="off">
-  <button type="button" id="custom-wordlist-dropzone" class="custom-wordlist-dropzone">
+  <button type="button" id="custom-wordlist-dropzone" data-operation-input class="custom-wordlist-dropzone">
     <svg class="custom-wordlist-dropzone-icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14.5v3A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-3" />
     </svg>
@@ -1634,6 +1636,7 @@
 <script src="/app-bridge.js"></script>
 <script src="/metadata-change.js?v=compact-song-metadata-v1"></script>
 <script src="/audio-upload.js"></script>
+<script src="/operation-guard.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 // 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
@@ -2741,6 +2744,7 @@ function resetHistoryShare() {
   if (!prepared) return;
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
+    globalThis.VideoOperations?.clearContinuation(prepared.button);
     prepared.button.disabled = false;
     prepared.button.textContent = "共有";
   }
@@ -2753,8 +2757,10 @@ async function shareHistoryResult(index, button) {
   const open = (state, afterPreparation = false) => {
     button.disabled = false;
     button.textContent = "共有";
+    globalThis.VideoOperations?.clearContinuation(button);
     openFileShare(state.file, (error) => {
       if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+      if (afterPreparation && error?.name === "NotAllowedError") globalThis.VideoOperations?.allowContinuation(button);
       button.textContent = afterPreparation && error?.name === "NotAllowedError"
         ? "共有を開く" : "共有を再試行";
     });
@@ -2778,6 +2784,7 @@ async function shareHistoryResult(index, button) {
     const blob = await res.blob();
     if (preparedHistoryShare !== state) return;
     const audio = job.result_kind === "audio";
+    globalThis.VideoOperations?.allowContinuation(button);
     state.file = new File([blob], audio ? "soramimic.wav" : "soramimic.mp4",
       { type: blob.type || (audio ? "audio/wav" : "video/mp4") });
     button.disabled = false;
@@ -2797,6 +2804,7 @@ function resetHistorySave() {
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
     prepared.button.disabled = false;
+    globalThis.VideoOperations?.clearContinuation(prepared.button);
     prepared.button.textContent = "保存";
     prepared.button.removeAttribute("aria-busy");
     prepared.button.removeAttribute("aria-disabled");
@@ -2820,6 +2828,7 @@ async function saveHistoryVideo(index, button, status) {
   };
   const requestTap = state => {
     state.needsTap = true;
+    globalThis.VideoOperations?.allowContinuation(button);
     ready();
     message("保存の準備ができました。もう一度「保存」をタップしてください。");
   };
@@ -2828,6 +2837,7 @@ async function saveHistoryVideo(index, button, status) {
     message("");
     state.shareable = true;
     state.needsTap = false;
+    globalThis.VideoOperations?.clearContinuation(button);
     openFileShare(state.file, (error) => {
       if (preparedHistorySave !== state || error?.name === "AbortError") return;
       if (afterPreparation && error?.name === "NotAllowedError") requestTap(state);
@@ -2860,6 +2870,7 @@ async function saveHistoryVideo(index, button, status) {
     if (!res.ok) throw new Error("保存データを取得できませんでした");
     const blob = await res.blob();
     if (preparedHistorySave !== state) return;
+    globalThis.VideoOperations?.allowContinuation(button);
     state.file = new File([blob], "soramimic.mp4", { type: blob.type || "video/mp4" });
     state.abort = null;
     if (navigator.userActivation?.isActive === false) requestTap(state);
@@ -3354,6 +3365,7 @@ function fallbackToDirectVideo(videoUrl, video, expectedObjectUrl = "") {
 }
 
 function resetVideoSharePreparation() {
+  globalThis.VideoOperations?.clearContinuation($("share-save"));
   sharePreparationSeq += 1;
   if (sharePreparationAbort) sharePreparationAbort.abort();
   sharePreparationAbort = null;
@@ -3437,27 +3449,36 @@ function bindShare(videoUrl) {
 }
 
 async function sharePreparedVideo(videoUrl, button, text = SHARE_TEXT) {
+  globalThis.VideoOperations?.allowContinuation(button);
   const seq = sharePreparationSeq;
   let afterPreparation = false;
   if ((!preparedVideoShare || preparedVideoShare.videoUrl !== videoUrl) && videoSharePreparation) {
     button.disabled = true;
     button.textContent = "共有を準備中…";
     await videoSharePreparation;
-    if (seq !== sharePreparationSeq) return;
+    if (seq !== sharePreparationSeq) {
+      globalThis.VideoOperations?.clearContinuation(button);
+      return;
+    }
     button.disabled = false;
     afterPreparation = true;
   }
   const prepared = preparedVideoShare;
-  if (!prepared || prepared.videoUrl !== videoUrl || !prepared.file) return;
+  if (!prepared || prepared.videoUrl !== videoUrl || !prepared.file) {
+    globalThis.VideoOperations?.clearContinuation(button);
+    return;
+  }
   if (afterPreparation && navigator.userActivation?.isActive === false) {
     button.textContent = "共有を開く";
     return;
   }
   button.textContent = "共有";
   prepared.shareable = true;
+  globalThis.VideoOperations?.clearContinuation(button);
   openFileShare(prepared.file, (error) => {
     if (seq !== sharePreparationSeq || error?.name === "AbortError") return;
     if (afterPreparation && error?.name === "NotAllowedError") {
+      globalThis.VideoOperations?.allowContinuation(button);
       button.textContent = "共有を開く";
       return;
     }
@@ -4136,6 +4157,8 @@ function syncRecordingUi() {
   const button = $("song-record-button");
   const recording = activeSongRecording?.recorder?.state === "recording";
   const busy = songRecordingBusy();
+  if (busy) globalThis.VideoOperations?.allowContinuation(button);
+  else globalThis.VideoOperations?.clearContinuation(button);
   button.hidden = !busy && (!audioInputReady || !recordingSupported() || !!ownSongFile());
   button.disabled = activeSongRecording?.stopping === true;
   syncSongInputControls();
@@ -4380,6 +4403,9 @@ $("adjust-lyrics").addEventListener("change", () => {
 let lyricsFileReadSequence = 0;
 let lyricsFileReading = false;
 async function loadLyricsFile(file) {
+  loadLyricsFile.operation?.end();
+  const operation = file ? globalThis.VideoOperations?.begin({ allow: [$("clear-lyrics-file")] }) : null;
+  loadLyricsFile.operation = operation;
   const sequence = ++lyricsFileReadSequence;
   lyricsFileReading = !!file;
   syncRecordingUi();
@@ -4410,6 +4436,7 @@ async function loadLyricsFile(file) {
       ? error.message
       : "歌詞ファイルを読み込めませんでした。UTF-8で保存されているか確認してください。";
   } finally {
+    operation?.end();
     if (sequence === lyricsFileReadSequence) {
       lyricsFileReading = false;
       syncRecordingUi();
@@ -4680,6 +4707,7 @@ async function applySample(opts = {}) {
   const lyricsSequence = lyricsFileReadSequence;
   const previousLyrics = $("lyrics").value;
   if (!sid) return false;
+  const operation = !opts.keepLyrics ? globalThis.VideoOperations?.begin() : null;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
     const lyricsRes = (opts.keepLyrics || editorImportedFile) ? null
@@ -4754,6 +4782,8 @@ async function applySample(opts = {}) {
     if (request !== sampleApplySeq || $("sample-select").value !== sid) return false;
     $("sample-status").textContent = err.message;
     return false;
+  } finally {
+    operation?.end();
   }
 }
 // 進行中の applySample。MIDIの取得は非同期なので、選んだ直後に「生成」を押されても
@@ -5106,6 +5136,11 @@ function closeCustomList() {
   $("custom-wordlist-panel").close();
 }
 function setCustomListBusy(busy) {
+  if (busy && !customListBusy) setCustomListBusy.operation = globalThis.VideoOperations?.begin();
+  if (!busy) {
+    setCustomListBusy.operation?.end();
+    setCustomListBusy.operation = null;
+  }
   customListBusy = busy;
   for (const id of ["name", "text", "file", "dropzone", "save", "cancel", "delete", "close"]) {
     $("custom-wordlist-" + id).disabled = busy;
@@ -6002,6 +6037,7 @@ $("title-candidates-load").addEventListener("click", async () => {
   titleCandidatesAbort?.abort();
   titleCandidatesAbort = ctrl;
   titleCandidatesContext = context;
+  const operation = globalThis.VideoOperations?.begin();
   const timer = setTimeout(() => ctrl.abort(), 25000);
   setTitleCandidatesStatus("曲名に近い候補を探しています…");
   $("title-candidates-list").replaceChildren();
@@ -6030,6 +6066,7 @@ $("title-candidates-load").addEventListener("click", async () => {
     }
   } finally {
     clearTimeout(timer);
+    operation?.end();
     if (seq === titleCandidatesSeq) {
       titleCandidatesAbort = null;
       renderTitleChoices();
