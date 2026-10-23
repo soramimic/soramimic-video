@@ -96,6 +96,7 @@ def test_lyric_review_opens_once_preserves_edits_and_resumes_the_same_job():
         let reviewAction = "";
         const songRecordingBusy = () => false, syncHistoryReviewControls = () => {};
         const historyReviewBlocked = () => !!reviewAction;
+        const reviewPresentationBlocked = () => false;
         const elements = new Map();
         const $ = (id) => {
           if (!elements.has(id)) elements.set(id, {hidden: true, textContent: "", focus() {}});
