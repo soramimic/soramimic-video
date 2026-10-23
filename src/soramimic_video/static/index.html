@@ -1837,7 +1837,8 @@ async function receiveEditorLyrics() {
       await applyEditorWordlist();
       $("lyrics").value = JSON.stringify(payload, null, 2);
       $("auto-lyrics").checked = false;
-      $("song-title").value = payload.videoMetadata?.songTitle ?? payload.song?.title ?? "";
+      // song.title can be an automatically derived label, not a user-entered title.
+      $("song-title").value = payload.videoMetadata?.songTitle ?? "";
       $("song-credit").value = payload.videoMetadata?.songCredit ?? "";
       $("thumbnail-wordlist-label").value = payload.videoMetadata?.thumbnailWordlistLabel ?? "";
       updateSongTextPreviews();
