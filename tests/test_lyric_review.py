@@ -398,7 +398,11 @@ def test_completed_video_keeps_portable_edited_lyrics(review_client, monkeypatch
         assert result["wordlist"]["value"] == "ORIGINAL"
         assert "清水" in result["wordlist"]["csvText"]
     job = manager.get(job_id)
-    assert sorted(p.name for p in job.dir.iterdir()) == [FILENAME, "status.json", "video.mp4"]
+    assert sorted(p.name for p in job.dir.iterdir()) == [
+        "exports", FILENAME, "status.json", "video.mp4",
+    ]
+    assert set(body["export_urls"]) == {"musicxml", "midi", "xf", "vocal"}
+    assert client.get(body["export_urls"]["vocal"]).content == b"voice"
     assert len(calls["synthesize"]) == 1
 
     # The same owner check protects both the history link and its JSON endpoint.
@@ -424,6 +428,42 @@ def test_completed_video_keeps_portable_edited_lyrics(review_client, monkeypatch
     assert restored.cleanup_expired() == [job_id]
     assert restarted.get(url).status_code == 404
     assert not job.dir.exists()
+
+
+@pytest.mark.parametrize("alpha", [0.0, 0.25, 1.0])
+def test_completed_lyrics_preserves_note_length_weight_through_reload_and_import(
+    review_client, alpha,
+):
+    from soramimic_video.completed_lyrics import save_result
+
+    client, midi, _calls, _editor = review_client
+    job_id = submit_review(
+        review_client, review=False, convert_params=f"NOTE_LENGTH_WEIGHT={alpha}",
+    )
+    job = wait_status(client, job_id, "done")
+    payload = client.get(job["editor_url"]).json()
+    assert payload["noteLengthAlpha"] == alpha
+    assert payload["noteLengthRawList"]
+    assert "NOTE_LENGTH_WEIGHT" not in payload["param"]
+
+    directory = client.app.state.manager.get(job_id).dir
+    reloaded = Project.load(directory)
+    assert reloaded.parody.note_length_alpha == alpha
+    save_result(reloaded, directory)
+    assert client.get(job["editor_url"]).json()["noteLengthAlpha"] == alpha
+
+    # An editor can change the setting; a later Video request must keep it,
+    # rather than replacing it with the form's conversion default.
+    payload["noteLengthAlpha"] = 0.75
+    response = client.post("/api/jobs", files={
+        "midi": ("song.mid", midi),
+        "editor": ("lyrics.json", json.dumps(payload), "application/json"),
+    }, data={"convert_params": "NOTE_LENGTH_WEIGHT=0.25"})
+    assert response.status_code == 200, response.text
+    imported = wait_status(client, response.json()["id"], "done")
+    exported = client.get(imported["editor_url"]).json()
+    assert exported["noteLengthAlpha"] == 0.75
+    assert exported["results"] == payload["results"]
 
 
 def test_completed_lyrics_omits_large_results_and_unsafe_files(

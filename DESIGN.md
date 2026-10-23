@@ -2,23 +2,25 @@
 
 ## 目的
 
-soramimic-video は、XF MIDI または歌唱音源を解析し、替え歌の歌唱音源と画像・字幕付き動画を
+soramimic-video は、歌詞入りMIDI（XF・標準lyricsイベント）または歌唱音源を解析し、替え歌の歌唱音源と画像・字幕付き動画を
 生成します。各処理段階は同じ project directory を介して接続され、CLI と Web API から
 同じ変換処理を利用します。
 
 ## Pipeline
 
 ```text
-XF MIDI + 元歌詞 ── analyze ─┐
+歌詞入りMIDI + 元歌詞 ── analyze ─┐
 歌唱音源 + 任意の MIDI ─ analyze-audio ─┤
                                       ├─ convert ─ edit ─ synthesize ─ mix ─ video
 メロディ MIDI + 歌詞 ─ analyze-midi ────┘
 ```
 
-- `analyze`: XF の歌詞・読み・音符 timing を解析し、元歌詞と対応付けます。
+- `analyze`: MIDIの歌詞・読み・音符 timing を解析し、元歌詞と対応付けます。
 - `analyze-audio`: 歌唱音源から読み、timing、pitch を推定します。メロディ MIDI を併用できます。
 - `analyze-midi`: メロディ MIDI と歌詞から音符・モーラ対応を作ります。
 - `apply-lyric-layers`: 完全歌詞・実演・合成ノートのレイヤーJSONを取り込みます。
+- `export`: 現在の読み・元の音高でMusicXML、歌詞入りMIDI、XF MIDIを書き出します。
+  `vocal`形式では合成済みの伴奏なし歌声WAVをコピーします。
 - `export-xf`: 現在の歌詞とノートをXF MIDIと由来情報JSONへ書き出します。
 - `convert`: soramimic の単語リストを使って替え歌候補を作ります。
 - `export-edit` / `import-edit`: 人手編集用 JSON を書き出し・取り込みます。
@@ -142,14 +144,49 @@ layout JSON が画像、文字、字幕、credit の配置を定義します。�
 「単語リスト名」はサムネイルの表示名だけを変更し、空欄なら選択中のリスト名を使います。
 画像の作者・ライセンス表記は各画像に表示します。
 
-生成物は MP4 を基本とします。Web UI は対応端末で保存・共有を提供し、利用できない場合は
-直接 download へ fallback します。
+生成物は MP4 を基本とします。完成画面と履歴には「保存」メニューと「共有」を表示します。
+編集用の歌詞データがある動画には「歌詞を編集 ↗」も表示し、別タブの編集画面へ渡します。
+保存メニュー内に「動画」「歌唱データ」を設け、動画・MusicXML・歌詞入りMIDI・XF MIDI・
+伴奏なし歌声WAVを選べます。各項目は形式名を中心に簡潔に表示します。
+iPhone・iPadの動画保存は写真に保存できる共有シートを使い、保存前に省略可能な案内を表示します。
+「次回から表示しない」の選択をブラウザーに記憶します。Android・PCの動画と歌唱データは直接ダウンロードします。
+履歴の動画保存では、取得後も操作権限が有効なら共有画面を開き、失効時は「保存を続ける」で再タップを案内します。
+MusicXMLはNEUTRINO入力と共通の標準形式です。NEUTRINO合成では使用した譜面をそのまま保存し、
+それ以外では現在の読みと元の音高から生成します。曲頭が音符なら、その一部を短い休符にします。
+拍子変更で短くなる小節には実際の長さに合う拍子を記録し、読み込み時の休符補完を防ぎます。
+ジョブの `export_urls` が取得可能な形式を返し、`/api/jobs/{id}/exports/{kind}` で保存します。
+書き出しファイルは完成動画と同じセッション・保存期間の制限に従います。
 
 ## Public API behavior
 
 Web API は job 単位で処理し、状態、thumbnail、完成動画を返します。公開 instance では
 入力 size、曲長、同時実行数、利用回数等の制限が適用される場合があります。制限に達した場合は
 API response と UI で利用者に通知します。
+
+ブラウザからの取り消し可能な送信は、先に `POST /api/submissions` で受付IDを確保し、
+`POST /api/jobs` にその `submission_id` と `registered_submission=true` を指定します。
+受付IDは同じ所有者だけが使用でき、有効期間は1時間、未使用枠はセッション・接続元ごとに
+8件、全体128件です。`POST /api/submissions/{id}/cancel` は未受付なら受付を取り消し、
+受付済みならそのジョブを中断します。応答は `id`（未受付ならnull）と `status` を返します。
+ジョブが実行中なら状態取得で終了を確認し、完成済みなら完成結果を表示します。
+取り消し済み・期限切れのIDでの遅延送信は受け付けません。従来の未登録送信も利用できます。
+
+音源の途中再開には `POST /api/audio-uploads` で `filename`、`size`、32桁の16進数の
+`submission_id` と `turnstile_token` を送ります。人間確認はこの時点で検証します。
+応答の `id` を使い、`GET /api/audio-uploads/{id}` で `offset`、`size`、`chunk_bytes` を取得し、
+`PUT /api/audio-uploads/{id}?offset=...` へ最大512KiBのバイナリを送ります。
+同じ位置・同じ内容の再送は追記せず、受信済み位置を返します。異なる位置への送信は409です。
+送信完了後は `POST /api/jobs` に `audio_upload_id` と同じ値の `submission_id` を指定し、
+曲名・歌詞などの設定を送ります。既存の音源検査・生成制限を適用し、受付済みIDの再送には
+同じジョブIDを返します。従来のmultipartによる音源送信も受け付けます。
+
+途中データはAPIキー認証と公開モードのセッションで保護し、
+`DELETE /api/audio-uploads/{id}` で削除できます。
+`cancel_job=true` を付けると、同じ送信IDで受付済みのジョブも中断します。
+作成から1時間で期限切れとなり、定期清掃で削除します。
+送信枠はセッション・接続元ごとに2件、全体で8件までとし、
+申告容量の合計を音源1ファイルの上限の4倍までに制限します。
+Web UIは同じページ内の再試行に対応し、ページの再読み込み後には音源を保持しません。
 
 `POST /api/title-candidates` はJSONで `title` または `sample`、`wordlist` と任意の
 `where` を受け取り、バランス設定で比較したタイトル候補を `candidates` に返します。

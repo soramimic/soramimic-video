@@ -19,7 +19,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .convert import REPO_ROOT, apply_converted_lines, resolve_wordlist
+from .convert import (
+    NOTE_LENGTH_WEIGHT,
+    REPO_ROOT,
+    apply_converted_lines,
+    pop_note_length_weight,
+    resolve_wordlist,
+)
 from .facets import survives_editor_facets
 from .layout import Layout
 from .parenthetical_ruby import normalize_parenthetical_ruby
@@ -712,6 +718,11 @@ def import_editor(
         where=where,
         params=params,
     )
+    assert aligned.parody is not None
+    default_alpha = project.parody.note_length_alpha if project.parody else 0.0
+    aligned.parody.note_length_alpha = pop_note_length_weight({
+        NOTE_LENGTH_WEIGHT: payload.get("noteLengthAlpha", default_alpha),
+    })
     project.lines, project.notes, project.parody = aligned.lines, aligned.notes, aligned.parody
     project.lyric_phrasing = aligned.lyric_phrasing
     # 再書き出しにも、現在の曲へ対応付けた単語範囲を使う。

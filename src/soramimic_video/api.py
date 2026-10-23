@@ -24,6 +24,7 @@ import csv
 import hashlib
 import hmac
 import importlib.util
+import io
 import ipaddress
 import json
 import logging
@@ -53,6 +54,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from . import completed_lyrics, runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
@@ -67,6 +69,7 @@ from .audio_input import (
     normalize_compressed_audio,
     validate_pcm_wav,
 )
+from .audio_uploads import CHUNK_BYTES, AudioUploads
 from .layout import (
     LAYOUTS_DIR,
     builtin_layout_names,
@@ -75,6 +78,7 @@ from .layout import (
     parse_layout,
 )
 from .soramimic_engine import start_warmup_thread
+from .submissions import Submissions
 from .thumbnail_preview import RateLimiter, preview_cache_dir
 from .transcribe import DEFAULT_WHISPER_MODEL
 from .usage_metrics import UsageMetrics
@@ -133,6 +137,8 @@ SIMPLE_MAX_REQUEST_BYTES_ENV = "SORAMIMIC_SIMPLE_MAX_REQUEST_BYTES"
 DEFAULT_MAX_AUDIO_UPLOAD_BYTES = 200 * 1024 * 1024
 DEFAULT_MAX_MIDI_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_LYRICS_UPLOAD_BYTES = 256 * 1024
+MAX_GENERATION_THUMBNAIL_BYTES = 2 * 1024 * 1024
+GENERATION_THUMBNAIL_FILENAME = "generation-thumbnail.png"
 DEFAULT_SIMPLE_MAX_REQUEST_BYTES = 2 * 1024 * 1024
 DEFAULT_QUEUE_LIMIT = 5
 DEFAULT_DAILY_QUOTA = 5
@@ -326,6 +332,26 @@ async def read_midi_upload(midi: UploadFile) -> bytes:
     if len(data) > DEFAULT_MAX_MIDI_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="MIDIファイルが大きすぎます")
     return data
+
+
+async def read_generation_thumbnail(upload: UploadFile) -> bytes:
+    """Validate and strip metadata from the browser's generation background."""
+    from PIL import Image
+
+    data = await upload.read(MAX_GENERATION_THUMBNAIL_BYTES + 1)
+    if len(data) > MAX_GENERATION_THUMBNAIL_BYTES:
+        raise HTTPException(status_code=413, detail="サムネ画像が大きすぎます")
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != "PNG" or image.width > 1280 or image.height > 720:
+                raise ValueError("invalid thumbnail")
+            output = io.BytesIO()
+            clean = image.convert("RGBA")
+            clean.info.clear()
+            clean.save(output, format="PNG")
+            return output.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise HTTPException(status_code=422, detail="サムネ画像が読めません") from exc
 
 
 def max_audio_upload_bytes() -> int:
@@ -738,6 +764,10 @@ class Job:
 
         return self.dir / THUMBNAIL_FILENAME
 
+    @property
+    def generation_thumbnail(self) -> Path:
+        return self.dir / GENERATION_THUMBNAIL_FILENAME
+
     def _stage_progress(self, elapsed: float) -> tuple[int | None, float | None]:
         """現在工程の進捗率(%)と残り秒の目安を返す。
 
@@ -794,17 +824,26 @@ class Job:
         if self.status == "done" and self.video:
             d["video_url"] = f"/api/jobs/{self.id}/video"
             d["playback_url"] = f"/api/jobs/{self.id}/playback"
+            from .exports import FORMATS, result_path
+
+            d["export_urls"] = {
+                kind: f"/api/jobs/{self.id}/exports/{kind}"
+                for kind in FORMATS if result_path(self.dir, kind) is not None
+            }
             d["result_kind"] = "audio" if self.video.suffix == ".wav" else "video"
             if self.video.suffix != ".wav" and completed_lyrics.result_path(self.dir):
                 d["editor_url"] = f"/api/jobs/{self.id}/lyrics"
             if self.video.suffix != ".wav":
                 d["credits_url"] = f"/api/jobs/{self.id}/credits"
-            if self.thumbnail.exists():
-                d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
             if self.generation_quality_warning:
                 d["generation_quality_warning"] = True
             if self.wordlist_exhausted:
                 d["wordlist_exhausted"] = True
+        if self.thumbnail.exists() or (
+            self.status in {"queued", "running", "awaiting_review"}
+            and self.generation_thumbnail.exists()
+        ):
+            d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
         if with_log and not is_public_mode():
             d["log"] = list(self.log)
         return d
@@ -1314,6 +1353,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     """analyze〜videoを順に実行して完成動画のパスを返す(ワーカースレッドから呼ぶ)。"""
     from .align import align_correct_lyrics, align_lines
     from .editor_io import import_editor, save_raw
+    from .exports import save_results
     from .mix import mix
     from .synthesize import synthesize
     from .video import (
@@ -1494,9 +1534,20 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
         ),
     }
 
+    def save_exports(wav: Path) -> None:
+        score = d / "neutrino" / "score.musicxml"
+        # NEUTRINO合成では、音域調整も含めて実際に渡した譜面を保存する。
+        musicxml_source = (
+            score if job.params.get("synthesizer", "neutrino") == "neutrino" and score.is_file()
+            else None
+        )
+        save_results(project, d, vocal_source=wav, musicxml_source=musicxml_source)
+
     if not config.get("parallel_video", True):
-        _run_synthesize(job, config, project, synthesize)
+        wav = _run_synthesize(job, config, project, synthesize)
         project.save(d)
+        if wav is not None:
+            save_exports(wav)
         with _stage(job, "mix", estimated_total=8.0):
             mix(project, d, soundfont=config.get("soundfont"))
         with _stage(job, "video", estimated_total=45.0):
@@ -1531,9 +1582,11 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
     future = executor.submit(build_silent_video)
     try:
         try:
-            _run_synthesize(job, config, project, synthesize)
+            wav = _run_synthesize(job, config, project, synthesize)
             # 自動調整が決めたキー変更を保存し、伴奏も同じだけ移調する。
             project.save(d)
+            if wav is not None:
+                save_exports(wav)
             with _stage(job, "mix", estimated_total=8.0):
                 audio_path = mix(project, d, soundfont=config.get("soundfont"))
         except Exception as audio_error:
@@ -1707,6 +1760,7 @@ class JobManager:
         self._cleaner: threading.Thread | None = None
         if (
             self.config.get("scrub_private_artifacts")
+            or self.config.get("audio_uploads")
             or _env_float(JOB_TTL_HOURS_ENV, 0.0) > 0
         ):
             self._cleaner = threading.Thread(target=self._cleanup_loop, daemon=True)
@@ -1942,6 +1996,7 @@ class JobManager:
         wordlist_csv: str = "",
         wordlist_images: dict[str, bytes] | None = None,
         audio: bytes | None = None,
+        generation_thumbnail: bytes | None = None,
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
@@ -1968,6 +2023,8 @@ class JobManager:
                 )
             if editor:
                 (job_dir / "editor.json").write_bytes(editor)
+            if generation_thumbnail is not None:
+                (job_dir / GENERATION_THUMBNAIL_FILENAME).write_bytes(generation_thumbnail)
             if lyrics.strip():
                 (job_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
             if layout_json.strip():
@@ -2134,6 +2191,8 @@ class JobManager:
             sum(1 for job in list(self.jobs.values()) if job.cleanup_pending)
             + len(self._pending_deletions)
             + int(self._editor_cleanup_failed)
+            + int(bool(self.config.get("audio_uploads")
+                       and self.config["audio_uploads"].cleanup_failed))
         )
 
     def cleanup_expired(self, now: float | None = None) -> list[str]:
@@ -2141,6 +2200,13 @@ class JobManager:
 
         Public reviews expire after 24 hours when result retention is disabled.
         """
+        if self.config.get("submissions"):
+            self.config["submissions"].cleanup(now)
+        if self.config.get("audio_uploads"):
+            self.config["audio_uploads"].cleanup(now, consumed={
+                job.submission_id: job.owner for job in list(self.jobs.values())
+                if job.submission_id
+            })
         hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
         if hours <= 0 and not self.config.get("scrub_private_artifacts"):
             return []
@@ -2346,8 +2412,9 @@ class JobManager:
         """Keep only downloadable results; remove uploads and work products.
 
         A completed job may retain its final video (or audio preview), thumbnail,
-        portable editing lyrics, and source-credit sidecars. Raw uploads, separated
-        stems, synthesized audio, analysis JSON, and rendered frames are removed
+        portable editing lyrics, downloadable scores/vocal, and source-credit sidecars.
+        Raw uploads, separated stems, synthesis intermediates, analysis JSON, and
+        rendered frames are removed
         before the job becomes observable as ``done``.
         """
         root = job.dir.resolve()
@@ -2380,6 +2447,13 @@ class JobManager:
                 sidecar = root / VIDEO_DIR / name
                 if sidecar.is_file() and not sidecar.is_symlink():
                     keep.add(sidecar.resolve())
+
+        from .exports import FORMATS, result_path
+
+        for kind in FORMATS:
+            exported = result_path(root, kind)
+            if exported is not None:
+                keep.add(exported.resolve())
 
         failures: list[str] = []
         for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
@@ -2571,6 +2645,10 @@ def create_app(
         # job/session ID、ファイル名はUsageMetricsのschema上保存できない。
         "usage_metrics": usage_metrics,
     }
+    audio_uploads = AudioUploads(jobs_dir.resolve() / "audio-uploads", max_audio_upload_bytes())
+    config["audio_uploads"] = audio_uploads
+    submissions = Submissions(jobs_dir.resolve() / "submissions")
+    config["submissions"] = submissions
     manager = JobManager(jobs_dir, config)
     # 高コストGETの短期レート制限。セッション枠に加えてIP枠も必ず確認するため、
     # cookieを削除してもバックストップを回避できない。IP枠はNATを考慮して広め。
@@ -2623,6 +2701,8 @@ def create_app(
     )
     app.state.manager = manager
     app.state.usage_metrics = usage_metrics
+    app.state.audio_uploads = audio_uploads
+    app.state.submissions = submissions
 
     @app.middleware("http")
     async def _session_cookie(request: Request, call_next):
@@ -2647,6 +2727,15 @@ def create_app(
             and request.method == "POST"
             and request.url.path == "/api/jobs"
         )
+        if request.url.path.startswith("/api/audio-uploads"):
+            maximum = CHUNK_BYTES if request.method == "PUT" else 8192
+            try:
+                default = "0" if request.method in {"GET", "DELETE", "HEAD"} else "-1"
+                length = int(request.headers.get("content-length", default))
+            except ValueError:
+                length = maximum + 1
+            if length < 0 or length > maximum:
+                return JSONResponse({"detail": "送信部分が大きすぎます"}, status_code=413)
         if is_simple_ui() and request.method == "POST" and request.url.path in {
             "/api/jobs",
             "/api/midi-check",
@@ -2678,6 +2767,7 @@ def create_app(
         if not is_public_mode() or request.url.path in {
             "/healthz",
             "/custom-wordlists.js",
+            "/operation-guard.js",
             "/ogp-soramimic-v1.png",
             "/ogp-soramimic-v2.png",
             "/ogp-soramimic-v3.png",
@@ -2700,9 +2790,7 @@ def create_app(
                     "soramimic_usage_submission_responses_total",
                     {"status": str(response.status_code)},
                 )
-            if request.url.path == "/api/jobs" or request.url.path.startswith(
-                "/api/jobs/"
-            ):
+            if request.url.path.startswith(("/api/jobs", "/api/audio-uploads", "/api/submissions")):
                 response.headers["Cache-Control"] = "private, no-store"
                 response.headers["Vary"] = "Cookie"
             return response
@@ -2717,9 +2805,7 @@ def create_app(
                 "soramimic_usage_submission_responses_total",
                 {"status": str(response.status_code)},
             )
-        if request.url.path == "/api/jobs" or request.url.path.startswith(
-            "/api/jobs/"
-        ):
+        if request.url.path.startswith(("/api/jobs", "/api/audio-uploads", "/api/submissions")):
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Vary"] = "Cookie"
         if issued:
@@ -3047,6 +3133,13 @@ def create_app(
             .replace("<!-- usage-scope-toc -->", usage_scope_toc)
         )
 
+    @app.get("/operation-guard.js", include_in_schema=False)
+    def operation_guard_script() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "operation-guard.js", media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
+        )
+
     @app.get("/app-bridge.js", include_in_schema=False)
     def app_bridge_script() -> FileResponse:
         return FileResponse(
@@ -3057,6 +3150,14 @@ def create_app(
     @app.get("/metadata-change.js", include_in_schema=False)
     def metadata_change_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "metadata-change.js", media_type="application/javascript")
+
+    @app.get("/submissions.js", include_in_schema=False)
+    def submissions_script():
+        return FileResponse(STATIC_DIR / "submissions.js", media_type="application/javascript")
+
+    @app.get("/audio-upload.js", include_in_schema=False)
+    def audio_upload_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "audio-upload.js", media_type="application/javascript")
 
     @app.get("/image-credits.js", include_in_schema=False)
     def image_credits_script() -> FileResponse:
@@ -3295,6 +3396,7 @@ def create_app(
             "audio_input": audio_input_available(),
             "audio_analysis": audio_analysis,
             "max_audio_upload_bytes": max_audio_upload_bytes(),
+            "resumable_audio_upload": True,
         }
         # Public deployments use the launch catalog as an allowlist even when the
         # full settings UI is enabled.  The API already enforces the same list;
@@ -3919,14 +4021,20 @@ def create_app(
         if is_simple_ui():
             raise HTTPException(status_code=404, detail="Not Found")
         from .align import parse_granularity_override
-        from .editor_io import build_editor_preview
+        from .editor_io import MAX_EDITOR_BYTES, build_editor_preview
         from .editor_wordlist import is_text_only
 
-        raw = await editor.read()
+        raw = await editor.read(MAX_EDITOR_BYTES + 1)
+        if len(raw) > MAX_EDITOR_BYTES:
+            raise HTTPException(status_code=413, detail="歌詞JSONの容量が大きすぎます")
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
+        except (ValueError, UnicodeError, RecursionError) as exc:
             raise HTTPException(status_code=400, detail="editorのJSONが読めません") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=400, detail="歌詞JSONはオブジェクトである必要があります",
+            )
         if isinstance(payload, dict) and isinstance(payload.get("unitsList"), list):
             try:
                 payload = prepare_editor_import(payload, wordlist)
@@ -4058,13 +4166,96 @@ def create_app(
                     "もっと短い曲でお試しください。",
                 )
 
+    @app.post("/api/audio-uploads", dependencies=[Depends(_require_api_key)])
+    async def begin_audio_upload(
+        request: Request, filename: str = Form(..., max_length=255),
+        size: int = Form(..., gt=0), submission_id: str = Form(..., pattern="^[0-9a-f]{32}$"),
+        turnstile_token: str = Form("", max_length=4096),
+    ) -> dict[str, Any]:
+        owner = owner_of(request)
+        existing = manager.find_submission(submission_id, owner)
+        if existing is not None:
+            return {"id": submission_id, "job_id": existing.id}
+        if not audio_input_available():
+            raise HTTPException(503, "このサーバーでは音声入力を利用できません")
+        if Path(filename).suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+            raise HTTPException(400, "対応していない音声形式です")
+        try:
+            audio_uploads.info(submission_id, owner)
+        except HTTPException as exc:
+            if exc.status_code not in (404, 410):
+                raise
+            _check_turnstile(request, turnstile_token)
+            exempt = await _quota_exempt(request)
+            _check_public_limits(owner, _client_hash(request), None, quota_exempt=exempt)
+        return audio_uploads.create(submission_id, owner, _client_hash(request), filename, size)
+
+    @app.get("/api/audio-uploads/{upload_id}", dependencies=[Depends(_require_api_key)])
+    def audio_upload_info(upload_id: str, request: Request) -> dict[str, Any]:
+        return audio_uploads.info(upload_id, owner_of(request))
+
+    @app.put("/api/audio-uploads/{upload_id}", dependencies=[Depends(_require_api_key)])
+    async def append_audio_upload(upload_id: str, request: Request, offset: int) -> dict[str, Any]:
+        owner = owner_of(request)
+        audio_uploads.info(upload_id, owner)
+        data = bytearray()
+        try:
+            async for part in request.stream():
+                if len(data) + len(part) > CHUNK_BYTES:
+                    raise HTTPException(413, "送信部分が大きすぎます")
+                data.extend(part)
+        except ClientDisconnect:
+            raise HTTPException(400, "送信が中断されました。続きから再開してください") from None
+        return await run_in_threadpool(audio_uploads.append, upload_id, owner, offset, bytes(data))
+
+    @app.delete("/api/audio-uploads/{upload_id}", dependencies=[Depends(_require_api_key)])
+    def remove_audio_upload(
+        upload_id: str, request: Request, cancel_job: bool = False,
+    ) -> dict[str, bool]:
+        owner = owner_of(request)
+        # Serialize against final admission so cancellation cannot miss a job
+        # created while waiting to remove its staged input.
+        with audio_uploads.lock:
+            existing = manager.find_submission(upload_id, owner)
+            if existing is not None and cancel_job:
+                manager.cancel(existing.id, owner)
+            try:
+                audio_uploads.remove(upload_id, owner)
+            except HTTPException as exc:
+                if existing is None or exc.status_code not in (404, 410):
+                    raise
+        return {"removed": True}
+
+    @app.post("/api/submissions", dependencies=[Depends(_require_api_key)])
+    def reserve_submission(request: Request) -> dict[str, str]:
+        return {"id": submissions.create(owner_of(request), _client_hash(request))}
+
+    @app.post("/api/submissions/{submission_id}/cancel", dependencies=[Depends(_require_api_key)])
+    def cancel_submission(submission_id: str, request: Request) -> dict[str, Any]:
+        owner = owner_of(request)
+        # Revocation and final admission share the same locks. A delayed POST cannot
+        # create a job after a successful cancellation, including across restarts.
+        with quota_submit_lock, audio_uploads.lock:
+            job = manager.find_submission(submission_id, owner)
+            submissions.remove(submission_id, owner)
+            if job is not None:
+                job = manager.cancel(job.id, owner)
+            try:
+                audio_uploads.remove(submission_id, owner)
+            except HTTPException as exc:
+                if exc.status_code not in (404, 410):
+                    raise
+            return {"id": job.id if job else None, "status": job.status if job else "canceled"}
+
     @app.post("/api/jobs", dependencies=[Depends(_require_api_key)])
     async def create_job(
         request: Request,
         midi: UploadFile | None = File(None),
         audio: UploadFile | None = File(None),
+        audio_upload_id: str = Form(""),
         sample_id: str = Form(""),
         lyrics_file: UploadFile | None = File(None),
+        generation_thumbnail: UploadFile | None = File(None),
         editor: UploadFile | None = None,
         # 自作の単語リスト(CSV)。付いていればリスト名より優先する
         wordlist_csv: UploadFile | None = None,
@@ -4111,6 +4302,7 @@ def create_app(
         turnstile_token: str = Form(""),
         # モバイル回線で大きな音源送信が切れた場合の安全な再送ID。
         submission_id: str = Form(""),
+        registered_submission: bool = Form(False),
     ) -> dict[str, Any]:
         from .title_choices import parse_title_words, selected_rows
 
@@ -4126,11 +4318,33 @@ def create_app(
             existing = manager.find_submission(submission_id, owner)
             if existing is not None:
                 return {"id": existing.id}
-        _check_turnstile(request, turnstile_token)
-        quota_exempt = await _quota_exempt(request)
-        input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
-            await resolve_song_input(midi, audio, sample_id)
-        )
+        if registered_submission:
+            submissions.require(submission_id, owner)
+        staged_audio: UploadFile | None = None
+        if audio_upload_id:
+            if audio is not None or midi is not None or sample_id.strip():
+                raise HTTPException(422, "送信済み音源と別の曲は同時に指定できません")
+            if submission_id != audio_upload_id:
+                raise HTTPException(422, "送信IDが一致しません")
+            quota_exempt = await _quota_exempt(request)
+            _check_public_limits(owner, _client_hash(request), None, quota_exempt=quota_exempt)
+            path, filename = audio_uploads.completed(audio_upload_id, owner)
+            staged_audio = UploadFile(filename=filename, file=path.open("rb"))
+            audio = staged_audio
+        else:
+            _check_turnstile(request, turnstile_token)
+            quota_exempt = await _quota_exempt(request)
+        try:
+            input_bytes, input_kind, input_seconds, launch_sample_id, input_filename = (
+                await resolve_song_input(midi, audio, sample_id)
+            )
+        except Exception:
+            if staged_audio is not None:
+                audio_uploads.remove(audio_upload_id, owner)
+            raise
+        finally:
+            if staged_audio is not None:
+                await staged_audio.close()
         editor_bytes = None
         editor_payload: Any = None
         editor_original = False
@@ -4531,13 +4745,19 @@ def create_app(
         # ローカルmanifestを読み直して空になると、完成動画から表記が欠落するため。
         if params["sample_id"]:
             params["sample_midi_end_credit"] = midi_end_credit_of(params)
-        with quota_submit_lock:
+        thumbnail_bytes = (
+            await read_generation_thumbnail(generation_thumbnail)
+            if generation_thumbnail is not None else None
+        )
+        with quota_submit_lock, audio_uploads.lock:
             # 1回目の応答だけが失われ、再送が並行して到着した場合もここで直列化して
             # 同じ音源のジョブを2本作らない。
             if submission_id:
                 existing = manager.find_submission(submission_id, owner)
                 if existing is not None:
                     return {"id": existing.id}
+            if registered_submission:
+                submissions.require(submission_id, owner)
             _check_public_limits(
                 owner,
                 client_hash,
@@ -4545,6 +4765,8 @@ def create_app(
                 input_seconds=input_seconds,
                 quota_exempt=quota_exempt,
             )
+            if audio_upload_id:
+                audio_uploads.completed(audio_upload_id, owner)
             job = manager.create(
                 input_bytes if input_kind == "midi" else None,
                 editor_bytes, lyrics, params,
@@ -4553,7 +4775,12 @@ def create_app(
                 wordlist_csv=custom.csv.text if custom is not None else "",
                 wordlist_images=custom.images if custom is not None else None,
                 audio=input_bytes if input_kind == "audio" else None,
+                generation_thumbnail=thumbnail_bytes,
             )
+            if audio_upload_id:
+                audio_uploads.remove(audio_upload_id, owner)
+            if registered_submission:
+                submissions.remove(submission_id, owner)
         return {"id": job.id}
 
     @app.post("/api/wordlist-check", dependencies=[Depends(_require_api_key)])
@@ -4705,6 +4932,22 @@ def create_app(
             headers={"Cache-Control": "private, no-store"},
         )
 
+    @app.get("/api/jobs/{job_id}/exports/{kind}", dependencies=[Depends(_require_api_key)])
+    def get_export(job_id: str, kind: str, request: Request) -> FileResponse:
+        from .exports import FORMATS, result_path
+
+        job = manager.get(job_id, owner_of(request))
+        if job.status != "done":
+            raise HTTPException(status_code=409, detail="書き出しファイルはまだできていません")
+        path = result_path(job.dir, kind)
+        if path is None:
+            raise HTTPException(status_code=404, detail="この形式の書き出しファイルはありません")
+        manager.record_output_usage(job, "download")
+        return FileResponse(
+            path, media_type=FORMATS[kind][1], filename=FORMATS[kind][0],
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     @app.get("/api/jobs/{job_id}/video", dependencies=[Depends(_require_api_key)])
     def get_video(job_id: str, request: Request) -> FileResponse:
         job = manager.get(job_id, owner_of(request))
@@ -4739,13 +4982,17 @@ def create_app(
 
     @app.get("/api/jobs/{job_id}/thumbnail", dependencies=[Depends(_require_api_key)])
     def get_thumbnail(job_id: str, request: Request) -> FileResponse:
-        """サムネ画像(video ステージが作る thumbnail.png)。未生成なら404。"""
+        """Return the rendered thumbnail, or the saved background during generation."""
         job = manager.get(job_id, owner_of(request))
-        if not job.thumbnail.exists():
+        path = job.thumbnail
+        if not path.exists() and job.status in {"queued", "running", "awaiting_review"}:
+            path = job.generation_thumbnail
+        if not path.exists():
             raise HTTPException(status_code=404, detail="サムネ画像がありません")
-        manager.record_output_usage(job, "thumbnail")
+        if job.status == "done":
+            manager.record_output_usage(job, "thumbnail")
         return FileResponse(
-            job.thumbnail, media_type="image/png", filename=_thumbnail_filename(job),
+            path, media_type="image/png", filename=_thumbnail_filename(job),
             headers={"Cache-Control": "private, no-store"},
         )
 
@@ -4847,7 +5094,7 @@ def create_app(
     ) -> dict[str, Any]:
         """選ばれたMIDIに歌詞が入っているかを、生成に進む前にその場で調べる。
 
-        この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱・空耳変換の
+        この画面のパイプラインはMIDIの歌詞(XFまたは標準lyricsイベント)を歌唱・空耳変換の
         入力にしているので、歌詞の無いMIDIは何分も待たせた末にジョブが落ちる。
         UIがファイル選択の直後にこれを呼び、歌詞が無ければその場で断れるようにする。
 
@@ -4855,11 +5102,11 @@ def create_app(
         試して「元歌詞が対応づかなかったXF行」の数も返す。UIはこれを使って
         元歌詞とMIDIの食い違いを警告する(生成はブロックしない)。
 
-        解析できないMIDI(歌詞なし・XFKMなし・壊れている)はエラーではなく
+        解析できないMIDI(歌詞なし・音符との対応なし・壊れている)はエラーではなく
         has_lyrics=false の判定結果として返す。UIが理由をそのまま出せるように。
         MIDIですらないファイルだけ400。
 
-        midi_lines には XF歌詞の行テキストをそのまま並べて返す(align_lines が
+        midi_lines には MIDI歌詞の行テキストをそのまま並べて返す(align_lines が
         元歌詞との突き合わせに使うのと同じ表示テキスト)。自分のMIDIを選んだ
         人はこれを専用モーダルの元歌詞欄の下敷きに使う。
         """

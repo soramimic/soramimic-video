@@ -1,6 +1,6 @@
 # soramimic-video
 
-XF MIDI（カラオケ歌詞入り MIDI）または歌唱音源と元歌詞を入力に、
+歌詞入りMIDI（XF・標準の歌詞イベント）または歌唱音源と元歌詞を入力に、
 [soramimic](https://github.com/soramimic/soramimic) の単語リストで替え歌歌詞を生成し、
 歌唱音源と画像・字幕付き動画を作るツールです。
 
@@ -37,7 +37,7 @@ uv sync
 ## CLI
 
 ```sh
-# XF MIDI と元歌詞を解析
+# 歌詞入りMIDI と元歌詞を解析
 uv run soramimic-video analyze \
   --midi song.mid --lyrics lyrics.txt --project work/song
 
@@ -83,6 +83,14 @@ Web UIの固定歌声として試す場合は、上記に加えて
 F♯3〜F♯5に収まらない音を含むフレーズをPrettyPitchで補います。
 両エンジンの設定が必要で、PrettyPitchモデルと同じ非商用の利用条件が適用されます。
 Web UIの固定歌声には `SORAMIMIC_FIXED_SYNTHESIZER=hybrid` を指定できます。
+
+NHVSingのPyTorch版を使う場合は、[NHVSing](https://github.com/wavtechyukky/NHVSing)の
+コード、`config_v3_2.yaml`、`exported_models/v3_2_1/nhv_v3_2_1.pth`を含むcheckoutを
+`PRETTYPITCH_NHVSING_ROOT=/path/to/NHVSing`で指定します。
+`PRETTYPITCH_DEVICE=cuda`では音高・音響・波形生成のモデルをGPUで実行します。
+GPUの空き容量が2 GiB未満の場合やCUDAのメモリ不足が起きた場合は、CPUで再実行します。
+`PRETTYPITCH_DEVICE=cpu`で最初からCPUを選べます。
+NHVSingの指定がなければ、波形生成には従来のONNX CPU版を使います。
 
 モーラの位置・長さ・読みは timing editor で調整できます。
 
@@ -164,10 +172,17 @@ uv sync --extra api --extra audio
 uv run soramimic-video serve
 ```
 
-画面上部の「曲をアップロード」から、XF MIDI（`.mid` / `.midi`）
+画面上部の「曲をアップロード」から、歌詞入りMIDI（`.mid` / `.midi`）
 またはWAV、MP3、M4A/AAC、FLAC、OGG/Opus音声を選びます。PCでは同じ欄へ
 1ファイルをドラッグ＆ドロップでき、WebM音声も入力できます。同梱曲は「サンプル曲で試す」で入力方法を切り替えて選べます。
 「曲をアップロード」で戻れます。入力方法を切り替えると前の曲選択は解除されます。
+
+音源は小分けに送信し、通信が切れた場合はサーバーの受信済み位置から再開します。
+再試行の上限に達した場合も、同じページで同じ音源を選択したまま再度生成を押すと、
+残っているデータの続きから送れます。ページの再読み込み後の再開には対応していません。
+人間確認は送信開始前に検証します。途中データは受付完了・中断・音源変更時に削除し、
+削除できなかった場合も再試行します。放置された途中データは作成から1時間で期限切れとし、
+1分間隔の清掃で削除します。
 形式は拡張子とファイル内容から自動で判定し、
 圧縮音声は解析前にPCM WAVへ変換します。持ち込み音源には正式な元歌詞を
 画面へ入力するか、UTF-8のテキストファイルとして同時にアップロードできます。
@@ -182,9 +197,20 @@ uv run soramimic-video serve
 サーバーで行うため、初回はモデルの取得が発生し、通常のMIDI入力より時間と保存容量を
 使います。float WAVには対応していません。
 
+MIDIはXF形式に加え、標準の歌詞イベント（Lyric Meta Event、FF 05）に対応します。
+標準MIDIの日本語歌詞はUTF-8またはCP932で保存してください。歌詞の時刻から旋律音符を
+対応付け、歌詞中の改行、`/`、`\`を行の区切りとして扱います。複数の歌詞トラックが
+ある場合は、音符との対応から1つを選びます。歌詞イベントがないMIDIや、歌詞に対応する
+音符がないMIDIは利用できません。
+
+読みが未指定の英字・数字は歌詞イベントごとにカナへ変換し、漢字は単語の読みと照合します。
+指定済みのカナは保持し、読みを別の歌詞イベントへ均等配分しません。
+音符への対応が決まらない箇所は、MIDIの歌詞イベントに `表記[かな]` で読みを指定してください。
+英語の音節断片の発音は推定になるため、必要に応じて同じ記法で読みを指定できます。
+
 公開モードでは、アップロードされた音源・歌詞ファイルと解析中間物を処理終了時に削除し、
 失敗時は1分間隔で再試行します。完成動画・サムネイル・出典情報・編集用の歌詞データ
-（元歌詞を含みます）を設定された
+（元歌詞を含みます）・書き出し用のMIDIと歌声WAVを設定された
 保存期間中保持し、期間を過ぎたものから同じ間隔で削除します。音源解析は
 同一ホスト上のサービスで行い、入力内容をモデル学習には使用しません。
 
@@ -269,7 +295,7 @@ Demucs、Whisper、SheetSage2は入力取得後に独立ジョブとして投入
 公開運用では `SORAMIMIC_JOB_TTL_HOURS` を設定し、音源解析モデルを事前に取得してから
 受付を開始してください。リバースプロキシを使う場合は、同じ音声上限までmultipart requestを
 通せるようbody sizeとtimeoutも設定します。`audio` extraがないサーバーでも共通の
-アップロードボタンからXF MIDIを選べます。音声を選んだ場合だけ「準備中」と案内します。
+アップロードボタンから歌詞入りMIDIを選べます。音声を選んだ場合だけ「準備中」と案内します。
 
 同梱の音源解析サンプルを再生成する場合は、FluidR3 GM SoundFontとfluidsynthを
 用意して次を実行します。必要な第三者ライセンスは `THIRD_PARTY_NOTICES.md` に記載しています。
@@ -345,7 +371,37 @@ uv run pytest -q
 
 ソラミミックの編集画面の「ビデオで作る」で、編集中の歌詞を動画作成画面へ渡せます。
 開いた画面で同じ曲の音源またはMIDIを選んでください。
-完成動画の履歴にある「歌詞を編集」で、その歌詞をソラミミックの編集画面へ戻せます。
+
+完成画面と履歴には「保存」メニューと「共有」を表示します。
+保存メニュー内を「動画」と「歌唱データ」に分け、動画（MP4）、歌声WAV（伴奏なし）、
+楽譜（MusicXML）、歌詞入りMIDI、XF MIDIを選べます。
+iPhone・iPadで動画を保存する場合は、標準の共有シートから「ビデオを保存」を選べます。
+保存前に使い方の案内を表示し、「次回から表示しない」を選ぶと同じブラウザーでは省略します。
+Android・PCの動画保存はMP4をダウンロードします。
+完成直後の動画は共有用ファイルを先に準備し、履歴では共有またはiPhone・iPadの動画保存を選んでから準備します。
+楽譜・MIDIには現在の替え歌の読みを使います。
+MIDIは元の音高、歌声WAVは選択した歌声・音域調整を反映します。
+NEUTRINOで合成したMusicXMLは、音域調整を含めて合成に使った譜面そのものです。
+それ以外のMusicXMLは元の音高で生成し、同じ形式でNEUTRINOへ渡せます。
+曲頭から歌う場合は、NEUTRINOによる自動休符追加を防ぐため、先頭音符の一部を
+約30ms（短い音符では半分まで）の休符にします。後続の音符の位置は変わりません。
+小節途中で拍子が変わる場合、その直前の短い小節は実際の長さに合う拍子で記録します。
+通常のMIDI歌詞はUTF-8、XF歌詞はCP932です。
+XF MIDIには標準の歌詞イベントも併記し、XF拡張に対応しないMIDI読み込みでも歌詞を利用できます。
+この機能の追加前に完成した動画には書き出しファイルがありません。
+
+CLIでは、解析・変換済みのプロジェクトから動画を作らずMusicXMLやMIDIを書き出せます。
+CLIのMusicXMLは現在のプロジェクトから元の音高で生成します。
+歌声WAVの書き出しには先に `synthesize` を実行してください。
+
+```sh
+uv run soramimic-video export --project work/song --format musicxml --output score.musicxml
+uv run soramimic-video export --project work/song --format midi --output lyrics.mid
+uv run soramimic-video export --project work/song --format xf --output lyrics.xf.mid
+uv run soramimic-video export --project work/song --format vocal --output vocal.wav
+```
+
+完成画面と履歴の「歌詞を編集 ↗」で、その歌詞をソラミミックの編集画面へ戻せます。
 編集データの保存前に作られた動画や、歌詞データが4MBを超える動画には表示されません。
 編集データは動画と同じ保存期間で削除されます。
 

@@ -37,6 +37,18 @@ def _wordlist(tmp_path: Path) -> Path:
     return csv_path
 
 
+def test_legacy_project_without_note_length_alpha_loads_as_unweighted(tmp_path: Path):
+    from soramimic_video.project import Project
+
+    project = _project(tmp_path)
+    convert_project(project, wordlist=str(_wordlist(tmp_path)))
+    path = project.save(tmp_path)
+    data = json.loads(path.read_text())
+    data["parody"].pop("note_length_alpha", None)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert Project.load(tmp_path).parody.note_length_alpha == 0.0
+
+
 def test_editor_roundtrip(tmp_path: Path):
     project = _project(tmp_path)
     raw = convert_project(project, wordlist=str(_wordlist(tmp_path)))

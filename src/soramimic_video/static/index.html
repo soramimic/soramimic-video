@@ -55,6 +55,8 @@
   * { box-sizing: border-box; }
   /* [hidden] はJSの表示制御の要。display指定を持つレイアウト用クラスに負けないよう固定する */
   [hidden] { display: none !important; }
+  #cancel[data-operation-blocked], #builder-cancel[data-operation-blocked],
+  .operation-cancel[data-operation-blocked] { display: none !important; }
   body {
     margin: 0; background: var(--bg); color: var(--text); line-height: 1.6;
     font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans",
@@ -103,7 +105,11 @@
     background: var(--panel); color: var(--text);
   }
   button:hover:not(:disabled) { border-color: var(--accent); }
+  [data-operation-blocked] { cursor: wait; }
+  :is(button, input, select, textarea, a)[data-operation-blocked] { opacity: .55; }
   button:disabled { opacity: .55; cursor: not-allowed; }
+  #builder-wordlist-field[inert], #advanced[inert], #history[inert],
+  #auto-lyrics-toggle[inert], #lyrics-correction-panel[inert] { opacity: .55; }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .btn-primary:hover:not(:disabled) { background: var(--accent-dark); border-color: var(--accent-dark); }
   .btn-sm { padding: .3rem .8rem; min-height: 0; font-size: .82rem; }
@@ -210,14 +216,14 @@
   summary { cursor: pointer; }
   details.card > summary { font-weight: 700; font-size: .95rem; color: var(--text); }
   details.card[open] > summary { margin-bottom: .7rem; }
-  #advanced.is-locked { opacity: .48; }
-  #advanced > summary[aria-disabled="true"] { cursor: not-allowed; color: var(--muted); }
-  .advanced-lock-hint { margin-left: .45rem; font-size: .78rem; font-weight: 400; }
   .sub-details > summary { font-size: .85rem; color: var(--muted); }
   /* ---- 詳細設定の中のグループ分け ---- */
   /* 曲・歌詞・単語リスト・歌声・レイアウトがフラットに並ぶと、初見の人がどこから
      触ればいいか分からない。役割ごとに区切り、よく使う順に並べる。小見出しと
      1行の説明を付けて「上から読めば分かる」形にする。 */
+  fieldset.startup-inputs {
+    border: 0; padding: 0; margin: 0; min-width: 0; background: transparent;
+  }
   .opt-group + .opt-group {
     margin-top: 1.1rem; padding-top: .9rem; border-top: 1px solid var(--border);
   }
@@ -394,7 +400,7 @@
   #le-props input:disabled { opacity: .4; }
   .history-list { display: grid; gap: .75rem; margin-top: .75rem; }
   .history-item {
-    overflow: hidden; border: 1px solid var(--border); border-radius: 12px;
+    border: 1px solid var(--border); border-radius: 12px;
     background: var(--panel-2);
   }
   .history-main { display: grid; grid-template-columns: minmax(8rem, 36%) 1fr; min-width: 0; }
@@ -402,13 +408,23 @@
     position: relative; display: flex; min-width: 0; aspect-ratio: 16 / 9;
     align-items: center; justify-content: center; overflow: hidden; background: #111827;
   }
+  .history-media { border-radius: 11px 0 0 11px; }
   .history-thumb {
-    display: flex; width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0;
+    position: relative; display: flex; width: 100%; height: 100%; min-width: 0; margin: 0; padding: 0;
     align-items: center; justify-content: center; overflow: hidden; border: 0; border-radius: 0;
     background: #111827; color: #cbd5e1; font-weight: 600;
   }
   button.history-thumb { cursor: pointer; }
+  button.history-thumb:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
   .history-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .history-play-icon {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    display: flex; align-items: center; justify-content: center; width: 3rem; height: 3rem;
+    border: 1px solid #ffffff99; border-radius: 50%; background: #000b; color: #fff;
+    font-size: 1.35rem; line-height: 1; pointer-events: none;
+  }
+  button.history-thumb:hover .history-play-icon { background: #000e; }
+  .history-thumb-audio .history-play-icon { position: static; transform: none; margin-right: .5rem; }
   .history-media video {
     display: block; width: 100%; height: 100%; object-fit: contain; background: #000;
   }
@@ -429,6 +445,7 @@
   }
   @media (max-width: 30rem) {
     .history-main { grid-template-columns: 1fr; }
+    .history-media { border-radius: 11px 11px 0 0; }
     .history-actions > button { flex: 1 1 auto; }
   }
   /* ---- 替え歌エディタの全画面モーダル ---- */
@@ -439,6 +456,10 @@
   .editor-modal {
     position: fixed; inset: 0; z-index: 50;
     display: flex; flex-direction: column; background: var(--bg);
+  }
+  #editor-frame-wrap {
+    width: 100%; max-width: none; height: 100%; max-height: none;
+    margin: 0; padding: 0; border: 0; color: inherit;
   }
   .editor-modal-head {
     flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem;
@@ -864,10 +885,44 @@
   }
   /* 完成後のダウンロード・共有ボタンを横並びに(狭い画面では折り返す) */
   .share-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+  .result-action {
+    display: inline-flex; align-items: center; gap: .4rem; min-height: 44px;
+    padding: .35rem .25rem; border: 0; border-radius: 4px;
+    background: transparent; color: var(--accent); font-size: .88rem;
+  }
+  .result-action::before {
+    content: ""; display: inline-block; width: 1.25rem; height: 1.25rem; flex: none;
+    background: currentColor;
+    -webkit-mask: var(--action-icon) center / contain no-repeat;
+    mask: var(--action-icon) center / contain no-repeat;
+  }
+  .action-save { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%203v12m-5-5%205%205%205-5M4%2015v5h16v-5%22%2F%3E%3C%2Fsvg%3E"); }
+  .action-share { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%2016V3m-4%204%204-4%204%204M7%2010H4v11h16V10h-3%22%2F%3E%3C%2Fsvg%3E"); }
+  .action-edit { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M16%203l5%205L8%2021H3v-5L16%203ZM13%206l5%205%22%2F%3E%3C%2Fsvg%3E"); }
+  .result-action:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+  .history-actions > .result-action { flex: 0 0 auto; }
+  .save-menu { position: relative; margin: 0; }
+  .save-menu > summary { list-style: none; }
+  .save-menu > summary::-webkit-details-marker { display: none; }
+  .save-menu > summary::after { content: " ▾"; font-size: .7rem; }
+  .save-options {
+    position: absolute; top: calc(100% + .25rem); left: 0; z-index: 20;
+    width: 21rem; max-width: calc(100vw - 24px); max-height: min(70vh, 32rem);
+    overflow-y: auto; padding: .3rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px #0004;
+  }
+  .save-options section + section { border-top: 1px solid var(--border); margin-top: .3rem; }
+  .save-group-title { margin: .45rem .75rem .15rem; color: var(--muted); font-size: .72rem; }
+  .save-options a { display: flex; align-items: center; min-height: 44px; padding: .55rem .75rem; border-radius: 5px; text-decoration: none; }
+  .save-options a:hover, .save-options a:focus-visible { background: var(--panel-2); }
+  #share-hint:empty { display: none; }
   .generation-quality-warning {
     margin: .75rem 0 0; padding: .75rem; border: 1px solid #f59e0b;
     border-radius: 8px; background: color-mix(in srgb, #f59e0b 10%, transparent);
   }
+.history-copy > .save-status { margin: .5rem 0 0; }
+.save-menu summary[aria-disabled="true"] { opacity: .6; cursor: wait; }
 </style>
 </head>
 <body>
@@ -890,9 +945,14 @@
      (エディタの中で選び直した結果は正本を経由してこのプルダウンにも出る)。
      見出しや説明文は置かない(選ぶ→サムネが出る、で分かる)。 -->
 <section class="card" id="lucky-card">
+  <div id="startup-status" role="status">
+    <p class="hint" id="startup-message">準備中…</p>
+    <button type="button" id="startup-retry" class="btn-sm" hidden>再試行</button>
+  </div>
   <span id="open-editor-msg" class="error"></span>
+  <fieldset class="startup-inputs" data-startup-inputs disabled>
   <div id="song-upload-panel">
-    <div class="audio-upload-entry" id="song-upload-entry">
+    <div class="audio-upload-entry" id="song-upload-entry" data-operation-input>
       <div class="song-upload-actions">
         <button type="button" id="song-upload-button" aria-describedby="song-upload-hint">
           <span aria-hidden="true">＋</span>曲をアップロード
@@ -902,7 +962,7 @@
           <span aria-hidden="true">●</span><span id="song-record-label">録音する</span>
         </button>
       </div>
-      <p class="hint" id="song-upload-hint">XF MIDI・音声入力を確認しています…</p>
+      <p class="hint" id="song-upload-hint">歌詞入りMIDI・音声入力を確認しています…</p>
       <p class="hint" id="song-record-status" role="status" hidden></p>
       <div class="song-upload-selection" id="song-upload-selection" hidden>
         <div class="song-upload-selection-main">
@@ -957,17 +1017,14 @@
   </div>
   <div id="custom-wordlist-menu" class="custom-wordlist-menu" role="menu"
     aria-label="単語リスト" hidden></div>
+  </fieldset>
   <p class="hint" id="builder-text-only-notice" role="status" hidden>この単語リストは画像なしで動画にします。受け取った空耳歌詞と読みをそのまま使います。</p>
   <!-- #advanced はHTML上では正本の入力群とまとまった位置に置き、ページ構築時に
        このスロットへ移す。単語リスト直下で開閉でき、下のプレビューを探し回らずに済む。 -->
   <div id="advanced-slot"></div>
   <div class="fanwork-notice" id="builder-fanwork-notice" hidden>
-    <p class="hint">本アプリは、動画に使用する画像の権利者や、登場する人物・団体とは関係ありません。動画の内容に応じて、各権利者の<a id="builder-fanwork-guidelines" href="/guidelines"
+    <p class="hint">本アプリは、動画に使用する画像の権利者や、登場する人物・団体とは関係ありません。動画の内容に応じて、各権利者の<a id="builder-fanwork-guidelines" href="/guidelines#image-guidelines-title"
       target="_blank" rel="noopener noreferrer">利用ガイドライン</a>を守ってください。</p>
-    <details class="hint" id="builder-usage-links" hidden>
-      <summary>対象の利用ガイドライン</summary>
-      <ul id="builder-usage-terms"></ul>
-    </details>
     <p class="hint" id="builder-usage-status" role="status" hidden></p>
   </div>
   <!-- サムネ枠。この1枠が「プレビュー → 生成中の進捗 → できあがった動画」と
@@ -985,7 +1042,7 @@
       <span class="spinner" aria-hidden="true"></span>
       <span>プレビューを作成中…</span>
     </div>
-    <button type="button" class="builder-play" id="builder-play" hidden
+    <button type="button" class="builder-play" id="builder-play" data-startup-inputs disabled hidden
       aria-label="この組み合わせで動画を生成">
       <span class="builder-play-icon" aria-hidden="true">▶</span>
       <span class="builder-play-label">タップで動画を生成</span>
@@ -1114,9 +1171,9 @@
      曲・元歌詞・単語リスト・変換のしかたはビルダーカードとエディタに一本化。
      歌声とレイアウトの既存DOMは機能を残すため保持するが、Web UIでは非表示にする。 -->
 <details class="card" id="advanced">
-  <summary aria-disabled="true">⚙️ 詳細設定
-    <span class="advanced-lock-hint" id="advanced-lock-hint">曲と単語リストを選ぶと開けます</span>
-  </summary>
+  <summary>⚙️ 詳細設定</summary>
+
+  <fieldset class="startup-inputs" data-startup-inputs disabled>
 
   <div class="field" id="adjust-lyrics-panel" hidden>
     <label for="adjust-lyrics">
@@ -1135,6 +1192,8 @@
 
   <!-- 既存機能の非表示グループと、表示する曲情報グループをDOM上で分ける。 -->
 
+  </fieldset>
+
   <!-- APIキーは認証ありのサーバーでだけ出る(loadConfig が auth_required を見て
        hidden を外す)。公開モードや認証なしの構成では最後まで hidden のまま。
        出るときは入力しないと何も動かないので、グループより前・先頭に置く
@@ -1144,6 +1203,7 @@
     <input type="password" id="api-key" placeholder="X-API-Key">
   </div>
 
+  <fieldset class="startup-inputs" data-startup-inputs disabled>
   <!-- 歌声の調整・試聴機能はAPI/DOMには残すが、Web UIでは波音リツに固定する。 -->
   <section class="opt-group" hidden>
     <h3 class="opt-group-title">① 歌声</h3>
@@ -1235,27 +1295,28 @@
 
     <div class="field">
       <label for="song-title">曲名</label>
-      <input type="text" id="song-title" maxlength="200" placeholder="例: ふるさと">
-      <p class="hint" data-info>サムネイルに表示する曲名です。サンプル曲は登録済みの曲名が使われます。</p>
+      <input type="text" id="song-title" maxlength="200" placeholder="空欄ならファイル名を使用">
+      <p class="hint" data-info>空欄ならアップロードしたファイル名を使います。入力すると、その曲名をサムネイルに表示します。サンプル曲は登録済みの曲名が使われます。</p>
     </div>
 
     <div class="field">
       <label for="song-credit">クレジット表記</label>
       <textarea id="song-credit" rows="3" maxlength="2000"
-        placeholder="例: オトノケ - Creepy Nuts"></textarea>
-      <p class="hint" data-info>動画の左下と最後のクレジットに、入力した文章をそのまま表示します。著作者名や権利者から指定された表記もここに入力してください。</p>
+        placeholder="例: さくらさくら（日本古謡）&#10;空欄なら曲名を使用"></textarea>
+      <p class="hint" data-info>動画の左下と最後のクレジットに、入力した文章をそのまま表示します。空欄なら曲名を使います。著作者名や権利者から指定された表記もここに入力してください。</p>
     </div>
 
     <div class="field" id="title-words-field">
       <label for="title-words">タイトルに使う単語</label>
       <div class="row">
-        <select id="title-words" class="row-grow" aria-describedby="title-words-detail">
+        <select id="title-words" class="row-grow" aria-describedby="title-words-hint title-words-detail">
           <option value="">自動で選ぶ</option>
         </select>
         <button type="button" id="title-candidates-load" class="btn-sm"
           aria-haspopup="dialog" aria-controls="title-candidates-dialog">候補を探す</button>
       </div>
-      <p class="hint" id="title-words-detail" aria-live="polite">選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。</p>
+      <p class="hint" id="title-words-hint" data-info>選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。</p>
+      <p class="hint" id="title-words-detail" aria-live="polite"></p>
       <p class="hint" id="title-candidates-status" role="status"></p>
     </div>
 
@@ -1295,6 +1356,7 @@
 
   </section>
 
+  </fieldset>
 </details>
 
 <details class="card" id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
@@ -1322,7 +1384,7 @@
   </div>
   <label for="custom-wordlist-name">リスト名</label>
   <input type="text" id="custom-wordlist-name" maxlength="100" placeholder="例：歴代レスラー" autocomplete="off">
-  <button type="button" id="custom-wordlist-dropzone" class="custom-wordlist-dropzone">
+  <button type="button" id="custom-wordlist-dropzone" data-operation-input class="custom-wordlist-dropzone">
     <svg class="custom-wordlist-dropzone-icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14.5v3A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-3" />
     </svg>
@@ -1370,12 +1432,11 @@
     <div class="custom-wordlist-header"><h2 id="metadata-change-title"></h2></div>
     <p id="metadata-change-hint"></p>
     <label class="recording-delete-choice" for="metadata-change-hide-warning">
-      <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回から表示しない</span>
+      <input type="checkbox" id="metadata-change-hide-warning"><span id="metadata-change-preference-label">次回からこの選択を使う</span>
     </label>
     <div class="custom-wordlist-actions recording-delete-actions">
-      <button type="submit" id="metadata-change-acknowledge" value="acknowledge" class="btn-primary" autofocus>閉じる</button>
-      <button type="submit" id="metadata-change-keep" value="keep" hidden>入力済みの名前を保持</button>
-      <button type="submit" id="metadata-change-update" value="update" class="btn-primary" hidden>選択したリスト名に更新</button>
+      <button type="submit" id="metadata-change-keep" value="keep" autofocus>入力済みの名前を保持</button>
+      <button type="submit" id="metadata-change-update" value="update" class="btn-primary">選択したリスト名に更新</button>
     </div>
   </form>
 </dialog>
@@ -1396,6 +1457,19 @@
       <button type="submit" value="delete" class="btn-danger">削除する</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="video-save-help" class="custom-wordlist-dialog recording-delete-dialog"
+  aria-labelledby="video-save-help-title" aria-describedby="video-save-help-hint">
+  <div class="custom-wordlist-header"><h2 id="video-save-help-title">動画を保存</h2></div>
+  <p id="video-save-help-hint">共有画面で「ビデオを保存」または「ファイルに保存」を選んでください。</p>
+  <label class="recording-delete-choice" for="video-save-help-skip">
+    <input type="checkbox" id="video-save-help-skip">次回から表示しない
+  </label>
+  <div class="custom-wordlist-actions recording-delete-actions">
+    <button type="button" id="video-save-help-cancel">キャンセル</button>
+    <button type="button" id="video-save-help-proceed" class="btn-primary" autofocus>次へ</button>
+  </div>
 </dialog>
 
 <dialog id="lyric-review-confirm" class="custom-wordlist-dialog"
@@ -1419,7 +1493,7 @@
      .wrap の外に置いてページ全体を覆う(詳細設定の中に展開すると編集領域が狭い)。
      戻る導線は埋め込みeditor内に表示し、Escでも閉じる。Escで閉じても編集は生きている
      (sessionStorageに残り、生成時に自動で使われる: liveEditorEdit)。 -->
-<div class="editor-modal" id="editor-frame-wrap" hidden role="dialog" aria-modal="true"
+<dialog class="editor-modal" id="editor-frame-wrap" hidden aria-modal="true"
   aria-labelledby="editor-modal-title">
   <div class="editor-modal-head">
     <h2 id="editor-modal-title">✏️ 替え歌エディタ</h2>
@@ -1434,7 +1508,7 @@
   <div class="editor-modal-foot" id="parody-export">
     <button type="button" id="download-editor" class="btn-sm" disabled>ダウンロード</button>
   </div>
-</div>
+</dialog>
 
 <!-- ⚙(openEditorFlow)を押したとき、保存済みの替え歌の来歴が今の選択と
      食い違う(stale)場合だけ出す選択。一致していれば聞かずに再開するので、
@@ -1558,7 +1632,10 @@
 <script src="/image-credits.js"></script>
 <script src="/custom-wordlists.js"></script>
 <script src="/app-bridge.js"></script>
-<script src="/metadata-change.js"></script>
+<script src="/metadata-change.js?v=compact-song-metadata-v1"></script>
+<script src="/audio-upload.js"></script>
+<script src="/submissions.js"></script>
+<script src="/operation-guard.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 // 詳細設定は単語リストの直下に置く。入力の正本群は既存のHTML位置にまとめたまま、
@@ -1735,9 +1812,13 @@ let bridgeReceiving = false;
 async function receiveEditorLyrics() {
   if (bridgeReceiving || !new URL(location.href).searchParams.has("lyrics-transfer")) return;
   bridgeReceiving = true;
+  const controller = new AbortController();
   const status = $("bridge-status");
   status.hidden = false;
   status.textContent = "ソラミミックから歌詞を受け取っています…";
+  const action = globalThis.VideoOperations?.beginAction(status, {
+    onCancel: () => controller.abort(), cancelLabel: "歌詞の受け取りをキャンセル",
+  });
   try {
     await SoramimicBridge.receive(editorPeer, async (payload) => {
       if (simpleMode) throw new Error("この画面では歌詞JSONを読み込めません。");
@@ -1771,23 +1852,28 @@ async function receiveEditorLyrics() {
       syncBuilderValues();
       saveForm();
       status.textContent = "歌詞を読み込みました。同じ曲の音源またはMIDIを選んで、動画を作成してください。";
-    });
-  } catch (error) { status.textContent = error.message; }
+    }, { signal: controller.signal, onApplying: () => action?.setCancelable(false) });
+  } catch (error) { status.textContent = error.name === "AbortError" ? "歌詞の受け取りを中断しました。" : error.message; }
+  finally { bridgeReceiving = false; action?.finish(); }
 }
 
-async function editHistoryLyrics(job, button, status) {
+async function editResultLyrics(job, button, status) {
+  const controller = new AbortController();
+  const action = globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => controller.abort(), cancelLabel: "歌詞の転送をキャンセル",
+  });
   button.disabled = true;
   status.hidden = false;
   status.textContent = "編集画面へ歌詞を渡しています…";
   try {
     await SoramimicBridge.send(editorPeer, async () => {
-      const response = await fetch(job.editor_url, { headers: headers(), cache: "no-store" });
-      if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。履歴を更新してください。");
+      const response = await fetch(job.editor_url, { headers: headers(), cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。ページを更新してお試しください。");
       return response.json();
-    });
+    }, { signal: controller.signal });
     status.textContent = "編集画面へ歌詞を渡しました。";
   } catch (error) { status.textContent = error.message; }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; action?.finish(); }
 }
 
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
@@ -1806,12 +1892,15 @@ let fixedSynthesizer = "voicevox";
 let maxAudioUploadBytes = 200 * 1024 * 1024;
 let maxSongSeconds = 7 * 60;
 let audioInputReady = false;
+let resumableAudioUploads = false;
 
 async function loadConfig() {
-  const res = await fetch("/api/config", { headers: headers() });
+  const res = await fetch("/api/config", {
+    headers: headers(), signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error("設定を取得できませんでした");
   const conf = await res.json();
   $("auth").hidden = !conf.auth_required;
-  updateAdvancedSettingsAvailability();
   simpleMode = !!conf.simple_ui;
   editorPeer = SoramimicBridge.peer("editor", conf.editor_app_url);
   $("lyrics-file").accept = simpleMode
@@ -1836,9 +1925,10 @@ async function loadConfig() {
     maxSongSeconds = configuredMaxSongSeconds;
   }
   audioInputReady = conf.audio_input === true;
+  resumableAudioUploads = conf.resumable_audio_upload === true;
   $("song-upload-hint").textContent = audioInputReady
-    ? `XF MIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
-    : "XF MIDIに対応";
+    ? `歌詞入りMIDI または音声（MP3・M4A・WAVなど、最大${Math.round(maxAudioUploadBytes / 1024 / 1024)}MB）`
+    : "歌詞入りMIDIに対応（XF・標準歌詞イベント）";
   syncRecordingUi();
   renderSampleOptions();
   $("advanced").hidden = simpleMode;
@@ -1881,9 +1971,11 @@ async function loadConfig() {
   leUpdateStatus();     // 復元した編集の有無をフォーム側の表示に反映
   // 復元より後にビルダーカードを組む(前回の選択があればそれを既定にする)
   await initBuilder();
+  if (samplePending && !await samplePending) throw new Error("曲を復元できませんでした");
   updateSongTextPreviews();
   restoreJobProgress(await loadHistory());
-  receiveEditorLyrics();
+  await receiveEditorLyrics();
+  return true;
 }
 
 function restoreJobProgress(jobs) {
@@ -1894,6 +1986,7 @@ function restoreJobProgress(jobs) {
     if (active.status === "awaiting_review") reviewOpenedJob = active.id;
     setBusy(true);
     showProgress();
+    if (active.thumbnail_url) restoreGenerationThumbnail(active);
     $("status-line").textContent = "実行中のジョブに再接続しました";
     watch(active.id);
   }
@@ -2235,71 +2328,76 @@ function resetTurnstile(hidePrompt = true) {
 // 「おまかせ」のように即投入するときは、まだトークンが無いことがあるため。
 // トークンが必須なのはサーバーに TURNSTILE_SECRET_KEY があるとき(=サイトキーが
 // 配られたとき)だけなので、無効な構成では何もしない。
-async function ensureTurnstileToken(timeoutMs = 120000) {
+async function ensureTurnstileToken(timeoutMs = 120000, signal) {
   if (!turnstileSiteKey) return true;
-  // 前回の完了表示や予約済みタイマーを、今回の確認に持ち越さない。
-  hideTurnstilePrompt();
-  setTurnstilePromptCopy(
-    "ロボットではないことを確認しています",
-    "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
-  );
-  const deadline = Date.now() + timeoutMs;
-  // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
-  // 読み込み失敗時は下の明示的な失敗案内へ切り替える。
-  const loadDeadline = Math.min(deadline, Date.now() + 10000);
-  while (turnstileWidget === null && !turnstileScriptFailed && Date.now() < loadDeadline) {
-    if (window.turnstile && !rebuildTurnstileWidget()) break;
-    if (turnstileWidget !== null) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  if (turnstileWidget === null || turnstileScriptFailed) {
-    showTurnstileFailure(turnstileScriptFailed);
-    return false;
-  }
-  // 一時的なerror/timeout callbackは、widgetを作り直すだけで次のタップでは通ることが
-  // ある。最初のerrorだけは同じタップのまま新しいwidgetで一度再試行する。
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
-    if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
-    if (turnstileWidget === null && window.turnstile) {
-      showTurnstilePrompt(true);
+  const operation = globalThis.VideoOperations?.begin({ cancelable: false });
+  try {
+    // 前回の完了表示や予約済みタイマーを、今回の確認に持ち越さない。
+    hideTurnstilePrompt();
+    setTurnstilePromptCopy(
+      "ロボットではないことを確認しています",
+      "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
+    );
+    const deadline = Date.now() + timeoutMs;
+    // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
+    // 読み込み失敗時は下の明示的な失敗案内へ切り替える。
+    const loadDeadline = Math.min(deadline, Date.now() + 10000);
+    while (turnstileWidget === null && !turnstileScriptFailed && Date.now() < loadDeadline && !signal?.aborted) {
+      if (window.turnstile && !rebuildTurnstileWidget()) break;
+      if (turnstileWidget !== null) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (signal?.aborted) return false;
+    if (turnstileWidget === null || turnstileScriptFailed) {
+      showTurnstileFailure(turnstileScriptFailed);
       return false;
     }
-    if (turnstileToken()) return true;
-    turnstileWaiting = true;
-    turnstileFailed = false;
-    scheduleTurnstileInteractionPrompt();
-    // tokenをページ表示時に先取りすると、生成までに失効してサーバーで拒否され得る。
-    // execution:execute と組み合わせ、生成タップの直後に新しい確認を始める。
-    try { window.turnstile.execute(turnstileWidget); } catch {
-      turnstileFailed = true;
-      showTurnstilePrompt(true);
-    }
-    while (!turnstileToken() && !turnstileFailed && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    turnstileWaiting = false;
-    const failed = turnstileFailed;
-    const verified = !failed && !!turnstileToken();
-    if (verified) {
-      // getResponseがcallbackより先にtokenを返す順序でも、表示済みの案内を即座に
-      // 閉じて点滅へ戻さない。callbackが後から来てもcomplete処理は二重予約しない。
-      if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();
-      return true;
-    }
-    if (turnstileWidget !== null && window.turnstile) {
-      // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
-      // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
-      rebuildTurnstileWidget();
-      // 1回目の失敗後も案内を画面外へ置き去りにしない。
-      if ($("turnstile-wrap").classList.contains("turnstile-active")) {
+    // 一時的なerror/timeout callbackは、widgetを作り直すだけで次のタップでは通ることが
+    // ある。最初のerrorだけは同じタップのまま新しいwidgetで一度再試行する。
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
+      if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
+      if (turnstileWidget === null && window.turnstile) {
+        showTurnstilePrompt(true);
+        return false;
+      }
+      if (turnstileToken()) return true;
+      turnstileWaiting = true;
+      turnstileFailed = false;
+      scheduleTurnstileInteractionPrompt();
+      // tokenをページ表示時に先取りすると、生成までに失効してサーバーで拒否され得る。
+      // execution:execute と組み合わせ、生成タップの直後に新しい確認を始める。
+      try { window.turnstile.execute(turnstileWidget); } catch {
+        turnstileFailed = true;
         showTurnstilePrompt(true);
       }
+      while (!turnstileToken() && !turnstileFailed && Date.now() < deadline && !signal?.aborted) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (signal?.aborted) return false;
+      turnstileWaiting = false;
+      const failed = turnstileFailed;
+      const verified = !failed && !!turnstileToken();
+      if (verified) {
+        // getResponseがcallbackより先にtokenを返す順序でも、表示済みの案内を即座に
+        // 閉じて点滅へ戻さない。callbackが後から来てもcomplete処理は二重予約しない。
+        if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();
+        return true;
+      }
+      if (turnstileWidget !== null && window.turnstile) {
+        // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
+        // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
+        rebuildTurnstileWidget();
+        // 1回目の失敗後も案内を画面外へ置き去りにしない。
+        if ($("turnstile-wrap").classList.contains("turnstile-active")) {
+          showTurnstilePrompt(true);
+        }
+      }
+      // 期限切れは再試行しても待ち時間を延ばすだけなので、即時errorのときだけ再試行する。
+      if (!failed || Date.now() >= deadline) return false;
     }
-    // 期限切れは再試行しても待ち時間を延ばすだけなので、即時errorのときだけ再試行する。
-    if (!failed || Date.now() >= deadline) return false;
-  }
-  return false;
+    return false;
+  } finally { turnstileWaiting = false; operation?.end(); }
 }
 
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
@@ -2341,25 +2439,86 @@ function updateTransposeEnabled() {
 $("auto-octave").addEventListener("change", updateTransposeEnabled);
 updateTransposeEnabled();
 
+let historyLoadPending = null;
 async function loadHistory() {
-  const res = await fetch("/api/jobs", { headers: headers() });
-  if (!res.ok) return [];
-  const jobs = await res.json();
-  disposeHistoryPlayback();
-  resetHistoryShare();
-  historyJobs = jobs;
+  if (historyLoadPending) return historyLoadPending;
+  historyLoadPending = fetchHistory();
+  try { return await historyLoadPending; }
+  finally { historyLoadPending = null; }
+}
+
+async function fetchHistory() {
+  let jobs;
+  try {
+    const res = await fetch("/api/jobs", {
+      headers: headers(), signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error("履歴を取得できませんでした");
+    jobs = await res.json();
+  } catch {
+    const message = document.createElement("p");
+    message.textContent = "履歴を取得できませんでした。もう一度お試しください。";
+    message.setAttribute("role", "status");
+    const retry = historyButton("再試行");
+    retry.addEventListener("click", () => loadHistory().then(restoreJobProgress));
+    const body = $("history-body");
+    if (activeHistoryPlayback || preparedHistorySave || preparedHistoryShare) {
+      body.querySelector(".history-load-error")?.remove();
+      const error = document.createElement("div");
+      error.className = "history-load-error";
+      error.append(message, retry);
+      body.appendChild(error);
+    } else {
+      historyJobs = [];
+      body.replaceChildren(message, retry);
+    }
+    return historyJobs;
+  }
+  renderHistoryJobs(jobs);
+  return jobs;
+}
+
+function renderHistoryJobs(jobs) {
   const body = $("history-body");
+  const previousList = body.querySelector?.(".history-list");
+  const retained = new Map();
+  const keep = (state, element, urlKey, reset) => {
+    const index = state?.jobId ? jobs.findIndex(job => job.id === state.jobId
+      && job[urlKey] === state.url) : -1;
+    const card = element?.closest?.(".history-item");
+    if (index < 0 || !previousList || card?.parentElement !== previousList) { reset(); return; }
+    state.index = index;
+    retained.set(index, card);
+  };
+  keep(activeHistoryPlayback, activeHistoryPlayback?.media, "playback_url", disposeHistoryPlayback);
+  keep(preparedHistorySave, preparedHistorySave?.button, "video_url", resetHistorySave);
+  keep(preparedHistoryShare, preparedHistoryShare?.button, "video_url", resetHistoryShare);
+  historyJobs = jobs;
+  if (retained.size) {
+    // Keep playing media and pending native-save controls connected to the document.
+    // Moving a media node, even into an identical card, can pause it in WebKit.
+    const cards = new Set(retained.values());
+    for (const child of [...body.children]) if (child !== previousList) child.remove();
+    for (const child of [...previousList.children]) if (!cards.has(child)) child.remove();
+    const indices = [...retained.keys()].sort((a, b) => a - b);
+    jobs.forEach((job, index) => {
+      if (retained.has(index)) return;
+      const next = indices.find(value => value > index);
+      previousList.insertBefore(historyCard(job, index), retained.get(next) || null);
+    });
+    return;
+  }
   body.replaceChildren();
-  if (!jobs.length) { body.textContent = "まだありません"; return jobs; }
+  if (!jobs.length) { body.textContent = "まだありません"; return; }
   const list = document.createElement("div");
   list.className = "history-list";
   jobs.forEach((job, index) => list.appendChild(historyCard(job, index)));
   body.appendChild(list);
-  return jobs;
 }
 
 let historyJobs = [];
 let activeHistoryPlayback = null;
+let preparedHistorySave = null;
 let preparedHistoryShare = null;
 
 const HISTORY_STATUS_LABELS = {
@@ -2388,7 +2547,21 @@ function historyButton(label, className = "") {
   return button;
 }
 
+function appendLyricEditAction(actions, job, statusContainer, className = "") {
+  if (!job.editor_url || !editorPeer) return;
+  const edit = historyButton("歌詞を編集 ↗", `result-action action-edit ${className}`.trim());
+  edit.setAttribute("aria-label", "歌詞を編集（新しいタブで開きます）");
+  const message = document.createElement("p");
+  message.className = "history-meta";
+  message.setAttribute("role", "status");
+  message.hidden = true;
+  edit.addEventListener("click", () => editResultLyrics(job, edit, message));
+  actions.appendChild(edit);
+  statusContainer.appendChild(message);
+}
+
 function historyCard(job, index) {
+  const jobIndex = () => job.id ? historyJobs.findIndex(item => item.id === job.id) : index;
   const card = document.createElement("article");
   card.className = "history-item";
   const main = document.createElement("div");
@@ -2401,8 +2574,7 @@ function historyCard(job, index) {
   if (complete) {
     thumb.type = "button";
     thumb.setAttribute("aria-label", `${job.song_label || "曲"}を再生`);
-    thumb.setAttribute("aria-expanded", "false");
-    thumb.addEventListener("click", () => toggleHistoryPlayback(index, thumb));
+    thumb.addEventListener("click", () => startHistoryPlayback(jobIndex(), thumb));
   }
   if (job.thumbnail_url && job.result_kind !== "audio") {
     const image = document.createElement("img");
@@ -2412,6 +2584,14 @@ function historyCard(job, index) {
     thumb.appendChild(image);
   } else {
     thumb.textContent = job.result_kind === "audio" ? "音声" : historyStatusLabel(job);
+  }
+  if (complete) {
+    if (job.result_kind === "audio") thumb.classList.add("history-thumb-audio");
+    const icon = document.createElement("span");
+    icon.className = "history-play-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "▶";
+    thumb.prepend(icon);
   }
   const copy = document.createElement("div");
   copy.className = "history-copy";
@@ -2447,34 +2627,36 @@ function historyCard(job, index) {
   if (complete) {
     const actions = document.createElement("div");
     actions.className = "history-actions";
-    const play = historyButton("再生", "history-play");
-    play.setAttribute("aria-expanded", "false");
-    play.addEventListener("click", () => toggleHistoryPlayback(index, play));
-    actions.appendChild(play);
+    const save = appendSaveMenu(actions, job, () => {
+      if (!save || (preparedHistorySave?.index === jobIndex()
+          && preparedHistorySave.shareable === false)) return false;
+      saveHistoryVideo(jobIndex(), save.button, save.status);
+      return true;
+    });
+    if (save && prefersNativeVideoSave() && job.result_kind !== "audio") {
+      save.button.addEventListener("click", event => {
+        if (preparedHistorySave?.index !== jobIndex()
+            || preparedHistorySave.needsTap === false
+            || preparedHistorySave.shareable === false) return;
+        event.preventDefault();
+        saveHistoryVideo(jobIndex(), save.button, save.status);
+      });
+    }
     if (typeof navigator.share === "function" && typeof File !== "undefined") {
-      const share = historyButton("共有", "history-share");
-      share.addEventListener("click", () => shareHistoryResult(index, share));
+      const share = historyButton("共有", "history-share result-action action-share");
+      share.addEventListener("click", () => shareHistoryResult(jobIndex(), share));
       actions.appendChild(share);
     }
-    const download = historyButton("ダウンロード", "history-download");
-    download.addEventListener("click", () => downloadHistoryResult(job));
-    actions.appendChild(download);
-    if (job.editor_url && editorPeer) {
-      const edit = historyButton("歌詞を編集 ↗", "history-edit-lyrics");
-      const message = document.createElement("p");
-      message.className = "history-meta";
-      message.setAttribute("role", "status");
-      message.hidden = true;
-      edit.addEventListener("click", () => editHistoryLyrics(job, edit, message));
-      actions.appendChild(edit);
-      copy.appendChild(message);
-    }
+    appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
     copy.appendChild(actions);
+    if (save) copy.appendChild(save.status);
   }
   if (job.status === "awaiting_review") {
     const actions = document.createElement("div");
     actions.className = "history-actions";
     const resume = historyButton("編集を再開", "history-review");
+    resume.dataset.jobId = job.id;
+    resume.disabled = historyReviewBlocked(job.id);
     resume.addEventListener("click", () => resumeHistoryReview(job));
     actions.appendChild(resume);
     copy.appendChild(actions);
@@ -2486,17 +2668,35 @@ function historyCard(job, index) {
 }
 
 function resumeHistoryReview(job) {
-  if (reviewSubmitting || reviewOpening) return;
+  if (historyReviewBlocked(job.id)) return;
   resumed = true;
   reviewOpenedJob = null;
+  openLyricReview.requestedJob = job.id;
   setBusy(true);
   showProgress();
   watch(job.id);
 }
 
+function historyReviewBlocked(id) {
+  return !!reviewAction || songRecordingBusy() || lyricsFileReading
+    || (submitBusy && currentJob !== id);
+}
+
+function syncHistoryReviewControls() {
+  $("builder-review").disabled = !!reviewAction || songRecordingBusy() || lyricsFileReading;
+  if (!songRecordingBusy()) {
+    $("song-record-button").disabled = !!reviewAction || customListBusy || lyricsFileReading;
+  }
+  for (const button of document.querySelectorAll(".history-review")) {
+    button.disabled = historyReviewBlocked(button.dataset.jobId);
+  }
+}
+
 function disposeHistoryPlayback() {
   const active = activeHistoryPlayback;
   if (!active) return;
+  activeHistoryPlayback = null;
+  globalThis.VideoOperations?.cancelAction(active.media);
   if (active.abort) active.abort.abort();
   active.media.pause();
   active.media.removeAttribute("src");
@@ -2505,20 +2705,14 @@ function disposeHistoryPlayback() {
   active.media.remove();
   if (active.objectUrl) URL.revokeObjectURL(active.objectUrl);
   active.slot.replaceChildren(active.thumb);
-  active.triggers.forEach((button) => {
-    button.setAttribute("aria-expanded", "false");
-    if (button.classList.contains("history-play")) button.textContent = "再生";
-  });
-  activeHistoryPlayback = null;
 }
 
-async function toggleHistoryPlayback(index, trigger) {
+async function startHistoryPlayback(index, trigger) {
   if (activeHistoryPlayback && activeHistoryPlayback.index === index) {
-    disposeHistoryPlayback();
-    resetHistoryShare();
     return;
   }
   disposeHistoryPlayback();
+  resetHistorySave();
   resetHistoryShare();
   const job = historyJobs[index];
   if (!job || !job.playback_url) return;
@@ -2533,103 +2727,226 @@ async function toggleHistoryPlayback(index, trigger) {
     media.setAttribute("playsinline", "");
     if (job.thumbnail_url) media.poster = qs(job.thumbnail_url);
   }
-  const triggers = [...card.querySelectorAll(".history-play, .history-thumb")];
-  triggers.forEach((button) => {
-    button.setAttribute("aria-expanded", "true");
-    if (button.classList.contains("history-play")) button.textContent = "閉じる";
-  });
   slot.replaceChildren(media);
-  const active = { index, media, slot, thumb, triggers, abort: null, objectUrl: "" };
+  const active = { index, jobId: job.id, url: job.playback_url,
+    media, slot, thumb, abort: null, objectUrl: "" };
   activeHistoryPlayback = active;
+  const operation = globalThis.VideoOperations?.beginAction(media, {
+    onCancel: () => disposeHistoryPlayback(), cancelLabel: "再生の準備をキャンセル",
+  });
+  const ctrl = new AbortController();
+  active.abort = ctrl;
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); media.pause(); }, 30000);
   try {
     if (apiKey()) {
-      const ctrl = new AbortController();
-      active.abort = ctrl;
       const res = await fetch(job.playback_url, { headers: headers(), signal: ctrl.signal });
       if (!res.ok) throw new Error("再生データを取得できませんでした");
       const blob = await res.blob();
       if (activeHistoryPlayback !== active) return;
+      if (timedOut) throw new Error("再生の準備がタイムアウトしました");
       active.objectUrl = URL.createObjectURL(blob);
       media.src = active.objectUrl;
     } else {
       media.src = job.playback_url;
     }
     media.load();
-    media.play().catch(() => { /* controlsから再生できるので自動再生拒否は無視 */ });
+    await media.play().catch(error => {
+      // 自動再生の許可待ちはcontrolsから再生できる。取得失敗は再試行へ戻す。
+      if (error?.name !== "NotAllowedError") throw error;
+    });
+    if (timedOut) throw new Error("再生の準備がタイムアウトしました");
   } catch (error) {
-    if (activeHistoryPlayback !== active || (error && error.name === "AbortError")) return;
+    if (activeHistoryPlayback !== active || (!timedOut && error && error.name === "AbortError")) return;
+    disposeHistoryPlayback();
     const msg = document.createElement("p");
     msg.className = "history-player-msg";
-    msg.textContent = "この端末では再生を開始できませんでした。ダウンロードをお試しください。";
+    msg.textContent = "再生データを読み込めませんでした。もう一度再生するか、ダウンロードをお試しください。";
     slot.appendChild(msg);
   }
-}
-
-function downloadHistoryResult(job) {
-  const link = document.createElement("a");
-  link.href = qs(job.video_url);
-  link.download = job.result_kind === "audio" ? "soramimic.wav" : "soramimic.mp4";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  finally { clearTimeout(timer); operation?.finish(); }
 }
 
 function resetHistoryShare() {
   const prepared = preparedHistoryShare;
   if (!prepared) return;
+  preparedHistoryShare = null;
+  globalThis.VideoOperations?.cancelAction(prepared.button);
   if (prepared.abort) prepared.abort.abort();
   if (prepared.button && prepared.button.isConnected) {
+    globalThis.VideoOperations?.clearContinuation(prepared.button);
     prepared.button.disabled = false;
     prepared.button.textContent = "共有";
   }
-  preparedHistoryShare = null;
 }
 
 async function shareHistoryResult(index, button) {
   const job = historyJobs[index];
   if (!job || !job.video_url || typeof navigator.share !== "function") return;
+  const startAction = () => globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => resetHistoryShare(),
+  });
+  const open = (state, afterPreparation = false) => {
+    button.disabled = false;
+    button.textContent = "共有";
+    action?.finish();
+    globalThis.VideoOperations?.clearContinuation(button);
+    openFileShare(state.file, (error) => {
+      if (preparedHistoryShare !== state || error?.name === "AbortError") return;
+      if (afterPreparation && error?.name === "NotAllowedError") {
+        startAction();
+        globalThis.VideoOperations?.allowContinuation(button);
+      }
+      button.textContent = afterPreparation && error?.name === "NotAllowedError"
+        ? "共有を開く" : "共有を再試行";
+    });
+  };
+  if (preparedHistoryShare?.index !== index) resetHistoryShare();
+  const action = startAction();
   const prepared = preparedHistoryShare;
   if (prepared && prepared.index === index && prepared.file) {
-    try {
-      const sharing = navigator.share({ files: [prepared.file], text: SHARE_TEXT });
-      resetHistoryShare();
-      Promise.resolve(sharing).catch(() => { /* キャンセル時にダウンロードは始めない */ });
-    } catch {
-      resetHistoryShare();
-    }
+    open(prepared);
     return;
   }
-  resetHistoryShare();
+  if (prepared && prepared.index === index && prepared.abort) return;
   const ctrl = new AbortController();
-  const state = { index, button, abort: ctrl, file: null };
+  const state = { index, jobId: job.id, url: job.video_url, button, abort: ctrl, file: null };
   preparedHistoryShare = state;
   button.disabled = true;
   button.textContent = "共有を準備中…";
+  const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
     const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
     if (!res.ok) throw new Error("共有データを取得できませんでした");
     const blob = await res.blob();
     if (preparedHistoryShare !== state) return;
-    const filename = job.result_kind === "audio" ? "soramimic.wav" : "soramimic.mp4";
-    state.file = new File([blob], filename, { type: blob.type });
+    const audio = job.result_kind === "audio";
+    globalThis.VideoOperations?.allowContinuation(button);
+    state.file = new File([blob], audio ? "soramimic.wav" : "soramimic.mp4",
+      { type: blob.type || (audio ? "audio/wav" : "video/mp4") });
     button.disabled = false;
-    button.textContent = "共有を開く";
+    if (navigator.userActivation?.isActive === false) button.textContent = "共有を開く";
+    else open(state, true);
   } catch (error) {
-    if (preparedHistoryShare !== state || (error && error.name === "AbortError")) return;
-    resetHistoryShare();
-    button.textContent = "共有できません";
+    if (preparedHistoryShare !== state) return;
+    state.abort = null;
+    button.disabled = false;
+    button.textContent = "共有を再試行";
+  } finally {
+    clearTimeout(timer);
+    if (!preparedHistoryShare?.file) action?.finish();
+  }
+}
+
+function resetHistorySave() {
+  const prepared = preparedHistorySave;
+  if (!prepared) return;
+  preparedHistorySave = null;
+  globalThis.VideoOperations?.cancelAction(prepared.button);
+  if (prepared.abort) prepared.abort.abort();
+  if (prepared.button && prepared.button.isConnected) {
+    prepared.button.disabled = false;
+    globalThis.VideoOperations?.clearContinuation(prepared.button);
+    prepared.button.textContent = "保存";
+    prepared.button.removeAttribute("aria-busy");
+    prepared.button.removeAttribute("aria-disabled");
+  }
+  if (prepared.status) prepared.status.hidden = true;
+}
+
+async function saveHistoryVideo(index, button, status) {
+  const job = historyJobs[index];
+  if (!job || !job.video_url || !prefersNativeVideoSave()) return;
+  if (preparedHistorySave?.index !== index) resetHistorySave();
+  const action = globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => resetHistorySave(),
+  });
+  const ready = () => {
+    button.disabled = false;
+    button.textContent = "保存";
+    button.removeAttribute("aria-busy");
+    button.removeAttribute("aria-disabled");
+  };
+  const message = text => {
+    status.textContent = text;
+    status.hidden = !text;
+  };
+  const requestTap = state => {
+    state.needsTap = true;
+    globalThis.VideoOperations?.beginAction(button, { onCancel: () => resetHistorySave() });
+    globalThis.VideoOperations?.allowContinuation(button);
+    ready();
+    message("保存の準備ができました。もう一度「保存」をタップしてください。");
+  };
+  const open = (state, afterPreparation = false) => {
+    ready();
+    message("");
+    state.shareable = true;
+    state.needsTap = false;
+    action?.finish();
+    globalThis.VideoOperations?.clearContinuation(button);
+    openFileShare(state.file, (error) => {
+      if (preparedHistorySave !== state || error?.name === "AbortError") return;
+      if (afterPreparation && error?.name === "NotAllowedError") requestTap(state);
+      else {
+        state.shareable = false;
+        message("保存画面を開けませんでした。「保存」からMP4を選び直してください。");
+      }
+    }, "");
+  };
+  const prepared = preparedHistorySave;
+  if (prepared && prepared.index === index && prepared.file) {
+    open(prepared);
+    return;
+  }
+  // 準備中の同じジョブを二重取得しない。
+  if (prepared && prepared.index === index && prepared.abort) return;
+  const ctrl = new AbortController();
+  const state = { index, jobId: job.id, url: job.video_url,
+    button, status, abort: ctrl, file: null, needsTap: true };
+  preparedHistorySave = state;
+  button.disabled = true;
+  button.textContent = "準備中…";
+  button.setAttribute("aria-busy", "true");
+  button.setAttribute("aria-disabled", "true");
+  message("動画を取得しています…");
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await fetch(job.video_url, { headers: headers(), signal: ctrl.signal });
+    if (!res.ok) throw new Error("保存データを取得できませんでした");
+    const blob = await res.blob();
+    if (preparedHistorySave !== state) return;
+    globalThis.VideoOperations?.allowContinuation(button);
+    state.file = new File([blob], "soramimic.mp4", { type: blob.type || "video/mp4" });
+    state.abort = null;
+    if (navigator.userActivation?.isActive === false) requestTap(state);
+    else open(state, true);
+  } catch (error) {
+    if (preparedHistorySave !== state) return;
+    state.abort = null;
+    ready();
+    message("動画を取得できませんでした。もう一度「保存」をタップしてください。");
+  } finally {
+    clearTimeout(timer);
+    if (!preparedHistorySave?.file) action?.finish();
   }
 }
 
 $("history").addEventListener("toggle", () => {
-  if (!$("history").open) {
+  if ($("history").open) {
+    loadHistory().then(restoreJobProgress);
+  } else {
     disposeHistoryPlayback();
+    resetHistorySave();
     resetHistoryShare();
   }
 });
 window.addEventListener("pagehide", () => {
   disposeHistoryPlayback();
+  resetHistorySave();
   resetHistoryShare();
+  if (resultDownloadAbort) resultDownloadAbort.abort();
+  if ($("video-save-help").open) $("video-save-help").close();
 });
 
 let currentJob = null;
@@ -2682,10 +2999,11 @@ function restartPolling(id) {
   poll(id, pollSeq);
 }
 
-function watch(id) {
+function watch(id, { canceling = false } = {}) {
   currentJob = id;
-  cancelPendingJob = null;
-  setCancelPending(false);
+  syncHistoryReviewControls();
+  cancelPendingJob = canceling ? id : null;
+  setCancelPending(canceling);
   $("cancel").hidden = false;
   restartPolling(id);
 }
@@ -2834,6 +3152,7 @@ async function poll(id, seq = pollSeq) {
   try {
     const res = await fetch(`/api/jobs/${id}`,
       { headers: headers(), cache: "no-store", signal: ctrl.signal });
+    if (seq !== pollSeq || id !== currentJob) return;
     if (POLL_FATAL_STATUS.includes(res.status)) {
       // 取り直しても直らない。busyのままにせず操作を返す
       stopPolling();
@@ -2856,6 +3175,9 @@ async function poll(id, seq = pollSeq) {
   }
   if (seq !== pollSeq) return;   // 待っている間に取り直しが走っていたら捨てる
   pollFailures = 0;
+  if (job.thumbnail_url && ["queued", "running", "awaiting_review"].includes(job.status)) {
+    restoreGenerationThumbnail(job);
+  }
   renderStages(job);
   renderBuilderBar(job);
   $("builder-review").hidden = job.status !== "awaiting_review";
@@ -2893,7 +3215,7 @@ async function poll(id, seq = pollSeq) {
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "awaiting_review") {
     setJobStatus("替え歌歌詞を確認してください");
-    if (reviewOpenedJob !== id && !cancelPendingJob) await openLyricReview(id);
+    if (reviewOpenedJob !== id && !cancelPendingJob) await openLyricReview(id, { foreground: openLyricReview.requestedJob === id });
     if (seq === pollSeq) schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "done") {
     setJobStatus(`完成!(合計 ${Math.round(job.total_seconds)}秒)`);
@@ -2937,85 +3259,136 @@ function showWordlistExhaustionNotice(exhausted) {
   notice.hidden = !exhausted;
 }
 
-// UAだけでブラウザ名を推測すると、iPadのデスクトップ表示やアプリ内ブラウザを
-// 誤判定しやすい。iPadのデスクトップ表示も含めてモバイルOSかを判定したうえで、
-// Web Share APIの有無を見る。PCでは共有シートを保存導線にせず、直接ダウンロードと
-// 共有を別ボタンにする。モバイルではOS標準の保存・共有を1ボタンにまとめる。
+// 保存は形式を選ぶ操作。iPhoneの動画保存では写真に保存できる共有シートを使う。
 const SHARE_TEXT =
   "Soramimicで替え歌動画を作りました🎤 #Soramimic #そらみみっく\n" + location.origin;
 
-function mobilePlatform() {
-  const platform = (navigator.userAgentData && navigator.userAgentData.platform)
-    || navigator.platform || "";
-  const ua = navigator.userAgent || "";
-  if (/iPhone|iPad|iPod/i.test(ua) || /iPhone|iPad|iPod/i.test(platform)
-      || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)) return "ios";
-  if (/Android/i.test(ua) || /Android/i.test(platform)) return "android";
-  return "other";
-}
-
 function supportsVideoFileShare() {
-  // 起動時には実動画がまだ無い。ここではAPIの有無だけを見て、完成後に
-  // 再生と共有で共用する実動画を準備する。
   return typeof navigator.share === "function" && typeof File !== "undefined"
     && typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
     && typeof URL.revokeObjectURL === "function";
 }
 
 const FILE_SHARE_SUPPORTED = supportsVideoFileShare();
-const DESKTOP_SHARE_UI = mobilePlatform() === "other";
+const SHARE_HTML = `<div class="share-row" id="result-actions">` +
+  (FILE_SHARE_SUPPORTED ? `<button type="button" id="share-save" class="result-action action-share" aria-label="動画を共有">共有</button>` : "") +
+  `</div><p class="hint" id="share-hint" role="status"></p>`;
 
-function shareHint(shareable) {
-  if (DESKTOP_SHARE_UI) {
-    return shareable
-      ? "動画をダウンロードするか、共有メニューから共有先を選べます。"
-      : "「動画をダウンロード」を押すと、動画ファイルを保存できます。";
+// 呼び出しは同期のままにし、用意済みのFileならタップの操作権限内で共有を開く。
+// iOSでは共有Promiseが完了しないこともあるため、待ってボタンを無効にしない。
+function openFileShare(file, onError, text = SHARE_TEXT) {
+  try {
+    const data = { files: [file] };
+    if (text) data.text = text;
+    const sharing = navigator.share(data);
+    Promise.resolve(sharing).catch(onError);
+  } catch (error) {
+    onError(error);
   }
-  if (!shareable) return "ボタンを押すと、動画ファイルをダウンロードします。";
-  if (mobilePlatform() === "ios") {
-    return "";
-  }
-  if (mobilePlatform() === "android") {
-    return "Androidの共有メニューから保存先または共有先を選べます。";
-  }
-  return "端末の共有メニューから保存先または共有先を選べます。";
 }
 
-const SHARE_HTML = DESKTOP_SHARE_UI
-  ? `<p class="share-row">` +
-    `<button type="button" id="download-video" class="btn-sm">動画をダウンロード</button>` +
-    (FILE_SHARE_SUPPORTED
-      ? `<button type="button" id="share-save" class="btn-sm" disabled>共有を準備中…</button>`
-      : "") +
-    `</p>` +
-    `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "動画を再生・共有できるよう準備しています。ダウンロードはすぐにできます。"
-      : shareHint(false)}</p>`
-  : `<p class="share-row">` +
-    `<button type="button" id="share-save" class="btn-sm"${FILE_SHARE_SUPPORTED ? " disabled" : ""}>` +
-    `${FILE_SHARE_SUPPORTED ? "共有を準備中…" : "動画をダウンロード"}</button>` +
-    `</p>` +
-    `<p class="hint" id="share-hint">${FILE_SHARE_SUPPORTED
-      ? "動画を再生・共有できるよう準備しています。" : shareHint(false)}</p>`;
+function isIOSPlatform() {
+  const platform = navigator.platform || "";
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent || "")
+    || /iPhone|iPad|iPod/i.test(platform)
+    || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1);
+}
+
+function prefersNativeVideoSave() {
+  return typeof navigator.share === "function" && typeof File !== "undefined" && isIOSPlatform();
+}
+
+let nativeVideoSaveHelpSkipped = false;
+function offerNativeVideoSave(link, onVideoSave, onDownload) {
+  const preference = "soramimic-video-save-help-skipped";
+  try {
+    nativeVideoSaveHelpSkipped ||= localStorage.getItem(preference) === "1";
+  } catch (_) { /* 保存不可でも、このページ内では選択を記憶する。 */ }
+  if (nativeVideoSaveHelpSkipped) return onVideoSave() !== false;
+  const dialog = $("video-save-help");
+  const skip = $("video-save-help-skip");
+  const proceed = $("video-save-help-proceed");
+  skip.checked = false;
+  proceed.onclick = () => {
+    dialog.close();
+    // 結果の切替や画面離脱後に、古い動画の共有を開始しない。
+    if (!link.isConnected || document.visibilityState === "hidden") return;
+    if (skip.checked) {
+      nativeVideoSaveHelpSkipped = true;
+      try { localStorage.setItem(preference, "1"); } catch (_) { /* 記憶は任意。 */ }
+    }
+    // 確認タップ内で同期的に共有を呼び、OSの操作権限を保つ。
+    if (onVideoSave() === false) {
+      onDownload();
+    }
+  };
+  $("video-save-help-cancel").onclick = () => dialog.close();
+  dialog.onclose = () => { if (!dialog.open) proceed.onclick = null; };
+  dialog.showModal();
+  return true;
+}
+
+let resultDownloadObjectUrl = "";
+let resultDownloadAbort = null;
+
+async function downloadResultMedia(link, mediaType, status) {
+  if (link.getAttribute("aria-busy") === "true") return;
+  if (resultDownloadAbort) resultDownloadAbort.abort();
+  const ctrl = new AbortController();
+  resultDownloadAbort = ctrl;
+  link.setAttribute("aria-busy", "true");
+  status.hidden = false;
+  status.textContent = "ファイルを取得しています…";
+  const timer = setTimeout(() => ctrl.abort(), 120000);
+  try {
+    const response = await fetch(link.href, {
+      headers: headers(), credentials: "same-origin", signal: ctrl.signal,
+    });
+    if (!response.ok) throw new Error("ファイルを取得できませんでした");
+    const blob = await response.blob();
+    if (ctrl.signal.aborted || !blob.size) throw new Error("ファイルを取得できませんでした");
+    if (blob.type && ![mediaType, "application/octet-stream"].includes(blob.type.split(";")[0])) {
+      throw new Error("ファイル形式が一致しません");
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const plainName = disposition.match(/filename="([^"]+)"/i);
+    let filename = mediaType === "audio/wav" ? "soramimic.wav" : "soramimic.mp4";
+    if (encodedName) {
+      try { filename = decodeURIComponent(encodedName[1]); } catch (_) { /* 既定名を使う */ }
+    } else if (plainName) filename = plainName[1];
+    const url = URL.createObjectURL(new Blob([blob], { type: mediaType }));
+    // Safariの「表示」はclick後に読むため、今回のURLは次の保存まで保持する。
+    if (resultDownloadObjectUrl) URL.revokeObjectURL(resultDownloadObjectUrl);
+    resultDownloadObjectUrl = url;
+    const download = document.createElement("a");
+    download.href = url;
+    download.download = filename;
+    document.body.appendChild(download);
+    globalThis.VideoOperations?.allowContinuation(download);
+    try { download.click(); }
+    finally {
+      globalThis.VideoOperations?.clearContinuation(download);
+      download.remove();
+    }
+    status.hidden = true;
+  } catch (_error) {
+    status.textContent = "ファイルを取得できませんでした。保存メニューからもう一度お試しください。";
+  } finally {
+    clearTimeout(timer);
+    link.removeAttribute("aria-busy");
+    if (resultDownloadAbort === ctrl) resultDownloadAbort = null;
+  }
+}
 
 function videoFileName(videoUrl) {
   const name = (videoUrl.split("/").pop() || "soramimic.mp4").split("?")[0];
   return name.endsWith(".mp4") ? name : "soramimic.mp4";
 }
 
-// シェアシートが使えない環境向けのフォールバック。動画URLはそのまま開けるので、
-// blobを作らずリンクのdownload属性に任せる。
-function downloadVideo(videoUrl) {
-  const a = document.createElement("a");
-  a.href = qs(videoUrl);
-  a.download = videoFileName(videoUrl);
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
 let sharePreparationSeq = 0;
 let preparedVideoShare = null;
+let videoSharePreparation = null;
 let sharePreparationAbort = null;
 let sharePlaybackUrl = "";
 let sharePlaybackErrorBinding = null;
@@ -3048,30 +3421,25 @@ function fallbackToDirectVideo(videoUrl, video, expectedObjectUrl = "") {
 }
 
 function resetVideoSharePreparation() {
+  globalThis.VideoOperations?.clearContinuation($("share-save"));
   sharePreparationSeq += 1;
   if (sharePreparationAbort) sharePreparationAbort.abort();
   sharePreparationAbort = null;
   revokeSharePlaybackUrl();
   preparedVideoShare = null;
+  videoSharePreparation = null;
 }
 
 function setShareButtonMode(shareable) {
-  const saveBtn = $("share-save");
-  const hint = $("share-hint");
-  if (!hint) return;
-  if (DESKTOP_SHARE_UI) {
-    if (saveBtn) {
-      saveBtn.hidden = !shareable;
-      saveBtn.disabled = false;
-      saveBtn.textContent = "共有";
-    }
-    hint.textContent = shareHint(shareable);
-    return;
+  const button = $("share-save");
+  if (button) {
+    button.hidden = !shareable;
+    button.disabled = false;
+    button.textContent = "共有";
   }
-  if (!saveBtn) return;
-  saveBtn.disabled = false;
-  saveBtn.textContent = shareable ? "動画を保存・共有" : "動画をダウンロード";
-  hint.textContent = shareHint(shareable);
+  const hint = $("share-hint");
+  if (hint) hint.textContent = !shareable && FILE_SHARE_SUPPORTED
+    ? "共有を準備できませんでした。「保存」からダウンロードできます。" : "";
 }
 
 async function prepareVideoShare(videoUrl, video) {
@@ -3115,7 +3483,7 @@ async function prepareVideoShare(videoUrl, video) {
     video.removeAttribute("aria-busy");
     // iOSのアプリ内ブラウザにはshareはあってもcanShareが無いものがあり、
     // canShareを門番にすると「共有」表示なのに必ずdownloadへ落ちてしまう。
-    // 実Fileを用意できたらshareを直接試し、拒否されたときだけ保存へ切り替える。
+    // 実Fileを用意できたらshareを直接試し、拒否時は保存メニューからの保存を案内する。
     preparedVideoShare = { videoUrl, file, shareable: true };
     setShareButtonMode(true);
   } catch (_e) {
@@ -3131,50 +3499,70 @@ async function prepareVideoShare(videoUrl, video) {
 }
 
 function bindShare(videoUrl) {
-  const downloadBtn = $("download-video");
-  if (downloadBtn) {
-    downloadBtn.addEventListener("click", () => {
-      if (videoUrl) downloadVideo(videoUrl);
-    });
-  }
-  const saveBtn = $("share-save");
-  if (!saveBtn) return;
-  saveBtn.addEventListener("click", () => {
-    if (!videoUrl) return;
-    if (!FILE_SHARE_SUPPORTED) return downloadVideo(videoUrl);
-    const prepared = preparedVideoShare;
-    if (!prepared || prepared.videoUrl !== videoUrl) return;
-    if (!prepared.shareable || !prepared.file) {
-      if (!DESKTOP_SHARE_UI) downloadVideo(videoUrl);
-      return;
-    }
-    // Web Shareはタップによる一時的なユーザー操作権限を必要とする。ここでは
-    // fetch/blob変換を一切待たず、クリックハンドラから最初にshareを呼ぶ。
-    // 動画と投稿用本文を同じ共有シートへ渡す。共有API自体はこのクリック内で
-    // 即座に呼び、一時的なユーザー操作権限を失わない。
-    // iOSでは共有シートを閉じてもPromiseが完了しないことがある。Promise待ちで
-    // ボタンをdisabledにすると以後ずっと押せなくなるので、ここでは無効化しない。
-    let sharing;
-    try {
-      sharing = navigator.share({ files: [prepared.file], text: SHARE_TEXT });
-    } catch (e) {
-      if (!(e && e.name === "AbortError")) {
-        preparedVideoShare = { videoUrl, file: null, shareable: false };
-        setShareButtonMode(false);
-        showBuilderMsg("共有メニューを開けませんでした。「動画をダウンロード」をお使いください。");
-      }
-      return;
-    }
-    Promise.resolve(sharing).catch((e) => {
-      // キャンセルや共有エラーを勝手なダウンロードに置き換えない。共有が
-      // 拒否された環境では、次の明示操作用にボタンをダウンロードへ変える。
-      if (!(e && e.name === "AbortError")) {
-        preparedVideoShare = { videoUrl, file: null, shareable: false };
-        setShareButtonMode(false);
-        showBuilderMsg("共有メニューを開けませんでした。「動画をダウンロード」をお使いください。");
-      }
-    });
+  const button = $("share-save");
+  if (!button) return;
+  button.addEventListener("click", () => sharePreparedVideo(videoUrl, button));
+}
+
+async function sharePreparedVideo(videoUrl, button, text = SHARE_TEXT) {
+  const startAction = () => globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => {
+      globalThis.VideoOperations?.clearContinuation(button);
+      button.disabled = false;
+      button.textContent = "共有";
+    },
+    onFinish: () => setTimeout(() => {
+      if ($("share-save") === button) flushDeferredBuilderState();
+    }, 0),
   });
+  const action = startAction();
+  globalThis.VideoOperations?.allowContinuation(button);
+  const seq = sharePreparationSeq;
+  let afterPreparation = false;
+  if ((!preparedVideoShare || preparedVideoShare.videoUrl !== videoUrl) && videoSharePreparation) {
+    button.disabled = true;
+    button.textContent = "共有を準備中…";
+    try { await videoSharePreparation; }
+    catch (_) {
+      action?.finish();
+      globalThis.VideoOperations?.clearContinuation(button);
+      button.disabled = false;
+      button.textContent = "共有を再試行";
+      return;
+    }
+    if (action?.canceled || seq !== sharePreparationSeq) {
+      action?.finish();
+      globalThis.VideoOperations?.clearContinuation(button);
+      return;
+    }
+    button.disabled = false;
+    afterPreparation = true;
+  }
+  const prepared = preparedVideoShare;
+  if (!prepared || prepared.videoUrl !== videoUrl || !prepared.file) {
+    action?.finish();
+    globalThis.VideoOperations?.clearContinuation(button);
+    return;
+  }
+  if (afterPreparation && navigator.userActivation?.isActive === false) {
+    button.textContent = "共有を開く";
+    return;
+  }
+  button.textContent = "共有";
+  prepared.shareable = true;
+  action?.finish();
+  globalThis.VideoOperations?.clearContinuation(button);
+  openFileShare(prepared.file, (error) => {
+    if (seq !== sharePreparationSeq || error?.name === "AbortError") return;
+    if (afterPreparation && error?.name === "NotAllowedError") {
+      startAction();
+      globalThis.VideoOperations?.allowContinuation(button);
+      button.textContent = "共有を開く";
+      return;
+    }
+    prepared.shareable = false;
+    showBuilderMsg("共有メニューを開けませんでした。「保存」からダウンロードできます。");
+  }, text);
 }
 
 // ジョブを投入できない状態か(投入中・実行中)。生成の導線はサムネ枠のタップ
@@ -3200,9 +3588,7 @@ function finish() {
 
 function setBusy(busy) {
   submitBusy = busy;
-  $("preview").disabled = busy;
-  $("preview-high").disabled = busy;
-  $("preview-low").disabled = busy;
+  syncHistoryReviewControls();
   // カードのプルダウンは生成中も触れる。走っているジョブは投入時の
   // 選択で確定していて影響しないし、それは説明しなくても分かる(押しても無反応の
   // 方が不親切)。サムネ枠は進捗表示が使っているので、プレビューの作り直しだけ
@@ -3243,6 +3629,12 @@ function showSubmitMsg(text) {
 // Turnstile tokenはサーバー検証時点で失効していることがある。403はこのendpointでは
 // Turnstile拒否だけなので、新しいtokenを取り直して同じFormDataを一度だけ再送する。
 async function postJobWithTurnstileRetry(form, signal = null) {
+  if (typeof SoramimicSubmissions === "undefined") {
+    throw new Error("受付情報を読み込めませんでした。ページを再読み込みしてください。");
+  }
+  await SoramimicSubmissions.prepare(form, {headers, signal});
+  signal?.throwIfAborted();
+  SoramimicSubmissions.sent(form);
   const hasAudio = !!(form.has && form.has("audio"));
   const jobHeaders = () => ({
     ...headers(),
@@ -3339,7 +3731,10 @@ async function postJobWithTurnstileRetry(form, signal = null) {
       }
     }
   };
-  let res = await send();
+  const sendAudio = () => SoramimicAudioUpload.send(form, {headers, signal, onStatus: setJobStatus});
+  const resumable = hasAudio && typeof SoramimicAudioUpload !== "undefined"
+    && resumableAudioUploads;
+  let res = await (resumable ? sendAudio() : send());
   if (res.status !== 403 || !turnstileSiteKey) return res;
   // resetだけでは前回実行の遅延callbackと新しい実行を区別できない。widgetを世代ごと
   // 作り直し、拒否されたtokenの実行から届くcallbackを無効化してから再確認する。
@@ -3348,9 +3743,9 @@ async function postJobWithTurnstileRetry(form, signal = null) {
   turnstileFailed = false;
   hideTurnstilePrompt();
   rebuildTurnstileWidget();
-  if (!await ensureTurnstileToken()) return res;
+  if (!await ensureTurnstileToken(undefined, signal)) return res;
   form.set("turnstile_token", turnstileToken());
-  return send();
+  return resumable ? sendAudio() : send();
 }
 
 // previewMode は声プレビューの切り出し方(head=歌い出し / high / low)。
@@ -3358,153 +3753,226 @@ async function postJobWithTurnstileRetry(form, signal = null) {
 async function submitJob(previewSec, previewMode) {
   // サンプル取得待ちやTurnstile待ちも投入処理の一部。二重タップで同じtokenを使う
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
-  if (submitBusy) return;
-  setBusy(true);
-  const inputError = lyricsFileReading ? "歌詞ファイルの読み込みが終わるまでお待ちください。"
-    : (songInputMode !== "upload" || !automaticLyricsEnabled()) ? lyricsInput().error : "";
-  if (inputError) { setBusy(false); showSubmitMsg(inputError); return; }
-  // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
-  // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
-  if (previewSec === 0) $("builder-image-hidden").hidden = true;
-  // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
-  const audio = ownAudioFile();
-  if (!audio) {
-    if (samplePending) await samplePending;
-    if (midiChecking) await midiChecking;
-  }
-  // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
-  // いたり、復元した古い中身が入っていたりする状態では投げない。
-  if (!audio && !await ensureSelectedSampleMidi()) {
-    setBusy(false);   // 先に無効化されている場合に戻す
-    return;
-  }
-  const midi = ownSongKind() === "midi" ? ownSongFile() : null;
-  const sampleId = midiSampleId;
-  if (!audio && !sampleId && !midi) {
-    setBusy(false);  // 先に無効化されている場合に戻す
-    // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
-    // 曲が未選択ならアップロードから案内する。
-    showSubmitMsg("曲がまだセットされていません。"
-      + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
-    return;
-  }
-  if (audio && !automaticLyricsEnabled()
-      && !$("lyrics").value.trim()) {
-    setBusy(false);
-    showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
-    $("lyrics").focus();
-    return;
-  }
-  showSubmitMsg("");
-  // 表示中の歌詞欄から、元歌詞と編集済みの割り当てを取り出す。
-  const editorSrc = editorSourceForSubmit();
-  if (editorSrc.error) { setBusy(false); showSubmitMsg(editorSrc.error); return; }
-  if (simpleMode) {
-    editorSrc.file = null;
-  }
-  if (editorSrc.file) {
-    try {
-      const payload = await readParodyFile(editorSrc.file);
-      if (previewSec === 0 && lyricReviewCoverage(payload).unmatched
-          && !await confirmReviewRegeneration("fill-missing")) {
+  if (submitBusy || songRecordingBusy()) return;
+  const preparationController = new AbortController();
+  submitJob.preparationController = preparationController;
+  let preparationFinished;
+  const preparationDone = new Promise(resolve => { preparationFinished = resolve; });
+  let operation = globalThis.VideoOperations?.beginAction($("submit-msg"), {
+    allow: [$("lyric-review-skip"), $("lyric-review-cancel"), $("lyric-review-proceed")],
+    cancelLabel: "生成の準備をキャンセル",
+    onCancel: () => { preparationController.abort(); return preparationDone; },
+  });
+  try {
+    setBusy(true);
+    const inputError = lyricsFileReading ? "歌詞ファイルの読み込みが終わるまでお待ちください。"
+      : (songInputMode !== "upload" || !automaticLyricsEnabled()) ? lyricsInput().error : "";
+    if (inputError) { setBusy(false); showSubmitMsg(inputError); return; }
+    // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
+    // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
+    if (previewSec === 0) $("builder-image-hidden").hidden = true;
+    // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
+    const audio = ownAudioFile();
+    if (!audio) {
+      if (samplePending) await samplePending;
+      if (midiChecking) await midiChecking;
+    }
+    // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
+    // いたり、復元した古い中身が入っていたりする状態では投げない。
+    if (!audio && !await ensureSelectedSampleMidi()) {
+      setBusy(false);   // 先に無効化されている場合に戻す
+      return;
+    }
+    preparationController.signal.throwIfAborted();
+    const midi = ownSongKind() === "midi" ? ownSongFile() : null;
+    const sampleId = midiSampleId;
+    if (!audio && !sampleId && !midi) {
+      setBusy(false);  // 先に無効化されている場合に戻す
+      // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
+      // 曲が未選択ならアップロードから案内する。
+      showSubmitMsg("曲がまだセットされていません。"
+        + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
+      return;
+    }
+    if (audio && !automaticLyricsEnabled()
+        && !$("lyrics").value.trim()) {
+      setBusy(false);
+      showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
+      $("lyrics").focus();
+      return;
+    }
+    showSubmitMsg("");
+    // 表示中の歌詞欄から、元歌詞と編集済みの割り当てを取り出す。
+    const lyrics = $("lyrics").value;
+    const automaticLyrics = automaticLyricsEnabled();
+    const editorSrc = editorSourceForSubmit();
+    if (editorSrc.error) { setBusy(false); showSubmitMsg(editorSrc.error); return; }
+    if (simpleMode) {
+      editorSrc.file = null;
+    }
+    if (editorSrc.file) {
+      try {
+        const payload = await readParodyFile(editorSrc.file);
+        if (previewSec === 0 && lyricReviewCoverage(payload).unmatched
+            && !await confirmReviewRegeneration("fill-missing")) {
+          setBusy(false);
+          return;
+        }
+      }
+      catch (err) { setBusy(false); showSubmitMsg(err.message); return; }
+    }
+    // JSONの割り当てを使うため、単語リストの選択と異なる場合は確認する。
+    if (editorSrc.file && parodyMismatch()
+        && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
+          + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
+      setBusy(false);
+      return;
+    }
+    if (apiKey()) localStorage.setItem("apiKey", apiKey());
+    // Turnstileが有効なら、トークンが出るまで待ってから組み立てる。人の操作が
+    // 必要なときは確認欄まで自動スクロールし、未確認のリクエストは送らない。
+    if (turnstileSiteKey) {
+      const verified = await ensureTurnstileToken(undefined, preparationController.signal);
+      preparationController.signal.throwIfAborted();
+      if (!verified) {
         setBusy(false);
+        showSubmitMsg(turnstileScriptFailed
+          ? "人間かどうかの確認を読み込めませんでした。ページを再読み込みしてください。"
+          : "人間かどうかの確認を完了できませんでした。もう一度お試しください。");
+        showTurnstileFailure(turnstileScriptFailed);
         return;
       }
     }
-    catch (err) { setBusy(false); showSubmitMsg(err.message); return; }
-  }
-  // JSONの割り当てを使うため、単語リストの選択と異なる場合は確認する。
-  if (editorSrc.file && parodyMismatch()
-      && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
-        + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
-    setBusy(false);
-    return;
-  }
-  if (apiKey()) localStorage.setItem("apiKey", apiKey());
-  // Turnstileが有効なら、トークンが出るまで待ってから組み立てる。人の操作が
-  // 必要なときは確認欄まで自動スクロールし、未確認のリクエストは送らない。
-  if (turnstileSiteKey) {
-    if (!await ensureTurnstileToken()) {
+    // 自動反映などで入力が変わった場合も、古い音源と新しい情報を組み合わせない。
+    if (audio !== ownAudioFile()
+        || midi !== (ownSongKind() === "midi" ? ownSongFile() : null)
+        || sampleId !== midiSampleId) {
       setBusy(false);
-      showSubmitMsg(turnstileScriptFailed
-        ? "人間かどうかの確認を読み込めませんでした。ページを再読み込みしてください。"
-        : "人間かどうかの確認を完了できませんでした。もう一度お試しください。");
-      showTurnstileFailure(turnstileScriptFailed);
+      hideTurnstilePrompt();
+      showSubmitMsg("曲の選択が変わりました。もう一度動画をタップして生成してください。");
       return;
     }
-  }
-  const form = new FormData();
-  const submissionId = globalThis.crypto?.randomUUID
-    ? globalThis.crypto.randomUUID().replace(/-/g, "")
-    : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-  form.append("submission_id", submissionId);
-  // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
-  if (audio) form.append("audio", audio);
-  else if (sampleId) form.append("sample_id", sampleId);
-  else form.append("midi", midi);
-  if (editorSrc.file) form.append("editor", editorSrc.file);
-  appendSongLyrics(form);
-  form.append("model", $("model").value);
-  form.append("synthesizer", fixedSynthesizer);
-  form.append("voicevox_style", String(fixedVoicevoxStyle));
-  form.append("auto_octave", "true");
-  form.append("transpose", "0");
-  form.append("preview", String(previewSec));
-  form.append("preview_mode", previewMode || "");
-  form.append("song_title", songTitleOf(audio || midi));
-  form.append("song_credit", $("song-credit").value.trim());
-  form.append("thumbnail_wordlist_label", $("thumbnail-wordlist-label").value.trim());
-  form.append("title_words", selectedTitleWords());
-  form.append("allow_noncommercial_fanwork", "true");
-  form.append("wordlist", $("wordlist").value);
-  form.append("where", $("where").value);
-  form.append("convert_params", buildConvertParams());
-  const customLayout = !!activeCustomList() || showsEditorWordlist();
-  form.append("layout", customLayout ? "" : $("layout").value);
-  // Web UIは単語リスト対応カードに固定する。レイアウト編集機能とAPI入力は
-  // 残すが、この画面から古い保存済みJSONを送ってカードを上書きしない。
-  if (!editorSrc.file) appendCustomWordlist(form);
-  if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
-  setBusy(true);
-  $("result").hidden = true;
-  showProgress();
-  setJobStatus("送信中…");
-  const submitController = new AbortController();
-  submitAbort = submitController;
-  let keepTurnstilePrompt = false;
-  try {
-    const res = await postJobWithTurnstileRetry(form, submitController.signal);
-    const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
-    if (turnstileRejected) {
-      keepTurnstilePrompt = true;
-      showTurnstileFailure(false);
-      showSubmitMsg("人間かどうかの確認をやり直して、もう一度生成してください。");
+    if (lyricsFileReading || lyrics !== $("lyrics").value
+        || automaticLyrics !== automaticLyricsEnabled()) {
+      setBusy(false);
+      hideTurnstilePrompt();
+      showSubmitMsg("歌詞の入力が変わりました。もう一度動画をタップして生成してください。");
+      return;
     }
-    let body = {};
-    try { body = await res.json(); } catch { /* edge/proxyのHTMLエラーでも状態を失わない */ }
-    if (!res.ok) {
-      throw new Error(body.detail || res.status);
+    preparationController.signal.throwIfAborted();
+    const form = new FormData();
+    const submissionId = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID().replace(/-/g, "")
+      : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+    form.append("submission_id", submissionId);
+    // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
+    if (audio) form.append("audio", audio);
+    else if (sampleId) form.append("sample_id", sampleId);
+    else form.append("midi", midi);
+    if (editorSrc.file) form.append("editor", editorSrc.file);
+    appendSongLyrics(form);
+    form.append("model", $("model").value);
+    form.append("synthesizer", fixedSynthesizer);
+    form.append("voicevox_style", String(fixedVoicevoxStyle));
+    form.append("auto_octave", "true");
+    form.append("transpose", "0");
+    form.append("preview", String(previewSec));
+    form.append("preview_mode", previewMode || "");
+    form.append("song_title", songTitleOf(audio || midi));
+    form.append("song_credit", $("song-credit").value.trim());
+    form.append("thumbnail_wordlist_label", $("thumbnail-wordlist-label").value.trim());
+    form.append("title_words", selectedTitleWords());
+    form.append("allow_noncommercial_fanwork", "true");
+    form.append("wordlist", $("wordlist").value);
+    form.append("where", $("where").value);
+    form.append("convert_params", buildConvertParams());
+    const customLayout = !!activeCustomList() || showsEditorWordlist();
+    form.append("layout", customLayout ? "" : $("layout").value);
+    // Web UIは単語リスト対応カードに固定する。レイアウト編集機能とAPI入力は
+    // 残すが、この画面から古い保存済みJSONを送ってカードを上書きしない。
+    if (!editorSrc.file) appendCustomWordlist(form);
+    if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
+    setBusy(true);
+    $("result").hidden = true;
+    showProgress();
+    setJobStatus("送信中…");
+    submitJob.preparationController = null;
+    // Audio transfer follows generation policy; a short MIDI submission waits for acknowledgement.
+    const acknowledgement = audio ? null : globalThis.VideoOperations?.begin();
+    operation?.finish(); operation = null; preparationFinished();
+    const submitController = new AbortController();
+    submitAbort = submitController;
+    const submission = {form, unconfirmed: false, reconciling: false};
+    submitJob.pendingSubmission = submission;
+    let keepTurnstilePrompt = false;
+    try {
+      const thumbnail = await captureGenerationThumbnail();
+      submitController.signal.throwIfAborted();
+      if (thumbnail) form.append("generation_thumbnail", thumbnail, "thumbnail.png");
+      const res = await postJobWithTurnstileRetry(form, submitController.signal);
+      submitController.signal.throwIfAborted();
+      const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
+      if (turnstileRejected) {
+        keepTurnstilePrompt = true;
+        showTurnstileFailure(false);
+        showSubmitMsg("人間かどうかの確認をやり直して、もう一度生成してください。");
+      }
+      let body = {};
+      try { body = await res.json(); } catch { /* edge/proxyのHTMLエラーでも状態を失わない */ }
+      if (!res.ok) {
+        throw Object.assign(new Error(body.detail || res.status), {
+          submissionRejected: res.status >= 400 && res.status < 500,
+        });
+      }
+      submitController.signal.throwIfAborted();
+      if (typeof SoramimicSubmissions !== "undefined") SoramimicSubmissions.finish(form);
+      watch(body.id);
+    } catch (err) {
+      // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
+      // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
+      if (!keepTurnstilePrompt) hideTurnstilePrompt();
+      const canceled = submitController.signal.aborted && err?.name === "AbortError";
+      if (typeof SoramimicSubmissions !== "undefined") {
+        if (canceled) {
+          await reconcileSubmissionCancellation(submission);
+          return;
+        }
+        if (!err.submissionRejected && SoramimicSubmissions.wasSent(form)) {
+          submission.unconfirmed = true;
+          setJobStatus("生成の受付を確認できません");
+          showBuilderMsg("生成の受付を確認できません。「中断」で受付済みの処理を確認して中断できます。");
+          openJobDetails();
+          return;
+        }
+        if (!audio && err.submissionRejected) SoramimicSubmissions.cancel(form, headers).catch(() => {});
+      }
+      $("status-line").innerHTML = canceled
+        ? "音源の送信を中断しました"
+        : `<span class="error">${err.message}</span>`;
+      setBuilderState("preview");
+      showBuilderMsg(canceled
+        ? "音源の送信を中断しました。"
+        : err.submissionUnconfirmed ? err.message : "生成を開始できませんでした: " + err.message);
+      openJobDetails();
+      setBusy(false);
+    } finally {
+      if (submitAbort === submitController) submitAbort = null;
+      acknowledgement?.end();
+      if (!submission.trackingCancellation) setCancelPending(false);
+      if (!submission.unconfirmed && submitJob.pendingSubmission === submission) submitJob.pendingSubmission = null;
+      // Turnstileのトークンは1回きり。次の投入用に取り直す
+      resetTurnstile(!keepTurnstilePrompt);
     }
-    watch(body.id);
-  } catch (err) {
-    // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
-    // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
-    if (!keepTurnstilePrompt) hideTurnstilePrompt();
-    const canceled = submitController.signal.aborted && err?.name === "AbortError";
-    $("status-line").innerHTML = canceled
-      ? "音源の送信を中断しました"
-      : `<span class="error">${err.message}</span>`;
-    setBuilderState("preview");
-    showBuilderMsg(canceled
-      ? "音源の送信を中断しました。"
-      : "生成を開始できませんでした: " + err.message);
-    openJobDetails();
+  } catch (error) {
     setBusy(false);
+    hideTurnstilePrompt();
+    showSubmitMsg(preparationController.signal.aborted
+      ? "生成の準備を中断しました。" : error.message);
   } finally {
-    if (submitAbort === submitController) submitAbort = null;
-    setCancelPending(false);
-    // Turnstileのトークンは1回きり。次の投入用に取り直す
-    resetTurnstile(!keepTurnstilePrompt);
+    if (preparationController.signal.aborted) resetTurnstile();
+    operation?.finish();
+    preparationFinished();
+    if (submitJob.preparationController === preparationController) submitJob.preparationController = null;
   }
 }
 
@@ -3554,7 +4022,7 @@ function updateSongTextPreviews() {
     || (showsEditorWordlist() ? "自作リスト" : "単語リスト");
   $("thumbnail-wordlist-label").placeholder = defaultWordlistLabel;
   const wordlistLabel = $("thumbnail-wordlist-label").value.trim() || defaultWordlistLabel;
-  const credit = $("song-credit").value.trim();
+  const credit = $("song-credit").value.trim() || title;
   const baseCredit = currentWordlistName().toLowerCase() === "vtuber"
     ? "lyrics & video by Soramimic / 非公式・ファンメイド"
     : "lyrics & video by Soramimic";
@@ -3648,7 +4116,7 @@ function renderSampleOptions() {
 
 async function loadSamples() {
   try {
-    const res = await fetch("/api/samples");
+    const res = await fetch("/api/samples", { signal: AbortSignal.timeout(20000) });
     if (!res.ok) throw new Error(String(res.status));
     const samples = await res.json();
     sampleCatalog = samples;
@@ -3811,16 +4279,40 @@ function confirmRecordedSongDeletion() {
 
 let activeSongRecording = null;
 let recordingStartSequence = 0;
+let recordingRequestPending = false;
+
+function songRecordingBusy() {
+  return recordingRequestPending || !!activeSongRecording;
+}
+
+function syncSongInputControls() {
+  const busy = songRecordingBusy() || lyricsFileReading;
+  for (const id of ["midi", "song-upload-button", "song-source-switch", "song-upload-clear",
+    "builder-sample", "sample-select", "lyrics-file", "auto-lyrics"]) $(id).disabled = busy;
+  $("lyrics").readOnly = busy;
+}
 
 function syncRecordingUi() {
   const button = $("song-record-button");
   const recording = activeSongRecording?.recorder?.state === "recording";
-  button.hidden = !recording && (!audioInputReady || !recordingSupported() || !!ownSongFile());
+  const busy = songRecordingBusy();
+  if (busy && !syncRecordingUi.operation) syncRecordingUi.operation = globalThis.VideoOperations?.begin();
+  if (!busy) { syncRecordingUi.operation?.end(); syncRecordingUi.operation = null; }
+  if (busy) globalThis.VideoOperations?.allowContinuation(button);
+  else globalThis.VideoOperations?.clearContinuation(button);
+  button.hidden = !busy && (!audioInputReady || !recordingSupported() || !!ownSongFile());
   button.disabled = activeSongRecording?.stopping === true;
+  syncSongInputControls();
   button.classList.toggle("is-recording", recording);
   button.setAttribute("aria-pressed", String(recording));
-  $("song-record-label").textContent = recording ? "録音を停止" : "録音する";
-  $("song-upload-button").hidden = recording || !!ownSongFile();
+  $("song-record-label").textContent = recordingRequestPending ? "キャンセル"
+    : recording ? "録音を停止" : "録音する";
+  $("song-upload-button").hidden = busy || !!ownSongFile();
+  for (const id of ["auto-lyrics-toggle", "lyrics-correction-panel", "song-upload-selection",
+    "sample-picker", "builder-wordlist-field", "custom-wordlist-menu", "advanced",
+    "builder-video", "builder-share", "history"]) $(id).inert = busy;
+  updateBuilderOverlay();
+  syncHistoryReviewControls();
 }
 
 function setRecordingStatus(message) {
@@ -3865,8 +4357,13 @@ function finishSongRecording(state) {
 
 function stopSongRecording(discard = false) {
   recordingStartSequence += 1;
+  recordingRequestPending = false;
   const state = activeSongRecording;
-  if (!state) return;
+  if (!state) {
+    setRecordingStatus("");
+    syncRecordingUi();
+    return;
+  }
   state.discard ||= discard;
   state.stopping = true;
   clearInterval(state.timer);
@@ -3878,23 +4375,24 @@ function stopSongRecording(discard = false) {
 }
 
 async function startSongRecording() {
-  if (activeSongRecording) {
+  if (songRecordingBusy()) {
     stopSongRecording();
     return;
   }
-  if (!audioInputReady || !recordingSupported()) return;
+  if ($("song-record-button").disabled || !audioInputReady || !recordingSupported()) return;
   const request = ++recordingStartSequence;
+  recordingRequestPending = true;
+  for (const media of document.querySelectorAll("audio, video")) media.pause();
   setRecordingStatus("マイクの使用を許可してください…");
-  $("song-record-button").disabled = true;
+  syncRecordingUi();
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    if (request !== recordingStartSequence || songInputMode !== "upload") {
+    if (request !== recordingStartSequence) {
       stream.getTracks().forEach((track) => track.stop());
-      setRecordingStatus("");
-      syncRecordingUi();
       return;
     }
+    recordingRequestPending = false;
     const mimeType = preferredRecordingMimeType();
     const recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     const state = {
@@ -3927,11 +4425,14 @@ async function startSongRecording() {
     syncRecordingUi();
   } catch (error) {
     stream?.getTracks().forEach((track) => track.stop());
+    if (request !== recordingStartSequence) return;
+    if (activeSongRecording?.stream === stream) activeSongRecording = null;
     const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
     setRecordingStatus(denied
       ? "マイクを使用できません。ブラウザの設定でマイクを許可してください。"
       : "録音を開始できませんでした。もう一度お試しください。");
-    $("song-record-button").disabled = false;
+  } finally {
+    if (request === recordingStartSequence) recordingRequestPending = false;
     syncRecordingUi();
   }
 }
@@ -4025,9 +4526,12 @@ function syncLyricsRecognition() {
   $("adjust-lyrics-panel").hidden = !audio || automatic;
   $("adjust-lyrics").disabled = !audio || automatic || !!activeLyricsJson();
   $("auto-lyrics").setAttribute("aria-expanded", automatic ? "false" : "true");
+  syncSongInputControls();
 }
 
 $("auto-lyrics").addEventListener("change", () => {
+  $("lyrics-file").value = "";
+  loadLyricsFile(null);
   syncLyricsRecognition();
   syncLyricsInput();
   saveForm();
@@ -4035,12 +4539,17 @@ $("auto-lyrics").addEventListener("change", () => {
 });
 $("adjust-lyrics").addEventListener("change", () => {
   clearEditorFile();
+  saveForm();
 });
 let lyricsFileReadSequence = 0;
 let lyricsFileReading = false;
 async function loadLyricsFile(file) {
+  loadLyricsFile.operation?.end();
+  const operation = file ? globalThis.VideoOperations?.begin({ allow: [$("clear-lyrics-file")] }) : null;
+  loadLyricsFile.operation = operation;
   const sequence = ++lyricsFileReadSequence;
   lyricsFileReading = !!file;
+  syncRecordingUi();
   $("clear-lyrics-file").hidden = !file;
   $("lyrics-file-name").hidden = !file;
   if (!file) {
@@ -4068,7 +4577,11 @@ async function loadLyricsFile(file) {
       ? error.message
       : "歌詞ファイルを読み込めませんでした。UTF-8で保存されているか確認してください。";
   } finally {
-    if (sequence === lyricsFileReadSequence) lyricsFileReading = false;
+    operation?.end();
+    if (sequence === lyricsFileReadSequence) {
+      lyricsFileReading = false;
+      syncRecordingUi();
+    }
   }
 }
 $("lyrics-file").addEventListener("change", () => {
@@ -4104,6 +4617,7 @@ function syncLyricsInput(resetSession = true) {
 $("lyrics").addEventListener("input", () => {
   ++lyricsFileReadSequence;
   lyricsFileReading = false;
+  syncRecordingUi();
   $("lyrics-file").value = "";
   $("lyrics-file-name").hidden = true;
   $("clear-lyrics-file").hidden = true;
@@ -4125,33 +4639,10 @@ function showSongInputMode(mode) {
     ? "サンプル曲で試す" : "曲をアップロード";
 }
 
-function advancedSettingsAvailable() {
-  // 認証キーが必要な構成だけは、選択前でもキー入力のため開けるようにする。
-  const auth = $("auth");
-  if (!auth.hidden && !apiKey()) return true;
-  const songSelected = !!ownSongFile() || !!$("sample-select").value;
-  const wordlistSelected = !!currentWordlistName() || !!activeCustomList()
-    || showsEditorWordlist() || !!activeLyricsJson();
-  return songSelected && wordlistSelected;
-}
-
-function updateAdvancedSettingsAvailability() {
-  const advanced = $("advanced");
-  const available = advancedSettingsAvailable();
-  advanced.classList.toggle("is-locked", !available);
-  advanced.querySelector(":scope > summary").setAttribute(
-    "aria-disabled", String(!available),
-  );
-  $("advanced-lock-hint").hidden = available;
-  if (!available) advanced.open = false;
-}
-
-$("advanced").querySelector(":scope > summary").addEventListener("click", (event) => {
-  if (!advancedSettingsAvailable()) event.preventDefault();
-});
-
 function switchSongInputMode(mode) {
-  if (mode === songInputMode) return;
+  if (songRecordingBusy() || lyricsFileReading || mode === songInputMode) return;
+  $("lyrics-file").value = "";
+  loadLyricsFile(null);
   stopSongRecording(true);
   clearRecordedSongPlayback();
   // 非表示になる入力を残さず、取得中のサンプルも無効にする。
@@ -4181,7 +4672,9 @@ $("song-source-switch").addEventListener("click", () => {
   switchSongInputMode(songInputMode === "upload" ? "sample" : "upload");
 });
 
-$("song-upload-button").addEventListener("click", () => $("midi").click());
+$("song-upload-button").addEventListener("click", () => {
+  if (!songRecordingBusy() && !lyricsFileReading) $("midi").click();
+});
 $("song-record-button").addEventListener("click", startSongRecording);
 function setOwnSongFile(file) {
   const transfer = new DataTransfer();
@@ -4221,13 +4714,16 @@ function hasDraggedFiles(event) {
 songUploadEntry.addEventListener("dragenter", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
+  if (songRecordingBusy() || lyricsFileReading) return;
   songDragDepth += 1;
   songUploadEntry.classList.add("drag-over");
 });
 songUploadEntry.addEventListener("dragover", (event) => {
   if (!hasDraggedFiles(event)) return;
   event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = songRecordingBusy() || lyricsFileReading ? "none" : "copy";
+  }
 });
 songUploadEntry.addEventListener("dragleave", () => {
   songDragDepth = Math.max(0, songDragDepth - 1);
@@ -4238,29 +4734,39 @@ songUploadEntry.addEventListener("drop", (event) => {
   event.preventDefault();
   songDragDepth = 0;
   songUploadEntry.classList.remove("drag-over");
+  if (songRecordingBusy()) {
+    showBuilderMsg("録音を停止してから曲をアップロードしてください。");
+    return;
+  }
+  if (lyricsFileReading) {
+    showBuilderMsg("歌詞ファイルの読み込みが終わるか、取り消してから曲をアップロードしてください。");
+    return;
+  }
   const files = [...(event.dataTransfer?.files || [])];
   if (files.length !== 1) {
     showBuilderMsg("曲ファイルは1つだけドロップしてください。");
     return;
   }
+  if (songUploadEntry.closest("fieldset")?.disabled) return;
   setOwnSongFile(files[0]);
+  waitForSelectedMidiCheck();
 });
-// The input already contains the new file when change fires, so retain whether
-// a source was selected before it (including restored MIDI and recordings).
-let metadataSongSelected = false;
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
-  const replacing = metadataSongSelected;
-  metadataSongSelected = !!file;
-  if (!file) return;
+  globalThis.SoramimicAudioUpload?.selectionChanged?.(file);
+  if (!file) {
+    syncBuilderValues();
+    schedulePreview(true);
+    return;
+  }
   setRecordingStatus("");
   const kind = ownSongKind(file);
   if (!kind) {
-    rejectOwnSongFile("XF MIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
+    rejectOwnSongFile("歌詞入りMIDI、MP3、M4A、WAVなどの対応ファイルを選んでください。");
     return;
   }
   if (kind === "audio" && !audioInputReady) {
-    rejectOwnSongFile("このサーバーでは音声入力を準備中です。XF MIDIは利用できます。");
+    rejectOwnSongFile("このサーバーでは音声入力を準備中です。歌詞入りMIDIは利用できます。");
     return;
   }
   if (kind === "audio" && file.size > maxAudioUploadBytes) {
@@ -4270,7 +4776,7 @@ $("midi").addEventListener("change", () => {
   $("sample-select").value = "";
   midiSampleId = "";
   if (!restoring) {
-    if (!midiFromSample) updateUploadedSongMetadata(file, replacing);
+    if (!midiFromSample) updateUploadedSongMetadata(file);
   }
   $("sample-select").dispatchEvent(new Event("change", { bubbles: true }));
   if (!editorImportedFile) clearEditorFile();
@@ -4291,29 +4797,21 @@ $("midi").addEventListener("change", () => {
   showBuilderMsg("");
   schedulePreview(true);
 });
-async function updateUploadedSongMetadata(file, replacing = false) {
-  const titleInput = $("song-title"), creditInput = $("song-credit");
-  const hasMetadata = !!(titleInput.value.trim() || creditInput.value.trim());
-  // A first upload can complete a transfer from the lyric editor.
-  if (!titleInput.value.trim()) {
-    const editorTitle = !replacing && activeLyricsJson()?.song?.title;
-    titleInput.value = typeof editorTitle === "string" && editorTitle.trim()
-      ? editorTitle.trim() : songFileStem(file);
-    titleInput.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-  if (!hasMetadata) return;
-  const previousTitle = titleInput.value, previousCredit = creditInput.value;
+$("midi").addEventListener("change", updateSongTextPreviews);
+async function updateUploadedSongMetadata(file) {
+  const inputs = [$("song-title"), $("song-credit")];
+  if (!inputs.some(input => input.value.trim())) return;
+  const previousValues = inputs.map(input => input.value);
   const isCurrent = () => ownSongFile() === file
-    && titleInput.value === previousTitle && creditInput.value === previousCredit;
-  const choice = await VideoMetadata.notifyChange(replacing ? "song-replacement" : "song", isCurrent);
-  if (!replacing || choice !== "update" || !isCurrent()) return;
-  titleInput.value = songFileStem(file);
-  creditInput.value = "";
-  titleInput.dispatchEvent(new Event("change", { bubbles: true }));
-  creditInput.dispatchEvent(new Event("change", { bubbles: true }));
+    && inputs.every((input, index) => input.value === previousValues[index]);
+  const choice = await VideoMetadata.notifyChange("song-replacement", isCurrent);
+  if (choice !== "update" || !isCurrent()) return;
+  for (const input of inputs) input.value = "";
+  for (const input of inputs) input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function clearSelectedSong() {
+  if (songRecordingBusy() || lyricsFileReading) return false;
   if (recordedSongFile && !recordingDeleteWarningHidden()
       && !await confirmRecordedSongDeletion()) return false;
   $("midi").value = "";
@@ -4348,10 +4846,14 @@ $("midi").addEventListener("change", () => {
 async function applySample(opts = {}) {
   const request = ++sampleApplySeq;
   const sid = $("sample-select").value;
+  const lyricsSequence = lyricsFileReadSequence;
+  const previousLyrics = $("lyrics").value;
   if (!sid) return false;
+  const operation = !opts.keepLyrics ? globalThis.VideoOperations?.begin() : null;
   try {
     const title = $("sample-select").selectedOptions[0].textContent;
-    const lyricsRes = (opts.keepLyrics || editorImportedFile) ? null : await fetch(`/api/sample/${sid}/lyrics`);
+    const lyricsRes = (opts.keepLyrics || editorImportedFile) ? null
+      : await fetch(`/api/sample/${sid}/lyrics`, { signal: AbortSignal.timeout(20000) });
     if (lyricsRes && !lyricsRes.ok) {
       throw new Error("サンプルの取得に失敗しました");
     }
@@ -4390,10 +4892,12 @@ async function applySample(opts = {}) {
       creditHint.replaceChildren();
       creditHint.hidden = true;
     }
-    if (lyricsRes) {
+    if (lyricsRes && lyricsSequence === lyricsFileReadSequence
+        && previousLyrics === $("lyrics").value) {
       sampleLyricsId = sid;
       sampleLyricsBaseline = sampleLyrics;
       $("lyrics").value = sampleLyrics;
+      $("lyrics").dispatchEvent(new Event("input", { bubbles: true }));
       $("lyrics").dispatchEvent(new Event("change", { bubbles: true }));
     }
     // クレジット表記: プリセットがある曲は選曲時に自動で入れる(権利者指定の
@@ -4420,6 +4924,8 @@ async function applySample(opts = {}) {
     if (request !== sampleApplySeq || $("sample-select").value !== sid) return false;
     $("sample-status").textContent = err.message;
     return false;
+  } finally {
+    operation?.end();
   }
 }
 // 進行中の applySample。MIDIの取得は非同期なので、選んだ直後に「生成」を押されても
@@ -4482,7 +4988,7 @@ async function ensureSelectedSampleMidi(onFail) {
 }
 
 // ---- 選んだMIDIの検証(歌詞の有無・元歌詞との整合) ----
-// この画面のパイプラインは XF MIDI の歌詞(XFKMチャンク)を歌唱と空耳変換の
+// この画面のパイプラインはMIDIの歌詞(XFまたは標準lyricsイベント)を歌唱と空耳変換の
 // 入力にしているので、歌詞の無いMIDIは何分も待たせた末に必ず失敗する。
 // 選ばれた直後に /api/midi-check へ送って確かめ、歌詞が無ければその場で
 // ファイル選択ごと取り消す(=生成にも編集にも進めない状態に戻す)。
@@ -4586,9 +5092,9 @@ function rejectMidi(detail, notMidi = false) {
   $("sample-status").textContent = "";
   const text = (notMidi
     ? "⚠ このファイルはMIDIとして読めないので使えません(取り消しました)。"
-    : "⚠ この曲は歌詞が入っていないので使えません(取り消しました)。")
-    + "歌詞入りのXF形式MIDIが必要です — カラオケ用のXF MIDIを使うか、"
-    + "Dominoなどで歌詞(XF情報チャンク)を書き込んだMIDIを書き出してください。"
+    : "⚠ このMIDIの歌詞・読みと音符を解析できないため使えません(取り消しました)。")
+    + "歌詞入りMIDI（XFまたは標準の歌詞イベント）が必要です。"
+    + "音符に対応する歌詞を含むMIDIを書き出してください。"
     + (detail ? `\n(${detail})` : "");
   $("midi-error").textContent = text;
   $("midi-error").hidden = false;
@@ -4628,6 +5134,7 @@ async function checkMidi() {
   }
   const f = $("midi").files[0];
   const sampleId = midiSampleId;
+  const lyrics = songLyricsForRequest();
   if (!sampleId && !f) { clearMidiNotices(); return; }
   let body;
   let notMidi = false;
@@ -4635,8 +5142,10 @@ async function checkMidi() {
     const form = new FormData();
     if (sampleId) form.append("sample_id", sampleId);
     else form.append("midi", f);
-    form.append("lyrics", songLyricsForRequest());
-    const res = await fetch("/api/midi-check", { method: "POST", body: form, headers: headers() });
+    form.append("lyrics", lyrics);
+    const res = await fetch("/api/midi-check", {
+      method: "POST", body: form, headers: headers(), signal: AbortSignal.timeout(20000),
+    });
     body = await res.json();
     if (!res.ok) {
       // 拡張子だけMIDIのファイルも400ならその場で取り消す。
@@ -4648,14 +5157,25 @@ async function checkMidi() {
     // 検証そのものに失敗したときは黙って通す(生成側で従来どおりのエラーになる)
     return;
   }
-  if (seq !== midiCheckSeq) return;   // 追い越された古い応答は捨てる
+  if (seq !== midiCheckSeq || f !== $("midi").files[0] || sampleId !== midiSampleId
+      || lyrics !== songLyricsForRequest() || ownSongKind() === "audio"
+      || selectedSampleIsAudio()) return;
   clearMidiNotices();
   if (notMidi || !body.has_lyrics) { rejectMidi(body.detail, notMidi); return; }
   lastMidiCheck = f ? { file: f, lines: body.midi_lines || [] } : null;
   renderLyricsMidiWarning(body);
 }
 
-$("midi").addEventListener("change", scheduleMidiCheck);
+function waitForSelectedMidiCheck() {
+  if (!midiChecking || ownSongKind() !== "midi") return;
+  const operation = globalThis.VideoOperations?.begin();
+  const finish = () => operation?.end();
+  midiChecking.then(finish, finish);
+}
+$("midi").addEventListener("change", (event) => {
+  scheduleMidiCheck();
+  if (event.isTrusted && !restoring) waitForSelectedMidiCheck();
+});
 $("lyrics").addEventListener("change", scheduleMidiCheck);
 
 // ---- ビルダーカード(曲 × 単語リスト → サムネプレビュー → 生成) ----
@@ -4721,12 +5241,21 @@ function selectCustomList(id) {
   schedulePreview(true);
 }
 async function openCustomList(id = "") {
-  if (customListBusy || $("custom-wordlist-panel").open) return;
+  if (customListBusy || $("custom-wordlist-panel").open || songRecordingBusy()) return;
   customListOpener = document.activeElement;
+  $("custom-wordlist-name").value = "";
+  $("custom-wordlist-text").value = "";
+  $("custom-wordlist-title").textContent = "自作単語リストを読み込み中…";
+  $("custom-wordlist-delete").hidden = true;
+  showCustomListMessage("読み込んでいます…");
+  $("custom-wordlist-panel").showModal();
+  document.body.classList.add("custom-wordlist-open");
   setCustomListBusy(true);
-  try { await refreshCustomLists(); }
-  catch (err) { showBuilderMsg(err.message); return; }
+  let loaded = false;
+  try { await refreshCustomLists(); loaded = true; }
+  catch (err) { showBuilderMsg(err.message); }
   finally { setCustomListBusy(false); }
+  if (!loaded) { closeCustomList(); return; }
   const list = customLists.find((item) => item.id === id);
   const legacy = !id && showsEditorWordlist() ? editorSessionWordlist() : null;
   editingCustomListId = list?.id || "";
@@ -4740,8 +5269,6 @@ async function openCustomList(id = "") {
   showCustomListMessage("");
   $("custom-wordlist-title").textContent = list ? "自作単語リストの編集" : "自作単語リストの保存";
   syncBuilderValues();
-  $("custom-wordlist-panel").showModal();
-  document.body.classList.add("custom-wordlist-open");
   $("custom-wordlist-name").focus();
 }
 function customListHasChanges() {
@@ -4760,6 +5287,11 @@ function closeCustomList() {
   $("custom-wordlist-panel").close();
 }
 function setCustomListBusy(busy) {
+  if (busy && !customListBusy) setCustomListBusy.operation = globalThis.VideoOperations?.begin();
+  if (!busy) {
+    setCustomListBusy.operation?.end();
+    setCustomListBusy.operation = null;
+  }
   customListBusy = busy;
   for (const id of ["name", "text", "file", "dropzone", "save", "cancel", "delete", "close"]) {
     $("custom-wordlist-" + id).disabled = busy;
@@ -4768,6 +5300,7 @@ function setCustomListBusy(busy) {
   for (const button of $("custom-wordlist-menu").querySelectorAll("button")) {
     button.disabled = busy || button.dataset.optionDisabled === "true";
   }
+  syncHistoryReviewControls();
 }
 function showCustomListMessage(text, isError = false) {
   const msg = $("custom-wordlist-message");
@@ -5168,7 +5701,6 @@ function syncBuilderValues() {
   syncRecordingUi();
   const sample = $("sample-select");
   showSongInputMode(sample.value ? "sample" : file ? "upload" : songInputMode);
-  updateAdvancedSettingsAvailability();
   $("builder-sample").value = sample.value;
   const wl = $("wordlist-select"), card = $("builder-wordlist");
   const selectedCustom = activeCustomList();
@@ -5202,13 +5734,11 @@ async function updateWordlistUsageNotice() {
   wordlistUsageAbort?.abort();
   wordlistUsageAbort = new AbortController();
   const notice = $("builder-fanwork-notice");
-  const terms = $("builder-usage-terms"), status = $("builder-usage-status");
+  const status = $("builder-usage-status");
   notice.hidden = true;
-  terms.replaceChildren();
-  $("builder-usage-links").hidden = true;
   status.hidden = true;
   $("builder-fanwork-guidelines").href = "/guidelines?"
-    + new URLSearchParams({ wordlist: request.name });
+    + new URLSearchParams({ wordlist: request.name }) + "#image-guidelines-title";
   if (!request.name && !request.text) return;
   const form = new FormData();
   form.set("wordlist", request.name);
@@ -5222,19 +5752,7 @@ async function updateWordlistUsageNotice() {
     const body = await res.json();
     if (wordlistUsageRequest !== request) return;
     notice.hidden = !body.required;
-    for (const term of body.terms || []) {
-      let url;
-      try { url = new URL(term.url); } catch { continue; }
-      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) continue;
-      const item = document.createElement("li"), link = document.createElement("a");
-      link.href = url.href;
-      link.textContent = term.label || url.hostname;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      item.appendChild(link);
-      terms.appendChild(item);
-    }
-    $("builder-usage-links").hidden = !terms.children.length;
+
   } catch (err) {
     if (wordlistUsageRequest !== request || err.name === "AbortError") return;
     notice.hidden = false;
@@ -5258,6 +5776,14 @@ function showBuilderMsg(text) {
 // preview へ戻すのは「選択を変えたとき」(loadThumbnailPreview)、
 // 「中断・失敗したとき」(poll)、「設定を触ったとき」(releaseBuilderDone)。
 let builderState = "preview";
+let deferredBuilderState = null;
+function flushDeferredBuilderState() {
+  if (globalThis.VideoOperations?.hasAction($("share-save"))) return;
+  const state = deferredBuilderState;
+  deferredBuilderState = null;
+  if (state) setBuilderState(state);
+  if (previewDeferred && !submitBusy) renderBuilder();
+}
 
 // WebKit系では同じvideo要素のsrcを生成のたびに差し替えると、pause/load済みでも
 // ネイティブコントロールだけが前の再生状態を引き継ぎ、未再生なのに停止アイコンを
@@ -5277,6 +5803,11 @@ function freshBuilderVideo() {
 }
 
 function setBuilderState(state) {
+  if (state !== "done" && globalThis.VideoOperations?.hasAction($("share-save"))) {
+    deferredBuilderState = state;
+    return;
+  }
+  deferredBuilderState = null;
   builderState = state;
   $("builder-progress").hidden = state !== "running";
   const video = $("builder-video");
@@ -5314,6 +5845,9 @@ function setBuilderState(state) {
 // できるときだけ。生成の導線はこれ1つしかないので、サムネの絵が用意できて
 // いない(#builder-image が無い)ときでも枠だけは出して押せるようにする。
 function updateBuilderOverlay() {
+  const blocked = submitBusy || lyricsFileReading || songRecordingBusy();
+  $("builder-play").disabled = blocked;
+  for (const id of ["preview", "preview-high", "preview-low"]) $(id).disabled = blocked;
   $("builder-play").hidden = !(builderState === "preview"
     && !$("builder-figure").hidden && $("builder-loading").hidden && !submitBusy);
 }
@@ -5338,10 +5872,100 @@ for (const type of ["change", "input"]) {
   document.addEventListener(type, (ev) => {
     const t = ev.target;
     if (t instanceof Node
-        && ($("builder-figure").contains(t) || $("builder-share").contains(t))) return;
+        && ($("builder-figure").contains(t) || $("builder-share").contains(t)
+          || $("video-save-help").contains(t))) return;
     releaseBuilderDone();
   }, true);
 }
+
+function appendSaveMenu(container, job, onVideoSave = null) {
+  const nativeVideoSave = !!onVideoSave && prefersNativeVideoSave();
+  const video = job.video_url && job.result_kind !== "audio" ? [{
+    label: "MP4", url: job.video_url, video: true, mediaType: "video/mp4",
+  }] : [];
+  const singing = job.video_url && job.result_kind === "audio" ? [{
+    label: "歌声プレビュー（WAV）", url: job.video_url, mediaType: "audio/wav",
+  }] : [];
+  const formats = {
+    vocal: "歌声WAV（伴奏なし）",
+    musicxml: "楽譜（MusicXML）",
+    midi: "歌詞入りMIDI",
+    xf: "XF MIDI",
+  };
+  for (const [kind, label] of Object.entries(formats)) {
+    if (job.export_urls?.[kind]) singing.push({
+      label, url: job.export_urls[kind], mediaType: kind === "vocal" ? "audio/wav" : "",
+    });
+  }
+  if (!video.length && !singing.length) return;
+  const menu = document.createElement("details");
+  menu.className = "save-menu";
+  const summary = document.createElement("summary");
+  summary.className = "result-action action-save";
+  summary.textContent = "保存";
+  menu.appendChild(summary);
+  const links = document.createElement("div");
+  links.className = "save-options";
+  const status = document.createElement("p");
+  status.className = "hint save-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  for (const [title, entries] of [["動画", video], ["歌唱データ", singing]]) {
+    if (!entries.length) continue;
+    const section = document.createElement("section");
+    const heading = document.createElement("p");
+    heading.className = "save-group-title";
+    heading.textContent = title;
+    section.appendChild(heading);
+    for (const entry of entries) {
+      const link = document.createElement("a");
+      link.href = qs(entry.url);
+      link.download = "";
+      link.textContent = entry.label;
+      link.addEventListener("click", event => {
+        const download = () => downloadResultMedia(link, entry.mediaType, status);
+        // iPhoneの動画保存は、同じタップから保存用の共有シートを開く。
+        if (entry.video && nativeVideoSave && offerNativeVideoSave(link, onVideoSave, download)) {
+          event.preventDefault();
+        } else if (entry.mediaType && isIOSPlatform()) {
+          event.preventDefault();
+          download();
+        }
+        menu.open = false;
+      });
+      section.appendChild(link);
+    }
+    links.appendChild(section);
+  }
+  menu.appendChild(links);
+  menu.addEventListener("toggle", () => {
+    if (!menu.open) return;
+    document.querySelectorAll(".save-menu[open]").forEach(other => {
+      if (other !== menu) other.open = false;
+    });
+    // 履歴の途中にある保存ボタンでも、メニューを画面内に収める。
+    links.style.left = "0px";
+    const rect = links.getBoundingClientRect();
+    const offset = Math.max(12 - rect.left, Math.min(0, innerWidth - 12 - rect.right));
+    links.style.left = `${offset}px`;
+  });
+  container.appendChild(menu);
+  container.appendChild(status);
+  return {button: summary, status};
+}
+
+document.addEventListener("click", event => {
+  document.querySelectorAll(".save-menu[open]").forEach(menu => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
+});
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  document.querySelectorAll(".save-menu[open]").forEach(menu => {
+    menu.open = false;
+    menu.querySelector("summary").focus();
+  });
+});
 
 // 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
 function showBuilderVideo(job) {
@@ -5357,8 +5981,18 @@ function showBuilderVideo(job) {
   // シェアのボタンは毎回作り直す(古いクリックハンドラを残さない)
   $("builder-share").innerHTML = SHARE_HTML;
   $("builder-share").hidden = false;
+  appendSaveMenu($("result-actions"), job, () => {
+    const share = $("share-save");
+    if (!share || share.hidden || preparedVideoShare?.shareable === false) return false;
+    sharePreparedVideo(job.video_url, share, "");
+    return true;
+  });
+  const actions = $("result-actions");
+  const saveMenu = actions.querySelector(".save-menu");
+  if (saveMenu) actions.prepend(saveMenu);
+  appendLyricEditAction(actions, job, $("builder-share"), "result-edit-lyrics");
   bindShare(job.video_url);
-  prepareVideoShare(job.video_url, video);
+  videoSharePreparation = prepareVideoShare(job.video_url, video);
   setBuilderState("done");
 }
 
@@ -5367,6 +6001,7 @@ function showBuilderVideo(job) {
 let previewSeq = 0;            // 取得の世代(古い結果の取り違え防止)
 let previewUrl = "";           // 表示中のプレビュー(blob URL。差し替え時にrevoke)
 let previewAbort = null;       // 進行中の取得(組み合わせが変わったら中断)
+
 let previewTimer = null;       // デバウンスのタイマー
 let previewKey = "";           // 直近に表示を頼んだ内容(同じなら作り直さない)
 let previewComboKey = "";      // 直近の組み合わせ(変わったら画像の表示指定を戻す)
@@ -5385,6 +6020,41 @@ const PREVIEW_DEBOUNCE_MS = 400;
 const PREVIEW_FALLBACK_RETRY_MS = 4000;
 const PREVIEW_FALLBACK_RETRY_MAX_MS = 15000;
 const PREVIEW_FALLBACK_RETRIES = 8;
+
+// 表示中の画像をジョブの背景として保存する。代表画像へのフォールバックも含め、
+// 同じ絵を送る。画像がまだ表示できていなければ、生成を待たせず省略する。
+function captureGenerationThumbnail() {
+  const image = $("builder-image");
+  if (image.hidden || !image.complete || !image.naturalWidth) return Promise.resolve(null);
+  return new Promise(resolve => {
+    try {
+      const canvas = document.createElement("canvas");
+      const scale = Math.min(1, 640 / image.naturalWidth, 360 / image.naturalHeight);
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(resolve, "image/png");
+    } catch { resolve(null); }
+  });
+}
+
+// ジョブのサムネを復元したら、起動時に始めた別のプレビューで上書きしない。
+function restoreGenerationThumbnail(job) {
+  const image = $("builder-image");
+  const url = qs(job.thumbnail_url);
+  if (image.getAttribute("src") === url) return;
+  ++previewSeq;
+  if (previewAbort) previewAbort.abort();
+  previewAbort = null;
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = ""; }
+  image.src = url;
+  image.alt = "生成中の動画のサムネイル";
+  image.hidden = false;
+  $("builder-loading").hidden = true;
+  $("builder-image-hidden").hidden = true;
+  $("builder-figure").hidden = false;
+  setPreviewPending(false);
+}
 
 // 画像を初期非表示にする単語リストか。隠すなら理由の文言、出してよいなら空文字。
 function hiddenPreviewReason(name) {
@@ -5434,9 +6104,25 @@ const currentCombo = () => ({
 
 function titleChoiceContext() {
   const c = currentCombo();
-  return JSON.stringify([c.sampleId,
-    c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "",
-    c.wordlistName, $("where").value.trim(), c.customList?.text || ""]);
+  // アップロード待ちでも、保持中の曲名と辞書に対応する選択はそのまま使う。
+  const ownTitle = c.sampleId === OWN_SONG_VALUE
+    || (!c.sampleId && songInputMode === "upload");
+  const file = ownSongFile();
+  let title = ownTitle ? songTitleOf(file) : "";
+  // ファイル名を使う曲を外した間は、選択時の曲名を保留して再選択を待つ。
+  if (ownTitle && !file && !title && titleChoice) {
+    try {
+      const previous = JSON.parse(titleChoice.context);
+      if (previous[0] === OWN_SONG_VALUE && typeof previous[1] === "string") title = previous[1];
+    } catch { /* 不正な保存値は通常の条件比較で解除する。 */ }
+  }
+  return JSON.stringify([ownTitle ? OWN_SONG_VALUE : c.sampleId,
+    title, c.wordlistName, currentWordlistWhere(), c.customList?.text || ""]);
+}
+
+function currentWordlistWhere() {
+  const data = activeLyricsJson();
+  return data ? editorWhereOf(data) : $("where").value.trim();
 }
 
 function selectedTitleWords() {
@@ -5499,7 +6185,7 @@ function renderTitleChoices() {
   select.value = selected;
   $("title-words-detail").textContent = selected
     ? `読み：${titleChoice.reading} ／ ${titleChoice.originals.join(" ＋ ")}`
-    : "選んだ単語をサムネイルと動画の冒頭に使います。「＋」は複数の単語の組み合わせです。";
+    : "";
   const c = currentCombo();
   $("title-candidates-load").disabled = !!titleCandidatesAbort || !c.sampleId
     || (!c.wordlistName && !c.customList);
@@ -5531,12 +6217,13 @@ $("title-candidates-load").addEventListener("click", async () => {
   const payload = combo.sampleId === OWN_SONG_VALUE
     ? { title: songTitleOf(ownSongFile()) } : { sample: combo.sampleId };
   if (combo.customList) payload.wordlist_text = combo.customList.text;
-  else Object.assign(payload, { wordlist: combo.wordlistName, where: $("where").value.trim() });
+  else Object.assign(payload, { wordlist: combo.wordlistName, where: currentWordlistWhere() });
   const seq = ++titleCandidatesSeq;
   const ctrl = new AbortController();
   titleCandidatesAbort?.abort();
   titleCandidatesAbort = ctrl;
   titleCandidatesContext = context;
+  const operation = globalThis.VideoOperations?.begin();
   const timer = setTimeout(() => ctrl.abort(), 25000);
   setTitleCandidatesStatus("曲名に近い候補を探しています…");
   $("title-candidates-list").replaceChildren();
@@ -5565,6 +6252,7 @@ $("title-candidates-load").addEventListener("click", async () => {
     }
   } finally {
     clearTimeout(timer);
+    operation?.end();
     if (seq === titleCandidatesSeq) {
       titleCandidatesAbort = null;
       renderTitleChoices();
@@ -5658,7 +6346,7 @@ function loadThumbnailPreview(combo) {
   const ctrl = new AbortController();
   previewAbort = ctrl;
   const timer = setTimeout(() => ctrl.abort(), combo.customList ? 25000 : PREVIEW_TIMEOUT_MS);
-  // 持ち込み曲にはサンプルIDがないので、入力中の曲名(初期値はファイル名)を渡す。
+  // 持ち込み曲にはサンプルIDがないので、入力中の曲名(空欄ならファイル名)を渡す。
   // サムネ生成は音声そのものではなく曲名を同じ単語リストで変換するため、WAVでも
   // 完成時と同じ経路で事前に作れる。登録済みの音声サンプルは従来どおりIDを渡す。
   const params = combo.sampleId === OWN_SONG_VALUE
@@ -5666,7 +6354,7 @@ function loadThumbnailPreview(combo) {
     : { sample: combo.sampleId, wordlist: combo.wordlistName };
   const displayLabel = $("thumbnail-wordlist-label").value.trim();
   if (displayLabel) params.wordlist_label = displayLabel;
-  params.where = $("where").value.trim();
+  params.where = currentWordlistWhere();
   const titleWords = selectedTitleWords();
   if (titleWords) params.title_words = titleWords;
   params.noncommercial_fanwork = "true";
@@ -5789,7 +6477,7 @@ let previewDeferred = false;
 function renderBuilder() {
   // 生成中はサムネ枠を進捗表示が使っている。ここで作り直すと state が preview に
   // 戻って進捗が消えるので、選択だけ受けて作り直しは終わるまで先送りする
-  if (submitBusy) { previewDeferred = true; return; }
+  if (submitBusy || globalThis.VideoOperations?.hasAction($("share-save"))) { previewDeferred = true; return; }
   previewDeferred = false;
   const c = currentCombo();
   // 古い編集データにCSV本文がない場合も、生成には進める。
@@ -5813,7 +6501,7 @@ function schedulePreview(force) {
   const ownTitle = c.sampleId === OWN_SONG_VALUE ? songTitleOf(ownSongFile()) : "";
   const combo = JSON.stringify([c.sampleId, ownTitle, c.wordlistName,
     list?.id || "", list?.name || "", list?.text || "",
-    $("thumbnail-wordlist-label").value.trim(), $("where").value.trim(), selectedTitleWords()]);
+    $("thumbnail-wordlist-label").value.trim(), currentWordlistWhere(), selectedTitleWords()]);
   // 組み合わせを変えたら「画像を表示する」の効果は切れる(意図せず出さないため)
   if (!force && combo !== previewComboKey) previewShowImages = false;
   previewComboKey = combo;
@@ -5892,6 +6580,9 @@ $("wordlist").addEventListener("change", () => {
 $("song-title").addEventListener("change", () => schedulePreview(true));
 $("where").addEventListener("change", () => schedulePreview(true));
 $("thumbnail-wordlist-label").addEventListener("change", () => schedulePreview(true));
+$("lyrics").addEventListener("input", () => schedulePreview());
+$("lyrics").addEventListener("change", () => schedulePreview());
+$("auto-lyrics").addEventListener("change", () => schedulePreview());
 // 「画像を表示する」を押したときだけ単語画像入りで作り直す
 $("builder-show-image").addEventListener("click", () => {
   previewShowImages = true;
@@ -5941,14 +6632,68 @@ $("synthesizer").addEventListener("change", () => {
 $("voicevox-style").addEventListener("change", updateVoicevoxCredit);
 // 中断はサムネ枠の中(#builder-cancel)と詳細の進捗(#cancel)の両方から押せる
 function setCancelPending(pending) {
+  if (!pending && typeof cancelJob !== "undefined") {
+    cancelJob.operation?.end();
+    cancelJob.operation = null;
+    clearTimeout(cancelJob.timer);
+  }
   for (const btn of [$("cancel"), $("builder-cancel")]) {
     btn.disabled = pending;
     btn.textContent = pending ? "中断中…" : "中断";
   }
 }
 
+async function reconcileSubmissionCancellation(submission) {
+  if (submission.reconciling) return;
+  submission.reconciling = true;
+  setCancelPending(true);
+  setJobStatus("中断を確認しています…");
+  showBuilderMsg("");
+  try {
+    const result = await SoramimicSubmissions.cancel(submission.form, headers);
+    submission.unconfirmed = false;
+    if (submitJob.pendingSubmission === submission) submitJob.pendingSubmission = null;
+    if (result.id) {
+      submission.trackingCancellation = true;
+      watch(result.id, {canceling: true});
+    } else {
+      setJobStatus("中断しました");
+      setBuilderState("preview");
+      setBusy(false);
+      setCancelPending(false);
+      loadHistory();
+    }
+  } catch (_) {
+    submission.unconfirmed = true;
+    setCancelPending(false);
+    setJobStatus("中断の完了を確認できません");
+    showBuilderMsg("中断の完了を確認できません。通信状態を確認して、もう一度「中断」を押してください。");
+  } finally {
+    submission.reconciling = false;
+  }
+}
+
 async function cancelJob() {
+  if (typeof submitJob !== "undefined" && submitJob.preparationController) {
+    submitJob.preparationController.abort();
+    setJobStatus("生成の準備を中断しています…");
+    return;
+  }
+  const submission = typeof submitJob !== "undefined" ? submitJob.pendingSubmission : null;
+  const retry = submission?.unconfirmed && !submission.reconciling;
   const id = currentJob;
+  if ((!id && !submitAbort && !retry) || (id && cancelPendingJob === id)) return;
+  if (!cancelJob.operation) {
+    const operation = globalThis.VideoOperations?.begin();
+    cancelJob.operation = operation;
+    if (operation) cancelJob.timer = setTimeout(() => {
+      if (cancelJob.operation !== operation) return;
+      cancelPendingJob = null;
+      setCancelPending(false);
+      showBuilderMsg("中断の完了をまだ確認できません。通信状態を確認して、もう一度中断してください。");
+    }, 30000);
+  }
+  if (retry) { await reconcileSubmissionCancellation(submission); return; }
   if (!id && submitAbort && !submitAbort.signal.aborted) {
     setCancelPending(true);
     setJobStatus("中断しています…");
@@ -5963,7 +6708,7 @@ async function cancelJob() {
   showBuilderMsg("");
   try {
     const res = await fetch(`/api/jobs/${id}/cancel`, {
-      method: "POST", headers: headers(),
+      method: "POST", headers: headers(), signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) throw new Error(String(res.status));
     // 応答までに数秒かかっても表示はpendingのまま保つ。応答後は次の定期
@@ -5985,6 +6730,7 @@ $("builder-cancel").addEventListener("click", cancelJob);
 // ---- レイアウトエディタ(ドラッグで配置) ----
 
 let leLayout = null;   // 編集中のレイアウト。nullなら未使用(=レイアウト名 or サーバー既定)
+let leLoadSequence = 0;
 // ユーザーが自分で編集したか(ドラッグ・追加/削除・JSON手入力)。
 // 生成時にlayout_jsonを送るのはこれがtrueのときだけ(読み込んだだけなら名前で送る)
 let leDirty = false;
@@ -6054,6 +6800,7 @@ function leCaptureCustom() {
 // 「Aを編集 → Bを見に行く → Aに戻ったら編集が生きている」ための復元
 function leRestoreStash() {
   if (!leStash) return;
+  ++leLoadSequence;
   leLayout = JSON.parse(JSON.stringify(leStash.layout));
   leBaseKey = leStash.baseKey;
   leBaseline = leStash.baseline;
@@ -6301,7 +7048,7 @@ function leLabel(e) {
 
 // leLayout を #layout-json に書き戻す。ドラッグ等の手編集から呼ばれるので
 // 「ユーザーが編集した」印(leDirty)を立てる。leLoad は読み込み直後に降ろす
-function leToJson() {
+function leToJson(releaseResult = true) {
   $("layout-json").value = leLayout ? JSON.stringify(leLayout, null, 2) : "";
   leDirty = true;
   // 新しい編集が入ったので、ベース切り替え用に取っておいた退避は捨てる
@@ -6310,13 +7057,14 @@ function leToJson() {
   leUpdateStatus();
   leLayoutFor = $("layout").value.trim();
   saveForm();  // ドラッグ編集はchangeを発火しないのでここで保存する
-  releaseBuilderDone();   // 同じ理由で、完成した動画も自分でプレビューに戻す
+  if (releaseResult) releaseBuilderDone();
 }
 
 // 編集中のレイアウトを捨てる(= レイアウト名だけで生成する状態に戻す)。
 // レイアウト名を変えた瞬間に同期で呼ぶことで、leLoadのfetchが失敗しても
 // 前のレイアウト由来のJSONが残らないようにする
 function leClearLayout() {
+  ++leLoadSequence;
   leLayout = null;
   leSelected = -1;
   leDirty = false;
@@ -7031,8 +7779,12 @@ document.addEventListener("keydown", (ev) => {
 // 捨てる: 前のレイアウトのJSONを残すと、レイアウト名と中身が食い違ったまま
 // 生成に送られて別の単語リスト向けのカードになってしまう(実際に起きた事故)
 async function leLoad() {
+  const sequence = ++leLoadSequence;
   const name = $("layout").value.trim() || "default";
+  const isCurrent = () => sequence === leLoadSequence
+    && name === ($("layout").value.trim() || "default");
   const fail = (msg) => {
+    if (!isCurrent()) return false;
     leClearLayout();
     saveForm();
     leMsg(msg);
@@ -7047,11 +7799,14 @@ async function leLoad() {
     return fail(`レイアウト「${name}」を読み込めませんでした(${err.message})。`
       + "編集中のレイアウトは破棄しました。プリセットを選び直して再試行してください");
   }
+  if (!isCurrent()) return false;
   if (!res.ok) {
     return fail("組み込みレイアウトだけ読み込めます: " + name);
   }
   try {
-    leLayout = await res.json();
+    const layout = await res.json();
+    if (!isCurrent()) return false;
+    leLayout = layout;
   } catch (err) {
     return fail(`レイアウト「${name}」の内容を読めませんでした(${err.message})`);
   }
@@ -7059,7 +7814,8 @@ async function leLoad() {
   // 読み込んだ内容がこれ以降の「ベース」(●の判定基準)になる
   leBaseKey = "preset:" + $("layout").value.trim();
   leBaseline = JSON.stringify(leLayout);
-  leToJson();
+  // プリセットの取得完了だけで、完成した動画を非表示にしない。
+  leToJson(false);
   leUndoReset();     // 読み込みでレイアウトが入れ替わったので履歴はここから
   leDirty = false;   // 読み込んだだけなので「ユーザーの編集」ではない
   leLayoutFor = $("layout").value.trim();
@@ -7110,6 +7866,7 @@ $("layout-file").addEventListener("change", async () => {
 // プリセットは非同期(fetch)、ファイルはメモリからなので同期で返り値が違う点に注意
 function leLoadBase(key) {
   if (!key.startsWith(LE_FILE_PREFIX)) return leLoad();   // Promise<boolean>
+  ++leLoadSequence;
   const name = key.slice(LE_FILE_PREFIX.length);
   const src = leFiles.get(name);
   if (!src) { leMsg("読み込んだファイルが見つかりません: " + name); return false; }
@@ -7265,20 +8022,51 @@ const REVIEW_REGENERATE_KEY = "soramimic-video-review-auto-regenerate";
 const UNMATCHED_LYRICS_KEY = "soramimic-video-unmatched-lyrics-accepted";
 let reviewJobId = null;
 let reviewOpenedJob = null;
-let reviewOpening = false;
-let reviewSubmitting = false;
+// Only one review action can run at a time: "", "opening", "closing", "submitting".
+let reviewAction = "";
 let reviewSavedRaw = "";
 let reviewSavePending = null;
 
-async function openLyricReview(id) {
-  if (!id || reviewOpening || reviewSubmitting) return;
-  reviewOpening = true;
+function setReviewAction(action) {
+  if ((action === "closing" || action === "submitting") && !setReviewAction.operation) {
+    setReviewAction.operation = globalThis.VideoOperations?.begin({ allow: [
+      $("lyric-review-skip"), $("lyric-review-cancel"), $("lyric-review-proceed"),
+    ] });
+  }
+  if (!action) { setReviewAction.operation?.end(); setReviewAction.operation = null; }
+  reviewAction = action;
+  const editingBlocked = action === "closing" || action === "submitting";
+  $("confirm-lyric-review").disabled = editingBlocked;
+  $("close-lyric-review").disabled = editingBlocked;
+  $("editor-frame").inert = editingBlocked;
+  $("close-lyric-review").textContent = action === "closing" ? "保存中…" : "閉じる";
+  if (action !== "submitting") $("confirm-lyric-review").textContent = "動画を生成 →";
+  syncHistoryReviewControls();
+}
+
+function reviewPresentationBlocked(operation) {
+  return (globalThis.VideoOperations?.isBusy() && !operation?.isAlone()) || !!document.querySelector("dialog[open]");
+}
+
+async function openLyricReview(id, { foreground = false } = {}) {
+  if (!id || historyReviewBlocked(id) || reviewPresentationBlocked()) return;
+  const operation = foreground ? globalThis.VideoOperations?.begin() : null;
+  if (foreground) openLyricReview.requestedJob = id;
+  setReviewAction("opening");
   reviewOpenedJob = id;
   try {
-    const res = await fetch(`/api/jobs/${id}/review`, { headers: headers(), cache: "no-store" });
+    const res = await fetch(`/api/jobs/${id}/review`, {
+      headers: headers(), cache: "no-store", signal: AbortSignal.timeout(20000),
+    });
     const seed = await res.json();
     if (!res.ok) throw new Error(seed.detail || res.status);
     if (currentJob !== id) return;
+    // A foreground operation or dialog may have opened while the seed was loading.
+    // Leave the review pending so polling can present it after that work finishes.
+    if (reviewPresentationBlocked(operation)) {
+      reviewOpenedJob = null;
+      return;
+    }
     // The shared editor storage can contain another song. Reuse it only for this job.
     if (sessionStorage.getItem(REVIEW_JOB_KEY) !== id || !editorSessionData()) {
       sessionStorage.setItem(EDITOR_KEY, JSON.stringify(seed));
@@ -7295,10 +8083,13 @@ async function openLyricReview(id) {
     reviewJobId = id;
     $("lyric-review-error").textContent = "";
     showEditorFrame();
+    if (openLyricReview.requestedJob === id) openLyricReview.requestedJob = null;
   } catch (err) {
+    if (openLyricReview.requestedJob === id) openLyricReview.requestedJob = null;
     showBuilderMsg("編集画面を開けませんでした。「歌詞を確認する」から再試行してください: " + err.message);
   } finally {
-    reviewOpening = false;
+    setReviewAction("");
+    operation?.end();
   }
 }
 
@@ -7308,7 +8099,7 @@ async function saveLyricReview() {
     return saveLyricReview();
   }
   const id = reviewJobId;
-  if (!id || reviewSubmitting || sessionStorage.getItem(REVIEW_JOB_KEY) !== id) return;
+  if (!id || reviewAction === "submitting" || sessionStorage.getItem(REVIEW_JOB_KEY) !== id) return;
   const raw = sessionStorage.getItem(EDITOR_KEY);
   if (!raw || raw === reviewSavedRaw) return;
   reviewSavePending = (async () => {
@@ -7331,15 +8122,16 @@ async function saveLyricReview() {
 }
 
 async function closeLyricReview() {
-  const button = $("close-lyric-review");
-  if (button.disabled || reviewSubmitting) return;
-  button.disabled = true;
+  if (reviewAction) return;
+  setReviewAction("closing");
   try { await saveLyricReview(); }
   catch (err) {
     $("lyric-review-error").textContent = "保存できませんでした: " + err.message;
     return;
   }
-  finally { button.disabled = false; }
+  finally {
+    setReviewAction("");
+  }
   closeEditor();
   loadHistory().catch(() => {});
 }
@@ -7394,12 +8186,9 @@ function confirmReviewRegeneration(mode = "regenerate") {
 }
 
 async function confirmLyricReview() {
-  if (!reviewJobId || reviewSubmitting) return;
+  if (!reviewJobId || reviewAction) return;
   const id = reviewJobId;
-  reviewSubmitting = true;
-  $("confirm-lyric-review").disabled = true;
-  $("close-lyric-review").disabled = true;
-  $("editor-frame").inert = true;
+  setReviewAction("submitting");
   $("lyric-review-error").textContent = "";
   try {
     if (reviewSavePending) await reviewSavePending;
@@ -7425,7 +8214,9 @@ async function confirmLyricReview() {
     $("confirm-lyric-review").textContent = "動画を生成中…";
     const form = new FormData();
     form.append("editor", new Blob([raw], { type: "application/json" }), "editor.json");
-    const res = await fetch(`/api/jobs/${id}/resume`, { method: "POST", headers: headers(), body: form });
+    const res = await fetch(`/api/jobs/${id}/resume`, {
+      method: "POST", headers: headers(), body: form, signal: AbortSignal.timeout(20000),
+    });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.status);
     closeEditor();
@@ -7436,16 +8227,12 @@ async function confirmLyricReview() {
   } catch (err) {
     $("lyric-review-error").textContent = "動画生成を再開できませんでした: " + err.message;
   } finally {
-    reviewSubmitting = false;
-    $("confirm-lyric-review").disabled = false;
-    $("confirm-lyric-review").textContent = "動画を生成 →";
-    $("close-lyric-review").disabled = false;
-    $("editor-frame").inert = false;
+    setReviewAction("");
     if (reviewJobId === id) $("confirm-lyric-review").focus();
   }
 }
 
-$("builder-review").addEventListener("click", () => openLyricReview(currentJob));
+$("builder-review").addEventListener("click", () => openLyricReview(currentJob, { foreground: true }));
 $("confirm-lyric-review").addEventListener("click", confirmLyricReview);
 $("close-lyric-review").addEventListener("click", closeLyricReview);
 
@@ -7770,7 +8557,7 @@ async function hostUploadSong() {
   }
   if (midiChecking) await midiChecking;    // 歌詞なしMIDIはここで取り消される
   if (!$("midi").files[0]) {
-    throw new Error("そのMIDIは使えません(歌詞入りのXF形式MIDIが必要です)");
+    throw new Error("そのMIDIは使えません(歌詞入りMIDI（XFまたは標準の歌詞イベント）が必要です)");
   }
   prefillOwnMidiLyrics($("midi").files[0]);
   // サンプルの選択を外す。残すと投入前の突き合わせ(ensureSelectedSampleMidi)が
@@ -7780,7 +8567,7 @@ async function hostUploadSong() {
   await reseedEditorSong();
 }
 
-// /api/midi-check が返したXF歌詞を、持ち込みMIDI専用モーダルの
+// /api/midi-check が返したMIDI歌詞を、持ち込みMIDI専用モーダルの
 // 元歌詞欄の下敷きにする。空ならそのまま入れ、前の曲の歌詞等があれば
 // 勝手に消さず確認する。ここで正本 #lyrics を更新すると reseedEditorSong が
 // 同じ値をエディタに返し、開いている専用モーダルの textarea に表示される。
@@ -8074,6 +8861,7 @@ async function importEditor() {
 
 function closeEditor() {
   if ($("lyric-review-confirm").open) $("lyric-review-confirm").close("cancel");
+  if ($("editor-frame-wrap").open) $("editor-frame-wrap").close();
   $("editor-frame-wrap").hidden = true;
   $("editor-frame").src = "about:blank";
   document.body.classList.remove("modal-open");
@@ -8115,6 +8903,7 @@ function showEditorFrame() {
   // Soramimicロゴは従来どおり生成画面へ進むが、埋め込み時は親へ戻る操作になる。
   $("editor-frame").src = "/editor/editor.html?embed=video";
   $("editor-frame-wrap").hidden = false;
+  if (!$("editor-frame-wrap").open) $("editor-frame-wrap").showModal();
   document.body.classList.add("modal-open");   // 裏のページをスクロールさせない
   // 開いた直後は親側にフォーカスを置く(この時点でEscが効く)
   $("editor-frame").focus();
@@ -8130,12 +8919,19 @@ function showEditorFrame() {
 // ハンドラを付ける(付けられなければ親のEscだけになる)。
 function onEditorModalKeydown(ev) {
   if (ev.key !== "Escape" || ev.defaultPrevented || $("editor-frame-wrap").hidden) return;
+  if (ev.currentTarget && ev.currentTarget !== document
+      && ev.currentTarget.querySelector?.("dialog[open]")) return;
   if ($("lyric-review-confirm").open) return;
   ev.preventDefault();
   if (reviewJobId) closeLyricReview();
   else closeEditor();
 }
 document.addEventListener("keydown", onEditorModalKeydown);
+$("editor-frame-wrap").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (reviewJobId) closeLyricReview();
+  else closeEditor();
+});
 $("editor-frame").addEventListener("load", () => {
   try {
     const doc = $("editor-frame").contentDocument;
@@ -8240,7 +9036,9 @@ async function loadWordlistSelect(editorAvailable) {
   if (!editorAvailable) { bail(); return; }
   let entries;
   try {
-    const res = await fetch("/editor/conf/setting.json", { headers: headers() });
+    const res = await fetch("/editor/conf/setting.json", {
+      headers: headers(), signal: AbortSignal.timeout(20000),
+    });
     if (!res.ok) throw new Error(String(res.status));
     const conf = await res.json();
     // value=ORIGINAL(editorローカルのカスタムリスト)はサーバーで解決できないので除外。
@@ -8686,6 +9484,7 @@ function saveForm() {
       lyrics: $("lyrics").value,
       lyricsInputVersion: 1,
       autoLyrics: $("auto-lyrics").checked,
+      adjustLyrics: $("adjust-lyrics").checked,
       songTitle: $("song-title").value,
       sampleId: midiSampleId,
       // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
@@ -8821,6 +9620,7 @@ $("midi").addEventListener("change", async () => {
       r.onerror = reject;
       r.readAsDataURL(f);
     });
+    if (f !== ownSongFile()) return;
     localStorage.setItem(MIDI_KEY, JSON.stringify({ name: f.name, dataUrl }));
   } catch { /* 保存失敗は無視 */ }
 });
@@ -8900,6 +9700,7 @@ async function doRestoreForm() {
     // 2. lyrics, transpose, model
     $("lyrics").value = state.lyrics || "";
     if (typeof state.autoLyrics === "boolean") $("auto-lyrics").checked = state.autoLyrics;
+    if (typeof state.adjustLyrics === "boolean") $("adjust-lyrics").checked = state.adjustLyrics;
     $("song-title").value = state.songTitle || "";
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
@@ -8983,17 +9784,16 @@ async function doRestoreForm() {
     }
   }
 
-  // 6. 持ち込みMIDIだけをdataURLから復元する。旧版が保存した
-  // サンプルMIDIはIDだけ移行し、バイナリをブラウザに残さない。
+  // 6. 持ち込みMIDIをdataURLから復元する。旧版のサンプルMIDIは
+  // 保存済みの選択IDも一致するときだけ移行する。同名の持ち込み曲は置き換えない。
   try {
     const m = JSON.parse(localStorage.getItem(MIDI_KEY) || "null");
     if (m && m.dataUrl) {
       await samplesReady;
       const restoredId = m.name.replace(/\.[^.]+$/, "");
-      const restoredSample = [...$("sample-select").options]
-        .some((option) => option.value === restoredId);
+      const restoredSample = restoredSampleId && restoredSampleId === restoredId
+        && [...$("sample-select").options].some((option) => option.value === restoredId);
       if (restoredSample) {
-        if (!restoredSampleId) restoredSampleId = restoredId;
         localStorage.removeItem(MIDI_KEY);
       } else {
         const blob = await (await fetch(m.dataUrl)).blob();
@@ -9025,9 +9825,36 @@ async function doRestoreForm() {
       && Array.isArray(state.titleChoice.originals)) titleChoice = state.titleChoice;
 }
 
-$("api-key").addEventListener("change", loadConfig);
+let initializationPending = null;
+async function initializePage() {
+  if (initializationPending) return initializationPending;
+  const inputs = document.querySelectorAll("[data-startup-inputs]");
+  for (const input of inputs) input.disabled = true;
+  $("startup-status").hidden = false;
+  $("startup-message").textContent = "準備中…";
+  $("startup-retry").hidden = true;
+  const operation = globalThis.VideoOperations?.begin({ allow: [$("api-key"), $("startup-retry")] });
+  initializationPending = (async () => {
+    try {
+      if (!await loadConfig()) {
+        $("startup-message").textContent = "APIキーを入力してください。";
+        return;
+      }
+      for (const input of inputs) input.disabled = false;
+      $("startup-status").hidden = true;
+    } catch {
+      $("startup-message").textContent = "準備できませんでした。通信状態を確認して再試行してください。";
+      $("startup-retry").hidden = false;
+    }
+  })();
+  try { await initializationPending; }
+  finally { initializationPending = null; operation?.end(); }
+}
+
+$("startup-retry").addEventListener("click", () => location.reload());
+$("api-key").addEventListener("change", initializePage);
 if (localStorage.getItem("apiKey")) $("api-key").value = localStorage.getItem("apiKey");
-loadConfig();
+initializePage();
 </script>
 </body>
 </html>

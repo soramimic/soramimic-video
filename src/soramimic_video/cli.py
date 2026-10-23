@@ -99,6 +99,15 @@ def cmd_apply_lyric_layers(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    from .exports import export_file
+
+    directory = Path(args.project)
+    path = export_file(Project.load(directory), directory, args.format, Path(args.output))
+    print(f"書き出し完了: {path}")
+    return 0
+
+
 def cmd_export_xf(args: argparse.Namespace) -> int:
     from .xfexport import export_xf_midi
 
@@ -498,8 +507,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("analyze", help="XF MIDIを解析し元歌詞とアライメントする")
-    p.add_argument("--midi", required=True, help="XF MIDIファイル")
+    p = sub.add_parser("analyze", help="歌詞入りMIDIを解析し元歌詞とアライメントする")
+    p.add_argument("--midi", required=True, help="歌詞入りMIDIファイル（XF・標準lyricsイベント）")
     p.add_argument("--lyrics", help="元歌詞テキスト(1行1フレーズ)")
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
     p.set_defaults(func=cmd_analyze)
@@ -544,6 +553,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", required=True, help="替え歌変換前のプロジェクト")
     p.add_argument("--layers", required=True, help="version 1のrealization JSON")
     p.set_defaults(func=cmd_apply_lyric_layers)
+
+    p = sub.add_parser("export", help="MusicXML・歌詞入りMIDI・XF MIDI・伴奏なし歌声WAVを書き出す")
+    p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
+    p.add_argument("--format", required=True, choices=["musicxml", "midi", "xf", "vocal"])
+    p.add_argument("--output", required=True, help="出力ファイルパス")
+    p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("export-xf", help="選択した歌詞とノートを由来情報付きXF MIDIへ出力する")
     p.add_argument("--project", required=True, help="プロジェクトディレクトリ")
