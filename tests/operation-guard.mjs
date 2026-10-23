@@ -388,3 +388,67 @@ test('receiver cleanup survives failure to notify a disconnected peer', async ()
   await h.message('data', h.payload); await failure;
   assert.equal(h.timers.size, 0);
 });
+
+function historyPlaybackSetup(play) {
+  const h = setup(), { document, context } = h;
+  const card = document.createElement('article'); card.className = 'history-item';
+  const slot = document.createElement('div'); slot.className = 'history-media';
+  const thumb = document.createElement('button'); thumb.className = 'history-thumb';
+  card.append(slot); slot.append(thumb); document.body.append(card);
+  const timers = new Set(), create = document.createElement.bind(document);
+  let pause = () => {};
+  document.createElement = tag => {
+    const element = create(tag);
+    if (['video', 'audio'].includes(tag)) {
+      element.play = () => play(element);
+      element.pause = () => pause();
+      element.load = () => {};
+    }
+    return element;
+  };
+  Object.assign(context, {
+    AbortController, headers: () => ({}), qs: value => value, apiKey: () => '',
+    historyJobs: [{ id: 'done', playback_url: '/playback', thumbnail_url: '/thumbnail' }],
+    resetHistorySave() {}, resetHistoryShare() {},
+    setTimeout: fn => { timers.add(fn); return fn; }, clearTimeout: fn => timers.delete(fn),
+    URL: { revokeObjectURL() {} },
+  });
+  vm.runInContext('let activeHistoryPlayback = null;\n'
+    + pageFunction('disposeHistoryPlayback') + '\n' + pageFunction('startHistoryPlayback'), context);
+  return { ...h, slot, thumb, timers, play: fn => { play = fn; }, pause: fn => { pause = fn; } };
+}
+
+test('failed history media restores the replay control and permits a successful retry', async () => {
+  const h = historyPlaybackSetup(() => Promise.reject(Object.assign(new Error('unavailable'), { name: 'NotSupportedError' })));
+  await h.context.startHistoryPlayback(0, h.thumb);
+  assert(h.slot.querySelector('.history-thumb') === h.thumb, 'the original replay button is restored');
+  assert.match(h.slot.querySelector('.history-player-msg').textContent, /もう一度/);
+  assert(!h.ops.isBusy());
+  h.play(() => Promise.resolve());
+  await h.context.startHistoryPlayback(0, h.thumb);
+  assert(h.slot.querySelector('video'));
+  assert(!h.slot.querySelector('.history-player-msg'), 'retry replaces the old failure message');
+  assert(!h.ops.isBusy());
+});
+
+test('autoplay refusal retains usable native controls without reporting a data failure', async () => {
+  const h = historyPlaybackSetup(() => Promise.reject(Object.assign(new Error('activation required'), { name: 'NotAllowedError' })));
+  await h.context.startHistoryPlayback(0, h.thumb);
+  assert(h.slot.querySelector('video').controls);
+  assert(!h.slot.querySelector('.history-player-msg'));
+  assert(!h.ops.isBusy());
+});
+
+test('history preparation timeout restores replay without unlocking unrelated work', async () => {
+  let reject;
+  const h = historyPlaybackSetup(() => new Promise((_, fail) => { reject = fail; }));
+  h.pause(() => reject(Object.assign(new Error('paused'), { name: 'AbortError' })));
+  const unrelated = h.ops.begin();
+  const pending = h.context.startHistoryPlayback(0, h.thumb);
+  [...h.timers][0]();
+  await pending;
+  assert(h.slot.querySelector('.history-thumb') === h.thumb, 'the original replay button is restored');
+  assert(h.slot.querySelector('.history-player-msg'));
+  assert(h.ops.isBusy(), 'only the failed player releases its restriction');
+  unrelated.end(); assert(!h.ops.isBusy());
+});
