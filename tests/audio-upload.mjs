@@ -10,13 +10,30 @@ const response = (body, status = 200) => ({ok: status < 400, status, json: async
 
 function setup(hook = () => {}, data = bytes) {
   const stages = new Map(), jobs = new Map(), calls = [], statuses = [], timers = new Map();
+  class Surface extends EventTarget {
+    listeners = new Set();
+    addEventListener(type, listener, options) {
+      this.listeners.add(listener);
+      super.addEventListener(type, listener, options);
+    }
+    removeEventListener(type, listener) {
+      this.listeners.delete(listener);
+      super.removeEventListener(type, listener);
+    }
+  }
+  const page = new Surface(), window = new Surface();
+  page.hidden = false;
+  const visibility = hidden => {
+    page.hidden = hidden;
+    page.dispatchEvent(new Event('visibilitychange'));
+  };
   let creates = 0, timer = 0;
   const fetch = async (url, options = {}) => {
     assert.equal(options.headers['X-API-Key'], 'key');
     const method = options.method || 'GET';
     calls.push({url, method});
     const sid = url.split('/')[3]?.split('?')[0];
-    const before = await hook({url, method, options, stages, jobs, calls, timers});
+    const before = await hook({url, method, options, stages, jobs, calls, timers, visibility});
     if (before) return before;
     if (url === '/api/audio-uploads' && method === 'POST') {
       const id = options.body.get('submission_id');
@@ -48,6 +65,8 @@ function setup(hook = () => {}, data = bytes) {
     return response({id: sid, size: stage.size, offset: stage.data.length, chunk_bytes: 524288});
   };
   const context = vm.createContext({fetch, FormData, URLSearchParams, AbortController, DOMException,
+    document: page, addEventListener: window.addEventListener.bind(window),
+    removeEventListener: window.removeEventListener.bind(window),
     setTimeout(callback, ms) {
       const id = ++timer;
       if (ms < 30000) queueMicrotask(callback); else timers.set(id, callback);
@@ -64,7 +83,7 @@ function setup(hook = () => {}, data = bytes) {
     headers: () => ({'X-API-Key': 'key'}), onStatus: status => statuses.push(status), signal,
   });
   return {stages, jobs, calls, statuses, file, form, send, creates: () => creates,
-    selectionChanged: context.SoramimicAudioUpload.selectionChanged};
+    selectionChanged: context.SoramimicAudioUpload.selectionChanged, visibility, page, window};
 }
 
 test('a dropped acknowledgement resumes from server bytes, without altering the audio', async () => {
@@ -237,4 +256,106 @@ test('selecting a different file removes an abandoned transfer instead of holdin
   await h.selectionChanged(new File([bytes], 'another.mp3'));
   assert.equal(h.stages.size, 0);
   assert.equal(h.jobs.size, 0);
+});
+
+const nextTurn = () => new Promise(resolve => setImmediate(resolve));
+const noListeners = h => {
+  assert.equal(h.page.listeners.size, 0);
+  assert.equal(h.window.listeners.size, 0);
+};
+
+test('returning to the page recovers a suspended chunk with a lost acknowledgement', {timeout: 2000}, async () => {
+  let suspended = false;
+  const h = setup(async ({method, options, stages, visibility}) => {
+    if (method === 'PUT' && !suspended) {
+      suspended = true;
+      [...stages.values()][0].data = Buffer.from(await options.body.arrayBuffer());
+      visibility(true);
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new DOMException('suspended', 'AbortError')));
+      });
+    }
+  });
+  const sent = h.send();
+  await nextTurn();
+  assert.equal(h.calls.filter(c => c.method === 'PUT').length, 1);
+  h.visibility(false);
+  assert.equal((await (await sent).json()).id, 'job');
+  assert.equal(h.creates(), 1);
+  assert.ok(h.calls.some(c => c.method === 'GET'), 'resume reconciles committed server bytes');
+  noListeners(h);
+});
+
+test('background interruptions wait for visibility without exhausting retries', {timeout: 2000}, async () => {
+  let interrupted = 0;
+  const h = setup(({method, visibility}) => {
+    if (method === 'PUT' && interrupted < 7) {
+      interrupted++;
+      visibility(true);
+      throw new TypeError('background connection stopped');
+    }
+  });
+  const sent = h.send();
+  for (let i = 1; i <= 7; i++) {
+    await nextTurn();
+    assert.equal(interrupted, i);
+    const count = h.calls.length;
+    await nextTurn();
+    assert.equal(h.calls.length, count, 'no retries are spent while hidden');
+    h.visibility(false);
+  }
+  assert.equal((await (await sent).json()).id, 'job');
+  assert.equal(h.creates(), 1);
+  noListeners(h);
+});
+
+test('cancel while waiting in the background removes the transfer and visibility listeners', {timeout: 2000}, async () => {
+  const controller = new AbortController();
+  const h = setup(({method, visibility}) => {
+    if (method === 'PUT') {
+      visibility(true);
+      throw new TypeError('suspended');
+    }
+  });
+  const sent = h.send(h.form(), controller.signal);
+  const cancelled = assert.rejects(sent, error => error.name === 'AbortError');
+  await nextTurn();
+  controller.abort();
+  await cancelled;
+  h.visibility(false);
+  await nextTurn();
+  assert.equal(h.stages.size, 0);
+  assert.equal(h.creates(), 0);
+  noListeners(h);
+});
+
+test('a healthy background connection is allowed to complete', async () => {
+  const h = setup(({method, visibility}) => { if (method === 'PUT') visibility(true); });
+  assert.equal((await (await h.send()).json()).id, 'job');
+  assert.equal(h.creates(), 1);
+  noListeners(h);
+});
+
+test('restoring a cached page recovers suspended job acceptance without a duplicate', {timeout: 2000}, async () => {
+  let suspended = false;
+  const h = setup(({url, options, stages, jobs}) => {
+    if (url === '/api/jobs' && !suspended) {
+      suspended = true;
+      const id = options.body.get('submission_id');
+      assert.deepEqual(stages.get(id).data, bytes);
+      stages.delete(id); jobs.set(id, 'job');
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new DOMException('suspended', 'AbortError')));
+      });
+    }
+  });
+  const sent = h.send();
+  await nextTurn();
+  const event = new Event('pageshow');
+  event.persisted = true;
+  h.window.dispatchEvent(event);
+  assert.equal((await (await sent).json()).id, 'job');
+  assert.equal(h.jobs.size, 1);
+  assert.equal(h.calls.filter(c => c.method === 'PUT').length, 3);
+  noListeners(h);
 });

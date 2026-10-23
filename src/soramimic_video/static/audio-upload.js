@@ -11,13 +11,23 @@
     if (previousFile && previousFile !== file) return discard(previousFile);
   };
   const abortError = () => new DOMException("音源送信を中断しました", "AbortError");
+  const page = globalThis.document;
+  const visible = () => page?.hidden !== true;
   const wait = (ms, signal) => new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError());
-    const abort = () => { clearTimeout(timer); reject(abortError()); };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", abort); resolve();
-    }, ms);
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      page?.removeEventListener("visibilitychange", resume);
+      globalThis.removeEventListener?.("pageshow", resume);
+    };
+    const abort = () => { cleanup(); reject(abortError()); };
+    // Retry delays must not expire repeatedly while iOS has suspended the page.
+    const resume = () => { if (visible()) { cleanup(); resolve(); } };
+    const timer = setTimeout(resume, ms);
     signal?.addEventListener("abort", abort, {once: true});
+    page?.addEventListener("visibilitychange", resume);
+    globalThis.addEventListener?.("pageshow", resume);
   });
 
   async function send(form, {headers, signal, onStatus}) {
@@ -32,12 +42,25 @@
     form.set("submission_id", session.id);
     const url = `/api/audio-uploads/${session.id}`;
     const request = async (target, options = {}, retries = 4, timeout = 30000) => {
-      for (let attempt = 0; ; attempt++) {
+      for (let attempt = 0; ;) {
         if (signal?.aborted) throw abortError();
         const ctrl = new AbortController();
         const abort = () => ctrl.abort();
+        let wasHidden = !visible(), resumed = false;
+        const restore = event => {
+          if (!visible()) wasHidden = true;
+          else if (wasHidden || event?.persisted) {
+            // A suspended fetch may never settle. Retrying is safe for both
+            // acknowledged chunks and job submission because their IDs are stable.
+            resumed = true;
+            ctrl.abort();
+          }
+        };
         signal?.addEventListener("abort", abort, {once: true});
+        page?.addEventListener("visibilitychange", restore);
+        globalThis.addEventListener?.("pageshow", restore);
         const timer = setTimeout(abort, timeout);
+        let interrupted = false;
         try {
           const response = await fetch(target, {...options, headers: {...headers(), ...options.headers},
             cache: "no-store", signal: ctrl.signal});
@@ -48,13 +71,17 @@
           return {ok: response.ok, status: response.status, body, json: async () => body};
         } catch (error) {
           if (signal?.aborted) throw abortError();
-          if (attempt >= retries) throw error;
-          onStatus("通信の回復を待っています…");
+          interrupted = resumed || !visible();
+          if (!interrupted && attempt++ >= retries) throw error;
+          onStatus(!visible() ? "画面に戻ると、届いた部分から音源の送信を再開します…"
+            : resumed ? "音源の送信を再開しています…" : "通信の回復を待っています…");
         } finally {
           clearTimeout(timer);
           signal?.removeEventListener("abort", abort);
+          page?.removeEventListener("visibilitychange", restore);
+          globalThis.removeEventListener?.("pageshow", restore);
         }
-        await wait(Math.min(1000 * 2 ** attempt, 15000), signal);
+        await wait(interrupted ? 0 : Math.min(1000 * 2 ** (attempt - 1), 15000), signal);
       }
     };
     const remove = (cancelJob = false) => {
