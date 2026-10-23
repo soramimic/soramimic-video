@@ -1813,9 +1813,13 @@ let bridgeReceiving = false;
 async function receiveEditorLyrics() {
   if (bridgeReceiving || !new URL(location.href).searchParams.has("lyrics-transfer")) return;
   bridgeReceiving = true;
+  const controller = new AbortController();
   const status = $("bridge-status");
   status.hidden = false;
   status.textContent = "ソラミミックから歌詞を受け取っています…";
+  const action = globalThis.VideoOperations?.beginAction(status, {
+    onCancel: () => controller.abort(), cancelLabel: "歌詞の受け取りをキャンセル",
+  });
   try {
     await SoramimicBridge.receive(editorPeer, async (payload) => {
       if (simpleMode) throw new Error("この画面では歌詞JSONを読み込めません。");
@@ -1849,23 +1853,28 @@ async function receiveEditorLyrics() {
       syncBuilderValues();
       saveForm();
       status.textContent = "歌詞を読み込みました。同じ曲の音源またはMIDIを選んで、動画を作成してください。";
-    });
-  } catch (error) { status.textContent = error.message; }
+    }, { signal: controller.signal, onApplying: () => action?.setCancelable(false) });
+  } catch (error) { status.textContent = error.name === "AbortError" ? "歌詞の受け取りを中断しました。" : error.message; }
+  finally { bridgeReceiving = false; action?.finish(); }
 }
 
 async function editResultLyrics(job, button, status) {
+  const controller = new AbortController();
+  const action = globalThis.VideoOperations?.beginAction(button, {
+    onCancel: () => controller.abort(), cancelLabel: "歌詞の転送をキャンセル",
+  });
   button.disabled = true;
   status.hidden = false;
   status.textContent = "編集画面へ歌詞を渡しています…";
   try {
     await SoramimicBridge.send(editorPeer, async () => {
-      const response = await fetch(job.editor_url, { headers: headers(), cache: "no-store" });
+      const response = await fetch(job.editor_url, { headers: headers(), cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error("編集用の歌詞を取得できませんでした。ページを更新してお試しください。");
       return response.json();
-    });
+    }, { signal: controller.signal });
     status.textContent = "編集画面へ歌詞を渡しました。";
   } catch (error) { status.textContent = error.message; }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; action?.finish(); }
 }
 
 // 単語リスト名 → 組み込みレイアウト名(/api/config の wordlist_layouts)。
@@ -2319,71 +2328,76 @@ function resetTurnstile(hidePrompt = true) {
 // 「おまかせ」のように即投入するときは、まだトークンが無いことがあるため。
 // トークンが必須なのはサーバーに TURNSTILE_SECRET_KEY があるとき(=サイトキーが
 // 配られたとき)だけなので、無効な構成では何もしない。
-async function ensureTurnstileToken(timeoutMs = 120000) {
+async function ensureTurnstileToken(timeoutMs = 120000, signal) {
   if (!turnstileSiteKey) return true;
-  // 前回の完了表示や予約済みタイマーを、今回の確認に持ち越さない。
-  hideTurnstilePrompt();
-  setTurnstilePromptCopy(
-    "ロボットではないことを確認しています",
-    "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
-  );
-  const deadline = Date.now() + timeoutMs;
-  // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
-  // 読み込み失敗時は下の明示的な失敗案内へ切り替える。
-  const loadDeadline = Math.min(deadline, Date.now() + 10000);
-  while (turnstileWidget === null && !turnstileScriptFailed && Date.now() < loadDeadline) {
-    if (window.turnstile && !rebuildTurnstileWidget()) break;
-    if (turnstileWidget !== null) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  if (turnstileWidget === null || turnstileScriptFailed) {
-    showTurnstileFailure(turnstileScriptFailed);
-    return false;
-  }
-  // 一時的なerror/timeout callbackは、widgetを作り直すだけで次のタップでは通ることが
-  // ある。最初のerrorだけは同じタップのまま新しいwidgetで一度再試行する。
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
-    if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
-    if (turnstileWidget === null && window.turnstile) {
-      showTurnstilePrompt(true);
+  const operation = globalThis.VideoOperations?.begin();
+  try {
+    // 前回の完了表示や予約済みタイマーを、今回の確認に持ち越さない。
+    hideTurnstilePrompt();
+    setTurnstilePromptCopy(
+      "ロボットではないことを確認しています",
+      "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
+    );
+    const deadline = Date.now() + timeoutMs;
+    // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
+    // 読み込み失敗時は下の明示的な失敗案内へ切り替える。
+    const loadDeadline = Math.min(deadline, Date.now() + 10000);
+    while (turnstileWidget === null && !turnstileScriptFailed && Date.now() < loadDeadline && !signal?.aborted) {
+      if (window.turnstile && !rebuildTurnstileWidget()) break;
+      if (turnstileWidget !== null) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (signal?.aborted) return false;
+    if (turnstileWidget === null || turnstileScriptFailed) {
+      showTurnstileFailure(turnstileScriptFailed);
       return false;
     }
-    if (turnstileToken()) return true;
-    turnstileWaiting = true;
-    turnstileFailed = false;
-    scheduleTurnstileInteractionPrompt();
-    // tokenをページ表示時に先取りすると、生成までに失効してサーバーで拒否され得る。
-    // execution:execute と組み合わせ、生成タップの直後に新しい確認を始める。
-    try { window.turnstile.execute(turnstileWidget); } catch {
-      turnstileFailed = true;
-      showTurnstilePrompt(true);
-    }
-    while (!turnstileToken() && !turnstileFailed && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    turnstileWaiting = false;
-    const failed = turnstileFailed;
-    const verified = !failed && !!turnstileToken();
-    if (verified) {
-      // getResponseがcallbackより先にtokenを返す順序でも、表示済みの案内を即座に
-      // 閉じて点滅へ戻さない。callbackが後から来てもcomplete処理は二重予約しない。
-      if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();
-      return true;
-    }
-    if (turnstileWidget !== null && window.turnstile) {
-      // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
-      // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
-      rebuildTurnstileWidget();
-      // 1回目の失敗後も案内を画面外へ置き去りにしない。
-      if ($("turnstile-wrap").classList.contains("turnstile-active")) {
+    // 一時的なerror/timeout callbackは、widgetを作り直すだけで次のタップでは通ることが
+    // ある。最初のerrorだけは同じタップのまま新しいwidgetで一度再試行する。
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
+      if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
+      if (turnstileWidget === null && window.turnstile) {
+        showTurnstilePrompt(true);
+        return false;
+      }
+      if (turnstileToken()) return true;
+      turnstileWaiting = true;
+      turnstileFailed = false;
+      scheduleTurnstileInteractionPrompt();
+      // tokenをページ表示時に先取りすると、生成までに失効してサーバーで拒否され得る。
+      // execution:execute と組み合わせ、生成タップの直後に新しい確認を始める。
+      try { window.turnstile.execute(turnstileWidget); } catch {
+        turnstileFailed = true;
         showTurnstilePrompt(true);
       }
+      while (!turnstileToken() && !turnstileFailed && Date.now() < deadline && !signal?.aborted) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      if (signal?.aborted) return false;
+      turnstileWaiting = false;
+      const failed = turnstileFailed;
+      const verified = !failed && !!turnstileToken();
+      if (verified) {
+        // getResponseがcallbackより先にtokenを返す順序でも、表示済みの案内を即座に
+        // 閉じて点滅へ戻さない。callbackが後から来てもcomplete処理は二重予約しない。
+        if (turnstilePromptCompletionTimer === null) completeTurnstilePrompt();
+        return true;
+      }
+      if (turnstileWidget !== null && window.turnstile) {
+        // error/timeout/長時間待ちのwidgetを世代ごと破棄する。旧widgetから成功callbackが
+        // 遅れて届いてもepochが異なるため、次回の送信tokenとして復活しない。
+        rebuildTurnstileWidget();
+        // 1回目の失敗後も案内を画面外へ置き去りにしない。
+        if ($("turnstile-wrap").classList.contains("turnstile-active")) {
+          showTurnstilePrompt(true);
+        }
+      }
+      // 期限切れは再試行しても待ち時間を延ばすだけなので、即時errorのときだけ再試行する。
+      if (!failed || Date.now() >= deadline) return false;
     }
-    // 期限切れは再試行しても待ち時間を延ばすだけなので、即時errorのときだけ再試行する。
-    if (!failed || Date.now() >= deadline) return false;
-  }
-  return false;
+    return false;
+  } finally { turnstileWaiting = false; operation?.end(); }
 }
 
 // エンジン選択に応じて NEUTRINO / VOICEVOX の設定欄を切り替える。
@@ -2657,6 +2671,7 @@ function resumeHistoryReview(job) {
   if (historyReviewBlocked(job.id)) return;
   resumed = true;
   reviewOpenedJob = null;
+  openLyricReview.requestedJob = job.id;
   setBusy(true);
   showProgress();
   watch(job.id);
@@ -2680,6 +2695,8 @@ function syncHistoryReviewControls() {
 function disposeHistoryPlayback() {
   const active = activeHistoryPlayback;
   if (!active) return;
+  activeHistoryPlayback = null;
+  globalThis.VideoOperations?.cancelAction(active.media);
   if (active.abort) active.abort.abort();
   active.media.pause();
   active.media.removeAttribute("src");
@@ -2688,7 +2705,6 @@ function disposeHistoryPlayback() {
   active.media.remove();
   if (active.objectUrl) URL.revokeObjectURL(active.objectUrl);
   active.slot.replaceChildren(active.thumb);
-  activeHistoryPlayback = null;
 }
 
 async function startHistoryPlayback(index, trigger) {
@@ -2715,28 +2731,36 @@ async function startHistoryPlayback(index, trigger) {
   const active = { index, jobId: job.id, url: job.playback_url,
     media, slot, thumb, abort: null, objectUrl: "" };
   activeHistoryPlayback = active;
+  const operation = globalThis.VideoOperations?.beginAction(media, {
+    onCancel: () => disposeHistoryPlayback(), cancelLabel: "再生の準備をキャンセル",
+  });
+  const ctrl = new AbortController();
+  active.abort = ctrl;
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); media.pause(); }, 30000);
   try {
     if (apiKey()) {
-      const ctrl = new AbortController();
-      active.abort = ctrl;
       const res = await fetch(job.playback_url, { headers: headers(), signal: ctrl.signal });
       if (!res.ok) throw new Error("再生データを取得できませんでした");
       const blob = await res.blob();
       if (activeHistoryPlayback !== active) return;
+      if (timedOut) throw new Error("再生の準備がタイムアウトしました");
       active.objectUrl = URL.createObjectURL(blob);
       media.src = active.objectUrl;
     } else {
       media.src = job.playback_url;
     }
     media.load();
-    media.play().catch(() => { /* controlsから再生できるので自動再生拒否は無視 */ });
+    await media.play().catch(() => { /* controlsから再生できるので自動再生拒否は無視 */ });
+    if (timedOut) throw new Error("再生の準備がタイムアウトしました");
   } catch (error) {
-    if (activeHistoryPlayback !== active || (error && error.name === "AbortError")) return;
+    if (activeHistoryPlayback !== active || (!timedOut && error && error.name === "AbortError")) return;
     const msg = document.createElement("p");
     msg.className = "history-player-msg";
     msg.textContent = "この端末では再生を開始できませんでした。ダウンロードをお試しください。";
     slot.appendChild(msg);
   }
+  finally { clearTimeout(timer); operation?.finish(); }
 }
 
 function resetHistoryShare() {
@@ -3184,7 +3208,7 @@ async function poll(id, seq = pollSeq) {
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "awaiting_review") {
     setJobStatus("替え歌歌詞を確認してください");
-    if (reviewOpenedJob !== id && !cancelPendingJob) await openLyricReview(id);
+    if (reviewOpenedJob !== id && !cancelPendingJob) await openLyricReview(id, { foreground: openLyricReview.requestedJob === id });
     if (seq === pollSeq) schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "done") {
     setJobStatus(`完成!(合計 ${Math.round(job.total_seconds)}秒)`);
@@ -3706,7 +3730,7 @@ async function postJobWithTurnstileRetry(form, signal = null) {
   turnstileFailed = false;
   hideTurnstilePrompt();
   rebuildTurnstileWidget();
-  if (!await ensureTurnstileToken()) return res;
+  if (!await ensureTurnstileToken(undefined, signal)) return res;
   form.set("turnstile_token", turnstileToken());
   return resumable ? sendAudio() : send();
 }
@@ -3717,170 +3741,202 @@ async function submitJob(previewSec, previewMode) {
   // サンプル取得待ちやTurnstile待ちも投入処理の一部。二重タップで同じtokenを使う
   // submitJobが複数走らないよう、最初のawaitより前にロックする。
   if (submitBusy || songRecordingBusy()) return;
-  setBusy(true);
-  const inputError = lyricsFileReading ? "歌詞ファイルの読み込みが終わるまでお待ちください。"
-    : (songInputMode !== "upload" || !automaticLyricsEnabled()) ? lyricsInput().error : "";
-  if (inputError) { setBusy(false); showSubmitMsg(inputError); return; }
-  // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
-  // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
-  if (previewSec === 0) $("builder-image-hidden").hidden = true;
-  // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
-  const audio = ownAudioFile();
-  if (!audio) {
-    if (samplePending) await samplePending;
-    if (midiChecking) await midiChecking;
-  }
-  // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
-  // いたり、復元した古い中身が入っていたりする状態では投げない。
-  if (!audio && !await ensureSelectedSampleMidi()) {
-    setBusy(false);   // 先に無効化されている場合に戻す
-    return;
-  }
-  const midi = ownSongKind() === "midi" ? ownSongFile() : null;
-  const sampleId = midiSampleId;
-  if (!audio && !sampleId && !midi) {
-    setBusy(false);  // 先に無効化されている場合に戻す
-    // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
-    // 曲が未選択ならアップロードから案内する。
-    showSubmitMsg("曲がまだセットされていません。"
-      + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
-    return;
-  }
-  if (audio && !automaticLyricsEnabled()
-      && !$("lyrics").value.trim()) {
-    setBusy(false);
-    showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
-    $("lyrics").focus();
-    return;
-  }
-  showSubmitMsg("");
-  // 表示中の歌詞欄から、元歌詞と編集済みの割り当てを取り出す。
-  const lyrics = $("lyrics").value;
-  const automaticLyrics = automaticLyricsEnabled();
-  const editorSrc = editorSourceForSubmit();
-  if (editorSrc.error) { setBusy(false); showSubmitMsg(editorSrc.error); return; }
-  if (simpleMode) {
-    editorSrc.file = null;
-  }
-  if (editorSrc.file) {
-    try {
-      const payload = await readParodyFile(editorSrc.file);
-      if (previewSec === 0 && lyricReviewCoverage(payload).unmatched
-          && !await confirmReviewRegeneration("fill-missing")) {
+  const preparationController = new AbortController();
+  submitJob.preparationController = preparationController;
+  let preparationFinished;
+  const preparationDone = new Promise(resolve => { preparationFinished = resolve; });
+  let operation = globalThis.VideoOperations?.beginAction($("submit-msg"), {
+    allow: [$("lyric-review-skip"), $("lyric-review-cancel"), $("lyric-review-proceed")],
+    cancelLabel: "生成の準備をキャンセル",
+    onCancel: () => { preparationController.abort(); return preparationDone; },
+  });
+  try {
+    setBusy(true);
+    const inputError = lyricsFileReading ? "歌詞ファイルの読み込みが終わるまでお待ちください。"
+      : (songInputMode !== "upload" || !automaticLyricsEnabled()) ? lyricsInput().error : "";
+    if (inputError) { setBusy(false); showSubmitMsg(inputError); return; }
+    // 本番の動画生成を選んだ時点で、プレビューを隠している理由の案内は役目を
+    // 終えている。声プレビューでは消さず、動画生成ボタンを押したときだけ消す。
+    if (previewSec === 0) $("builder-image-hidden").hidden = true;
+    // 曲を選んだ直後に押されたときは、歌詞取得とMIDIチェックが終わるのを待ってから見る
+    const audio = ownAudioFile();
+    if (!audio) {
+      if (samplePending) await samplePending;
+      if (midiChecking) await midiChecking;
+    }
+    // 曲は「いま選ばれているもの」から決める。取得に失敗して前の曲のMIDIが残って
+    // いたり、復元した古い中身が入っていたりする状態では投げない。
+    if (!audio && !await ensureSelectedSampleMidi()) {
+      setBusy(false);   // 先に無効化されている場合に戻す
+      return;
+    }
+    preparationController.signal.throwIfAborted();
+    const midi = ownSongKind() === "midi" ? ownSongFile() : null;
+    const sampleId = midiSampleId;
+    if (!audio && !sampleId && !midi) {
+      setBusy(false);  // 先に無効化されている場合に戻す
+      // 曲の入力は詳細設定から無くなったので、いまある2つの導線だけを挙げる:
+      // 曲が未選択ならアップロードから案内する。
+      showSubmitMsg("曲がまだセットされていません。"
+        + "曲をアップロードするか、「サンプル曲で試す」から選んでください。");
+      return;
+    }
+    if (audio && !automaticLyricsEnabled()
+        && !$("lyrics").value.trim()) {
+      setBusy(false);
+      showSubmitMsg("音源解析には正式な元歌詞を入力するか、歌詞ファイルを選んでください。");
+      $("lyrics").focus();
+      return;
+    }
+    showSubmitMsg("");
+    // 表示中の歌詞欄から、元歌詞と編集済みの割り当てを取り出す。
+    const lyrics = $("lyrics").value;
+    const automaticLyrics = automaticLyricsEnabled();
+    const editorSrc = editorSourceForSubmit();
+    if (editorSrc.error) { setBusy(false); showSubmitMsg(editorSrc.error); return; }
+    if (simpleMode) {
+      editorSrc.file = null;
+    }
+    if (editorSrc.file) {
+      try {
+        const payload = await readParodyFile(editorSrc.file);
+        if (previewSec === 0 && lyricReviewCoverage(payload).unmatched
+            && !await confirmReviewRegeneration("fill-missing")) {
+          setBusy(false);
+          return;
+        }
+      }
+      catch (err) { setBusy(false); showSubmitMsg(err.message); return; }
+    }
+    // JSONの割り当てを使うため、単語リストの選択と異なる場合は確認する。
+    if (editorSrc.file && parodyMismatch()
+        && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
+          + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
+      setBusy(false);
+      return;
+    }
+    if (apiKey()) localStorage.setItem("apiKey", apiKey());
+    // Turnstileが有効なら、トークンが出るまで待ってから組み立てる。人の操作が
+    // 必要なときは確認欄まで自動スクロールし、未確認のリクエストは送らない。
+    if (turnstileSiteKey) {
+      const verified = await ensureTurnstileToken(undefined, preparationController.signal);
+      preparationController.signal.throwIfAborted();
+      if (!verified) {
         setBusy(false);
+        showSubmitMsg(turnstileScriptFailed
+          ? "人間かどうかの確認を読み込めませんでした。ページを再読み込みしてください。"
+          : "人間かどうかの確認を完了できませんでした。もう一度お試しください。");
+        showTurnstileFailure(turnstileScriptFailed);
         return;
       }
     }
-    catch (err) { setBusy(false); showSubmitMsg(err.message); return; }
-  }
-  // JSONの割り当てを使うため、単語リストの選択と異なる場合は確認する。
-  if (editorSrc.file && parodyMismatch()
-      && !confirm(`編集済みの替え歌は単語リスト「${editorWordlist.name}」から作成されています。`
-        + "このまま使って生成しますか？(選択中の単語リストは使われません)")) {
-    setBusy(false);
-    return;
-  }
-  if (apiKey()) localStorage.setItem("apiKey", apiKey());
-  // Turnstileが有効なら、トークンが出るまで待ってから組み立てる。人の操作が
-  // 必要なときは確認欄まで自動スクロールし、未確認のリクエストは送らない。
-  if (turnstileSiteKey) {
-    if (!await ensureTurnstileToken()) {
+    // 自動反映などで入力が変わった場合も、古い音源と新しい情報を組み合わせない。
+    if (audio !== ownAudioFile()
+        || midi !== (ownSongKind() === "midi" ? ownSongFile() : null)
+        || sampleId !== midiSampleId) {
       setBusy(false);
-      showSubmitMsg(turnstileScriptFailed
-        ? "人間かどうかの確認を読み込めませんでした。ページを再読み込みしてください。"
-        : "人間かどうかの確認を完了できませんでした。もう一度お試しください。");
-      showTurnstileFailure(turnstileScriptFailed);
+      hideTurnstilePrompt();
+      showSubmitMsg("曲の選択が変わりました。もう一度動画をタップして生成してください。");
       return;
     }
-  }
-  // 確認や編集の待機中も曲は選び直せる。古い音源と新しい曲情報を組み合わせて送らない。
-  if (audio !== ownAudioFile()
-      || midi !== (ownSongKind() === "midi" ? ownSongFile() : null)
-      || sampleId !== midiSampleId) {
+    if (lyricsFileReading || lyrics !== $("lyrics").value
+        || automaticLyrics !== automaticLyricsEnabled()) {
+      setBusy(false);
+      hideTurnstilePrompt();
+      showSubmitMsg("歌詞の入力が変わりました。もう一度動画をタップして生成してください。");
+      return;
+    }
+    preparationController.signal.throwIfAborted();
+    const form = new FormData();
+    const submissionId = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID().replace(/-/g, "")
+      : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+    form.append("submission_id", submissionId);
+    // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
+    if (audio) form.append("audio", audio);
+    else if (sampleId) form.append("sample_id", sampleId);
+    else form.append("midi", midi);
+    if (editorSrc.file) form.append("editor", editorSrc.file);
+    appendSongLyrics(form);
+    form.append("model", $("model").value);
+    form.append("synthesizer", fixedSynthesizer);
+    form.append("voicevox_style", String(fixedVoicevoxStyle));
+    form.append("auto_octave", "true");
+    form.append("transpose", "0");
+    form.append("preview", String(previewSec));
+    form.append("preview_mode", previewMode || "");
+    form.append("song_title", songTitleOf(audio || midi));
+    form.append("song_credit", $("song-credit").value.trim());
+    form.append("thumbnail_wordlist_label", $("thumbnail-wordlist-label").value.trim());
+    form.append("title_words", selectedTitleWords());
+    form.append("allow_noncommercial_fanwork", "true");
+    form.append("wordlist", $("wordlist").value);
+    form.append("where", $("where").value);
+    form.append("convert_params", buildConvertParams());
+    const customLayout = !!activeCustomList() || showsEditorWordlist();
+    form.append("layout", customLayout ? "" : $("layout").value);
+    // Web UIは単語リスト対応カードに固定する。レイアウト編集機能とAPI入力は
+    // 残すが、この画面から古い保存済みJSONを送ってカードを上書きしない。
+    if (!editorSrc.file) appendCustomWordlist(form);
+    if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
+    setBusy(true);
+    $("result").hidden = true;
+    showProgress();
+    setJobStatus("送信中…");
+    submitJob.preparationController = null;
+    // Audio transfer follows generation policy; a short MIDI submission waits for acknowledgement.
+    const acknowledgement = audio ? null : globalThis.VideoOperations?.begin();
+    operation?.finish(); operation = null; preparationFinished();
+    const submitController = new AbortController();
+    submitAbort = submitController;
+    let keepTurnstilePrompt = false;
+    try {
+      const res = await postJobWithTurnstileRetry(form, submitController.signal);
+      submitController.signal.throwIfAborted();
+      const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
+      if (turnstileRejected) {
+        keepTurnstilePrompt = true;
+        showTurnstileFailure(false);
+        showSubmitMsg("人間かどうかの確認をやり直して、もう一度生成してください。");
+      }
+      let body = {};
+      try { body = await res.json(); } catch { /* edge/proxyのHTMLエラーでも状態を失わない */ }
+      if (!res.ok) {
+        throw new Error(body.detail || res.status);
+      }
+      submitController.signal.throwIfAborted();
+      watch(body.id);
+    } catch (err) {
+      // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
+      // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
+      if (!keepTurnstilePrompt) hideTurnstilePrompt();
+      const canceled = submitController.signal.aborted && err?.name === "AbortError";
+      $("status-line").innerHTML = canceled
+        ? "音源の送信を中断しました"
+        : `<span class="error">${err.message}</span>`;
+      setBuilderState("preview");
+      showBuilderMsg(canceled
+        ? "音源の送信を中断しました。"
+        : err.submissionUnconfirmed ? err.message : "生成を開始できませんでした: " + err.message);
+      openJobDetails();
+      setBusy(false);
+    } finally {
+      if (submitAbort === submitController) submitAbort = null;
+      acknowledgement?.end();
+      setCancelPending(false);
+      // Turnstileのトークンは1回きり。次の投入用に取り直す
+      resetTurnstile(!keepTurnstilePrompt);
+    }
+  } catch (error) {
     setBusy(false);
     hideTurnstilePrompt();
-    showSubmitMsg("曲の選択が変わりました。もう一度動画をタップして生成してください。");
-    return;
-  }
-  if (lyricsFileReading || lyrics !== $("lyrics").value
-      || automaticLyrics !== automaticLyricsEnabled()) {
-    setBusy(false);
-    hideTurnstilePrompt();
-    showSubmitMsg("歌詞の入力が変わりました。もう一度動画をタップして生成してください。");
-    return;
-  }
-  const form = new FormData();
-  const submissionId = globalThis.crypto?.randomUUID
-    ? globalThis.crypto.randomUUID().replace(/-/g, "")
-    : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-  form.append("submission_id", submissionId);
-  // 同梱サンプルはIDだけを送り、サーバー内の正本MIDIを使う。
-  if (audio) form.append("audio", audio);
-  else if (sampleId) form.append("sample_id", sampleId);
-  else form.append("midi", midi);
-  if (editorSrc.file) form.append("editor", editorSrc.file);
-  appendSongLyrics(form);
-  form.append("model", $("model").value);
-  form.append("synthesizer", fixedSynthesizer);
-  form.append("voicevox_style", String(fixedVoicevoxStyle));
-  form.append("auto_octave", "true");
-  form.append("transpose", "0");
-  form.append("preview", String(previewSec));
-  form.append("preview_mode", previewMode || "");
-  form.append("song_title", songTitleOf(audio || midi));
-  form.append("song_credit", $("song-credit").value.trim());
-  form.append("thumbnail_wordlist_label", $("thumbnail-wordlist-label").value.trim());
-  form.append("title_words", selectedTitleWords());
-  form.append("allow_noncommercial_fanwork", "true");
-  form.append("wordlist", $("wordlist").value);
-  form.append("where", $("where").value);
-  form.append("convert_params", buildConvertParams());
-  const customLayout = !!activeCustomList() || showsEditorWordlist();
-  form.append("layout", customLayout ? "" : $("layout").value);
-  // Web UIは単語リスト対応カードに固定する。レイアウト編集機能とAPI入力は
-  // 残すが、この画面から古い保存済みJSONを送ってカードを上書きしない。
-  if (!editorSrc.file) appendCustomWordlist(form);
-  if (turnstileSiteKey) form.append("turnstile_token", turnstileToken());
-  setBusy(true);
-  $("result").hidden = true;
-  showProgress();
-  setJobStatus("送信中…");
-  const submitController = new AbortController();
-  submitAbort = submitController;
-  let keepTurnstilePrompt = false;
-  try {
-    const res = await postJobWithTurnstileRetry(form, submitController.signal);
-    const turnstileRejected = res.status === 403 && !!turnstileSiteKey;
-    if (turnstileRejected) {
-      keepTurnstilePrompt = true;
-      showTurnstileFailure(false);
-      showSubmitMsg("人間かどうかの確認をやり直して、もう一度生成してください。");
-    }
-    let body = {};
-    try { body = await res.json(); } catch { /* edge/proxyのHTMLエラーでも状態を失わない */ }
-    if (!res.ok) {
-      throw new Error(body.detail || res.status);
-    }
-    watch(body.id);
-  } catch (err) {
-    // 投入自体が失敗した場合に「確認できました／動画生成を始めます」を残さない。
-    // Turnstile拒否の再試行案内だけは、もう一度生成できるよう表示を維持する。
-    if (!keepTurnstilePrompt) hideTurnstilePrompt();
-    const canceled = submitController.signal.aborted && err?.name === "AbortError";
-    $("status-line").innerHTML = canceled
-      ? "音源の送信を中断しました"
-      : `<span class="error">${err.message}</span>`;
-    setBuilderState("preview");
-    showBuilderMsg(canceled
-      ? "音源の送信を中断しました。"
-      : err.submissionUnconfirmed ? err.message : "生成を開始できませんでした: " + err.message);
-    openJobDetails();
-    setBusy(false);
+    showSubmitMsg(preparationController.signal.aborted
+      ? "生成の準備を中断しました。" : error.message);
   } finally {
-    if (submitAbort === submitController) submitAbort = null;
-    setCancelPending(false);
-    // Turnstileのトークンは1回きり。次の投入用に取り直す
-    resetTurnstile(!keepTurnstilePrompt);
+    if (preparationController.signal.aborted) resetTurnstile();
+    operation?.finish();
+    preparationFinished();
+    if (submitJob.preparationController === preparationController) submitJob.preparationController = null;
   }
 }
 
@@ -4204,6 +4260,8 @@ function syncRecordingUi() {
   const button = $("song-record-button");
   const recording = activeSongRecording?.recorder?.state === "recording";
   const busy = songRecordingBusy();
+  if (busy && !syncRecordingUi.operation) syncRecordingUi.operation = globalThis.VideoOperations?.begin();
+  if (!busy) { syncRecordingUi.operation?.end(); syncRecordingUi.operation = null; }
   if (busy) globalThis.VideoOperations?.allowContinuation(button);
   else globalThis.VideoOperations?.clearContinuation(button);
   button.hidden = !busy && (!audioInputReady || !recordingSupported() || !!ownSongFile());
@@ -4216,7 +4274,7 @@ function syncRecordingUi() {
   $("song-upload-button").hidden = busy || !!ownSongFile();
   for (const id of ["auto-lyrics-toggle", "lyrics-correction-panel", "song-upload-selection",
     "sample-picker", "builder-wordlist-field", "custom-wordlist-menu", "advanced",
-    "builder-figure", "builder-share", "job-card", "history"]) $(id).inert = busy;
+    "builder-video", "builder-share", "history"]) $(id).inert = busy;
   updateBuilderOverlay();
   syncHistoryReviewControls();
 }
@@ -4655,6 +4713,7 @@ songUploadEntry.addEventListener("drop", (event) => {
   }
   if (songUploadEntry.closest("fieldset")?.disabled) return;
   setOwnSongFile(files[0]);
+  waitForSelectedMidiCheck();
 });
 $("midi").addEventListener("change", () => {
   const file = ownSongFile();
@@ -5071,7 +5130,16 @@ async function checkMidi() {
   renderLyricsMidiWarning(body);
 }
 
-$("midi").addEventListener("change", scheduleMidiCheck);
+function waitForSelectedMidiCheck() {
+  if (!midiChecking || ownSongKind() !== "midi") return;
+  const operation = globalThis.VideoOperations?.begin();
+  const finish = () => operation?.end();
+  midiChecking.then(finish, finish);
+}
+$("midi").addEventListener("change", (event) => {
+  scheduleMidiCheck();
+  if (event.isTrusted && !restoring) waitForSelectedMidiCheck();
+});
 $("lyrics").addEventListener("change", scheduleMidiCheck);
 
 // ---- ビルダーカード(曲 × 単語リスト → サムネプレビュー → 生成) ----
@@ -6506,6 +6574,11 @@ $("synthesizer").addEventListener("change", () => {
 $("voicevox-style").addEventListener("change", updateVoicevoxCredit);
 // 中断はサムネ枠の中(#builder-cancel)と詳細の進捗(#cancel)の両方から押せる
 function setCancelPending(pending) {
+  if (!pending && typeof cancelJob !== "undefined") {
+    cancelJob.operation?.end();
+    cancelJob.operation = null;
+    clearTimeout(cancelJob.timer);
+  }
   for (const btn of [$("cancel"), $("builder-cancel")]) {
     btn.disabled = pending;
     btn.textContent = pending ? "中断中…" : "中断";
@@ -6513,7 +6586,23 @@ function setCancelPending(pending) {
 }
 
 async function cancelJob() {
+  if (typeof submitJob !== "undefined" && submitJob.preparationController) {
+    submitJob.preparationController.abort();
+    setJobStatus("生成の準備を中断しています…");
+    return;
+  }
   const id = currentJob;
+  if ((!id && !submitAbort) || (id && cancelPendingJob === id)) return;
+  if (!cancelJob.operation) {
+    const operation = globalThis.VideoOperations?.begin();
+    cancelJob.operation = operation;
+    if (operation) cancelJob.timer = setTimeout(() => {
+      if (cancelJob.operation !== operation) return;
+      cancelPendingJob = null;
+      setCancelPending(false);
+      showBuilderMsg("中断の完了をまだ確認できません。通信状態を確認して、もう一度中断してください。");
+    }, 30000);
+  }
   if (!id && submitAbort && !submitAbort.signal.aborted) {
     setCancelPending(true);
     setJobStatus("中断しています…");
@@ -7848,6 +7937,12 @@ let reviewSavedRaw = "";
 let reviewSavePending = null;
 
 function setReviewAction(action) {
+  if ((action === "closing" || action === "submitting") && !setReviewAction.operation) {
+    setReviewAction.operation = globalThis.VideoOperations?.begin({ allow: [
+      $("lyric-review-skip"), $("lyric-review-cancel"), $("lyric-review-proceed"),
+    ] });
+  }
+  if (!action) { setReviewAction.operation?.end(); setReviewAction.operation = null; }
   reviewAction = action;
   const editingBlocked = action === "closing" || action === "submitting";
   $("confirm-lyric-review").disabled = editingBlocked;
@@ -7858,12 +7953,14 @@ function setReviewAction(action) {
   syncHistoryReviewControls();
 }
 
-function reviewPresentationBlocked() {
-  return globalThis.VideoOperations?.isBusy() || !!document.querySelector("dialog[open]");
+function reviewPresentationBlocked(operation) {
+  return (globalThis.VideoOperations?.isBusy() && !operation?.isAlone()) || !!document.querySelector("dialog[open]");
 }
 
-async function openLyricReview(id) {
+async function openLyricReview(id, { foreground = false } = {}) {
   if (!id || historyReviewBlocked(id) || reviewPresentationBlocked()) return;
+  const operation = foreground ? globalThis.VideoOperations?.begin() : null;
+  if (foreground) openLyricReview.requestedJob = id;
   setReviewAction("opening");
   reviewOpenedJob = id;
   try {
@@ -7875,7 +7972,7 @@ async function openLyricReview(id) {
     if (currentJob !== id) return;
     // A foreground operation or dialog may have opened while the seed was loading.
     // Leave the review pending so polling can present it after that work finishes.
-    if (reviewPresentationBlocked()) {
+    if (reviewPresentationBlocked(operation)) {
       reviewOpenedJob = null;
       return;
     }
@@ -7895,10 +7992,13 @@ async function openLyricReview(id) {
     reviewJobId = id;
     $("lyric-review-error").textContent = "";
     showEditorFrame();
+    if (openLyricReview.requestedJob === id) openLyricReview.requestedJob = null;
   } catch (err) {
+    if (openLyricReview.requestedJob === id) openLyricReview.requestedJob = null;
     showBuilderMsg("編集画面を開けませんでした。「歌詞を確認する」から再試行してください: " + err.message);
   } finally {
     setReviewAction("");
+    operation?.end();
   }
 }
 
@@ -8041,7 +8141,7 @@ async function confirmLyricReview() {
   }
 }
 
-$("builder-review").addEventListener("click", () => openLyricReview(currentJob));
+$("builder-review").addEventListener("click", () => openLyricReview(currentJob, { foreground: true }));
 $("confirm-lyric-review").addEventListener("click", confirmLyricReview);
 $("close-lyric-review").addEventListener("click", closeLyricReview);
 
@@ -8328,6 +8428,8 @@ async function handleHostRequest() {
   const key = hostRequestKey(req);
   // 応えたのに同じ依頼が残っている(書き戻しの行き違い)ときは消すだけにする
   if (key === hostRequestSeen) { clearHostRequest(key); return; }
+  const operation = globalThis.VideoOperations?.begin({ allow: [$("midi")] });
+  $("editor-frame").inert = true;
   hostRequestBusy = true;
   hostRequestSeen = key;
   try {
@@ -8339,6 +8441,8 @@ async function handleHostRequest() {
   } finally {
     clearHostRequest(key);
     hostRequestBusy = false;
+    $("editor-frame").inert = false;
+    operation?.end();
   }
 }
 
@@ -8442,7 +8546,7 @@ async function reseedEditorSong() {
   form.append("song_title", songTitleOf(midi));
   form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
   appendCustomWordlist(form);
-  const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
+  const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers(), signal: AbortSignal.timeout(20000) });
   const body = await res.json();
   if (!res.ok) throw new Error(body.detail || res.status);
   const fresh = withHostInfo(body);
@@ -8612,60 +8716,66 @@ async function regenerateEditor() {
 // 「この設定で変換」でブラウザ内で変換する(soramimic frontend/README の約束)。
 // 単語リストは無くてよい(エディタ側が conf の既定で始める)。
 async function convertAndOpenEditor() {
-  if (ownSongKind() === "audio" || selectedSampleIsAudio()) {
-    $("open-editor-msg").textContent = "音声入力は動画生成時に自動変換されるため、先に編集できません";
-    return;
-  }
-  if (midiChecking) await midiChecking;
-  // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
-  if (!await ensureSelectedSampleMidi((m) => { $("open-editor-msg").textContent = m; })) {
-    return;
-  }
-  const midi = ownSongKind() === "midi" ? ownSongFile() : null;
-  const msg = $("open-editor-msg");
-  msg.textContent = "";
-  if (!midiSampleId && !midi) {
-    msg.textContent = "MIDIファイルを選んでください";
-    return;
-  }
-  const form = new FormData();
-  if (midiSampleId) form.append("sample_id", midiSampleId);
-  else form.append("midi", midi);
-  appendSongLyrics(form);
-  form.append("wordlist", $("wordlist").value.trim());
-  form.append("where", $("where").value.trim());
-  // 変換パラメータは生成時と同じものを使う(エディタの初期値と生成結果を揃える)
-  form.append("convert_params", buildConvertParams());
-  form.append("song_title", songTitleOf(midi));
-  form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
-  appendCustomWordlist(form);
+  const operation = globalThis.VideoOperations?.begin();
   try {
-    const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers() });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || res.status);
-    // 曲を選び直せることをエディタへ伝える(host.songs / host.canUploadSong)
-    const seed = JSON.stringify(withHostInfo(body));
-    sessionStorage.setItem(EDITOR_KEY, seed);
-    // 未変換のシード=編集前の状態。ここからセットアップ画面で変換されると
-    // results が入って指紋が変わり、その結果が生成に使われる(liveEditorEdit)
-    markEditorSeed(seed);
-    showEditorFrame();
-  } catch (err) {
-    msg.textContent = "編集の準備に失敗しました: " + err.message;
-  }
+    if (ownSongKind() === "audio" || selectedSampleIsAudio()) {
+      $("open-editor-msg").textContent = "音声入力は動画生成時に自動変換されるため、先に編集できません";
+      return;
+    }
+    if (midiChecking) await midiChecking;
+    // 曲は選択中のサンプルから取り直す(古い中身・別の曲の替え歌を作らない)
+    if (!await ensureSelectedSampleMidi((m) => { $("open-editor-msg").textContent = m; })) {
+      return;
+    }
+    const midi = ownSongKind() === "midi" ? ownSongFile() : null;
+    const msg = $("open-editor-msg");
+    msg.textContent = "";
+    if (!midiSampleId && !midi) {
+      msg.textContent = "MIDIファイルを選んでください";
+      return;
+    }
+    const form = new FormData();
+    if (midiSampleId) form.append("sample_id", midiSampleId);
+    else form.append("midi", midi);
+    appendSongLyrics(form);
+    form.append("wordlist", $("wordlist").value.trim());
+    form.append("where", $("where").value.trim());
+    // 変換パラメータは生成時と同じものを使う(エディタの初期値と生成結果を揃える)
+    form.append("convert_params", buildConvertParams());
+    form.append("song_title", songTitleOf(midi));
+    form.append("convert", "0");   // 解析のみ(変換はエディタのセットアップ画面で)
+    appendCustomWordlist(form);
+    try {
+      const res = await fetch("/api/editor-session", { method: "POST", body: form, headers: headers(), signal: AbortSignal.timeout(20000) });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || res.status);
+      // 曲を選び直せることをエディタへ伝える(host.songs / host.canUploadSong)
+      const seed = JSON.stringify(withHostInfo(body));
+      sessionStorage.setItem(EDITOR_KEY, seed);
+      // 未変換のシード=編集前の状態。ここからセットアップ画面で変換されると
+      // results が入って指紋が変わり、その結果が生成に使われる(liveEditorEdit)
+      markEditorSeed(seed);
+      showEditorFrame();
+    } catch (err) {
+      msg.textContent = "編集の準備に失敗しました: " + err.message;
+    }
+  } finally { operation?.end(); }
 }
 
 async function importEditor() {
-  if (reviewJobId) { await closeLyricReview(); return; }
-  await syncEditorSession();
-  const raw = sessionStorage.getItem(EDITOR_KEY);
-  if (!raw) { alert("編集データがありません"); return; }
-  $("lyrics").value = JSON.stringify(JSON.parse(raw), null, 2);
-  $("auto-lyrics").checked = false;
-  syncLyricsInput(false);
-  syncLyricsRecognition();
-  saveForm();
-  closeEditor();
+  const operation = globalThis.VideoOperations?.begin();
+  try {
+    if (reviewJobId) { await closeLyricReview(); return; }
+    await syncEditorSession();
+    const raw = sessionStorage.getItem(EDITOR_KEY);
+    if (!raw) { alert("編集データがありません"); return; }
+    $("lyrics").value = JSON.stringify(JSON.parse(raw), null, 2);
+    $("auto-lyrics").checked = false;
+    syncLyricsInput(false);
+    syncLyricsRecognition();
+    saveForm();
+    closeEditor();
+  } finally { operation?.end(); }
 }
 
 function closeEditor() {
@@ -9642,6 +9752,7 @@ async function initializePage() {
   $("startup-status").hidden = false;
   $("startup-message").textContent = "準備中…";
   $("startup-retry").hidden = true;
+  const operation = globalThis.VideoOperations?.begin({ allow: [$("api-key"), $("startup-retry")] });
   initializationPending = (async () => {
     try {
       if (!await loadConfig()) {
@@ -9656,7 +9767,7 @@ async function initializePage() {
     }
   })();
   try { await initializationPending; }
-  finally { initializationPending = null; }
+  finally { initializationPending = null; operation?.end(); }
 }
 
 $("startup-retry").addEventListener("click", () => location.reload());
