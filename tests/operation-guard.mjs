@@ -27,7 +27,7 @@ function setup() {
     document.querySelector(selector).dispatchEvent(event);
     return event.defaultPrevented;
   };
-  return { document, ops: context.VideoOperations, send, events };
+  return { document, ops: context.VideoOperations, send, events, context };
 }
 
 test('blocks new starts, keyboard edits, uploads, drops and form submission; preserves reading and cancellation', () => {
@@ -60,6 +60,7 @@ test('stale completion cannot unlock a later operation; dynamically inserted his
   first.end();
   const second = ops.begin();
   first.end();
+  assert(ops.isBusy());
   assert(send('#generate'));
   const button = document.createElement('button');
   button.id = 'history-play';
@@ -69,6 +70,7 @@ test('stale completion cannot unlock a later operation; dynamically inserted his
   assert(button.hasAttribute('data-operation-blocked'));
   assert.equal(document.querySelector('video'), video, 'media nodes are never replaced');
   second.end();
+  assert(!ops.isBusy());
   assert(!send('#history-play'));
 });
 
@@ -101,5 +103,39 @@ test('overlapping owned work and its cancellation do not release unrelated work'
   assert(send('#continue'));
   assert(send('#generate'));
   save.end();
+  assert(!send('#generate'));
+});
+
+test('an already requested media download completes while a later input operation blocks new actions', async () => {
+  const { document, ops, send, context } = setup();
+  let respond;
+  const downloads = [];
+  document.addEventListener('click', event => {
+    if (event.target.download === 'song.wav') downloads.push(event.target.href);
+  });
+  Object.assign(context, {
+    Blob, AbortController, setTimeout, clearTimeout,
+    headers: () => ({}),
+    URL: { createObjectURL: () => 'blob:song', revokeObjectURL() {} },
+    fetch: () => new Promise(resolve => { respond = resolve; }),
+  });
+  const source = readFileSync(new URL('../src/soramimic_video/static/index.html', import.meta.url), 'utf8');
+  vm.runInContext(source.slice(source.indexOf('let resultDownloadObjectUrl ='),
+    source.indexOf('function videoFileName(')), context);
+  const status = document.createElement('p');
+  const link = document.querySelector('a[download]');
+  const pending = context.downloadResultMedia(link, 'audio/wav', status);
+  const operation = ops.begin();
+  assert(send('a[download]'), 'a new save must stay blocked');
+  respond({
+    ok: true, blob: async () => new Blob(['audio'], { type: 'audio/wav' }),
+    headers: { get: () => 'attachment; filename="song.wav"' },
+  });
+  await pending;
+  assert.deepEqual(downloads, ['blob:song'], 'the requested file must actually be handed to the browser');
+  assert(status.hidden);
+  assert(!document.querySelector('a[download="song.wav"]'), 'temporary download control is removed');
+  assert(send('#generate'), 'finishing the download must not unlock the input operation');
+  operation.end();
   assert(!send('#generate'));
 });
