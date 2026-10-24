@@ -589,6 +589,7 @@
   }
   .turnstile-title { margin: 0; font-weight: 700; }
   .turnstile-copy .hint { margin: .2rem 0 .5rem; }
+  .turnstile-copy .hint:empty { display: none; }
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー ---- */
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
@@ -1088,7 +1089,7 @@
     <div class="turnstile-panel" tabindex="-1" aria-labelledby="turnstile-title">
       <div class="turnstile-copy" role="status" aria-live="polite">
         <p class="turnstile-title" id="turnstile-title">人間かどうかの確認が必要です</p>
-        <p class="hint">確認欄が表示されたらチェックしてください。完了すると、そのまま合成を始めます。</p>
+        <p class="hint"></p>
       </div>
       <div id="turnstile-widget"></div>
     </div>
@@ -1837,7 +1838,8 @@ async function receiveEditorLyrics() {
       await applyEditorWordlist();
       $("lyrics").value = JSON.stringify(payload, null, 2);
       $("auto-lyrics").checked = false;
-      $("song-title").value = payload.videoMetadata?.songTitle ?? payload.song?.title ?? "";
+      // song.title can be an automatically derived label, not a user-entered title.
+      $("song-title").value = payload.videoMetadata?.songTitle ?? "";
       $("song-credit").value = payload.videoMetadata?.songCredit ?? "";
       $("thumbnail-wordlist-label").value = payload.videoMetadata?.thumbnailWordlistLabel ?? "";
       updateSongTextPreviews();
@@ -2336,7 +2338,7 @@ async function ensureTurnstileToken(timeoutMs = 120000, signal) {
     hideTurnstilePrompt();
     setTurnstilePromptCopy(
       "ロボットではないことを確認しています",
-      "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
+      "",
     );
     const deadline = Date.now() + timeoutMs;
     // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
@@ -3257,6 +3259,33 @@ function showWordlistExhaustionNotice(exhausted) {
   const notice = $("wordlist-exhausted-notice");
   notice.textContent = exhausted ? WORDLIST_EXHAUSTED_NOTICE : "";
   notice.hidden = !exhausted;
+}
+
+// 復帰後は再生位置と再生状態を保ったまま、iOSの標準コントロールを更新する。
+function refreshNativePlaybackControls(media) {
+  if (!isIOSPlatform() || document.visibilityState === "hidden"
+      || !media?.isConnected || !media.controls
+      || !media.matches("#builder-video, .history-media video, .history-media audio")) return;
+  // 全画面・PiP中はその表示を維持し、インラインへ戻ったときに更新する。
+  if (media.webkitDisplayingFullscreen || document.fullscreenElement
+      || document.pictureInPictureElement === media
+      || ["fullscreen", "picture-in-picture"].includes(media.webkitPresentationMode)) return;
+  media.controls = false;
+  media.controls = true;
+}
+
+function refreshVisiblePlaybackControls() {
+  for (const media of document.querySelectorAll(
+    "#builder-video, .history-media video, .history-media audio",
+  )) refreshNativePlaybackControls(media);
+}
+
+document.addEventListener("visibilitychange", refreshVisiblePlaybackControls);
+window.addEventListener("pageshow", refreshVisiblePlaybackControls);
+window.addEventListener("focus", refreshVisiblePlaybackControls);
+// 復帰通知より遅れて再生やPiPからの復帰が完了する場合も、最終状態へ合わせる。
+for (const type of ["playing", "webkitpresentationmodechanged", "webkitendfullscreen", "leavepictureinpicture"]) {
+  document.addEventListener(type, event => refreshNativePlaybackControls(event.target), true);
 }
 
 // 保存は形式を選ぶ操作。iPhoneの動画保存では写真に保存できる共有シートを使う。

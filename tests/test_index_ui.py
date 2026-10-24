@@ -2630,6 +2630,98 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_ios_native_controls_refresh_after_resume_without_restarting_media():
+    script = _script()
+    start = script.index("function refreshNativePlaybackControls(")
+    end = script.index("const SHARE_TEXT =", start)
+    functions = _function_body(script, "function isIOSPlatform()") + "\n}\n"
+    node = r'''
+      const assert = require('node:assert/strict');
+      const document = new EventTarget(), window = new EventTarget();
+      const navigator = {platform: 'iPhone'};
+      document.visibilityState = 'visible';
+      const media = new EventTarget();
+      let controls = true, shownPlaying = false;
+      const writes = [];
+      Object.assign(media, {
+        isConnected: true, paused: false, currentTime: 14, src: '/old-job',
+        matches: () => true,
+        play() { throw Error('must not restart playback'); },
+        pause() { throw Error('must not interrupt playback'); },
+        load() { throw Error('must not reload the source'); },
+      });
+      Object.defineProperty(media, 'controls', {
+        get: () => controls,
+        set: value => {
+          writes.push(value); controls = value;
+          // Model the native UI rereading paused when controls become available.
+          if (value) shownPlaying = !media.paused;
+        },
+      });
+      document.querySelectorAll = () => [media];
+      FUNCTIONS
+      const refresh = (target, type) => {
+        writes.length = 0;
+        target.dispatchEvent(new Event(type));
+      };
+      document.visibilityState = 'hidden';
+      refresh(document, 'visibilitychange');
+      assert.deepEqual(writes, [], 'backgrounding must leave controls alone');
+      document.visibilityState = 'visible';
+      for (const [target, type] of [
+        [document, 'visibilitychange'], [window, 'pageshow'], [window, 'focus'],
+      ]) {
+        shownPlaying = false;
+        refresh(target, type);
+        assert.equal(shownPlaying, true, 'resume must reread the actual playing state');
+        assert.equal(controls, true);
+      }
+      media.paused = true;
+      refresh(window, 'focus');
+      assert.equal(shownPlaying, false, 'a user-paused video must stay paused');
+      assert.equal(media.currentTime, 14);
+      assert.equal(media.src, '/old-job');
+      // A delayed playing event must resync after the earlier visibility event.
+      media.paused = false;
+      for (const type of ['playing', 'webkitpresentationmodechanged',
+                          'webkitendfullscreen', 'leavepictureinpicture']) {
+        const event = new Event(type);
+        Object.defineProperty(event, 'target', {value: media});
+        writes.length = 0;
+        document.dispatchEvent(event);
+        assert(writes.length > 0, type);
+        assert.equal(shownPlaying, true);
+      }
+      const skips = [
+        [media, 'webkitPresentationMode', 'picture-in-picture'],
+        [media, 'webkitPresentationMode', 'fullscreen'],
+        [media, 'webkitDisplayingFullscreen', true],
+        [document, 'pictureInPictureElement', media],
+        [document, 'fullscreenElement', media],
+        [media, 'isConnected', false],
+        [media, 'matches', () => false],
+      ];
+      for (const [object, key, value] of skips) {
+        const previous = object[key]; object[key] = value;
+        refresh(window, 'focus');
+        assert.deepEqual(writes, [], key);
+        object[key] = previous;
+      }
+      controls = false;
+      refresh(window, 'focus');
+      assert.deepEqual(writes, [], 'share preparation keeps its controls hidden');
+      controls = true;
+      navigator.platform = 'Linux';
+      refresh(window, 'focus');
+      assert.deepEqual(writes, [], 'other platforms keep their existing behavior');
+      navigator.platform = 'MacIntel'; navigator.maxTouchPoints = 5;
+      refresh(window, 'focus');
+      assert(writes.length > 0, 'iPad desktop mode also refreshes');
+    '''.replace("FUNCTIONS", functions + script[start:end])
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_each_completed_video_gets_fresh_paused_native_controls():
     """2回目の完成動画が前回の停止アイコンを引き継がない。"""
     fresh = _function_body(_script(), "function freshBuilderVideo()") + "\n}"
@@ -3269,6 +3361,7 @@ def test_editor_transfer_populates_json_and_recognition_mode():
         _function_body(script, head) + "\n}"
         for head in (
             "async function receiveEditorLyrics()",
+            "async function updateUploadedSongMetadata(",
             "async function readParodyFile(",
             "function parodySourceLyrics(",
             "function syncLyricsRecognition()",
@@ -3309,7 +3402,11 @@ def test_editor_transfer_populates_json_and_recognition_mode():
           assert.equal(peer, editorPeer); await apply(payload);
         }};
         const clearAudioInput = () => {cleared++;};
-        const ownSongFile = () => null;
+        let selectedFile = null, metadataChoices = [];
+        const ownSongFile = () => selectedFile;
+        const VideoMetadata = {notifyChange: async (kind, isCurrent) => {
+          assert(isCurrent()); metadataChoices.push(kind); return "keep";
+        }};
         const showSongInputMode = mode => {songInputMode = mode;};
         const applyEditorWordlist = async () => {
           assert.deepEqual(JSON.parse(stored.get(EDITOR_KEY)), payload);
@@ -3333,12 +3430,17 @@ def test_editor_transfer_populates_json_and_recognition_mode():
               phrases:["ベツノヒョーキ"]}, "元の表記\\nを保つ"],
             [{originalLines:["字幕の歌詞", "次の行"], phrases:["ヨミ"]}, "字幕の歌詞\\n次の行"],
             [{}, ""],
+            [{videoMetadata:null}, ""],
+            [{videoMetadata:{}}, ""],
+            [{videoMetadata:{songTitle:"", songCredit:""}}, ""],
+            [{videoMetadata:{songCredit:"指定したクレジット"}}, ""],
           ];
           for (const [fields, expected] of variants) {
             elements.clear(); stored.clear(); bridgeReceiving = false;
-            payload = {...base, ...fields, song:{title:"受け渡しテスト"},
+            payload = {...base, song:{title:"自動で付いた曲名"},
               videoMetadata:{songTitle:"表示用の曲名", songCredit:"作詞・作曲: テスト",
-                thumbnailWordlistLabel:"表示用のリスト名"}};
+                thumbnailWordlistLabel:"表示用のリスト名"}, ...fields};
+            if (payload.videoMetadata === null) delete payload.videoMetadata;
             $("lyrics").value = "前回の歌詞";
             $("auto-lyrics").checked = true;
             $("midi").value = "previous.mid";
@@ -3354,10 +3456,17 @@ def test_editor_transfer_populates_json_and_recognition_mode():
             assert.equal(songInputMode, "upload");
             assert.equal(stored.has(EDITOR_SEED_KEY), false);
             assert.deepEqual(imported, payload, "keep the converted assignments and readings");
-            assert.equal($("song-title").value, payload.videoMetadata.songTitle);
-            assert.equal($("song-credit").value, payload.videoMetadata.songCredit);
+            assert.equal($("song-title").value, payload.videoMetadata?.songTitle ?? "",
+              "an implicit song title never fills the user-entered title field");
+            assert.equal($("song-credit").value, payload.videoMetadata?.songCredit ?? "");
             assert.equal($("thumbnail-wordlist-label").value,
-              payload.videoMetadata.thumbnailWordlistLabel);
+              payload.videoMetadata?.thumbnailWordlistLabel ?? "");
+            metadataChoices = []; selectedFile = {name:"uploaded.xf.mid"};
+            await updateUploadedSongMetadata(selectedFile);
+            const hasMetadata = $("song-title").value.trim() || $("song-credit").value.trim();
+            assert.deepEqual(metadataChoices, hasMetadata ? ["song-replacement"] : [],
+              "uploading after transfer asks only about explicitly entered metadata");
+            assert.deepEqual(JSON.parse($("lyrics").value), payload);
             const form = new Map();
             appendSongLyrics({append:(key,value) => form.set(key,value)});
             assert.equal(form.get("lyrics"), expected);
