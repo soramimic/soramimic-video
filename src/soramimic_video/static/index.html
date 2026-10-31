@@ -2118,6 +2118,7 @@ let turnstileFailed = false;
 let turnstileScriptFailed = false;
 const TURNSTILE_PROMPT_MIN_MS = 1400;
 const TURNSTILE_INTERACTION_REVEAL_MS = 700;
+const TURNSTILE_AUTOMATIC_WAIT_MS = 15000;
 let turnstilePromptShownAt = 0;
 let turnstilePromptCompletionTimer = null;
 let turnstileInteractionRevealTimer = null;
@@ -2354,8 +2355,8 @@ async function ensureTurnstileToken(timeoutMs = 120000, signal) {
       showTurnstileFailure(turnstileScriptFailed);
       return false;
     }
-    // 一時的なerror/timeout callbackは、widgetを作り直すだけで次のタップでは通ることが
-    // ある。最初のerrorだけは同じタップのまま新しいwidgetで一度再試行する。
+    // error通知が来ない自動確認の停滞も、同じ操作で一度だけ作り直す。
+    // チェック欄が出た後は、操作を途中で破棄せず全体の期限まで待つ。
     for (let attempt = 0; attempt < 2; attempt += 1) {
       // 前回の回復用renderだけが失敗した場合は、次の操作で即座に再描画を試す。
       if (turnstileWidget === null && window.turnstile) rebuildTurnstileWidget();
@@ -2366,6 +2367,7 @@ async function ensureTurnstileToken(timeoutMs = 120000, signal) {
       if (turnstileToken()) return true;
       turnstileWaiting = true;
       turnstileFailed = false;
+      const automaticDeadline = Math.min(deadline, Date.now() + TURNSTILE_AUTOMATIC_WAIT_MS);
       scheduleTurnstileInteractionPrompt();
       // tokenをページ表示時に先取りすると、生成までに失効してサーバーで拒否され得る。
       // execution:execute と組み合わせ、生成タップの直後に新しい確認を始める。
@@ -2373,7 +2375,8 @@ async function ensureTurnstileToken(timeoutMs = 120000, signal) {
         turnstileFailed = true;
         showTurnstilePrompt(true);
       }
-      while (!turnstileToken() && !turnstileFailed && Date.now() < deadline && !signal?.aborted) {
+      while (!turnstileToken() && !turnstileFailed && Date.now() < deadline && !signal?.aborted
+          && (turnstileNeedsInteraction || Date.now() < automaticDeadline)) {
         await new Promise((r) => setTimeout(r, 200));
       }
       if (signal?.aborted) return false;
@@ -2395,8 +2398,9 @@ async function ensureTurnstileToken(timeoutMs = 120000, signal) {
           showTurnstilePrompt(true);
         }
       }
-      // 期限切れは再試行しても待ち時間を延ばすだけなので、即時errorのときだけ再試行する。
-      if (!failed || Date.now() >= deadline) return false;
+      // 全体の期限や非対応環境では再試行しない。自動確認だけなら各15秒、最大2回で戻す。
+      if (Date.now() >= deadline || turnstileScriptFailed) return false;
+      if (attempt === 0) setTurnstilePromptCopy("確認をやり直しています", "");
     }
     return false;
   } finally { turnstileWaiting = false; operation?.end(); }

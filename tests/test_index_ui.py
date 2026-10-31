@@ -2284,6 +2284,7 @@ def test_turnstile_errors_rebuild_and_retry_widget():
         let rebuilds = 0;
         let now = 0;
         let waitMode = "error-then-success";
+        const TURNSTILE_AUTOMATIC_WAIT_MS = 15000;
         let window = {{turnstile: {{execute() {{}} }}}};
         function turnstileToken() {{ return token; }}
         function showTurnstilePrompt() {{}}
@@ -2319,6 +2320,116 @@ def test_turnstile_errors_rebuild_and_retry_widget():
         """
     )
     subprocess.run(["node", "-e", node], check=True)
+
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+@pytest.mark.parametrize("scenario", ["recovery", "stalled", "interactive", "abort"])
+def test_turnstile_silent_stall_has_bounded_recovery(scenario):
+    """通知なしの停滞を回復し、手動確認・取消・旧callbackを正しく扱う。"""
+    script = _script()
+    turnstile = script[script.index('let turnstileSiteKey = "";') :]
+    turnstile = turnstile[: turnstile.index("// エンジン選択に応じて")]
+    node = textwrap.dedent(
+        f"""
+        const assert = require("node:assert/strict");
+        let now = 0, seq = 0;
+        const timers = new Map();
+        Date.now = () => now;
+        const setTimeout = (fn, ms) => {{
+          const id = ++seq;
+          timers.set(id, {{fn, at: now + ms}});
+          return id;
+        }};
+        const clearTimeout = id => timers.delete(id);
+        async function advance(ms) {{
+          const target = now + ms;
+          while (true) {{
+            const next = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+            if (!next || next[1].at > target) break;
+            now = next[1].at;
+            timers.delete(next[0]);
+            next[1].fn();
+            await Promise.resolve();
+            await Promise.resolve();
+          }}
+          now = target;
+        }}
+        const classes = new Set();
+        const title = {{textContent: ""}}, hint = {{textContent: ""}};
+        const wrap = {{
+          classList: {{
+            contains: name => classes.has(name),
+            add: (...names) => names.forEach(name => classes.add(name)),
+            remove: (...names) => names.forEach(name => classes.delete(name)),
+          }},
+          querySelector: selector => selector.includes("hint") ? hint : {{focus() {{}}}},
+          scrollIntoView() {{}},
+        }};
+        const widget = {{replaceChildren() {{}}}};
+        const $ = id => id === "turnstile-wrap" ? wrap
+          : id === "turnstile-widget" ? widget : title;
+        const requestAnimationFrame = fn => fn();
+        const options = [], executions = [], removals = [];
+        const window = {{turnstile: {{
+          render(_selector, config) {{ options.push(config); return options.length; }},
+          execute(id) {{ executions.push({{id, at: now}}); }},
+          remove(id) {{ removals.push(id); }},
+          getResponse() {{ return ""; }},
+        }}}};
+        let ended = 0;
+        globalThis.VideoOperations = {{begin: () => ({{end() {{ ended += 1; }}}})}};
+        {turnstile}
+        (async () => {{
+          turnstileSiteKey = "site";
+          renderTurnstileWidget();
+          const controller = new AbortController();
+          const pending = ensureTurnstileToken(undefined, controller.signal);
+          const scenario = {scenario!r};
+          if (scenario === "interactive") {{
+            await advance(1000);
+            options[0]["before-interactive-callback"]();
+            await advance(30000);
+            assert.equal(executions.length, 1, "do not replace an interactive challenge");
+            assert.equal(classes.has("turnstile-challenge"), true);
+            await advance(89000);
+            assert.equal(await pending, false, "interactive waits retain the overall deadline");
+            assert.equal(executions.length, 1);
+            assert.equal(now, 120000);
+          }} else {{
+            await advance(14800);
+            assert.equal(executions.length, 1, "allow a slow first verification to finish");
+            await advance(200);
+            assert.deepEqual(executions, [{{id: 1, at: 0}}, {{id: 2, at: 15000}}]);
+            assert.deepEqual(removals, [1]);
+            assert.match(title.textContent, /やり直しています/);
+            options[0].callback("old-token");
+            assert.equal(turnstileToken(), "", "discard success from the stalled widget");
+            if (scenario === "recovery") {{
+              options[1].callback("fresh-token");
+              await advance(200);
+              assert.equal(await pending, true);
+              assert.equal(turnstileToken(), "fresh-token");
+            }} else if (scenario === "abort") {{
+              controller.abort();
+              await advance(200);
+              assert.equal(await pending, false);
+            }} else {{
+              await advance(15000);
+              assert.equal(await pending, false);
+              assert.equal(now, 30000, "two silent stalls must return within 30 seconds");
+              options[1].callback("late-token");
+              assert.equal(turnstileToken(), "");
+              assert.equal(executions.length, 2, "never retry indefinitely");
+            }}
+          }}
+          assert.equal(turnstileWaiting, false);
+          assert.equal(ended, 1, "release the operation guard after every outcome");
+          hideTurnstilePrompt();
+        }})().catch(error => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True, timeout=10)
 
 
 def test_turnstile_old_widget_callbacks_are_ignored_after_rebuild():
