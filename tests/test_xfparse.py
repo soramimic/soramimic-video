@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from helpers import build_xf_midi
 from soramimic_video import reading as reading_mod
 from soramimic_video.xfparse import (
@@ -37,6 +39,35 @@ def test_parse_lyric_events_leading_break_in_same_event():
     moras = parse_lyric_events([(0, "あ"), (480, "/い")])
     assert moras[1].line_break_before is True
     assert moras[1].kana == "い"
+
+
+@pytest.mark.parametrize(("raw", "surface", "kana"), [
+    ("あ^い！", "あ い！", "あ い！"),
+    (r"あ\^い？", "あ^い？", "あ^い？"),
+    (r"あ\\^い", "あ\\ い", "あ\\ い"),
+    (r"あ\\\^い", "あ\\^い", "あ\\^い"),
+    ("字[じ]^", "字 ", "じ "),
+])
+def test_parse_xf_spacing_and_escapes(raw, surface, kana):
+    event, = parse_lyric_events([(0, raw)], xf=True)
+    assert (event.surface, event.kana, event.raw) == (surface, kana, raw)
+
+
+def test_xf_standalone_spaces_do_not_consume_notes(tmp_path: Path):
+    midi = build_xf_midi(
+        tmp_path / "spaces.mid",
+        notes=[(0, 240, 60), (480, 240, 62), (960, 240, 64)],
+        lyric_events=[
+            (0, "<あ"), (480, "^"), (480, "い"),
+            (720, "/^"), (960, r"う\^！"),
+        ],
+    )
+    project = analyze_midi(midi)
+    assert [line.xf_surface for line in project.lines] == ["あ い", " う^！"]
+    assert [line.xf_kana for line in project.lines] == ["アイ", "ウ"]
+    assert [(n.start_tick, n.end_tick, n.midi_note) for n in project.notes] == [
+        (0, 240, 60), (480, 720, 62), (960, 1200, 64),
+    ]
 
 
 def test_parse_lyric_events_repairs_broken_word_internal_breaks():
