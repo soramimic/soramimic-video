@@ -44,10 +44,18 @@ class LyricEvent:
     line_break_before: bool
 
 
-def parse_lyric_events(events: list[tuple[int, str]]) -> list[LyricEvent]:
+def _decode_xf_spacing(text: str) -> str:
+    """Decode XF spaces, respecting escaped carets and backslashes."""
+    return re.sub(r"\\[\\^]|\^", lambda m: " " if m[0] == "^" else m[0][1], text)
+
+
+def parse_lyric_events(
+    events: list[tuple[int, str]], *, xf: bool = False,
+) -> list[LyricEvent]:
     """(絶対tick, テキスト) の列を歌唱モーラのイベント列にする。
 
     `/` `<` は行区切りとして次のモーラに畳み込む。
+    XFでは `^` を空白に変換し、エスケープされたキャレットは文字として残す。
     """
     result: list[LyricEvent] = []
     in_bracket = False
@@ -79,6 +87,9 @@ def parse_lyric_events(events: list[tuple[int, str]]) -> list[LyricEvent]:
         else:
             surface = text
             kana = text
+        if xf:
+            surface = _decode_xf_spacing(surface)
+            kana = _decode_xf_spacing(kana)
         result.append(
             LyricEvent(
                 tick=tick,
@@ -493,7 +504,7 @@ def analyze_midi(midi_path: Path) -> Project:
         for tick, msg in _absolute_events(midi.xfkm or [])
         if msg.type == "lyrics"
     ]
-    lyric_events = parse_lyric_events(_decode_lyric_texts(raw_events, xf=True))
+    lyric_events = parse_lyric_events(_decode_lyric_texts(raw_events, xf=True), xf=True)
     if lyric_events:
         try:
             info = extract_xf_karaoke_info(str(midi_path))
