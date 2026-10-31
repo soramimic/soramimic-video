@@ -12,6 +12,8 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is re
 @pytest.mark.parametrize(('outcome', 'audio_input'), [
     ('before', False), ('accepted', False), ('done', False),
     ('lost-cancel', False), ('lost-submit', False), ('accepted', True), ('quota-retry', True),
+    ('recovered', False), ('cancel-lookup', False),
+    ('invalid-lookup', False),
 ])
 def test_pending_submission_cancel_reconciles_before_releasing_new_generation(outcome, audio_input):
     harness = DOM + Path('src/soramimic_video/static/submissions.js').read_text()
@@ -36,7 +38,7 @@ const appendSongLyrics=()=>{}, appendCustomWordlist=()=>{}, headers=()=>({});
 const showSubmitMsg=()=>{}, showProgress=()=>{}, hideTurnstilePrompt=()=>{};
 const resetTurnstile=()=>{}, openJobDetails=()=>{}, loadHistory=()=>{};
 let state='preview', message='', status='', posts=0, cancellations=0, posted=false;
-let reservations=0, offset=0;
+let reservations=0, offset=0, lookups=0;
 const watched=[], urls=[];
 const setBusy=v=>{submitBusy=v;}, setBuilderState=v=>{state=v;};
 const setJobStatus=v=>{status=v;}, showBuilderMsg=v=>{message=v;};
@@ -45,6 +47,15 @@ const response=body=>({ok:true,status:200,json:async()=>body});
 const fetch=async(url, options)=>{
   urls.push(url);
   if(url==='/api/submissions'){reservations++;return response({id:'a'.repeat(32)});}
+  if(url==='/api/submissions/'+ 'a'.repeat(32)){
+    lookups++;
+    if(outcome==='cancel-lookup')return new Promise((_,reject)=>options.signal.addEventListener(
+      'abort',
+      ()=>reject(new DOMException('aborted','AbortError')),{once:true}));
+    if(outcome==='recovered')return response({id:'1234abcd',status:'done'});
+    if(outcome==='invalid-lookup')return response({id:'bad-id',status:'done'});
+    return response({id:null,status:'pending'});
+  }
   if(url==='/api/audio-uploads')return response({id:'a'.repeat(32),size:file.size,
     offset,chunk_bytes:524288});
   if(options.method==='DELETE')return response({removed:true});
@@ -55,7 +66,8 @@ const fetch=async(url, options)=>{
     assert.equal(options.body.get('registered_submission'),'true');
     assert.equal(options.body.get('submission_id'),'a'.repeat(32));
     if(outcome==='quota-retry'&&posts===1)return {ok:false,status:429,json:async()=>({})};
-    if(outcome==='lost-submit')throw new TypeError('acknowledgement lost');
+    if(['lost-submit','recovered','cancel-lookup','invalid-lookup'].includes(outcome))
+      throw new TypeError('acknowledgement lost');
     return new Promise((_,reject)=>options.signal.addEventListener('abort',
       ()=>reject(new DOMException('aborted','AbortError')),{once:true}));
   }
@@ -78,9 +90,20 @@ if(outcome==='quota-retry'){
   await pending;assert.equal(submitBusy,false);pending=submitJob(0,'');
   while(posts<2)await tick();
 }
-if(outcome==='lost-submit'){
+if(outcome==='recovered'){
+  await pending;
+  assert.equal(posts,1,'receipt lookup must not resubmit the song');
+  assert.equal(lookups,1);assert.equal(cancellations,0);
+  assert.equal(currentJob,'1234abcd');assert.deepEqual(watched,['1234abcd']);
+  assert.equal(leases,0,'receipt confirmation releases the submission lock');
+  assert.equal(submitJob.pendingSubmission,null);
+  return;
+}
+if(outcome==='cancel-lookup')while(!lookups)await tick();
+if(['lost-submit','invalid-lookup'].includes(outcome)){
   await pending;
   assert(submitBusy);assert.match(message,/受付を確認できません/);
+  assert.equal(lookups,1);
 }
 await cancelJob();await pending;
 if(outcome==='lost-cancel'){
