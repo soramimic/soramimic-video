@@ -467,7 +467,6 @@ test('verification suppresses cancellation without canceling existing work and r
     Object.assign(context, {
       turnstileSiteKey: 'site', turnstileWidget: {}, turnstileScriptFailed: false,
       turnstileWaiting: false, turnstileFailed: false, turnstilePromptCompletionTimer: null,
-      turnstileNeedsInteraction: false, TURNSTILE_AUTOMATIC_WAIT_MS: 15000,
       Date: {now: () => now}, setTimeout: fn => {wake = fn;},
       window: {turnstile: {execute() {}}},
       turnstileToken: () => token, $: () => ({classList: {contains: () => false}}),
