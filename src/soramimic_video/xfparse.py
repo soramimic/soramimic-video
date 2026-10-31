@@ -10,6 +10,7 @@ from __future__ import annotations
 import bisect
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -88,9 +89,42 @@ def parse_lyric_events(events: list[tuple[int, str]]) -> list[LyricEvent]:
             )
         )
         pending_break = False
+    result = _fold_display_punctuation(result)
     repaired = _repair_word_internal_breaks(result)
     if repaired:
         logger.warning("XFの語中改行を補正しました: %d箇所", repaired)
+    return result
+
+
+def _fold_display_punctuation(events: list[LyricEvent]) -> list[LyricEvent]:
+    """Keep standalone display punctuation without assigning it a melody note."""
+    result: list[LyricEvent] = []
+    pending: list[LyricEvent] = []
+    for event in events:
+        display_only = all(
+            char.isspace() or unicodedata.category(char).startswith("P")
+            for char in event.surface + event.kana
+        )
+        if display_only:
+            opens = any(unicodedata.category(char) in {"Ps", "Pi"} for char in event.surface)
+            if result and not pending and not event.line_break_before and not opens:
+                result[-1].surface += event.surface
+                result[-1].kana += event.kana
+                result[-1].raw += event.raw
+            else:
+                pending.append(event)
+            continue
+        if pending:
+            event.surface = "".join(e.surface for e in pending) + event.surface
+            event.kana = "".join(e.kana for e in pending) + event.kana
+            event.raw = "".join(e.raw for e in pending) + event.raw
+            event.line_break_before |= any(e.line_break_before for e in pending)
+            pending = []
+        result.append(event)
+    if result and pending:
+        result[-1].surface += "".join(e.surface for e in pending)
+        result[-1].kana += "".join(e.kana for e in pending)
+        result[-1].raw += "".join(e.raw for e in pending)
     return result
 
 
