@@ -68,6 +68,16 @@ def test_contextual_word_reading_uses_existing_kana_anchors(midi_builder, monkey
     assert [n.kana for n in project.notes] == ["メ", "メ", "シ", "ク", "テ"]
 
 
+def test_punctuation_preserves_contextual_reading_inference(midi_builder, monkeypatch):
+    monkeypatch.setattr(
+        reading, "reading_tokens", lambda _: [("「", ""), ("女々しく", "メメシク"), ("」", "")]
+    )
+    monkeypatch.setattr(reading, "text_to_kana", lambda text: {"「女": "オンナ", "々": ""}[text])
+    project = analyze_midi(midi_builder(["「", "女", "々", "し", "く", "」"]))
+    assert [n.kana for n in project.notes] == ["メ", "メ", "シ", "ク"]
+    assert project.lines[0].xf_surface == "「女々しく」"
+
+
 def test_contextual_long_vowels_keep_supplied_kana(midi_builder, monkeypatch):
     monkeypatch.setattr(reading, "reading_tokens", lambda _: [("大きい", "オーキー")])
     monkeypatch.setattr(reading, "text_to_kana", lambda _: "ダイ")
@@ -126,6 +136,51 @@ def test_display_spaces_do_not_create_empty_sung_notes(midi_builder):
     project = analyze_midi(midi_builder(["あ", " ", "い"]))
     assert [(n.start_tick, n.kana) for n in project.notes] == [(0, "ア"), (960, "イ")]
     assert project.lines[0].xf_kana == "アイ"
+
+
+def test_display_punctuation_keeps_text_without_consuming_notes(midi_builder):
+    project = analyze_midi(midi_builder(["あ", "「", "い", "う", "」", "。", "/（", "え", "）"]))
+
+    assert [(n.start_tick, n.kana) for n in project.notes] == [
+        (0, "ア"), (960, "イ"), (1440, "ウ"), (3360, "エ"),
+    ]
+    assert [line.xf_surface for line in project.lines] == ["あ「いう」。", "（え）"]
+    assert [line.xf_kana for line in project.lines] == ["アイウ", "エ"]
+
+
+@pytest.mark.parametrize("shared_tick", [False, True])
+def test_standalone_punctuation_does_not_take_a_sung_note(tmp_path, shared_tick):
+    start = 69280 if shared_tick else 69520
+    path = build_xf_midi(
+        tmp_path / "quoted.mid",
+        notes=([(69280, 240, 59)] if not shared_tick else []) + [
+            (start, 240, 60), (start + 240, 240, 62),
+        ],
+        lyric_events=[(69280, "「"), (start, "あ"), (start + 240, "い"), (start + 480, "」")],
+    )
+    project = analyze_midi(path)
+    assert [(n.start_tick, n.kana) for n in project.notes] == [(start, "ア"), (start + 240, "イ")]
+    assert project.lines[0].xf_surface == "「あい」"
+
+    with TestClient(api.create_app(jobs_dir=tmp_path / "jobs")) as client:
+        check = client.post(
+            "/api/midi-check", files={"midi": (path.name, path.read_bytes(), "audio/midi")},
+        )
+    assert check.status_code == 200
+    assert check.json()["has_lyrics"] is True
+    assert check.json()["midi_lines"] == ["「あい」"]
+
+
+def test_display_bracket_closure_keeps_ruby_state():
+    events = parse_lyric_events([(0, "/「"), (240, "青[あ"), (480, "お"), (720, "]」")])
+    assert [(e.tick, e.surface, e.kana, e.line_break_before) for e in events] == [
+        (240, "「青", "「あ", True), (480, "」", "お」", False),
+    ]
+
+
+def test_punctuation_without_sung_text_is_not_a_lyric(midi_builder):
+    with pytest.raises(ValueError, match="歌詞イベントがありません"):
+        analyze_midi(midi_builder(["「", "」"]))
 
 
 def test_empty_inferred_reading_is_rejected_before_editor_or_generation(
