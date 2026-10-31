@@ -40,6 +40,17 @@
     },
     sent(form) { const state = forms.get(form); if (state) state.sent = true; },
     wasSent(form) { return !!forms.get(form)?.sent; },
+    async lookup(form, headers, signal) {
+      const state = forms.get(form);
+      if (!state?.id) throw new Error('受付情報を確認できませんでした');
+      const body = await request(`/api/submissions/${state.id}`, {headers: headers()}, signal);
+      if ((body.id === null && body.status === 'pending')
+          || (typeof body.id === 'string' && /^[a-f0-9]{8}$/.test(body.id)
+              && ['queued', 'running', 'awaiting_review', 'done', 'error', 'canceled'].includes(body.status))) {
+        return body;
+      }
+      throw new Error('受付情報を確認できませんでした');
+    },
     async cancel(form, headers) {
       const state = forms.get(form);
       const body = state?.id ? await request(`/api/submissions/${state.id}/cancel`,
