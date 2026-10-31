@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 from collections import defaultdict, deque
@@ -36,7 +37,6 @@ SILENCE_LUFS = -70.0
 # スマホ再生でも聞き取れる最終ミックスの配信用ラウドネス。歌と伴奏の相対
 # バランスを決めた後、全体だけを正規化するので歌声のヘッドルームは維持される。
 TARGET_MIX_LUFS = -14.0
-TARGET_MIX_LRA = 11.0
 TARGET_MIX_TRUE_PEAK_DB = -1.0
 MIX_SAMPLE_RATE = 44100
 
@@ -264,6 +264,35 @@ def auto_accompaniment_gain(
     return clipped
 
 
+def _mix_normalization_filter(
+    inputs: list[str], mixed_filter: str,
+) -> str:
+    """Measure the whole mix, then apply one gain without boosting quiet rests."""
+    proc = runproc.run(
+        [*inputs, "-filter_complex",
+         f"{mixed_filter},loudnorm=print_format=json[out]",
+         "-map", "[out]", "-f", "null", "-"],
+        capture_output=True, text=True, check=False,
+    )
+    stderr = proc.stderr or ""
+    try:
+        stats = json.loads(stderr[stderr.rfind("{") : stderr.rfind("}") + 1])
+        integrated = float(stats["input_i"])
+        peak = float(stats["input_tp"])
+        if proc.returncode or not all(map(math.isfinite, (integrated, peak))):
+            raise ValueError("unavailable loudness or peak")
+    except (ValueError, TypeError, KeyError):
+        logger.warning("ミックスの音量を測定できないため、音量正規化を省略します")
+        return "anull"
+    if integrated <= SILENCE_LUFS:
+        return "anull"
+    # Cap gain at the measured true-peak headroom. A single-pass loudnorm uses
+    # dynamic gain and can amplify synthesis noise during an otherwise quiet intro.
+    gain_db = min(TARGET_MIX_LUFS - integrated, TARGET_MIX_TRUE_PEAK_DB - peak)
+    logger.info("ミックス音量: %.1f LUFS / %.1f dBTP → %+.2f dB", integrated, peak, gain_db)
+    return f"volume={gain_db:.6f}dB"
+
+
 def mix(
     project: Project,
     project_dir: Path,
@@ -293,16 +322,21 @@ def mix(
         )
 
     out = work / "song.wav"
-    cmd = [
+    inputs = [
         ffmpeg, "-y",
         "-i", str(acc_wav),
         "-i", str(vocal),
-        "-filter_complex",
+    ]
+    mixed_filter = (
         f"[0:a]volume={accompaniment_gain}[a0];"
         f"[1:a]volume={vocal_gain}[a1];"
-        "[a0][a1]amix=inputs=2:duration=longest:normalize=0,"
-        f"loudnorm=I={TARGET_MIX_LUFS}:LRA={TARGET_MIX_LRA}:"
-        f"TP={TARGET_MIX_TRUE_PEAK_DB},aresample={MIX_SAMPLE_RATE}[out]",
+        "[a0][a1]amix=inputs=2:duration=longest:normalize=0"
+    )
+    normalization = _mix_normalization_filter(inputs, mixed_filter)
+    cmd = [
+        *inputs,
+        "-filter_complex",
+        f"{mixed_filter},{normalization},aresample={MIX_SAMPLE_RATE}[out]",
         "-map", "[out]",
         str(out),
     ]
