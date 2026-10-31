@@ -1,8 +1,10 @@
 import shutil
 import subprocess
+import wave
 from pathlib import Path
 
 import mido
+import numpy as np
 import pytest
 
 from helpers import build_xf_midi
@@ -363,8 +365,8 @@ def _mix_with_recorded_gain(
     mix(project, tmp_path, **kwargs)
 
     filters = [c[c.index("-filter_complex") + 1] for c in cmds if "-filter_complex" in c]
-    assert len(filters) == 1
-    head = filters[0].split("[a0]")[0]  # "[0:a]volume=<伴奏ゲイン>"
+    assert filters
+    head = filters[-1].split("[a0]")[0]  # "[0:a]volume=<伴奏ゲイン>"
     return float(head.split("volume=")[1])
 
 
@@ -382,6 +384,58 @@ def test_mix_normalizes_final_output_for_phone_playback(tmp_path: Path):
     loudness = measure_loudness(out)
     assert loudness is not None
     assert loudness == pytest.approx(-14.0, abs=1.0)
+
+
+def _mix_test_signal(tmp_path: Path, signal: np.ndarray) -> np.ndarray:
+    """Mix a vocal with silent backing and read back the resulting PCM."""
+    def write(path: Path, samples: np.ndarray) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as out:
+            out.setparams((1, 2, 44100, 0, "NONE", "not compressed"))
+            out.writeframes((samples * 32767).astype("<i2").tobytes())
+
+    acc = tmp_path / "acc.wav"
+    write(acc, np.zeros_like(signal))
+    write(vocal_path(tmp_path), signal)
+    project = Project(song=SongInfo("", 480, accompaniment_path=str(acc)))
+    path = mix(project, tmp_path, accompaniment_gain=0.6)
+    with wave.open(str(path)) as source:
+        return np.frombuffer(source.readframes(source.getnframes()), "<i2") / 32768
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_mix_preserves_quiet_intro_relative_to_singing(tmp_path: Path):
+    # Synthesis can leave a low noise floor in the opening rest. Dynamic loudnorm
+    # lifts this by tens of dB before the first sung note.
+    sr = 44100
+    signal = 0.1 * np.sin(2 * np.pi * 440 * np.arange(12 * sr) / sr)
+    signal[:5 * sr] *= 0.01
+    output = _mix_test_signal(tmp_path, signal)
+
+    def rms(samples: np.ndarray) -> float:
+        return float(np.sqrt(np.mean(samples**2)))
+
+    ratio = 20 * np.log10(rms(output[sr:3 * sr]) / rms(output[7 * sr:10 * sr]))
+    assert ratio == pytest.approx(-40, abs=0.5)
+    assert len(output) == len(signal)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_mix_caps_gain_for_high_peaks(tmp_path: Path):
+    sr = 44100
+    signal = 0.01 * np.sin(2 * np.pi * 440 * np.arange(8 * sr) / sr)
+    signal[3 * sr:3 * sr + sr // 100] *= 90
+    output = _mix_test_signal(tmp_path, signal)
+    peak_db = 20 * np.log10(np.max(np.abs(output)))
+    assert peak_db == pytest.approx(-1, abs=0.1)
+    assert measure_loudness(tmp_path / "mix" / "song.wav") < -14
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_mix_keeps_silence_when_loudness_is_unmeasurable(tmp_path: Path):
+    output = _mix_test_signal(tmp_path, np.zeros(44100 * 2))
+    assert len(output) == 44100 * 2
+    assert not np.any(output)
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
