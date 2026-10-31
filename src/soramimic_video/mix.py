@@ -267,7 +267,7 @@ def auto_accompaniment_gain(
 def _mix_normalization_filter(
     inputs: list[str], mixed_filter: str,
 ) -> str:
-    """Measure the whole mix, then apply one gain without boosting quiet rests."""
+    """Apply a fixed loudness gain and limit peaks without boosting quiet rests."""
     proc = runproc.run(
         [*inputs, "-filter_complex",
          f"{mixed_filter},loudnorm=print_format=json[out]",
@@ -286,11 +286,21 @@ def _mix_normalization_filter(
         return "anull"
     if integrated <= SILENCE_LUFS:
         return "anull"
-    # Cap gain at the measured true-peak headroom. A single-pass loudnorm uses
-    # dynamic gain and can amplify synthesis noise during an otherwise quiet intro.
-    gain_db = min(TARGET_MIX_LUFS - integrated, TARGET_MIX_TRUE_PEAK_DB - peak)
+    # Keep gain fixed across the track: dynamic normalization can amplify noise
+    # during an otherwise quiet intro. Limit only peaks instead of turning down
+    # the whole song when a transient would exceed the ceiling.
+    gain_db = TARGET_MIX_LUFS - integrated
     logger.info("ミックス音量: %.1f LUFS / %.1f dBTP → %+.2f dB", integrated, peak, gain_db)
-    return f"volume={gain_db:.6f}dB"
+    gain = f"volume={gain_db:.6f}dB"
+    if peak + gain_db <= TARGET_MIX_TRUE_PEAK_DB:
+        return gain
+    ceiling = 10 ** (TARGET_MIX_TRUE_PEAK_DB / 20)
+    # Oversampling catches peaks between output samples. Disable automatic
+    # makeup gain and compensate lookahead so lyrics and video stay aligned.
+    return (
+        f"{gain},aresample={MIX_SAMPLE_RATE * 4},"
+        f"alimiter=limit={ceiling:.9f}:attack=5:release=50:level=false:latency=true"
+    )
 
 
 def mix(

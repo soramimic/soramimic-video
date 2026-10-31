@@ -410,6 +410,7 @@ def test_mix_preserves_quiet_intro_relative_to_singing(tmp_path: Path):
     sr = 44100
     signal = 0.1 * np.sin(2 * np.pi * 440 * np.arange(12 * sr) / sr)
     signal[:5 * sr] *= 0.01
+    signal[6 * sr:6 * sr + sr // 100] *= 9  # exercise the peak limiter too
     output = _mix_test_signal(tmp_path, signal)
 
     def rms(samples: np.ndarray) -> float:
@@ -421,14 +422,31 @@ def test_mix_preserves_quiet_intro_relative_to_singing(tmp_path: Path):
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
-def test_mix_caps_gain_for_high_peaks(tmp_path: Path):
+def test_mix_limits_transients_without_lowering_track_loudness(tmp_path: Path):
     sr = 44100
-    signal = 0.01 * np.sin(2 * np.pi * 440 * np.arange(8 * sr) / sr)
-    signal[3 * sr:3 * sr + sr // 100] *= 90
+    signal = 0.1 * np.sin(2 * np.pi * 440 * np.arange(8 * sr) / sr)
+    signal[3 * sr:3 * sr + sr // 100] *= 9
     output = _mix_test_signal(tmp_path, signal)
     peak_db = 20 * np.log10(np.max(np.abs(output)))
     assert peak_db == pytest.approx(-1, abs=0.1)
-    assert measure_loudness(tmp_path / "mix" / "song.wav") < -14
+    assert measure_loudness(tmp_path / "mix" / "song.wav") == pytest.approx(-14, abs=0.5)
+    assert len(output) == len(signal)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
+def test_mix_limiter_preserves_transient_timing_and_tail(tmp_path: Path):
+    sr = 44100
+    signal = 0.1 * np.sin(2 * np.pi * 440 * np.arange(5 * sr) / sr)
+    positions = [sr, len(signal) - 10]
+    for pos in positions:
+        signal[pos] = 0.95
+    output = _mix_test_signal(tmp_path, signal)
+    assert len(output) == len(signal)
+    for pos in positions:
+        # The compensated limiter must neither delay transients nor discard the
+        # last samples while flushing its lookahead buffer.
+        peak = pos - 5 + int(np.argmax(output[pos - 5:pos + 6]))
+        assert peak == pos
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpegがない")
