@@ -939,6 +939,70 @@ def _function_body(script: str, head: str) -> str:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_long_running_job_notice_follows_stage_elapsed_and_clears_on_cancel():
+    functions = "\n".join(_function_body(_script(), head) + "\n}" for head in (
+        "function setJobStatus(", "function setRunningJobStatus(",
+        "function audioAnalysisIsStarting(", "async function poll(",
+    ))
+    node = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {hidden: false, textContent: ''});
+        return elements.get(id);
+      };
+      let currentJob = 'job', pollSeq = 1, pollLastAt = 0, pollFailures = 0;
+      let cancelPendingJob = null, reviewJobId = null;
+      const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], POLL_INTERVAL_MS = 2000;
+      const STAGE_LABELS = {analyze: 'MIDI解析', convert: '空耳変換'};
+      const headers = () => ({}), renderStages = () => {}, renderBuilderBar = () => {};
+      const schedulePoll = () => {}, setBuilderState = () => {}, openJobDetails = () => {};
+      const finish = () => {}, queueWaitLabel = () => '開始待ち';
+      let job = {status: 'running', stage: 'analyze', params: {input_kind: 'audio'},
+        stage_elapsed: 179, stage_progress: 22, stage_detail: '歌詞の読みを確認しています'};
+      const fetch = async () => ({ok: true, status: 200, json: async () => job});
+      FUNCTIONS
+      const notice = () => $('builder-status').textContent.split('\n')[1] || '';
+      (async () => {
+        await poll('job');
+        assert.equal(notice(), '', 'ordinary processing has no extra warning');
+        job.stage_elapsed = 180;
+        await poll('job');
+        assert.ok(notice().length > 0, 'the threshold adds a continuation notice');
+        assert.equal($('status-line').textContent, $('builder-status').textContent);
+        assert.ok($('builder-status').textContent.includes(job.stage_detail));
+        assert.ok($('builder-status').textContent.includes('22%'));
+        const message = notice();
+        job.stage_progress = 1; // Initial model loading uses a different progress branch.
+        await poll('job');
+        assert.equal(notice(), message);
+        delete job.stage_progress; job.stage = 'convert';
+        await poll('job');
+        assert.equal(notice(), message, 'stages without percentage also show it');
+        job.stage_elapsed = 0; // A new stage has just started.
+        await poll('job');
+        assert.equal(notice(), '', 'the notice resets with the stage timer');
+        delete job.stage_elapsed; // Older responses without a timer remain compatible.
+        await poll('job');
+        assert.equal(notice(), '');
+        job.stage_elapsed = 410;
+        await poll('job');
+        assert.equal(notice(), message);
+        cancelPendingJob = 'job';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '中断しています…');
+        cancelPendingJob = null; job.status = 'canceled';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '中断しました');
+        job.status = 'queued';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '開始待ち');
+      })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''.replace("FUNCTIONS", functions)
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
 def test_generation_thumbnail_capture_and_reload_restore():
     functions = "\n".join(_function_body(_script(), head) + "\n}" for head in (
         "function captureGenerationThumbnail()", "function restoreGenerationThumbnail(job)",
