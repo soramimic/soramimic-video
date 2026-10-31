@@ -3636,6 +3636,9 @@ function setBusy(busy) {
 // 自動的に開いて警告色になっていた場合もここでリセットされる)。
 function showProgress() {
   showBuilderMsg("");
+  const inputKind = ownAudioFile() || selectedSampleIsAudio() ? "audio" : "midi";
+  renderStages({ stages: [], params: { input_kind: inputKind } });
+  $("log").textContent = "";
   $("generation-quality-warning").hidden = true;
   $("job-card").hidden = false;
   $("job-card").open = false;
@@ -3971,6 +3974,22 @@ async function submitJob(previewSec, previewMode) {
           return;
         }
         if (!err.submissionRejected && SoramimicSubmissions.wasSent(form)) {
+          setJobStatus("生成の受付を確認しています…");
+          try {
+            const receipt = await SoramimicSubmissions.lookup(form, headers, submitController.signal);
+            submitController.signal.throwIfAborted();
+            if (receipt.id) {
+              submission.unconfirmed = false;
+              SoramimicSubmissions.finish(form);
+              watch(receipt.id);
+              return;
+            }
+          } catch (_) {
+            if (submitController.signal.aborted) {
+              await reconcileSubmissionCancellation(submission);
+              return;
+            }
+          }
           submission.unconfirmed = true;
           setJobStatus("生成の受付を確認できません");
           showBuilderMsg("生成の受付を確認できません。「中断」で受付済みの処理を確認して中断できます。");
@@ -5101,6 +5120,9 @@ function scheduleMidiCheck() {
 }
 
 function clearMidiNotices() {
+  // 拒否理由を生成ボタン下にも表示している。別の案内に替わっていなければ一緒に消す。
+  const error = $("midi-error").textContent;
+  if (error && $("submit-msg").textContent === error) showSubmitMsg("");
   $("midi-error").textContent = "";
   $("midi-error").hidden = true;
   $("lyrics-midi-warn").textContent = "";

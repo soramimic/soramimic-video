@@ -111,6 +111,77 @@ assert.ok(previews>0);
 """)
 
 
+def test_replacing_rejected_midi_clears_its_visible_error_only():
+    harness = DOM + r"""
+let midiCheckSeq=0, midiSampleId='', midiRejecting=false, lastMidiCheck=null;
+let kind='midi', audioSample=false, valid=false;
+const ownSongKind=()=>kind, selectedSampleIsAudio=()=>audioSample;
+const songLyricsForRequest=()=>'', headers=()=>({}), renderLyricsMidiWarning=()=>{};
+const fetch=async()=>({ok:true,json:async()=>({has_lyrics:valid,
+  detail:valid?'':'歌詞を音符に対応付けられません',midi_lines:['あいうえお']})});
+""" + _functions(
+        "async function checkMidi(", "function rejectMidi(",
+        "function clearMidiNotices()", "function showSubmitMsg(",
+    )
+    _run(harness, r"""
+for (const replacement of ['midi','sample','audio','audio-sample','clear','invalid']) {
+  kind='midi'; audioSample=false; valid=false; midiSampleId='';
+  $('midi').files=[new File(['bad'],'bad.mid')];
+  await checkMidi();
+  assert.equal($('midi').files.length,0);
+  assert.match($('submit-msg').textContent,/取り消しました/);
+  assert.equal($('submit-msg').hidden,false,'rejection reason remains visible');
+  valid=replacement!=='invalid';
+  if (['midi','invalid'].includes(replacement)) $('midi').files=[new File(['next'],'next.mid')];
+  if (replacement==='sample') midiSampleId='furusato';
+  if (replacement==='audio') kind='audio';
+  if (replacement==='audio-sample') audioSample=true;
+  await checkMidi();
+  if (replacement==='invalid') {
+    assert.equal($('submit-msg').hidden,false,'a new rejection is still shown');
+  } else {
+    assert.equal($('submit-msg').textContent,'',replacement+' clears the relayed error');
+    assert.equal($('submit-msg').hidden,true);
+    assert.equal($('midi-error').hidden,true);
+  }
+}
+// A newer submission message must survive cleanup of the old MIDI notice.
+showSubmitMsg('別の処理の案内');
+clearMidiNotices();
+assert.equal($('submit-msg').textContent,'別の処理の案内');
+assert.equal($('submit-msg').hidden,false);
+// An empty MIDI notice does not own the submission message either.
+clearMidiNotices();
+assert.equal($('submit-msg').textContent,'別の処理の案内');
+""")
+
+
+def test_starting_generation_clears_previous_stage_results_and_log():
+    harness = DOM + r"""
+const chips=['analyze','convert','synthesize','mix','video'].map(name=>({
+  dataset:{stage:name},textContent:name+' 29秒',classes:new Set(['done']),
+  classList:{toggle(key,on){
+    if(on)this.owner.classes.add(key);else this.owner.classes.delete(key);
+  }},
+}));
+for(const chip of chips)chip.classList.owner=chip;
+const document={querySelectorAll:()=>chips};
+const ownAudioFile=()=>null, selectedSampleIsAudio=()=>false;
+const showBuilderMsg=()=>{}, setBuilderState=()=>{};
+$('job-card').classList={remove(){}};
+""" + _functions("function showProgress()", "function renderStages(", "function stagePlan(")
+    _run(harness, r"""
+$('log').textContent='previous generation log';
+showProgress();
+assert.equal($('log').textContent,'');
+for(const chip of chips){
+  assert.equal(chip.classes.has('done'),false);
+  assert.equal(chip.classes.has('now'),false);
+  assert.ok(!chip.textContent.includes('29秒'));
+}
+""")
+
+
 def test_saved_midi_cannot_be_overwritten_by_an_obsolete_file_read():
     harness = DOM + r"""
 const MIDI_KEY='midiFile', stored=new Map(), readers=[];

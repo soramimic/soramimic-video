@@ -4230,6 +4230,16 @@ def create_app(
     def reserve_submission(request: Request) -> dict[str, str]:
         return {"id": submissions.create(owner_of(request), _client_hash(request))}
 
+    @app.get("/api/submissions/{submission_id}", dependencies=[Depends(_require_api_key)])
+    def submission_status(submission_id: str, request: Request) -> dict[str, Any]:
+        owner = owner_of(request)
+        with quota_submit_lock, audio_uploads.lock:
+            job = manager.find_submission(submission_id, owner)
+            if job is not None:
+                return {"id": job.id, "status": job.status}
+            submissions.require(submission_id, owner)
+            return {"id": None, "status": "pending"}
+
     @app.post("/api/submissions/{submission_id}/cancel", dependencies=[Depends(_require_api_key)])
     def cancel_submission(submission_id: str, request: Request) -> dict[str, Any]:
         owner = owner_of(request)
