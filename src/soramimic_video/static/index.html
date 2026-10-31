@@ -846,6 +846,7 @@
     z-index: 2;
   }
   .builder-progress p { margin: 0; font-size: .9rem; }
+  #builder-status, #status-line { white-space: pre-line; }
   /* 暗い下地の上ではスピナーの既定色(枠の色)が沈むので明るくする */
   .builder-progress .spinner { border-color: #fff5; border-top-color: #fff; }
   .builder-bar {
@@ -3066,6 +3067,15 @@ function setJobStatus(text, builderText) {
   $("builder-status").textContent = builderText || text;
 }
 
+function setRunningJobStatus(job, text, builderText = text) {
+  // 工程ごとの経過時間を使い、次の工程へ進んだら案内を消す。
+  // 時間だけで混雑やCPUへの切り替えを断定しない。
+  const notice = job.status === "running" && Number(job.stage_elapsed) >= 180
+    ? "\n通常より時間がかかっています。処理を続けていますので、そのままお待ちください。"
+    : "";
+  setJobStatus(text + notice, builderText + notice);
+}
+
 // 開始時刻は処理内容で大きくぶれるので、秒単位の精密そうな表示にはしない。
 // APIが前方のWAV/XF MIDIを区別して積み上げた幅を、分単位へ丸めて見せる。
 function queueWaitLabel(job) {
@@ -3197,7 +3207,7 @@ async function poll(id, seq = pollSeq) {
     } else if (audioAnalysisIsStarting(job)) {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
       const text = `${job.stage_detail || label}${elapsed}`;
-      setJobStatus(text, text);
+      setRunningJobStatus(job, text);
     } else if (job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
       if (job.stage === "analyze" && job.params.input_kind === "audio" && job.stage_detail) {
@@ -3205,10 +3215,10 @@ async function poll(id, seq = pollSeq) {
       }
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
-      setJobStatus(`${label}${tail}`, `${label}${tail}`);
+      setRunningJobStatus(job, `${label}${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
+      setRunningJobStatus(job, `実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
