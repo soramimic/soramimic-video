@@ -1211,13 +1211,62 @@ def _synthesize_chunk(
     """1チャンクを sing_frame_audio_query → frame_synthesis して WAV バイトを返す。"""
     query = _query_score(base, engine_url, teacher, score)
     try:
-        return _synthesize_frame_query(base, style_id, query)
+        return _silence_leading_pause(_synthesize_frame_query(base, style_id, query), query)
     except requests.ConnectionError:
         # 接続断(合成中のクラッシュ or 死んでいる間のリクエスト)は呼び出し側で
         # 復帰待ち・再試行するため、そのまま送出する。
         raise
     except requests.RequestException as exc:
         raise _request_error(engine_url, exc) from exc
+
+
+def _silence_leading_pause(content: bytes, query: dict[str, Any]) -> bytes:
+    """Remove decoder noise in long initial pauses, retaining phoneme preroll.
+
+    Use the engine's phonemes rather than note starts: initial consonants can
+    begin in the score's leading rest. Short pauses and later audio stay intact.
+    """
+    phonemes, f0 = query.get("phonemes"), query.get("f0")
+    if not isinstance(phonemes, list) or not phonemes or not isinstance(f0, list):
+        return content
+    try:
+        lengths = [int(p["frame_length"]) for p in phonemes]
+        if any(n < 0 for n in lengths) or sum(lengths) != len(f0):
+            return content
+        leading = 0
+        for phoneme, length in zip(phonemes, lengths, strict=True):
+            if phoneme["phoneme"] != "pau":
+                break
+            leading += length
+    except (KeyError, TypeError, ValueError):
+        return content
+    if leading / FRAME_RATE < 0.5:
+        return content
+    rate, width, channels, frames, pcm = _read_wav(content)
+    if width != 2 or abs(frames - round(len(f0) * rate / FRAME_RATE)) > 1:
+        return content
+    if leading == len(f0):
+        output = bytearray(len(pcm))
+    else:
+        # Keep 150 ms before the first actual phoneme, with a 10 ms fade from
+        # silence to avoid clicks. Never touch the consonant or its following audio.
+        fade_end = max(0, round((leading / FRAME_RATE - 0.15) * rate))
+        fade_start = max(0, fade_end - round(0.01 * rate))
+        output = bytearray(pcm)
+        output[:fade_start * channels * width] = bytes(fade_start * channels * width)
+        for sample in range(fade_start, fade_end):
+            gain = (sample - fade_start) / (fade_end - fade_start)
+            for channel in range(channels):
+                offset = (sample * channels + channel) * width
+                value = int.from_bytes(pcm[offset:offset + width], "little", signed=True)
+                output[offset:offset + width] = round(value * gain).to_bytes(
+                    width, "little", signed=True,
+                )
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as target:
+        target.setparams((channels, width, rate, 0, "NONE", "not compressed"))
+        target.writeframes(output)
+    return buffer.getvalue()
 
 
 def _query_score(
@@ -1423,9 +1472,9 @@ def _partial_chunk(
             for start, end in ranges:
                 runproc.raise_if_cancelled()
                 left, right = start - chunk.start_frame, end - chunk.start_frame
-                parts.append(_synthesize_frame_query(
-                    base, style_id, slice_frame_query(query, left, right),
-                ))
+                partial_query = slice_frame_query(query, left, right)
+                content = _synthesize_frame_query(base, style_id, partial_query)
+                parts.append(_silence_leading_pause(content, partial_query))
                 spans.append(ScoreChunk(start_frame=left, notes=[
                     {"key": None, "lyric": "", "frame_length": right - left},
                 ]))
