@@ -1496,7 +1496,9 @@ def test_creator_wordlists_are_separate_in_ui_and_editor(client, name, label):
     entry = next(item for item in entries if item.get("value") == name.upper())
     assert entry == named_wordlist_entry(name)
     assert entry["text"] == label
-    assert {facet["column"] for facet in entry["facets"]} == {"type", "status"}
+    assert {facet["column"] for facet in entry["facets"]} == {
+        "type", "status", "subscriber_band", "has_image"
+    }
 
     response = client.get(f"/editor/{entry['filepath']}")
     assert response.status_code == 200
