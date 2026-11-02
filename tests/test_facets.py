@@ -209,8 +209,8 @@ const c = document.createElement("div");
 m.renderFacets(c, entry);
 for (const group of c.querySelectorAll(".facet-group")) {
   const options = group.querySelectorAll("input.facet-value");
-  if (options.some((cb) => cb.value === "1m_plus")) {
-    for (const cb of options) cb.checked = cb.value === "1m_plus";
+  if (options.some((cb) => cb.value === "100k_plus")) {
+    for (const cb of options) cb.checked = cb.value === "100k_plus";
   } else if (options.some((cb) => cb.__where === "(has_image=yes)")) {
     for (const cb of options) cb.checked = cb.value === "yes";
   }
@@ -223,6 +223,7 @@ console.log(JSON.stringify({where, restored: m.compileWhere(c, entry)}));
         tmp_path,
     )
     where = result["where"]
+    assert "subscriber_band=100k_to_1m" in where
     assert "subscriber_band=1m_plus" in where
     assert "has_image=yes" in where
     assert result["restored"] == restored_where(entry, where) == where
@@ -235,7 +236,7 @@ console.log(JSON.stringify({where, restored: m.compileWhere(c, entry)}));
     assert selected
     assert selected == [
         row for row in all_rows
-        if row[subscribers].isdigit() and int(row[subscribers]) >= 1_000_000
+        if row[subscribers].isdigit() and int(row[subscribers]) >= 100_000
         and row[image] == "yes"
     ]
     assert _select(csv_path, default_where(entry)) == all_rows
