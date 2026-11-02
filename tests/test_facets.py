@@ -196,6 +196,52 @@ def test_editor_restores_the_same_filter_from_the_where(tmp_path):
         )
 
 
+@pytest.mark.parametrize("name", ["VTUBER", "YOUTUBER"])
+def test_creator_subscribers_and_images_survive_editor_roundtrip(tmp_path, name):
+    entry = next(w for w in _conf_entries() if w["value"] == name)
+    csv_path = WORDLISTS / Path(entry["filepath"]).name
+    result = _run_node(
+        DOM_SHIM
+        + f'const m = await import("file://{CONVERT_CONTROLS}");\n'
+        + f"const entry = {json.dumps(entry, ensure_ascii=False)};\n"
+        + """
+const c = document.createElement("div");
+m.renderFacets(c, entry);
+for (const group of c.querySelectorAll(".facet-group")) {
+  const options = group.querySelectorAll("input.facet-value");
+  if (options.some((cb) => cb.value === "100k_plus")) {
+    for (const cb of options) cb.checked = cb.value === "100k_plus";
+  } else if (options.some((cb) => cb.__where === "(has_image=yes)")) {
+    for (const cb of options) cb.checked = cb.value === "yes";
+  }
+}
+const where = m.compileWhere(c, entry);
+m.renderFacets(c, entry);
+m.restoreFacets(c, where);
+console.log(JSON.stringify({where, restored: m.compileWhere(c, entry)}));
+""",
+        tmp_path,
+    )
+    where = result["where"]
+    assert "subscriber_band=100k_to_1m" in where
+    assert "subscriber_band=1m_plus" in where
+    assert "has_image=yes" in where
+    assert result["restored"] == restored_where(entry, where) == where
+    assert survives_editor_facets(entry, where)
+    all_rows = _select(csv_path, "")
+    header = csv_path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    subscribers = header.index("subscribers")
+    image = header.index("has_image")
+    selected = _select(csv_path, where)
+    assert selected
+    assert selected == [
+        row for row in all_rows
+        if row[subscribers].isdigit() and int(row[subscribers]) >= 100_000
+        and row[image] == "yes"
+    ]
+    assert _select(csv_path, default_where(entry)) == all_rows
+
+
 def test_server_predicts_the_editor_roundtrip():
     """facets.restored_where が editor の往復を正しく予測している。
 
