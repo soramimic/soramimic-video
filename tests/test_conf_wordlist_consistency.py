@@ -51,7 +51,7 @@ def _where_column(where: str) -> str | None:
     m = _WHERE_OPS.search(where or "")
     if not m:
         return None
-    return where[: m.start()].strip()
+    return where[: m.start()].strip().lstrip("(").strip()
 
 
 def _facet_columns(facet: dict) -> list[str]:
