@@ -18,7 +18,10 @@ MAX_RETENTION_SECONDS = 48 * 3600
 def annotate_stage(exc: Exception, stage: str) -> None:
     """Keep the originating stage when parallel work propagates an exception."""
     if not getattr(exc, "_soramimic_stage", None):
-        exc._soramimic_stage = stage  # type: ignore[attr-defined]
+        try:
+            exc._soramimic_stage = stage  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            pass
 
 
 def failure_stage(exc: Exception | None, fallback: str | None) -> str | None:

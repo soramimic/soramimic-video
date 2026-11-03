@@ -148,12 +148,15 @@ def test_expired_diagnostics_deletion_failure_is_hidden_and_retried(failed_job, 
     assert manager.pending_cleanup_count() == 0
 
 
-def test_report_failure_still_retains_inputs_with_a_durable_deadline(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure_type", [OSError, ValueError, RuntimeError])
+def test_report_failure_still_retains_inputs_with_a_durable_deadline(
+    tmp_path, monkeypatch, failure_type,
+):
     monkeypatch.setenv(api.PUBLIC_ENV, "1")
     monkeypatch.setattr(api, "song_seconds", lambda _: 0.0)
 
     def no_space(*args, **kwargs):
-        raise OSError("no space for private-error")
+        raise failure_type("cannot save private-error")
 
     def pipeline(job, config):
         raise RuntimeError("original-failure")
@@ -179,6 +182,18 @@ def test_parallel_failure_preserves_originating_stage(tmp_path):
         with api._stage(job, "synthesize"):
             raise failure
     assert error_diagnostics.failure_stage(failure, job.stage) == "video"
+
+
+def test_stage_annotation_does_not_replace_an_immutable_exception(tmp_path):
+    class ImmutableError(Exception):
+        def __setattr__(self, name, value):
+            raise AttributeError("immutable")
+
+    failure = ImmutableError("original failure")
+    job = api.Job(id="abcdef12", dir=tmp_path, params={})
+    with pytest.raises(ImmutableError, match="original failure"):
+        with api._stage(job, "analyze"):
+            raise failure
 
 
 def test_subprocess_report_keeps_captured_stderr_without_environment(tmp_path, monkeypatch):

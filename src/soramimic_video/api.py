@@ -2469,7 +2469,7 @@ class JobManager:
                 params=job.params,
                 log=list(job.log),
             )
-        except OSError:
+        except Exception:  # noqa: BLE001 - diagnostics must not terminate the worker
             # Preserve the existing inputs and deadline even if report writing
             # fails. Neither a report failure nor a restart extends retention.
             _log_exception("[job %s] 診断情報の保存に失敗しました", job.id)
