@@ -151,3 +151,24 @@ test('Soramimic accepts a setup JSON with edited readings and original surface, 
   assert.doesNotMatch(JSON.stringify(seed), /do-not-fetch|sheetsage/);
   assert.throws(() => soramimicSeed(document, []), /歌詞がありません/);
 });
+
+test('SVS roundtrip carries only score fields and preserves parody when readings are unchanged', () => {
+  const document = openDocument(project());
+  const first = soramimicSeed(document, document.payload.moras);
+  assert.equal(first.scoreContext.song.audio_path, undefined);
+  assert.equal(first.scoreContext.moras[0].source, undefined);
+  const previous = {...first, setupFirst:undefined, results:[[{surface:'採用済み',locked:true}],[]], unitsList:[[],[]]};
+  document.soramimic = previous;
+  const edited = structuredClone(document.payload.moras);
+  edited[0].pitch++;
+  const resumed = soramimicSeed(document, edited);
+  assert.deepEqual(resumed.results, previous.results);
+  assert.equal(resumed.scoreContext.moras[0].pitch, edited[0].pitch);
+  edited[0].text = 'ア';
+  const revised = soramimicSeed(document, edited);
+  assert.equal(revised.setupFirst, true);
+  assert.deepEqual(revised.results, []);
+  assert.deepEqual(revised.scorePrevious.results, previous.results);
+  const reopened = openDocument(saveDocument(document, document.payload));
+  assert.deepEqual(reopened.soramimic.results, previous.results);
+});

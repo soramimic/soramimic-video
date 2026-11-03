@@ -164,3 +164,32 @@ test('Video job entry reads only that job MIDI and keeps the API key out of URLs
   assert.equal(payload.moras[0].text, 'ア');
   assert.equal(payload.moras[0].start, 1);
 });
+
+test('SVS receives the original score and sends edited notes directly back to Soramimic', async t => {
+  const { window, document } = parseHTML(html);
+  const previous = { document: globalThis.document, window: globalThis.window, location: globalThis.location };
+  Object.assign(globalThis, { document, window, location: { href: 'https://dev-video.soramimic.com/score-editor?lyrics-transfer=test' } });
+  t.after(() => Object.assign(globalThis, previous));
+  t.mock.method(globalThis, 'fetch', () => assert.fail('Handoff must not upload score or audio'));
+  const format = document.getElementById('local-format');
+  format.querySelector('option').selected = true;
+  Object.defineProperty(format, 'selectedOptions', { get: () => [format.querySelector('option')] });
+  const seed = {phrases:['ア'], results:[[{surface:'替え歌',locked:true}]], unitsList:[[{pronunciation:'ア'}]],
+    scoreContext:{format:'soramimic-score-context/1', song:{ticks_per_beat:480}, lineTexts:{0:'あ'},
+      moras:[{id:0,line:0,text:'ア',pitch:60,start:1,end:2}]}};
+  let returned, payload;
+  const peer = new URL('https://dev.soramimic.pages.dev/editor.html');
+  window.SoramimicBridge = {
+    peer: app => { assert.equal(app,'editor'); return peer; },
+    receive: async (target, apply) => {assert.equal(target,peer); await apply(seed);},
+    send: async (target, getData, options) => {assert.equal(target,peer); assert.equal(options.allowSetup,true); returned=getData();},
+  };
+  await start({load:async value=>{payload=value;},setStatus:()=>{},isDirty:()=>false,
+    setSave:()=>{},clearAudio:()=>{},read:()=>payload});
+  assert.equal(document.getElementById('local-soramimic').hidden,false);
+  assert.equal(document.getElementById('local-soramimic').disabled,false);
+  payload.moras[0].pitch=65;
+  await document.getElementById('local-soramimic').onclick();
+  assert.equal(returned.scoreContext.moras[0].pitch,65);
+  assert.deepEqual(returned.results,seed.results);
+});

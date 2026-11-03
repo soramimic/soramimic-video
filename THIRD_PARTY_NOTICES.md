@@ -96,3 +96,13 @@ Copyright © 2004–2017 the Contributors to the MusicXML Specification,
 published by the W3C Music Notation Community Group under the
 [W3C Community Final Specification Agreement](https://www.w3.org/community/about/agreements/final/).
 The original schema notices are retained in `tests/fixtures/musicxml31`.
+
+
+## VocaTab browser synthesis engine
+
+The client score editor includes VocaTab source code, copyright 2026 wavtechyukky,
+under MIT, with an Apache-2.0 growl implementation. See
+[third_party/vocatab/LICENSE](third_party/vocatab/LICENSE),
+[third_party/vocatab/THIRD_PARTY_NOTICES.md](third_party/vocatab/THIRD_PARTY_NOTICES.md),
+and [third_party/vocatab/Apache-2.0.txt](third_party/vocatab/Apache-2.0.txt).
+Model and voicebank files are not included.

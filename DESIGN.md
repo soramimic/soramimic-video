@@ -53,6 +53,16 @@ project directory の `project.json` が処理段階間の公開 exchange format
 `source=manual_edit`、`pitch_confidence=null`とし、歌詞レイヤーの合成ノートにも反映します。
 歌詞レイヤーがある場合、歌詞・行・音符数の変更はMIDIで受け渡し、元のレイヤーを編集用JSONに保持します。
 Soramimic用JSONは、修正後の読みと元歌詞を持つ未変換のセットアップデータです。
+任意の`scoreContext`（`soramimic-score-context/1`）には、元歌のモーラ・歌詞行・テンポ・拍子だけを保持します。
+音源、元ファイルのパス、ホスト情報は含めません。アプリ間では既存のウィンドウ・送信元・nonceを
+検証する転送プロトコルで受け渡し、未変換データの受け入れはSVS連携時に明示します。
+Soramimicから受け取った替え歌は編集用JSONの`soramimic`にも保存します。
+読みの変更時は`scorePrevious`で修正前の替え歌を渡し、Soramimicで履歴保存と変更のない行の復元を行います。
+
+合成はVocaTabのブラウザエンジンをWeb Workerで実行します。配布物はソースと生成済みWorkerを含み、
+モデルは含めません。`npm run build:score`でWorkerを生成し、テストで生成結果を検証します。
+ノートは秒から固定60 BPM・480 ticks/beatに変換し、フレーズの絶対開始位置に合成音を配置します。
+元音源と合成音はブラウザ内のBlobで再生します。
 
 音源解析の `evidence` 経路では、`lyric_layers` に完全な `canonical`、音源に対応した
 `performed`、合成ノートの `synthesis_plan` を別々に保持します。替え歌変換は完全な読みを

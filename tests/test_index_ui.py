@@ -750,7 +750,7 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
         for head in (
             "function historyCard(", "function historyButton(",
             "function appendLyricEditAction(",
-            "function appendScoreEditAction(",
+            "function appendScoreEditAction(", "function appendEditActions(",
             "async function startHistoryPlayback(", "function disposeHistoryPlayback()",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
             "function isIOSPlatform(",
@@ -3878,7 +3878,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
             "async function poll(", "function setBuilderState(",
             "function showWordlistExhaustionNotice(", "function historyCard(",
             "function appendLyricEditAction(",
-            "function appendScoreEditAction(",
+            "function appendScoreEditAction(", "function appendEditActions(",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
             "function isIOSPlatform(",
         )

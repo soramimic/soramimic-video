@@ -3260,6 +3260,18 @@ def create_app(
     def score_editor_io_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "score-editor-io.mjs", media_type="application/javascript")
 
+    @app.get("/score-engine.mjs", include_in_schema=False)
+    def score_engine_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "score-engine.mjs", media_type="application/javascript")
+
+    @app.get("/score-worker.js", include_in_schema=False)
+    def score_worker_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "score-worker.js", media_type="application/javascript")
+
+    @app.get("/score-engine-notices.txt", include_in_schema=False)
+    def score_engine_notices() -> FileResponse:
+        return FileResponse(STATIC_DIR / "score-engine-notices.txt", media_type="text/plain")
+
     @app.get("/operation-guard.js", include_in_schema=False)
     def operation_guard_script() -> FileResponse:
         return FileResponse(

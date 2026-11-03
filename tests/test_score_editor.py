@@ -14,9 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_client_score_exchange() -> None:
     subprocess.run(
-        ["node", "--test", "tests/score-editor-io.mjs", "tests/score-editor-ui.mjs"],
+        ["node", "--test", "tests/score-editor-io.mjs",
+         "tests/score-editor-ui.mjs", "tests/score-engine.mjs"],
         cwd=ROOT, check=True,
     )
+
+
+def test_browser_worker_bundle_is_current() -> None:
+    subprocess.run(["node", "scripts/build-score-worker.mjs", "--check"], cwd=ROOT, check=True)
 
 
 def test_client_editor_static_routes(tmp_path: Path) -> None:
@@ -24,7 +29,10 @@ def test_client_editor_static_routes(tmp_path: Path) -> None:
         response = client.get("/score-editor")
         assert response.status_code == 200
         assert 'id="local-score-file"' in response.text
-        for script in ("score-editor.mjs", "score-editor-io.mjs"):
+        for script in (
+            "score-editor.mjs", "score-editor-io.mjs", "score-engine.mjs",
+            "score-worker.js", "app-bridge.js",
+        ):
             response = client.get("/" + script)
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("application/javascript")

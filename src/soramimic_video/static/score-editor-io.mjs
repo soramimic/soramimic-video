@@ -125,11 +125,12 @@ export function openDocument(input) {
   // Audio paths from a saved project are never fetched. The user opens the file explicitly.
   payload.has_audio = false;
   payload.rms = null;
-  return { source, song, payload };
+  return { source, song, payload, soramimic: input.format === FORMAT ? clone(input.soramimic ?? null) : null };
 }
 
 export function saveDocument(document, payload) {
   return { format: FORMAT, source: clone(document.source), song: clone(document.song),
+    soramimic: clone(document.soramimic ?? null),
     payload: { ...clone(payload), moras: validateMoras(payload.moras), has_audio: false, rms: null } };
 }
 
@@ -250,10 +251,27 @@ export function soramimicSeed(document, input) {
   if (!rows.size) fail('変換する歌詞がありません。');
   const phrases = [...rows.values()];
   const originalLines = [...rows].map(([line, reading]) => document.payload.line_texts[line] || reading);
+  // Only portable score fields cross app boundaries. Source files and audio stay here.
+  const scoreContext = {
+    format: 'soramimic-score-context/1',
+    moras: validateMoras(input).map(({ line, text, start, end, pitch }, id) => ({ id, line, text, start, end, pitch })),
+    lineTexts: Object.fromEntries([...rows].map(([line], index) => [line, originalLines[index]])),
+    song: { ticks_per_beat: document.song.ticks_per_beat,
+      tempo_map: clone(document.song.tempo_map), time_signatures: clone(document.song.time_signatures) },
+  };
+  const previous = document.soramimic;
+  if (previous?.results?.length && JSON.stringify(previous.phrases) === JSON.stringify(phrases)) {
+    return { ...clone(previous), scoreContext };
+  }
   // An unconverted setup seed: the receiver builds its own pronunciation units
   // and replacement candidates. It does not mistake literal lyrics for a result.
   return {
-    format: 'soramimic-editor/1', setupFirst: true, phrases,
+    format: 'soramimic-editor/1', setupFirst: true, phrases, scoreContext,
+    ...(previous?.results?.length ? {
+      param: clone(previous.param ?? {}), wordlist: clone(previous.wordlist ?? null),
+      where: clone(previous.where ?? null), noteLengthAlpha: previous.noteLengthAlpha,
+      scorePrevious: clone(previous),
+    } : {}),
     results: [], unitsList: [],
     tokensList: phrases.map(reading => [{
       surface_form: reading, basic_form: '*', reading, pronunciation: reading,
