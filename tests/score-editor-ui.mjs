@@ -193,3 +193,18 @@ test('SVS receives the original score and sends edited notes directly back to So
   assert.equal(returned.scoreContext.moras[0].pitch,65);
   assert.deepEqual(returned.results,seed.results);
 });
+
+test('score transfer accepts implicit tempo, strips private fields, and explicitly gates unconverted lyrics', async () => {
+  const source = await readFile(new URL('../src/soramimic_video/static/app-bridge.js', import.meta.url), 'utf8');
+  const window = {};
+  vm.runInNewContext(source, {window,location:{origin:'https://dev-video.soramimic.com'},URL,Blob});
+  const context={format:'soramimic-score-context/1',moras:[{line:0,text:'ア',pitch:60,start:0,end:1,secret:'omit'}],
+    song:{ticks_per_beat:480,tempo_map:[],audio_path:'omit'},lineTexts:{0:'あ'},secret:'omit'};
+  const seed={phrases:['ア'],setupFirst:true,results:[],unitsList:[],scoreContext:context};
+  assert.throws(()=>window.SoramimicBridge.portable(seed),/変換済み/);
+  const portable=window.SoramimicBridge.portable(seed,{allowSetup:true});
+  assert.equal(portable.scoreContext.song.tempo_map.length,0);
+  assert(!JSON.stringify(portable).includes('omit'));
+  context.moras[0].end=-1;
+  assert.throws(()=>window.SoramimicBridge.portable(seed,{allowSetup:true}),/音符/);
+});
