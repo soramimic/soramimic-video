@@ -101,10 +101,10 @@ def test_missing_surface_column_is_rejected():
     assert "surface" in str(exc.value)
 
 
-def test_kanji_reading_is_rejected_with_line_numbers():
+def test_unreadable_reading_is_rejected_with_line_numbers():
     with pytest.raises(wc.WordlistCsvError) as exc:
-        wc.parse("surface,pronunciation\nネコ,ネコ\n猫,猫又\n".encode())
-    assert "3行目" in str(exc.value) and "猫又" in str(exc.value)
+        wc.parse("surface,pronunciation\nネコ,ネコ\n猫,❤\n".encode())
+    assert "3行目" in str(exc.value) and "❤" in str(exc.value)
 
 
 def test_empty_file_is_rejected():
@@ -182,7 +182,7 @@ def test_wordlist_check_rejects_broken_csv(client):
     res = client.post(
         "/api/wordlist-check",
         files={"wordlist_csv": (
-            "bad.csv", "surface,pronunciation\n猫,猫又\n".encode(), "text/csv")},
+            "bad.csv", "surface,pronunciation\n猫,❤\n".encode(), "text/csv")},
     )
     assert res.status_code == 400
     assert "カタカナ" in res.json()["detail"]

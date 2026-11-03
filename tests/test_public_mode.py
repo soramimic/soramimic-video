@@ -951,7 +951,7 @@ def test_public_rejects_invalid_custom_text(public_app, endpoint):
     response = TestClient(public_app).post(
         endpoint,
         files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
-        data={"wordlist_text": "surface,pronunciation\n猫,猫又"},
+        data={"wordlist_text": "surface,pronunciation\n猫,❤"},
     )
     assert response.status_code == 400, response.text
     assert "カタカナ" in response.json()["detail"]
