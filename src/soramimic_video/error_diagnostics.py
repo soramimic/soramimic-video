@@ -8,11 +8,13 @@ import os
 import platform
 import sys
 import traceback
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 REPORT_FILENAME = "error-diagnostics.json"
 MAX_RETENTION_SECONDS = 48 * 3600
+CURRENT_JOB: ContextVar[str | None] = ContextVar("diagnostic_job", default=None)
 
 
 def annotate_stage(exc: Exception, stage: str) -> None:

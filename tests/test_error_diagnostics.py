@@ -7,6 +7,7 @@ import logging
 import os
 import stat
 import subprocess
+import threading
 import time
 
 import pytest
@@ -28,6 +29,12 @@ def failed_job(tmp_path, monkeypatch):
             job.thumbnail.write_bytes(b"private-thumbnail")
             logging.getLogger("soramimic_video.convert").warning("private-word ネX")
             logging.getLogger("soramimic.maker").warning("private-core-word ネX")
+            # Requests on other threads must not enter this job's report.
+            other_request = threading.Thread(target=lambda: logging.getLogger(
+                "soramimic_video.api"
+            ).warning("private-other-user"))
+            other_request.start()
+            other_request.join()
             raise ValueError("private-error ネX")
 
     monkeypatch.setattr(api, "run_pipeline", pipeline)
@@ -51,6 +58,7 @@ def test_private_report_keeps_context_without_exposing_files(failed_job, caplog)
     assert "ValueError: private-error ネX" in report["traceback"]
     assert any("private-word ネX" in line for line in report["log"])
     assert any("private-core-word ネX" in line for line in report["log"])
+    assert "private-other-user" not in report_path.read_text()
     assert "soramimic-yomi" in report["versions"]
     assert "revision" in report["versions"]["soramimic-yomi"]
     assert "owner" not in report

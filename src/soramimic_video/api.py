@@ -42,6 +42,7 @@ from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
@@ -1283,7 +1284,8 @@ class _JobLogHandler(logging.Handler):
         self.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.job.log.append(self.format(record))
+        if not is_public_mode() or error_diagnostics.CURRENT_JOB.get() == self.job.id:
+            self.job.log.append(self.format(record))
         if is_public_mode() and not getattr(record, "diagnostic_safe", False):
             # This handler runs on the package logger before propagation to the
             # console/journal. Keep full records only in the bounded job buffer.
@@ -1598,7 +1600,7 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             runproc.kill_current()
             raise
 
-    future = executor.submit(build_silent_video)
+    future = executor.submit(copy_context().run, build_silent_video)
     try:
         try:
             wav = _run_synthesize(job, config, project, synthesize)
@@ -2596,6 +2598,7 @@ class JobManager:
             self._save(job)
             return
         handler = _JobLogHandler(job)
+        diagnostic_context = error_diagnostics.CURRENT_JOB.set(job.id)
         job_loggers = [logging.getLogger(name) for name in (
             "soramimic_video", "soramimic", "soramimic_yomi", "soramimic_score"
         )]
@@ -2649,6 +2652,7 @@ class JobManager:
             final_stage = job.stage
             for log in job_loggers:
                 log.removeHandler(handler)
+            error_diagnostics.CURRENT_JOB.reset(diagnostic_context)
             # Publish a terminal in-memory state only after its metrics and durable
             # status are ready.  Polling clients therefore cannot race result TTL
             # cleanup against the final status write.
