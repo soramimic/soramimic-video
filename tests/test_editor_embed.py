@@ -196,7 +196,7 @@ def test_editor_session_rejects_broken_custom_wordlist(client, tmp_path):
     res = client.post(
         "/api/editor-session",
         files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
-        data={"wordlist_text": "surface,pronunciation\n猫,猫又\n"},
+        data={"wordlist_text": "surface,pronunciation\n猫,❤\n"},
     )
     assert res.status_code == 400
     assert "カタカナ" in res.json()["detail"]
