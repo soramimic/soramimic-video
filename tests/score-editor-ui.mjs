@@ -25,6 +25,7 @@ async function fixture() {
   const source = html.match(/<script>([\s\S]*)<\/script>/u)[1].split("if(localMode){\n $('local-help')")[0];
   vm.runInContext(source + `\nwindow.editor = {
     load, select, undo, redo, setSave:f=>{localSave=f}, save,
+    setSelectionHandler:f=>{localSelection=f},
     read:()=>structuredClone(moras), dirty:()=>dirty, saved:()=>{dirty=false}
   };`, context);
   await window.editor.load({ moras: [
@@ -207,4 +208,41 @@ test('score transfer accepts implicit tempo, strips private fields, and explicit
   assert(!JSON.stringify(portable).includes('omit'));
   context.moras[0].end=-1;
   assert.throws(()=>window.SoramimicBridge.portable(seed,{allowSetup:true}),/音符/);
+});
+
+test('visible actions and labeled pitch selector edit the same score; save remains lossless after an export choice', async t => {
+  const {window,document,editor}=await fixture();
+  const previous={document:globalThis.document,window:globalThis.window,location:globalThis.location};
+  Object.assign(globalThis,{document,window,location:{href:'http://localhost/score-editor'}});
+  t.after(()=>Object.assign(globalThis,previous));
+  t.mock.method(globalThis,'fetch',()=>assert.fail('Editing must remain local'));
+  t.mock.timers.enable({apis:['setTimeout']});
+  const downloads=[];t.mock.method(URL,'createObjectURL',blob=>{downloads.push(blob);return 'blob:test';});
+  t.mock.method(URL,'revokeObjectURL',()=>{});
+  const format=document.getElementById('local-format');
+  Object.defineProperty(format,'selectedOptions',{get:()=>[...format.querySelectorAll('option')].filter(o=>o.selected)});
+  await start({load:editor.load,setStatus:()=>{},isDirty:editor.dirty,markSaved:editor.saved,
+    setSave:editor.setSave,setSelectionHandler:editor.setSelectionHandler,clearAudio:()=>{},
+    read:()=>({moras:editor.read(),line_texts:{0:'空'},reference:[],ignore_ranges:[]})});
+  for(const id of ['local-open','bsave'])assert.equal(document.getElementById(id).closest('details'),null);
+  assert.equal(document.getElementById('ptext').disabled,true);
+  const input={moras:[{line:0,text:'ソ',start:1,end:1.5,pitch:60}]};
+  await document.getElementById('local-score-file').onchange({target:{files:[new File([JSON.stringify(input)],'song.json')]}});
+  const pitch=document.getElementById('local-pitch');
+  // linkedom does not implement the native select.value setter.
+  Object.defineProperty(pitch,'value',{configurable:true,get(){return this._value;},set(value){this._value=String(value);}});
+  editor.select(0);
+  assert.equal(pitch.value,'60');
+  assert.match(pitch.querySelector('option[value="60"]').textContent,/ド4/);
+  assert.equal(document.getElementById('ptext').closest('label').textContent,'歌詞（読み）');
+  assert.match(document.getElementById('local-duration').textContent,/0.500/);
+  pitch.value='62';pitch.onchange();
+  assert.equal(editor.read()[0].pitch,62);
+  editor.undo();editor.select(0);assert.equal(pitch.value,'60');
+  Object.defineProperty(format,'value',{value:'midi',writable:true});
+  await editor.save();
+  assert.equal(JSON.parse(await downloads.at(-1).text()).payload.moras[0].pitch,60);
+  await document.getElementById('local-export').onclick();
+  assert.equal(new TextDecoder().decode((await downloads.at(-1).arrayBuffer()).slice(0,4)),'MThd');
+  t.mock.timers.tick(60000);
 });
