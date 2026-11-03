@@ -41,6 +41,19 @@ project directory の `project.json` が処理段階間の公開 exchange format
 具体的な field は実際に生成される JSON と CLI の export 結果を正本とします。外部 tool が
 編集する場合は未知 field を保持してください。
 
+`GET /score-editor` は、ローカルファイルを編集するピアノロールです。完成ジョブの
+`job`パラメータを指定した場合だけ、そのジョブの既存のMIDI書き出しAPIから読み込みます。
+元音源は利用者が選んだファイルをブラウザ内で再生し、保存された音声パスから取得しません。
+編集と保存ではAPIへ送信しません。
+
+編集用JSONの形式は`soramimic-score-editor/1`です。`source`に読み込んだ元のJSON、
+`song`にテンポ・拍子、`payload`に編集後のモーラと参照音符を保持します。
+`project.json`へ書き戻す際は、音符・歌詞行の未知フィールドを保持し、
+変更前後の音符を`score_editor_edits`へ記録します。手修正した音高は
+`source=manual_edit`、`pitch_confidence=null`とし、歌詞レイヤーの合成ノートにも反映します。
+歌詞レイヤーがある場合、歌詞・行・音符数の変更はMIDIで受け渡し、元のレイヤーを編集用JSONに保持します。
+Soramimic用JSONは、修正後の読みと元歌詞を持つ未変換のセットアップデータです。
+
 音源解析の `evidence` 経路では、`lyric_layers` に完全な `canonical`、音源に対応した
 `performed`、合成ノートの `synthesis_plan` を別々に保持します。替え歌変換は完全な読みを
 入力に使い、字幕は完全な表記を保持します。実演の省略で元歌詞を削りません。
