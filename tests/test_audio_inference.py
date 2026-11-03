@@ -23,6 +23,31 @@ def _queued_job(scheduler, tmp_path, name, priority, kind="whisper"):
     return scheduler.add(kind, priority, {}, audio, work)
 
 
+def test_inference_failure_returns_details_without_journaling_content(
+    monkeypatch, tmp_path, caplog,
+):
+    scheduler = InferenceScheduler(tmp_path / "state", device="cpu")
+
+    def fail(job):
+        raise ValueError("private-input-lyrics")
+
+    monkeypatch.setattr(scheduler, "_run", fail)
+    scheduler.start()
+    try:
+        job = _queued_job(scheduler, tmp_path, "failed", "public")
+        for _ in range(100):
+            snapshot = scheduler.snapshot(job)
+            if snapshot["status"] == "error":
+                break
+            time.sleep(0.01)
+        assert snapshot["status"] == "error"
+        assert snapshot["error"] == "private-input-lyrics"
+        assert "private-input-lyrics" not in caplog.text
+        assert "ValueError" in caplog.text
+    finally:
+        scheduler.stop()
+
+
 def test_service_readiness_allows_staggered_demucs_rollout(monkeypatch):
     class Response:
         ok = True
