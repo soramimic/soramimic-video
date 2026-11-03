@@ -1211,13 +1211,83 @@ def _synthesize_chunk(
     """1チャンクを sing_frame_audio_query → frame_synthesis して WAV バイトを返す。"""
     query = _query_score(base, engine_url, teacher, score)
     try:
-        return _synthesize_frame_query(base, style_id, query)
+        return _silence_long_pauses(_synthesize_frame_query(base, style_id, query), query)
     except requests.ConnectionError:
         # 接続断(合成中のクラッシュ or 死んでいる間のリクエスト)は呼び出し側で
         # 復帰待ち・再試行するため、そのまま送出する。
         raise
     except requests.RequestException as exc:
         raise _request_error(engine_url, exc) from exc
+
+
+def _silence_long_pauses(content: bytes, query: dict[str, Any]) -> bytes:
+    """Mute the middle of long decoder pauses, preserving phonemes and margins.
+
+    Use actual phonemes rather than note starts: consonants can precede note-on.
+    Keep 150 ms of preroll and decay, and leave short pauses unchanged.
+    """
+    phonemes, f0 = query.get("phonemes"), query.get("f0")
+    if not isinstance(phonemes, list) or not phonemes or not isinstance(f0, list):
+        return content
+    pauses: list[tuple[int, int]] = []
+    try:
+        lengths = [p["frame_length"] for p in phonemes]
+        if any(type(n) is not int or n < 0 for n in lengths) or sum(lengths) != len(f0):
+            return content
+        position = 0
+        pause_start: int | None = None
+        for phoneme, length in zip(phonemes, lengths, strict=True):
+            if not length:
+                continue
+            if phoneme["phoneme"] == "pau":
+                if pause_start is None:
+                    pause_start = position
+            elif pause_start is not None:
+                pauses.append((pause_start, position))
+                pause_start = None
+            position += length
+        if pause_start is not None:
+            pauses.append((pause_start, position))
+    except (KeyError, TypeError, ValueError):
+        return content
+    pauses = [(start, end) for start, end in pauses if (end - start) / FRAME_RATE >= 0.5]
+    if not pauses:
+        return content
+    rate, width, channels, frames, pcm = _read_wav(content)
+    if width != 2 or abs(frames - round(len(f0) * rate / FRAME_RATE)) > 1:
+        return content
+    output = bytearray(pcm)
+    fade_length = round(0.01 * rate)
+    for start, end in pauses:
+        # Fade only inside the pause; the phoneme and its 150 ms margin are exact PCM.
+        left = round((start / FRAME_RATE + 0.15) * rate) if start else 0
+        right = round((end / FRAME_RATE - 0.15) * rate) if end < len(f0) else frames
+        silent_start = left + fade_length if start else 0
+        silent_end = right - fade_length if end < len(f0) else frames
+        output[silent_start * channels * width:silent_end * channels * width] = bytes(
+            (silent_end - silent_start) * channels * width
+        )
+        fades = []
+        if start:
+            fades.append((left, silent_start, False))
+        if end < len(f0):
+            fades.append((silent_end, right, True))
+        for fade_start, fade_end, rising in fades:
+            for sample in range(fade_start, fade_end):
+                gain = (sample - fade_start) / (fade_end - fade_start)
+                if not rising:
+                    gain = 1 - gain
+                for channel in range(channels):
+                    offset = (sample * channels + channel) * width
+                    value = int.from_bytes(pcm[offset:offset + width], "little", signed=True)
+                    output[offset:offset + width] = round(value * gain).to_bytes(
+                        width, "little", signed=True,
+                    )
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as target:
+        target.setparams((channels, width, rate, 0, "NONE", "not compressed"))
+        target.writeframes(output)
+    return buffer.getvalue()
 
 
 def _query_score(
@@ -1423,9 +1493,9 @@ def _partial_chunk(
             for start, end in ranges:
                 runproc.raise_if_cancelled()
                 left, right = start - chunk.start_frame, end - chunk.start_frame
-                parts.append(_synthesize_frame_query(
-                    base, style_id, slice_frame_query(query, left, right),
-                ))
+                partial_query = slice_frame_query(query, left, right)
+                content = _synthesize_frame_query(base, style_id, partial_query)
+                parts.append(_silence_long_pauses(content, partial_query))
                 spans.append(ScoreChunk(start_frame=left, notes=[
                     {"key": None, "lyric": "", "frame_length": right - left},
                 ]))
