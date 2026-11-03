@@ -36,6 +36,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from .wordlist_reading import wordlist_reading
+
 # 上限。stations.csv のような同梱リストも自作リストとして読み直せるよう、
 # ファイルサイズには余裕を持たせる。実際の処理量は、変換前処理
 # (読み推定+バリエーション展開)が現実的な時間で終わる行数側でも制限する。
@@ -77,11 +79,6 @@ COLUMN_ALIASES: dict[str, str] = {
     "かな": "pronunciation",
     "ふりがな": "pronunciation",
 }
-
-# 読みとして許すのはカナ(ひらがな/カタカナ)と長音・繰り返し記号だけ。
-# 漢字混じりでもエンジンは MeCab で読みを推定するが、推定が外れると
-# 歌詞が黙って変になるので「読み欄に漢字」は投入前に知らせる
-_KANA_RE = re.compile(r"^[ぁ-ゖァ-ヺーゝゞヽヾ]+$")
 
 # エンジンのCSVパーサはクオートを解釈しないので、値の中のカンマ・改行は潰す
 _INFIELD_COMMA = "、"
@@ -169,10 +166,26 @@ def _clean_value(value: str) -> str:
     return value.replace(",", _INFIELD_COMMA).strip()
 
 
+class _CsvRow(list[str]):
+    def __init__(self, cells: list[str], source_line: int) -> None:
+        super().__init__(cells)
+        self.source_line = source_line
+
+
+def _source_line(row: list[str], fallback: int) -> int:
+    return row.source_line if isinstance(row, _CsvRow) else fallback
+
+
 def _split_rows(text: str) -> list[list[str]]:
     """引用符つきCSVとして行に分ける。"""
     try:
-        return [row for row in csv.reader(io.StringIO(text, newline=""))]
+        reader = csv.reader(io.StringIO(text, newline=""))
+        rows: list[list[str]] = []
+        source_line = 1
+        for row in reader:
+            rows.append(_CsvRow(row, source_line))
+            source_line = reader.line_num + 1
+        return rows
     except csv.Error as exc:  # pragma: no cover - csv.reader が落ちるのは稀
         raise WordlistCsvError(f"CSVとして読めません: {exc}") from exc
 
@@ -189,8 +202,11 @@ def _looks_like_header(row: list[str]) -> bool:
 
 
 def _check_reading(pronunciation: str, surface: str, line_no: int, bad: list[str]) -> None:
-    if pronunciation and not _KANA_RE.fullmatch(pronunciation):
-        bad.append(f"{line_no}行目「{surface}」の読み「{pronunciation}」")
+    try:
+        wordlist_reading(pronunciation or surface)
+    except ValueError as exc:
+        source = "指定した読み" if pronunciation else "表記から自動推定した読み"
+        bad.append(f"{line_no}行目「{surface}」の{source}: {exc}")
 
 
 class _ImageBinder:
@@ -259,6 +275,7 @@ def _parse_plain(
     auto = 0
     word_id = 0
     for line_no, row in enumerate(rows, start=1):
+        line_no = _source_line(row, line_no)
         # 「#」以降は行末までコメント(本家と同じ)。全部コメントなら空行と同じ
         cells = [_clean_value(c) for c in row]
         for i, cell in enumerate(cells):
@@ -274,6 +291,7 @@ def _parse_plain(
         image = [binder.resolve("", surface, line_no)] if binder is not None else []
         if not readings:
             auto += 1
+            _check_reading("", surface, line_no, bad)
             out.append([str(word_id), surface, surface, "", *image])
             continue
         for reading in readings:
@@ -288,8 +306,8 @@ def _reading_error(bad: list[str]) -> str:
     head = "、".join(bad[:5])
     more = f" ほか{len(bad) - 5}件" if len(bad) > 5 else ""
     return (
-        f"読みはカタカナ(またはひらがな)で書いてください: {head}{more}。"
-        "読みを空にすると表記から自動で推定します。"
+        f"単語リストの読みを確認してください: {head}{more}。"
+        "読み欄に正しい読みをカタカナ(またはひらがな)で指定してください。"
     )
 
 
@@ -329,6 +347,7 @@ def _parse_tidy(
     bad: list[str] = []
     auto = 0
     for line_no, row in enumerate(rows[1:], start=2):
+        line_no = _source_line(row, line_no)
         cells = [_clean_value(c) for c in row]
 
         def cell(name: str, cells: list[str] = cells) -> str:
@@ -375,7 +394,7 @@ def parse_editor_text(text: str) -> WordlistCsv:
     * ``id`` 列は絶対に振り直さない。JSONの results 側の id と1対1で対応して
       いるので、書き換えると別の語の行を引いてしまう
     * 列の並びもそのまま(エンジン・_find_row はどちらも列名で引く)
-    * 読みのカナ検査はしない(変換はブラウザ側で済んでいる)
+    * 指定読みと省略された読みを、通常のアップロードと同じ経路で検査する
 
     それでも通すのは、あとで素朴に split(",") されても壊れない形に均すこと
     (値のカンマ・改行・BOM落とし)と、``image`` 列を落とすことの2つ。画像列は
@@ -421,13 +440,20 @@ def parse_editor_text(text: str) -> WordlistCsv:
     # 足すのは末尾なので、既存の列(特に id)の中身も並びも変わらない
     added = [c for c in ("original", "pronunciation") if c not in seen]
     body: list[list[str]] = []
-    for row in rows[1:]:
+    bad: list[str] = []
+    pronunciation_at = (columns + added).index("pronunciation")
+    for line_no, row in enumerate(rows[1:], 2):
+        line_no = _source_line(row, line_no)
         cells = [_clean_value(c) for c in row]
         values = [cells[i] if i < len(cells) else "" for i, _ in keep]
         if not values[surface_at]:
             continue  # 表記のない行(末尾の空行など)は捨てる
         values += [values[surface_at] if name == "original" else "" for name in added]
+        reading = values[pronunciation_at]
+        _check_reading("" if reading.lower() == "na" else reading, values[surface_at], line_no, bad)
         body.append(values)
+    if bad:
+        raise WordlistCsvError(_reading_error(bad))
     if not body:
         raise WordlistCsvError("単語リスト(csvText)に単語が1行もありません。")
     row_limit = max_rows()

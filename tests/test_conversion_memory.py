@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ def test_long_reading_keeps_all_syllables_with_bounded_memory(tmp_path: Path) ->
         encoding="utf-8",
     )
     script = """
+import contextlib
 import json
 import resource
 import sys
@@ -26,11 +28,13 @@ from pathlib import Path
 resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2, 512 * 1024**2))
 from soramimic_video.soramimic_engine import run_convert
 
-result = run_convert(
-    ["カン" * 18], Path(sys.argv[1]), None,
-    {"DUPLICATE": False, "VARIATION_COST": 16}, cache_db=False,
-    word_boundaries_per_line=lambda lines: [[0, len(units)] for units in lines],
-)
+# Keep optional reading-library diagnostics separate from the JSON result.
+with contextlib.redirect_stdout(sys.stderr):
+    result = run_convert(
+        ["カン" * 18], Path(sys.argv[1]), None,
+        {"DUPLICATE": False, "VARIATION_COST": 16}, cache_db=False,
+        word_boundaries_per_line=lambda lines: [[0, len(units)] for units in lines],
+    )
 print(json.dumps(result, ensure_ascii=False))
 """
     completed = subprocess.run(
@@ -39,6 +43,9 @@ print(json.dumps(result, ensure_ascii=False))
         text=True,
         timeout=30,
         check=False,
+        # Yomi imports NumPy; BLAS worker stacks must not consume the address
+        # space reserved for this single-threaded reading/search regression.
+        env={**os.environ, "OPENBLAS_NUM_THREADS": "1"},
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
