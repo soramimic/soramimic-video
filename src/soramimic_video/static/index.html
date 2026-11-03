@@ -907,6 +907,11 @@
   .save-menu > summary { list-style: none; }
   .save-menu > summary::-webkit-details-marker { display: none; }
   .save-menu > summary::after { content: " ▾"; font-size: .7rem; }
+  .edit-menu { position: relative; }
+  .edit-menu > summary { list-style: none; }
+  .edit-menu > summary::-webkit-details-marker { display: none; }
+  .edit-menu > summary::after { content: " ▾"; font-size: .7rem; }
+  .edit-options .result-action { display: flex; width: 100%; justify-content: flex-start; text-align: left; margin: 0; }
   .save-options {
     position: absolute; top: calc(100% + .25rem); left: 0; z-index: 20;
     width: 21rem; max-width: calc(100vw - 24px); max-height: min(70vh, 32rem);
@@ -2552,7 +2557,7 @@ function historyButton(label, className = "") {
 
 function appendLyricEditAction(actions, job, statusContainer, className = "") {
   if (!job.editor_url || !editorPeer) return;
-  const edit = historyButton("歌詞を編集 ↗", `result-action action-edit ${className}`.trim());
+  const edit = historyButton("替え歌歌詞を編集 ↗", `result-action action-edit ${className}`.trim());
   edit.setAttribute("aria-label", "歌詞を編集（新しいタブで開きます）");
   const message = document.createElement("p");
   message.className = "history-meta";
@@ -2561,6 +2566,46 @@ function appendLyricEditAction(actions, job, statusContainer, className = "") {
   edit.addEventListener("click", () => editResultLyrics(job, edit, message));
   actions.appendChild(edit);
   statusContainer.appendChild(message);
+}
+
+function appendScoreEditAction(actions, job, className = "") {
+  if (!job.export_urls?.midi || !/^[a-zA-Z0-9_-]{1,80}$/.test(job.id || "")) return;
+  const link = document.createElement("a");
+  link.className = `btn-sm result-action action-edit ${className}`.trim();
+  link.href = "/score-editor?job=" + encodeURIComponent(job.id);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = "元歌の認識結果を修正 ↗";
+  link.setAttribute("aria-label", "音符を編集（新しいタブで開きます）");
+  actions.appendChild(link);
+}
+
+function appendEditActions(actions, job, statusContainer, prefix) {
+  const options = document.createElement("div");
+  options.className = "save-options edit-options";
+  appendLyricEditAction(options, job, statusContainer, prefix + "-edit-lyrics");
+  appendScoreEditAction(options, job, prefix + "-edit-score");
+  if (!options.children.length) return;
+  const menu = document.createElement("details");
+  menu.className = "edit-menu";
+  const summary = document.createElement("summary");
+  summary.className = "btn-sm result-action action-edit";
+  summary.textContent = "編集";
+  menu.appendChild(summary);
+  menu.appendChild(options);
+  options.addEventListener("click", event => {
+    if (event.target.closest("button, a")) menu.open = false;
+  });
+  menu.addEventListener("toggle", () => {
+    if (!menu.open) return;
+    document.querySelectorAll(".save-menu[open], .edit-menu[open]").forEach(other => {
+      if (other !== menu) other.open = false;
+    });
+    options.style.left = "0px";
+    const rect = options.getBoundingClientRect();
+    options.style.left = `${Math.max(12 - rect.left, Math.min(0, innerWidth - 12 - rect.right))}px`;
+  });
+  actions.appendChild(menu);
 }
 
 function historyCard(job, index) {
@@ -2650,7 +2695,7 @@ function historyCard(job, index) {
       share.addEventListener("click", () => shareHistoryResult(jobIndex(), share));
       actions.appendChild(share);
     }
-    appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
+    appendEditActions(actions, job, copy, "history");
     copy.appendChild(actions);
     if (save) copy.appendChild(save.status);
   }
@@ -6001,7 +6046,7 @@ function appendSaveMenu(container, job, onVideoSave = null) {
   menu.appendChild(links);
   menu.addEventListener("toggle", () => {
     if (!menu.open) return;
-    document.querySelectorAll(".save-menu[open]").forEach(other => {
+    document.querySelectorAll(".save-menu[open], .edit-menu[open]").forEach(other => {
       if (other !== menu) other.open = false;
     });
     // 履歴の途中にある保存ボタンでも、メニューを画面内に収める。
@@ -6016,13 +6061,13 @@ function appendSaveMenu(container, job, onVideoSave = null) {
 }
 
 document.addEventListener("click", event => {
-  document.querySelectorAll(".save-menu[open]").forEach(menu => {
+  document.querySelectorAll(".save-menu[open], .edit-menu[open]").forEach(menu => {
     if (!menu.contains(event.target)) menu.open = false;
   });
 });
 document.addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
-  document.querySelectorAll(".save-menu[open]").forEach(menu => {
+  document.querySelectorAll(".save-menu[open], .edit-menu[open]").forEach(menu => {
     menu.open = false;
     menu.querySelector("summary").focus();
   });
@@ -6051,7 +6096,7 @@ function showBuilderVideo(job) {
   const actions = $("result-actions");
   const saveMenu = actions.querySelector(".save-menu");
   if (saveMenu) actions.prepend(saveMenu);
-  appendLyricEditAction(actions, job, $("builder-share"), "result-edit-lyrics");
+  appendEditActions(actions, job, $("builder-share"), "result");
   bindShare(job.video_url);
   videoSharePreparation = prepareVideoShare(job.video_url, video);
   setBuilderState("done");

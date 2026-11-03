@@ -65,6 +65,7 @@ const job=id=>({id,status:'done',result_kind:'video',
 """ + _functions(
         "function renderHistoryJobs(", "async function fetchHistory()",
         "function historyCard(", "function historyButton(",
+        "function appendScoreEditAction(", "function appendEditActions(",
         "async function startHistoryPlayback(", "function disposeHistoryPlayback()",
         "function resetHistorySave()", "function resetHistoryShare()",
     )

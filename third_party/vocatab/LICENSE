@@ -1,0 +1,47 @@
+MIT License
+
+Copyright (c) 2026 wavtechyukky
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+NOTICE — scope of this license
+
+The MIT license above covers the **source code** of this repository only
+(the editor UI, the in-browser engine, the Python engine and the tools). It
+does NOT cover the following, which have their own terms. See
+`THIRD_PARTY_NOTICES.md` and `voicebanks/leapsinger_ja_3singer/README.md`.
+
+  - The trained models and the voicebank shipped in `voicebanks/` and
+    `vocoders/` (the acoustic model, the F0 and consonant-duration models, the
+    breath bank, and the NHVSing vocoder). They are provided for personal,
+    non-commercial use only, and **may not be redistributed**: they were
+    trained on singing-voice databases (Oniku Kurumi, Natsume Yuuri, Namine
+    Ritsu) whose terms of use bind every model made from them. Keep the
+    credits, and for Natsume Yuuri the bundled terms of use
+    (`voicebanks/leapsinger_ja_3singer/夏目悠李_利用規約.txt`), with anything
+    you make from them.
+
+  - The growl effect (`engine/voiceparams.py` `growl()` and its TypeScript
+    port in `ui/src/engine-web/voiceparams.ts`), which follows
+    hifisampler's `util/growl.py` (Apache License, Version 2.0; full text in
+    `LICENSES/Apache-2.0.txt`).
+
+  - onnxruntime-web, which the browser engine loads at run time from jsDelivr
+    (MIT, Microsoft).

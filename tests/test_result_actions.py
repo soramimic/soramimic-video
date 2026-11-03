@@ -12,6 +12,7 @@ from test_index_ui import _function_body, _script
 def test_completed_video_edits_the_current_jobs_lyrics_and_preserves_action_order():
     code = "\n".join(_function_body(_script(), head) + "\n}" for head in (
         "function showBuilderVideo(", "function appendLyricEditAction(",
+        "function appendScoreEditAction(", "function appendEditActions(",
         "function historyButton(", "async function editResultLyrics(",
     ))
     setup = r'''
@@ -29,7 +30,8 @@ def test_completed_video_edits_the_current_jobs_lyrics_and_preserves_action_orde
             }
             addEventListener(type, callback) {this.handlers[type] = callback;}
             querySelector(selector) {
-                return this.children.find(child => child.classList.contains(selector.slice(1)));
+                return this.children.find(child => child.classList.contains(selector.slice(1)))
+                    || this.children.map(child => child.querySelector(selector)).find(Boolean);
             }
         }
         const document = {createElement: () => new Element()};
@@ -67,8 +69,9 @@ def test_completed_video_edits_the_current_jobs_lyrics_and_preserves_action_orde
                 const edit = actions.querySelector('.result-edit-lyrics');
                 assert.equal(actions.children[0].className, 'save-menu');
                 assert.equal(actions.children[1].className, 'action-share');
-                assert.equal(actions.children.at(-1), edit);
-                assert.equal(edit.textContent, '歌詞を編集 ↗');
+                assert.equal(actions.children.at(-1).className, "edit-menu");
+                assert.equal(actions.children.at(-1).children[0].textContent, "編集");
+                assert.equal(edit.textContent, '替え歌歌詞を編集 ↗');
                 assert.match(edit['aria-label'], /新しいタブ/);
                 await edit.handlers.click();
                 assert.equal(requested.at(-1).url, '/lyrics/' + name);
