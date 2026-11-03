@@ -95,6 +95,25 @@ def test_split_moras_redundant_small_vowel_becomes_vowel():
 # ---- build_score ----
 
 
+def test_invalid_parody_reading_reports_word_before_synthesis():
+    project = _project([_note(0, 60, 0.5, 1.5, "カ")])
+    project.parody = Parody("", lines=[ParodyLine(3, [
+        ParodyWord("メカＸ", "メカX", "", "", "", [0], ["メカX"]),
+    ])])
+    with pytest.raises(ValueError, match="歌詞行3の単語「メカＸ」.*文字「X」"):
+        build_score(project)
+
+
+def test_invalid_original_reading_reports_note():
+    with pytest.raises(ValueError, match="音符0.*文字「2」"):
+        build_score(_project([_note(0, 60, 0.5, 1.5, "メカ2")]))
+
+
+def test_synthesis_boundary_normalizes_kana_width_and_script():
+    score = build_score(_project([_note(0, 60, 0.5, 1.5, "めかﾆ")]))
+    assert [n["lyric"] for n in score["notes"] if n["key"] is not None] == ["メ", "カ", "ニ"]
+
+
 def test_build_score_leading_rest_from_zero():
     score = build_score(_project([_note(0, 60, 0.5, 1.0, "ド")]))
     notes = score["notes"]

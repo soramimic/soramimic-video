@@ -75,6 +75,8 @@ def _get_app(vowel_ratio: Any = None) -> Any:
     """「音の合わせ方」r に応じた soramimic アプリを返す(appCore.js の appFor)。"""
     from soramimic import create_soramimic, scale_similarity
 
+    from .wordlist_reading import wordlist_reading
+
     key = _app_key(vowel_ratio)
     r = float(key)
     if key not in _apps:
@@ -94,6 +96,7 @@ def _get_app(vowel_ratio: Any = None) -> Any:
             tokenize_sentenses=tok.tokenize,  # type: ignore[arg-type]
             get_yomi=tok.get_yomi,
             preserve_reading_positions=True,
+            wordlist_reading=wordlist_reading,
         )
     return _apps[key]
 
