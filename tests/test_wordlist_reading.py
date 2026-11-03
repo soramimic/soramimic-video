@@ -57,6 +57,13 @@ def test_csv_reports_multiple_bad_readings_and_their_sources():
     assert "読み欄" in message
 
 
+def test_plain_na_reading_uses_surface_for_validation():
+    with pytest.raises(wordlist_csv.WordlistCsvError) as exc:
+        wordlist_csv.parse("❤,NA".encode())
+    assert "1行目「❤」" in str(exc.value)
+    assert "自動推定" in str(exc.value)
+
+
 def test_editor_csv_does_not_skip_reading_validation():
     with pytest.raises(wordlist_csv.WordlistCsvError, match="2行目「対象」"):
         wordlist_csv.parse_editor_text("id,surface,pronunciation\n17,対象,???")

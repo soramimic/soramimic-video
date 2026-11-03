@@ -202,6 +202,8 @@ def _looks_like_header(row: list[str]) -> bool:
 
 
 def _check_reading(pronunciation: str, surface: str, line_no: int, bad: list[str]) -> None:
+    if pronunciation.lower() == "na":
+        pronunciation = ""
     try:
         wordlist_reading(pronunciation or surface)
     except ValueError as exc:
