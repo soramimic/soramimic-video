@@ -3247,6 +3247,19 @@ def create_app(
             .replace("<!-- usage-scope-toc -->", usage_scope_toc)
         )
 
+    @app.get("/score-editor", include_in_schema=False)
+    @app.get("/score-editor.html", include_in_schema=False)
+    def score_editor_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "timing_editor.html", media_type="text/html")
+
+    @app.get("/score-editor.mjs", include_in_schema=False)
+    def score_editor_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "score-editor.mjs", media_type="application/javascript")
+
+    @app.get("/score-editor-io.mjs", include_in_schema=False)
+    def score_editor_io_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "score-editor-io.mjs", media_type="application/javascript")
+
     @app.get("/operation-guard.js", include_in_schema=False)
     def operation_guard_script() -> FileResponse:
         return FileResponse(

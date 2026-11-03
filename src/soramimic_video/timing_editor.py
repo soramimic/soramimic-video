@@ -619,8 +619,10 @@ def _make_handler(state: dict[str, Any]) -> type[http.server.BaseHTTPRequestHand
 
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?")[0]
-            if path == "/":
+            if path in {"/", "/score-editor", "/score-editor.html"}:
                 self._file(EDITOR_HTML, "text/html; charset=utf-8")
+            elif path in {"/score-editor.mjs", "/score-editor-io.mjs"}:
+                self._file(STATIC_DIR / path[1:], "application/javascript; charset=utf-8")
             elif path == "/data":
                 try:
                     project_dir: Path = state["project_dir"]
