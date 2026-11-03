@@ -207,10 +207,16 @@ def test_creator_subscribers_and_images_survive_editor_roundtrip(tmp_path, name)
         + """
 const c = document.createElement("div");
 m.renderFacets(c, entry);
+m.restoreFacets(c, "((subscriber_band=100k_to_1m or subscriber_band=1m_plus))"
+  + " and ((has_image=yes))");
+const legacyBands = c.querySelectorAll("input.facet-value:checked")
+  .filter((cb) => cb.__where.startsWith("subscriber_band="))
+  .map((cb) => cb.value);
+m.renderFacets(c, entry);
 for (const group of c.querySelectorAll(".facet-group")) {
   const options = group.querySelectorAll("input.facet-value");
-  if (options.some((cb) => cb.value === "100k_plus")) {
-    for (const cb of options) cb.checked = cb.value === "100k_plus";
+  if (options.some((cb) => cb.value === "100k_to_1m")) {
+    for (const cb of options) cb.checked = cb.value === "100k_to_1m";
   } else if (options.some((cb) => cb.__where === "(has_image=yes)")) {
     for (const cb of options) cb.checked = cb.value === "yes";
   }
@@ -218,13 +224,14 @@ for (const group of c.querySelectorAll(".facet-group")) {
 const where = m.compileWhere(c, entry);
 m.renderFacets(c, entry);
 m.restoreFacets(c, where);
-console.log(JSON.stringify({where, restored: m.compileWhere(c, entry)}));
+console.log(JSON.stringify({where, restored: m.compileWhere(c, entry), legacyBands}));
 """,
         tmp_path,
     )
     where = result["where"]
+    assert result["legacyBands"] == ["100k_to_1m", "1m_plus"]
     assert "subscriber_band=100k_to_1m" in where
-    assert "subscriber_band=1m_plus" in where
+    assert "subscriber_band=1m_plus" not in where
     assert "has_image=yes" in where
     assert result["restored"] == restored_where(entry, where) == where
     assert survives_editor_facets(entry, where)
@@ -236,7 +243,7 @@ console.log(JSON.stringify({where, restored: m.compileWhere(c, entry)}));
     assert selected
     assert selected == [
         row for row in all_rows
-        if row[subscribers].isdigit() and int(row[subscribers]) >= 100_000
+        if row[subscribers].isdigit() and 100_000 <= int(row[subscribers]) < 1_000_000
         and row[image] == "yes"
     ]
     assert _select(csv_path, default_where(entry)) == all_rows
