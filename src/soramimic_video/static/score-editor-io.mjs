@@ -145,16 +145,30 @@ export function projectDocument(document, input) {
   if (source.lyric_layers && !stable) {
     fail('歌詞レイヤーのある楽譜で分割・結合・歌詞を変更した場合は、MIDIで保存して取り込んでください。');
   }
-  const result = clone(source), used = new Set(), ids = new Map();
+  const result = clone(source), used = new Set(), ids = new Map(), edits = [];
   result.notes = moras.map((note, index) => {
     const base = used.has(note.id) ? {} : (old.get(note.id) ?? {});
     if (!used.has(note.id)) ids.set(note.id, index);
     used.add(note.id);
-    return { ...clone(base), id: index, line: note.line, kana: note.text, midi_note: note.pitch,
+    const updated = { ...clone(base), id: index, line: note.line, kana: note.text, midi_note: note.pitch,
       start_sec: note.start, end_sec: note.end, start_tick: secToTick(document.song, note.start),
       end_tick: Math.max(secToTick(document.song, note.start) + 1, secToTick(document.song, note.end)),
       surface: base.surface ?? '', raw: base.raw ?? note.text };
+    const changed = base.midi_note !== note.pitch || base.start_sec !== note.start
+      || base.end_sec !== note.end || base.kana !== note.text || base.line !== note.line;
+    if (base.midi_note !== note.pitch) {
+      updated.source = 'manual_edit'; updated.pitch_confidence = null;
+    }
+    if (changed) edits.push({ before: base.id === undefined ? null : clone(base), after: clone(updated) });
+    return updated;
   });
+  for (const note of source.notes) if (!used.has(note.id)) edits.push({ before: clone(note), after: null });
+  if (edits.length) {
+    if (result.score_editor_edits !== undefined && !Array.isArray(result.score_editor_edits)) {
+      fail('編集記録が不正です。編集用JSONまたはMIDIで保存してください。');
+    }
+    result.score_editor_edits = [...(result.score_editor_edits ?? []), ...edits];
+  }
   result.lines = source.lines.map(line => ({ ...clone(line),
     note_ids: result.notes.filter(note => note.line === line.id).map(note => note.id),
     xf_kana: result.notes.filter(note => note.line === line.id).map(note => note.kana).join('') }));
@@ -167,6 +181,9 @@ export function projectDocument(document, input) {
   if (result.lyric_layers?.synthesis_plan) {
     if (result.lyric_layers.synthesis_plan.length !== moras.length) fail('合成ノートの対応が不正です。');
     result.lyric_layers.synthesis_plan.forEach((slot, index) => {
+      if (slot.midi_pitch !== moras[index].pitch) {
+        slot.pitch_sources = ['manual_edit']; slot.pitch_confidence = null;
+      }
       slot.start_sec = moras[index].start; slot.end_sec = moras[index].end; slot.midi_pitch = moras[index].pitch;
     });
   }
@@ -223,6 +240,28 @@ export function lyricText(input) {
   const rows = new Map();
   for (const note of validateMoras(input)) rows.set(note.line, (rows.get(note.line) ?? '') + note.text);
   return [...rows.values()].join('\n') + '\n';
+}
+
+export function soramimicSeed(document, input) {
+  const rows = new Map();
+  for (const note of validateMoras(input)) {
+    rows.set(note.line, (rows.get(note.line) ?? '') + note.text);
+  }
+  if (!rows.size) fail('変換する歌詞がありません。');
+  const phrases = [...rows.values()];
+  const originalLines = [...rows].map(([line, reading]) => document.payload.line_texts[line] || reading);
+  // An unconverted setup seed: the receiver builds its own pronunciation units
+  // and replacement candidates. It does not mistake literal lyrics for a result.
+  return {
+    format: 'soramimic-editor/1', setupFirst: true, phrases,
+    results: [], unitsList: [],
+    tokensList: phrases.map(reading => [{
+      surface_form: reading, basic_form: '*', reading, pronunciation: reading,
+      pos: '名詞', pos_detail_1: '一般', pos_detail_2: '*', pos_detail_3: '*',
+      conjugated_form: '*', conjugated_type: '*', word_position: 1, phrase: 0, token_index: 0,
+    }]),
+    lyrics: originalLines.join('\n'), originalLines,
+  };
 }
 
 // Decode standard lyrics MIDI. XF uses a separate text/event contract and is

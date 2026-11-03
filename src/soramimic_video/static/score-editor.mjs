@@ -1,4 +1,4 @@
-import { openDocument, openMidi, saveDocument, projectDocument, lyricMidi, lyricText } from './score-editor-io.mjs';
+import { openDocument, openMidi, saveDocument, projectDocument, lyricMidi, lyricText, soramimicSeed } from './score-editor-io.mjs';
 
 export async function start(editor) {
   const $ = id => document.getElementById(id);
@@ -92,6 +92,7 @@ export async function start(editor) {
       let blob, extension;
       switch (format.value) {
         case 'midi': blob = new Blob([lyricMidi(current, payload.moras)], { type: 'audio/midi' }); extension = '.mid'; break;
+        case 'soramimic': blob = new Blob([JSON.stringify(soramimicSeed(current, payload.moras), null, 1)], { type: 'application/json' }); extension = '.soramimic.json'; break;
         case 'lyrics': blob = new Blob([lyricText(payload.moras)], { type: 'text/plain;charset=utf-8' }); extension = '.txt'; break;
         case 'project': blob = new Blob([JSON.stringify(projectDocument(current, payload.moras), null, 1)], { type: 'application/json' }); extension = '.project.json'; break;
         default: blob = new Blob([JSON.stringify(saveDocument(current, payload), null, 1)], { type: 'application/json' }); extension = '.json';
@@ -100,6 +101,7 @@ export async function start(editor) {
       // MIDI/text are interchange exports, not a lossless save of the editor state.
       if (format.value === 'json') editor.markSaved();
       setStatus('保存しました: ' + filename + '.edited' + extension);
+      if (format.value === 'soramimic') setStatus('Soramimicの「読み込み」でJSONを開き、単語リストを選んで変換してください。');
     } catch (error) { setStatus('保存できません: ' + error.message); }
   });
 
@@ -114,7 +116,11 @@ export async function start(editor) {
   const job = new URL(location.href).searchParams.get('job');
   if (job && /^[a-zA-Z0-9_-]{1,80}$/u.test(job)) {
     try {
-      const response = await fetch('/api/jobs/' + encodeURIComponent(job) + '/exports/midi');
+      const key = localStorage.getItem('apiKey');
+      const response = await fetch('/api/jobs/' + encodeURIComponent(job) + '/exports/midi', {
+        headers: key ? { 'X-API-Key': key } : {}, credentials: 'same-origin', cache: 'no-store',
+        signal: AbortSignal.timeout(20000),
+      });
       if (!response.ok) throw new Error('曲の保存期限またはログイン状態を確認してください。');
       const file = new File([await response.blob()], 'song.mid', { type: 'audio/midi' });
       await openFile(file);

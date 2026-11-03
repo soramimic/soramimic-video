@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import { parseHTML } from 'linkedom';
 import { start } from '../src/soramimic_video/static/score-editor.mjs';
+import { openDocument, lyricMidi } from '../src/soramimic_video/static/score-editor-io.mjs';
 
 const html = await readFile(new URL('../src/soramimic_video/static/timing_editor.html', import.meta.url), 'utf8');
 
@@ -130,4 +131,36 @@ test('standalone file handlers import, edit and save locally without fetching so
   assert.equal(exported.payload.moras[0].pitch, 61);
   assert.equal(exported.source.notes[0].midi_note, 60);
   t.mock.timers.tick(60000);
+});
+
+test('Video job entry reads only that job MIDI and keeps the API key out of URLs', async t => {
+  const { window, document } = parseHTML(html);
+  const previous = { document: globalThis.document, window: globalThis.window,
+    location: globalThis.location, localStorage: globalThis.localStorage };
+  Object.assign(globalThis, { document, window, location: { href: 'http://localhost/score-editor?job=score_1' },
+    localStorage: { getItem: name => { assert.equal(name, 'apiKey'); return 'private-test-key'; } },
+  });
+  t.after(() => Object.assign(globalThis, previous));
+  const format = document.getElementById('local-format');
+  format.querySelector('option').selected = true;
+  Object.defineProperty(format, 'selectedOptions', { get: () => [format.querySelector('option')] });
+  const source = openDocument({ moras: [{ id: 0, line: 0, text: 'ア', start: 1, end: 2, pitch: 62 }] });
+  const midi = lyricMidi(source, source.payload.moras);
+  let payload, requests = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests++;
+    assert.equal(url, '/api/jobs/score_1/exports/midi');
+    assert.doesNotMatch(url, /private-test-key|api_key/);
+    assert.deepEqual(options.headers, { 'X-API-Key': 'private-test-key' });
+    assert.equal(options.credentials, 'same-origin');
+    assert.equal(options.cache, 'no-store');
+    return new Response(midi, { headers: { 'Content-Type': 'audio/midi' } });
+  });
+  await start({ load: async value => { payload = value; }, setStatus: () => {},
+    isDirty: () => false, setSave: () => {}, clearAudio: () => {},
+  });
+  assert.equal(requests, 1);
+  assert.equal(payload.moras[0].pitch, 62);
+  assert.equal(payload.moras[0].text, 'ア');
+  assert.equal(payload.moras[0].start, 1);
 });

@@ -12,6 +12,7 @@ from test_index_ui import _function_body, _script
 def test_completed_video_edits_the_current_jobs_lyrics_and_preserves_action_order():
     code = "\n".join(_function_body(_script(), head) + "\n}" for head in (
         "function showBuilderVideo(", "function appendLyricEditAction(",
+        "function appendScoreEditAction(",
         "function historyButton(", "async function editResultLyrics(",
     ))
     setup = r'''

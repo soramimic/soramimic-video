@@ -2563,6 +2563,18 @@ function appendLyricEditAction(actions, job, statusContainer, className = "") {
   statusContainer.appendChild(message);
 }
 
+function appendScoreEditAction(actions, job, className = "") {
+  if (!job.export_urls?.midi || !/^[a-zA-Z0-9_-]{1,80}$/.test(job.id || "")) return;
+  const link = document.createElement("a");
+  link.className = `btn-sm result-action action-edit ${className}`.trim();
+  link.href = "/score-editor?job=" + encodeURIComponent(job.id);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = "音符を編集 ↗";
+  link.setAttribute("aria-label", "音符を編集（新しいタブで開きます）");
+  actions.appendChild(link);
+}
+
 function historyCard(job, index) {
   const jobIndex = () => job.id ? historyJobs.findIndex(item => item.id === job.id) : index;
   const card = document.createElement("article");
@@ -2651,6 +2663,7 @@ function historyCard(job, index) {
       actions.appendChild(share);
     }
     appendLyricEditAction(actions, job, copy, "history-edit-lyrics");
+    appendScoreEditAction(actions, job, "history-edit-score");
     copy.appendChild(actions);
     if (save) copy.appendChild(save.status);
   }
@@ -6052,6 +6065,7 @@ function showBuilderVideo(job) {
   const saveMenu = actions.querySelector(".save-menu");
   if (saveMenu) actions.prepend(saveMenu);
   appendLyricEditAction(actions, job, $("builder-share"), "result-edit-lyrics");
+  appendScoreEditAction(actions, job, "result-edit-score");
   bindShare(job.video_url);
   videoSharePreparation = prepareVideoShare(job.video_url, video);
   setBuilderState("done");

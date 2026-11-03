@@ -750,6 +750,7 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
         for head in (
             "function historyCard(", "function historyButton(",
             "function appendLyricEditAction(",
+            "function appendScoreEditAction(",
             "async function startHistoryPlayback(", "function disposeHistoryPlayback()",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
             "function isIOSPlatform(",
@@ -800,6 +801,7 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
         const nodesIn = node => [node, ...node.children.flatMap(nodesIn)];
         let activeHistoryPlayback = null, preparedHistorySave = null;
         const historyJobs = ['video', 'audio'].map(result_kind => ({
+          id: 'score_' + result_kind, export_urls: {midi: '/lyrics.mid'},
           status: 'done', song_label: '曲名', result_kind, playback_url: '/playback',
           video_url: '/download', editor_url: '/editor',
           thumbnail_url: '/thumbnail',
@@ -828,6 +830,17 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
             assert.ok(edit.className.includes('result-action action-edit'));
             edit.dispatchEvent(new Event('click'));
             assert.equal(editCalls.at(-1), job);
+            const score = actions.querySelector('.history-edit-score');
+            assert.equal(score.tagName, 'A');
+            assert.equal(score.href, '/score-editor?job=' + job.id);
+            assert.equal(score.target, '_blank');
+            assert.equal(score.rel, 'noopener noreferrer');
+            const legacy = new Element('div');
+            appendScoreEditAction(legacy, {id: job.id});
+            assert.equal(legacy.children.length, 0);
+            appendScoreEditAction(legacy,
+              {id: '../bad?api_key=secret', export_urls: job.export_urls});
+            assert.equal(legacy.children.length, 0);
             assert.equal(actions.querySelector('.history-save-retry'), undefined);
             if (IOS && job.result_kind === 'video') {
               const saveButton = nodesIn(actions).find(node => node.tagName === 'SUMMARY');
@@ -3865,6 +3878,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
             "async function poll(", "function setBuilderState(",
             "function showWordlistExhaustionNotice(", "function historyCard(",
             "function appendLyricEditAction(",
+            "function appendScoreEditAction(",
             "function appendSaveMenu(", "function prefersNativeVideoSave(",
             "function isIOSPlatform(",
         )

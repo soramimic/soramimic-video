@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { openDocument, openMidi, saveDocument, projectDocument, lyricMidi, lyricText,
-  secToTick, tickToSec, validateMoras, gridLines } from '../src/soramimic_video/static/score-editor-io.mjs';
+  secToTick, tickToSec, validateMoras, gridLines, soramimicSeed } from '../src/soramimic_video/static/score-editor-io.mjs';
+import { validateEditorData } from '../external/soramimic/frontend/src/editorData.js';
 
 const project = () => ({ version: 1, custom: { retained: 'source' },
   song: { midi_path: 'do-not-fetch.mid', audio_path: 'do-not-fetch.wav', ticks_per_beat: 480,
@@ -31,8 +32,11 @@ test('project roundtrip preserves source, unknown fields, note provenance and ca
   const exported = projectDocument(document, document.payload.moras);
   assert.deepEqual(exported.custom, source.custom);
   assert.equal(exported.notes[0].custom, 'note');
-  assert.equal(exported.notes[0].source, 'sheetsage_note');
-  assert.equal(exported.notes[0].pitch_confidence, .8);
+  assert.equal(exported.notes[0].source, 'manual_edit');
+  assert.equal(exported.notes[0].pitch_confidence, null);
+  assert.equal(exported.score_editor_edits[0].before.source, 'sheetsage_note');
+  assert.equal(exported.score_editor_edits[0].before.pitch_confidence, .8);
+  assert.equal(exported.score_editor_edits[0].after.midi_note, 61);
   assert.equal(exported.notes[0].start_tick, 499);
   assert.deepEqual(exported.lines[0].canonical_mora_ids, ['m0', 'm1']);
   assert.deepEqual(exported.parody.lines[0].words[0].note_ids, [0, 1]);
@@ -66,6 +70,8 @@ test('layered project updates synthesis timing/pitch while retaining original ob
   const result = projectDocument(document, document.payload.moras);
   assert.equal(result.lyric_layers.synthesis_plan[0].midi_pitch, 62);
   assert.equal(result.lyric_layers.synthesis_plan[0].start_sec, .51);
+  assert.deepEqual(result.lyric_layers.synthesis_plan[0].pitch_sources, ['manual_edit']);
+  assert.equal(result.lyric_layers.synthesis_plan[0].pitch_confidence, null);
   assert.deepEqual(result.lyric_layers.evidence, source.lyric_layers.evidence);
   assert.deepEqual(result.lyric_layers.canonical, source.lyric_layers.canonical);
   document.payload.moras[0].text = 'ア';
@@ -126,4 +132,22 @@ test('large songs export without spread argument limits', () => {
   const result = openMidi(lyricMidi(document, moras));
   assert.equal(result.payload.moras.length, 10000);
   assert.equal(result.payload.moras.at(-1).text, 'ア');
+});
+
+test('Soramimic accepts a setup JSON with edited readings and original surface, without fabricated results', () => {
+  const document = openDocument(project());
+  document.payload.moras[0].text = 'ア';
+  const seed = soramimicSeed(document, document.payload.moras);
+  assert.equal(validateEditorData(seed), null);
+  assert.deepEqual(seed.phrases, ['アラ', 'ミ']);
+  assert.deepEqual(seed.tokensList.map(row => row[0].pronunciation), seed.phrases);
+  assert.deepEqual(seed.originalLines, ['青い空', '実']);
+  assert.equal(seed.lyrics, '青い空\n実');
+  assert.equal(seed.setupFirst, true);
+  assert.deepEqual(seed.results, []);
+  assert.deepEqual(seed.unitsList, []);
+  assert.equal(seed.song, undefined);
+  assert.equal(seed.host, undefined);
+  assert.doesNotMatch(JSON.stringify(seed), /do-not-fetch|sheetsage/);
+  assert.throws(() => soramimicSeed(document, []), /歌詞がありません/);
 });
