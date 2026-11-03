@@ -184,14 +184,16 @@ def test_parallel_failure_preserves_originating_stage(tmp_path):
     assert error_diagnostics.failure_stage(failure, job.stage) == "video"
 
 
-def test_stage_annotation_does_not_replace_an_immutable_exception(tmp_path):
-    class ImmutableError(Exception):
+def test_stage_annotation_does_not_replace_an_exception_rejecting_metadata(tmp_path):
+    class NoMetadataError(Exception):
         def __setattr__(self, name, value):
-            raise AttributeError("immutable")
+            if name == "_soramimic_stage":
+                raise AttributeError("cannot attach stage")
+            super().__setattr__(name, value)
 
-    failure = ImmutableError("original failure")
+    failure = NoMetadataError("original failure")
     job = api.Job(id="abcdef12", dir=tmp_path, params={})
-    with pytest.raises(ImmutableError, match="original failure"):
+    with pytest.raises(NoMetadataError, match="original failure"):
         with api._stage(job, "analyze"):
             raise failure
 
