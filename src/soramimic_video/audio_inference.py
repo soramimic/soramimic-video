@@ -749,7 +749,9 @@ class InferenceScheduler:
                 with self._lock:
                     job.status = "cancelled"
             except Exception as exc:  # noqa: BLE001 - isolate each submitted job
-                logger.exception("共有%s推論が失敗しました", job.kind)
+                # The caller retains the error in its expiring job diagnostics.
+                # Do not duplicate input-derived exception text in the journal.
+                logger.error("共有%s推論が失敗しました (%s)", job.kind, type(exc).__name__)
                 with self._lock:
                     job.error = str(exc)
                     job.status = "error"
