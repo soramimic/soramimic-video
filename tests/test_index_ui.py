@@ -1217,6 +1217,41 @@ def test_lyric_adjustment_round_trips_with_saved_form():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_title_reading_and_its_help_belong_to_the_candidate_dialog():
+    node = r'''
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const vm = require('node:vm');
+      const {parseHTML} = require('linkedom');
+      const html = fs.readFileSync(process.argv[1], 'utf8');
+      const {document, window, Event} = parseHTML(html);
+      const dialog = document.getElementById('title-candidates-dialog');
+      const reading = document.getElementById('title-reading');
+      assert.equal(reading.closest('dialog'), dialog);
+      assert.equal(document.getElementById('advanced').contains(reading), false);
+      assert.equal(document.getElementById('title-candidates-search').closest('dialog'), dialog);
+      const context = vm.createContext({document, window, setTimeout, clearTimeout});
+      const info = html.slice(html.indexOf('const INFO_ANCHOR_TAGS'),
+        html.indexOf('// 秒数を「30秒」'));
+      vm.runInContext(info, context);
+      const help = document.getElementById('title-reading-hint');
+      const button = dialog.querySelector('[aria-controls="title-reading-hint"]');
+      assert.equal(help.hidden, true);
+      button.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30, width: 20});
+      dialog.setAttribute('open', '');
+      button.click();
+      assert.equal(help.hidden, false);
+      assert.equal(help.closest('dialog'), dialog, 'help must render in the modal top layer');
+      assert.equal(button.getAttribute('aria-expanded'), 'true');
+      dialog.removeAttribute('open');
+      dialog.dispatchEvent(new Event('close'));
+      assert.equal(help.hidden, true, 'closing the dialog also closes its help');
+      assert.equal(button.getAttribute('aria-expanded'), 'false');
+    '''
+    subprocess.run(["node", "-e", node, str(INDEX)], check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
     script = _script()
     block = script[script.index("function titleChoiceContext()"):
@@ -1232,7 +1267,7 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         setAttribute(name, value) {this[name] = value;},
         addEventListener(event, fn) {this.listeners[event] = fn;},
         focus() {document.activeElement = this;},
-        showModal() {this.open = true;},
+        showModal() {this.open = true; this.showCount = (this.showCount || 0) + 1;},
         close() {this.open = false; this.listeners.close?.();},
       });
       const document = {createElement: element, activeElement: null};
@@ -1255,6 +1290,12 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
       let titleCandidatesAbort = null, titleCandidatesSeq = 0, saved, previews = 0;
       const saveForm = () => {saved = titleChoice;};
       const schedulePreview = () => {refreshTitleChoices(); previews++;};
+      const operations = [];
+      globalThis.VideoOperations = {begin(options) {
+        const operation = {options, ended: false, end() {this.ended = true;}};
+        operations.push(operation);
+        return operation;
+      }};
       const setTimeout = () => 1, clearTimeout = () => {};
       let resolveFetch, sent, signal;
       const fetch = async (_url, options) => {
@@ -1268,6 +1309,7 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
           label: 'ハンゼン ＋ ホフ', reading: 'ハンゼン・ホフ',
           originals: ['ハンゼン氏', 'ホフ氏']};
         const load = () => $('title-candidates-load').listeners.click();
+        const search = () => $('title-candidates-search').listeners.click();
         const select = () => $('title-words').listeners.change();
         const dialog = $('title-candidates-dialog');
         const list = $('title-candidates-list');
@@ -1277,6 +1319,8 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.equal(list.children.length, 0);
         assert.match($('title-candidates-dialog-status').textContent, /探しています/);
         assert.equal($('title-candidates-load').disabled, true);
+        assert.equal($('title-candidates-search').disabled, true);
+        assert.deepEqual(operations.at(-1).options.allow, [$('title-reading')]);
         assert.deepEqual(sent, {title, wordlist: 'scientist', where: 'field=天文学'});
         resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
         await pending;
@@ -1392,6 +1436,7 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         titleChoice = {...choice, context: '{invalid'};
         assert.doesNotThrow(refreshTitleChoices, 'corrupt saved context cannot break the UI');
         assert.equal(titleChoice, null);
+        $('title-candidates-close').listeners.click();
         // A reading is sent for uploaded songs, samples and custom dictionaries.
         for (const source of [
           {sampleId: 'own', wordlistName: 'scientist', customList: null},
@@ -1399,32 +1444,53 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
           {sampleId: 'own', wordlistName: '', customList: {text: 'one'}},
         ]) {
           combo = source;
+          const originalSearch = load();
+          const originalResolve = resolveFetch;
+          const originalSignal = signal;
+          const showCount = dialog.showCount;
           $('title-reading').value = ' れもん ';
           $('title-reading').listeners.input();
-          const readingSearch = load();
+          assert.equal(originalSignal.aborted, true, 'reading edits cancel the initial search');
+          assert.equal(dialog.open, true, 'editing the reading must keep the dialog open');
+          assert.equal($('title-candidates-search').disabled, false);
+          const readingSearch = search();
+          assert.equal(dialog.showCount, showCount, 'searching again uses the open dialog');
           assert.equal(sent.title_reading, 'れもん');
           if (source.sampleId === 'momiji') assert.equal(sent.sample, 'momiji');
           else assert.equal(sent.title, songTitleOf());
           if (source.customList) assert.equal(sent.wordlist_text, 'one');
           resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
           await readingSearch;
+          originalResolve({ok: true, json: async () => ({candidates: []})});
+          await originalSearch;
+          assert.equal(titleCandidates.length, 1, 'an older search cannot clear the new results');
           list.children[0].listeners.click();
           assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+          const reopened = load();
+          resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+          await reopened;
           // Editing the reading clears the previous choice and its cached candidates.
           $('title-reading').value = 'もみじ';
           $('title-reading').listeners.input();
           assert.equal(titleChoice, null);
           assert.deepEqual(titleCandidates, []);
           assert.equal(saved, null);
-          const obsoleteReading = load();
+          assert.equal(dialog.open, true);
+          const obsoleteReading = search();
           $('title-reading').value = '';
           $('title-reading').listeners.input();
           assert.equal(signal.aborted, true);
           resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
           await obsoleteReading;
-          assert.equal(dialog.open, false);
+          assert.equal(dialog.open, true);
           assert.deepEqual(titleCandidates, []);
-          const automaticReading = load();
+          const enter = $('title-reading').listeners.keydown;
+          assert.equal(enter({key: 'Enter', isComposing: true}), undefined,
+            'IME composition must not start a search');
+          let prevented = false;
+          const automaticReading = enter({key: 'Enter', isComposing: false,
+            preventDefault() {prevented = true;}});
+          assert.equal(prevented, true);
           assert.equal('title_reading' in sent, false);
           resolveFetch({ok: true, json: async () => ({candidates: []})});
           await automaticReading;
