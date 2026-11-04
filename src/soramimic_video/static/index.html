@@ -4044,7 +4044,7 @@ async function submitJob(previewSec, previewMode) {
 // 決めることで、「別の曲のMIDI + 選んだ曲の曲名」のような食い違いを作らない。
 function songFileStem(file) {
   const name = (file && file.name) || "";
-  return name.replace(/\.xf\.(?:mid|midi)$/i, "").replace(/\.[^.]+$/, "");
+  return name.replace(/\.xf\.(?:mid|midi)$|\.[^.]+$/i, "");
 }
 
 function songTitleOf(file) {

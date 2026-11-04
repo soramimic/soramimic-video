@@ -677,14 +677,17 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
 
         // ファイルの置換・解除でも既定値だけを更新し、空欄を保つ。
         $("song-credit").value = "";
-        for (const name of ["次の曲.wav", "次の曲.XF.MID", "次の曲.xf.midi"]) {
+        for (const [name, expected] of [
+          ["次の曲.wav", "次の曲"], ["次の曲.XF.MID", "次の曲"],
+          ["次の曲.xf.midi", "次の曲"], ["次の曲.ver2.XF.MID", "次の曲.ver2"],
+        ]) {
           file = { name };
           updateSongTextPreviews();
-          assert.equal($("song-title").placeholder, "次の曲");
-          assert.equal($("song-credit").placeholder, "次の曲");
+          assert.equal($("song-title").placeholder, expected);
+          assert.equal($("song-credit").placeholder, expected);
           assert.equal($("song-title").value, "");
           assert.equal($("song-credit").value, "");
-          assert.equal(songTitleOf(file), "次の曲");
+          assert.equal(songTitleOf(file), expected);
         }
         file = null;
         updateSongTextPreviews();
