@@ -4132,7 +4132,12 @@ function fitSongCreditPreview() {
 // 背景には現在のビルダー画像を借りるが、文字は入力値から組み直すため、
 // 持ち込み曲の曲名を変えたときもジョブ生成を待たずに反映される。
 function updateSongTextPreviews() {
-  const title = songTitleOf(ownSongFile()) || "曲名";
+  const file = ownSongFile();
+  const defaultTitle = midiSampleId ? sampleTitleOf(midiSampleId) : songFileStem(file);
+  $("song-title").placeholder = defaultTitle || "空欄ならファイル名を使用";
+  const songTitle = songTitleOf(file);
+  $("song-credit").placeholder = songTitle || "空欄なら曲名を使用";
+  const title = songTitle || "曲名";
   const custom = activeCustomList();
   const group = selectedWordlistGroup();
   const defaultWordlistLabel = custom?.name || wordlistPhrases[currentWordlistName()] || group?.text
@@ -6248,6 +6253,47 @@ function currentWordlistWhere() {
   return data ? editorWhereOf(data) : $("where").value.trim();
 }
 
+let titleReadingContext = "", titleReadingAbort = null, titleReadingLoaded = false;
+
+// 空欄時の読みは候補検索と同じ解析で取得し、別の曲への遅い応答を捨てる。
+async function updateTitleReadingPlaceholder() {
+  const combo = currentCombo();
+  const title = songTitleOf(ownSongFile());
+  const sample = combo.sampleId && combo.sampleId !== OWN_SONG_VALUE ? combo.sampleId : "";
+  const payload = sample ? { sample } : { title };
+  const context = JSON.stringify(payload);
+  const input = $("title-reading");
+  if (titleReadingContext !== context) {
+    titleReadingAbort?.abort();
+    titleReadingAbort = null;
+    titleReadingLoaded = false;
+    titleReadingContext = context;
+    input.placeholder = "ひらがな・カタカナ";
+  }
+  if (titleReadingLoaded || titleReadingAbort || (!sample && !title)
+      || !$("title-candidates-dialog").open) return;
+  const ctrl = new AbortController();
+  titleReadingAbort = ctrl;
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  input.placeholder = "曲名から読みを取得中…";
+  try {
+    const res = await fetch("/api/title-reading", {
+      method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload), signal: ctrl.signal,
+    });
+    const body = await res.json();
+    if (ctrl !== titleReadingAbort || context !== titleReadingContext) return;
+    if (!res.ok) throw new Error("reading lookup failed");
+    input.placeholder = body.reading || "空欄なら曲名から自動で読みを決定";
+    titleReadingLoaded = true;
+  } catch {
+    if (ctrl === titleReadingAbort) input.placeholder = "空欄なら曲名から自動で読みを決定";
+  } finally {
+    clearTimeout(timer);
+    if (ctrl === titleReadingAbort) titleReadingAbort = null;
+  }
+}
+
 function selectedTitleWords() {
   return titleChoice?.context === titleChoiceContext() ? JSON.stringify(titleChoice.words) : "";
 }
@@ -6295,6 +6341,7 @@ function renderTitleCandidateList() {
 }
 
 function renderTitleChoices() {
+  updateTitleReadingPlaceholder();
   const select = $("title-words");
   const selected = selectedTitleWords();
   const choices = [...titleCandidates];
