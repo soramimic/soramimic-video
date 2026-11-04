@@ -1304,7 +1304,7 @@
     <div class="field">
       <label for="song-credit">クレジット表記</label>
       <textarea id="song-credit" rows="3" maxlength="2000"
-        placeholder="例: さくらさくら（日本古謡）&#10;空欄なら曲名を使用"></textarea>
+        placeholder="空欄なら曲名を使用。著作者名なども入力できます。"></textarea>
       <p class="hint" data-info>動画の左下と最後のクレジットに、入力した文章をそのまま表示します。空欄なら曲名を使います。著作者名や権利者から指定された表記もここに入力してください。</p>
     </div>
 
@@ -1324,7 +1324,7 @@
 
     <div class="field">
       <label for="thumbnail-wordlist-label">単語リスト名</label>
-      <input type="text" id="thumbnail-wordlist-label" maxlength="100" placeholder="選択した単語リスト名">
+      <input type="text" id="thumbnail-wordlist-label" maxlength="100" placeholder="空欄なら選択中の単語リスト名">
       <p class="hint" data-info>サムネイルの「○○で歌ってみた」に表示する名前です。空欄なら選択した単語リスト名を使います。</p>
     </div>
 
@@ -1379,7 +1379,7 @@
     <label for="title-reading">曲名の読み</label>
     <div class="row">
       <input type="text" id="title-reading" class="row-grow" maxlength="200"
-        placeholder="ひらがな・カタカナ" enterkeyhint="search" aria-describedby="title-reading-hint">
+        placeholder="ひらがな・カタカナ（空欄なら曲名から自動）" enterkeyhint="search" aria-describedby="title-reading-hint">
       <button type="button" id="title-candidates-search" class="btn-sm">候補を探す</button>
     </div>
     <p class="hint" id="title-reading-hint" data-info>タイトルの候補検索に使う読みです。空欄なら曲名から自動で読みを決めます。</p>
@@ -4079,15 +4079,17 @@ function fitSongCreditPreview() {
 function updateSongTextPreviews() {
   const file = ownSongFile();
   const defaultTitle = midiSampleId ? sampleTitleOf(midiSampleId) : songFileStem(file);
-  $("song-title").placeholder = defaultTitle || "空欄ならファイル名を使用";
+  $("song-title").placeholder = defaultTitle
+    ? `例: ${defaultTitle}（空欄ならファイル名を使用）` : "空欄ならファイル名を使用";
   const songTitle = songTitleOf(file);
-  $("song-credit").placeholder = songTitle || "空欄なら曲名を使用";
+  $("song-credit").placeholder = [songTitle ? `例: ${songTitle}` : "",
+    "空欄なら曲名を使用。著作者名なども入力できます。"].filter(Boolean).join("\n");
   const title = songTitle || "曲名";
   const custom = activeCustomList();
   const group = selectedWordlistGroup();
   const defaultWordlistLabel = custom?.name || wordlistPhrases[currentWordlistName()] || group?.text
     || (showsEditorWordlist() ? "自作リスト" : "単語リスト");
-  $("thumbnail-wordlist-label").placeholder = defaultWordlistLabel;
+  $("thumbnail-wordlist-label").placeholder = `例: ${defaultWordlistLabel}（空欄なら選択中の単語リスト名）`;
   const wordlistLabel = $("thumbnail-wordlist-label").value.trim() || defaultWordlistLabel;
   const credit = $("song-credit").value.trim() || title;
   const baseCredit = currentWordlistName().toLowerCase() === "vtuber"
@@ -6213,7 +6215,7 @@ async function updateTitleReadingPlaceholder() {
     titleReadingAbort = null;
     titleReadingLoaded = false;
     titleReadingContext = context;
-    input.placeholder = "ひらがな・カタカナ";
+    input.placeholder = "ひらがな・カタカナ（空欄なら曲名から自動）";
   }
   if (titleReadingLoaded || titleReadingAbort || (!sample && !title)
       || !$("title-candidates-dialog").open) return;
@@ -6229,7 +6231,8 @@ async function updateTitleReadingPlaceholder() {
     const body = await res.json();
     if (ctrl !== titleReadingAbort || context !== titleReadingContext) return;
     if (!res.ok) throw new Error("reading lookup failed");
-    input.placeholder = body.reading || "空欄なら曲名から自動で読みを決定";
+    input.placeholder = body.reading
+      ? `例: ${body.reading}（空欄なら曲名から自動）` : "空欄なら曲名から自動で読みを決定";
     titleReadingLoaded = true;
   } catch {
     if (ctrl === titleReadingAbort) input.placeholder = "空欄なら曲名から自動で読みを決定";
