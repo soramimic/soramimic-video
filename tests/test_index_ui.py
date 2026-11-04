@@ -610,8 +610,9 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
     ) + functions + textwrap.dedent(
         """
         updateSongTextPreviews();
-        assert.equal($("song-title").placeholder, "upload");
-        assert.equal($("song-credit").placeholder, "夜に駆ける");
+        assert.equal($("song-title").placeholder, "例: upload（空欄ならファイル名を使用）");
+        assert.equal($("song-credit").placeholder,
+          "例: 夜に駆ける\\n空欄なら曲名を使用。著作者名なども入力できます。");
         assert.equal($("song-title").value, "夜に駆ける");
         assert.equal($("song-credit").value, "オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-caption").textContent,
@@ -663,7 +664,8 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         $("song-credit").value = " \\t\\n　";
         $("song-title").value = "三原色";
         updateSongTextPreviews();
-        assert.equal($("song-credit").placeholder, "三原色");
+        assert.equal($("song-credit").placeholder,
+          "例: 三原色\\n空欄なら曲名を使用。著作者名なども入力できます。");
         assert.equal($("song-preview-credits-original").textContent,
           "Original　三原色");
         assert.equal($("song-preview-footer").textContent,
@@ -683,8 +685,9 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         ]) {
           file = { name };
           updateSongTextPreviews();
-          assert.equal($("song-title").placeholder, expected);
-          assert.equal($("song-credit").placeholder, expected);
+          assert.equal($("song-title").placeholder, `例: ${expected}（空欄ならファイル名を使用）`);
+          assert.equal($("song-credit").placeholder,
+            `例: ${expected}\\n空欄なら曲名を使用。著作者名なども入力できます。`);
           assert.equal($("song-title").value, "");
           assert.equal($("song-credit").value, "");
           assert.equal(songTitleOf(file), expected);
@@ -692,11 +695,13 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         file = null;
         updateSongTextPreviews();
         assert.equal($("song-title").placeholder, "空欄ならファイル名を使用");
-        assert.equal($("song-credit").placeholder, "空欄なら曲名を使用");
+        assert.equal($("song-credit").placeholder,
+          "空欄なら曲名を使用。著作者名なども入力できます。");
         midiSampleId = "sample";
         updateSongTextPreviews();
-        assert.equal($("song-title").placeholder, "サンプル曲");
-        assert.equal($("song-credit").placeholder, "サンプル曲");
+        assert.equal($("song-title").placeholder, "例: サンプル曲（空欄ならファイル名を使用）");
+        assert.equal($("song-credit").placeholder,
+          "例: サンプル曲\\n空欄なら曲名を使用。著作者名なども入力できます。");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
@@ -1309,7 +1314,7 @@ def test_title_reading_placeholder_tracks_source_without_overwriting_input():
         assert.equal(requests.length, 1, 'reuse an in-flight request');
         requests[0].resolve({ok: true, json: async () => ({reading: 'サンゲンショク'})});
         await first;
-        assert.equal(input.placeholder, 'サンゲンショク');
+        assert.equal(input.placeholder, '例: サンゲンショク（空欄なら曲名から自動）');
         assert.equal(input.value, '');
         input.value = 'さんげんしょく';
         await updateTitleReadingPlaceholder();
@@ -1325,14 +1330,14 @@ def test_title_reading_placeholder_tracks_source_without_overwriting_input():
         await current;
         oldRequest.resolve({ok: true, json: async () => ({reading: 'フルイヨミ'})});
         await stale;
-        assert.equal(input.placeholder, 'アタラシイキョク');
+        assert.equal(input.placeholder, '例: アタラシイキョク（空欄なら曲名から自動）');
         assert.equal(input.value, 'さんげんしょく', 'never overwrite manual readings');
         combo = {sampleId: 'momiji'};
         const sample = updateTitleReadingPlaceholder();
         assert.deepEqual(requests.at(-1).payload, {sample: 'momiji'});
         requests.at(-1).resolve({ok: true, json: async () => ({reading: 'モミジ'})});
         await sample;
-        assert.equal(input.placeholder, 'モミジ');
+        assert.equal(input.placeholder, '例: モミジ（空欄なら曲名から自動）');
         combo = {sampleId: 'own'}; title = '失敗する曲';
         const failed = updateTitleReadingPlaceholder();
         requests.at(-1).resolve({ok: false, json: async () => ({detail: 'busy'})});
@@ -1340,7 +1345,8 @@ def test_title_reading_placeholder_tracks_source_without_overwriting_input():
         assert.equal(input.placeholder, '空欄なら曲名から自動で読みを決定');
         title = '';
         await updateTitleReadingPlaceholder();
-        assert.equal(input.placeholder, 'ひらがな・カタカナ', 'clearing removes the old default');
+        assert.equal(input.placeholder, 'ひらがな・カタカナ（空欄なら曲名から自動）',
+          'clearing removes the old default');
       })().catch(error => {console.error(error); process.exitCode = 1;});
     '''
     subprocess.run(["node", "-e", node], check=True, capture_output=True, text=True)
