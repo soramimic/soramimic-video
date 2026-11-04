@@ -116,13 +116,51 @@ def test_candidates_endpoint_uses_sample_reading_and_private_response(client, mo
 def test_custom_candidates_normalize_the_same_ids_as_submission(client, monkeypatch):
     seen = []
     monkeypatch.setattr(title_choices, "find_title_choices", lambda title, path, where, **kw:
-                        seen.append((path, kw["csv_text"])) or [])
+                        seen.append((title, path, kw["csv_text"])) or [])
     res = client.post("/api/title-candidates", json={
-        "title": "サンゲンショク", "wordlist_text": "ハンゼン,ハンゼン\nホフ,ホフ",
+        "title": "三原色", "title_reading": "さんげんしょく",
+        "wordlist_text": "ハンゼン,ハンゼン\nホフ,ホフ",
     })
     assert res.status_code == 200
-    assert seen == [(None, "id,original,surface,pronunciation\n"
+    assert seen == [("サンゲンショク", None, "id,original,surface,pronunciation\n"
                     "1,ハンゼン,ハンゼン,ハンゼン\n2,ホフ,ホフ,ホフ")]
+
+
+@pytest.mark.parametrize("source", [{"title": "紅葉"}, {"sample": "momiji"}])
+@pytest.mark.parametrize("reading,expected", [
+    (" こうよう ", "コウヨウ"), ("コーヨー", "コーヨー"), ("ｺｳﾖｳ", "コウヨウ"),
+    ("  ", None),
+])
+def test_candidates_prefer_optional_reading(client, monkeypatch, source, reading, expected):
+    monkeypatch.setattr(api, "sample_entry", lambda _id: {"title": "紅葉", "title_kana": "モミジ"})
+    seen = []
+    monkeypatch.setattr(title_choices, "find_title_choices", lambda title, *a, **kw:
+                        seen.append(title) or [])
+    response = client.post("/api/title-candidates", json={
+        **source, "wordlist": "test", "title_reading": reading,
+    })
+    assert response.status_code == 200
+    assert seen == [expected or ("モミジ" if "sample" in source else "紅葉")]
+
+
+@pytest.mark.parametrize("reading", ["ア" * 201, 123, None, ["レモン"]])
+def test_candidates_reject_invalid_reading_before_search(client, monkeypatch, reading):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid reading must not start candidate search")
+
+    monkeypatch.setattr(title_choices, "find_title_choices", forbidden)
+    response = client.post("/api/title-candidates", json={
+        "title": "曲", "wordlist": "test", "title_reading": reading,
+    })
+    assert response.status_code == 400
+
+
+def test_candidates_search_the_specified_reading(client):
+    response = client.post("/api/title-candidates", json={
+        "title": "別の曲名", "wordlist": "test", "title_reading": "さんげんしょく",
+    })
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["words"] == WORDS
 
 
 def test_candidates_reject_paths_and_require_auth(client, monkeypatch):

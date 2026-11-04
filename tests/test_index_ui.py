@@ -1190,16 +1190,19 @@ def test_lyric_adjustment_round_trips_with_saved_form():
         for (const enabled of [true, false]) {
           $('adjust-lyrics').checked = enabled;
           $('lyrics').value = 'あいうえお';
+          $('title-reading').value = 'れもん';
           midiSampleId = sampleLyricsId = 'furusato';
           sampleLyricsBaseline = '元のサンプル歌詞';
           saveForm();
           $('adjust-lyrics').checked = !enabled;
           $('lyrics').value = '';
+          $('title-reading').value = '';
           midiSampleId = sampleLyricsId = '';
           sampleLyricsBaseline = null;
           await doRestoreForm();
           assert.equal($('adjust-lyrics').checked, enabled);
           assert.equal($('lyrics').value, 'あいうえお');
+          assert.equal($('title-reading').value, 'れもん');
           assert.equal(restoredSampleId, 'furusato');
           assert.equal(sampleLyricsId, 'furusato');
           assert.equal(sampleLyricsBaseline, '元のサンプル歌詞');
@@ -1207,6 +1210,7 @@ def test_lyric_adjustment_round_trips_with_saved_form():
         values.set(FORM_KEY, '{}');
         await doRestoreForm();
         assert.equal($('adjust-lyrics').checked, false, 'legacy saves retain the default');
+        assert.equal($('title-reading').value, '', 'legacy saves use automatic reading');
       })().catch(error => {console.error(error); process.exit(1);});
     '''.replace("__FUNCTIONS__", functions)
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
@@ -1250,7 +1254,7 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
       let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
       let titleCandidatesAbort = null, titleCandidatesSeq = 0, saved, previews = 0;
       const saveForm = () => {saved = titleChoice;};
-      const schedulePreview = () => {previews++;};
+      const schedulePreview = () => {refreshTitleChoices(); previews++;};
       const setTimeout = () => 1, clearTimeout = () => {};
       let resolveFetch, sent, signal;
       const fetch = async (_url, options) => {
@@ -1388,6 +1392,44 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         titleChoice = {...choice, context: '{invalid'};
         assert.doesNotThrow(refreshTitleChoices, 'corrupt saved context cannot break the UI');
         assert.equal(titleChoice, null);
+        // A reading is sent for uploaded songs, samples and custom dictionaries.
+        for (const source of [
+          {sampleId: 'own', wordlistName: 'scientist', customList: null},
+          {sampleId: 'momiji', wordlistName: 'scientist', customList: null},
+          {sampleId: 'own', wordlistName: '', customList: {text: 'one'}},
+        ]) {
+          combo = source;
+          $('title-reading').value = ' れもん ';
+          $('title-reading').listeners.input();
+          const readingSearch = load();
+          assert.equal(sent.title_reading, 'れもん');
+          if (source.sampleId === 'momiji') assert.equal(sent.sample, 'momiji');
+          else assert.equal(sent.title, songTitleOf());
+          if (source.customList) assert.equal(sent.wordlist_text, 'one');
+          resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+          await readingSearch;
+          list.children[0].listeners.click();
+          assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+          // Editing the reading clears the previous choice and its cached candidates.
+          $('title-reading').value = 'もみじ';
+          $('title-reading').listeners.input();
+          assert.equal(titleChoice, null);
+          assert.deepEqual(titleCandidates, []);
+          assert.equal(saved, null);
+          const obsoleteReading = load();
+          $('title-reading').value = '';
+          $('title-reading').listeners.input();
+          assert.equal(signal.aborted, true);
+          resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+          await obsoleteReading;
+          assert.equal(dialog.open, false);
+          assert.deepEqual(titleCandidates, []);
+          const automaticReading = load();
+          assert.equal('title_reading' in sent, false);
+          resolveFetch({ok: true, json: async () => ({candidates: []})});
+          await automaticReading;
+          $('title-candidates-close').listeners.click();
+        }
       })().catch(error => {console.error(error); process.exitCode = 1;});
     '''
     subprocess.run(["node", "-e", harness], check=True, capture_output=True, text=True)

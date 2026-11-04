@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlsplit
 
+import jaconv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -3877,18 +3878,23 @@ def create_app(
         if not _allow_expensive_get(request, preview_session_limiter):
             raise HTTPException(status_code=429, detail="少し待ってから候補を探してください")
         payload = await _title_request_json(
-            request, {"sample", "title", "wordlist", "where", "wordlist_text"},
+            request, {"sample", "title", "title_reading", "wordlist", "where", "wordlist_text"},
         )
         sample = payload.get("sample", "").strip()
         title = payload.get("title", "").strip()
+        reading = payload.get("title_reading", "").strip()
         where = payload.get("where", "").strip()
         if len(sample) > 200 or len(title) > 200 or len(where) > 8000:
             raise HTTPException(status_code=400, detail="曲名または絞り込み条件が長すぎます")
+        if len(reading) > 200:
+            raise HTTPException(status_code=400, detail="曲名の読みは200文字以内で入力してください")
         if sample:
             title, kana = _sample_title(sample)
             title = kana or title
         if not title:
             raise HTTPException(status_code=400, detail="曲名が必要です")
+        if reading:
+            title = jaconv.hira2kata(jaconv.h2z(reading, ascii=False, digit=False))
         csv_path, csv_text = None, ""
         if "wordlist_text" in payload:
             if is_simple_ui():
