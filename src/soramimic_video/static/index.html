@@ -6346,7 +6346,7 @@ $("title-words").addEventListener("change", () => {
 $("title-reading").addEventListener("input", () => {
   refreshTitleChoices({ keepDialogOpen: true });
   $("title-candidates-list").replaceChildren();
-  setTitleCandidatesStatus("読みを指定して「候補を探す」を押してください。");
+  setTitleCandidatesStatus("");
   schedulePreview(true);
   saveForm();
 });
