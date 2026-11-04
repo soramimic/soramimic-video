@@ -3846,6 +3846,26 @@ def create_app(
             raise HTTPException(status_code=400, detail="プレビューの入力形式が不正です")
         return payload
 
+    @app.post("/api/title-reading", dependencies=[Depends(_require_api_key)])
+    async def title_reading(request: Request) -> Response:
+        from .soramimic_engine import run_tokenize
+
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(status_code=429, detail="少し待ってからお試しください")
+        payload = await _title_request_json(request, {"sample", "title"})
+        sample = payload.get("sample", "").strip()
+        title = payload.get("title", "").strip()
+        if len(sample) > 200 or len(title) > 200:
+            raise HTTPException(status_code=400, detail="曲名が長すぎます")
+        if sample:
+            title, kana = _sample_title(sample)
+            title = kana or title
+        if not title:
+            raise HTTPException(status_code=400, detail="曲名が必要です")
+        lines = await run_in_threadpool(run_tokenize, [title])
+        reading = "".join(unit["pronunciation"] for line in lines for unit in line)
+        return JSONResponse({"reading": reading}, headers={"Cache-Control": "private, no-store"})
+
     @app.post("/api/title-candidates", dependencies=[Depends(_require_api_key)])
     async def title_candidates(request: Request) -> Response:
         from .title_choices import find_title_choices
