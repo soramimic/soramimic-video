@@ -1308,6 +1308,10 @@
     </div>
 
     <div class="field" id="title-words-field">
+      <label for="title-reading">曲名の読み（候補検索用）</label>
+      <input type="text" id="title-reading" maxlength="200" placeholder="例: レモン（空欄なら自動）"
+        aria-describedby="title-reading-hint">
+      <p class="hint" id="title-reading-hint">ひらがな・カタカナで指定できます。空欄なら曲名から自動で読みを決めます。</p>
       <label for="title-words">タイトルに使う単語</label>
       <div class="row">
         <select id="title-words" class="row-grow" aria-describedby="title-words-hint title-words-detail">
@@ -6167,8 +6171,11 @@ function titleChoiceContext() {
       if (previous[0] === OWN_SONG_VALUE && typeof previous[1] === "string") title = previous[1];
     } catch { /* 不正な保存値は通常の条件比較で解除する。 */ }
   }
-  return JSON.stringify([ownTitle ? OWN_SONG_VALUE : c.sampleId,
-    title, c.wordlistName, currentWordlistWhere(), c.customList?.text || ""]);
+  const context = [ownTitle ? OWN_SONG_VALUE : c.sampleId,
+    title, c.wordlistName, currentWordlistWhere(), c.customList?.text || ""];
+  const reading = $("title-reading").value.trim();
+  if (reading) context.push(reading);
+  return JSON.stringify(context);
 }
 
 function currentWordlistWhere() {
@@ -6267,6 +6274,8 @@ $("title-candidates-load").addEventListener("click", async () => {
   const combo = currentCombo();
   const payload = combo.sampleId === OWN_SONG_VALUE
     ? { title: songTitleOf(ownSongFile()) } : { sample: combo.sampleId };
+  const reading = $("title-reading").value.trim();
+  if (reading) payload.title_reading = reading;
   if (combo.customList) payload.wordlist_text = combo.customList.text;
   else Object.assign(payload, { wordlist: combo.wordlistName, where: currentWordlistWhere() });
   const seq = ++titleCandidatesSeq;
@@ -6313,6 +6322,11 @@ $("title-candidates-load").addEventListener("click", async () => {
 
 $("title-words").addEventListener("change", () => {
   chooseTitleWords($("title-words").value);
+});
+
+$("title-reading").addEventListener("input", () => {
+  schedulePreview(true);
+  saveForm();
 });
 
 $("title-candidates-close").addEventListener("click", () => $("title-candidates-dialog").close());
@@ -9537,6 +9551,7 @@ function saveForm() {
       autoLyrics: $("auto-lyrics").checked,
       adjustLyrics: $("adjust-lyrics").checked,
       songTitle: $("song-title").value,
+      titleReading: $("title-reading").value,
       sampleId: midiSampleId,
       // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
       sampleLyricsId,
@@ -9753,6 +9768,7 @@ async function doRestoreForm() {
     if (typeof state.autoLyrics === "boolean") $("auto-lyrics").checked = state.autoLyrics;
     if (typeof state.adjustLyrics === "boolean") $("adjust-lyrics").checked = state.adjustLyrics;
     $("song-title").value = state.songTitle || "";
+    $("title-reading").value = typeof state.titleReading === "string" ? state.titleReading : "";
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
       ? state.sampleLyricsBaseline : null;

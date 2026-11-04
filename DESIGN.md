@@ -202,6 +202,10 @@ Web UIは同じページ内の再試行に対応し、ページの再読み込�
 
 `POST /api/title-candidates` はJSONで `title` または `sample`、`wordlist` と任意の
 `where` を受け取り、バランス設定で比較したタイトル候補を `candidates` に返します。
+任意の `title_reading`（200文字以内）を指定すると、曲名やサンプルの登録済みの読みより
+優先して候補検索に使います。ひらがなと半角カタカナは全角カタカナに変換します。
+省略・空欄なら従来どおり曲名やサンプルの登録済みの読みを使います。
+検索用の読みは曲名の表示には影響しません。
 自作リストには `wordlist` の代わりに `wordlist_text` を指定します。
 各候補は `words`（`id` と `surface` の配列）、表示用の `label`、`reading`、`originals` を持ちます。
 選んだ `words` をJSON文字列にした `title_words` を、サムネイルプレビューと動画生成の
