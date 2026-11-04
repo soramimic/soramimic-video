@@ -586,7 +586,8 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         };
         const $ = element;
         const fitSongCreditPreview = () => {};
-        const ownSongFile = () => ({ name: "upload.mid" });
+        let file = { name: "upload.mid" };
+        const ownSongFile = () => file;
         let midiSampleId = "";
         const sampleTitleOf = () => "サンプル曲";
         const sampleCredits = {};
@@ -609,6 +610,10 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
     ) + functions + textwrap.dedent(
         """
         updateSongTextPreviews();
+        assert.equal($("song-title").placeholder, "upload");
+        assert.equal($("song-credit").placeholder, "夜に駆ける");
+        assert.equal($("song-title").value, "夜に駆ける");
+        assert.equal($("song-credit").value, "オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
@@ -658,6 +663,7 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         $("song-credit").value = " \\t\\n　";
         $("song-title").value = "三原色";
         updateSongTextPreviews();
+        assert.equal($("song-credit").placeholder, "三原色");
         assert.equal($("song-preview-credits-original").textContent,
           "Original　三原色");
         assert.equal($("song-preview-footer").textContent,
@@ -668,6 +674,29 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
           "Original　upload");
         assert.equal($("song-preview-footer").textContent,
           "lyrics & video by Soramimic / Original: upload");
+
+        // ファイルの置換・解除でも既定値だけを更新し、空欄を保つ。
+        $("song-credit").value = "";
+        for (const [name, expected] of [
+          ["次の曲.wav", "次の曲"], ["次の曲.XF.MID", "次の曲"],
+          ["次の曲.xf.midi", "次の曲"], ["次の曲.ver2.XF.MID", "次の曲.ver2"],
+        ]) {
+          file = { name };
+          updateSongTextPreviews();
+          assert.equal($("song-title").placeholder, expected);
+          assert.equal($("song-credit").placeholder, expected);
+          assert.equal($("song-title").value, "");
+          assert.equal($("song-credit").value, "");
+          assert.equal(songTitleOf(file), expected);
+        }
+        file = null;
+        updateSongTextPreviews();
+        assert.equal($("song-title").placeholder, "空欄ならファイル名を使用");
+        assert.equal($("song-credit").placeholder, "空欄なら曲名を使用");
+        midiSampleId = "sample";
+        updateSongTextPreviews();
+        assert.equal($("song-title").placeholder, "サンプル曲");
+        assert.equal($("song-credit").placeholder, "サンプル曲");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
@@ -1252,6 +1281,72 @@ def test_title_reading_and_its_help_belong_to_the_candidate_dialog():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_title_reading_placeholder_tracks_source_without_overwriting_input():
+    script = _script()
+    block = script[script.index('let titleReadingContext = ""'):
+                   script.index("function selectedTitleWords()")]
+    node = r'''
+      const assert = require('node:assert/strict');
+      const input = {value: '', placeholder: ''}, dialog = {open: false};
+      const $ = id => id === 'title-reading' ? input : dialog;
+      const OWN_SONG_VALUE = 'own';
+      let combo = {sampleId: 'own'}, title = '三原色';
+      const currentCombo = () => combo, ownSongFile = () => null, songTitleOf = () => title;
+      const headers = () => ({}), setTimeout = () => 1, clearTimeout = () => {};
+      const requests = [];
+      const fetch = (url, options) => new Promise(resolve => {
+        requests.push({url, payload: JSON.parse(options.body), signal: options.signal, resolve});
+      });
+    ''' + block + r'''
+      (async () => {
+        await updateTitleReadingPlaceholder();
+        assert.equal(requests.length, 0, 'closed dialogs do not request readings');
+        dialog.open = true;
+        const first = updateTitleReadingPlaceholder();
+        assert.deepEqual(requests[0].payload, {title: '三原色'});
+        assert.match(input.placeholder, /取得中/);
+        await updateTitleReadingPlaceholder();
+        assert.equal(requests.length, 1, 'reuse an in-flight request');
+        requests[0].resolve({ok: true, json: async () => ({reading: 'サンゲンショク'})});
+        await first;
+        assert.equal(input.placeholder, 'サンゲンショク');
+        assert.equal(input.value, '');
+        input.value = 'さんげんしょく';
+        await updateTitleReadingPlaceholder();
+        assert.equal(requests.length, 1, 'manual readings do not change the default');
+        title = '別の曲';
+        const stale = updateTitleReadingPlaceholder();
+        const oldRequest = requests.at(-1);
+        title = '新しい曲';
+        const current = updateTitleReadingPlaceholder();
+        assert.equal(oldRequest.signal.aborted, true);
+        const newRequest = requests.at(-1);
+        newRequest.resolve({ok: true, json: async () => ({reading: 'アタラシイキョク'})});
+        await current;
+        oldRequest.resolve({ok: true, json: async () => ({reading: 'フルイヨミ'})});
+        await stale;
+        assert.equal(input.placeholder, 'アタラシイキョク');
+        assert.equal(input.value, 'さんげんしょく', 'never overwrite manual readings');
+        combo = {sampleId: 'momiji'};
+        const sample = updateTitleReadingPlaceholder();
+        assert.deepEqual(requests.at(-1).payload, {sample: 'momiji'});
+        requests.at(-1).resolve({ok: true, json: async () => ({reading: 'モミジ'})});
+        await sample;
+        assert.equal(input.placeholder, 'モミジ');
+        combo = {sampleId: 'own'}; title = '失敗する曲';
+        const failed = updateTitleReadingPlaceholder();
+        requests.at(-1).resolve({ok: false, json: async () => ({detail: 'busy'})});
+        await failed;
+        assert.equal(input.placeholder, '空欄なら曲名から自動で読みを決定');
+        title = '';
+        await updateTitleReadingPlaceholder();
+        assert.equal(input.placeholder, 'ひらがな・カタカナ', 'clearing removes the old default');
+      })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''
+    subprocess.run(["node", "-e", node], check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
     script = _script()
     block = script[script.index("function titleChoiceContext()"):
@@ -1299,6 +1394,9 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
       const setTimeout = () => 1, clearTimeout = () => {};
       let resolveFetch, sent, signal;
       const fetch = async (_url, options) => {
+        if (_url === '/api/title-reading') {
+          return {ok: true, json: async () => ({reading: 'ジドウノヨミ'})};
+        }
         sent = JSON.parse(options.body);
         signal = options.signal;
         return await new Promise(resolve => {resolveFetch = resolve;});
