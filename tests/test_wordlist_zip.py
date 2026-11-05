@@ -38,7 +38,7 @@ class Cp932Info(zipfile.ZipInfo):
     """Windowsの「圧縮フォルダー」と同じ書き方(UTF-8フラグ無しのcp932名)をするZipInfo。"""
 
     def _encodeFilenameFlags(self):  # type: ignore[override]
-        return self.filename.encode("cp932"), self.flag_bits
+        return self.filename.encode("cp932"), self.flag_bits & ~0x800
 
 
 def png_bytes(color: str = "red", size: tuple[int, int] = (8, 6)) -> bytes:
