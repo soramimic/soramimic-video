@@ -36,7 +36,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from .wordlist_reading import wordlist_reading
+from .wordlist_reading import wordlist_pronunciation, wordlist_reading
 
 # 上限。stations.csv のような同梱リストも自作リストとして読み直せるよう、
 # ファイルサイズには余裕を持たせる。実際の処理量は、変換前処理
@@ -205,7 +205,10 @@ def _check_reading(pronunciation: str, surface: str, line_no: int, bad: list[str
     if pronunciation.lower() == "na":
         pronunciation = ""
     try:
-        wordlist_reading(pronunciation or surface)
+        if pronunciation:
+            wordlist_pronunciation(pronunciation)
+        else:
+            wordlist_reading(surface)
     except ValueError as exc:
         source = "指定した読み" if pronunciation else "表記から自動推定した読み"
         bad.append(f"{line_no}行目「{surface}」の{source}: {exc}")
