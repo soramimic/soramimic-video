@@ -230,6 +230,7 @@ journaldへ出力しません。
 |---|---:|---|
 | `SORAMIMIC_MAX_AUDIO_UPLOAD_BYTES` | 200MB | 音声1ファイルの最大容量 |
 | `SORAMIMIC_MAX_SONG_SECONDS` | 420秒 | MIDI/音声共通の曲長上限 |
+| `SORAMIMIC_AUDIO_SEARCH_TIMEOUT_SECONDS` | 120秒 | 歌詞と音符の対応付け探索1回の制限時間。モデル推論は含めず、正の有限値を指定する |
 | `SORAMIMIC_JOB_TTL_HOURS` | 0（自動削除なし） | 完了後に動画・サムネイル・出典情報を自動削除するまでの時間（入力・中間物は処理終了時に削除） |
 | `SORAMIMIC_REQUIRE_PUBLIC` | 0 | `1`なら`SORAMIMIC_PUBLIC=1`が無い状態での起動を拒否（公開サービスの設定漏れ防止） |
 | `SORAMIMIC_SHEETSAGE_MODEL_DIR` | 未設定 | 音源解析に必要なローカルSheetSage2モデル |
