@@ -2418,6 +2418,8 @@ class JobManager:
             if job.status not in ("queued", "running", "awaiting_review"):
                 return job
             job.cancel_event.set()
+            logger.info("[job %s] 中断要求を受け付けました", job.id,
+                        extra={"diagnostic_safe": True})
             if job.status == "running":
                 # 実行中のNEUTRINO/ffmpeg等をプロセスグループごと止める。
                 # ワーカーは1本なので、実行中プロセス=このジョブのもの

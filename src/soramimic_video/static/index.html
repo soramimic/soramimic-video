@@ -6881,13 +6881,16 @@ async function cancelJob() {
   const id = currentJob;
   if ((!id && !submitAbort && !retry) || (id && cancelPendingJob === id)) return;
   if (!cancelJob.operation) {
+    cancelJob.acceptedJob = null;
     const operation = globalThis.VideoOperations?.begin();
     cancelJob.operation = operation;
     if (operation) cancelJob.timer = setTimeout(() => {
       if (cancelJob.operation !== operation) return;
       cancelPendingJob = null;
       setCancelPending(false);
-      showBuilderMsg("中断の完了をまだ確認できません。通信状態を確認して、もう一度中断してください。");
+      showBuilderMsg(id && cancelJob.acceptedJob === id
+        ? "中断要求は受け付けました。処理の終了を待っています。"
+        : "中断の完了をまだ確認できません。通信状態を確認して、もう一度中断してください。");
     }, 30000);
   }
   if (retry) { await reconcileSubmissionCancellation(submission); return; }
@@ -6910,7 +6913,10 @@ async function cancelJob() {
     if (!res.ok) throw new Error(String(res.status));
     // 応答までに数秒かかっても表示はpendingのまま保つ。応答後は次の定期
     // pollを待たず、完了状態をすぐ取りに行く。
-    if (currentJob === id) restartPolling(id);
+    if (currentJob === id) {
+      cancelJob.acceptedJob = id;
+      restartPolling(id);
+    }
   } catch (e) {
     if (currentJob !== id) return;
     cancelPendingJob = null;

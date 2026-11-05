@@ -413,5 +413,6 @@ setCancelPending(false);assert.equal(active.size,0);
 cancelPendingJob=null;await cancelJob();assert.equal(active.size,1);
 timers[0]();assert.equal(active.size,1,'old timeout must not release a new cancellation');
 timers.at(-1)();assert.equal(active.size,0);assert.equal(cancelPendingJob,null);
-assert.match(message,/まだ確認できません/);assert.equal($('builder-cancel').disabled,false);
+assert.match(message,/受け付け/);assert.doesNotMatch(message,/通信状態/);
+assert.equal($('builder-cancel').disabled,false);
 """)
