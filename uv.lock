@@ -2646,7 +2646,7 @@ wheels = [
 [[package]]
 name = "soramimic"
 version = "0.2.0"
-source = { git = "https://github.com/soramimic/soramimic-python?rev=ddc8537f9b8fd7f85b394378ad9a84af787c3187#ddc8537f9b8fd7f85b394378ad9a84af787c3187" }
+source = { git = "https://github.com/soramimic/soramimic-python?rev=7a09583fbdf802f39bb2d07486c47c864301f301#7a09583fbdf802f39bb2d07486c47c864301f301" }
 
 [package.optional-dependencies]
 mecab = [
@@ -2749,10 +2749,10 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.9" },
     { name = "requests", specifier = ">=2.31" },
     { name = "scipy", marker = "extra == 'audio'", specifier = ">=1.13" },
-    { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=ddc8537f9b8fd7f85b394378ad9a84af787c3187" },
+    { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=7a09583fbdf802f39bb2d07486c47c864301f301" },
     { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=dd6dd4280443787bb819b22101d79b719191f263" },
-    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=5ee067dd59ebd47cd26e5868bed9d26568e0228c" },
-    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=5ee067dd59ebd47cd26e5868bed9d26568e0228c" },
+    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=6a7604fe0673278c5cb189795085e253f5245833" },
+    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=6a7604fe0673278c5cb189795085e253f5245833" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.12" },
     { name = "torch", marker = "extra == 'audio'", specifier = "==2.8.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = "==2.8.0" },
@@ -2780,7 +2780,7 @@ dev = [
 [[package]]
 name = "soramimic-yomi"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-yomi?rev=5ee067dd59ebd47cd26e5868bed9d26568e0228c#5ee067dd59ebd47cd26e5868bed9d26568e0228c" }
+source = { git = "https://github.com/soramimic/soramimic-yomi?rev=6a7604fe0673278c5cb189795085e253f5245833#6a7604fe0673278c5cb189795085e253f5245833" }
 dependencies = [
     { name = "arpakana" },
     { name = "e2k" },

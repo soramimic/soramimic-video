@@ -1186,3 +1186,25 @@ def test_voicevox_end_to_end_song_starting_at_zero(tmp_path):
     with wave.open(str(out)) as w:
         dur = w.getnframes() / w.getframerate()
     assert dur == pytest.approx(1.5, abs=0.3)  # 先頭休符のぶん後ろにずれない
+
+
+@pytest.mark.parametrize("reading, lyrics", [
+    ("はない", ["ハ", "ナ", "イ"]),
+    ("ハァ", ["ハ", "ア"]),
+    ("ティー", ["ティ", "イ"]),
+    ("ドーー", ["ド", "オ", "オ"]),
+    ("フュ", ["フュ"]),
+])
+def test_wordlist_supplied_reading_reaches_singing_score(reading, lyrics):
+    from soramimic_video.soramimic_engine import _get_app
+
+    db = _get_app().word_list.parse_tidy(
+        f"id,original,surface,pronunciation\n17,花井,花井,{reading}", max_units=8,
+    )
+    kana = next(word for bucket in db.values() for word in bucket)["kana"]
+    project = _project([_note(0, 60, 0.5, 3.0, "カ")])
+    project.parody = Parody("", lines=[ParodyLine(0, [
+        ParodyWord("花井", kana, "", "", "", [0], [kana]),
+    ])])
+    score = build_score(project)
+    assert [note["lyric"] for note in score["notes"] if note["key"] is not None] == lyrics
