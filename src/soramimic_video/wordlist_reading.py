@@ -12,6 +12,6 @@ def wordlist_reading(text: str) -> str:
 
 def wordlist_pronunciation(text: str) -> str:
     from soramimic import resolve_wordlist_reading
-    from soramimic_yomi import normalize_reading
+    from soramimic_yomi import get_word_reading
 
-    return resolve_wordlist_reading(text, normalize_reading)
+    return resolve_wordlist_reading(text, get_word_reading)

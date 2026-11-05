@@ -115,7 +115,23 @@ def test_provenance_keeps_sentence_inference_separate_from_supplied_reading():
 @pytest.mark.parametrize("reading", [
     "はないX", "メガリザードンX", "ポリゴン2", "ケルヴィン卿", "カ ナ", "ハナイ・ティー",
 ])
-def test_non_kana_supplied_reading_requires_correction(reading):
+def test_mixed_supplied_reading_is_inferred_as_a_whole(reading):
+    from soramimic_yomi import get_yomi, normalize_reading
+
+    expected = normalize_reading(get_yomi(reading))
+    assert wordlist_pronunciation(reading) == expected
+    parsed = wordlist_csv.parse(f"花井,{reading}".encode())
+    db = _get_app().word_list.parse_tidy(parsed.text, max_units=16)
+    assert {w["kana"] for bucket in db.values() for w in bucket} == {expected}
+
+
+def test_mixed_supplied_reading_reinterprets_its_kana():
+    assert wordlist_pronunciation("はないX").startswith("ワナイ")
+    assert wordlist_pronunciation("はない") == "ハナイ"
+
+
+@pytest.mark.parametrize("reading", ["❤", "???"])
+def test_unreadable_supplied_reading_reports_source(reading):
     with pytest.raises(ValueError, match="指定した読み"):
         wordlist_pronunciation(reading)
     with pytest.raises(wordlist_csv.WordlistCsvError, match="1行目「花井」.*指定した読み"):
