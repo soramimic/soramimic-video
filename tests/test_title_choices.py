@@ -277,7 +277,7 @@ def test_editor_submission_validates_against_its_own_wordlist(client, original):
     job = client.get(f"/api/jobs/{response.json()['id']}").json()
     assert job["params"]["title_words"] == WORDS
     if original:
-        payload["wordlist"]["csvText"] = CSV.replace("ホフ", "別人")
+        payload["wordlist"]["csvText"] = CSV.replace("ホフ", "ベツジン")
     else:
         payload["where"] = "field=天文学"
     assert submit().status_code == 422
