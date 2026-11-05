@@ -12,6 +12,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from .search_limits import AudioSearchTimeout
+
 REPORT_FILENAME = "error-diagnostics.json"
 MAX_RETENTION_SECONDS = 48 * 3600
 CURRENT_JOB: ContextVar[str | None] = ContextVar("diagnostic_job", default=None)
@@ -91,6 +93,12 @@ def save_report(
         "log": log,
     }
     if exc is not None:
+        if isinstance(exc, AudioSearchTimeout):
+            data["search_timeout"] = {
+                "operation": "lyric_note_search",
+                "limit_seconds": exc.timeout_seconds,
+                "elapsed_seconds": exc.elapsed_seconds,
+            }
         # CalledProcessError contains decoder/compiler output that str(exc) omits.
         for name in ("stdout", "stderr"):
             output = getattr(exc, name, None)
