@@ -45,12 +45,13 @@ def analyze_audio(
     editor_path: Path | None = None,
 ) -> Project:
     """Run the Score pipeline and import only its supported synthesis slots."""
-    from soramimic_score import ModelConfig, parse_lyric_input
+    from soramimic_score import ModelConfig, SearchTimeoutError, parse_lyric_input
     from soramimic_score import analyze_audio as analyze_score
 
     from . import runproc
     from .audio_inference import configured_priority, configured_url
     from .lyric_layers import apply_lyric_layers
+    from .search_limits import AudioSearchTimeout, configured_timeout
 
     if adjust_lyrics and editor_path is not None:
         raise ValueError("歌詞JSONの歌詞と読みは調整できません")
@@ -123,19 +124,25 @@ def analyze_audio(
             progress(min(0.9, progress_count * 0.04 + 0.02))
         progress_count += 1
 
-    if editor_rows is not None:
-        from .editor_audio import align_editor_audio
+    timeout = configured_timeout()
+    try:
+        if editor_rows is not None:
+            from .editor_audio import align_editor_audio
 
-        document = align_editor_audio(audio_path, editor_rows, config,
-                                      on_progress, accompaniment,
-                                      word_boundaries=editor_boundaries)
-    else:
-        document = analyze_score(
-            audio_path, lyrics=parsed,
-            model_config=config, adjust_lyrics=adjust_lyrics,
-            on_progress=on_progress, accompaniment_path=accompaniment,
-            check_cancelled=runproc.raise_if_cancelled,
-        )
+            document = align_editor_audio(audio_path, editor_rows, config,
+                                          on_progress, accompaniment,
+                                          word_boundaries=editor_boundaries,
+                                          search_timeout=timeout)
+        else:
+            document = analyze_score(
+                audio_path, lyrics=parsed,
+                model_config=config, adjust_lyrics=adjust_lyrics,
+                on_progress=on_progress, accompaniment_path=accompaniment,
+                check_cancelled=runproc.raise_if_cancelled,
+                search_timeout=timeout,
+            )
+    except SearchTimeoutError as exc:
+        raise AudioSearchTimeout(exc.timeout_seconds, exc.elapsed_seconds) from exc
     runproc.raise_if_cancelled()
     (out / "score.json").write_text(document.to_json(), encoding="utf-8")
     layers = copy.deepcopy(document.to_dict()["score"])

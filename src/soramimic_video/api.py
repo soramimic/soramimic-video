@@ -79,6 +79,7 @@ from .layout import (
     load_wordlist_layouts,
     parse_layout,
 )
+from .search_limits import SEARCH_TIMEOUT_MESSAGE
 from .soramimic_engine import start_warmup_thread
 from .submissions import Submissions
 from .thumbnail_preview import RateLimiter, preview_cache_dir
@@ -807,7 +808,11 @@ class Job:
             "song_label": job_song_label(self.params),
             "wordlist_label": job_wordlist_label(self.params),
             # 公開APIへ例外本文を返すとparser/ffmpeg由来の内部pathやコマンドが漏れる。
-            "error": "生成に失敗しました" if is_public_mode() and self.error else self.error,
+            "error": (
+                "生成に失敗しました"
+                if is_public_mode() and self.error and self.error != SEARCH_TIMEOUT_MESSAGE
+                else self.error
+            ),
             "created_at": datetime.fromtimestamp(self.created_at).isoformat(
                 timespec="seconds"
             ),
