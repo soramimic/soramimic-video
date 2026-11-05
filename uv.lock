@@ -2657,7 +2657,7 @@ mecab = [
 [[package]]
 name = "soramimic-score"
 version = "0.1.0"
-source = { git = "https://github.com/jiroshimaya/soramimic-score?rev=b3cd862a0944d3e7a5b973076ebcd0f14d21eac1#b3cd862a0944d3e7a5b973076ebcd0f14d21eac1" }
+source = { git = "https://github.com/jiroshimaya/soramimic-score?rev=16945fef8056da7ddbde4240168624b9ef853e2b#16945fef8056da7ddbde4240168624b9ef853e2b" }
 dependencies = [
     { name = "jasyllablesep" },
     { name = "kanasim" },
@@ -2750,7 +2750,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31" },
     { name = "scipy", marker = "extra == 'audio'", specifier = ">=1.13" },
     { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=ddc8537f9b8fd7f85b394378ad9a84af787c3187" },
-    { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=b3cd862a0944d3e7a5b973076ebcd0f14d21eac1" },
+    { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=16945fef8056da7ddbde4240168624b9ef853e2b" },
     { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=5ee067dd59ebd47cd26e5868bed9d26568e0228c" },
     { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=5ee067dd59ebd47cd26e5868bed9d26568e0228c" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.12" },

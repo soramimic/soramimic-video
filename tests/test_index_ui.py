@@ -3068,6 +3068,10 @@ def test_cancel_job_shows_pending_feedback_and_recovers_from_request_failure():
         const statuses = [];
         const messages = [];
         const restarted = [];
+        let cancellationTimeout;
+        const setTimeout = (callback) => {{ cancellationTimeout = callback; return 1; }};
+        const clearTimeout = () => {{}};
+        globalThis.VideoOperations = {{ begin: () => ({{ end() {{}} }}) }};
         const setJobStatus = (text) => statuses.push(text);
         const showBuilderMsg = (text) => messages.push(text);
         const restartPolling = (id) => restarted.push(id);
@@ -3098,6 +3102,11 @@ def test_cancel_job_shows_pending_feedback_and_recovers_from_request_failure():
           assert.deepEqual(restarted, ["job-1"]);
           assert.equal(elements.cancel.disabled, true,
             "successful request stays disabled until polling reaches a terminal state");
+
+          cancellationTimeout();
+          assert.match(messages.at(-1), /受け付け/,
+            "an accepted request must be distinguished from a network failure");
+          assert.doesNotMatch(messages.at(-1), /通信状態/);
 
           currentJob = "job-2";
           cancelPendingJob = null;
