@@ -102,6 +102,8 @@ def align_editor_audio(
     from soramimic_score.media import decoded_audio
     from soramimic_score.models import prepared_adapters
 
+    from . import runproc
+
     active = [(index, text, kana) for index, (text, kana) in enumerate(rows) if kana]
     if word_boundaries is not None and len(word_boundaries) != len(rows):
         raise ValueError("歌詞JSONの単語境界と歌詞行数が一致しません")
@@ -136,8 +138,10 @@ def align_editor_audio(
                     for group, (start, end) in enumerate(pairwise(cuts)):
                         segments.update({mid: f"{utterance.id}:word-{group}"
                                          for mid in mora_ids[start:end]})
-            result = (compile_score(observations, segment_ids_by_mora=segments)
-                      if segments is not None else compile_score(observations))
+            result = compile_score(
+                observations, segment_ids_by_mora=segments,
+                check_cancelled=runproc.raise_if_cancelled,
+            )
             if adapters.vocal_activity is not None:
                 from soramimic_score.spoken import add_spoken_fallback
 

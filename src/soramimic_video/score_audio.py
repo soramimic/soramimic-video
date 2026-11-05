@@ -134,6 +134,7 @@ def analyze_audio(
             audio_path, lyrics=parsed,
             model_config=config, adjust_lyrics=adjust_lyrics,
             on_progress=on_progress, accompaniment_path=accompaniment,
+            check_cancelled=runproc.raise_if_cancelled,
         )
     runproc.raise_if_cancelled()
     (out / "score.json").write_text(document.to_json(), encoding="utf-8")
