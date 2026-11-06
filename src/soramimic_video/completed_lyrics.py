@@ -71,6 +71,9 @@ def save_result(
                                           for line in project.lines))
         payload["originalLines"] = [strip_ruby(line.original_text or line.xf_kana)
                                     for line in project.lines]
+        from .lyric_alignment import sync_editor_alignments
+
+        sync_editor_alignments(payload)
         payload["song"] = {"title": title}
         if video_metadata is not None:
             payload["videoMetadata"] = {
@@ -81,6 +84,9 @@ def save_result(
                 if isinstance(video_metadata.get(key), str)
             }
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_BYTES:
+            payload.pop("originalReadingAlignments", None)
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         if len(encoded) > MAX_BYTES:
             path.unlink(missing_ok=True)
             return
