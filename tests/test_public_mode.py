@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import time
-import wave
 
 import pytest
+
+from helpers import fake_wav
 
 fastapi = pytest.importorskip("fastapi")
 
@@ -22,16 +22,6 @@ from soramimic_video import api as api_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
-
-
-def fake_wav(seconds: float, rate: int = 8000) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(rate)
-        wav.writeframes(b"\x00\x00" * round(seconds * rate))
-    return out.getvalue()
 
 
 def fast_pipeline(job, config):

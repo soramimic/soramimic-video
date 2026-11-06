@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import fake_wav
+
 fastapi = pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -28,16 +30,6 @@ from soramimic_video import audio_input as audio_input_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
-
-
-def fake_wav(seconds: float = 0.1, rate: int = 8000) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(rate)
-        wav.writeframes(b"\x00\x00" * round(seconds * rate))
-    return out.getvalue()
 
 
 def encoded_audio(tmp_path: Path, suffix: str, codec: str, muxer: str) -> bytes:
@@ -1022,7 +1014,6 @@ def test_first_lyric_start():
 def test_trim_wav_head(tmp_path):
     import shutil
     import subprocess
-    import wave
 
     # start<=0 は何もしない
     wav = tmp_path / "vocal.wav"

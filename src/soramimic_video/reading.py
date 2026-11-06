@@ -1,17 +1,7 @@
-"""歌詞テキストのカナ読み変換。
+"""Lyric readings and tokenization for MIDI analysis and conversion.
 
-ベースは soramimic-yomi(pyopenjtalk-plus + ユーザー辞書 + 英語カナ変換)。
-読みは発音形(は→ワ、トーキョー式の長音)で、CTCアライメントの音響と整合する。
-フォールバック/読み候補生成用に MeCab + unidic-lite の発音形も使う。
-
-読みの誤りはアライメント先の取り違えとして行全体に伝播する
-(例: ipadicの「二人」→ニニン誤読)。エンジン間で読みが割れた行は
-音響スコアで判定できるよう、行ごとの候補読みを返す reading_candidates を提供する。
-
-読みエンジン(soramimic-yomi / unidic)は青空文庫ルビ記法(``｜表層《よみ》``)を
-知らないので、この層で ruby.segments により「素の断片」と「強制読みの断片」に
-割り、前者だけを読みエンジンに掛ける。記法を含まない入力では割らずにそのまま
-1回で掛けるので、従来と完全に同じ読みになる。
+Use Soramimic Yomi for pronunciation, with UniDic as the reading fallback.
+Explicit ruby readings remain fixed while surrounding text is analyzed normally.
 """
 
 from __future__ import annotations
@@ -20,37 +10,16 @@ import csv
 import logging
 import re
 import threading
-import unicodedata
 from typing import Any
 
 import jaconv
 
 from . import ruby, runproc
-from .kana import normalize_audio_reading, normalize_long_vowels, split_moras, vowel_of
 
 logger = logging.getLogger(__name__)
 
 _KATAKANA_RE = re.compile(r"[ァ-ヶー]+")
 _PRON_FIELD = 9  # unidic: 発音形(出現形)
-_UNIDIC_NBEST_PATHS = 8
-_UNIDIC_MAX_READINGS = 2
-_YOMI_NBEST_PATHS = 32
-_YOMI_MAX_READINGS = 8
-_YOMI_VARIANT_RE = re.compile(
-    r"[0-9\uff10-\uff19A-Za-z\uff21-\uff3a\uff41-\uff5a]"
-)
-_STRUCTURED_RE = re.compile(r"[&+#%@=\u00d7\u00f7\uff06\uff0b\uff03\uff05\uff20\uff1d]")
-_SYMBOL_READINGS = {
-    "&": "\u30a2\u30f3\u30c9",
-    "+": "\u30d7\u30e9\u30b9",
-    "#": "\u30b7\u30e3\u30fc\u30d7",
-    "%": "\u30d1\u30fc\u30bb\u30f3\u30c8",
-    "@": "\u30a2\u30c3\u30c8",
-    "=": "\u30a4\u30b3\u30fc\u30eb",
-    "\u00d7": "\u30ab\u30b1\u30eb",
-    "\u00f7": "\u30ef\u30eb",
-}
-
 _tagger: Any = None
 _tagger_lock = threading.Lock()
 _yomi_available: bool | None = None
@@ -106,13 +75,11 @@ def _kana_with_ruby(text: str, to_kana: Any) -> str | None:
     return "".join(out)
 
 
-def _unidic_node_reading(node: Any, *, warn_unknown: bool = True) -> tuple[tuple[str, ...], str]:
-    """MeCab の1解析経路から表層分割と UniDic 発音形を返す。"""
-    surfaces: list[str] = []
+def _unidic_node_reading(node: Any) -> str:
+    """MeCab の1解析経路から UniDic 発音形を返す。"""
     parts: list[str] = []
     while node:
         if node.surface:
-            surfaces.append(node.surface)
             fields = _feature_fields(node.feature)
             reading = (
                 fields[_PRON_FIELD]
@@ -122,67 +89,19 @@ def _unidic_node_reading(node: Any, *, warn_unknown: bool = True) -> tuple[tuple
             if reading is None:
                 # 未知語: 既にカナならそのまま読みにする
                 reading = jaconv.hira2kata(node.surface)
-                if warn_unknown and not _KATAKANA_RE.fullmatch(reading):
+                if not _KATAKANA_RE.fullmatch(reading):
                     logger.warning("読みが取れないため無視: %r", node.surface)
             parts.append(reading)
         node = node.next
-    return tuple(surfaces), _kana_only("".join(parts))
-
-
-def _unidic_kana_candidates(
-    text: str, *, include_alternate_splits: bool = False,
-) -> list[str]:
-    """MeCab + unidic-lite の上位解析経路から異なる読みを返す。"""
-    readings: list[str] = []
-    seen: set[str] = set()
-    best_surfaces: tuple[str, ...] | None = None
-    # parseNBestInit/nextNode は Tagger 内に列挙状態を持つ。同一プロセスの
-    # 並行解析で経路が混ざらないよう、列挙全体を直列化する。
-    with _tagger_lock:
-        tagger = _get_tagger()
-        if not tagger.parseNBestInit(text):
-            return []
-        for path_index in range(_UNIDIC_NBEST_PATHS):
-            node = tagger.nextNode()
-            if node is None:
-                break
-            surfaces, kana = _unidic_node_reading(node, warn_unknown=path_index == 0)
-            if best_surfaces is None:
-                best_surfaces = surfaces
-            # 通常は別分割の読みを除く。音声根拠を確認する経路では
-            # 「今夜→イマヨル」のような候補も必要になる。
-            if not include_alternate_splits and surfaces != best_surfaces:
-                continue
-            normalized = normalize_long_vowels(kana)
-            if kana and normalized not in seen:
-                seen.add(normalized)
-                readings.append(kana)
-                if len(readings) >= _UNIDIC_MAX_READINGS:
-                    break
-    return readings
+    return _kana_only("".join(parts))
 
 
 def _unidic_kana(text: str) -> str:
     """MeCab + unidic-lite の1-best発音形(素テキスト前提)。"""
     with _tagger_lock:
         node = _get_tagger().parseToNode(text)
-        _surfaces, kana = _unidic_node_reading(node)
+        kana = _unidic_node_reading(node)
     return kana
-
-
-def _unidic_candidates_with_ruby(
-    text: str, *, include_alternate_splits: bool = False,
-) -> list[str]:
-    """明示ルビを守りつつ、UniDic N-best の行読み候補を作る。"""
-    parts = ruby.segments(text)
-    if len(parts) == 1 and parts[0][1] is None:
-        return _unidic_kana_candidates(
-            parts[0][0], include_alternate_splits=include_alternate_splits,
-        )
-    # 明示ルビはその区間の読みを固定する入力。ルビ前後を別々に N-best
-    # 列挙すると文全体の接続コストを失うため、従来どおり1-bestだけを使う。
-    kana = text_to_kana_unidic(text)
-    return [kana] if kana else []
 
 
 def text_to_kana_unidic(text: str) -> str:
@@ -298,89 +217,9 @@ def _yomi_kana(text: str) -> str | None:
     return _kana_only(result)
 
 
-def _mora_diverse_readings(
-    readings: list[tuple[str, bool]], limit: int,
-) -> list[str]:
-    """Keep the default, then prefer high-quality candidates of each mora count."""
-    if limit <= 0:
-        return []
-
-    unique: list[tuple[str, bool]] = []
-    seen_readings: set[str] = set()
-    for reading, diversity_eligible in readings:
-        normalized = normalize_long_vowels(reading)
-        if reading and normalized not in seen_readings:
-            seen_readings.add(normalized)
-            unique.append((reading, diversity_eligible))
-    if len(unique) <= limit:
-        return [reading for reading, _eligible in unique]
-
-    selected = [unique[0][0]]
-    selected_indices = {0}
-    seen_counts = {len(split_moras(unique[0][0]))}
-    for index, (reading, diversity_eligible) in enumerate(unique[1:], start=1):
-        if not diversity_eligible:
-            continue
-        mora_count = len(split_moras(reading))
-        if mora_count in seen_counts:
-            continue
-        selected.append(reading)
-        selected_indices.add(index)
-        seen_counts.add(mora_count)
-        if len(selected) == limit:
-            return selected
-
-    for index, (reading, _eligible) in enumerate(unique[1:], start=1):
-        if index not in selected_indices:
-            selected.append(reading)
-            if len(selected) == limit:
-                break
-    return selected
-
-
-def _yomi_kana_candidates(text: str) -> list[str]:
-    """Return soramimic-yomi's ordered readings for plain text."""
-    global _yomi_available
-    if _yomi_available is False:
-        return []
-    try:
-        import soramimic_yomi
-    except ImportError:
-        if _yomi_available is None:
-            logger.warning(
-                "soramimic-yomi が無いため unidic-lite の読みを使います"
-                "(英語・数字の読みが弱くなります)"
-            )
-        _yomi_available = False
-        return []
-    _yomi_available = True
-    with runproc.suppress_native_output_in_public_mode():
-        generate = getattr(soramimic_yomi, "get_yomi_candidates", None)
-        if generate is None:
-            return [_kana_only(soramimic_yomi.get_yomi(text))]
-        generated = generate(text, nbest=_YOMI_NBEST_PATHS)
-    # Letter-name spellings remain available when capacity remains, but do not
-    # displace connected-speech readings solely by adding a new mora count.
-    readings = [
-        (kana, "latin" not in candidate.sources)
-        for candidate in generated
-        if (kana := _kana_only(candidate.reading))
-    ]
-    return _mora_diverse_readings(readings, _YOMI_MAX_READINGS)
-
-
 def text_to_kana_yomi(text: str) -> str | None:
     """soramimic-yomi によるカタカナ読み(ルビ記法対応)。未インストールなら None。"""
     return _kana_with_ruby(text, _yomi_kana)
-
-
-def _yomi_candidates_with_ruby(text: str) -> list[str]:
-    """Keep forced ruby fixed; otherwise expose soramimic-yomi's N-best."""
-    parts = ruby.segments(text)
-    if len(parts) == 1 and parts[0][1] is None:
-        return _yomi_kana_candidates(parts[0][0])
-    kana = text_to_kana_yomi(text)
-    return [kana] if kana else []
 
 
 def text_to_kana(text: str) -> str:
@@ -389,102 +228,3 @@ def text_to_kana(text: str) -> str:
     ルビ記法(``｜表層《よみ》``)を含む行では、注釈区間の読みが優先される。
     """
     return text_to_kana_yomi(text) or text_to_kana_unidic(text)
-
-
-def reading_candidates(
-    text: str, *, include_alternate_splits: bool = False,
-) -> list[str]:
-    """行の読み候補(重複除去済み、第1候補が既定)。
-
-    yomi の既定読みと UniDic N-best の発音形を候補にする。
-    N-best は上限付きで、既定読みを先頭に保ちながらモーラ数を分散させ、
-    長音正規化後の重複を除く。
-    音源解析では複数候補をKanaWhisperの音声認識結果と照合して選ぶ。
-    ReazonかなCTCは選択した読みの発音時刻を推定し、読み候補の選択には使わない。
-    ルビ注釈のある区間は両エンジンで同じ(指定)読みになるので、候補は増えない。
-    """
-    yomi = _yomi_candidates_with_ruby(text)
-    unidic = (
-        _unidic_candidates_with_ruby(text, include_alternate_splits=True)
-        if include_alternate_splits else _unidic_candidates_with_ruby(text)
-    )
-    candidates = [*yomi, *unidic]
-    unique: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = normalize_audio_reading(candidate)
-        key = normalize_audio_reading(normalize_long_vowels(normalized))
-        if normalized and key not in seen:
-            seen.add(key)
-            unique.append(normalized)
-    return unique
-
-
-def _structured_reading(surface: str) -> str:
-    normalized = unicodedata.normalize("NFKC", surface)
-    return _SYMBOL_READINGS.get(normalized, "")
-
-
-def _structured_variant(text: str, target_indices: set[int]) -> str:
-    """Build a reading while replacing only selected structured spans."""
-    parts: list[str] = []
-    cursor = 0
-    for index, match in enumerate(_STRUCTURED_RE.finditer(text)):
-        parts.append(text_to_kana(text[cursor:match.start()]))
-        surface = match.group()
-        if index in target_indices:
-            parts.append(_structured_reading(surface))
-        else:
-            parts.append(text_to_kana(surface))
-        cursor = match.end()
-    parts.append(text_to_kana(text[cursor:]))
-    return "".join(parts)
-
-
-def _vowel_sequence(reading: str) -> tuple[str, ...]:
-    return tuple(
-        vowel
-        for mora in split_moras(normalize_long_vowels(reading))
-        if (vowel := vowel_of(mora)) is not None
-    )
-
-
-def automatic_reading_candidates(text: str) -> list[str]:
-    """Conservative readings for automatically transcribed surface text.
-
-    The dictionary-first reading is always the default.  soramimic-yomi supplies
-    bounded number, Latin-letter, and connected-English alternatives; this layer
-    adds a small explicit symbol set. Candidates whose vowel sequence differs are
-    kept, preventing consonant-only ambiguity from reaching the acoustic selector.
-    """
-    uses_yomi_variants = bool(_YOMI_VARIANT_RE.search(text))
-    yomi = _yomi_candidates_with_ruby(text) if uses_yomi_variants else []
-    dictionary = yomi or reading_candidates(text)
-    if not dictionary:
-        # An empty default would make an added spoken symbol form win trivially.
-        return []
-    default = dictionary[0]
-    structured = list(_STRUCTURED_RE.finditer(text))
-    default_vowels = _vowel_sequence(default)
-    candidates = [default]
-    linguistic = dictionary[1:] if not uses_yomi_variants or yomi else []
-    candidates.extend(
-        candidate
-        for candidate in linguistic
-        if _vowel_sequence(candidate) != default_vowels
-    )
-    if structured:
-        for index in range(len(structured)):
-            candidates.append(_structured_variant(text, {index}))
-        if len(structured) > 1:
-            candidates.append(_structured_variant(text, set(range(len(structured)))))
-
-    unique: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = normalize_audio_reading(candidate)
-        key = normalize_audio_reading(normalize_long_vowels(normalized))
-        if normalized and key not in seen:
-            seen.add(key)
-            unique.append(normalized)
-    return unique

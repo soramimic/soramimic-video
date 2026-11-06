@@ -153,7 +153,7 @@ def test_xf_is_importable_by_bundled_soramimic(tmp_path, full_song):
 
 
 def test_all_results_use_synthesized_vocal_and_fixed_allowlist(tmp_path):
-    from test_api import fake_wav
+    from helpers import fake_wav
 
     original = fake_wav()
     (tmp_path / "neutrino").mkdir()
@@ -202,8 +202,9 @@ def test_public_downloads_survive_cleanup_restart_and_expire_with_job(tmp_path, 
 
     from fastapi.testclient import TestClient
 
+    from helpers import fake_wav
     from soramimic_video import api
-    from test_api import FAKE_MIDI, fake_wav, wait_done
+    from test_api import FAKE_MIDI, wait_done
 
     monkeypatch.setenv(api.PUBLIC_ENV, '1')
     monkeypatch.setenv(api.JOB_TTL_HOURS_ENV, '1')
