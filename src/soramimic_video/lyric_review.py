@@ -56,6 +56,9 @@ def prepare_review(
 def _review_display(payload: dict[str, Any], project: Project) -> None:
     payload["host"] = {"songs": [], "canUploadSong": False, "review": True}
     payload["originalLines"] = [strip_ruby(line.original_text or "") for line in project.lines]
+    from .lyric_alignment import sync_editor_alignments
+
+    sync_editor_alignments(payload)
 
 
 def load_review(directory: Path, *, draft: bool = True) -> dict[str, Any]:
