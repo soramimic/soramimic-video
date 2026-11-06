@@ -51,16 +51,23 @@ def text_tokens(text: str, reader: TokenReader = _default_reader) -> list[tuple[
             for i, (_, reading) in enumerate(located)]
 
 
-def reading_positions(source: str, target: str) -> list[int]:
+def reading_positions(
+    source: str, target: str, support: dict[str, bool] | None = None,
+) -> list[int]:
     """Video's existing monotonic reading alignment, retaining its tie breaks."""
     positions = [0] * (len(source) + 1)
+    if support is not None:
+        support["aligned"] = bool(source) and source == target
     if not source:
         return positions
     if source == target:
         return list(range(len(source) + 1))
     matcher = SequenceMatcher(None, source, target, autojunk=False)
     opcodes = matcher.get_opcodes()
-    if sum(block.size for block in matcher.get_matching_blocks()) < len(source) * .35:
+    supported = sum(block.size for block in matcher.get_matching_blocks()) >= len(source) * .35
+    if support is not None:
+        support["aligned"] = supported
+    if not supported:
         opcodes = [("replace", 0, len(source), 0, len(target))]
     for _tag, a, b, c, d in opcodes:
         if a == b:
@@ -79,7 +86,8 @@ def align_tokens(text: str, reading: str, tokens: list[tuple[str, str]]) -> dict
     if (len(target) != len(reading) or utf16_length(reading) != len(reading)
             or len(source) * len(target) > 4_000_000):
         return None
-    positions = reading_positions(source, target)
+    support: dict[str, bool] = {}
+    positions = reading_positions(source, target, support)
     surface = offset = 0
     spans = []
     for (part, _), normalized in zip(tokens, readings, strict=True):
@@ -87,8 +95,8 @@ def align_tokens(text: str, reading: str, tokens: list[tuple[str, str]]) -> dict
         surface += utf16_length(part)
         offset += len(normalized)
         d = positions[offset]
-        spans.append({"surface": [a, surface], "reading": [c, d],
-                      "exact": d > c and source[first:offset] == target[c:d]})
+        exact = support["aligned"] and d > c and source[first:offset] == target[c:d]
+        spans.append({"surface": [a, surface], "reading": [c, d], "exact": exact})
     return {"format": FORMAT, "text": text, "reading": reading, "spans": spans}
 
 
