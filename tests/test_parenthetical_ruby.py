@@ -61,10 +61,10 @@ def test_annotation_offsets_readings_and_chorus_survive_together():
 
 
 def test_reading_and_tokenization_do_not_duplicate_the_annotation():
-    from soramimic_video.reading import reading_candidates, reading_tokens, text_to_kana
+    from soramimic_video.reading import reading_tokens, text_to_kana
     from soramimic_video.soramimic_engine import run_tokenize
 
-    assert reading_candidates(normalize("紅葉（もみじ）")) == ["モミジ"]
+    assert text_to_kana(normalize("紅葉（もみじ）")) == "モミジ"
     assert text_to_kana(normalize("未来（みらい）（ラララ）")) == "ミライラララ"
     assert reading_tokens(normalize("紅葉（もみじ）")) == [("紅葉", "モミジ")]
     units = run_tokenize(["紅葉（もみじ）"])[0]

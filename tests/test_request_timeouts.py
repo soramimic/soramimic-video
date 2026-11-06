@@ -1,7 +1,6 @@
 """A stalled response must not hold startup or song verification indefinitely."""
 
-from test_index_ui import _song_input_node_harness
-from test_input_lifecycle import DOM, _functions, _run
+from ui_helpers import DOM, _functions, _run, _song_input_node_harness
 
 STALL = r"""
 const controllers=[];

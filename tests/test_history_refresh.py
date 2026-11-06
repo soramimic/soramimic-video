@@ -2,7 +2,7 @@
 
 import pytest
 
-from test_input_lifecycle import DOM, _functions, _run
+from ui_helpers import DOM, _functions, _run
 
 
 def test_background_refresh_keeps_media_connected_and_actions_bound_to_the_same_job():
