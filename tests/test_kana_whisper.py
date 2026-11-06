@@ -1,251 +1,105 @@
-from soramimic_video.kana_whisper import (
-    build_kana_contexts,
-    choose_reading,
-    has_dictionary_reading_alternative,
-    normalize_kana_evidence,
-    propose_dictionary_readings,
-)
+"""KanaWhisper inference adapter tests without loading model weights."""
+
+import sys
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from soramimic_video import kana_whisper
 
 
-def test_normalize_kana_evidence_removes_non_kana_and_pronunciation_spelling():
-    assert normalize_kana_evidence("何? なにを、みていたの") == "ナニオミテータノ"
+def test_model_available_requires_a_complete_local_snapshot(monkeypatch, tmp_path):
+    def snapshot(model, *, revision, local_files_only):
+        assert model == kana_whisper.KANA_WHISPER_MODEL
+        assert revision == kana_whisper.KANA_WHISPER_REVISION
+        assert local_files_only is True
+        return str(tmp_path)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(
+        snapshot_download=snapshot,
+    ))
+    files = ("config.json", "model.safetensors", "preprocessor_config.json", "tokenizer.json")
+    for name in files:
+        assert kana_whisper.model_available() is False
+        (tmp_path / name).touch()
+    assert kana_whisper.model_available() is True
 
 
-def test_local_alignment_recovers_dictionary_reading_missing_from_line_nbest():
-    surface = "OK! 竜町独壇場 Listen! Listen!"
-    default = "オーケイリューマチドクダンジョーリサンリサン"
-    evidence = [
-        "レディーフォーマンショーオーケータチマチソクダンジョー",
-        "レディースルマショーオーケータツマチドクダンチョー",
-    ]
+def test_model_available_tolerates_a_missing_snapshot(monkeypatch):
+    def missing(*_args, **_kwargs):
+        raise OSError("snapshot is not cached")
 
-    assert has_dictionary_reading_alternative(surface, default)
-    proposals = propose_dictionary_readings(surface, default, evidence)
-
-    assert [proposal.reading for proposal in proposals] == [
-        "オーケイタツマチドクダンジョーリサンリサン"
-    ]
-    assert proposals[0].surface == "竜"
-    assert proposals[0].default_reading == "リュー"
-    assert proposals[0].alternative_reading == "タツ"
-    assert proposals[0].evidence_views == (1,)
-    decision = choose_reading([default, proposals[0].reading], evidence)
-    assert decision.selected_index == 1
-    assert decision.reason == "kana-evidence"
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(
+        snapshot_download=missing,
+    ))
+    assert kana_whisper.model_available() is False
 
 
-def test_alternate_split_requires_matching_kana_evidence():
-    surface = "二人今夜に駆け出してく"
-    default = "フタリコンヤニカケダシテク"
-    alternative = "フタリイマヨルニカケダシテク"
+@pytest.fixture
+def local_inference(monkeypatch, tmp_path):
+    audio = tmp_path / "vocals.wav"
+    waveform = np.arange(48_000, dtype=np.float32)
+    calls, loads, devices = [], [], []
 
-    assert has_dictionary_reading_alternative(surface, default)
-    assert propose_dictionary_readings(surface, default, [default]) == ()
-    proposals = propose_dictionary_readings(surface, default, [alternative])
-    assert [(proposal.reading, proposal.surface) for proposal in proposals] == [
-        (alternative, "今夜"),
-    ]
-    assert choose_reading([default, proposals[0].reading], [alternative]).selected_index == 1
+    def load(path, **kwargs):
+        loads.append((path, kwargs))
+        return waveform, 16_000
+
+    def transcribe(samples, **kwargs):
+        calls.append((samples.copy(), kwargs))
+        return {"text": f" カナ{len(calls)}\n"}
+
+    def model(device):
+        devices.append(device)
+        return transcribe
+
+    monkeypatch.setitem(sys.modules, "librosa", SimpleNamespace(load=load))
+    monkeypatch.setattr(kana_whisper, "_load_model", model)
+    return SimpleNamespace(audio=audio, waveform=waveform, calls=calls,
+                           loads=loads, devices=devices)
 
 
-def test_local_alignment_rejects_dictionary_reading_without_exact_context():
-    proposals = propose_dictionary_readings(
-        "心に炎を灯して 遠い未来まで",
-        "ココロニホノオヲトモシテトーイミライマデ",
-        [
-            "カラココロニクムラオトボシテトーリミライノアテー",
-            "カラココロニムムラオトモシテトーイミライマデー",
-        ],
+def test_local_windows_keep_order_and_clip_to_the_audio(local_inference):
+    setup = local_inference
+    results = kana_whisper._transcribe_kana_windows_local(
+        setup.audio, [(0.25, 0.5), (2.5, 3.25)], "cpu",
     )
 
-    assert all(proposal.alternative_reading != "ホムラ" for proposal in proposals)
+    assert results == ["カナ1", "カナ2"]
+    assert setup.loads == [(str(setup.audio), {"sr": 16_000, "mono": True})]
+    assert setup.devices == ["cpu"]
+    np.testing.assert_array_equal(setup.calls[0][0], setup.waveform[4_000:8_000])
+    np.testing.assert_array_equal(setup.calls[1][0], setup.waveform[40_000:])
+    assert all(kwargs == {"generate_kwargs": {"language": "ja", "task": "transcribe"}}
+               for _, kwargs in setup.calls)
 
 
-def test_local_alignment_does_not_borrow_matching_sound_across_left_context():
-    proposals = propose_dictionary_readings(
-        "もっと走る熱いパクスで 思い出を裏切るなら",
-        "モットハシルアツイパクスデオモイデヲウラギルナラ",
-        [
-            "ナガテトビタチモノバシルアツイッパツデオモイデモフラギルナラ",
-            "ナガデトータチコトバシルアツネパツデオモイデオーラギルナラ",
-        ],
-    )
-
-    assert all(proposal.alternative_reading != "バシル" for proposal in proposals)
+@pytest.mark.parametrize("window", [(3.0, 4.0), (3.5, 4.0), (1.0, 1.0)])
+def test_empty_local_window_fails_before_inference(local_inference, window):
+    setup = local_inference
+    with pytest.raises(ValueError, match="outside the input audio"):
+        kana_whisper._transcribe_kana_windows_local(setup.audio, [window], "cpu")
+    assert setup.calls == []
 
 
-def test_local_alignment_keeps_consonant_only_ambiguity_closed():
-    proposals = propose_dictionary_readings(
-        "綺麗事じゃないけど",
-        "キレーゴトジャナイケド",
-        ["キレーコトジャナイケド", "キレーコトジャナイケド"],
-    )
-
-    assert proposals == ()
+def test_excessive_window_count_does_not_load_audio_or_model(local_inference):
+    setup = local_inference
+    windows = [(0.0, 0.1)] * (kana_whisper.KANA_MAX_WINDOWS + 1)
+    with pytest.raises(ValueError, match="window count"):
+        kana_whisper._transcribe_kana_windows_local(setup.audio, windows, "cpu")
+    assert setup.loads == setup.devices == setup.calls == []
 
 
-def test_mix_tie_and_vocals_support_choose_nani_reading():
-    decision = choose_reading(
-        ["ナンヲシテイタノ", "ナニヲシテイタノ"],
-        [
-            "ウタビアフレテヤマナイノワナミダナカナニオシテイタノナニオ",
-            "ウタビアフレテヤマナイノワナミラダケナニモシテイタノナニオ",
-        ],
-    )
-    assert decision.selected_index == 1
-    assert decision.reason == "kana-evidence"
+def test_cancellation_stops_before_the_next_window(local_inference):
+    setup = local_inference
 
+    def cancel():
+        if setup.calls:
+            raise RuntimeError("job canceled")
 
-def test_exact_soba_evidence_beats_gawa_default():
-    decision = choose_reading(
-        ["アンナニガワニイタノニ", "アンナニソバニイタノニ"],
-        ["アンナニソバニイタノニ", "アンナニソバニイタノニ"],
-    )
-    assert decision.selected_index == 1
-
-
-def test_conflicting_views_keep_default():
-    decision = choose_reading(
-        ["ココデ", "ソコデ"],
-        ["ソコデ", "ココデ"],
-    )
-    assert decision.selected_index == 0
-    assert decision.reason == "default-or-tie"
-
-
-def test_different_mora_count_can_be_selected_from_closed_candidates():
-    decision = choose_reading(["ヨルヨル", "ヨ"], ["ヨ", "ヨ"])
-    assert decision.selected_index == 1
-    assert decision.reason == "kana-evidence"
-
-
-def test_weak_voicing_evidence_keeps_default():
-    decision = choose_reading(
-        ["キレーゴトジャナイケド", "キレーコトジャナイケド"],
-        ["チレーコトジャナイケド", "チレーコトジャナイケド"],
-    )
-    assert decision.selected_index == 0
-    assert decision.reason == "weak-evidence"
-
-
-def test_dropped_long_vowel_can_select_different_length_candidate():
-    decision = choose_reading(
-        ["ホントウワダキアッテ", "ホントワダキアッテ"],
-        ["ホントワダキアッテ", "ホントワダキアッテ"],
-    )
-    assert decision.selected_index == 1
-    assert decision.reason == "kana-evidence"
-
-
-def test_marigold_reading_uses_exact_kana_evidence_across_mora_counts():
-    decision = choose_reading(
-        ["キボーノコーハ", "キボーノヒカリワ", "キボーノヒカルワ"],
-        [
-            "アシタニワキボーノヒカリワ",
-            "キボーノヒカリワソソグ",
-        ],
-    )
-
-    assert decision.selected_index == 1
-    assert decision.reason == "kana-evidence"
-    assert decision.distances[1] == (0.0, 0.0)
-
-
-def test_raw_distance_can_select_short_exact_candidate():
-    decision = choose_reading(
-        ["カキクケコ", "カ"],
-        ["カキクケサ", "カキクケサ"],
-    )
-
-    assert decision.selected_index == 1
-    assert decision.reason == "kana-evidence"
-
-
-def test_raw_distance_does_not_prefer_lower_candidate_normalized_error():
-    decision = choose_reading(
-        ["カキクケコ", "カキクケサタチツテト"],
-        ["カキクケサタチツセソ", "カキクケサタチツセソ"],
-    )
-
-    assert sum(decision.distances[0]) < sum(decision.distances[1])
-    assert sum(decision.normalized_distances[0]) > sum(decision.normalized_distances[1])
-    assert decision.selected_index == 0
-
-
-def test_kanasim_prefers_phonetically_closer_candidate_when_edit_counts_tie():
-    decision = choose_reading(["マ", "ツ"], ["ス", "ス"])
-
-    assert decision.selected_index == 1
-    assert decision.distances[1][0] < decision.distances[0][0]
-
-
-def test_kanasim_accepts_expressive_repeated_long_vowel_marks():
-    decision = choose_reading(["キレー", "キロ"], ["キレーー", "キレー"])
-
-    assert decision.distances[0] == (0.0, 0.0)
-
-
-def test_kanasim_accepts_same_vowel_small_kana_in_candidate():
-    decision = choose_reading(["デェー", "デス"], ["デー", "デー"])
-
-    assert decision.selected_index == 0
-    assert decision.distances[0] == (0.0, 0.0)
-
-
-def test_unsupported_candidate_is_excluded_without_aborting(monkeypatch):
-    from soramimic_video import kana_whisper
-
-    original = kana_whisper._phonetic_substring_distance
-
-    def reject_unknown(needle, haystack):
-        if needle == "ヴョ":
-            raise ValueError("unsupported test mora")
-        return original(needle, haystack)
-
-    monkeypatch.setattr(kana_whisper, "_phonetic_substring_distance", reject_unknown)
-    decision = choose_reading(["カ", "ヴョ", "サ"], ["サ", "サ"])
-
-    assert decision.selected_index == 2
-    assert decision.reason == "kana-evidence"
-    assert decision.distances[1] == ()
-
-
-def test_unsupported_default_uses_first_supported_candidate(monkeypatch):
-    from soramimic_video import kana_whisper
-
-    original = kana_whisper._phonetic_substring_distance
-
-    def reject_unknown(needle, haystack):
-        if needle == "ヴョ":
-            raise ValueError("unsupported test mora")
-        return original(needle, haystack)
-
-    monkeypatch.setattr(kana_whisper, "_phonetic_substring_distance", reject_unknown)
-    decision = choose_reading(["ヴョ", "カ", "サ"], ["サ", "サ"])
-
-    assert decision.selected_index == 1
-    assert decision.reason == "unsupported-default"
-
-
-def test_earlier_dictionary_path_wins_when_nbest_paths_are_one_edit_apart():
-    decision = choose_reading(
-        [
-            "ムネニノコリバナレナイ",
-            "ムネニノコリハナレナイ",
-            "ムナニノコリハナレナイ",
-        ],
-        ["ムネニノコリハナレナイ", "ムナニノコリハナレナイ"],
-    )
-    assert decision.selected_index == 1
-
-
-def test_build_contexts_packs_nearby_lines_and_skips_abnormal_long_line():
-    contexts, assignments = build_kana_contexts(
-        [(2.0, 4.0), (5.0, 7.0), (20.0, 22.0), (30.0, 55.0)],
-        audio_duration=60.0,
-    )
-    assert contexts == [
-        type(contexts[0])(0.5, 8.5, (0, 1)),
-        type(contexts[0])(18.5, 23.5, (2,)),
-    ]
-    assert assignments == [0, 0, 1, None]
+    with pytest.raises(RuntimeError, match="job canceled"):
+        kana_whisper._transcribe_kana_windows_local(
+            setup.audio, [(0.0, 0.5), (0.5, 1.0)], "cpu", cancel_check=cancel,
+        )
+    assert len(setup.calls) == 1

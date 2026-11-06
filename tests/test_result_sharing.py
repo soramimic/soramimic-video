@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from test_index_ui import _function_body, _script
+from ui_helpers import _function_body, _script
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")

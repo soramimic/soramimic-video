@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from test_input_lifecycle import DOM, _functions, _run
+from ui_helpers import DOM, _functions, _run
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 

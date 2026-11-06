@@ -9,13 +9,13 @@ import json
 
 import pytest
 
+from helpers import fake_wav
 from soramimic_video import api, editor_completion
 from soramimic_video.editor_wordlist import text_only_import
 from soramimic_video.layout import ImageElement, load_layout
 from soramimic_video.video import collect_word_frames
 from test_lyric_review import review_client as review_client
 from test_lyric_review import wait_status
-from test_public_mode import fake_wav
 
 
 def lyrics():

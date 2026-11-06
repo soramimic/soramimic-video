@@ -1,65 +1,12 @@
 """Behavioral regressions for input replacement and asynchronous completion."""
 
 import shutil
-import subprocess
 
 import pytest
 
-from test_index_ui import _function_body, _script, _song_input_node_harness
+from ui_helpers import DOM, _functions, _listener, _run, _song_input_node_harness
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
-
-
-def _functions(*heads):
-    return "\n".join(_function_body(_script(), head) + "\n}" for head in heads)
-
-
-def _listener(prefix):
-    block = _script()[_script().index(prefix):]
-    return block[:block.index("\n});") + len("\n});")]
-
-
-def _run(harness, scenario):
-    # Keep Node alive until assertions finish; unresolved promises must fail the test.
-    node = harness + """
-const deadline = require('node:timers').setTimeout(() => {
-  console.error('UI scenario did not finish'); process.exit(1);
-}, 4000);
-(async () => {
-""" + scenario + """
-})().then(() => require('node:timers').clearTimeout(deadline)).catch(error => {
-  require('node:timers').clearTimeout(deadline); console.error(error); process.exitCode = 1;
-});
-"""
-    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True, timeout=8)
-
-
-DOM = r"""
-const assert = require('node:assert/strict');
-const {File} = require('node:buffer');
-const elements = new Map();
-const element = () => ({
-  _value: '', files: [], children: [], listeners: {}, hidden: false, checked: false,
-  textContent: '',
-  get value() {return this._value;},
-  set value(v) {this._value=v; if (!v) this.files=[];},
-  addEventListener(type, fn) {this.listeners[type]=fn;},
-  dispatchEvent(e) {return this.listeners[e.type]?.(e);},
-  replaceChildren(...items) {this.children=items;},
-  appendChild(child) {this.children.push(child);},
-  setAttribute(key, value) {this[key]=value;}, focus() {},
-});
-const $ = id => {
-  if (!elements.has(id)) elements.set(id, element());
-  return elements.get(id);
-};
-const tick = () => new Promise(resolve => setImmediate(resolve));
-const deferred = () => {
-  let resolve, reject;
-  const promise = new Promise((done, fail) => {resolve=done; reject=fail;});
-  return {promise, resolve, reject};
-};
-"""
 
 
 def test_midi_response_cannot_reject_a_replacement_before_its_check_starts():
