@@ -433,6 +433,13 @@ def export_editor(
         payload["noteLengthAlpha"] = (
             0.25 if note_length_alpha is None else note_length_alpha
         )
+    from .lyric_alignment import sync_editor_alignments
+
+    payload["originalLines"] = [strip_ruby(line.original_text or line.xf_surface or line.xf_kana)
+                                for line in project.lines]
+    payload["originalReadingAlignments"] = project.original_reading_alignments
+    sync_editor_alignments(payload)
+    project.original_reading_alignments = payload["originalReadingAlignments"]
     path = project_dir / filename
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return path
@@ -725,5 +732,7 @@ def import_editor(
     })
     project.lines, project.notes, project.parody = aligned.lines, aligned.notes, aligned.parody
     project.lyric_phrasing = aligned.lyric_phrasing
+    maps = payload.get("originalReadingAlignments")
+    project.original_reading_alignments = maps if isinstance(maps, list) else None
     # 再書き出しにも、現在の曲へ対応付けた単語範囲を使う。
     save_raw(raw, project_dir)

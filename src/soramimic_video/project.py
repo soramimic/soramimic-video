@@ -117,6 +117,7 @@ class Project:
     version: int = SCHEMA_VERSION
     lyric_layers: dict[str, Any] | None = None
     lyric_phrasing: dict[str, Any] | None = None
+    original_reading_alignments: list[dict[str, Any] | None] | None = None
 
     # ---- 参照ヘルパ ----
 
@@ -178,4 +179,6 @@ class Project:
             )
         return cls(song=song, notes=notes, lines=lines, parody=parody,
                    lyric_layers=data.get("lyric_layers"),
-                   lyric_phrasing=data.get("lyric_phrasing"))
+                   lyric_phrasing=data.get("lyric_phrasing"),
+                   original_reading_alignments=(data.get("original_reading_alignments")
+                       if isinstance(data.get("original_reading_alignments"), list) else None))

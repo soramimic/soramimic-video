@@ -5,10 +5,19 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from functools import cache
 
 from .align import SubtitleSegment, _default_reader, _pron_normalize
+from .lyric_alignment import (
+    align_tokens,
+    normalize_reading,
+    text_tokens,
+    utf16_length,
+    valid_alignment,
+)
+from .lyric_alignment import (
+    reading_positions as _reading_positions,
+)
 from .project import Line, ParodyWord, Project
 
 
@@ -39,35 +48,13 @@ class _Atom:
     break_before: bool | None = None
 
 
-_FALLBACK_TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*|[^\s]")
 _PARTICLES = {"は", "が", "を", "に", "へ", "と", "で", "の", "も", "や", "から", "まで", "より"}
 _CLOSING = set("、。，．！？!?：:；;)]）］｝」』】〉》ーぁぃぅぇぉっゃゅょァィゥェォッャュョ")
 _OPENING = set("([（［｛「『【〈《")
 
 
 def _text_tokens(text: str) -> list[tuple[str, str]]:
-    """Retain every surface character, including spaces skipped by the reader."""
-    tokens = _default_reader(text)
-    located: list[tuple[int, str]] = []
-    cursor = 0
-    for surface, reading in tokens:
-        if not surface:
-            continue
-        index = text.find(surface, cursor)
-        if index < 0 or text[cursor:index].strip():
-            located = []
-            break
-        if not surface.isspace():
-            located.append((index, reading))
-        cursor = index + len(surface)
-    if not located or text[cursor:].strip():
-        located = [(m.start(), m.group()) for m in _FALLBACK_TOKEN.finditer(text)]
-    if not located:
-        return [(text, "")]
-    located[0] = (0, located[0][1])
-    bounds = [start for start, _ in located] + [len(text)]
-    return [(text[bounds[i]:bounds[i + 1]], reading)
-            for i, (_, reading) in enumerate(located)]
+    return text_tokens(text, _default_reader)
 
 
 def _phrase_boundaries(text: str) -> tuple[set[int], set[int]] | None:
@@ -117,25 +104,6 @@ def _phrase_boundaries(text: str) -> tuple[set[int], set[int]] | None:
     return phrase_starts, word_starts
 
 
-def _reading_positions(source: str, target: str) -> list[int]:
-    """Map text-reading boundaries to existing note-reading boundaries monotonically."""
-    positions = [0] * (len(source) + 1)
-    if not source:
-        return positions
-    matcher = SequenceMatcher(None, source, target, autojunk=False)
-    opcodes = matcher.get_opcodes()
-    # Unknown readings still use note boundaries, never equal divisions of time.
-    if sum(block.size for block in matcher.get_matching_blocks()) < len(source) * .35:
-        opcodes = [("replace", 0, len(source), 0, len(target))]
-    for _tag, a, b, c, d in opcodes:
-        if a == b:
-            positions[a] = d
-            continue
-        for index in range(a, b + 1):
-            positions[index] = c + round((index - a) * (d - c) / (b - a))
-    return positions
-
-
 def _original_atoms(
     project: Project, segment: SubtitleSegment, lines: Sequence[Line],
 ) -> list[_Atom]:
@@ -145,17 +113,49 @@ def _original_atoms(
     owners = [note for note, reading in zip(notes, note_readings, strict=True) for _ in reading]
     if not owners:
         return [_Atom(segment.text, segment.start, segment.end)]
-    tokens = _text_tokens(segment.text)
-    readings = [_pron_normalize(reading) for _, reading in tokens]
-    source = _pron_normalize("".join(readings))
-    positions = _reading_positions(source, target)
+    alignment = None
+    saved = project.original_reading_alignments
+    if saved is not None and len(segment.indices) == 1:
+        line_id = lines[segment.indices[0]].id
+        candidate = saved[line_id] if 0 <= line_id < len(saved) else None
+        if (isinstance(candidate, dict)
+                and valid_alignment(candidate, segment.text, candidate.get("reading", ""))
+                and normalize_reading(candidate["reading"]) == normalize_reading(target)
+                and len(candidate["reading"]) == len(target)):
+            alignment = candidate
+    if alignment is None:
+        tokens = _text_tokens(segment.text)
+        alignment = align_tokens(segment.text, target, tokens)
+    # Partial external maps are useful for highlighting, but cannot replace the
+    # complete caption. Retain the existing timing fallback for uncovered text.
+    spans = alignment["spans"] if alignment is not None else []
+    end = 0
+    for span in spans:
+        if span["surface"][0] != end:
+            spans = []
+            break
+        end = span["surface"][1]
+    if end != utf16_length(segment.text):
+        spans = []
+    parts = []
+    if spans:
+        encoded = segment.text.encode("utf-16-le")
+        for span in spans:
+            a, b = span["surface"]
+            parts.append((encoded[a * 2:b * 2].decode("utf-16-le"), *span["reading"]))
+    else:
+        tokens = _text_tokens(segment.text)
+        readings = [_pron_normalize(reading) for _, reading in tokens]
+        positions = _reading_positions(_pron_normalize("".join(readings)), target)
+        cursor = 0
+        for (text, _), reading in zip(tokens, readings, strict=True):
+            a = positions[cursor]
+            cursor += len(reading)
+            parts.append((text, a, positions[cursor]))
     boundaries = _phrase_boundaries(segment.text)
     atoms = []
-    cursor = offset = 0
-    for (text, _), reading in zip(tokens, readings, strict=True):
-        a = positions[cursor]
-        cursor += len(reading)
-        b = positions[cursor]
+    offset = 0
+    for text, a, b in parts:
         start = owners[min(a, len(owners) - 1)].start_sec
         end = owners[min(b - 1, len(owners) - 1)].end_sec if b > a else start
         atoms.append(_Atom(
