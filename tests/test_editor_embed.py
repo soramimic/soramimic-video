@@ -730,6 +730,27 @@ def test_import_editor_uses_embedded_original_csv(client, tmp_path):
     assert project.parody.where is None  # 自作リストに絞り込みは無い
 
 
+def test_original_reading_alignment_survives_editor_project_roundtrip(client, tmp_path):
+    from soramimic_video.editor_io import export_editor
+    from soramimic_video.lyric_alignment import align_tokens
+    from soramimic_video.project import Project
+
+    payload = _original_payload(client, tmp_path)
+    reading = "".join(unit["pronunciation"] for unit in payload["unitsList"][0])
+    payload["lyrics"] = "しずむ"
+    payload["originalLines"] = ["しずむ"]
+    payload["originalReadingAlignments"] = [align_tokens("しずむ", reading, [("しずむ", reading)])]
+    project, directory = _import(payload, tmp_path)
+    project.save(directory)
+    restored = Project.load(directory)
+    assert restored.original_reading_alignments == payload["originalReadingAlignments"]
+    path = export_editor(restored, directory, wordlist_entry=payload["wordlist"])
+    exported = json.loads(path.read_text())
+    assert exported["format"] == "soramimic-editor/1"
+    assert exported["originalReadingAlignments"] == payload["originalReadingAlignments"]
+    assert exported["results"] == payload["results"]
+
+
 def test_import_editor_original_requires_csv_text(client, tmp_path):
     payload = _original_payload(client, tmp_path, csv_text=None)
     with pytest.raises(ValueError, match="csvText"):
