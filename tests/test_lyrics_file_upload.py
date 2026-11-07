@@ -5,11 +5,11 @@ import json
 
 import pytest
 
+from helpers import fake_wav
 from soramimic_video import api
 from soramimic_video.editor_io import MAX_EDITOR_BYTES
 from test_lyric_review import review_client as review_client
 from test_lyric_review import wait_status
-from test_public_mode import fake_wav
 
 
 def exported_lyrics(client, midi, custom=False):

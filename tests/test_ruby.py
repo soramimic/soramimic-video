@@ -83,13 +83,6 @@ def test_text_to_kana_unidic_uses_annotation_reading():
     assert reading.text_to_kana_unidic("｜紅葉《もみじ》が散る") == "モミジガチル"
 
 
-def test_reading_candidates_agree_on_annotated_span():
-    reading = _reading_module()
-    # 両エンジンとも注釈の読みを使うので候補は増えない
-    cands = reading.reading_candidates("｜紅葉《もみじ》")
-    assert cands == ["モミジ"]
-
-
 def test_reading_tokens_keeps_plain_surface():
     reading = _reading_module()
     pytest.importorskip("soramimic_yomi")

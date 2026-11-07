@@ -6,11 +6,10 @@ import shutil
 import subprocess
 import textwrap
 from html.parser import HTMLParser
-from pathlib import Path
 
 import pytest
 
-INDEX = Path(__file__).resolve().parents[1] / "src/soramimic_video/static/index.html"
+from ui_helpers import INDEX, _function_body, _script, _song_input_node_harness
 
 
 class _Collector(HTMLParser):
@@ -960,16 +959,68 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def _script() -> str:
-    """<script> 以降(=画面のふるまい)だけを返す。"""
-    text = INDEX.read_text(encoding="utf-8")
-    return text[text.index("<script>") :]
-
-
-def _function_body(script: str, head: str) -> str:
-    """head で始まる関数の中身(次の行頭 } まで)を返す。"""
-    body = script[script.index(head) :]
-    return body[: body.index("\n}\n")]
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_long_running_job_notice_follows_stage_elapsed_and_clears_on_cancel():
+    functions = "\n".join(_function_body(_script(), head) + "\n}" for head in (
+        "function setJobStatus(", "function setRunningJobStatus(",
+        "function audioAnalysisIsStarting(", "async function poll(",
+    ))
+    node = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {hidden: false, textContent: ''});
+        return elements.get(id);
+      };
+      let currentJob = 'job', pollSeq = 1, pollLastAt = 0, pollFailures = 0;
+      let cancelPendingJob = null, reviewJobId = null;
+      const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], POLL_INTERVAL_MS = 2000;
+      const STAGE_LABELS = {analyze: 'MIDI解析', convert: '空耳変換'};
+      const headers = () => ({}), renderStages = () => {}, renderBuilderBar = () => {};
+      const schedulePoll = () => {}, setBuilderState = () => {}, openJobDetails = () => {};
+      const finish = () => {}, queueWaitLabel = () => '開始待ち';
+      let job = {status: 'running', stage: 'analyze', params: {input_kind: 'audio'},
+        stage_elapsed: 179, stage_progress: 22, stage_detail: '歌詞の読みを確認しています'};
+      const fetch = async () => ({ok: true, status: 200, json: async () => job});
+      FUNCTIONS
+      const notice = () => $('builder-status').textContent.split('\n')[1] || '';
+      (async () => {
+        await poll('job');
+        assert.equal(notice(), '', 'ordinary processing has no extra warning');
+        job.stage_elapsed = 180;
+        await poll('job');
+        assert.ok(notice().length > 0, 'the threshold adds a continuation notice');
+        assert.equal($('status-line').textContent, $('builder-status').textContent);
+        assert.ok($('builder-status').textContent.includes(job.stage_detail));
+        assert.ok($('builder-status').textContent.includes('22%'));
+        const message = notice();
+        job.stage_progress = 1; // Initial model loading uses a different progress branch.
+        await poll('job');
+        assert.equal(notice(), message);
+        delete job.stage_progress; job.stage = 'convert';
+        await poll('job');
+        assert.equal(notice(), message, 'stages without percentage also show it');
+        job.stage_elapsed = 0; // A new stage has just started.
+        await poll('job');
+        assert.equal(notice(), '', 'the notice resets with the stage timer');
+        delete job.stage_elapsed; // Older responses without a timer remain compatible.
+        await poll('job');
+        assert.equal(notice(), '');
+        job.stage_elapsed = 410;
+        await poll('job');
+        assert.equal(notice(), message);
+        cancelPendingJob = 'job';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '中断しています…');
+        cancelPendingJob = null; job.status = 'canceled';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '中断しました');
+        job.status = 'queued';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '開始待ち');
+      })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''.replace("FUNCTIONS", functions)
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
@@ -1693,81 +1744,6 @@ def test_builder_restores_only_explicit_song_choices():
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
-def _song_input_node_harness() -> str:
-    script = _script()
-    functions = "\n".join(
-        _function_body(script, head) + "\n}"
-        for head in (
-            "function ownSongFile()",
-            "function syncLyricsRecognition()",
-            "function showSongInputMode(",
-            "function syncSongInputControls()",
-            "function switchSongInputMode(",
-            "async function loadLyricsFile(",
-            "function syncBuilderValues()", "function songRecordingBusy()",
-            "async function applySample(",
-            "function trackSample(",
-        )
-    )
-    sample_change = script[script.index('$("sample-select").addEventListener("change", () => {'):]
-    sample_change = sample_change[:sample_change.index("\n});") + len("\n});")]
-    return textwrap.dedent(
-        """
-        const assert = require("node:assert/strict");
-        const elements = new Map();
-        let focused = "";
-        function $(id) {
-          if (!elements.has(id)) elements.set(id, {
-            _value: "", hidden: false, textContent: "", files: [], options: [],
-            selectedOptions: [{ textContent: "Sample song" }], listeners: new Map(),
-            classList: { toggle() {} },
-            get value() { return this._value; },
-            set value(value) {
-              this._value = value;
-              if (id === "midi" && value === "") this.files = [];
-            },
-            focus() { focused = id; },
-            addEventListener(type, callback) { this.listeners.set(type, callback); },
-            dispatchEvent(event) { this.listeners.get(event.type)?.(event); },
-            replaceChildren() {},
-            setAttribute(name, value) { this[name] = value; }
-          });
-          return elements.get(id);
-        }
-        let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
-        let editorImportedFile = null, lyricsFileReadSequence = 0, lyricsFileReading = false;
-        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
-        const updateBuilderOverlay = () => {}, syncLyricsInput = () => {};
-        const originalLyricsFile = () => null;
-        let recordedSongFile = null, activeSongRecording = null, recordingRequestPending = false;
-        let midiFromSample = false, samplePending = null, restoring = false;
-        let sampleLyricsId = "", sampleLyricsBaseline = null;
-        const sampleCredits = {}, sampleLicenseUrls = {}, sampleDescriptions = {};
-        const EDITOR_WORDLIST_VALUE = "__editor__";
-        const showsEditorWordlist = () => false;
-        const activeCustomList = () => null;
-        const simpleMode = false;
-        const renderCustomListMenu = () => {};
-        const syncJsonInputControls = () => {};
-        const activeLyricsJson = () => null;
-        const updateWordlistUsageNotice = () => {};
-        const selectedSampleIsAudio = () => false;
-        const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
-        const clearAudioInput = clearAudioPresentation;
-        const stopSongRecording = () => {};
-        const clearRecordedSongPlayback = () => {};
-        const syncRecordingUi = () => { syncSongInputControls(); };
-        const clearEditorFile = () => { $("editor").files = []; };
-        let previews = 0, saves = 0, builderMessage = "";
-        const schedulePreview = () => { previews += 1; };
-        const saveForm = () => { saves += 1; };
-        const showBuilderMsg = (message) => { builderMessage = message; };
-        const sampleTitleOf = (id) => id;
-        const document = { querySelector: () => $("analyze-stage") };
-        """
-    ) + functions + "\n" + sample_change
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
