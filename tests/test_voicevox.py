@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import math
 import wave
+from copy import deepcopy
 
 import pytest
 
@@ -148,6 +149,108 @@ def test_build_score_one_frame_gap_at_head():
     assert score["notes"][0]["frame_length"] == vv.HEAD_REST_FRAMES
     # 合計は変わらない(絶対時間が保たれる)
     assert sum(n["frame_length"] for n in score["notes"]) == round(0.5 * FRAME_RATE)
+
+
+@pytest.mark.parametrize(("previous_frames", "gap", "absorbed"), [
+    (8, 2, True), (7, 2, False),
+    (12, 3, True), (11, 3, False),
+    (16, 4, True), (15, 4, False),
+    (100, 5, False),
+])
+def test_build_score_micro_rest_limits_keep_note_onsets(previous_frames, gap, absorbed):
+    following_start = 50 + previous_frames + gap
+    project = _project([
+        _note(0, 60, 50 / FRAME_RATE, (50 + previous_frames) / FRAME_RATE, "ハ"),
+        _note(1, 62, following_start / FRAME_RATE, (following_start + 20) / FRAME_RATE, "サ"),
+    ])
+    original = deepcopy(project)
+
+    notes = build_score(project)["notes"]
+
+    assert notes[0] == {"key": None, "frame_length": 50, "lyric": ""}
+    assert notes[1] == {
+        "key": 60, "frame_length": previous_frames + (gap if absorbed else 0), "lyric": "ハ",
+    }
+    assert sum(note["frame_length"] for note in notes[:-1]) == following_start
+    assert notes[-1] == {"key": 62, "frame_length": 20, "lyric": "サ"}
+    assert sum(note["frame_length"] for note in notes) == following_start + 20
+    assert len(notes) == (3 if absorbed else 4)
+    assert project == original
+
+
+@pytest.mark.parametrize("following_kana", ["カ", "サ", "タ", "ハ", "ガ", "ラ", "ア"])
+def test_build_score_micro_rest_is_not_limited_to_one_consonant(following_kana):
+    notes = build_score(_project([
+        _note(0, 60, 20 / FRAME_RATE, 60 / FRAME_RATE, "ア"),
+        _note(1, 62, 64 / FRAME_RATE, 84 / FRAME_RATE, following_kana),
+    ]))["notes"]
+
+    assert [n["key"] for n in notes] == [None, 60, 62]
+    assert notes[1]["frame_length"] == 44
+    assert notes[-1]["lyric"] == following_kana
+    assert sum(n["frame_length"] for n in notes[:-1]) == 64
+
+
+@pytest.mark.parametrize(("previous_kana", "following_kana"), [
+    ("ッ", "カ"), ("ン", "カ"), ("カ", "ッ"), ("カ", "ン"),
+])
+def test_build_score_keeps_micro_rest_next_to_sokuon_or_nasal(previous_kana, following_kana):
+    notes = build_score(_project([
+        _note(0, 60, 20 / FRAME_RATE, 60 / FRAME_RATE, previous_kana),
+        _note(1, 62, 64 / FRAME_RATE, 84 / FRAME_RATE, following_kana),
+    ]))["notes"]
+
+    assert [n["key"] for n in notes] == [None, 60, None, 62]
+    assert notes[2] == {"key": None, "frame_length": 4, "lyric": ""}
+    assert [n["lyric"] for n in notes if n["key"] is not None] == [
+        previous_kana, following_kana,
+    ]
+
+
+def test_absorb_micro_rests_keeps_head_tail_and_input_score():
+    notes = [
+        {"key": None, "frame_length": 2, "lyric": ""},
+        {"key": 60, "frame_length": 12, "lyric": "ハ"},
+        {"key": None, "frame_length": 3, "lyric": ""},
+        {"key": 64, "frame_length": 16, "lyric": "サ"},
+        {"key": None, "frame_length": 4, "lyric": ""},
+        {"key": 65, "frame_length": 20, "lyric": "タ"},
+        {"key": None, "frame_length": 2, "lyric": ""},
+    ]
+    original = deepcopy(notes)
+
+    result = vv._absorb_micro_rests(notes)
+
+    assert result == [notes[0], {**notes[1], "frame_length": 15},
+                      {**notes[3], "frame_length": 20}, notes[5], notes[6]]
+    assert notes == original
+    assert sum(n["frame_length"] for n in result) == sum(n["frame_length"] for n in notes)
+
+
+@pytest.mark.parametrize("mode", ["parody", "layered"])
+@pytest.mark.parametrize(("gap", "absorbed"), [(2, True), (4, False)])
+def test_build_score_micro_rest_uses_final_mora_length(mode, gap, absorbed):
+    following_start = 60 + gap
+    project = _project([
+        _note(0, 60, 20 / FRAME_RATE, 60 / FRAME_RATE, "ハサ"),
+        _note(1, 62, following_start / FRAME_RATE, (following_start + 20) / FRAME_RATE, "タ"),
+    ])
+    if mode == "parody":
+        project.parody = Parody("", lines=[ParodyLine(0, [
+            ParodyWord("ハサ", "ハサ", "", "", "", [0], ["ハサ"]),
+            ParodyWord("タ", "タ", "", "", "", [1], ["タ"]),
+        ])])
+    else:
+        project.lyric_layers = {}
+    original = deepcopy(project)
+
+    notes = build_score(project)["notes"]
+
+    assert [n["lyric"] for n in notes if n["key"] is not None] == ["ハ", "サ", "タ"]
+    assert [n["key"] for n in notes] == [None, 60, 60] + ([] if absorbed else [None]) + [62]
+    assert sum(n["frame_length"] for n in notes[:-1]) == following_start
+    assert sum(n["frame_length"] for n in notes) == following_start + 20
+    assert project == original
 
 
 def test_build_score_choon_note_inherits_prev_vowel():
