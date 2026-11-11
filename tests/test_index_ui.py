@@ -6,11 +6,10 @@ import shutil
 import subprocess
 import textwrap
 from html.parser import HTMLParser
-from pathlib import Path
 
 import pytest
 
-INDEX = Path(__file__).resolve().parents[1] / "src/soramimic_video/static/index.html"
+from ui_helpers import INDEX, _function_body, _script, _song_input_node_harness
 
 
 class _Collector(HTMLParser):
@@ -586,7 +585,8 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         };
         const $ = element;
         const fitSongCreditPreview = () => {};
-        const ownSongFile = () => ({ name: "upload.mid" });
+        let file = { name: "upload.mid" };
+        const ownSongFile = () => file;
         let midiSampleId = "";
         const sampleTitleOf = () => "サンプル曲";
         const sampleCredits = {};
@@ -609,6 +609,11 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
     ) + functions + textwrap.dedent(
         """
         updateSongTextPreviews();
+        assert.equal($("song-title").placeholder, "例: upload（空欄ならファイル名を使用）");
+        assert.equal($("song-credit").placeholder,
+          "例: 夜に駆ける\\n空欄なら曲名を使用。著作者名なども入力できます。");
+        assert.equal($("song-title").value, "夜に駆ける");
+        assert.equal($("song-credit").value, "オトノケ - Creepy Nuts");
         assert.equal($("song-preview-thumb-caption").textContent,
           "夜に駆ける を 駅名 で歌ってみた");
         assert.equal($("song-preview-footer").textContent,
@@ -658,6 +663,8 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
         $("song-credit").value = " \\t\\n　";
         $("song-title").value = "三原色";
         updateSongTextPreviews();
+        assert.equal($("song-credit").placeholder,
+          "例: 三原色\\n空欄なら曲名を使用。著作者名なども入力できます。");
         assert.equal($("song-preview-credits-original").textContent,
           "Original　三原色");
         assert.equal($("song-preview-footer").textContent,
@@ -668,6 +675,32 @@ def test_song_text_previews_follow_title_credits_and_wordlist():
           "Original　upload");
         assert.equal($("song-preview-footer").textContent,
           "lyrics & video by Soramimic / Original: upload");
+
+        // ファイルの置換・解除でも既定値だけを更新し、空欄を保つ。
+        $("song-credit").value = "";
+        for (const [name, expected] of [
+          ["次の曲.wav", "次の曲"], ["次の曲.XF.MID", "次の曲"],
+          ["次の曲.xf.midi", "次の曲"], ["次の曲.ver2.XF.MID", "次の曲.ver2"],
+        ]) {
+          file = { name };
+          updateSongTextPreviews();
+          assert.equal($("song-title").placeholder, `例: ${expected}（空欄ならファイル名を使用）`);
+          assert.equal($("song-credit").placeholder,
+            `例: ${expected}\\n空欄なら曲名を使用。著作者名なども入力できます。`);
+          assert.equal($("song-title").value, "");
+          assert.equal($("song-credit").value, "");
+          assert.equal(songTitleOf(file), expected);
+        }
+        file = null;
+        updateSongTextPreviews();
+        assert.equal($("song-title").placeholder, "空欄ならファイル名を使用");
+        assert.equal($("song-credit").placeholder,
+          "空欄なら曲名を使用。著作者名なども入力できます。");
+        midiSampleId = "sample";
+        updateSongTextPreviews();
+        assert.equal($("song-title").placeholder, "例: サンプル曲（空欄ならファイル名を使用）");
+        assert.equal($("song-credit").placeholder,
+          "例: サンプル曲\\n空欄なら曲名を使用。著作者名なども入力できます。");
 
         // VTuberカードの必須表記もフッターへ反映する。
         wordlist = "vtuber";
@@ -926,16 +959,68 @@ def test_history_player_disposal_stops_detaches_and_releases_media():
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
-def _script() -> str:
-    """<script> 以降(=画面のふるまい)だけを返す。"""
-    text = INDEX.read_text(encoding="utf-8")
-    return text[text.index("<script>") :]
-
-
-def _function_body(script: str, head: str) -> str:
-    """head で始まる関数の中身(次の行頭 } まで)を返す。"""
-    body = script[script.index(head) :]
-    return body[: body.index("\n}\n")]
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_long_running_job_notice_follows_stage_elapsed_and_clears_on_cancel():
+    functions = "\n".join(_function_body(_script(), head) + "\n}" for head in (
+        "function setJobStatus(", "function setRunningJobStatus(",
+        "function audioAnalysisIsStarting(", "async function poll(",
+    ))
+    node = r'''
+      const assert = require('node:assert/strict');
+      const elements = new Map();
+      const $ = id => {
+        if (!elements.has(id)) elements.set(id, {hidden: false, textContent: ''});
+        return elements.get(id);
+      };
+      let currentJob = 'job', pollSeq = 1, pollLastAt = 0, pollFailures = 0;
+      let cancelPendingJob = null, reviewJobId = null;
+      const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], POLL_INTERVAL_MS = 2000;
+      const STAGE_LABELS = {analyze: 'MIDI解析', convert: '空耳変換'};
+      const headers = () => ({}), renderStages = () => {}, renderBuilderBar = () => {};
+      const schedulePoll = () => {}, setBuilderState = () => {}, openJobDetails = () => {};
+      const finish = () => {}, queueWaitLabel = () => '開始待ち';
+      let job = {status: 'running', stage: 'analyze', params: {input_kind: 'audio'},
+        stage_elapsed: 179, stage_progress: 22, stage_detail: '歌詞の読みを確認しています'};
+      const fetch = async () => ({ok: true, status: 200, json: async () => job});
+      FUNCTIONS
+      const notice = () => $('builder-status').textContent.split('\n')[1] || '';
+      (async () => {
+        await poll('job');
+        assert.equal(notice(), '', 'ordinary processing has no extra warning');
+        job.stage_elapsed = 180;
+        await poll('job');
+        assert.ok(notice().length > 0, 'the threshold adds a continuation notice');
+        assert.equal($('status-line').textContent, $('builder-status').textContent);
+        assert.ok($('builder-status').textContent.includes(job.stage_detail));
+        assert.ok($('builder-status').textContent.includes('22%'));
+        const message = notice();
+        job.stage_progress = 1; // Initial model loading uses a different progress branch.
+        await poll('job');
+        assert.equal(notice(), message);
+        delete job.stage_progress; job.stage = 'convert';
+        await poll('job');
+        assert.equal(notice(), message, 'stages without percentage also show it');
+        job.stage_elapsed = 0; // A new stage has just started.
+        await poll('job');
+        assert.equal(notice(), '', 'the notice resets with the stage timer');
+        delete job.stage_elapsed; // Older responses without a timer remain compatible.
+        await poll('job');
+        assert.equal(notice(), '');
+        job.stage_elapsed = 410;
+        await poll('job');
+        assert.equal(notice(), message);
+        cancelPendingJob = 'job';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '中断しています…');
+        cancelPendingJob = null; job.status = 'canceled';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '中断しました');
+        job.status = 'queued';
+        await poll('job');
+        assert.equal($('builder-status').textContent, '開始待ち');
+      })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''.replace("FUNCTIONS", functions)
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
@@ -1113,16 +1198,19 @@ def test_lyric_adjustment_round_trips_with_saved_form():
         for (const enabled of [true, false]) {
           $('adjust-lyrics').checked = enabled;
           $('lyrics').value = 'あいうえお';
+          $('title-reading').value = 'れもん';
           midiSampleId = sampleLyricsId = 'furusato';
           sampleLyricsBaseline = '元のサンプル歌詞';
           saveForm();
           $('adjust-lyrics').checked = !enabled;
           $('lyrics').value = '';
+          $('title-reading').value = '';
           midiSampleId = sampleLyricsId = '';
           sampleLyricsBaseline = null;
           await doRestoreForm();
           assert.equal($('adjust-lyrics').checked, enabled);
           assert.equal($('lyrics').value, 'あいうえお');
+          assert.equal($('title-reading').value, 'れもん');
           assert.equal(restoredSampleId, 'furusato');
           assert.equal(sampleLyricsId, 'furusato');
           assert.equal(sampleLyricsBaseline, '元のサンプル歌詞');
@@ -1130,9 +1218,112 @@ def test_lyric_adjustment_round_trips_with_saved_form():
         values.set(FORM_KEY, '{}');
         await doRestoreForm();
         assert.equal($('adjust-lyrics').checked, false, 'legacy saves retain the default');
+        assert.equal($('title-reading').value, '', 'legacy saves use automatic reading');
       })().catch(error => {console.error(error); process.exit(1);});
     '''.replace("__FUNCTIONS__", functions)
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_title_reading_and_its_help_belong_to_the_candidate_dialog():
+    node = r'''
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const vm = require('node:vm');
+      const {parseHTML} = require('linkedom');
+      const html = fs.readFileSync(process.argv[1], 'utf8');
+      const {document, window, Event} = parseHTML(html);
+      const dialog = document.getElementById('title-candidates-dialog');
+      const reading = document.getElementById('title-reading');
+      assert.equal(reading.closest('dialog'), dialog);
+      assert.equal(document.getElementById('advanced').contains(reading), false);
+      assert.equal(document.getElementById('title-candidates-search').closest('dialog'), dialog);
+      const context = vm.createContext({document, window, setTimeout, clearTimeout});
+      const info = html.slice(html.indexOf('const INFO_ANCHOR_TAGS'),
+        html.indexOf('// 秒数を「30秒」'));
+      vm.runInContext(info, context);
+      const help = document.getElementById('title-reading-hint');
+      const button = dialog.querySelector('[aria-controls="title-reading-hint"]');
+      assert.equal(help.hidden, true);
+      button.getBoundingClientRect = () => ({left: 10, top: 10, bottom: 30, width: 20});
+      dialog.setAttribute('open', '');
+      button.click();
+      assert.equal(help.hidden, false);
+      assert.equal(help.closest('dialog'), dialog, 'help must render in the modal top layer');
+      assert.equal(button.getAttribute('aria-expanded'), 'true');
+      dialog.removeAttribute('open');
+      dialog.dispatchEvent(new Event('close'));
+      assert.equal(help.hidden, true, 'closing the dialog also closes its help');
+      assert.equal(button.getAttribute('aria-expanded'), 'false');
+    '''
+    subprocess.run(["node", "-e", node, str(INDEX)], check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_title_reading_placeholder_tracks_source_without_overwriting_input():
+    script = _script()
+    block = script[script.index('let titleReadingContext = ""'):
+                   script.index("function selectedTitleWords()")]
+    node = r'''
+      const assert = require('node:assert/strict');
+      const input = {value: '', placeholder: ''}, dialog = {open: false};
+      const $ = id => id === 'title-reading' ? input : dialog;
+      const OWN_SONG_VALUE = 'own';
+      let combo = {sampleId: 'own'}, title = '三原色';
+      const currentCombo = () => combo, ownSongFile = () => null, songTitleOf = () => title;
+      const headers = () => ({}), setTimeout = () => 1, clearTimeout = () => {};
+      const requests = [];
+      const fetch = (url, options) => new Promise(resolve => {
+        requests.push({url, payload: JSON.parse(options.body), signal: options.signal, resolve});
+      });
+    ''' + block + r'''
+      (async () => {
+        await updateTitleReadingPlaceholder();
+        assert.equal(requests.length, 0, 'closed dialogs do not request readings');
+        dialog.open = true;
+        const first = updateTitleReadingPlaceholder();
+        assert.deepEqual(requests[0].payload, {title: '三原色'});
+        assert.match(input.placeholder, /取得中/);
+        await updateTitleReadingPlaceholder();
+        assert.equal(requests.length, 1, 'reuse an in-flight request');
+        requests[0].resolve({ok: true, json: async () => ({reading: 'サンゲンショク'})});
+        await first;
+        assert.equal(input.placeholder, '例: サンゲンショク（空欄なら曲名から自動）');
+        assert.equal(input.value, '');
+        input.value = 'さんげんしょく';
+        await updateTitleReadingPlaceholder();
+        assert.equal(requests.length, 1, 'manual readings do not change the default');
+        title = '別の曲';
+        const stale = updateTitleReadingPlaceholder();
+        const oldRequest = requests.at(-1);
+        title = '新しい曲';
+        const current = updateTitleReadingPlaceholder();
+        assert.equal(oldRequest.signal.aborted, true);
+        const newRequest = requests.at(-1);
+        newRequest.resolve({ok: true, json: async () => ({reading: 'アタラシイキョク'})});
+        await current;
+        oldRequest.resolve({ok: true, json: async () => ({reading: 'フルイヨミ'})});
+        await stale;
+        assert.equal(input.placeholder, '例: アタラシイキョク（空欄なら曲名から自動）');
+        assert.equal(input.value, 'さんげんしょく', 'never overwrite manual readings');
+        combo = {sampleId: 'momiji'};
+        const sample = updateTitleReadingPlaceholder();
+        assert.deepEqual(requests.at(-1).payload, {sample: 'momiji'});
+        requests.at(-1).resolve({ok: true, json: async () => ({reading: 'モミジ'})});
+        await sample;
+        assert.equal(input.placeholder, '例: モミジ（空欄なら曲名から自動）');
+        combo = {sampleId: 'own'}; title = '失敗する曲';
+        const failed = updateTitleReadingPlaceholder();
+        requests.at(-1).resolve({ok: false, json: async () => ({detail: 'busy'})});
+        await failed;
+        assert.equal(input.placeholder, '空欄なら曲名から自動で読みを決定');
+        title = '';
+        await updateTitleReadingPlaceholder();
+        assert.equal(input.placeholder, 'ひらがな・カタカナ（空欄なら曲名から自動）',
+          'clearing removes the old default');
+      })().catch(error => {console.error(error); process.exitCode = 1;});
+    '''
+    subprocess.run(["node", "-e", node], check=True, capture_output=True, text=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -1151,7 +1342,7 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         setAttribute(name, value) {this[name] = value;},
         addEventListener(event, fn) {this.listeners[event] = fn;},
         focus() {document.activeElement = this;},
-        showModal() {this.open = true;},
+        showModal() {this.open = true; this.showCount = (this.showCount || 0) + 1;},
         close() {this.open = false; this.listeners.close?.();},
       });
       const document = {createElement: element, activeElement: null};
@@ -1173,10 +1364,19 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
       let titleChoice = null, titleCandidates = [], titleCandidatesContext = '';
       let titleCandidatesAbort = null, titleCandidatesSeq = 0, saved, previews = 0;
       const saveForm = () => {saved = titleChoice;};
-      const schedulePreview = () => {previews++;};
+      const schedulePreview = () => {refreshTitleChoices(); previews++;};
+      const operations = [];
+      globalThis.VideoOperations = {begin(options) {
+        const operation = {options, ended: false, end() {this.ended = true;}};
+        operations.push(operation);
+        return operation;
+      }};
       const setTimeout = () => 1, clearTimeout = () => {};
       let resolveFetch, sent, signal;
       const fetch = async (_url, options) => {
+        if (_url === '/api/title-reading') {
+          return {ok: true, json: async () => ({reading: 'ジドウノヨミ'})};
+        }
         sent = JSON.parse(options.body);
         signal = options.signal;
         return await new Promise(resolve => {resolveFetch = resolve;});
@@ -1187,6 +1387,7 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
           label: 'ハンゼン ＋ ホフ', reading: 'ハンゼン・ホフ',
           originals: ['ハンゼン氏', 'ホフ氏']};
         const load = () => $('title-candidates-load').listeners.click();
+        const search = () => $('title-candidates-search').listeners.click();
         const select = () => $('title-words').listeners.change();
         const dialog = $('title-candidates-dialog');
         const list = $('title-candidates-list');
@@ -1196,6 +1397,8 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         assert.equal(list.children.length, 0);
         assert.match($('title-candidates-dialog-status').textContent, /探しています/);
         assert.equal($('title-candidates-load').disabled, true);
+        assert.equal($('title-candidates-search').disabled, true);
+        assert.deepEqual(operations.at(-1).options.allow, [$('title-reading')]);
         assert.deepEqual(sent, {title, wordlist: 'scientist', where: 'field=天文学'});
         resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
         await pending;
@@ -1311,6 +1514,66 @@ def test_title_search_opens_choices_and_discards_dismissed_or_stale_responses():
         titleChoice = {...choice, context: '{invalid'};
         assert.doesNotThrow(refreshTitleChoices, 'corrupt saved context cannot break the UI');
         assert.equal(titleChoice, null);
+        $('title-candidates-close').listeners.click();
+        // A reading is sent for uploaded songs, samples and custom dictionaries.
+        for (const source of [
+          {sampleId: 'own', wordlistName: 'scientist', customList: null},
+          {sampleId: 'momiji', wordlistName: 'scientist', customList: null},
+          {sampleId: 'own', wordlistName: '', customList: {text: 'one'}},
+        ]) {
+          combo = source;
+          const originalSearch = load();
+          const originalResolve = resolveFetch;
+          const originalSignal = signal;
+          const showCount = dialog.showCount;
+          $('title-reading').value = ' れもん ';
+          $('title-reading').listeners.input();
+          assert.equal(originalSignal.aborted, true, 'reading edits cancel the initial search');
+          assert.equal(dialog.open, true, 'editing the reading must keep the dialog open');
+          assert.equal($('title-candidates-search').disabled, false);
+          const readingSearch = search();
+          assert.equal(dialog.showCount, showCount, 'searching again uses the open dialog');
+          assert.equal(sent.title_reading, 'れもん');
+          if (source.sampleId === 'momiji') assert.equal(sent.sample, 'momiji');
+          else assert.equal(sent.title, songTitleOf());
+          if (source.customList) assert.equal(sent.wordlist_text, 'one');
+          resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+          await readingSearch;
+          originalResolve({ok: true, json: async () => ({candidates: []})});
+          await originalSearch;
+          assert.equal(titleCandidates.length, 1, 'an older search cannot clear the new results');
+          list.children[0].listeners.click();
+          assert.equal(selectedTitleWords(), JSON.stringify(choice.words));
+          const reopened = load();
+          resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+          await reopened;
+          // Editing the reading clears the previous choice and its cached candidates.
+          $('title-reading').value = 'もみじ';
+          $('title-reading').listeners.input();
+          assert.equal(titleChoice, null);
+          assert.deepEqual(titleCandidates, []);
+          assert.equal(saved, null);
+          assert.equal(dialog.open, true);
+          const obsoleteReading = search();
+          $('title-reading').value = '';
+          $('title-reading').listeners.input();
+          assert.equal(signal.aborted, true);
+          resolveFetch({ok: true, json: async () => ({candidates: [choice]})});
+          await obsoleteReading;
+          assert.equal(dialog.open, true);
+          assert.deepEqual(titleCandidates, []);
+          const enter = $('title-reading').listeners.keydown;
+          assert.equal(enter({key: 'Enter', isComposing: true}), undefined,
+            'IME composition must not start a search');
+          let prevented = false;
+          const automaticReading = enter({key: 'Enter', isComposing: false,
+            preventDefault() {prevented = true;}});
+          assert.equal(prevented, true);
+          assert.equal('title_reading' in sent, false);
+          resolveFetch({ok: true, json: async () => ({candidates: []})});
+          await automaticReading;
+          $('title-candidates-close').listeners.click();
+        }
       })().catch(error => {console.error(error); process.exitCode = 1;});
     '''
     subprocess.run(["node", "-e", harness], check=True, capture_output=True, text=True)
@@ -1481,81 +1744,6 @@ def test_builder_restores_only_explicit_song_choices():
         """
     )
     subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
-
-
-def _song_input_node_harness() -> str:
-    script = _script()
-    functions = "\n".join(
-        _function_body(script, head) + "\n}"
-        for head in (
-            "function ownSongFile()",
-            "function syncLyricsRecognition()",
-            "function showSongInputMode(",
-            "function syncSongInputControls()",
-            "function switchSongInputMode(",
-            "async function loadLyricsFile(",
-            "function syncBuilderValues()", "function songRecordingBusy()",
-            "async function applySample(",
-            "function trackSample(",
-        )
-    )
-    sample_change = script[script.index('$("sample-select").addEventListener("change", () => {'):]
-    sample_change = sample_change[:sample_change.index("\n});") + len("\n});")]
-    return textwrap.dedent(
-        """
-        const assert = require("node:assert/strict");
-        const elements = new Map();
-        let focused = "";
-        function $(id) {
-          if (!elements.has(id)) elements.set(id, {
-            _value: "", hidden: false, textContent: "", files: [], options: [],
-            selectedOptions: [{ textContent: "Sample song" }], listeners: new Map(),
-            classList: { toggle() {} },
-            get value() { return this._value; },
-            set value(value) {
-              this._value = value;
-              if (id === "midi" && value === "") this.files = [];
-            },
-            focus() { focused = id; },
-            addEventListener(type, callback) { this.listeners.set(type, callback); },
-            dispatchEvent(event) { this.listeners.get(event.type)?.(event); },
-            replaceChildren() {},
-            setAttribute(name, value) { this[name] = value; }
-          });
-          return elements.get(id);
-        }
-        let midiSampleId = "", sampleApplySeq = 0, songInputMode = "upload";
-        let editorImportedFile = null, lyricsFileReadSequence = 0, lyricsFileReading = false;
-        const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
-        const updateBuilderOverlay = () => {}, syncLyricsInput = () => {};
-        const originalLyricsFile = () => null;
-        let recordedSongFile = null, activeSongRecording = null, recordingRequestPending = false;
-        let midiFromSample = false, samplePending = null, restoring = false;
-        let sampleLyricsId = "", sampleLyricsBaseline = null;
-        const sampleCredits = {}, sampleLicenseUrls = {}, sampleDescriptions = {};
-        const EDITOR_WORDLIST_VALUE = "__editor__";
-        const showsEditorWordlist = () => false;
-        const activeCustomList = () => null;
-        const simpleMode = false;
-        const renderCustomListMenu = () => {};
-        const syncJsonInputControls = () => {};
-        const activeLyricsJson = () => null;
-        const updateWordlistUsageNotice = () => {};
-        const selectedSampleIsAudio = () => false;
-        const clearAudioPresentation = () => { $("audio-input-panel").hidden = true; };
-        const clearAudioInput = clearAudioPresentation;
-        const stopSongRecording = () => {};
-        const clearRecordedSongPlayback = () => {};
-        const syncRecordingUi = () => { syncSongInputControls(); };
-        const clearEditorFile = () => { $("editor").files = []; };
-        let previews = 0, saves = 0, builderMessage = "";
-        const schedulePreview = () => { previews += 1; };
-        const saveForm = () => { saves += 1; };
-        const showBuilderMsg = (message) => { builderMessage = message; };
-        const sampleTitleOf = (id) => id;
-        const document = { querySelector: () => $("analyze-stage") };
-        """
-    ) + functions + "\n" + sample_change
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
@@ -2630,6 +2818,98 @@ def test_video_share_preparation_blocks_controls_until_source_is_ready():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
+def test_ios_native_controls_refresh_after_resume_without_restarting_media():
+    script = _script()
+    start = script.index("function refreshNativePlaybackControls(")
+    end = script.index("const SHARE_TEXT =", start)
+    functions = _function_body(script, "function isIOSPlatform()") + "\n}\n"
+    node = r'''
+      const assert = require('node:assert/strict');
+      const document = new EventTarget(), window = new EventTarget();
+      const navigator = {platform: 'iPhone'};
+      document.visibilityState = 'visible';
+      const media = new EventTarget();
+      let controls = true, shownPlaying = false;
+      const writes = [];
+      Object.assign(media, {
+        isConnected: true, paused: false, currentTime: 14, src: '/old-job',
+        matches: () => true,
+        play() { throw Error('must not restart playback'); },
+        pause() { throw Error('must not interrupt playback'); },
+        load() { throw Error('must not reload the source'); },
+      });
+      Object.defineProperty(media, 'controls', {
+        get: () => controls,
+        set: value => {
+          writes.push(value); controls = value;
+          // Model the native UI rereading paused when controls become available.
+          if (value) shownPlaying = !media.paused;
+        },
+      });
+      document.querySelectorAll = () => [media];
+      FUNCTIONS
+      const refresh = (target, type) => {
+        writes.length = 0;
+        target.dispatchEvent(new Event(type));
+      };
+      document.visibilityState = 'hidden';
+      refresh(document, 'visibilitychange');
+      assert.deepEqual(writes, [], 'backgrounding must leave controls alone');
+      document.visibilityState = 'visible';
+      for (const [target, type] of [
+        [document, 'visibilitychange'], [window, 'pageshow'], [window, 'focus'],
+      ]) {
+        shownPlaying = false;
+        refresh(target, type);
+        assert.equal(shownPlaying, true, 'resume must reread the actual playing state');
+        assert.equal(controls, true);
+      }
+      media.paused = true;
+      refresh(window, 'focus');
+      assert.equal(shownPlaying, false, 'a user-paused video must stay paused');
+      assert.equal(media.currentTime, 14);
+      assert.equal(media.src, '/old-job');
+      // A delayed playing event must resync after the earlier visibility event.
+      media.paused = false;
+      for (const type of ['playing', 'webkitpresentationmodechanged',
+                          'webkitendfullscreen', 'leavepictureinpicture']) {
+        const event = new Event(type);
+        Object.defineProperty(event, 'target', {value: media});
+        writes.length = 0;
+        document.dispatchEvent(event);
+        assert(writes.length > 0, type);
+        assert.equal(shownPlaying, true);
+      }
+      const skips = [
+        [media, 'webkitPresentationMode', 'picture-in-picture'],
+        [media, 'webkitPresentationMode', 'fullscreen'],
+        [media, 'webkitDisplayingFullscreen', true],
+        [document, 'pictureInPictureElement', media],
+        [document, 'fullscreenElement', media],
+        [media, 'isConnected', false],
+        [media, 'matches', () => false],
+      ];
+      for (const [object, key, value] of skips) {
+        const previous = object[key]; object[key] = value;
+        refresh(window, 'focus');
+        assert.deepEqual(writes, [], key);
+        object[key] = previous;
+      }
+      controls = false;
+      refresh(window, 'focus');
+      assert.deepEqual(writes, [], 'share preparation keeps its controls hidden');
+      controls = true;
+      navigator.platform = 'Linux';
+      refresh(window, 'focus');
+      assert.deepEqual(writes, [], 'other platforms keep their existing behavior');
+      navigator.platform = 'MacIntel'; navigator.maxTouchPoints = 5;
+      refresh(window, 'focus');
+      assert(writes.length > 0, 'iPad desktop mode also refreshes');
+    '''.replace("FUNCTIONS", functions + script[start:end])
+    subprocess.run(["node", "-e", node], check=True, text=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for UI behavior test")
 def test_each_completed_video_gets_fresh_paused_native_controls():
     """2回目の完成動画が前回の停止アイコンを引き継がない。"""
     fresh = _function_body(_script(), "function freshBuilderVideo()") + "\n}"
@@ -2687,6 +2967,10 @@ def test_cancel_job_shows_pending_feedback_and_recovers_from_request_failure():
         const statuses = [];
         const messages = [];
         const restarted = [];
+        let cancellationTimeout;
+        const setTimeout = (callback) => {{ cancellationTimeout = callback; return 1; }};
+        const clearTimeout = () => {{}};
+        globalThis.VideoOperations = {{ begin: () => ({{ end() {{}} }}) }};
         const setJobStatus = (text) => statuses.push(text);
         const showBuilderMsg = (text) => messages.push(text);
         const restartPolling = (id) => restarted.push(id);
@@ -2717,6 +3001,11 @@ def test_cancel_job_shows_pending_feedback_and_recovers_from_request_failure():
           assert.deepEqual(restarted, ["job-1"]);
           assert.equal(elements.cancel.disabled, true,
             "successful request stays disabled until polling reaches a terminal state");
+
+          cancellationTimeout();
+          assert.match(messages.at(-1), /受け付け/,
+            "an accepted request must be distinguished from a network failure");
+          assert.doesNotMatch(messages.at(-1), /通信状態/);
 
           currentJob = "job-2";
           cancelPendingJob = null;
@@ -3269,6 +3558,7 @@ def test_editor_transfer_populates_json_and_recognition_mode():
         _function_body(script, head) + "\n}"
         for head in (
             "async function receiveEditorLyrics()",
+            "async function updateUploadedSongMetadata(",
             "async function readParodyFile(",
             "function parodySourceLyrics(",
             "function syncLyricsRecognition()",
@@ -3309,7 +3599,11 @@ def test_editor_transfer_populates_json_and_recognition_mode():
           assert.equal(peer, editorPeer); await apply(payload);
         }};
         const clearAudioInput = () => {cleared++;};
-        const ownSongFile = () => null;
+        let selectedFile = null, metadataChoices = [];
+        const ownSongFile = () => selectedFile;
+        const VideoMetadata = {notifyChange: async (kind, isCurrent) => {
+          assert(isCurrent()); metadataChoices.push(kind); return "keep";
+        }};
         const showSongInputMode = mode => {songInputMode = mode;};
         const applyEditorWordlist = async () => {
           assert.deepEqual(JSON.parse(stored.get(EDITOR_KEY)), payload);
@@ -3333,12 +3627,17 @@ def test_editor_transfer_populates_json_and_recognition_mode():
               phrases:["ベツノヒョーキ"]}, "元の表記\\nを保つ"],
             [{originalLines:["字幕の歌詞", "次の行"], phrases:["ヨミ"]}, "字幕の歌詞\\n次の行"],
             [{}, ""],
+            [{videoMetadata:null}, ""],
+            [{videoMetadata:{}}, ""],
+            [{videoMetadata:{songTitle:"", songCredit:""}}, ""],
+            [{videoMetadata:{songCredit:"指定したクレジット"}}, ""],
           ];
           for (const [fields, expected] of variants) {
             elements.clear(); stored.clear(); bridgeReceiving = false;
-            payload = {...base, ...fields, song:{title:"受け渡しテスト"},
+            payload = {...base, song:{title:"自動で付いた曲名"},
               videoMetadata:{songTitle:"表示用の曲名", songCredit:"作詞・作曲: テスト",
-                thumbnailWordlistLabel:"表示用のリスト名"}};
+                thumbnailWordlistLabel:"表示用のリスト名"}, ...fields};
+            if (payload.videoMetadata === null) delete payload.videoMetadata;
             $("lyrics").value = "前回の歌詞";
             $("auto-lyrics").checked = true;
             $("midi").value = "previous.mid";
@@ -3354,10 +3653,17 @@ def test_editor_transfer_populates_json_and_recognition_mode():
             assert.equal(songInputMode, "upload");
             assert.equal(stored.has(EDITOR_SEED_KEY), false);
             assert.deepEqual(imported, payload, "keep the converted assignments and readings");
-            assert.equal($("song-title").value, payload.videoMetadata.songTitle);
-            assert.equal($("song-credit").value, payload.videoMetadata.songCredit);
+            assert.equal($("song-title").value, payload.videoMetadata?.songTitle ?? "",
+              "an implicit song title never fills the user-entered title field");
+            assert.equal($("song-credit").value, payload.videoMetadata?.songCredit ?? "");
             assert.equal($("thumbnail-wordlist-label").value,
-              payload.videoMetadata.thumbnailWordlistLabel);
+              payload.videoMetadata?.thumbnailWordlistLabel ?? "");
+            metadataChoices = []; selectedFile = {name:"uploaded.xf.mid"};
+            await updateUploadedSongMetadata(selectedFile);
+            const hasMetadata = $("song-title").value.trim() || $("song-credit").value.trim();
+            assert.deepEqual(metadataChoices, hasMetadata ? ["song-replacement"] : [],
+              "uploading after transfer asks only about explicitly entered metadata");
+            assert.deepEqual(JSON.parse($("lyrics").value), payload);
             const form = new Map();
             appendSongLyrics({append:(key,value) => form.set(key,value)});
             assert.equal(form.get("lyrics"), expected);

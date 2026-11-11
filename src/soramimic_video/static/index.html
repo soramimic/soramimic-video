@@ -589,6 +589,7 @@
   }
   .turnstile-title { margin: 0; font-weight: 700; }
   .turnstile-copy .hint { margin: .2rem 0 .5rem; }
+  .turnstile-copy .hint:empty { display: none; }
   #turnstile-widget:not(:empty) { display: flex; justify-content: center; margin: .6rem 0; }
   /* ---- ビルダーカード: 曲×単語リストのプルダウン + サムネプレビュー ---- */
   .custom-wordlist-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
@@ -680,7 +681,8 @@
   .custom-wordlist-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .75rem; }
   .custom-wordlist-header h2 { margin: 0; font-size: 1.1rem; }
   #title-candidates-dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
-  #title-candidates-dialog .custom-wordlist-header, #title-candidates-dialog-status { flex: 0 0 auto; }
+  #title-candidates-dialog .custom-wordlist-header, #title-candidates-search-field,
+  #title-candidates-dialog-status { flex: 0 0 auto; }
   #title-candidates-close { min-height: 44px; }
   /* スクロール領域に収めるために行を縮めず、読み・元の名前もボタン内に収める。 */
   #title-candidates-list { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; align-content: start; gap: .5rem; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
@@ -845,6 +847,7 @@
     z-index: 2;
   }
   .builder-progress p { margin: 0; font-size: .9rem; }
+  #builder-status, #status-line { white-space: pre-line; }
   /* 暗い下地の上ではスピナーの既定色(枠の色)が沈むので明るくする */
   .builder-progress .spinner { border-color: #fff5; border-top-color: #fff; }
   .builder-bar {
@@ -1088,7 +1091,7 @@
     <div class="turnstile-panel" tabindex="-1" aria-labelledby="turnstile-title">
       <div class="turnstile-copy" role="status" aria-live="polite">
         <p class="turnstile-title" id="turnstile-title">人間かどうかの確認が必要です</p>
-        <p class="hint">確認欄が表示されたらチェックしてください。完了すると、そのまま合成を始めます。</p>
+        <p class="hint"></p>
       </div>
       <div id="turnstile-widget"></div>
     </div>
@@ -1302,7 +1305,7 @@
     <div class="field">
       <label for="song-credit">クレジット表記</label>
       <textarea id="song-credit" rows="3" maxlength="2000"
-        placeholder="例: さくらさくら（日本古謡）&#10;空欄なら曲名を使用"></textarea>
+        placeholder="空欄なら曲名を使用。著作者名なども入力できます。"></textarea>
       <p class="hint" data-info>動画の左下と最後のクレジットに、入力した文章をそのまま表示します。空欄なら曲名を使います。著作者名や権利者から指定された表記もここに入力してください。</p>
     </div>
 
@@ -1322,7 +1325,7 @@
 
     <div class="field">
       <label for="thumbnail-wordlist-label">単語リスト名</label>
-      <input type="text" id="thumbnail-wordlist-label" maxlength="100" placeholder="選択した単語リスト名">
+      <input type="text" id="thumbnail-wordlist-label" maxlength="100" placeholder="空欄なら選択中の単語リスト名">
       <p class="hint" data-info>サムネイルの「○○で歌ってみた」に表示する名前です。空欄なら選択した単語リスト名を使います。</p>
     </div>
 
@@ -1372,6 +1375,15 @@
   <div class="custom-wordlist-header">
     <h2 id="title-candidates-heading">タイトルの候補</h2>
     <button type="button" id="title-candidates-close" class="btn-sm" autofocus>閉じる</button>
+  </div>
+  <div class="field" id="title-candidates-search-field">
+    <label for="title-reading">曲名の読み</label>
+    <div class="row">
+      <input type="text" id="title-reading" class="row-grow" maxlength="200"
+        placeholder="ひらがな・カタカナ（空欄なら曲名から自動）" enterkeyhint="search" aria-describedby="title-reading-hint">
+      <button type="button" id="title-candidates-search" class="btn-sm">候補を探す</button>
+    </div>
+    <p class="hint" id="title-reading-hint" data-info>タイトルの候補検索に使う読みです。空欄なら曲名から自動で読みを決めます。</p>
   </div>
   <p class="hint" id="title-candidates-dialog-status" role="status"></p>
   <div id="title-candidates-list"></div>
@@ -1707,6 +1719,7 @@ function closeInfoPop() {
 
 function openInfoPop(btn, body, pinned) {
   closeInfoPop();
+  (btn.closest("dialog[open]") || document.body).appendChild(body);
   body.hidden = false;   // 位置の計算には実寸が要るので、先に出してから置く
   btn.setAttribute("aria-expanded", "true");
   openInfo = { btn, body, pinned };
@@ -1754,6 +1767,9 @@ function setupInfoHints() {
     btn.setAttribute("aria-label", `${name}の説明`);
     btn.title = `${name}の説明`;
     btn.innerHTML = '<span aria-hidden="true">ⓘ</span>';
+    body.closest("dialog")?.addEventListener("close", () => {
+      if (openInfo?.btn === btn) closeInfoPop();
+    });
     btn.addEventListener("click", (ev) => {
       // <label> や <summary> の中に置くので、チェック切り替え・開閉の巻き添えを止める
       ev.preventDefault();
@@ -1837,7 +1853,8 @@ async function receiveEditorLyrics() {
       await applyEditorWordlist();
       $("lyrics").value = JSON.stringify(payload, null, 2);
       $("auto-lyrics").checked = false;
-      $("song-title").value = payload.videoMetadata?.songTitle ?? payload.song?.title ?? "";
+      // song.title can be an automatically derived label, not a user-entered title.
+      $("song-title").value = payload.videoMetadata?.songTitle ?? "";
       $("song-credit").value = payload.videoMetadata?.songCredit ?? "";
       $("thumbnail-wordlist-label").value = payload.videoMetadata?.thumbnailWordlistLabel ?? "";
       updateSongTextPreviews();
@@ -2336,7 +2353,7 @@ async function ensureTurnstileToken(timeoutMs = 120000, signal) {
     hideTurnstilePrompt();
     setTurnstilePromptCopy(
       "ロボットではないことを確認しています",
-      "必要な場合だけ確認欄が表示されます。表示されたらチェックしてください。",
+      "",
     );
     const deadline = Date.now() + timeoutMs;
     // ページを開いてすぐ生成された場合はAPIスクリプトの読み込みを少しだけ待つ。
@@ -3064,6 +3081,15 @@ function setJobStatus(text, builderText) {
   $("builder-status").textContent = builderText || text;
 }
 
+function setRunningJobStatus(job, text, builderText = text) {
+  // 工程ごとの経過時間を使い、次の工程へ進んだら案内を消す。
+  // 時間だけで混雑やCPUへの切り替えを断定しない。
+  const notice = job.status === "running" && Number(job.stage_elapsed) >= 180
+    ? "\n通常より時間がかかっています。処理を続けていますので、そのままお待ちください。"
+    : "";
+  setJobStatus(text + notice, builderText + notice);
+}
+
 // 開始時刻は処理内容で大きくぶれるので、秒単位の精密そうな表示にはしない。
 // APIが前方のWAV/XF MIDIを区別して積み上げた幅を、分単位へ丸めて見せる。
 function queueWaitLabel(job) {
@@ -3195,7 +3221,7 @@ async function poll(id, seq = pollSeq) {
     } else if (audioAnalysisIsStarting(job)) {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
       const text = `${job.stage_detail || label}${elapsed}`;
-      setJobStatus(text, text);
+      setRunningJobStatus(job, text);
     } else if (job.stage_progress != null) {
       let tail = ` ${job.stage_progress}%`;
       if (job.stage === "analyze" && job.params.input_kind === "audio" && job.stage_detail) {
@@ -3203,10 +3229,10 @@ async function poll(id, seq = pollSeq) {
       }
       if (job.stage_eta_seconds != null) tail += ` (残り約${fmtDuration(job.stage_eta_seconds)})`;
       else if (job.stage_elapsed) tail += ` (${Math.round(job.stage_elapsed)}秒経過)`;
-      setJobStatus(`${label}${tail}`, `${label}${tail}`);
+      setRunningJobStatus(job, `${label}${tail}`);
     } else {
       const elapsed = job.stage_elapsed ? ` (${Math.round(job.stage_elapsed)}秒経過)` : "";
-      setJobStatus(`実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
+      setRunningJobStatus(job, `実行中: ${job.stage || "…"}${elapsed}`, `${label}${elapsed}`);
     }
     schedulePoll(id, seq, POLL_INTERVAL_MS);
   } else if (job.status === "queued") {
@@ -3257,6 +3283,33 @@ function showWordlistExhaustionNotice(exhausted) {
   const notice = $("wordlist-exhausted-notice");
   notice.textContent = exhausted ? WORDLIST_EXHAUSTED_NOTICE : "";
   notice.hidden = !exhausted;
+}
+
+// 復帰後は再生位置と再生状態を保ったまま、iOSの標準コントロールを更新する。
+function refreshNativePlaybackControls(media) {
+  if (!isIOSPlatform() || document.visibilityState === "hidden"
+      || !media?.isConnected || !media.controls
+      || !media.matches("#builder-video, .history-media video, .history-media audio")) return;
+  // 全画面・PiP中はその表示を維持し、インラインへ戻ったときに更新する。
+  if (media.webkitDisplayingFullscreen || document.fullscreenElement
+      || document.pictureInPictureElement === media
+      || ["fullscreen", "picture-in-picture"].includes(media.webkitPresentationMode)) return;
+  media.controls = false;
+  media.controls = true;
+}
+
+function refreshVisiblePlaybackControls() {
+  for (const media of document.querySelectorAll(
+    "#builder-video, .history-media video, .history-media audio",
+  )) refreshNativePlaybackControls(media);
+}
+
+document.addEventListener("visibilitychange", refreshVisiblePlaybackControls);
+window.addEventListener("pageshow", refreshVisiblePlaybackControls);
+window.addEventListener("focus", refreshVisiblePlaybackControls);
+// 復帰通知より遅れて再生やPiPからの復帰が完了する場合も、最終状態へ合わせる。
+for (const type of ["playing", "webkitpresentationmodechanged", "webkitendfullscreen", "leavepictureinpicture"]) {
+  document.addEventListener(type, event => refreshNativePlaybackControls(event.target), true);
 }
 
 // 保存は形式を選ぶ操作。iPhoneの動画保存では写真に保存できる共有シートを使う。
@@ -3603,6 +3656,9 @@ function setBusy(busy) {
 // 自動的に開いて警告色になっていた場合もここでリセットされる)。
 function showProgress() {
   showBuilderMsg("");
+  const inputKind = ownAudioFile() || selectedSampleIsAudio() ? "audio" : "midi";
+  renderStages({ stages: [], params: { input_kind: inputKind } });
+  $("log").textContent = "";
   $("generation-quality-warning").hidden = true;
   $("job-card").hidden = false;
   $("job-card").open = false;
@@ -3938,6 +3994,22 @@ async function submitJob(previewSec, previewMode) {
           return;
         }
         if (!err.submissionRejected && SoramimicSubmissions.wasSent(form)) {
+          setJobStatus("生成の受付を確認しています…");
+          try {
+            const receipt = await SoramimicSubmissions.lookup(form, headers, submitController.signal);
+            submitController.signal.throwIfAborted();
+            if (receipt.id) {
+              submission.unconfirmed = false;
+              SoramimicSubmissions.finish(form);
+              watch(receipt.id);
+              return;
+            }
+          } catch (_) {
+            if (submitController.signal.aborted) {
+              await reconcileSubmissionCancellation(submission);
+              return;
+            }
+          }
           submission.unconfirmed = true;
           setJobStatus("生成の受付を確認できません");
           showBuilderMsg("生成の受付を確認できません。「中断」で受付済みの処理を確認して中断できます。");
@@ -3982,7 +4054,7 @@ async function submitJob(previewSec, previewMode) {
 // 決めることで、「別の曲のMIDI + 選んだ曲の曲名」のような食い違いを作らない。
 function songFileStem(file) {
   const name = (file && file.name) || "";
-  return name.replace(/\.xf\.(?:mid|midi)$/i, "").replace(/\.[^.]+$/, "");
+  return name.replace(/\.xf\.(?:mid|midi)$|\.[^.]+$/i, "");
 }
 
 function songTitleOf(file) {
@@ -4015,12 +4087,19 @@ function fitSongCreditPreview() {
 // 背景には現在のビルダー画像を借りるが、文字は入力値から組み直すため、
 // 持ち込み曲の曲名を変えたときもジョブ生成を待たずに反映される。
 function updateSongTextPreviews() {
-  const title = songTitleOf(ownSongFile()) || "曲名";
+  const file = ownSongFile();
+  const defaultTitle = midiSampleId ? sampleTitleOf(midiSampleId) : songFileStem(file);
+  $("song-title").placeholder = defaultTitle
+    ? `例: ${defaultTitle}（空欄ならファイル名を使用）` : "空欄ならファイル名を使用";
+  const songTitle = songTitleOf(file);
+  $("song-credit").placeholder = [songTitle ? `例: ${songTitle}` : "",
+    "空欄なら曲名を使用。著作者名なども入力できます。"].filter(Boolean).join("\n");
+  const title = songTitle || "曲名";
   const custom = activeCustomList();
   const group = selectedWordlistGroup();
   const defaultWordlistLabel = custom?.name || wordlistPhrases[currentWordlistName()] || group?.text
     || (showsEditorWordlist() ? "自作リスト" : "単語リスト");
-  $("thumbnail-wordlist-label").placeholder = defaultWordlistLabel;
+  $("thumbnail-wordlist-label").placeholder = `例: ${defaultWordlistLabel}（空欄なら選択中の単語リスト名）`;
   const wordlistLabel = $("thumbnail-wordlist-label").value.trim() || defaultWordlistLabel;
   const credit = $("song-credit").value.trim() || title;
   const baseCredit = currentWordlistName().toLowerCase() === "vtuber"
@@ -5068,6 +5147,9 @@ function scheduleMidiCheck() {
 }
 
 function clearMidiNotices() {
+  // 拒否理由を生成ボタン下にも表示している。別の案内に替わっていなければ一緒に消す。
+  const error = $("midi-error").textContent;
+  if (error && $("submit-msg").textContent === error) showSubmitMsg("");
   $("midi-error").textContent = "";
   $("midi-error").hidden = true;
   $("lyrics-midi-warn").textContent = "";
@@ -6116,13 +6198,58 @@ function titleChoiceContext() {
       if (previous[0] === OWN_SONG_VALUE && typeof previous[1] === "string") title = previous[1];
     } catch { /* 不正な保存値は通常の条件比較で解除する。 */ }
   }
-  return JSON.stringify([ownTitle ? OWN_SONG_VALUE : c.sampleId,
-    title, c.wordlistName, currentWordlistWhere(), c.customList?.text || ""]);
+  const context = [ownTitle ? OWN_SONG_VALUE : c.sampleId,
+    title, c.wordlistName, currentWordlistWhere(), c.customList?.text || ""];
+  const reading = $("title-reading").value.trim();
+  if (reading) context.push(reading);
+  return JSON.stringify(context);
 }
 
 function currentWordlistWhere() {
   const data = activeLyricsJson();
   return data ? editorWhereOf(data) : $("where").value.trim();
+}
+
+let titleReadingContext = "", titleReadingAbort = null, titleReadingLoaded = false;
+
+// 空欄時の読みは候補検索と同じ解析で取得し、別の曲への遅い応答を捨てる。
+async function updateTitleReadingPlaceholder() {
+  const combo = currentCombo();
+  const title = songTitleOf(ownSongFile());
+  const sample = combo.sampleId && combo.sampleId !== OWN_SONG_VALUE ? combo.sampleId : "";
+  const payload = sample ? { sample } : { title };
+  const context = JSON.stringify(payload);
+  const input = $("title-reading");
+  if (titleReadingContext !== context) {
+    titleReadingAbort?.abort();
+    titleReadingAbort = null;
+    titleReadingLoaded = false;
+    titleReadingContext = context;
+    input.placeholder = "ひらがな・カタカナ（空欄なら曲名から自動）";
+  }
+  if (titleReadingLoaded || titleReadingAbort || (!sample && !title)
+      || !$("title-candidates-dialog").open) return;
+  const ctrl = new AbortController();
+  titleReadingAbort = ctrl;
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  input.placeholder = "曲名から読みを取得中…";
+  try {
+    const res = await fetch("/api/title-reading", {
+      method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload), signal: ctrl.signal,
+    });
+    const body = await res.json();
+    if (ctrl !== titleReadingAbort || context !== titleReadingContext) return;
+    if (!res.ok) throw new Error("reading lookup failed");
+    input.placeholder = body.reading
+      ? `例: ${body.reading}（空欄なら曲名から自動）` : "空欄なら曲名から自動で読みを決定";
+    titleReadingLoaded = true;
+  } catch {
+    if (ctrl === titleReadingAbort) input.placeholder = "空欄なら曲名から自動で読みを決定";
+  } finally {
+    clearTimeout(timer);
+    if (ctrl === titleReadingAbort) titleReadingAbort = null;
+  }
 }
 
 function selectedTitleWords() {
@@ -6172,6 +6299,7 @@ function renderTitleCandidateList() {
 }
 
 function renderTitleChoices() {
+  updateTitleReadingPlaceholder();
   const select = $("title-words");
   const selected = selectedTitleWords();
   const choices = [...titleCandidates];
@@ -6187,11 +6315,13 @@ function renderTitleChoices() {
     ? `読み：${titleChoice.reading} ／ ${titleChoice.originals.join(" ＋ ")}`
     : "";
   const c = currentCombo();
-  $("title-candidates-load").disabled = !!titleCandidatesAbort || !c.sampleId
+  const disabled = !!titleCandidatesAbort || !c.sampleId
     || (!c.wordlistName && !c.customList);
+  $("title-candidates-load").disabled = disabled;
+  $("title-candidates-search").disabled = disabled;
 }
 
-function refreshTitleChoices() {
+function refreshTitleChoices({ keepDialogOpen = false } = {}) {
   if (restoring) return;
   const context = titleChoiceContext();
   if (titleCandidatesContext && titleCandidatesContext !== context) {
@@ -6201,7 +6331,7 @@ function refreshTitleChoices() {
     titleCandidates = [];
     titleCandidatesContext = "";
     setTitleCandidatesStatus("");
-    $("title-candidates-dialog").close();
+    if (!keepDialogOpen) $("title-candidates-dialog").close();
   }
   if (titleChoice && titleChoice.context !== context) {
     titleChoice = null;
@@ -6210,12 +6340,15 @@ function refreshTitleChoices() {
   renderTitleChoices();
 }
 
-$("title-candidates-load").addEventListener("click", async () => {
-  refreshTitleChoices();
+async function searchTitleCandidates() {
+  refreshTitleChoices({ keepDialogOpen: true });
+  if (!$("title-candidates-dialog").open) return;
   const context = titleChoiceContext();
   const combo = currentCombo();
   const payload = combo.sampleId === OWN_SONG_VALUE
     ? { title: songTitleOf(ownSongFile()) } : { sample: combo.sampleId };
+  const reading = $("title-reading").value.trim();
+  if (reading) payload.title_reading = reading;
   if (combo.customList) payload.wordlist_text = combo.customList.text;
   else Object.assign(payload, { wordlist: combo.wordlistName, where: currentWordlistWhere() });
   const seq = ++titleCandidatesSeq;
@@ -6223,11 +6356,10 @@ $("title-candidates-load").addEventListener("click", async () => {
   titleCandidatesAbort?.abort();
   titleCandidatesAbort = ctrl;
   titleCandidatesContext = context;
-  const operation = globalThis.VideoOperations?.begin();
+  const operation = globalThis.VideoOperations?.begin({ allow: [$("title-reading")] });
   const timer = setTimeout(() => ctrl.abort(), 25000);
   setTitleCandidatesStatus("曲名に近い候補を探しています…");
   $("title-candidates-list").replaceChildren();
-  $("title-candidates-dialog").showModal();
   renderTitleChoices();
   try {
     const res = await fetch("/api/title-candidates", {
@@ -6258,10 +6390,30 @@ $("title-candidates-load").addEventListener("click", async () => {
       renderTitleChoices();
     }
   }
+}
+
+$("title-candidates-load").addEventListener("click", () => {
+  refreshTitleChoices();
+  $("title-candidates-dialog").showModal();
+  return searchTitleCandidates();
 });
+$("title-candidates-search").addEventListener("click", searchTitleCandidates);
 
 $("title-words").addEventListener("change", () => {
   chooseTitleWords($("title-words").value);
+});
+
+$("title-reading").addEventListener("input", () => {
+  refreshTitleChoices({ keepDialogOpen: true });
+  $("title-candidates-list").replaceChildren();
+  setTitleCandidatesStatus("");
+  schedulePreview(true);
+  saveForm();
+});
+$("title-reading").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing) return;
+  event.preventDefault();
+  if (!$("title-candidates-search").disabled) return searchTitleCandidates();
 });
 
 $("title-candidates-close").addEventListener("click", () => $("title-candidates-dialog").close());
@@ -6684,13 +6836,16 @@ async function cancelJob() {
   const id = currentJob;
   if ((!id && !submitAbort && !retry) || (id && cancelPendingJob === id)) return;
   if (!cancelJob.operation) {
+    cancelJob.acceptedJob = null;
     const operation = globalThis.VideoOperations?.begin();
     cancelJob.operation = operation;
     if (operation) cancelJob.timer = setTimeout(() => {
       if (cancelJob.operation !== operation) return;
       cancelPendingJob = null;
       setCancelPending(false);
-      showBuilderMsg("中断の完了をまだ確認できません。通信状態を確認して、もう一度中断してください。");
+      showBuilderMsg(id && cancelJob.acceptedJob === id
+        ? "中断要求は受け付けました。処理の終了を待っています。"
+        : "中断の完了をまだ確認できません。通信状態を確認して、もう一度中断してください。");
     }, 30000);
   }
   if (retry) { await reconcileSubmissionCancellation(submission); return; }
@@ -6713,7 +6868,10 @@ async function cancelJob() {
     if (!res.ok) throw new Error(String(res.status));
     // 応答までに数秒かかっても表示はpendingのまま保つ。応答後は次の定期
     // pollを待たず、完了状態をすぐ取りに行く。
-    if (currentJob === id) restartPolling(id);
+    if (currentJob === id) {
+      cancelJob.acceptedJob = id;
+      restartPolling(id);
+    }
   } catch (e) {
     if (currentJob !== id) return;
     cancelPendingJob = null;
@@ -9486,6 +9644,7 @@ function saveForm() {
       autoLyrics: $("auto-lyrics").checked,
       adjustLyrics: $("adjust-lyrics").checked,
       songTitle: $("song-title").value,
+      titleReading: $("title-reading").value,
       sampleId: midiSampleId,
       // サンプルの標準歌詞との差分で、復元時に未編集/手編集を判別する。
       sampleLyricsId,
@@ -9702,6 +9861,7 @@ async function doRestoreForm() {
     if (typeof state.autoLyrics === "boolean") $("auto-lyrics").checked = state.autoLyrics;
     if (typeof state.adjustLyrics === "boolean") $("adjust-lyrics").checked = state.adjustLyrics;
     $("song-title").value = state.songTitle || "";
+    $("title-reading").value = typeof state.titleReading === "string" ? state.titleReading : "";
     sampleLyricsId = state.sampleLyricsId || "";
     sampleLyricsBaseline = typeof state.sampleLyricsBaseline === "string"
       ? state.sampleLyricsBaseline : null;

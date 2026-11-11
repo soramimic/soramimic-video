@@ -42,6 +42,7 @@ from collections import deque
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
@@ -49,6 +50,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlsplit
 
+import jaconv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -56,7 +58,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 
-from . import completed_lyrics, runproc, synth_estimate
+from . import completed_lyrics, error_diagnostics, runproc, synth_estimate
 from . import wordlist_csv as wordlist_csv_mod
 from . import wordlist_zip as wordlist_zip_mod
 from .access_identity import canonical_email, valid_issuer, verify_access_email
@@ -77,6 +79,7 @@ from .layout import (
     load_wordlist_layouts,
     parse_layout,
 )
+from .search_limits import SEARCH_TIMEOUT_MESSAGE
 from .soramimic_engine import start_warmup_thread
 from .submissions import Submissions
 from .thumbnail_preview import RateLimiter, preview_cache_dir
@@ -92,6 +95,15 @@ if TYPE_CHECKING:  # 型注釈だけ。実行時のimportはハンドラの中�
     from .project import Project
 
 logger = logging.getLogger(__name__)
+
+
+def _log_exception(message: str, *args: Any) -> None:
+    # Detailed exceptions belong to expiring diagnostics, never the public journal.
+    logger.error(
+        message, *args, exc_info=None if is_public_mode() else True,
+        extra={"diagnostic_safe": True},
+    )
+
 
 API_KEY_ENV = "SORAMIMIC_VIDEO_API_KEY"
 # ---- 公開モード(一般公開インスタンス)向けの環境変数 ----
@@ -752,6 +764,7 @@ class Job:
     # A cleanup failure is never treated as success. Keep it durable so startup
     # and the periodic privacy scrubber continue retrying after transient I/O errors.
     cleanup_pending: bool = False
+    diagnostics_expires_at: float | None = None
     # 匿名集計への二重計上を防ぐ運用状態。利用者や入力内容は含めない。
     usage_finished_recorded: bool = False
     usage_outputs_recorded: set[str] = field(default_factory=set)
@@ -795,7 +808,11 @@ class Job:
             "song_label": job_song_label(self.params),
             "wordlist_label": job_wordlist_label(self.params),
             # 公開APIへ例外本文を返すとparser/ffmpeg由来の内部pathやコマンドが漏れる。
-            "error": "生成に失敗しました" if is_public_mode() and self.error else self.error,
+            "error": (
+                "生成に失敗しました"
+                if is_public_mode() and self.error and self.error != SEARCH_TIMEOUT_MESSAGE
+                else self.error
+            ),
             "created_at": datetime.fromtimestamp(self.created_at).isoformat(
                 timespec="seconds"
             ),
@@ -839,9 +856,9 @@ class Job:
                 d["generation_quality_warning"] = True
             if self.wordlist_exhausted:
                 d["wordlist_exhausted"] = True
-        if self.thumbnail.exists() or (
+        if (self.status == "done" and self.thumbnail.exists()) or (
             self.status in {"queued", "running", "awaiting_review"}
-            and self.generation_thumbnail.exists()
+            and (self.thumbnail.exists() or self.generation_thumbnail.exists())
         ):
             d["thumbnail_url"] = f"/api/jobs/{self.id}/thumbnail"
         if with_log and not is_public_mode():
@@ -1268,12 +1285,21 @@ class _JobLogHandler(logging.Handler):
     """パイプラインのログをジョブごとに取り込む(ワーカーは1本なので混線しない)。"""
 
     def __init__(self, job: Job) -> None:
-        super().__init__(level=logging.INFO)
+        super().__init__(level=logging.NOTSET)
         self.job = job
         self.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.job.log.append(self.format(record))
+        if not is_public_mode() or error_diagnostics.CURRENT_JOB.get() == self.job.id:
+            self.job.log.append(self.format(record))
+        if is_public_mode() and not getattr(record, "diagnostic_safe", False):
+            # This handler runs on the package logger before propagation to the
+            # console/journal. Keep full records only in the bounded job buffer.
+            record.msg = "[job %s] %s"
+            record.args = (self.job.id, record.levelname)
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
 
 
 def _first_lyric_start(project: Any) -> float:
@@ -1573,13 +1599,14 @@ def run_pipeline(job: Job, config: dict[str, Any]) -> Path:
             )
             return encode_silent_video(prepared), prepared.audio_delay_sec
         except Exception as exc:
+            error_diagnostics.annotate_stage(exc, "video")
             if not abort.is_set() and not job.cancel_event.is_set():
                 visual_failure.append(exc)
             abort.set()
             runproc.kill_current()
             raise
 
-    future = executor.submit(build_silent_video)
+    future = executor.submit(copy_context().run, build_silent_video)
     try:
         try:
             wav = _run_synthesize(job, config, project, synthesize)
@@ -1671,11 +1698,18 @@ def _stage(job: Job, name: str, estimated_total: float | None = None):
     job.stage_progress = None
     job.stage_detail = None
     job.stage_estimated_total = estimated_total
-    logger.info("[job %s] ステージ開始: %s", job.id, name)
-    yield
+    logger.info("[job %s] ステージ開始: %s", job.id, name, extra={"diagnostic_safe": True})
+    try:
+        yield
+    except Exception as exc:
+        error_diagnostics.annotate_stage(exc, name)
+        raise
     seconds = round(time.time() - job.stage_started_at, 1)
     job.stages.append({"name": name, "seconds": seconds})
-    logger.info("[job %s] ステージ完了: %s (%.1f秒)", job.id, name, seconds)
+    logger.info(
+        "[job %s] ステージ完了: %s (%.1f秒)", job.id, name, seconds,
+        extra={"diagnostic_safe": True},
+    )
 
 
 def _run_synthesize(
@@ -1793,6 +1827,7 @@ class JobManager:
                 ),
                 wordlist_exhausted=bool(data.get("wordlist_exhausted", False)),
                 cleanup_pending=bool(data.get("cleanup_pending", False)),
+                diagnostics_expires_at=data.get("diagnostics_expires_at"),
                 usage_finished_recorded=bool(
                     data.get("usage_finished_recorded", False)
                 ),
@@ -1805,8 +1840,16 @@ class JobManager:
             if job.status in ("queued", "running"):
                 job.status = "error"
                 job.error = "サーバー再起動により中断されました"
-                job.finished_at = time.time()
-                job.cleanup_pending = True
+                # The last durable update is a conservative failure timestamp:
+                # repeated restarts must not renew the diagnostic retention.
+                job.finished_at = min(time.time(), status_path.stat().st_mtime)
+                self._retain_error_diagnostics(job, stage=data.get("stage"))
+            elif job.status == "error" and self.config.get("scrub_private_artifacts"):
+                maximum = (
+                    (job.finished_at or job.created_at)
+                    + error_diagnostics.MAX_RETENTION_SECONDS - CLEANUP_INTERVAL_SECONDS
+                )
+                job.diagnostics_expires_at = min(job.diagnostics_expires_at or maximum, maximum)
             video = status_path.parent / data.get("video", "")
             if data.get("video") and video.exists():
                 job.video = video
@@ -1832,7 +1875,7 @@ class JobManager:
                 )
             except OSError:
                 self._pending_deletions[directory.name] = directory
-                logger.exception(
+                _log_exception(
                     "[job %s] 状態のない入力ディレクトリを削除できません",
                     directory.name,
                 )
@@ -1858,9 +1901,10 @@ class JobManager:
                 self._cleanup_completed_artifacts(job)
                 job.cleanup_pending = False
             except Exception as exc:  # noqa: BLE001 - fail closed on private data
-                logger.exception("[job %s] 完了済みジョブの機密データ清掃に失敗", job.id)
+                _log_exception("[job %s] 完了済みジョブの機密データ清掃に失敗", job.id)
                 job.error = f"完了後の一時データ削除に失敗しました: {exc}"
                 job.status = "error"
+                self._retain_error_diagnostics(job, exc, stage="cleanup")
                 self._cleanup_failed_artifacts(job)
             self._save(job)
 
@@ -2000,7 +2044,7 @@ class JobManager:
     ) -> Job:
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.jobs_dir / job_id
-        job_dir.mkdir(parents=True)
+        job_dir.mkdir(parents=True, mode=0o700)
         job: Job | None = None
         try:
             if audio is not None:
@@ -2046,7 +2090,7 @@ class JobManager:
             try:
                 shutil.rmtree(job_dir)
             except OSError:
-                logger.exception(
+                _log_exception(
                     "[job %s] 受付失敗後の入力削除に失敗しました", job_id
                 )
             raise
@@ -2172,7 +2216,7 @@ class JobManager:
                 self._retry_pending_deletions()
                 self.cleanup_expired()
             except Exception:  # noqa: BLE001 - 掃除の失敗でスレッドを落とさない
-                logger.exception("ジョブの自動削除に失敗しました")
+                _log_exception("ジョブの自動削除に失敗しました")
 
     def _retry_pending_deletions(self) -> None:
         for job_id, directory in list(self._pending_deletions.items()):
@@ -2181,7 +2225,7 @@ class JobManager:
             except FileNotFoundError:
                 pass
             except OSError:
-                logger.exception("[job %s] 保存期限後の削除を再試行できません", job_id)
+                _log_exception("[job %s] 保存期限後の削除を再試行できません", job_id)
                 continue
             self._pending_deletions.pop(job_id, None)
             logger.info("[job %s] 保存期限後の削除再試行が完了しました", job_id)
@@ -2210,14 +2254,17 @@ class JobManager:
         hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
         if hours <= 0 and not self.config.get("scrub_private_artifacts"):
             return []
-        current_time = now or time.time()
+        current_time = time.time() if now is None else now
         deadline = current_time - hours * 3600
         review_deadline = current_time - (hours if hours > 0 else 24) * 3600
         with self._lock:
             expired = [
                 job
                 for job in self.jobs.values()
-                if (hours > 0 and job.status in ("done", "error", "canceled")
+                if (job.status == "error" and job.diagnostics_expires_at is not None
+                    and job.diagnostics_expires_at <= current_time)
+                or (hours > 0 and job.status in ("done", "error", "canceled")
+                    and job.diagnostics_expires_at is None
                     and (job.finished_at or job.created_at) <= deadline)
                 or (job.status == "awaiting_review"
                     and (job.review_started_at or job.created_at) <= review_deadline)
@@ -2231,7 +2278,7 @@ class JobManager:
                 pass
             except OSError:
                 self._pending_deletions[job.id] = job.dir
-                logger.exception(
+                _log_exception(
                     "[job %s] 保存期限後の削除に失敗したため再試行します", job.id
                 )
             else:
@@ -2276,6 +2323,8 @@ class JobManager:
             data["finished_at"] = job.finished_at
         if job.cleanup_pending:
             data["cleanup_pending"] = True
+        if job.diagnostics_expires_at is not None:
+            data["diagnostics_expires_at"] = job.diagnostics_expires_at
         if job.started_at:
             data["started_at"] = job.started_at
         if job.usage_finished_recorded:
@@ -2374,6 +2423,8 @@ class JobManager:
             if job.status not in ("queued", "running", "awaiting_review"):
                 return job
             job.cancel_event.set()
+            logger.info("[job %s] 中断要求を受け付けました", job.id,
+                        extra={"diagnostic_safe": True})
             if job.status == "running":
                 # 実行中のNEUTRINO/ffmpeg等をプロセスグループごと止める。
                 # ワーカーは1本なので、実行中プロセス=このジョブのもの
@@ -2386,13 +2437,63 @@ class JobManager:
                 self._save(job)
             return job
 
+    def _retain_error_diagnostics(
+        self, job: Job, exc: Exception | None = None, *, stage: str | None = None
+    ) -> None:
+        """Retain failed public jobs independently of successful-result retention."""
+        if not self.config.get("scrub_private_artifacts"):
+            return
+        failed_at = job.finished_at or time.time()
+        if job.diagnostics_expires_at is None:
+            # Sweep one interval early so periodic deletion stays within 48 hours.
+            job.diagnostics_expires_at = (
+                failed_at + error_diagnostics.MAX_RETENTION_SECONDS - CLEANUP_INTERVAL_SECONDS
+            )
+        root = job.dir.resolve()
+        if root.parent != self.jobs_dir.resolve() or job.dir.is_symlink() or not root.is_dir():
+            return
+        # A crash can happen after the atomic report write but before status is
+        # saved. Recover its details without overwriting the original traceback.
+        report_path = root / error_diagnostics.REPORT_FILENAME
+        if exc is None and report_path.is_file() and not report_path.is_symlink():
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                job.diagnostics_expires_at = min(
+                    job.diagnostics_expires_at, float(report["expires_at"])
+                )
+                if isinstance(report.get("error"), str):
+                    job.error = report["error"]
+                return
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        try:
+            error_diagnostics.save_report(
+                root,
+                stage=error_diagnostics.failure_stage(exc, stage or job.stage),
+                error=job.error,
+                exc=exc,
+                failed_at=failed_at,
+                expires_at=job.diagnostics_expires_at,
+                started_at=job.started_at,
+                stages=job.stages,
+                params=job.params,
+                log=list(job.log),
+            )
+        except Exception:  # noqa: BLE001 - diagnostics must not terminate the worker
+            # Preserve the existing inputs and deadline even if report writing
+            # fails. Neither a report failure nor a restart extends retention.
+            _log_exception("[job %s] 診断情報の保存に失敗しました", job.id)
+
     def _cleanup_failed_artifacts(self, job: Job) -> bool:
-        """Remove uploads/intermediates after errors and cancellation, retaining status."""
+        """Keep unexpired diagnostics; otherwise remove inputs and intermediates."""
         root = job.dir.resolve()
         if root.parent != self.jobs_dir.resolve() or not root.is_dir():
             logger.error("[job %s] 不正なジョブ保存先のため清掃を拒否しました", job.id)
             job.cleanup_pending = True
             return False
+        if job.diagnostics_expires_at is not None and time.time() < job.diagnostics_expires_at:
+            job.cleanup_pending = False
+            return True
         failures = False
         for child in root.iterdir():
             if child.name in (STATUS_FILENAME, f"{STATUS_FILENAME}.tmp"):
@@ -2404,7 +2505,7 @@ class JobManager:
                     child.unlink(missing_ok=True)
             except OSError:
                 failures = True
-                logger.exception("[job %s] 失敗時の一時ファイル清掃に失敗", job.id)
+                _log_exception("[job %s] 失敗時の一時ファイル清掃に失敗", job.id)
         job.cleanup_pending = failures
         return not failures
 
@@ -2487,13 +2588,14 @@ class JobManager:
                     job.status = "error"
                     job.error = job.error or f"ワーカー内部エラー: {exc}"
                     job.finished_at = job.finished_at or time.time()
-                    logger.exception("[job %s] ワーカー内部エラー", job.id)
+                    self._retain_error_diagnostics(job, exc)
+                    _log_exception("[job %s] ワーカー内部エラー", job.id)
                     self._cleanup_failed_artifacts(job)
                     self._record_finished_usage(job, failed_stage=job.stage)
                     try:
                         self._save(job)
                     except Exception:
-                        logger.exception("[job %s] 状態の保存に失敗", job.id)
+                        _log_exception("[job %s] 状態の保存に失敗", job.id)
 
     def _run_one(self, job: Job) -> None:
         from .lyric_review import ReviewRequired
@@ -2504,16 +2606,21 @@ class JobManager:
             self._save(job)
             return
         handler = _JobLogHandler(job)
-        logging.getLogger("soramimic_video").addHandler(handler)
+        diagnostic_context = error_diagnostics.CURRENT_JOB.set(job.id)
+        job_loggers = [logging.getLogger(name) for name in (
+            "soramimic_video", "soramimic", "soramimic_yomi", "soramimic_score"
+        )]
+        for log in job_loggers:
+            log.addHandler(handler)
         job.status = "running"
         if job.review_approved and job.started_at and job.review_started_at:
             job.started_at += time.time() - job.review_started_at
             job.review_started_at = None
         job.started_at = job.started_at or time.time()
         runproc.set_cancel_check(job.cancel_event.is_set)
-        self._save(job)
         final_status = "error"
         try:
+            self._save(job)
             job.video = run_pipeline(job, self.config)
             if job.cancel_event.is_set():
                 raise runproc.Cancelled()
@@ -2523,7 +2630,11 @@ class JobManager:
                 quality = analysis.get("generation_quality", {})
                 job.generation_quality_warning = quality.get("status") == "warning"
             if self.config.get("scrub_private_artifacts"):
-                self._cleanup_completed_artifacts(job)
+                try:
+                    self._cleanup_completed_artifacts(job)
+                except Exception as exc:
+                    error_diagnostics.annotate_stage(exc, "cleanup")
+                    raise
             final_status = "done"
         except ReviewRequired:
             final_status = "awaiting_review"
@@ -2540,13 +2651,16 @@ class JobManager:
                 final_status = "error"
                 job.error = str(exc)
                 job.log.append(traceback.format_exc())
-                logger.exception("[job %s] 失敗", job.id)
-            # statusがAPIから観測可能になる前にuploadと中間物を消す。
+                self._retain_error_diagnostics(job, exc)
+                _log_exception("[job %s] 失敗", job.id)
+            # Keep diagnostic inputs private; cancellations still discard them.
             self._cleanup_failed_artifacts(job)
         finally:
             runproc.set_cancel_check(None)
             final_stage = job.stage
-            logging.getLogger("soramimic_video").removeHandler(handler)
+            for log in job_loggers:
+                log.removeHandler(handler)
+            error_diagnostics.CURRENT_JOB.reset(diagnostic_context)
             # Publish a terminal in-memory state only after its metrics and durable
             # status are ready.  Polling clients therefore cannot race result TTL
             # cleanup against the final status write.
@@ -2562,6 +2676,8 @@ class JobManager:
                 job.status = final_status
                 self._record_finished_usage(job, failed_stage=final_stage)
                 job.stage = None
+                if self.config.get("scrub_private_artifacts"):
+                    job.log.clear()
                 self._save(job)
 
 
@@ -3109,21 +3225,27 @@ def create_app(
                 'もご確認ください。</p>'
                 '</section>'
             )
+            data_handling_toc = (
+                '<li><a href="#data-handling-title">データの取り扱い</a></li>'
+            )
+            result_handling = ""
             if retention_hours > 0:
                 retention_label = f"{retention_hours:g}時間"
-                data_handling_toc = (
-                    '<li><a href="#data-handling-title">データの取り扱い</a></li>'
-                )
-                data_handling = (
-                    '<section aria-labelledby="data-handling-title">'
-                    '<h2 id="data-handling-title">データの取り扱い</h2>'
-                    '<p>アップロードした元の音源・歌詞ファイルと解析用データは処理終了時に削除し、'
-                    '失敗した場合は自動で再試行します。'
-                    f'完成動画と編集用の歌詞データ（元歌詞を含みます）は{retention_label}の保存期間を過ぎたものから'
+                result_handling = (
+                    f'<p>完成動画と編集用の歌詞データ（元歌詞を含みます）は、{retention_label}の保存期間を過ぎたものから'
                     '定期的に自動削除します。'
-                    '入力内容をAIモデルの学習には使用しません。</p>'
-                    '</section>'
                 )
+            data_handling = (
+                '<section aria-labelledby="data-handling-title">'
+                '<h2 id="data-handling-title">データの取り扱い</h2>'
+                '<p>アップロードした入力ファイルと解析用データは、処理の正常終了時に削除します。'
+                'エラー発生時は、不具合調査に必要な入力ファイル・中間データ・エラー情報を'
+                '最大48時間保存します。</p>'
+                + (result_handling or '<p>')
+                + '削除に失敗した場合は自動で再試行します。</p>'
+                '<p>入力内容をAIモデルの学習には使用しません。</p>'
+                '</section>'
+            )
         page = (STATIC_DIR / "guidelines.html").read_text(encoding="utf-8")
         return (
             page.replace("<!-- guideline-links -->", content)
@@ -3731,6 +3853,26 @@ def create_app(
             raise HTTPException(status_code=400, detail="プレビューの入力形式が不正です")
         return payload
 
+    @app.post("/api/title-reading", dependencies=[Depends(_require_api_key)])
+    async def title_reading(request: Request) -> Response:
+        from .soramimic_engine import run_tokenize
+
+        if not _allow_expensive_get(request, preview_session_limiter):
+            raise HTTPException(status_code=429, detail="少し待ってからお試しください")
+        payload = await _title_request_json(request, {"sample", "title"})
+        sample = payload.get("sample", "").strip()
+        title = payload.get("title", "").strip()
+        if len(sample) > 200 or len(title) > 200:
+            raise HTTPException(status_code=400, detail="曲名が長すぎます")
+        if sample:
+            title, kana = _sample_title(sample)
+            title = kana or title
+        if not title:
+            raise HTTPException(status_code=400, detail="曲名が必要です")
+        lines = await run_in_threadpool(run_tokenize, [title])
+        reading = "".join(unit["pronunciation"] for line in lines for unit in line)
+        return JSONResponse({"reading": reading}, headers={"Cache-Control": "private, no-store"})
+
     @app.post("/api/title-candidates", dependencies=[Depends(_require_api_key)])
     async def title_candidates(request: Request) -> Response:
         from .title_choices import find_title_choices
@@ -3738,18 +3880,23 @@ def create_app(
         if not _allow_expensive_get(request, preview_session_limiter):
             raise HTTPException(status_code=429, detail="少し待ってから候補を探してください")
         payload = await _title_request_json(
-            request, {"sample", "title", "wordlist", "where", "wordlist_text"},
+            request, {"sample", "title", "title_reading", "wordlist", "where", "wordlist_text"},
         )
         sample = payload.get("sample", "").strip()
         title = payload.get("title", "").strip()
+        reading = payload.get("title_reading", "").strip()
         where = payload.get("where", "").strip()
         if len(sample) > 200 or len(title) > 200 or len(where) > 8000:
             raise HTTPException(status_code=400, detail="曲名または絞り込み条件が長すぎます")
+        if len(reading) > 200:
+            raise HTTPException(status_code=400, detail="曲名の読みは200文字以内で入力してください")
         if sample:
             title, kana = _sample_title(sample)
             title = kana or title
         if not title:
             raise HTTPException(status_code=400, detail="曲名が必要です")
+        if reading:
+            title = jaconv.hira2kata(jaconv.h2z(reading, ascii=False, digit=False))
         csv_path, csv_text = None, ""
         if "wordlist_text" in payload:
             if is_simple_ui():
@@ -4229,6 +4376,16 @@ def create_app(
     @app.post("/api/submissions", dependencies=[Depends(_require_api_key)])
     def reserve_submission(request: Request) -> dict[str, str]:
         return {"id": submissions.create(owner_of(request), _client_hash(request))}
+
+    @app.get("/api/submissions/{submission_id}", dependencies=[Depends(_require_api_key)])
+    def submission_status(submission_id: str, request: Request) -> dict[str, Any]:
+        owner = owner_of(request)
+        with quota_submit_lock, audio_uploads.lock:
+            job = manager.find_submission(submission_id, owner)
+            if job is not None:
+                return {"id": job.id, "status": job.status}
+            submissions.require(submission_id, owner)
+            return {"id": None, "status": "pending"}
 
     @app.post("/api/submissions/{submission_id}/cancel", dependencies=[Depends(_require_api_key)])
     def cancel_submission(submission_id: str, request: Request) -> dict[str, Any]:
@@ -4984,6 +5141,8 @@ def create_app(
     def get_thumbnail(job_id: str, request: Request) -> FileResponse:
         """Return the rendered thumbnail, or the saved background during generation."""
         job = manager.get(job_id, owner_of(request))
+        if job.status in {"error", "canceled"}:
+            raise HTTPException(status_code=404, detail="サムネ画像がありません")
         path = job.thumbnail
         if not path.exists() and job.status in {"queued", "running", "awaiting_review"}:
             path = job.generation_thumbnail

@@ -15,6 +15,21 @@ NOTES = [(0, 240, 60), (240, 240, 62), (960, 240, 64), (1200, 240, 65)]
 LYRICS = [(0, "は"), (240, "る\r"), (960, "な"), (1200, "つ")]
 
 
+@pytest.mark.parametrize(("builder", "surface"), [
+    (build_xf_midi, "あ い！"),
+    (build_lyric_midi, "あ^い！"),
+], ids=["xf", "standard"])
+def test_only_xf_decodes_caret_as_space(tmp_path, builder, surface):
+    path = builder(
+        tmp_path / "caret.mid",
+        notes=[(0, 240, 60), (240, 240, 62)],
+        lyric_events=[(0, "あ^"), (240, "い！")],
+    )
+    project = analyze_midi(path)
+    assert project.lines[0].xf_surface == surface
+    assert project.lines[0].xf_kana == "アイ"
+
+
 @pytest.mark.parametrize("charset", ["cp932", "utf-8"])
 @pytest.mark.parametrize("separate", [False, True])
 def test_standard_lyrics_keep_text_notes_and_timing(tmp_path, charset, separate):

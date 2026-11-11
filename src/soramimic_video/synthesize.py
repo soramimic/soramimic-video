@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,6 +25,18 @@ logger = logging.getLogger(__name__)
 NEUTRINO_DIR = "neutrino"
 
 
+def _validated_singing_kana(kana: str, context: str) -> str:
+    normalized = unicodedata.normalize("NFKC", kana)
+    normalized = "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in normalized)
+    invalid = "".join(dict.fromkeys(re.sub(r"[ァ-ヺー]", "", normalized)))
+    if invalid:
+        raise ValueError(
+            f"{context}の歌唱用の読み「{kana}」に使えない文字「{invalid}」があります。"
+            "単語リストまたは編集画面で正しい読みをカナで指定してください。"
+        )
+    return normalized
+
+
 def vocal_path(project_dir: Path) -> Path:
     """合成した歌唱wavの正規パス。全バックエンド共通。
 
@@ -37,7 +51,10 @@ def build_lyric_map(project: Project) -> dict[int, str]:
     lyric_map = {n.id: n.kana for n in project.notes}
     if project.parody is None:
         logger.warning("替え歌案がないため元の歌詞で合成します")
-        return lyric_map
+        return {
+            n.id: _validated_singing_kana(n.kana, f"歌詞行{n.line}・音符{n.id}「{n.surface}」")
+            for n in project.notes
+        }
     # 替え歌単語が同じ音符を二重に取ると後勝ち上書きで先行単語の末尾モーラが
     # 潰れる(convert側で解消済みのはずだが、将来の同種バグ検出のため記録する)
     assigned_by: dict[int, str] = {}
@@ -61,7 +78,14 @@ def build_lyric_map(project: Project) -> dict[int, str]:
                         nid, assigned_by[nid], w.surface,
                     )
                 assigned_by[nid] = w.surface
-                lyric_map[nid] = kana
+                lyric_map[nid] = _validated_singing_kana(
+                    kana, f"歌詞行{pline.line_id}の単語「{w.surface}」"
+                )
+    for n in project.notes:
+        if n.id not in assigned_by:
+            lyric_map[n.id] = _validated_singing_kana(
+                n.kana, f"歌詞行{n.line}・音符{n.id}「{n.surface}」"
+            )
     return lyric_map
 
 

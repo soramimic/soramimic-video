@@ -196,7 +196,7 @@ def test_editor_session_rejects_broken_custom_wordlist(client, tmp_path):
     res = client.post(
         "/api/editor-session",
         files={"midi": ("song.mid", midi.read_bytes(), "audio/midi")},
-        data={"wordlist_text": "surface,pronunciation\n猫,猫又\n"},
+        data={"wordlist_text": "surface,pronunciation\n猫,❤\n"},
     )
     assert res.status_code == 400
     assert "カタカナ" in res.json()["detail"]
@@ -728,6 +728,27 @@ def test_import_editor_uses_embedded_original_csv(client, tmp_path):
     assert saved.read_text(encoding="utf-8").startswith("id,original,surface,pronunciation\n")
     assert not saved.read_text(encoding="utf-8").endswith("\n")  # 末尾改行なし
     assert project.parody.where is None  # 自作リストに絞り込みは無い
+
+
+def test_original_reading_alignment_survives_editor_project_roundtrip(client, tmp_path):
+    from soramimic_video.editor_io import export_editor
+    from soramimic_video.lyric_alignment import align_tokens
+    from soramimic_video.project import Project
+
+    payload = _original_payload(client, tmp_path)
+    reading = "".join(unit["pronunciation"] for unit in payload["unitsList"][0])
+    payload["lyrics"] = "しずむ"
+    payload["originalLines"] = ["しずむ"]
+    payload["originalReadingAlignments"] = [align_tokens("しずむ", reading, [("しずむ", reading)])]
+    project, directory = _import(payload, tmp_path)
+    project.save(directory)
+    restored = Project.load(directory)
+    assert restored.original_reading_alignments == payload["originalReadingAlignments"]
+    path = export_editor(restored, directory, wordlist_entry=payload["wordlist"])
+    exported = json.loads(path.read_text())
+    assert exported["format"] == "soramimic-editor/1"
+    assert exported["originalReadingAlignments"] == payload["originalReadingAlignments"]
+    assert exported["results"] == payload["results"]
 
 
 def test_import_editor_original_requires_csv_text(client, tmp_path):

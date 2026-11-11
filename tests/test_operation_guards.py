@@ -1,6 +1,6 @@
 """Conflicting operations stay exclusive without blocking independent work."""
 
-from test_input_lifecycle import DOM, _functions, _run
+from ui_helpers import DOM, _functions, _run
 
 
 def test_custom_list_opens_a_busy_modal_before_reading_storage():
@@ -370,7 +370,7 @@ assert.equal(active.size,0,'error releases the guard');
 
 
 def test_explicit_midi_selection_waits_without_gating_automatic_rechecks():
-    from test_input_lifecycle import _listener
+    from ui_helpers import _listener
 
     harness = DOM + r"""
 let midiChecking=null, restoring=false, kind='midi';
@@ -413,5 +413,6 @@ setCancelPending(false);assert.equal(active.size,0);
 cancelPendingJob=null;await cancelJob();assert.equal(active.size,1);
 timers[0]();assert.equal(active.size,1,'old timeout must not release a new cancellation');
 timers.at(-1)();assert.equal(active.size,0);assert.equal(cancelPendingJob,null);
-assert.match(message,/まだ確認できません/);assert.equal($('builder-cancel').disabled,false);
+assert.match(message,/受け付け/);assert.doesNotMatch(message,/通信状態/);
+assert.equal($('builder-cancel').disabled,false);
 """)

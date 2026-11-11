@@ -102,7 +102,7 @@ def test_generation_background_lifecycle(tmp_path, monkeypatch, outcome):
                 break
             time.sleep(0.02)
         assert body["status"] == outcome
-        assert not job.generation_thumbnail.exists()
+        assert job.generation_thumbnail.exists() == (outcome == "error")
         if outcome == "done":
             assert reloaded.get(body["thumbnail_url"]).content == final_thumbnail
         else:

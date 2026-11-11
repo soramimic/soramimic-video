@@ -1,4 +1,4 @@
-"""テスト用の合成XF MIDIビルダ。
+"""テスト用の合成MIDI・WAVビルダ。
 
 著作権のある実楽曲を使わずにXF解析をテストするため、
 mido で通常のMIDIを作り、XFKMチャンク(MTrkヘッダを差し替えたもの)を
@@ -8,6 +8,7 @@ mido で通常のMIDIを作り、XFKMチャンク(MTrkヘッダを差し替え�
 from __future__ import annotations
 
 import io
+import wave
 from pathlib import Path
 
 from mido import Message, MetaMessage, MidiFile, MidiTrack
@@ -105,3 +106,14 @@ def build_xf_midi(
     mid.save(file=buf)
     path.write_bytes(buf.getvalue() + xfih + xfkm)
     return path
+
+
+def fake_wav(seconds: float = 0.1, rate: int = 8000) -> bytes:
+    """Return a mono PCM WAV containing silence for upload tests."""
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * round(seconds * rate))
+    return out.getvalue()

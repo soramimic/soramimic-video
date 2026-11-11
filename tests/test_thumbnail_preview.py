@@ -137,7 +137,7 @@ def test_custom_preview_normalizes_and_drops_image_references(client, samples, m
 
 @pytest.mark.parametrize("fields", [
     {"wordlist_text": ""},
-    {"wordlist_text": "ねこ,invalid"},
+    {"wordlist_text": "ねこ,???"},
     {"wordlist_text": "\ud800"},
     {"wordlist_name": "\ud800"},
     {"title": "\ud800"},

@@ -30,6 +30,36 @@ def cancel(client, sid):
     return client.post(f'/api/submissions/{sid}/cancel')
 
 
+def test_status_recovers_accepted_job_without_canceling_it(public_app):
+    client = TestClient(public_app)
+    sid = reserve(client)
+    url = f'/api/submissions/{sid}'
+    for _ in range(2):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.headers['cache-control'] == 'private, no-store'
+        assert response.json() == {'id': None, 'status': 'pending'}
+    job_id = registered(client, sid).json()['id']
+    assert client.get(url).json()['id'] == job_id
+    assert wait_done(client, job_id)['status'] == 'done'
+    assert client.get(url).json() == {'id': job_id, 'status': 'done'}
+    assert len(public_app.state.manager.jobs) == 1
+    assert not public_app.state.manager.jobs[job_id].cancel_event.is_set()
+    assert TestClient(public_app).get(url).status_code == 410
+
+
+def test_status_requires_valid_owned_reservation_and_auth(public_app, monkeypatch):
+    client = TestClient(public_app)
+    sid = reserve(client)
+    url = f'/api/submissions/{sid}'
+    assert TestClient(public_app).get(url).status_code == 404
+    assert client.get('/api/submissions/invalid').status_code == 404
+    assert cancel(client, sid).status_code == 200
+    assert client.get(url).status_code == 410
+    monkeypatch.setenv(api.API_KEY_ENV, 'secret')
+    assert client.get(url).status_code == 401
+
+
 def test_cancel_before_admission_remains_revoked_after_restart(public_app):
     client = TestClient(public_app)
     sid = reserve(client)

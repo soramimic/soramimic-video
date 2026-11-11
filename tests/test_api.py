@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import fake_wav
+
 fastapi = pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -28,16 +30,6 @@ from soramimic_video import audio_input as audio_input_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
-
-
-def fake_wav(seconds: float = 0.1, rate: int = 8000) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(rate)
-        wav.writeframes(b"\x00\x00" * round(seconds * rate))
-    return out.getvalue()
 
 
 def encoded_audio(tmp_path: Path, suffix: str, codec: str, muxer: str) -> bytes:
@@ -1022,7 +1014,6 @@ def test_first_lyric_start():
 def test_trim_wav_head(tmp_path):
     import shutil
     import subprocess
-    import wave
 
     # start<=0 は何もしない
     wav = tmp_path / "vocal.wav"
@@ -1201,6 +1192,79 @@ def test_cancel_running_and_queued(tmp_path, monkeypatch):
     assert client.get(f"/api/jobs/{queued}").json()["status"] == "canceled"
     # 完了済みジョブへのcancelは何もしない
     assert client.post(f"/api/jobs/{running}/cancel").json()["status"] == "canceled"
+
+
+def test_cancel_during_score_search_cleans_job_and_releases_worker(tmp_path, monkeypatch):
+    import threading
+    from contextlib import contextmanager
+
+    import soramimic_score.media
+    import soramimic_score.models
+    import soramimic_score.note_runs as note_runs
+    from soramimic_score import AlignedMora, AudioAdapters, LyricLine, MelodyNote, ReadingSelection
+
+    from soramimic_video import runproc, score_audio
+
+    entered = threading.Event()
+    release = threading.Event()
+    first = True
+    original = note_runs._assignment_cost
+
+    def evaluate(*args, **kwargs):
+        nonlocal first
+        if first:
+            first = False
+            entered.set()
+            assert release.wait(10), "test did not release score search"
+        return original(*args, **kwargs)
+
+    adapters = AudioAdapters(
+        reading_selector=lambda _path, _lines: (ReadingSelection("カ", "synthetic", 1),),
+        mora_aligner=lambda *_: (AlignedMora(0, 0, "カ", .05, .1, .9),),
+        melody_transcriber=lambda _: tuple(MelodyNote(i * .1, i * .1 + .09, 60)
+                                          for i in range(600)),
+        lyric_recognizer=lambda _: (LyricLine("カ", 0, 60),),
+    )
+
+    @contextmanager
+    def prepared(*args, **kwargs):
+        yield adapters
+
+    @contextmanager
+    def decoded(path):
+        yield path
+
+    def pipeline(job, config):
+        runproc.raise_if_cancelled()
+        if not entered.is_set():
+            source = job.dir / "input.wav"
+            source.write_bytes(b"synthetic adapter input")
+            score_audio.analyze_audio(source, job.dir, device="cpu")
+            pytest.fail("canceled score search returned a completed project")
+        out = job.dir / "song.mp4"
+        out.write_bytes(FAKE_MP4)
+        return out
+
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_MODEL_DIR", "/models/synthetic")
+    monkeypatch.setenv("SORAMIMIC_SHEETSAGE_BASE_DIR", "/models/synthetic-base")
+    monkeypatch.setattr(soramimic_score.models, "prepared_adapters", prepared)
+    monkeypatch.setattr(soramimic_score.media, "decoded_audio", decoded)
+    monkeypatch.setattr(note_runs, "_assignment_cost", evaluate)
+    monkeypatch.setattr(api_mod, "run_pipeline", pipeline)
+    client = TestClient(api_mod.create_app(jobs_dir=tmp_path / "jobs"))
+    running = submit(client, editor=FAKE_EDITOR)
+    try:
+        assert entered.wait(10), "score search was not reached"
+        queued = submit(client, editor=FAKE_EDITOR)
+        response = client.post(f"/api/jobs/{running}/cancel")
+        assert response.status_code == 200
+        assert client.app.state.manager.jobs[running].cancel_event.is_set()
+    finally:
+        release.set()
+    assert wait_done(client, running)["status"] == "canceled"
+    job_dir = client.app.state.manager.jobs[running].dir
+    assert [path.name for path in job_dir.iterdir()] == [api_mod.STATUS_FILENAME]
+    assert wait_done(client, queued)["status"] == "done"
 
 
 def test_failed_job_removes_uploaded_and_intermediate_files(tmp_path, monkeypatch):
@@ -1496,7 +1560,9 @@ def test_creator_wordlists_are_separate_in_ui_and_editor(client, name, label):
     entry = next(item for item in entries if item.get("value") == name.upper())
     assert entry == named_wordlist_entry(name)
     assert entry["text"] == label
-    assert {facet["column"] for facet in entry["facets"]} == {"type", "status"}
+    assert {facet["column"] for facet in entry["facets"]} == {
+        "type", "status", "subscriber_band", "has_image"
+    }
 
     response = client.get(f"/editor/{entry['filepath']}")
     assert response.status_code == 200

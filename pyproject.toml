@@ -26,7 +26,6 @@ dependencies = [
     # 欠けると処理自体は継続するが、同じMIDI・変換パラメータでも選択語が変わる。
     "mecab-python3>=1.0",
     "unidic-lite>=1.0",
-    "kanasim==0.0.11",
     "soramimic-score==0.1.0",
 ]
 
@@ -122,6 +121,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 
 [tool.uv.sources]
-soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "b3cd862a0944d3e7a5b973076ebcd0f14d21eac1" }
-soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi", rev = "ae5aca15c672620010ec84b58059018fd248a34f" }
-soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "32c8260aeb682daf1b2d3f18de76bc40c6ad0eda" }
+soramimic-score = { git = "https://github.com/jiroshimaya/soramimic-score", rev = "dd6dd4280443787bb819b22101d79b719191f263" }
+soramimic-yomi = { git = "https://github.com/soramimic/soramimic-yomi", rev = "a662f8073e2bcc808338492cef99d98ea8673c63" }
+soramimic = { git = "https://github.com/soramimic/soramimic-python", rev = "7a09583fbdf802f39bb2d07486c47c864301f301" }

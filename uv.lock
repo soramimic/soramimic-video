@@ -2646,7 +2646,7 @@ wheels = [
 [[package]]
 name = "soramimic"
 version = "0.2.0"
-source = { git = "https://github.com/soramimic/soramimic-python?rev=32c8260aeb682daf1b2d3f18de76bc40c6ad0eda#32c8260aeb682daf1b2d3f18de76bc40c6ad0eda" }
+source = { git = "https://github.com/soramimic/soramimic-python?rev=7a09583fbdf802f39bb2d07486c47c864301f301#7a09583fbdf802f39bb2d07486c47c864301f301" }
 
 [package.optional-dependencies]
 mecab = [
@@ -2657,7 +2657,7 @@ mecab = [
 [[package]]
 name = "soramimic-score"
 version = "0.1.0"
-source = { git = "https://github.com/jiroshimaya/soramimic-score?rev=b3cd862a0944d3e7a5b973076ebcd0f14d21eac1#b3cd862a0944d3e7a5b973076ebcd0f14d21eac1" }
+source = { git = "https://github.com/jiroshimaya/soramimic-score?rev=dd6dd4280443787bb819b22101d79b719191f263#dd6dd4280443787bb819b22101d79b719191f263" }
 dependencies = [
     { name = "jasyllablesep" },
     { name = "kanasim" },
@@ -2672,7 +2672,6 @@ dependencies = [
     { name = "cairosvg" },
     { name = "jaconv" },
     { name = "jphrase" },
-    { name = "kanasim" },
     { name = "mecab-python3" },
     { name = "mido" },
     { name = "numpy" },
@@ -2734,7 +2733,6 @@ requires-dist = [
     { name = "faster-whisper", marker = "extra == 'audio'", specifier = ">=1.0" },
     { name = "jaconv", specifier = ">=0.3" },
     { name = "jphrase", specifier = ">=0.0.3" },
-    { name = "kanasim", specifier = "==0.0.11" },
     { name = "librosa", marker = "extra == 'audio'", specifier = ">=0.10" },
     { name = "mecab-python3", specifier = ">=1.0" },
     { name = "mido", specifier = ">=1.3" },
@@ -2749,10 +2747,10 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.9" },
     { name = "requests", specifier = ">=2.31" },
     { name = "scipy", marker = "extra == 'audio'", specifier = ">=1.13" },
-    { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=32c8260aeb682daf1b2d3f18de76bc40c6ad0eda" },
-    { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=b3cd862a0944d3e7a5b973076ebcd0f14d21eac1" },
-    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=ae5aca15c672620010ec84b58059018fd248a34f" },
-    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=ae5aca15c672620010ec84b58059018fd248a34f" },
+    { name = "soramimic", extras = ["mecab"], git = "https://github.com/soramimic/soramimic-python?rev=7a09583fbdf802f39bb2d07486c47c864301f301" },
+    { name = "soramimic-score", git = "https://github.com/jiroshimaya/soramimic-score?rev=dd6dd4280443787bb819b22101d79b719191f263" },
+    { name = "soramimic-yomi", git = "https://github.com/soramimic/soramimic-yomi?rev=a662f8073e2bcc808338492cef99d98ea8673c63" },
+    { name = "soramimic-yomi", marker = "extra == 'audio'", git = "https://github.com/soramimic/soramimic-yomi?rev=a662f8073e2bcc808338492cef99d98ea8673c63" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.12" },
     { name = "torch", marker = "extra == 'audio'", specifier = "==2.8.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = "==2.8.0" },
@@ -2780,7 +2778,7 @@ dev = [
 [[package]]
 name = "soramimic-yomi"
 version = "0.1.0"
-source = { git = "https://github.com/soramimic/soramimic-yomi?rev=ae5aca15c672620010ec84b58059018fd248a34f#ae5aca15c672620010ec84b58059018fd248a34f" }
+source = { git = "https://github.com/soramimic/soramimic-yomi?rev=a662f8073e2bcc808338492cef99d98ea8673c63#a662f8073e2bcc808338492cef99d98ea8673c63" }
 dependencies = [
     { name = "arpakana" },
     { name = "e2k" },

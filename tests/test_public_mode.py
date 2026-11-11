@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import time
-import wave
 
 import pytest
+
+from helpers import fake_wav
 
 fastapi = pytest.importorskip("fastapi")
 
@@ -22,16 +22,6 @@ from soramimic_video import api as api_mod  # noqa: E402
 
 FAKE_MIDI = b"MThd" + b"\x00" * 16
 FAKE_MP4 = b"fake-mp4-bytes"
-
-
-def fake_wav(seconds: float, rate: int = 8000) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(rate)
-        wav.writeframes(b"\x00\x00" * round(seconds * rate))
-    return out.getvalue()
 
 
 def fast_pipeline(job, config):
@@ -378,7 +368,7 @@ def test_expired_jobs_are_removed_during_startup(tmp_path, monkeypatch):
     assert not job.dir.exists()
 
 
-def test_restart_persists_interruption_and_scrubs_private_files(tmp_path, monkeypatch):
+def test_restart_persists_interruption_with_expiring_diagnostics(tmp_path, monkeypatch):
     monkeypatch.setenv(api_mod.PUBLIC_ENV, "1")
     jobs_dir = tmp_path / "jobs"
     job_dir = jobs_dir / "abcdef12"
@@ -403,7 +393,10 @@ def test_restart_persists_interruption_and_scrubs_private_files(tmp_path, monkey
     assert job.status == "error"
     assert job.finished_at is not None
     assert job.cleanup_pending is False
-    assert sorted(path.name for path in job_dir.iterdir()) == [api_mod.STATUS_FILENAME]
+    assert (job_dir / "input.wav").read_bytes() == b"private audio"
+    report = json.loads((job_dir / api_mod.error_diagnostics.REPORT_FILENAME).read_text())
+    assert report["error"] == "サーバー再起動により中断されました"
+    assert report["expires_at"] == saved["diagnostics_expires_at"]
     assert saved["status"] == "error"
     assert saved["finished_at"] == job.finished_at
 
@@ -432,7 +425,7 @@ def test_cleanup_failure_is_persisted_and_retried(tmp_path, monkeypatch):
 
     def failing_pipeline(job, config):
         (job.dir / "private.tmp").write_bytes(b"private")
-        raise RuntimeError("inference stopped")
+        raise api_mod.runproc.Cancelled()
 
     monkeypatch.setattr(api_mod.Path, "unlink", flaky_unlink)
     monkeypatch.setattr(api_mod, "run_pipeline", failing_pipeline)
@@ -951,7 +944,7 @@ def test_public_rejects_invalid_custom_text(public_app, endpoint):
     response = TestClient(public_app).post(
         endpoint,
         files={"midi": ("song.mid", FAKE_MIDI, "audio/midi")},
-        data={"wordlist_text": "surface,pronunciation\n猫,猫又"},
+        data={"wordlist_text": "surface,pronunciation\n猫,❤"},
     )
     assert response.status_code == 400, response.text
     assert "カタカナ" in response.json()["detail"]
