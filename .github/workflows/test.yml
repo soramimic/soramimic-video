@@ -32,8 +32,23 @@ jobs:
           cache: npm
       - run: npm ci
       - uses: astral-sh/setup-uv@v5
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Set up FFmpeg and FFprobe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ffmpeg_setup_dir="${RUNNER_TEMP}/ffmpeg-ci"
+          ffmpeg_archive=ffmpeg-n8.1.3-27-g8dca1586f4-linux64-gpl-8.1.tar.xz
+          mkdir -p "$ffmpeg_setup_dir"
+          gh release download autobuild-2026-10-31-12-59 --repo FFmpeg-Builds/FFmpeg-Builds \
+            --pattern "$ffmpeg_archive" --dir "$ffmpeg_setup_dir"
+          cd "$ffmpeg_setup_dir"
+          printf '41e9c565594c390622cf968d82fa4135d9e9a11d06c1515644288cbc844e3380  %s\n' "$ffmpeg_archive" | sha256sum --check --strict
+          mkdir extracted
+          tar -xJf "$ffmpeg_archive" --strip-components=1 -C extracted
+          printf '%s\n' "$ffmpeg_setup_dir/extracted/bin" >> "$GITHUB_PATH"
+          "$ffmpeg_setup_dir/extracted/bin/ffmpeg" -version
+          "$ffmpeg_setup_dir/extracted/bin/ffprobe" -version
       - run: uv sync --extra api
       - run: uv run ruff check .
       - run: uv run mypy src
