@@ -826,6 +826,7 @@ def test_history_thumbnail_plays_and_keeps_save_share_and_edit_actions(ios):
         const qs = url => url, apiKey = () => '';
         const resetHistorySave = () => {}, resetHistoryShare = () => {};
         const historyCreatedLabel = () => '', historyStatusLabel = () => '完成';
+        const appendHistoryDelete = () => {};
         const editorPeer = {}, saveCalls = [], editCalls = [];
         const saveHistoryVideo = (index, button, status) => saveCalls.push({index, button, status});
         const editResultLyrics = job => editCalls.push(job);
@@ -4037,6 +4038,7 @@ def test_wordlist_exhaustion_notice_follows_the_completed_result_and_resets():
         const document = {createElement: element}, navigator = {};
         const historyButton = element;
         const historyCreatedLabel = () => "", historyStatusLabel = () => "";
+        const appendHistoryDelete = () => {};
         let builderState = "preview", pollSeq = 1, currentJob = "job", pollLastAt = 0;
         let pollFailures = 0, reviewJobId = null;
         const POLL_FETCH_TIMEOUT_MS = 1000, POLL_FATAL_STATUS = [404], STAGE_LABELS = {};
