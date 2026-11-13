@@ -1796,6 +1796,7 @@ class JobManager:
             self.config.get("scrub_private_artifacts")
             or self.config.get("audio_uploads")
             or _env_float(JOB_TTL_HOURS_ENV, 0.0) > 0
+            or any(job.status == "deleted" for job in self.jobs.values())
         ):
             self._cleaner = threading.Thread(target=self._cleanup_loop, daemon=True)
             self._cleaner.start()
@@ -1882,8 +1883,15 @@ class JobManager:
 
     def _scrub_terminal_jobs(self, *, pending_only: bool = False) -> None:
         """Remove private inputs left by older releases from terminal jobs."""
+        with self._lock:
+            self._scrub_terminal_jobs_locked(pending_only=pending_only)
+
+    def _scrub_terminal_jobs_locked(self, *, pending_only: bool = False) -> None:
         for job in list(self.jobs.values()):
             if pending_only and not job.cleanup_pending:
+                continue
+            if job.status == "deleted":
+                self._cleanup_deleted_job(job)
                 continue
             if job.status in {"done", "error", "canceled"}:
                 self._record_finished_usage(job, failed_stage=job.stage)
@@ -2015,6 +2023,8 @@ class JobManager:
         if action not in {"credits", "credits_download", "download", "playback", "thumbnail"}:
             raise ValueError(f"unknown output usage action: {action}")
         with self._lock:
+            if self.jobs.get(job.id) is not job or job.status == "deleted":
+                return
             if action in job.usage_outputs_recorded:
                 return
             result_kind = (
@@ -2102,13 +2112,14 @@ class JobManager:
     def get(self, job_id: str, owner: str | None = None) -> Job:
         """ジョブを引く。ownerを渡すと持ち主が違うジョブは404にする(公開モード)。"""
         job = self.jobs.get(job_id)
-        if job is None or (owner is not None and job.owner != owner):
+        if (job is None or job.status == "deleted"
+                or (owner is not None and job.owner != owner)):
             raise HTTPException(status_code=404, detail="ジョブが見つかりません")
         return job
 
     def visible_jobs(self, owner: str | None = None) -> list[Job]:
         """一覧に出すジョブ。ownerを渡すとそのセッションのぶんだけ返す(公開モード)。"""
-        jobs = list(self.jobs.values())
+        jobs = [job for job in self.jobs.values() if job.status != "deleted"]
         if owner is not None:
             jobs = [j for j in jobs if j.owner == owner]
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
@@ -2118,7 +2129,7 @@ class JobManager:
         if not submission_id:
             return None
         with self._lock:
-            return next(
+            job = next(
                 (
                     job
                     for job in self.jobs.values()
@@ -2126,6 +2137,9 @@ class JobManager:
                 ),
                 None,
             )
+            if job is not None and job.status == "deleted":
+                raise HTTPException(status_code=410, detail="この生成結果は削除されています")
+            return job
 
     def active_count(self) -> int:
         """Count queued, running and review-pending jobs against the admission limit."""
@@ -2133,6 +2147,48 @@ class JobManager:
             1 for j in self.jobs.values()
             if j.status in ("queued", "running", "awaiting_review")
         )
+
+    def delete(self, job_id: str, owner: str | None = None) -> bool:
+        """Remove a terminal result, retaining only a one-day admission receipt."""
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if job is None or (owner is not None and job.owner != owner):
+                raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+            if job.status not in {"done", "error", "canceled", "deleted"}:
+                raise HTTPException(status_code=409, detail="作成が終了してから削除してください")
+            if job.status != "deleted":
+                receipt = Job(
+                    id=job.id, dir=job.dir, params={}, status="deleted",
+                    owner=job.owner, client_hash=job.client_hash,
+                    submission_id=job.submission_id,
+                    created_at=job.created_at, cleanup_pending=True,
+                )
+                # Publish the durable receipt before touching files. A restart
+                # must never restore a partly deleted result or reset its quota.
+                self._save(receipt)
+                self.jobs[job.id] = receipt
+                job = receipt
+            self._cleanup_deleted_job(job)
+            if self._cleaner is None:
+                self._cleaner = threading.Thread(target=self._cleanup_loop, daemon=True)
+                self._cleaner.start()
+            return job.cleanup_pending
+
+    def _cleanup_deleted_job(self, job: Job) -> None:
+        try:
+            for child in job.dir.iterdir():
+                if child.name == STATUS_FILENAME:
+                    continue
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink(missing_ok=True)
+        except OSError:
+            job.cleanup_pending = True
+            _log_exception("[job %s] 削除を再試行します", job.id)
+        else:
+            job.cleanup_pending = False
+        self._save(job)
 
     @staticmethod
     def _remaining_range(job: Job, now: float) -> tuple[int, int]:
@@ -2252,7 +2308,8 @@ class JobManager:
                 if job.submission_id
             })
         hours = _env_float(JOB_TTL_HOURS_ENV, 0.0)
-        if hours <= 0 and not self.config.get("scrub_private_artifacts"):
+        if (hours <= 0 and not self.config.get("scrub_private_artifacts")
+                and not any(job.status == "deleted" for job in self.jobs.values())):
             return []
         current_time = time.time() if now is None else now
         deadline = current_time - hours * 3600
@@ -2261,7 +2318,9 @@ class JobManager:
             expired = [
                 job
                 for job in self.jobs.values()
-                if (job.status == "error" and job.diagnostics_expires_at is not None
+                if (job.status == "deleted" and not job.cleanup_pending
+                    and job.created_at <= current_time - 24 * 3600)
+                or (job.status == "error" and job.diagnostics_expires_at is not None
                     and job.diagnostics_expires_at <= current_time)
                 or (hours > 0 and job.status in ("done", "error", "canceled")
                     and job.diagnostics_expires_at is None
@@ -2301,6 +2360,15 @@ class JobManager:
         return [job.id for job in expired]
 
     def _save(self, job: Job) -> None:
+        # Old playback requests can retain a Job reference after deletion.
+        # They must not overwrite the receipt with the original result metadata.
+        with self._lock:
+            current = self.jobs.get(job.id)
+            if current is not None and current is not job and current.status == "deleted":
+                return
+            self._save_locked(job)
+
+    def _save_locked(self, job: Job) -> None:
         data = job.to_dict(with_log=False)
         # status.jsonは公開配信せずProtectHome/StateDirectory内に置く運用データなので、
         # 再起動後の診断用に実際の例外を保存する。API応答だけ上で一般化する。
@@ -2342,6 +2410,11 @@ class JobManager:
                 )
             except ValueError:
                 data["video"] = str(job.video)
+        if job.status == "deleted":
+            data = {key: data[key] for key in (
+                "id", "status", "created_at", "owner", "client_hash", "submission_id",
+                "cleanup_pending",
+            ) if key in data}
         # 同じディレクトリの一時ファイルに書いてから置換する。ジョブ実行中も
         # APIスレッドが status.json を読むので、書きかけの中身を読ませない
         status_path = job.dir / STATUS_FILENAME
@@ -2600,11 +2673,14 @@ class JobManager:
     def _run_one(self, job: Job) -> None:
         from .lyric_review import ReviewRequired
 
-        if job.cancel_event.is_set():
-            self._cleanup_failed_artifacts(job)
-            job.status = "canceled"
-            self._save(job)
-            return
+        with self._lock:
+            if self.jobs.get(job.id) is not job:
+                return
+            if job.cancel_event.is_set():
+                self._cleanup_failed_artifacts(job)
+                job.status = "canceled"
+                self._save(job)
+                return
         handler = _JobLogHandler(job)
         diagnostic_context = error_diagnostics.CURRENT_JOB.set(job.id)
         job_loggers = [logging.getLogger(name) for name in (
@@ -5038,6 +5114,16 @@ def create_app(
     def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
         return manager.job_dict(
             manager.cancel(job_id, owner_of(request)), with_log=False
+        )
+
+    @app.delete("/api/jobs/{job_id}", dependencies=[Depends(_require_api_key)])
+    def delete_job(job_id: str, request: Request) -> JSONResponse:
+        with quota_submit_lock:
+            pending = manager.delete(job_id, owner_of(request))
+        return JSONResponse(
+            {"deleted": True, "cleanup_pending": pending},
+            status_code=202 if pending else 200,
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get("/api/jobs/{job_id}/lyrics", dependencies=[Depends(_require_api_key)])

@@ -431,6 +431,13 @@
   .history-media audio { display: block; width: calc(100% - 1rem); height: 3.5rem; }
   .history-copy { min-width: 0; padding: .7rem; }
   .history-copy h3 { margin: 0 0 .25rem; font-size: 1rem; overflow-wrap: anywhere; }
+  .history-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
+  .history-heading h3 { min-width: 0; }
+  .history-delete { flex: 0 0 auto; color: var(--danger); min-height: 44px; }
+  .history-delete-confirm { padding: .8rem; border-top: 1px solid var(--border); background: var(--panel-2); }
+  .history-delete-confirm p { margin: 0 0 .5rem; overflow-wrap: anywhere; }
+  .history-delete-confirm button { min-height: 44px; }
+  .history-delete-error { color: var(--danger); }
   .history-meta { margin: .18rem 0; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
   .history-status {
     display: inline-block; margin-top: .2rem; padding: .12rem .45rem; border-radius: 999px;
@@ -1367,7 +1374,7 @@
   </fieldset>
 </details>
 
-<details class="card" id="history"><summary>過去のジョブ</summary><div id="history-body"></div></details>
+<details class="card" id="history"><summary>過去のジョブ</summary><p id="history-message" class="hint" role="status" hidden></p><div id="history-body"></div></details>
 
 <nav class="site-links" aria-label="ご利用案内">
   <a href="/guidelines#singing-credits">歌声DB：波音リツ（カノン）</a>
@@ -2477,6 +2484,7 @@ async function fetchHistory() {
     });
     if (!res.ok) throw new Error("履歴を取得できませんでした");
     jobs = await res.json();
+    jobs = jobs.filter(job => !historyDeletedIds.has(job.id));
   } catch {
     const message = document.createElement("p");
     message.textContent = "履歴を取得できませんでした。もう一度お試しください。";
@@ -2484,7 +2492,7 @@ async function fetchHistory() {
     const retry = historyButton("再試行");
     retry.addEventListener("click", () => loadHistory().then(restoreJobProgress));
     const body = $("history-body");
-    if (activeHistoryPlayback || preparedHistorySave || preparedHistoryShare) {
+    if (activeHistoryPlayback || preparedHistorySave || preparedHistoryShare || historyDeleteStates.size) {
       body.querySelector(".history-load-error")?.remove();
       const error = document.createElement("div");
       error.className = "history-load-error";
@@ -2515,6 +2523,14 @@ function renderHistoryJobs(jobs) {
   keep(activeHistoryPlayback, activeHistoryPlayback?.media, "playback_url", disposeHistoryPlayback);
   keep(preparedHistorySave, preparedHistorySave?.button, "video_url", resetHistorySave);
   keep(preparedHistoryShare, preparedHistoryShare?.button, "video_url", resetHistoryShare);
+  for (const [id, state] of historyDeleteStates) {
+    const index = jobs.findIndex(job => job.id === id);
+    if (index >= 0 && previousList && state.card.parentElement === previousList) {
+      retained.set(index, state.card);
+    } else if (!state.busy) {
+      historyDeleteStates.delete(id);
+    }
+  }
   historyJobs = jobs;
   if (retained.size) {
     // Keep playing media and pending native-save controls connected to the document.
@@ -2542,6 +2558,110 @@ let historyJobs = [];
 let activeHistoryPlayback = null;
 let preparedHistorySave = null;
 let preparedHistoryShare = null;
+const historyDeleteStates = new Map();
+const historyDeletedIds = new Set();
+
+function appendHistoryDelete(card, title, job) {
+  if (!job.id || !["done", "error", "canceled"].includes(job.status)) return;
+  const heading = document.createElement("div");
+  heading.className = "history-heading";
+  title.replaceWith(heading);
+  const button = historyButton("削除", "history-delete");
+  button.setAttribute("aria-label", `${job.song_label || "曲"}の生成結果を削除`);
+  button.setAttribute("aria-expanded", "false");
+  heading.append(title, button);
+  button.addEventListener("click", () => {
+    if (historyDeleteStates.has(job.id)) return;
+    const panel = document.createElement("div");
+    panel.className = "history-delete-confirm";
+    panel.id = `history-delete-${job.id}`;
+    button.setAttribute("aria-controls", panel.id);
+    panel.setAttribute("role", "group");
+    panel.setAttribute("aria-label", "生成結果の削除確認");
+    const question = document.createElement("p");
+    question.textContent = `「${job.song_label || "曲"}」の生成結果を削除しますか？`;
+    const hint = document.createElement("p");
+    hint.className = "history-meta";
+    hint.textContent = "この結果の動画・音声・保存データを削除します。ダウンロード済みのファイルは残ります。削除は取り消せません。";
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const cancel = historyButton("キャンセル");
+    const confirm = historyButton("削除する", "btn-danger");
+    const error = document.createElement("p");
+    error.className = "history-delete-error";
+    error.setAttribute("role", "alert");
+    error.hidden = true;
+    const state = { card, button, panel, cancel, confirm, error, busy: false };
+    historyDeleteStates.set(job.id, state);
+    cancel.addEventListener("click", () => {
+      if (state.busy) return;
+      historyDeleteStates.delete(job.id);
+      panel.remove();
+      button.disabled = false;
+      button.setAttribute("aria-expanded", "false");
+      button.focus();
+    });
+    confirm.addEventListener("click", () => deleteHistoryResult(job, state));
+    actions.append(cancel, confirm);
+    panel.append(question, hint, actions, error);
+    card.appendChild(panel);
+    button.disabled = true;
+    button.setAttribute("aria-expanded", "true");
+    cancel.focus();
+  });
+}
+
+async function deleteHistoryResult(job, state) {
+  if (state.busy) return;
+  state.busy = true;
+  state.panel.setAttribute("aria-busy", "true");
+  state.cancel.disabled = state.confirm.disabled = true;
+  state.confirm.textContent = "削除中…";
+  state.error.hidden = true;
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(job.id)}`, {
+      method: "DELETE", headers: headers(), signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok && res.status !== 404) {
+      throw new Error(res.status === 409 ? "作成が終了してから削除してください。"
+        : "削除できませんでした。もう一度お試しください。");
+    }
+    historyDeletedIds.add(job.id);
+    historyDeleteStates.delete(job.id);
+    if (activeHistoryPlayback?.jobId === job.id) disposeHistoryPlayback();
+    if (preparedHistorySave?.jobId === job.id) resetHistorySave();
+    if (preparedHistoryShare?.jobId === job.id) resetHistoryShare();
+    if (showBuilderVideo.jobId === job.id) {
+      globalThis.VideoOperations?.cancelAction($("share-save"));
+      if (resultDownloadAbort) resultDownloadAbort.abort();
+      if (resultDownloadObjectUrl) URL.revokeObjectURL(resultDownloadObjectUrl);
+      resultDownloadObjectUrl = "";
+      freshBuilderVideo();
+      releaseBuilderDone();
+      showBuilderVideo.jobId = null;
+    }
+    renderHistoryJobs(historyJobs.filter(item => item.id !== job.id));
+    const message = $("history-message");
+    message.hidden = false;
+    message.textContent = res.status === 202
+      ? "履歴から削除しました。保存ファイルの削除を処理中です。"
+      : "生成結果を削除しました。";
+    const next = $("history-body").querySelector(".history-delete, button, a");
+    if (next) next.focus();
+    else $("history").querySelector("summary").focus();
+  } catch (error) {
+    state.error.textContent = error.name === "TimeoutError"
+      ? "削除の完了を確認できませんでした。もう一度お試しください。"
+      : error.message || "削除できませんでした。通信状態を確認してください。";
+    state.error.hidden = false;
+  } finally {
+    state.busy = false;
+    state.panel.removeAttribute("aria-busy");
+    state.cancel.disabled = state.confirm.disabled = false;
+    state.confirm.textContent = "削除する";
+    if (!state.error.hidden) state.confirm.focus();
+  }
+}
 
 const HISTORY_STATUS_LABELS = {
   awaiting_review: "歌詞の確認待ち", queued: "開始待ち", running: "作成中", done: "完成", error: "失敗", canceled: "中止",
@@ -2726,6 +2846,7 @@ function historyCard(job, index) {
   mediaSlot.appendChild(thumb);
   main.append(mediaSlot, copy);
   card.appendChild(main);
+  appendHistoryDelete(card, title, job);
   return card;
 }
 
@@ -6096,6 +6217,7 @@ document.addEventListener("keydown", event => {
 
 // 完成した動画をそのまま枠に出す。poster にサムネを敷くので絵が途切れない。
 function showBuilderVideo(job) {
+  showBuilderVideo.jobId = job.id;
   const video = freshBuilderVideo();
   // File共有を試せない環境だけはURLを直接再生する。対応候補では、共有用に
   // 先行取得したFileを再生にも共用し、同じMP4を二経路で読み込まない。

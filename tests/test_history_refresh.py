@@ -59,6 +59,7 @@ const appendSaveMenu=(actions,_job,save)=>{
   return {button,status};
 };
 let activeHistoryPlayback=null, preparedHistorySave=null, preparedHistoryShare=null, historyJobs=[];
+const historyDeleteStates=new Map(), historyDeletedIds=new Set(), appendHistoryDelete=()=>{};
 let fetch=async()=>({ok:false});
 const job=id=>({id,status:'done',result_kind:'video',
   playback_url:`/${id}/playback`,video_url:`/${id}/video`});

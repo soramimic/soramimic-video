@@ -260,6 +260,7 @@ def test_history_failure_times_out_without_locking_startup_and_can_retry():
     harness = DOM + r"""
 const document={createElement:element}, headers=()=>({});
 let historyLoadPending=null, historyJobs=[], loads=0, mode='http', controller, timeout;
+const historyDeleteStates=new Map(), historyDeletedIds=new Set();
 let activeHistoryPlayback=null, preparedHistorySave=null, preparedHistoryShare=null;
 let disposals=0, restored=[];
 const disposeHistoryPlayback=()=>{disposals++;}, resetHistorySave=()=>{}, resetHistoryShare=()=>{};
