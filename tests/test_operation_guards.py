@@ -106,6 +106,7 @@ let reviewAction='';
 let customListBusy=false;
 let submitBusy=false, currentJob=null, recording=false, resumed=false, reviewOpenedJob=null;
 let builderState='preview', lyricsFileReading=false, watched=null;
+const hasVideoWordlist=()=>true;
 const songRecordingBusy=()=>recording;
 const same=$('same-review'), other=$('other-review');
 same.dataset={jobId:'current'}; other.dataset={jobId:'other'};
@@ -308,7 +309,7 @@ assert.match($('song-record-status').textContent,/マイクを使用できませ
 def test_lyrics_loading_disables_generation_until_completion_cancel_or_error():
     harness = DOM + r"""
 let lyricsFileReadSequence=0, lyricsFileReading=false, submitBusy=false, builderState='preview';
-const songRecordingBusy=()=>false, MAX_EDITOR_BYTES=4*1024*1024;
+const songRecordingBusy=()=>false, hasVideoWordlist=()=>true, MAX_EDITOR_BYTES=4*1024*1024;
 const syncLyricsInput=()=>{}, syncLyricsRecognition=()=>{};
 const syncRecordingUi=()=>{updateBuilderOverlay();syncSongInputControls();};
 $('builder-figure').hidden=false; $('builder-loading').hidden=true;

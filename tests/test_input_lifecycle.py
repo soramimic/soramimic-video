@@ -211,7 +211,7 @@ assert.equal($('lyrics-file-name').hidden,true);
 def test_submit_rechecks_lyrics_after_verification_before_building_the_form():
     harness = DOM + r"""
 let submitBusy=false, lyricsFileReading=false, automatic=false, submitAbort=null;
-const songRecordingBusy=()=>false;
+const songRecordingBusy=()=>false, hasVideoWordlist=()=>true;
 let samplePending=null, midiChecking=null, midiSampleId='', submitMessage='', gate;
 const songInputMode='upload', simpleMode=false, fixedSynthesizer='voicevox', fixedVoicevoxStyle=1;
 const turnstileSiteKey='site', turnstileScriptFailed=false;

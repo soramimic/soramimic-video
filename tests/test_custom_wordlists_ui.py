@@ -159,6 +159,7 @@ let previewTimer = null;
 const label = {value: ""};
 const $ = id => id === "thumbnail-wordlist-label" ? label : {hidden: false, value: ""};
 const refreshTitleChoices = () => {};
+const updateBuilderOverlay = () => {};
 const selectedTitleWords = () => '';
 let where = '';
 const currentWordlistWhere = () => where;
