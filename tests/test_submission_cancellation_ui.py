@@ -24,7 +24,8 @@ const begin=()=>{leases++;let active=true;return {end(){if(active){active=false;
 globalThis.VideoOperations={begin,beginAction(){
   const lease=begin();return {finish:()=>lease.end()};
 }};
-const songRecordingBusy=()=>false, lyricsFileReading=false, songInputMode='sample';
+const songRecordingBusy=()=>false, hasVideoWordlist=()=>true;
+const lyricsFileReading=false, songInputMode='sample';
 const simpleMode=true, samplePending=null, midiChecking=null, midiSampleId='sample';
 const file=new File(['audio data'],'song.wav');
 const ownAudioFile=()=>audioInput?file:null, ownSongKind=()=>'', ownSongFile=()=>null;

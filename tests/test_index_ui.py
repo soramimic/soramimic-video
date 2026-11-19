@@ -347,6 +347,7 @@ def test_video_submit_confirms_unmatched_lyrics_and_remembers_only_acceptance():
     node = textwrap.dedent("""
         const assert = require('node:assert/strict');
         const songRecordingBusy = () => false;
+        const hasVideoWordlist = () => true;
         const REVIEW_REGENERATE_KEY = 'regenerate', UNMATCHED_LYRICS_KEY = 'unmatched';
         const MAX_EDITOR_BYTES = 4 * 1024 * 1024;
         const preferences = new Map(), elements = new Map(), requests = [];
@@ -2114,6 +2115,7 @@ def test_submission_rechecks_song_selection_after_verification_wait():
     harness = r'''
         const assert = require("node:assert/strict");
         const songRecordingBusy = () => false;
+        const hasVideoWordlist = () => true;
         const {File} = require("node:buffer");
         const audio = new File(["original audio"], "first.wav");
         const otherAudio = new File(["different audio"], "second.wav");
@@ -3718,6 +3720,7 @@ def test_fanwork_notice_allows_generation_and_images_without_confirmation():
         """
         const assert = require("node:assert/strict");
         const songRecordingBusy = () => false;
+        const hasVideoWordlist = () => true;
         let selected = "fanwork", songInputMode = "sample";
         let wordlistUsageRequest = null, wordlistUsageAbort = null;
         const currentPreviewCustomList = () => null;

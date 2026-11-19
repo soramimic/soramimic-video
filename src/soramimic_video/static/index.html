@@ -837,7 +837,8 @@
        指で押せる高さを自分で持つ(絵があるときは絵の高さが勝つ) */
     min-height: 7rem;
   }
-  .builder-play:hover, .builder-play:focus-visible { background: #0006; }
+  .builder-play:enabled:hover, .builder-play:focus-visible { background: #0006; }
+  .builder-play:disabled { cursor: default; opacity: .55; }
   .builder-play-icon {
     display: flex; align-items: center; justify-content: center;
     width: 3rem; height: 3rem; border-radius: 50%; font-size: 1.1rem;
@@ -1060,7 +1061,7 @@
     <button type="button" class="builder-play" id="builder-play" data-startup-inputs disabled hidden
       aria-label="この組み合わせで動画を生成">
       <span class="builder-play-icon" aria-hidden="true">▶</span>
-      <span class="builder-play-label">タップで動画を生成</span>
+      <span class="builder-play-label" id="builder-play-label">タップで動画を生成</span>
     </button>
     <div class="builder-progress" id="builder-progress" hidden>
       <span class="spinner" aria-hidden="true"></span>
@@ -4032,6 +4033,12 @@ async function submitJob(previewSec, previewMode) {
     if (simpleMode) {
       editorSrc.file = null;
     }
+    if (previewSec <= 0 && !hasVideoWordlist(editorSrc.file)) {
+      setBusy(false);
+      showSubmitMsg("単語リストを選んでください。");
+      $("builder-wordlist-trigger").focus();
+      return;
+    }
     if (editorSrc.file) {
       try {
         const payload = await readParodyFile(editorSrc.file);
@@ -4082,6 +4089,14 @@ async function submitJob(previewSec, previewMode) {
       return;
     }
     preparationController.signal.throwIfAborted();
+    // 確認待ちの間に単語リストが解除された場合も、未選択のまま送信しない。
+    if (previewSec <= 0 && !hasVideoWordlist(editorSrc.file)) {
+      setBusy(false);
+      hideTurnstilePrompt();
+      showSubmitMsg("単語リストを選んでください。");
+      $("builder-wordlist-trigger").focus();
+      return;
+    }
     const form = new FormData();
     const submissionId = globalThis.crypto?.randomUUID
       ? globalThis.crypto.randomUUID().replace(/-/g, "")
@@ -6089,12 +6104,19 @@ function setBuilderState(state) {
   updateBuilderOverlay();
 }
 
-// 「タップで動画を生成」を出してよいのは、枠が見えていて、いまジョブを投入
-// できるときだけ。生成の導線はこれ1つしかないので、サムネの絵が用意できて
-// いない(#builder-image が無い)ときでも枠だけは出して押せるようにする。
+// 編集済みの歌詞JSONは、単語リストを別に選ばずそのまま動画にできる。
+function hasVideoWordlist(editorData = !simpleMode && activeLyricsJson()) {
+  return !!editorData || !!$("wordlist").value.trim() || !!activeCustomList();
+}
+
+// サムネがなくても生成の枠を残し、入力が足りないときは選択を促す。
 function updateBuilderOverlay() {
   const blocked = submitBusy || lyricsFileReading || songRecordingBusy();
-  $("builder-play").disabled = blocked;
+  const missingWordlist = !hasVideoWordlist();
+  const label = missingWordlist ? "単語リストを選んでください" : "タップで動画を生成";
+  $("builder-play").disabled = blocked || missingWordlist;
+  $("builder-play-label").textContent = label;
+  $("builder-play").setAttribute("aria-label", missingWordlist ? label : "この組み合わせで動画を生成");
   for (const id of ["preview", "preview-high", "preview-low"]) $(id).disabled = blocked;
   $("builder-play").hidden = !(builderState === "preview"
     && !$("builder-figure").hidden && $("builder-loading").hidden && !submitBusy);
@@ -6814,6 +6836,7 @@ function renderBuilder() {
 function schedulePreview(force) {
   refreshTitleChoices();
   if (!builderLive || $("lucky-card").hidden) return;
+  updateBuilderOverlay();
   showBuilderMsg("");
   const c = currentCombo();
   const list = c.customList;
